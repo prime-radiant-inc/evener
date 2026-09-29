@@ -53,6 +53,16 @@ export function summaryEntry(
 		}),
 	};
 	entries.set(key, entry);
+	// A file written again gets a new key; the older write's summary would
+	// otherwise stay in the map forever. A newer write stays, though: a screen
+	// still showing it keeps its summary.
+	const at = updatedAt === undefined ? Number.NaN : Date.parse(updatedAt);
+	const prefix = `${JSON.stringify([sessionRef, path]).slice(0, -1)},`;
+	for (const other of entries.keys()) {
+		if (other === key || !other.startsWith(prefix)) continue;
+		const otherAt = (JSON.parse(other) as [string, string, string])[2];
+		if (Date.parse(otherAt) < at) entries.delete(other);
+	}
 	return entry;
 }
 

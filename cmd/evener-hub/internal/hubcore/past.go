@@ -111,9 +111,16 @@ type PastIndex struct {
 	// onChange, when set via SetOnChange, is fired by Rebuild only when the
 	// indexed content's fingerprint actually changes.
 	onChange func()
+	// onRootChange is fired, under the same generation gating as onChange, only
+	// when a root's shown fields change or the set of subagents changes (see
+	// rootFingerprint).
+	onRootChange func()
 	// fingerprint is the content hash from the most recent Rebuild (see
 	// contentFingerprint), used to gate onChange against no-op rebuilds.
 	fingerprint uint64
+	// rootFingerprint is the rootFingerprint hash from the most recent publish,
+	// gating onRootChange the way fingerprint gates onChange.
+	rootFingerprint uint64
 	// afterFindProbe, when non-nil, runs in Find after a miss's probe and before
 	// foldOne folds the row. Instance-scoped test seam for interleaving a
 	// concurrent writer that indexes a newer row first; nil in production.
@@ -122,6 +129,11 @@ type PastIndex struct {
 	// findCached miss and before the first probe. Instance-scoped test seam for
 	// interleaving a Rebuild swap in that window; nil in production.
 	afterFindCacheMiss func()
+
+	// rootIndex caches RootIndex's build for generation rootIndexGen. Guarded
+	// by mu.
+	rootIndex    *RootIndex
+	rootIndexGen uint64
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -185,6 +197,14 @@ func (i *PastIndex) StateGlob() string {
 // on nothing (runMain always seeds via the startup Rebuild before wiring).
 func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
 
+// SetOnRootChange registers a callback fired only when what a navigation row
+// shows can have changed: a root's shown fields moved, or a subagent appeared
+// or disappeared. A running subagent's autosave or rename does not fire it, so
+// consumers that read a roots-only projection stay quiet through delegate
+// writes. It shares SetOnChange's ordering hazard: call it after the initial
+// Rebuild.
+func (i *PastIndex) SetOnRootChange(fn func()) { i.onRootChange = fn }
+
 // contentFingerprint hashes the consumer-visible fields of the sorted entries so
 // a publish can detect a genuine content delta without a deep compare. It
 // deliberately covers ForkLabel and ObservedBy: a fork tag or an observer append
@@ -212,9 +232,10 @@ func contentFingerprint(all []PastEntry) uint64 {
 
 // Rebuild scans every project under stateGlob and reloads the index. The
 // bool return reports whether the reload's content actually differed from
-// what was already indexed AND a registered onChange callback fired for it
-// (false on a no-op reload, a glob error, or when SetOnChange was never
-// called) — so a caller relying on that hook to signal the change elsewhere
+// what was already indexed AND a registered hook (onChange or onRootChange)
+// fired for it (false on a no-op reload, a glob error, or when neither
+// SetOnChange nor SetOnRootChange was called; production subscribes with
+// SetOnRootChange) — so a caller relying on that hook to signal the change elsewhere
 // (e.g. a broadcast) can tell whether that already happened, or whether it
 // needs to compensate.
 //
@@ -451,9 +472,9 @@ func (i *PastIndex) reportSkips(skipped map[string]string) {
 // Rebuild may still be reading, which is a data race.
 //
 // The bool return reports whether the edit actually differed from what was
-// already indexed AND a registered onChange callback fired for it (false on
-// the untracked-id no-op, a no-op edit, or when SetOnChange was never
-// called) — see Rebuild's return for why a caller needs this.
+// already indexed AND a registered hook (onChange or onRootChange) fired for
+// it (false on the untracked-id no-op, a no-op edit, or when neither was
+// registered) — see Rebuild's return for why a caller needs this.
 func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	i.mu.Lock()
 	old, ok := i.byID[id]
@@ -504,7 +525,7 @@ func insertSorted(entries []PastEntry, pe PastEntry) []PastEntry {
 // the lock (publishFTS and contentFingerprint run unlocked), and gen the
 // generation that snapshot belongs to (see PastIndex.gen). The bool is
 // Rebuild/UpdateMeta's contract: whether content changed AND a registered
-// onChange fired for it.
+// hook (onChange or onRootChange) fired for it.
 //
 // A newer mutation (a fold or update landing after this snapshot was taken)
 // bumps i.gen. This publisher then abandons its tail entirely: the newer
@@ -517,18 +538,24 @@ func (i *PastIndex) publishAndSignal(all []PastEntry, gen uint64) bool {
 		i.publishFTS(all, gen)
 	}
 	fp := contentFingerprint(all)
+	rootFP := rootFingerprint(all)
 	i.mu.Lock()
 	if i.gen != gen {
 		i.mu.Unlock()
 		return false
 	}
 	changed := fp != i.fingerprint
+	rootChanged := rootFP != i.rootFingerprint
 	i.fingerprint = fp
+	i.rootFingerprint = rootFP
 	i.mu.Unlock()
 	if changed && i.onChange != nil {
 		i.onChange()
 	}
-	return changed && i.onChange != nil
+	if rootChanged && i.onRootChange != nil {
+		i.onRootChange()
+	}
+	return changed && i.onChange != nil || rootChanged && i.onRootChange != nil
 }
 
 // RefreshOne re-reads one already-indexed session's on-disk meta and folds it
@@ -1189,6 +1216,38 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 // miss rather than a stale probe.
 const pastFindProbeAttempts = 3
 
+// Lookup returns the indexed entry for sessionID. Unlike Find it is a pure map
+// read: it never probes the disk on a miss and never changes the index, so an
+// id that is on disk but not yet folded in is reported absent.
+func (i *PastIndex) Lookup(sessionID string) (PastEntry, bool) {
+	return i.findCached(sessionID)
+}
+
+// RootIndex returns the lineage index over the current entries, rebuilt only
+// when the index has changed since the last call.
+func (i *PastIndex) RootIndex() *RootIndex {
+	i.mu.RLock()
+	if i.rootIndex != nil && i.rootIndexGen == i.gen {
+		cached := i.rootIndex
+		i.mu.RUnlock()
+		return cached
+	}
+	metas := make([]schema.SessionMeta, 0, len(i.all))
+	for _, e := range i.all {
+		metas = append(metas, e.Meta)
+	}
+	gen := i.gen
+	i.mu.RUnlock()
+
+	built := NewRootIndex(metas)
+	i.mu.Lock()
+	if i.gen == gen {
+		i.rootIndex, i.rootIndexGen = built, gen
+	}
+	i.mu.Unlock()
+	return built
+}
+
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if identifier.ValidateSessionID(sessionID) != nil {
@@ -1320,6 +1379,13 @@ func (i *PastIndex) evict(id string, expectedRebuildGen, expectedIDGen uint64) b
 	i.mu.Unlock()
 	i.publishAndSignal(all, gen)
 	return true
+}
+
+// FindIndexed returns the entry the index already holds for sessionID. Unlike
+// Find it never probes the disk, so a caller that may be asked about unknown ids
+// repeatedly (a navigation read) does no I/O on a miss.
+func (i *PastIndex) FindIndexed(sessionID string) (PastEntry, bool) {
+	return i.findCached(sessionID)
 }
 
 func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {

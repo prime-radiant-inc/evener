@@ -8,7 +8,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
-import { alertRequests, pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { alertRequests, playedHaptics, pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -117,6 +117,7 @@ function provide(session: MobileConversation, over: Partial<SessionInfoHost> = {
 		controls: controls as unknown as SessionControls,
 		hostLabel: (id) => (id === "local" ? "Work hub" : id),
 		modelLabel: "Claude Sonnet 5 · High",
+		runMs: () => null,
 		ready: true,
 		editGoal: vi.fn(() => void calls.push("editGoal")),
 		clearGoal: vi.fn(() => void calls.push("clearGoal")),
@@ -223,6 +224,20 @@ describe("what the sheet shows (spec 8.6)", () => {
 			textTransform: "uppercase",
 			color: palette.inkMid,
 		});
+	});
+
+	it("draws its groups as the shared grouped list, inset with hairlines between rows", () => {
+		provide(conversation());
+		const tree = sheet();
+		// Grouped.tsx's Group is an inset surface card with a hairline between
+		// rows; the private Section this sheet used to carry drew a borderTop
+		// on each following row instead, so this pins the sheet to the shared one.
+		expect(tree.root.findAllByProps({ testID: "hairline" }).length).toBeGreaterThan(0);
+		const surface = tree.root.findAll(
+			(node) => String(node.type) === "View" && styleOf(node).backgroundColor === palette.surface,
+		);
+		expect(surface.length).toBeGreaterThan(0);
+		expect(styleOf(surface[0])).toMatchObject({ marginHorizontal: 16, borderRadius: 12 });
 	});
 
 	it("names the model, and opens the model sheet over this one", () => {
@@ -377,6 +392,19 @@ describe("what the sheet shows (spec 8.6)", () => {
 		expect(renderedText(sheet())).toContain("Could not confirm the action: refused");
 	});
 
+	it("announces a failed action to VoiceOver, not just shows it", () => {
+		const { host } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
+		replaceHost({
+			...host,
+			controls: fakeControls({
+				lastAction: "compact",
+				error: "Could not confirm the action: refused",
+			}) as unknown as SessionControls,
+		});
+		const tree = sheet();
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
+	});
+
 	it("stays open while the hub is away, showing what it knows with its actions held", () => {
 		const { host } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
 		replaceHost({ ...host, controls: null, ready: false });
@@ -525,6 +553,20 @@ describe("actions", () => {
 		},
 	);
 
+	it("times a subagent by its run, as the nav bar and its row do", () => {
+		// Its own turn started two minutes ago (a steer, say), but it has run four.
+		provide(
+			conversation({
+				status: { type: "active", activeFlags: [] } as MobileConversation["status"],
+				activeTurnStartedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+			}),
+			{ runMs: () => 4 * 60_000 },
+		);
+		const text = renderedText(sheet());
+		expect(text).toContain("Working · 4m");
+		expect(text).not.toContain("Working · 2m");
+	});
+
 	it("draws Shut down and Delete as destructive", () => {
 		provide(conversation({ capabilities: { ...NONE, shutdown: true } }));
 		const tree = sheet();
@@ -543,7 +585,10 @@ describe("actions", () => {
 			message: "It stops now and keeps its history. Sending a message resumes it.",
 		});
 		expect(calls).toEqual([]);
+		playedHaptics.length = 0;
 		act(() => confirm?.buttons?.[1]?.onPress?.());
+		// Spec 16.6: rigid on a destructive confirmation.
+		expect(playedHaptics).toEqual(["impact:rigid"]);
 		await flush();
 		expect(calls).toEqual(["goBack", "act:shutDown", "toast:shutDown done"]);
 	});

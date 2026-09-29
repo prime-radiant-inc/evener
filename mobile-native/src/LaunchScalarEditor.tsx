@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, ScrollView, TextInput, View } from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { friendlyErrorMessage, type LaunchOption, schemaPathKind } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { HubPathField } from "./HubPathField";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import { assertLaunchFieldCurrent, launchFieldConflictMessage, parseLaunchScalar } from "./launchScalar";
@@ -53,7 +54,7 @@ export function LaunchScalarEditor({
 			const parsed = parseLaunchScalar(option, raw);
 			if (parsed !== undefined && option.kind === "path") {
 				if (!client) {
-					setError("Reconnect to validate this path on the hub.");
+					setError("This path can be checked on the hub once it's back.");
 					return;
 				}
 				const validation = await client.request("evener/path/validate", {
@@ -103,7 +104,7 @@ export function LaunchScalarEditor({
 		</>
 	);
 	return (
-		<Modal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
+		<HoldingModal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
 					<Action onPress={close}>Cancel</Action>
@@ -174,6 +175,6 @@ export function LaunchScalarEditor({
 					)}
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }

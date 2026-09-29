@@ -5,7 +5,7 @@
 import { SymbolView } from "expo-symbols";
 import { useEffect, useRef } from "react";
 import { AccessibilityInfo, Pressable, Text, TextInput, View } from "react-native";
-import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { allowFontScaling, searchFieldStyle, useColors, useTextScale } from "../ui";
 import { SymbolButton } from "./SymbolButton";
 
 export function FindBar({
@@ -66,15 +66,7 @@ export function FindBar({
 				returnKeyType="search"
 				clearButtonMode="while-editing"
 				allowFontScaling={allowFontScaling}
-				style={{
-					flex: 1,
-					minHeight: 36,
-					paddingHorizontal: 12,
-					borderRadius: 10,
-					backgroundColor: palette.inset,
-					color: palette.inkHi,
-					fontSize: 17 * scale,
-				}}
+				style={{ flex: 1, ...searchFieldStyle(palette, scale) }}
 			/>
 			<Text
 				allowFontScaling={allowFontScaling}

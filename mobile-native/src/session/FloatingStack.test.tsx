@@ -1,7 +1,7 @@
 import { Text } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "../renderNative.testkit";
-import { FloatingStack } from "./FloatingStack";
+import { FloatingStack, transcriptEndRoomAt } from "./FloatingStack";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -28,5 +28,11 @@ describe("what floats above the transcript's end", () => {
 		const slots = column(tree).children as ReturnType<typeof column>[];
 		expect(slots).toHaveLength(1);
 		expect(slots[0].props.style).toMatchObject({ alignItems: "flex-end" });
+	});
+
+	it("has the transcript keep 60pt at its end, grown with the text size and never less, to clear Next", () => {
+		expect(transcriptEndRoomAt(0.82)).toBe(60);
+		expect(transcriptEndRoomAt(1)).toBe(60);
+		expect(transcriptEndRoomAt(1.5)).toBe(90);
 	});
 });

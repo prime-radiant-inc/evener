@@ -667,6 +667,18 @@ export interface EvenerThread {
    * must wait for an explicit thread/resume. Saved transcripts remain readable.
    */
   resumeRequired?: boolean;
+  /**
+   * ResumeOnlyFoldable means a turn/start sent on this connection right now
+   * would be admitted under the resume-only carve-out: the session merely needs
+   * its resume, which the send folds into itself. The hub stamps it only when
+   * that admission would actually succeed, so a client can offer Send from the
+   * hub's own answer instead of inferring the shape from ResumeRequired plus a
+   * missing send capability, which this same overlay also sets for a Stop drain,
+   * an unconfirmed force-stop exit, the connection-recovery fence, and a daemon
+   * on an incompatible protocol - four shapes whose turn/start the hub still
+   * refuses.
+   */
+  resumeOnlyFoldable?: boolean;
   ref: string;
   instanceId?: string;
   parentRef?: string;
@@ -3460,6 +3472,15 @@ export interface ThreadCapabilities {
    * that owns the tree.
    */
   stopSubagent?: boolean;
+  /**
+   * PageBefore advertises that thread/turns/list pages this thread from a
+   * before position, with or without a cursor: a client that trimmed rows
+   * from the top of its window can page them back. The hub answers for its
+   * own local and saved threads. A thread on another host stays masked until
+   * the hub can join such a page to its remote paging window (#3176); an
+   * older hub never sends it.
+   */
+  pageBefore?: boolean;
 }
 
 export interface ThreadClearParams {
@@ -3975,6 +3996,14 @@ export interface ThreadTurnsListParams {
   cursor?: string;
   itemsView?: string;
   itemLimit?: number;
+  /**
+   * Before, when set, ends the page just before this position. With a
+   * Cursor it moves the cursor's boundary, keeping the cursor's identity
+   * fence; with none the source mints a cursor there under the thread's
+   * current identity. A client that dropped rows from the top of its window
+   * names the oldest row it kept and pages the dropped rows back.
+   */
+  before?: ThreadItemPosition;
 }
 
 export interface ThreadTurnsListResponse {

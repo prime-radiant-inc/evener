@@ -3,9 +3,11 @@ package hub
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
@@ -99,7 +101,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if cfg.PinSections == nil {
 			return appwire.SessionPinUnpinResponse{}, appwire.InternalError("pin section store not configured")
 		}
-		session, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
+		session, err := resolveUnpinSession(ctx, cfg.PinSections, resolve, params.SessionRef)
 		if err != nil {
 			return appwire.SessionPinUnpinResponse{}, err
 		}
@@ -130,6 +132,19 @@ func resolvePinSession(ctx context.Context, resolve topLevelSessionResolver, req
 		return pinSession{}, appwire.InvalidParams(field + " must name a real top-level session")
 	}
 	return session, nil
+}
+
+// resolveUnpinSession names the assignment an unpin removes. Any assignment the
+// store holds can be removed, so a user can clear a stale pin on a subagent; a
+// ref with no assignment resolves as a pin write would, keeping its refusals.
+func resolveUnpinSession(ctx context.Context, pins *hubcore.PinSectionStore, resolve topLevelSessionResolver, requested string) (pinSession, error) {
+	key := hubcore.SessionPinIdentity(strings.TrimSpace(requested))
+	if assignments, err := pins.Assignments(); err == nil {
+		if _, held := assignments[key]; held {
+			return pinSession{source: key.Source, sessionID: key.ID}, nil
+		}
+	}
+	return resolvePinSession(ctx, resolve, requested, "sessionRef")
 }
 
 // commitNavigationChange returns the navigation receipt for a hub-owned
@@ -175,42 +190,68 @@ func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested str
 	if strings.HasPrefix(requested, "cluster:") {
 		return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
 	}
-	metas, live, _ := s.navigationTreeInputs(ctx)
-	ids := hubcore.TopLevelSessionIDs(metas)
-	metaIDs := make(map[string]struct{}, len(metas))
-	for _, meta := range metas {
-		metaIDs[meta.ID] = struct{}{}
+	ref, refErr := hubapi.ParseRef(strings.TrimSpace(requested))
+	if refErr != nil || ref.HostID == "local" {
+		return s.resolveLocalTopLevelSession(requested)
 	}
-	// A live session can be visible in the tree before its metadata reaches
-	// PastIndex. Such a session is a top-level root by construction; sessions
-	// with metadata are classified by the same helper as tree construction.
-	for _, entry := range live {
-		if entry.SessionID == "" {
+	// A remote host's sessions come from the remote thread cache, bounded by
+	// the remote list, so no navigation snapshot is needed.
+	var remoteMetas []schema.SessionMeta
+	for _, thread := range s.remoteThreadFetch(ctx).threads {
+		if meta, _, ok := appThreadTreeEntries(thread); ok {
+			remoteMetas = append(remoteMetas, meta)
+		}
+	}
+	roots := hubcore.NewRootIndex(remoteMetas)
+	hostHasTopLevel := false
+	for _, meta := range remoteMetas {
+		if !roots.TopLevel(meta.ID) {
 			continue
 		}
-		if _, known := metaIDs[entry.SessionID]; !known {
-			ids[entry.SessionID] = struct{}{}
-		}
-	}
-	for id := range ids {
-		if sessionRefMatchesID(requested, id) {
-			key := hubcore.SessionPinIdentity(id)
+		if sessionRefMatchesID(requested, meta.ID) {
+			key := hubcore.SessionPinIdentity(meta.ID)
 			return pinSession{source: key.Source, sessionID: key.ID}, nil
 		}
+		hostHasTopLevel = hostHasTopLevel || hubRefFromTreeNodeID(meta.ID).HostID == ref.HostID
 	}
 	// Nothing matched. A host-qualified ref that names a source the tree
 	// carries rows for is a missing session on that source; a ref that names
 	// no source at all is refused as an unknown source instead of being
 	// resolved against the controller's own rows.
-	if ref, err := hubapi.ParseRef(strings.TrimSpace(requested)); err == nil && hubcore.NormalizeDecisionSource(ref.HostID) != "" {
-		for id := range ids {
-			if hubRefFromTreeNodeID(id).HostID == ref.HostID {
-				return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
-			}
-		}
-		return pinSession{}, appwire.InvalidParams("unknown source: " + ref.HostID)
+	if hostHasTopLevel {
+		return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
 	}
-	return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
+	return pinSession{}, appwire.InvalidParams("unknown source: " + ref.HostID)
+}
+
+// resolveLocalTopLevelSession resolves a bare or "local:" ref against the
+// controller's own sessions: the past index's root index, plus a live session
+// whose meta has not reached the index yet. Neither a persisted subagent nor a
+// running child of a live entry is ever a root, so a subagent whose meta is
+// missing is still refused.
+func (s *WebServer) resolveLocalTopLevelSession(requested string) (pinSession, error) {
+	id := strings.TrimSpace(requested)
+	if ref, err := hubapi.ParseRef(id); err == nil {
+		id = ref.SessionID
+	}
+	refused := appwire.InvalidParams("sessionRef must name a real top-level session")
+	var live []hubcore.LiveEntry
+	if s.cfg.Roster != nil {
+		live = s.cfg.Roster.Snapshot().Live
+	}
+	if hubcore.RunningSubagentIDs(live)[id] {
+		return pinSession{}, refused
+	}
+	local := s.localSessionIndex()
+	if local.known(id) {
+		if !local.roots.TopLevel(id) {
+			return pinSession{}, refused
+		}
+	} else if !slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool { return entry.SessionID != "" && entry.SessionID == id }) {
+		return pinSession{}, refused
+	}
+	key := hubcore.SessionPinIdentity(id)
+	return pinSession{source: key.Source, sessionID: key.ID}, nil
 }
 
 func sessionRefMatchesID(requested, actual string) bool {

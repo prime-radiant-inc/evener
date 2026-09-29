@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, StrictMode } from "react";
@@ -167,7 +168,7 @@ test("a daemon-sourced steering item with BOTH real text and images renders the 
 // The daemon names what it injected (events.SteeringKind* on the Go side);
 // the row shows that label instead of pattern-matching the message's prose.
 // Absent a kind - a daemon predating the field, or a kind with no entry in
-// KIND_LABELS - the row claims nothing: a bare "System steered" with no
+// the shared kind labels - the row claims nothing: a bare "System steered" with no
 // colon, since a colon promises a value.
 
 test("labels a steer from its wire kind", () => {
@@ -178,7 +179,7 @@ test("labels a steer from its wire kind", () => {
       live={false}
     />,
   );
-  expect(screen.getByText("System steered: Tasks done")).toBeTruthy();
+  expect(screen.getByText("System steered: Tasks complete")).toBeTruthy();
   expect(screen.getByTestId("steering-glyph")).toBeTruthy();
 });
 
@@ -190,7 +191,7 @@ test("labels provider-failure steering from the wire kind", () => {
       live={false}
     />,
   );
-  expect(screen.getByText("System steered: Provider failure")).toBeTruthy();
+  expect(screen.getByText("System steered: Provider failed")).toBeTruthy();
 });
 
 test("labels an interrupted salvage draft from the wire kind", () => {
@@ -215,7 +216,7 @@ test("claims nothing when the wire carries no kind", () => {
 });
 
 // The OTHER half of "no colon": a kind the wire DID send, but this UI has no
-// label for - a daemon newer than this UI (KIND_LABELS §comment above), or -
+// label for - a daemon newer than this UI (steeringLabel, @evener/appwire-client), or -
 // live today - a "notification" kind whose markup fails to parse and falls
 // through to the divider path instead of a card. Absent and unmapped must
 // both render bare; only one of the two was pinned before this test.
@@ -231,7 +232,7 @@ test("does not infer a kind from the text", () => {
     <SteeringItem item={item({ text: "You have completed all tasks on your task list." })} turn={turn} live={false} />,
   );
   expect(screen.getByText("System steered")).toBeTruthy();
-  expect(screen.queryByText(/Tasks done/)).toBeNull();
+  expect(screen.queryByText(/Tasks complete/)).toBeNull();
 });
 
 // current-task/task-list: the tasks panel + task-update card already own
@@ -243,7 +244,7 @@ test.each([["current-task"], ["task-list"]])("suppresses %s - the tasks panel ow
   expect(container.firstChild).toBeNull();
 });
 
-// task-nudge is a labeled kind (KIND_LABELS above), NOT a suppressed one -
+// task-nudge is a labeled kind (STEERING_KIND_LABELS), NOT a suppressed one -
 // only current-task/task-list are in SUPPRESSED. Before wave-8/this task,
 // classifySteering's cascade suppressed task-nudge outright (a one-time
 // tool-availability nudge, judged not user-meaningful); the brief's
@@ -252,7 +253,7 @@ test.each([["current-task"], ["task-list"]])("suppresses %s - the tasks panel ow
 // flip is brief-mandated and correct - this pins the new visible outcome.
 test("a task-nudge kind renders labeled, not suppressed", () => {
   render(<SteeringItem item={item({ text: "x", steeringKind: "task-nudge" })} turn={turn} live={false} />);
-  expect(screen.getByText("System steered: Task nudge")).toBeTruthy();
+  expect(screen.getByText("System steered: Task reminder")).toBeTruthy();
 });
 
 // Ordering pin: the source==="user" check must run BEFORE the SUPPRESSED
@@ -307,6 +308,34 @@ Job job_shell completed.
   expect(cards[0]?.textContent).toContain("Delegate completed");
   expect(cards[0]?.textContent).not.toContain("Job completed");
   expect(cards[1]?.textContent).toContain("Job completed");
+});
+
+// The daemon's own frames (agent/testdata/notificationwire): a subagent's
+// report carries its result as TerminalPacket JSON, never the attribute shape
+// above, and the card must say who reported and what.
+test("a subagent's recorded report renders its name and message, never the raw packet", () => {
+  render(
+    <SteeringItem item={item({ text: notificationWireItem("delegate-reported").text })} turn={turn} live={false} />,
+  );
+  const card = screen.getByTestId("notification-card");
+  expect(card.textContent).toContain("Delegate completed");
+  expect(card.textContent).toContain("Fix race in tree settle");
+  expect(screen.getByTestId("notification-field-excerpt").textContent).toContain(
+    "Done: the settle pass now waits for the drain.",
+  );
+});
+
+test("a subagent's recorded failure renders as a failure with its message", () => {
+  render(
+    <SteeringItem
+      item={item({ text: notificationWireItem("delegate-failed-unnamed").text })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const card = screen.getByTestId("notification-card");
+  expect(card.textContent).toContain("Delegate failed");
+  expect(screen.getByTestId("notification-field-excerpt").textContent).toContain("go test exited 1 three times");
 });
 
 test("a job-notification steer renders a notification card (not a steering divider)", () => {
@@ -496,7 +525,7 @@ test("a mixed notification steer keeps its wire-kind label on the leftover divid
     />,
   );
   expect(screen.getByTestId("notification-card")).toBeTruthy();
-  expect(screen.getByText("System steered: Tasks done")).toBeTruthy();
+  expect(screen.getByText("System steered: Tasks complete")).toBeTruthy();
   expect(screen.getByText("trailing steering prose")).toBeTruthy();
 });
 

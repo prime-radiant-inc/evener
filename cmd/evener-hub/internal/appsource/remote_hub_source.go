@@ -307,10 +307,17 @@ func (s *RemoteHubSource) mapCallError(err error) error {
 	if wire.Code != appwire.CodeInternalError {
 		return err
 	}
-	if remoteHubTransportText(strings.ToLower(wire.Message)) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + wire.Message)
+	// Only a failure the client synthesized because its read loop is gone is a
+	// transport failure; the client marks it with TransportFailureError. An
+	// InternalError that arrived intact is the remote hub's own application
+	// verdict and is preserved: reconstructing transport provenance from the
+	// message text reclassified an intact "unexpected eof" as host
+	// unavailability, which then became mutationOutcomeUnknown with an
+	// automatic retry.
+	if !appwire.IsTransportFailure(err) {
+		return err
 	}
-	return err
+	return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + wire.Message)
 }
 
 // mapConnectError mirrors localDaemonDialError for the attach step: a timeout
@@ -412,9 +419,11 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	return err
 }
 
-// remoteHubTransportText recognizes transport-shaped error text. "eof" is
-// matched as a standalone token only so an application message that merely
-// contains those letters is not reclassified as host unavailability.
+// remoteHubTransportText recognizes transport-shaped error text for the raw
+// errors transportUnavailable still sees (it is no longer consulted for a
+// WireError, whose provenance the client now carries). "eof" is matched as a
+// standalone token only so a string that merely contains those letters is not
+// reclassified as host unavailability.
 func remoteHubTransportText(lower string) bool {
 	switch {
 	case containsWord(lower, "eof"),
@@ -424,9 +433,9 @@ func remoteHubTransportText(lower string) bool {
 		strings.Contains(lower, "closed pipe"),
 		// os.ErrClosed's text: the descriptor this end writes to is gone, the
 		// same class of failure as net.ErrClosed's "use of closed network
-		// connection" below. It matters on the WireError path, where the
-		// failure arrives as the peer's message and errors.Is has nothing to
-		// match against.
+		// connection" below. transportUnavailable checks errors.Is(err,
+		// os.ErrClosed) first, so this text fallback covers only the shapes a
+		// transport library wraps without exposing the sentinel.
 		strings.Contains(lower, "file already closed"),
 		strings.Contains(lower, "use of closed network connection"),
 		strings.Contains(lower, "i/o timeout"):
@@ -766,6 +775,18 @@ func remoteItemPagingKey(sourceID, threadID string) string {
 // page mints (or continues) a controller-owned identity, and the remote cursor
 // is retained behind it.
 func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
+	// Each remote page mints its own controller identity, so there is none to
+	// page a Before with no cursor under. Refuse it plainly rather than serve
+	// the remote's latest window as the page asked for (#3176). The phone
+	// never asks: remote threads don't advertise pageBefore.
+	if params.Cursor == "" && params.Before != nil {
+		return ItemCandidateResult{}, appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
+	}
+	// A before beside a cursor moves the cursor's boundary, whoever calls.
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
 	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return ItemCandidateResult{}, err
@@ -784,6 +805,9 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	remote.Ref = ref.String()
 	remote.ThreadID = ref.ThreadID
 	remote.ItemLimit = itemLimit
+	// The remote pages with the controller's own boundaries; a before never
+	// travels, since an older remote rejects the field outright.
+	remote.Before = nil
 
 	if params.Cursor == "" {
 		remote.Cursor = ""

@@ -1,7 +1,8 @@
 import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { copyText } from "./clipboard";
 import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longPressMenu";
 import { MarkdownResponse } from "./MarkdownResponse";
@@ -10,6 +11,7 @@ import type { MobileTimelineItem } from "./projectedRows";
 import { useMinuteClock } from "./session/minuteClock";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
+import { NotificationCards } from "./session/NotificationCards";
 import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
 import { SubagentRow } from "./session/SubagentRow";
@@ -18,7 +20,7 @@ import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
 import { askRowQuestions, timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
-import { isCriticalNotice, steeringNoticeLabel, type TimelineRow } from "./timeline";
+import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
 import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
 
@@ -74,7 +76,7 @@ export function TimelineItem({
 	// error rule, unless the thought itself failed.
 	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
 	const textScale = useTextScale();
-	const noticeLabel = item.kind === "notice" ? steeringNoticeLabel(item) : undefined;
+	const label = item.kind === "notice" ? noticeLabel(item) : undefined;
 	let content: ReactNode;
 	switch (item.kind) {
 		case "details":
@@ -122,6 +124,17 @@ export function TimelineItem({
 			);
 			break;
 		case "notice":
+			if (item.notifications) {
+				content = (
+					<NotificationCards
+						fragments={item.notifications}
+						delegates={delegates}
+						openSubagent={openSubagent}
+						disclosureId={disclosureId}
+					/>
+				);
+				break;
+			}
 			content = isCriticalNotice(item) ? (
 				<ErrorRow
 					title={item.text}
@@ -130,7 +143,9 @@ export function TimelineItem({
 					onAction={onErrorAction}
 				/>
 			) : (
-				<SystemEvent label={noticeLabel} text={item.text} expanded={expanded} onToggle={toggle} />
+				<SystemEvent label={label} text={item.text} expanded={expanded} onToggle={toggle}>
+					{item.rendersMarkdown ? <MarkdownResponse markdown={item.text} /> : undefined}
+				</SystemEvent>
 			);
 			break;
 		case "failure":
@@ -169,7 +184,7 @@ export function TimelineItem({
 				);
 				break;
 			}
-			if (item.label === "delegate" || item.label === "delegate_send") {
+			if (item.label === "delegate") {
 				content = <Subagent row={item} delegates={delegates} openSubagent={openSubagent} />;
 				break;
 			}
@@ -345,7 +360,7 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 			<Pressable accessible={false} onLongPress={() => showMenu(menu, menuPreview(markdown))}>
 				<MarkdownResponse markdown={markdown || "…"} selectable={false} {...accessibility} />
 			</Pressable>
-			<Modal
+			<HoldingModal
 				visible={selecting}
 				animationType="slide"
 				presentationStyle="fullScreen"
@@ -359,7 +374,7 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 						<Copy variant="agentProse">{markdown}</Copy>
 					</ScrollView>
 				</SafeAreaView>
-			</Modal>
+			</HoldingModal>
 		</>
 	);
 }

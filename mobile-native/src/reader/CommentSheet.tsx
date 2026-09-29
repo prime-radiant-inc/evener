@@ -5,9 +5,10 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useState } from "react";
 import { ScrollView, Text, TextInput, View } from "react-native";
 import type { Routes } from "../screens";
-import { Sheet, useSheet } from "../sheet/Sheet";
+import { Sheet } from "../sheet/Sheet";
+import { useSheet } from "../sheet/useSheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { fonts } from "../design/tokens";
+import { useReadingFace } from "../display/displayContext";
 import { documentMemory } from "./nativeDocumentMemory";
 
 /** How much of the quoted words the sheet shows. */
@@ -71,13 +72,14 @@ export function QuoteBlock({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const shown = words.length > limit ? `${words.slice(0, limit).trimEnd()}…` : words;
 	return (
 		<View style={{ borderLeftWidth: 2, borderLeftColor: palette.edgeStrong, paddingLeft: 10 }}>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{
-					fontFamily: fonts.serif,
+					...face.regular,
 					color: palette.inkMid,
 					fontSize: size * scale,
 					lineHeight: lineHeight * scale,

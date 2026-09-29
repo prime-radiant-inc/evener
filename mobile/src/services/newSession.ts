@@ -10,8 +10,6 @@
 // projects, models and plugins.
 
 import type {
-	HarnessDescriptor,
-	HarnessListResponse,
 	InputItem,
 	LaunchConfigLayer,
 	LaunchConfigResolved,
@@ -34,7 +32,6 @@ export interface NewSessionParams {
 	input?: InputItem[];
 	modelProvider?: string;
 	model?: string;
-	harness?: string;
 	reasoningEffort?: string;
 	launchOverrides?: LaunchConfigLayer;
 }
@@ -42,7 +39,6 @@ export interface NewSessionParams {
 export interface NewSessionService {
 	start(params: NewSessionParams): Promise<{ thread: Thread; turn: Turn }>;
 	recentProjects(host?: string): Promise<string[]>;
-	harnesses(host?: string): Promise<HarnessDescriptor[]>;
 	models(params?: ModelListParams, host?: string): Promise<ModelListResponse>;
 	previewPlugins(params: PluginPreviewParams, host?: string): Promise<PluginPreviewResponse>;
 	directoryExists(host: string, path: string): Promise<boolean>;
@@ -72,9 +68,6 @@ export function createNewSessionService(client: ConversationClientLike): NewSess
 			if (params.model !== undefined) {
 				wireParams.model = params.model;
 			}
-			if (params.harness !== undefined) {
-				wireParams.harness = params.harness;
-			}
 			if (params.reasoningEffort !== undefined) {
 				wireParams.reasoningEffort = params.reasoningEffort;
 			}
@@ -87,11 +80,6 @@ export function createNewSessionService(client: ConversationClientLike): NewSess
 
 		async recentProjects(host) {
 			const response = await hostRequest(client, host, "evener/projects/recent", {});
-			return response.data ?? [];
-		},
-
-		async harnesses(host) {
-			const response: HarnessListResponse = await hostRequest(client, host, "evener/harnesses/list", {});
 			return response.data ?? [];
 		},
 

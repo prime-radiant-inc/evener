@@ -196,10 +196,12 @@ func TestOpenRefusesAStoreReadableBeyondItsOwner(t *testing.T) {
 	}
 }
 
-// TestOpenRefusesACorruptStore pins this layer's half of spec §4's corrupt-store
-// rule: a corrupt or schema-invalid store file is refused (startup does not
-// serve it). The custody-first quarantine that §4 also takes at boot belongs to
-// the crash-fencing slice; this layer refuses and nothing more.
+// TestOpenRefusesACorruptStore pins the refusal half of spec §4's corrupt-store
+// rule: a corrupt or schema-invalid store file whose custody snapshot cannot be
+// shown complete refuses the load (startup does not serve it), and the refused
+// file is never rewritten. The quarantine half — a corrupt file that yields a
+// complete custody snapshot — runs through the same Open path (quarantine.go /
+// custody.go).
 func TestOpenRefusesACorruptStore(t *testing.T) {
 	record := `{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1",` +
 		`"kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1",` +
@@ -215,9 +217,7 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 		"invalid state":              `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` + strings.Replace(record, `"state":"pending"`, `"state":"queued"`, 1) + `]}`,
 		"record sequence ahead":      `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` + strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"sequence":9`, 1) + `]}`,
 		"record without pinned pair": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` + strings.Replace(record, `"generation":7`, `"generation":0`, 1) + `]}`,
-		"orphan state without boundary": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			strings.Replace(record, `"state":"pending"`, `"state":"orphan-unverified"`, 1) + `]}`,
-		"empty file": ``,
+		"empty file":                 ``,
 		// A file that omits a top-level field is not a store the writer ever
 		// produced, and reading it as an empty store would let the next write
 		// replace real history with nothing.
@@ -345,8 +345,9 @@ func TestAFailedWriteIsNotAWrite(t *testing.T) {
 }
 
 // TestOpenFailsOnAStoreItCannotRead pins this layer's answer to a store it
-// cannot read at all: refusal, never a half-served store. The custody-first
-// quarantine spec §4 takes for a corrupt store is the crash-fencing slice's.
+// cannot read at all (a filesystem error, not a parse failure): refusal, never a
+// half-served store. The custody-first quarantine §4 defines applies to a
+// corrupt file whose snapshot is provable, not to one this layer cannot read.
 func TestOpenFailsOnAStoreItCannotRead(t *testing.T) {
 	t.Run("unreadable file", func(t *testing.T) {
 		if os.Geteuid() == 0 {
@@ -768,13 +769,12 @@ func TestOpenQuarantinesDuplicateStampsButAcceptsGaps(t *testing.T) {
 	}
 }
 
-// TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes pins the presence
-// rules for the two raw fields. An absent optional field is absent; a present one
-// must carry the shape the spec gives it — an array for an orphan-unverified
-// record's boundary, an object for a fencing epoch. Null, a scalar and an object
-// are not a boundary array at all, while an empty array is one the fencing path
-// legitimately persists (crash-fencing §5's demonstrably-empty clean rule).
-func TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes(t *testing.T) {
+// TestOpenToleratesRetiredBoundaryShapesAndRefusesEpochs pins the two raw
+// fields' rules after the crash-fencing retirement: the retired orphanBoundary
+// key is decoded for tolerance in every shape — a prior-build file must load —
+// while a fencing epoch is still an object or an absent optional field, never
+// null, an array or a scalar.
+func TestOpenToleratesRetiredBoundaryShapesAndRefusesEpochs(t *testing.T) {
 	orphan := func(boundary string) string {
 		return `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":` + boundary + `}]}`
@@ -783,15 +783,27 @@ func TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes(t *testing.T) {
 		return `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"fencingEpoch":` + epoch + `}]}`
 	}
+	tolerated := map[string]string{
+		"null boundary":               orphan("null"),
+		"object boundary":             orphan("{}"),
+		"scalar boundary":             orphan("123"),
+		"string boundary":             orphan(`"x"`),
+		"member array":                orphan(`[{"host":"h1","kind":"local-linux"}]`),
+		"demonstrably empty boundary": orphan("[]"),
+	}
+	for name, body := range tolerated {
+		t.Run("tolerated/"+name, func(t *testing.T) {
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, body)
+			if _, err := Open(path); err != nil {
+				t.Fatalf("Open on the prior-build shape %q was refused: %v", name, err)
+			}
+		})
+	}
 	refused := map[string]string{
-		"null boundary":     orphan("null"),
-		"object boundary":   orphan("{}"),
-		"scalar boundary":   orphan("123"),
-		"string boundary":   orphan(`"x"`),
-		"unparseable array": orphan("["),
-		"null epoch":        pending("null"),
-		"array epoch":       pending("[]"),
-		"scalar epoch":      pending("7"),
+		"null epoch":   pending("null"),
+		"array epoch":  pending("[]"),
+		"scalar epoch": pending("7"),
 	}
 	for name, body := range refused {
 		t.Run("refused/"+name, func(t *testing.T) {
@@ -803,15 +815,8 @@ func TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes(t *testing.T) {
 		})
 	}
 	accepted := map[string]string{
-		"member array": orphan(`[{"host":"h1","kind":"local-linux"}]`),
 		"object epoch": pending(`{"bootId":"boot-1","opSeq":3}`),
 		"absent epoch": pendingPayloadWithoutEpoch(),
-		// Crash-fencing §5: "A markerless local boundary reads clean only when
-		// demonstrably empty"; §3 adds "An empty boundary is already clean". An
-		// empty array is therefore a legitimate persisted boundary — the
-		// fail-closed marker for a lost boundary is the `boundary-unavailable`
-		// entry (§9), never an absent array.
-		"demonstrably empty boundary": orphan("[]"),
 	}
 	for name, body := range accepted {
 		t.Run("accepted/"+name, func(t *testing.T) {
@@ -1195,11 +1200,6 @@ func TestTransitionRefusesARawFieldThatIsNotValidUTF8(t *testing.T) {
 	}); !errors.Is(err, ErrInvalidRecord) {
 		t.Fatalf("Transition with an invalid UTF-8 fencing epoch: err = %v, want ErrInvalidRecord", err)
 	}
-	if _, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
-		r.OrphanBoundary = json.RawMessage(`[{"host":"` + "\xff\xfe" + `"}]`)
-	}); !errors.Is(err, ErrInvalidRecord) {
-		t.Fatalf("Transition with an invalid UTF-8 boundary: err = %v, want ErrInvalidRecord", err)
-	}
 	if got := string(mustReadFile(t, path)); got != string(before) {
 		t.Fatalf("a refused transition rewrote the store file")
 	}
@@ -1280,11 +1280,6 @@ func TestTransitionRefusesARawFieldThatNamesAKeyTwice(t *testing.T) {
 		r.FencingEpoch = json.RawMessage(`{"bootId":"a","bootId":"b","opSeq":3}`)
 	}); !errors.Is(err, ErrInvalidRecord) {
 		t.Fatalf("Transition with a duplicated fencing-epoch key: err = %v, want ErrInvalidRecord", err)
-	}
-	if _, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
-		r.OrphanBoundary = json.RawMessage(`[{"host":"h1","host":"h2"}]`)
-	}); !errors.Is(err, ErrInvalidRecord) {
-		t.Fatalf("Transition with a duplicated boundary key: err = %v, want ErrInvalidRecord", err)
 	}
 	if got := string(mustReadFile(t, path)); got != string(before) {
 		t.Fatalf("a refused transition rewrote the store file")

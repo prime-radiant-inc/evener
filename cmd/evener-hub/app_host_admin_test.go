@@ -1887,6 +1887,41 @@ func TestHostAdminAllowListCoversSharedForwardedMethods(t *testing.T) {
 	}
 }
 
+// TestHostRecoveryMutationsNotForwarded pins the negative-list requirement
+// (registry spec 08 §3 states the exclusion): `evener/host/teardown-recover`
+// may not be forwarded through evener/host/request — it acts on THIS
+// controller's own hub.toml remnants, so a peer hub must not be able to clear
+// them by forwarding. The assertion is threefold: absent from the allow-list,
+// absent from the checked-in cross-language list the browser reads, and
+// actually refused by the proxy with InvalidParams before any forward.
+func TestHostRecoveryMutationsNotForwarded(t *testing.T) {
+	recovery := []string{appwire.MethodEvenerHostTeardownRecover}
+	shared := map[string]struct{}{}
+	for _, name := range readSharedHostRequestMethods(t) {
+		shared[name] = struct{}{}
+	}
+	controller, _, calls := scriptedHostAdmin(t, true, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	for _, name := range recovery {
+		if _, ok := remoteHostAdminMethods[name]; ok {
+			t.Errorf("controller-local %q is on the remote forward allow-list", name)
+		}
+		if _, ok := remoteHostAdminMutationMethods[name]; ok {
+			t.Errorf("controller-local %q is classified as a forwarded mutation", name)
+		}
+		if _, ok := shared[name]; ok {
+			t.Errorf("controller-local %q is listed in %s, so the browser would forward it", name, sharedHostRequestMethodsPath)
+		}
+		before := len(calls())
+		_, err := controller.Request(context.Background(), appwire.HostRequestParams{Host: "m4", Method: name})
+		assertWireCode(t, err, appwire.CodeInvalidParams)
+		if after := len(calls()); after != before {
+			t.Errorf("recovery method %q was forwarded (remote calls %d -> %d)", name, before, after)
+		}
+	}
+}
+
 // TestHostAdminFanOutStartsForRuntimeAddedSource pins the dynamic half of the
 // round-2 medium: the notification fan-out follows the shared source registry,
 // so a host whose source registers after start (the host-management surface's

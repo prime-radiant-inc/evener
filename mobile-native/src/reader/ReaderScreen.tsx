@@ -15,12 +15,14 @@ import {
 	Image,
 	type NativeScrollEvent,
 	type NativeSyntheticEvent,
+	Platform,
 	Pressable,
 	Text,
 	View,
 	type ViewToken,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useHeldAlertCount, useHoldAlerts } from "../alerts/alertsContext";
 import { copyText } from "../clipboard";
 import { useConnection } from "../ConnectionProvider";
 import { HubProfiles } from "../connection";
@@ -29,6 +31,7 @@ import type { Routes } from "../screens";
 import { compactDuration } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { holdQuote } from "../session/pendingQuote";
+import { BackButton } from "../session/BackButton";
 import { returnToSession } from "../session/returnToSession";
 import { SessionLink } from "../session/sessionMessage";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
@@ -74,12 +77,18 @@ function rowsOf(document: LoadedDocument | null): Row[] {
 }
 
 export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Routes, "Reader">) {
-	const { hubId, sessionRef, path, reviewRef, reviewTitle, updatedAt } = route.params;
+	const { hubId, sessionRef, path, sessionTitle, updatedAt } = route.params;
 	const key = useMemo(() => ({ sessionRef, path }), [sessionRef, path]);
 	const memory = documentMemory(hubId);
 	const { client } = useConnection();
 	const { document, reload } = useDocument(hubId, sessionRef, path);
 	const inFront = useScreenInFront(route.key);
+	// Banners wait while you read (spec 13.3); Back counts what waits.
+	// "In front" is the Reader's own notion of reading: it stays true while a
+	// sheet covers the Reader and follows the stack, so a hold ends when the
+	// Reader is actually left even if a fast swipe never delivers a blur.
+	useHoldAlerts(inFront, "quiet");
+	const held = useHeldAlertCount();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const insets = useSafeAreaInsets();
@@ -187,8 +196,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			title: document.title,
 			blocks: blocks?.map((block) => block.hash) ?? [],
 			position: position(),
-			reviewRef,
-			reviewTitle,
+			sessionTitle,
 			...(updatedAt === undefined ? {} : { updatedAt }),
 		});
 	};
@@ -292,7 +300,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 						{
 							type: "action",
 							label: "Open session",
-							onPress: () => returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle }),
+							onPress: () => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }),
 						},
 						{ type: "action", label: "Copy path", onPress: () => void copyText(path) },
 						...(text === null
@@ -304,10 +312,20 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		];
 		navigation.setOptions({
 			title: "",
+			// iPhone only, as the Session's: Android keeps its own back arrow.
+			...(Platform.OS === "ios" && {
+				headerLeft: () => (
+					<BackButton
+						count={held}
+						label={held > 0 ? `Back, ${held} new while you read` : "Back"}
+						onPress={() => navigation.goBack()}
+					/>
+				),
+			}),
 			headerTitle: () => (titleShown ? <HeaderTitle title={title} caption={about} /> : null),
 			unstable_headerRightItems: () => items,
 		});
-	}, [navigation, hasOutline, hubId, sessionRef, path, reviewRef, reviewTitle, text, titleShown, title, about]);
+	}, [navigation, held, hasOutline, hubId, sessionRef, path, sessionTitle, text, titleShown, title, about]);
 
 	const cellRenderer = useMemo(
 		() =>
@@ -354,7 +372,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		if (index !== null) setSelecting((current) => (current === index ? current : null));
 	}, []);
 	const endSelection = useCallback(() => setSelecting(null), []);
-	const sheetParams = { hubId, sessionRef, path, reviewRef, reviewTitle };
+	const sheetParams = { hubId, sessionRef, path, sessionTitle };
 	// The rows keep one callback; it reaches this render's values through the ref.
 	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
 	act.current = (action, block, words) => {
@@ -373,8 +391,8 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				return;
 			case "quote":
 				setSelecting(null);
-				holdQuote(hubId, reviewRef, selected);
-				returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle });
+				holdQuote(hubId, sessionRef, selected);
+				returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle });
 				return;
 			case "copy":
 				void copyText(block.text);
@@ -475,8 +493,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			{blocks ? (
 				<View style={{ paddingBottom: insets.bottom, paddingHorizontal: 16 }}>
 					{comments.length === 0 ? <CommentTip /> : null}
+					{/* The two ends take the room their words need, and the change
+					    stepper the rest: in equal thirds Send review wrapped. */}
 					<View style={{ minHeight: 44, flexDirection: "row", alignItems: "center" }}>
-						<View style={{ flex: 1, alignItems: "flex-start" }}>
+						<View style={{ alignItems: "flex-start" }}>
 							{comments.length > 0 ? (
 								<BarButton
 									label="Comments"
@@ -487,7 +507,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 							) : null}
 						</View>
 						{changed.length > 0 ? (
-							<View style={{ flexDirection: "row", alignItems: "center" }}>
+							<View style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
 								<Chevron name="chevron.left" label="Previous change" onPress={() => stepBy(-1)} />
 								<Text
 									allowFontScaling={allowFontScaling}
@@ -505,8 +525,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 								</Text>
 								<Chevron name="chevron.right" label="Next change" onPress={() => stepBy(1)} />
 							</View>
-						) : null}
-						<View style={{ flex: 1, alignItems: "flex-end" }}>
+						) : (
+							<View style={{ flex: 1 }} />
+						)}
+						<View style={{ alignItems: "flex-end" }}>
 							{canReview ? (
 								<Pressable
 									accessibilityRole="button"
@@ -516,6 +538,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 								>
 									<Text
 										allowFontScaling={allowFontScaling}
+										numberOfLines={1}
 										style={{
 											color: palette.accentInk,
 											fontSize: 15 * scale,

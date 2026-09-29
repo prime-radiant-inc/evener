@@ -4,6 +4,8 @@ package worktree
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -595,6 +597,19 @@ func TestWriteSidecarExclEncodeFailureHelper(t *testing.T) {
 			t.Fatalf("WriteSidecarExcl under a 4-byte RLIMIT_FSIZE = nil, want a write error")
 		}
 	})
+	// A failed exclusive create must clean up the reservation it made: the
+	// partially written file is ours (O_EXCL proved it), and leaving it behind
+	// both hides it from ListSidecars and blocks every same-name retry with
+	// EEXIST. Assert the name is immediately creatable again.
+	if _, statErr := os.Stat(sidecarPath(dir, sc.Name)); !os.IsNotExist(statErr) {
+		t.Fatalf("failed WriteSidecarExcl left residue at %s (stat err = %v); the name must stay creatable", sidecarPath(dir, sc.Name), statErr)
+	}
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
+		t.Fatalf("retry after failed create: %v", err)
+	}
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got != sc {
+		t.Fatalf("retry after failed create read = %+v, %v; want %+v", got, err, sc)
+	}
 }
 
 // TestUpdateSidecarEncodeFailure exercises UpdateSidecar's encode-error path
@@ -621,4 +636,244 @@ func TestUpdateSidecarEncodeFailureHelper(t *testing.T) {
 			t.Fatalf("UpdateSidecar under a 4-byte RLIMIT_FSIZE = nil, want a write error")
 		}
 	})
+	// A failed update must not destroy the only provenance record: the atomic
+	// replace leaves the previous sidecar intact rather than truncating it,
+	// and the update is retryable once the write can proceed.
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got != sc {
+		t.Fatalf("failed UpdateSidecar altered the record: got %+v, %v; want preserved %+v", got, err, sc)
+	}
+	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err != nil {
+		t.Fatalf("retry UpdateSidecar: %v", err)
+	}
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got.BaseSHA != "changed" {
+		t.Fatalf("retried update read = %+v, %v; want BaseSHA %q", got, err, "changed")
+	}
+}
+
+// TestListSidecarsWithErrorsSurfacesCorruptReservation: a reserved name whose
+// bytes do not decode — a crash-torn write that no error path could clean up —
+// is invisible to the tolerant ListSidecars, which is exactly how a reserved-but-
+// unusable name becomes unreconcilable. The WithErrors view names it so repair is
+// discoverable, while the tolerant listing keeps its documented contract of
+// dropping undecodable metadata rather than failing the whole sweep.
+func TestListSidecarsWithErrorsSurfacesCorruptReservation(t *testing.T) {
+	dir := t.TempDir()
+	good := testSidecar()
+	if err := WriteSidecarExcl(dir, good.Name, good); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	if err := os.WriteFile(sidecarPath(dir, "torn"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sidecars, failures, err := ListSidecarsWithErrors(dir)
+	if err != nil {
+		t.Fatalf("ListSidecarsWithErrors: %v", err)
+	}
+	if len(sidecars) != 1 || sidecars[0].Name != good.Name {
+		t.Fatalf("decodable sidecars = %+v, want only %q", sidecars, good.Name)
+	}
+	if len(failures) != 1 || failures[0].Name != "torn" || failures[0].Error == nil {
+		t.Fatalf("failures = %+v, want exactly one for %q carrying its decode error", failures, "torn")
+	}
+
+	tolerant, err := ListSidecars(dir)
+	if err != nil || len(tolerant) != 1 {
+		t.Fatalf("ListSidecars = %+v, %v; want the tolerant view unchanged (one entry)", tolerant, err)
+	}
+}
+
+// TestCorruptStaleReservation nails the classifier the create path uses to
+// tell a repairable torn record from a live concurrent create. Only an
+// undecodable file past the grace is reported: a valid record, a missing file,
+// and a fresh (possibly mid-write) undecodable file all yield nil.
+func TestCorruptStaleReservation(t *testing.T) {
+	dir := t.TempDir()
+	grace := ReconcileGrace
+
+	if err := CorruptStaleReservation(dir, "missing", grace); err != nil {
+		t.Fatalf("CorruptStaleReservation(missing) = %v, want nil", err)
+	}
+
+	good := testSidecar()
+	if err := WriteSidecarExcl(dir, good.Name, good); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	if err := CorruptStaleReservation(dir, good.Name, grace); err != nil {
+		t.Fatalf("CorruptStaleReservation(valid) = %v, want nil", err)
+	}
+
+	torn := sidecarPath(dir, "torn")
+	if err := os.WriteFile(torn, []byte("{torn"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CorruptStaleReservation(dir, "torn", grace); err != nil {
+		t.Fatalf("CorruptStaleReservation(fresh corrupt) = %v, want nil (may be a live create mid-write)", err)
+	}
+
+	old := time.Now().Add(-(grace + time.Minute))
+	if err := os.Chtimes(torn, old, old); err != nil {
+		t.Fatal(err)
+	}
+	err := CorruptStaleReservation(dir, "torn", grace)
+	if !errors.Is(err, ErrCorruptSidecar) {
+		t.Fatalf("CorruptStaleReservation(stale corrupt) = %v, want an ErrCorruptSidecar error", err)
+	}
+
+	// A file that vanishes between the read and the age probe is indeterminate,
+	// not corruption: reporting it would send repair at a name that is already
+	// free.
+	if err := os.Remove(torn); err != nil {
+		t.Fatal(err)
+	}
+	if err := CorruptStaleReservation(dir, "torn", grace); err != nil {
+		t.Fatalf("CorruptStaleReservation(deleted after read) = %v, want nil", err)
+	}
+}
+
+// TestClassifyCorruptReservation pins the shared classification the create and
+// prune paths both rely on: a torn record is stale only when it is undecodable,
+// past the grace, and its age could be read. A probe that misses the file (a
+// concurrent delete) is indeterminate, a fresh record may be a live create, and
+// a non-decode read error is not corruption at all.
+func TestClassifyCorruptReservation(t *testing.T) {
+	corrupt := fmt.Errorf("%w: boom", ErrCorruptSidecar)
+	grace := ReconcileGrace
+	cases := []struct {
+		name    string
+		readErr error
+		age     time.Duration
+		ageErr  error
+		want    CorruptReservationState
+	}{
+		{"valid read", nil, grace + time.Minute, nil, CorruptReservationNone},
+		{"non-decode read error", os.ErrPermission, 0, nil, CorruptReservationNone},
+		{"stale and readable", corrupt, grace + time.Minute, nil, CorruptReservationStaleCorrupt},
+		{"fresh may be a live create", corrupt, time.Second, nil, CorruptReservationInGrace},
+		{"vanished between read and probe", corrupt, 0, os.ErrNotExist, CorruptReservationIndeterminate},
+		{"probe failed otherwise", corrupt, 0, os.ErrPermission, CorruptReservationIndeterminate},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyCorruptReservation(tc.readErr, tc.age, tc.ageErr, grace); got != tc.want {
+				t.Fatalf("ClassifyCorruptReservation(readErr=%v, age=%v, ageErr=%v) = %d, want %d", tc.readErr, tc.age, tc.ageErr, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWriteSidecarExclCleanupSparesAReplacedFile: the failed-create cleanup
+// removes the file this call created, not whatever sits at that path. If a
+// concurrent actor unlinks the reservation and recreates the path before
+// cleanup runs, the identity check must leave the other file alone — otherwise
+// a failed create could delete a sidecar it does not own.
+func TestWriteSidecarExclCleanupSparesAReplacedFile(t *testing.T) {
+	dir := t.TempDir()
+	sc := testSidecar()
+	path := sidecarPath(dir, sc.Name)
+
+	orig := sidecarWrite
+	t.Cleanup(func() { sidecarWrite = orig })
+	sidecarWrite = func(f *os.File, raw []byte) (int, error) {
+		// Replace the path with a different file, then fail the write.
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("simulate concurrent unlink: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("someone else's sidecar"), 0o644); err != nil {
+			t.Fatalf("simulate concurrent recreate: %v", err)
+		}
+		return 0, errors.New("scripted write fault")
+	}
+
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err == nil {
+		t.Fatal("WriteSidecarExcl write fault did not propagate")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("cleanup deleted a concurrently replaced sidecar: %v", err)
+	}
+	if string(got) != "someone else's sidecar" {
+		t.Fatalf("concurrently replaced sidecar changed: %q", got)
+	}
+}
+
+// TestUpdateSidecarPreservesFileMode: the atomic replace must keep the
+// target's existing permission bits, exactly as a plain rewrite would, so a
+// deliberately set sidecar mode is not silently widened to 0o644. The asserted
+// mode (0o640) is deliberately distinct from the temp's own 0600 default, so
+// the test actually exercises the mode restoration rather than passing on
+// os.CreateTemp's default.
+func TestUpdateSidecarPreservesFileMode(t *testing.T) {
+	dir := t.TempDir()
+	sc := testSidecar()
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	path := sidecarPath(dir, sc.Name)
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err != nil {
+		t.Fatalf("UpdateSidecar: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("sidecar mode after update = %o, want 640", got)
+	}
+}
+
+// TestUpdateSidecarRefusesReadOnlyTarget: the atomic replace must keep the
+// plain-write contract — a target this process cannot write is not silently
+// replaced by the rename, which needs only directory write permission. The
+// previous record must survive the refused update.
+func TestUpdateSidecarRefusesReadOnlyTarget(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: file permissions do not restrict writes")
+	}
+	dir := t.TempDir()
+	sc := testSidecar()
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	path := sidecarPath(dir, sc.Name)
+	if err := os.Chmod(path, 0o444); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+
+	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err == nil {
+		t.Fatal("UpdateSidecar over a read-only target = nil, want a permission error")
+	}
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got != sc {
+		t.Fatalf("read-only target changed: got %+v, %v; want the original %+v", got, err, sc)
+	}
+}
+
+// TestUpdateSidecarToleratesStaleTemp: a temp file orphaned by an interrupted
+// update neither blocks nor corrupts a later update (the temp namespace is
+// random and O_EXCL, so the new update takes its own name), and it stays
+// invisible to the sidecar listings because it has no ".json" suffix.
+func TestUpdateSidecarToleratesStaleTemp(t *testing.T) {
+	dir := t.TempDir()
+	sc := testSidecar()
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	stale := filepath.Join(dir, ".sidecar-tmp-orphan")
+	if err := os.WriteFile(stale, []byte("orphaned partial temp"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err != nil {
+		t.Fatalf("UpdateSidecar with a stale temp present: %v", err)
+	}
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got.BaseSHA != "changed" {
+		t.Fatalf("update with a stale temp present read = %+v, %v; want BaseSHA changed", got, err)
+	}
+	list, err := ListSidecars(dir)
+	if err != nil || len(list) != 1 || list[0].Name != sc.Name {
+		t.Fatalf("stale temp leaked into the listing: %+v, %v", list, err)
+	}
 }

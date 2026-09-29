@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, ScrollView, TextInput, View } from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchOption, MCPServerSpec } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { HubPathField } from "./HubPathField";
 import { LaunchResourceRow } from "./LaunchResourceRow";
 import { assertLaunchListCurrent } from "./launchLists";
@@ -51,7 +52,7 @@ export function LaunchResourceEditor({
 		setBusy(true);
 		setError(null);
 		try {
-			if (raw.trim() && !client) throw Error("Reconnect to validate this entry.");
+			if (raw.trim() && !client) throw Error("This entry can be checked once the hub is back.");
 			const next =
 				raw.trim() && client
 					? isMcp
@@ -79,7 +80,7 @@ export function LaunchResourceEditor({
 	}
 	const rows = resourceRows(items);
 	return (
-		<Modal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
+		<HoldingModal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
 			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 				<View style={[styles.row, { paddingHorizontal: 16 }]}>
 					<Action onPress={close}>Cancel</Action>
@@ -171,11 +172,13 @@ export function LaunchResourceEditor({
 							{isMcp ? "Add server" : "Add path"}
 						</Action>
 						{busy && <ActivityIndicator accessibilityLabel="Validating entry" />}
-						{!client && <Copy muted>Reconnect to browse and validate entries. Your draft is kept here.</Copy>}
+						{!client && (
+							<Copy muted>You can browse and check entries once the hub is back. Your draft is kept here.</Copy>
+						)}
 					</ScrollView>
 				</KeyboardAvoidingView>
 			</SafeAreaView>
-		</Modal>
+		</HoldingModal>
 	);
 }
 

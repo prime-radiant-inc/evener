@@ -27,12 +27,13 @@ const list: Notice[] = [
 		text: "superpowers is broken",
 		action: "Plugins",
 		pluginId: "superpowers",
+		marketplace: "evener",
 	},
 ];
 
-function mount(notices: Notice[]) {
+function mount(notices: Notice[], connected = true) {
 	const navigation = { navigate: vi.fn() };
-	const tree = render(<BoardNotices hubId="hub-1" notices={notices} navigation={navigation} />);
+	const tree = render(<BoardNotices hubId="hub-1" notices={notices} navigation={navigation} connected={connected} />);
 	return { tree, navigation };
 }
 type Style = Record<string, unknown>;
@@ -73,14 +74,29 @@ it("labels each action with its notice and gives it a 44pt target", () => {
 	}
 });
 
-it("opens Providers for a sign-in, Hub settings for a host and Plugins for a plugin", () => {
+it("opens the Hub at that provider's sign-in, the Hub at that host for a host, and the Hub at that plugin for a plugin", () => {
 	const { tree, navigation } = mount(list);
 	act(() => actionButton(tree, "Sign in, openai sign-in expired").props.onPress());
-	expect(navigation.navigate).toHaveBeenLastCalledWith("Providers", { hubId: "hub-1" });
+	// Ruling 25: the Hub opens at the provider's sign-in, its home under the page.
+	expect(navigation.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Providers",
+		params: { hubId: "hub-1", focus: "openai", signIn: true },
+		initial: false,
+	});
 	act(() => actionButton(tree, "Details, Studio Mac is offline · 3 sessions").props.onPress());
-	expect(navigation.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: "hub-1" });
+	// Ruling 25: the Hub opens at that host, with its home under the page.
+	expect(navigation.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Hosts",
+		params: { hubId: "hub-1", focus: "studio" },
+		initial: false,
+	});
 	act(() => actionButton(tree, "Plugins, superpowers is broken").props.onPress());
-	expect(navigation.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: "hub-1" });
+	// Ruling 25: the Hub opens at Plugins with that plugin's detail.
+	expect(navigation.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Plugins",
+		params: { hubId: "hub-1", focus: { plugin: "superpowers", marketplace: "evener" } },
+		initial: false,
+	});
 });
 
 it("draws nothing when there are no notices", () => {
@@ -91,4 +107,13 @@ it("draws a notice row without an action when it has none", () => {
 	const tree = render(<NoticeRow text="Update needed" />);
 	expect(tree.root.findAll((node) => node.type === ("Pressable" as never))).toHaveLength(0);
 	expect(textWith(tree, "Update needed")).toBeTruthy();
+});
+
+it("hides each notice's action while the hub is out of reach, keeping the sentence", () => {
+	const { tree } = mount(list, false);
+	const rows = tree.root.findAll((node) => node.props.testID === "notice");
+	expect(rows).toHaveLength(3);
+	// Ruling 21: the action needs the hub, so it hides while it's unreachable.
+	expect(rows.flatMap((row) => row.findAll((node) => node.type === ("Pressable" as never)))).toHaveLength(0);
+	expect(textWith(tree, "superpowers is broken")).toBeTruthy();
 });

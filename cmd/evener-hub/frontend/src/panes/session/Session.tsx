@@ -30,9 +30,9 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
-import { controlsFor } from "../../stores/liveControls";
+import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
+import { hasQueuedNonSend, resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
@@ -286,15 +286,15 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // hubcore.DeletionStore never clears that fence once set). threads.ts's own
   // hydrateAndSubscribe records that specific rejection into `deletedRefs`
   // (its own doc comment) as it happens - the SAME thread/read attempt
-  // ensureThread's claim above already keeps retrying, not a second request
-  // from here - while still retrying exactly as it always has, since
-  // ensureThread's returned promise never settles for a deleted ref (its
-  // retry loop has no terminal state and cannot otherwise tell "the daemon
-  // is slow" apart from "this ref is gone"). Reading the flag here is what
-  // lets this pane render an honest terminal state instead of "Loading
-  // transcript…" forever.
-  const deletedRef = useThreadsStore((s) => !model && s.deletedRefs.has(ref));
+  // ensureThread's claim above already makes, not a second request from
+  // here. That fence is terminal for the ref's hydration lifecycle
+  // (threads.ts retires it, settles the acquisition and arms no retry), so
+  // reading the flag here renders an honest terminal state instead of
+  // "Loading transcript…" forever. Deliberately independent of `model` - see
+  // the deleted-surface guard below.
+  const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
+  const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
   const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
   const navigation = useNavigationStore();
@@ -462,22 +462,25 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     workspaceStore.getState().closePane(paneId);
   }
 
+  // The deleted surface outranks any cached model: a durably deleted target
+  // can never hydrate a fresh one, and its last cached snapshot is stale.
+  if (deletedRef) {
+    return (
+      <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
+        <EmptyState
+          title="This session was deleted"
+          hint="Its transcript is gone. You can close this pane."
+          action={
+            <Button variant="quiet" onClick={handleCloseDeleted}>
+              Close
+            </Button>
+          }
+        />
+      </PaneScaffold>
+    );
+  }
+
   if (!model) {
-    if (deletedRef) {
-      return (
-        <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
-          <EmptyState
-            title="This session was deleted"
-            hint="Its transcript is gone. You can close this pane."
-            action={
-              <Button variant="quiet" onClick={handleCloseDeleted}>
-                Close
-              </Button>
-            }
-          />
-        </PaneScaffold>
-      );
-    }
     return (
       <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
         <EmptyState
@@ -515,9 +518,22 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       ? model.parentRef
       : undefined;
 
+  // A merely-resumable session (a shut-down snapshot the hub overlays
+  // resumeRequired on, no Stop in flight) needs no special UI: sending a prompt
+  // resumes it. It drops the standalone Resume action and its notice. The other
+  // two causes of the obligation keep the notice - a restartRequired daemon and
+  // a session with uncertain messages still carry reconciliation the Resume
+  // action performs - so only the clean resume case is carved out. The uncertain
+  // -message signal is read here so a resumable snapshot whose outbox still
+  // holds delivery-uncertain rows keeps both the notice and the fence.
+  const resumeOnlyLocal = recoveryFence(ref, model, restartPending, {
+    uncertainMessages: blockedMutations.length > 0,
+    stopInFlight: stopping,
+    queuedNonSend: hasQueuedNonSend(ref),
+  }).resumeOnly;
   const showRestartNotice =
     model.status.type === "restartRequired" ||
-    restartPending ||
+    (restartPending && !resumeOnlyLocal) ||
     (blockedMutations.length > 0 && (model.status.type === "notLoaded" || !mutationStateAuthoritative));
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
@@ -551,7 +567,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         showSeenDividerTurnId={seenDividerTurnId ?? undefined}
         loadOlderRow={
           model.olderCursor && (
-            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+            <LoadOlderRow
+              onLoad={loadOlderReportingError}
+              loading={loadingOlder}
+              error={olderError}
+              scrollElement={() => virtualListRef.current?.getScrollElement() ?? null}
+            />
           )
         }
         liveOverlay={

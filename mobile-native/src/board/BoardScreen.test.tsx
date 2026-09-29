@@ -22,10 +22,11 @@ import { STUCK_AFTER_MS, WireError } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import {
 	alertRequests,
+	playedHaptics,
 	render,
 	renderedText,
 	screenConnection,
@@ -37,9 +38,11 @@ import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
 import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
+import { SearchResults } from "./SearchResults";
+import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
-import { seenMarkers } from "./nativeBoardMemory";
+import { forgetBoardForHub, seenMarkers } from "./nativeBoardMemory";
 import { SESSION_ID } from "./organizationTestUtils";
 import { ROW_ACTION_LABELS } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
@@ -58,6 +61,8 @@ const harness = vi.hoisted(() => ({
 	sqlite: new Map<string, unknown>(),
 	/** What AccessibilityInfo says of Reduce Motion. */
 	reduceMotion: false,
+	/** Dynamic Type's scale, as useWindowDimensions reports it. */
+	fontScale: 1,
 	/** AppState's change listeners. */
 	appState: new Set<(state: string) => void>(),
 	announce: vi.fn(),
@@ -69,11 +74,10 @@ vi.mock("react-native", async () => {
 		...native,
 		Alert: { ...native.Alert, prompt: (...args: unknown[]) => harness.prompt(...args) },
 		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
-		Keyboard: { dismiss: () => {} },
 		AccessibilityInfo: {
+			...native.AccessibilityInfo,
 			announceForAccessibility: (...args: unknown[]) => harness.announce(...args),
 			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
-			addEventListener: () => ({ remove: () => {} }),
 		},
 		AppState: {
 			addEventListener: (_type: string, listener: (state: string) => void) => {
@@ -81,6 +85,7 @@ vi.mock("react-native", async () => {
 				return { remove: () => harness.appState.delete(listener) };
 			},
 		},
+		useWindowDimensions: () => ({ fontScale: harness.fontScale, scale: 2, width: 390, height: 844 }),
 	};
 });
 vi.mock("react-native-reanimated", async () => (await import("../renderNative.testkit")).reanimatedModuleMock());
@@ -162,6 +167,7 @@ beforeEach(() => {
 	harness.focused = true;
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 	harness.reduceMotion = false;
+	harness.fontScale = 1;
 });
 function setFocused(focused: boolean) {
 	harness.focused = focused;
@@ -338,7 +344,9 @@ function hub(
 					const { ref } = params as { ref: string };
 					if (method === "thread/read") {
 						const row = sessionRows().find((candidate) => candidate.ref === ref);
-						resolve({ thread: threadOf(ref, row?.state === "active" ? "active" : "idle") } as never);
+						resolve({
+							thread: threadOf(ref, row?.state === "active" ? "active" : "idle", row?.turn_ended_at),
+						} as never);
 					} else
 						resolve({
 							receipt: {
@@ -577,7 +585,10 @@ function pressLabel(tree: ReactTestRenderer, label: string) {
 }
 function pressChip(tree: ReactTestRenderer, label: string) {
 	const chip = tree.root.find((node) => node.props.testID === "chip" && node.props.accessibilityLabel === label);
+	playedHaptics.length = 0;
 	act(() => chip.props.onPress());
+	// Spec 16.6: a selection tick on a chip.
+	expect(playedHaptics).toEqual(["selection"]);
 }
 const chipLabels = (tree: ReactTestRenderer) =>
 	tree.root
@@ -608,7 +619,10 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 			node.type === ("Pressable" as never) &&
 			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "2 idle").length > 0,
 	);
+	playedHaptics.length = 0;
 	act(() => idleCount.props.onPress());
+	// Spec 16.6: a selection tick on a summary count.
+	expect(playedHaptics).toEqual(["selection"]);
 	// The unfold applies when the scroll to Idle ends, as any change does.
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	listEvent(tree, "onMomentumScrollEnd");
@@ -636,6 +650,49 @@ async function mountWithInstances(nav: Navigation) {
 const boardScroller = (tree: ReactTestRenderer) =>
 	tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
 
+/** Lays the Board's toolbar out `height` tall; the toolbar is the bar
+ * itself, laid over the Board's end. */
+function layOutToolbar(tree: ReactTestRenderer, height: number) {
+	const flat = (node: ReactTestInstance) => Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
+	const toolbar = tree.root.find((node) => node.props.testID === "board-toolbar" && String(node.type) === "View");
+	expect(flat(toolbar)).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 0, borderTopWidth: 0.5 });
+	act(() => toolbar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 700, width: 390, height } } }));
+	const toastSlot = tree.root.find((node) => node.props.testID === "board-toast" && String(node.type) === "View");
+	return { scroller: boardScroller(tree), toastBottom: flat(toastSlot).bottom };
+}
+
+it("runs the Board under its toolbar, insetting its end by the toolbar and floating the toast above it", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	const { scroller, toastBottom } = layOutToolbar(tree, 84);
+	expect(scroller.props.contentInset).toEqual({ bottom: 84 });
+	expect(scroller.props.contentContainerStyle).toMatchObject({ paddingBottom: 24 });
+	expect(scroller.props.scrollIndicatorInsets).toEqual({ bottom: 84 });
+	expect(toastBottom).toBe(84 + 10);
+	act(() => tree.unmount());
+});
+
+it("pads the Board's end by its toolbar on Android, which has no content inset", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	Platform.OS = "android";
+	try {
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		connect(id, hub(fleet).client, "ready");
+		const tree = await mount(navigation());
+		const { scroller, toastBottom } = layOutToolbar(tree, 84);
+		expect(scroller.props.contentInset).toBeUndefined();
+		expect(scroller.props.contentContainerStyle).toMatchObject({ paddingBottom: 24 + 84 });
+		expect(scroller.props.scrollIndicatorInsets).toEqual({ bottom: 84 });
+		expect(toastBottom).toBe(84 + 10);
+		act(() => tree.unmount());
+	} finally {
+		Platform.OS = "ios";
+	}
+});
+
 it("keeps the chips fixed above the Board's scroller, and jumps a chip's section to the top", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -658,6 +715,35 @@ it("keeps the chips fixed above the Board's scroller, and jumps a chip's section
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 52, animated: true });
 	pressChip(tree, "Projects, 4 projects");
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 752, animated: true });
+	act(() => tree.unmount());
+});
+
+it("scrolls to Needs you when a coalesced banner asks, once the Board has laid out", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	// Asked before this Board existed: the banner popped to it.
+	requestBoardJump("needsYou");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	expect(scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ animated: true }));
+	const band = tree.root
+		.findAll(
+			(node) =>
+				typeof node.props.onLayout === "function" &&
+				node.findAll((child) => child.props.children === "NEEDS YOU · 2").length > 0,
+		)
+		.at(-1);
+	act(() => {
+		tree.root
+			.find((node) => node.props.testID === "live-block" && node.props.onLayout)
+			.props.onLayout({ nativeEvent: { layout: { x: 0, y: 52, width: 390, height: 400 } } });
+		band?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 30, width: 390, height: 28 } } });
+	});
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 82, animated: true });
+	// A Board already laid out scrolls at once.
+	scrollTo.mockClear();
+	act(() => requestBoardJump("needsYou"));
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 82, animated: true });
 	act(() => tree.unmount());
 });
 
@@ -1220,6 +1306,119 @@ it("searches nothing while connecting, and asks for the typed query once the con
 	await settle();
 	expect(fake.searches).toEqual(["ship"]);
 	expect(resultTitles(tree)).toEqual(["Ship it"]);
+	act(() => tree.unmount());
+});
+
+it("doesn't search while the Board is out of view, and asks again when it returns", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(fake.searches).toEqual(["ship"]);
+	// A pushed screen covers the Board: a reconnect must not send the query.
+	harness.stack = screenOverBoard;
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
+	// Back in view, the field's query asks again.
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship", "ship"]);
+	act(() => tree.unmount());
+});
+
+it("gives the search field a 44pt touch target while it still draws 36pt", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	const row = tree.root.find((node) => node.props.testID === "search-field");
+	expect(row.props.style.height).toBe(52);
+	// The visible pill is still the stock 36pt.
+	const pill = row.findAll((node) => node.type === ("View" as never) && node.props.style?.position === "absolute")[0];
+	expect(pill?.props.style.height).toBe(36);
+	// The input's own row is the target, so a slop wouldn't be clipped away.
+	const input = row.find(
+		(node) => node.type === ("TextInput" as never) && node.props.accessibilityLabel === "Search sessions",
+	);
+	expect(input.parent?.props.style.height).toBeGreaterThanOrEqual(44);
+	act(() => tree.unmount());
+});
+
+it("re-tucks the search field when Dynamic Type changes its height", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const { tree, scrollTo } = await mountWithInstances(nav);
+	scrollTo.mockClear();
+	harness.fontScale = 1.5;
+	rerender(tree, nav);
+	await settle();
+	const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
+	expect(height).toBe(70);
+	expect(scrollTo).toHaveBeenCalledWith({ y: 70, animated: false });
+	act(() => tree.unmount());
+});
+
+it("leaves a field the reader revealed or scrolled past where it is on a Dynamic Type change", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const { tree, scrollTo } = await mountWithInstances(nav);
+	const scrollToY = (y: number) =>
+		act(() =>
+			boardScroller(tree).props.onScroll({
+				nativeEvent: { contentOffset: { x: 0, y }, layoutMeasurement: { width: 390, height: 700 } },
+			}),
+		);
+	// Revealed by pulling down, without focusing.
+	scrollToY(0);
+	scrollTo.mockClear();
+	harness.fontScale = 1.5;
+	rerender(tree, nav);
+	await settle();
+	expect(scrollTo).not.toHaveBeenCalled();
+	// Scrolled down the list.
+	scrollToY(400);
+	harness.fontScale = 1;
+	rerender(tree, nav);
+	await settle();
+	expect(scrollTo).not.toHaveBeenCalled();
+	act(() => tree.unmount());
+});
+
+it("keeps one search through a sheet over the Board, without re-asking", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(fake.searches).toEqual(["ship"]);
+	// A sheet over the Board is still the Board (ruling 28): the binding holds,
+	// so closing it asks nothing again.
+	harness.stack = sheetOverBoard;
+	setFocused(false);
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	setFocused(true);
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
 	act(() => tree.unmount());
 });
 
@@ -2374,16 +2573,46 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 	);
 	expect(order.map((node) => node.props.testID)).toEqual(["notice", "notice", "notice", "live-block"]);
 	pressLabel(tree, "Sign in, openai sign-in expired");
-	expect(nav.navigate).toHaveBeenLastCalledWith("Providers", { hubId: id });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Providers",
+		params: { hubId: id, focus: "openai", signIn: true },
+		initial: false,
+	});
 	pressLabel(tree, "Details, Studio Mac is offline · 2 sessions");
-	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Hosts",
+		params: { hubId: id, focus: "studio" },
+		initial: false,
+	});
 	pressLabel(tree, "Plugins, superpowers is broken");
-	expect(nav.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: id });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Plugins",
+		params: { hubId: id, focus: { plugin: "superpowers", marketplace: "evener" } },
+		initial: false,
+	});
 	// Update needed comes first.
 	connect(id, null, "closed", { fatal: true });
 	rerender(tree, nav);
 	expect(noticeTexts(tree)[0]).toBe(INCOMPATIBLE_TEXT);
 	expect(noticeTexts(tree)).toHaveLength(4);
+	act(() => tree.unmount());
+});
+
+it("hides notice actions while the hub is out of reach, keeping the notice rows", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(troubledFleet()).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(noticeTexts(tree)).toContain("openai sign-in expiredSign in");
+	// Ruling 21: the Board's hub-facing actions show only while connected.
+	connect(id, null, "closed");
+	rerender(tree, nav);
+	expect(noticeTexts(tree)).toEqual([
+		"openai sign-in expired",
+		"Studio Mac is offline · 2 sessions",
+		"superpowers is broken",
+	]);
 	act(() => tree.unmount());
 });
 
@@ -2740,6 +2969,43 @@ it("scrolls to a project from search that was already unfolded", async () => {
 	act(() => tree.unmount());
 });
 
+it("scrolls a project row taller than the viewport to its top, never past it", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({
+		...fleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [localWork] },
+	});
+	connect(id, fake.client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	layOutAt(boardScroller(tree), 0, 600);
+	await revealFromSearch(tree);
+	layOutAt(projectSection(tree, "projects"), 900, 400);
+	// The row is taller than the 600pt viewport, so there is nowhere to sit it
+	// a third of the way down: the Board shows its top.
+	layOutAt(revealTarget(tree), 60, 700);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60, animated: true });
+	act(() => tree.unmount());
+});
+
+it("stays in search when a tapped project is no longer in the loaded catalog", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	connect(id, fake.client, "ready");
+	const { tree } = await mountWithInstances(navigation());
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("even");
+	// The catalog goes stale between the result's render and the tap: the
+	// project is no longer loaded, so there is nothing to reveal.
+	act(() => tree.root.findByType(SearchResults).props.onOpenProject({ key: "gone", name: "Gone" }));
+	expect(hasCancel(tree)).toBe(true);
+	expect(tree.root.findAll((node) => node.props.testID === "project-reveal")).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
 it("scrolls to a project from search without animating while Reduce Motion is on", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -2915,6 +3181,123 @@ it("pins a project to the top from its long-press menu, dimming it until the hub
 	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
 	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
 	expect(fake.mutations).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("reflects a project change held offline in its menu and on its row, and its opposite cancels it (phase 6 ruling 18)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	const openMenu = () => {
+		act(() => projectRows(tree, "evener")[0]?.props.onLongPress());
+		return harness.actionSheet.mock.calls.at(-1) ?? [];
+	};
+	const [sheet, choose] = openMenu();
+	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
+	act(() => choose(0));
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
+	const [held, undo] = openMenu();
+	expect(held.options).toEqual(["Unpin", "Archive project", "Cancel"]);
+	act(() => undo(0));
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
+	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("queues a project change behind the held one it answers, even once back online", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	let answerPin: () => void = () => {};
+	const request = fake.client.request;
+	let favorites = 0;
+	fake.client.request = ((method: string, params: unknown) => {
+		// The held Pin to top's write hangs while it is on its way.
+		if (method === "evener/favorite/set" && favorites++ === 0) {
+			const answer = request(method as never, params as never);
+			return new Promise((resolve) => {
+				answerPin = () => resolve(answer as never);
+			});
+		}
+		return request(method as never, params as never);
+	}) as typeof request;
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	const openMenu = () => {
+		act(() => projectRows(tree, "evener")[0]?.props.onLongPress());
+		return harness.actionSheet.mock.calls.at(-1) ?? [];
+	};
+	const [, pin] = openMenu();
+	act(() => pin(0));
+	await settle();
+	// The menu, opened offline, offers Unpin, and stays up across the
+	// reconnect while the held Pin to top goes out.
+	const [sheet, unpin] = openMenu();
+	expect(sheet.options?.[0]).toBe("Unpin");
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await vi.waitFor(() => expect(favorites).toBe(1));
+	act(() => unpin(0));
+	await settle();
+	answerPin();
+	await vi.waitFor(() =>
+		expect(fake.mutations.filter((m) => m.method === "evener/favorite/set").map((m) => m.params)).toEqual([
+			{ kind: "project", id: "evener", favorited: true },
+			{ kind: "project", id: "evener", favorited: false },
+		]),
+	);
+	await vi.waitFor(() => expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toEqual([]));
+	act(() => tree.unmount());
+});
+
+it("holds a project change while the journal is busy, and sends it once the journal is free", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } });
+	let answerFirst: () => void = () => {};
+	let favorites = 0;
+	const request = fake.client.request;
+	fake.client.request = ((method: string, params: unknown) => {
+		if (method !== "evener/favorite/set" || favorites++ > 0) return request(method as never, params as never);
+		const answered = request(method as never, params as never);
+		return new Promise((resolve) => {
+			answerFirst = () => resolve(answered as never);
+		});
+	}) as typeof request;
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const openMenu = () => {
+		act(() => projectRows(tree, "evener")[0]?.props.onLongPress());
+		return harness.actionSheet.mock.calls.at(-1) ?? [];
+	};
+	const [, pin] = openMenu();
+	act(() => pin(0));
+	await vi.waitFor(() => expect(favorites).toBe(1));
+	// The journal is busy with the Pin to top; the menu still offers Archive,
+	// which is held until the journal is free.
+	const [sheet, choose] = openMenu();
+	expect(sheet.options).toContain("Archive project");
+	act(() => choose(sheet.options.indexOf("Archive project")));
+	await settle();
+	expect(JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]")).toHaveLength(1);
+	answerFirst();
+	await vi.waitFor(() =>
+		expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/favorite/set", "evener/archive/set"]),
+	);
 	act(() => tree.unmount());
 });
 
@@ -3272,7 +3655,9 @@ it("drops the Projects chip once the projects catalog loads empty, as the sectio
 });
 
 /** A session's thread as thread/read answers it: `status` is its turn. */
-function threadOf(ref: string, status: string): Thread {
+/** A session's read: running a turn while `status` is active, its last turn
+ * ended at `turnEndedAt` (the row's turn_ended_at, the daemon's one stamp). */
+function threadOf(ref: string, status: string, turnEndedAt?: string): Thread {
 	return {
 		id: `thread:${ref}`,
 		sessionId: ref,
@@ -3305,6 +3690,8 @@ function threadOf(ref: string, status: string): Thread {
 				rename: true,
 			},
 			queue: { revision: 0, depth: 0, preview: [] },
+			...(status === "active" ? { activeTurnId: `turn:${ref}` } : {}),
+			...(turnEndedAt ? { lastTurnEndedAt: Date.parse(turnEndedAt) } : {}),
 		},
 	};
 }
@@ -3476,20 +3863,343 @@ it("opens Pin to category for a row's Pin", async () => {
 	});
 });
 
-it("offers only More on any row while reconnecting, and a menu of only the read marks", async () => {
+it("offers a row's actions offline too, to hold until the connection returns (phase 6 ruling 18)", async () => {
 	const fake = hub(swipeFleet());
 	const { id, tree, nav } = await mountSwipeFleet(fake);
 	connect(id, fake.client, "reconnecting");
 	rerender(tree, nav);
-	const swipeables = tree.root.findAll((node) => node.type === ("ReanimatedSwipeable" as never));
-	expect(swipeables).toHaveLength(3);
-	for (const swipeable of swipeables) {
-		expect(swipeable.props.renderLeftActions).toBeUndefined();
-		expect(revealedLabels(swipeable, "right")).toEqual(["More"]);
+	const working = swipeableOf(tree, "Refactor parser");
+	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
+	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin", "More"]);
+	expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).toEqual(
+		expect.arrayContaining(["Pin to category…", "Stop", "Shut down", "Archive"]),
+	);
+});
+
+describe("Board actions held offline (phase 6 ruling 18)", () => {
+	const heldIn = (id: string) => JSON.parse(harness.kv.get(`evener.native.board-hold.${id}`) ?? "[]") as unknown[];
+	const interrupts = (fake: ReturnType<typeof hub>) =>
+		fake.threadCalls.filter((call) => call.method === "turn/interrupt");
+	async function reconnect(id: string, fake: ReturnType<typeof hub>, tree: ReactTestRenderer, nav: Navigation) {
+		connect(id, fake.client, "ready");
+		rerender(tree, nav);
+		await settle();
+		await settle();
 	}
-	const menu = menuHost(id);
-	expect(rowMenuLabels(menu, `local:${OTHER_SESSION_ID}`)).toEqual(["Mark as read"]);
-	expect(rowMenuLabels(menu, `local:${SESSION_ID}`)).toEqual([]);
+
+	it("holds an archive taken offline, says so on the row, and sends it once back online", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await settle();
+		expect(fake.mutations).toEqual([]);
+		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(0.5);
+		expect(texts(tree)).toContain("Archive waits for the connection");
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+		expect(fake.mutations).toEqual([
+			{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
+		]);
+	});
+
+	it("queues a row's change behind the held one it answers, even once back online", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		let answerArchive: () => void = () => {};
+		const request = fake.client.request;
+		let archives = 0;
+		fake.client.request = ((method: string, params: unknown) => {
+			// The held archive's write hangs while it is on its way.
+			if (method === "evener/archive/set" && archives++ === 0) {
+				const answer = request(method as never, params as never);
+				return new Promise((resolve) => {
+					answerArchive = () => resolve(answer as never);
+				});
+			}
+			return request(method as never, params as never);
+		}) as typeof request;
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await settle();
+		// The menu, opened offline, stays up across the reconnect.
+		const menu = menuHost(id);
+		const item = menuItem(menu, `local:${SESSION_ID}`);
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(archives).toBe(1));
+		act(() => menu.act(item, "unarchive"));
+		await settle();
+		answerArchive();
+		await vi.waitFor(() =>
+			expect(fake.mutations.filter((m) => m.method === "evener/archive/set").map((m) => m.params)).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: SESSION_ID, archived: false },
+			]),
+		);
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+	});
+
+	/** Holds the first request of `method` until the returned function
+	 * answers it; the hub records it at once, as it does any write. */
+	function hangFirst(fake: ReturnType<typeof hub>, method: string): () => void {
+		let answer: () => void = () => {};
+		let count = 0;
+		const request = fake.client.request;
+		fake.client.request = ((name: string, params: unknown) => {
+			if (name !== method || count++ > 0) return request(name as never, params as never);
+			const answered = request(name as never, params as never);
+			return new Promise((resolve) => {
+				answer = () => resolve(answered as never);
+			});
+		}) as typeof request;
+		return () => answer();
+	}
+	const writes = (fake: ReturnType<typeof hub>, method: string) =>
+		fake.mutations.filter((mutation) => mutation.method === method).map((mutation) => mutation.params);
+
+	it("holds a row's archive while the journal is busy with another, and sends it once the journal is free", async () => {
+		const fake = hub(swipeFleet());
+		const answerFirst = hangFirst(fake, "evener/archive/set");
+		const { id, tree } = await mountSwipeFleet(fake);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await vi.waitFor(() => expect(writes(fake, "evener/archive/set")).toHaveLength(1));
+		// The journal is busy, and Archive is still there to take: it is held,
+		// never refused.
+		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
+		await settle();
+		expect(texts(tree)).toContain("Archive is waiting to send");
+		expect(heldIn(id)).toHaveLength(1);
+		answerFirst();
+		await vi.waitFor(() =>
+			expect(writes(fake, "evener/archive/set")).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: OTHER_SESSION_ID, archived: true },
+			]),
+		);
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+	});
+
+	it("holds a row's Undo while the journal is busy with another change, and sends it once the journal is free", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree } = await mountSwipeFleet(fake);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await settle();
+		expect(texts(tree)).toContain("Archived");
+		const answerNext = hangFirst(fake, "evener/archive/set");
+		swipeRowFully(swipeableOf(tree, "Write changelog"), "right");
+		await vi.waitFor(() => expect(writes(fake, "evener/archive/set")).toHaveLength(2));
+		pressLabel(tree, "Undo");
+		await settle();
+		expect(heldIn(id)).toHaveLength(1);
+		answerNext();
+		await vi.waitFor(() =>
+			expect(writes(fake, "evener/archive/set")).toEqual([
+				{ kind: "session", id: SESSION_ID, archived: true },
+				{ kind: "session", id: OTHER_SESSION_ID, archived: true },
+				{ kind: "session", id: SESSION_ID, archived: false },
+			]),
+		);
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+	});
+
+	it("queues a Shut down behind the held one that is on its way, rather than sending it beside it", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		const answerFirst = hangFirst(fake, "thread/shutdown");
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		const shutDown = () => {
+			const host = menuHost(id);
+			act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
+			act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
+		};
+		shutDown();
+		await settle();
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(writes(fake, "thread/shutdown")).toHaveLength(1));
+		shutDown();
+		await settle();
+		// The first is still out: the second waits in the hold behind it.
+		expect(writes(fake, "thread/shutdown")).toHaveLength(1);
+		expect(heldIn(id)).toHaveLength(2);
+		answerFirst();
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+	});
+
+	it("offers the row menu's Cancel for a change held after the menu opened", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		const before = menuHost(id);
+		const host = menuHost(id);
+		act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "stop"));
+		await settle();
+		// The sheet re-reads a host it is given anew: a hold alone gives it one.
+		expect(menuHost(id)).not.toBe(before);
+		expect(menuHost(id).held(menuItem(menuHost(id), `local:${SESSION_ID}`))).toEqual([
+			{ id: expect.any(String), label: "Cancel Stop" },
+		]);
+	});
+
+	it("cancels a held archive from the row's menu, and the row is itself again", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
+		await settle();
+		const menu = menuHost(id);
+		const [held] = menu.held(menuItem(menu, `local:${SESSION_ID}`));
+		expect(held?.label).toBe("Cancel Archive");
+		act(() => menu.cancel(held?.id ?? ""));
+		await settle();
+		expect(texts(tree)).not.toContain("Archive waits for the connection");
+		expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
+		await reconnect(id, fake, tree, nav);
+		expect(fake.mutations).toEqual([]);
+	});
+
+	it("sends a held Stop whose turn is the one seen, even with the Board out of view", async () => {
+		const fake = hub(swipeFleet());
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
+		await settle();
+		expect(texts(tree)).toContain("Stop waits for the connection");
+		setFocused(false);
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(interrupts(fake)).toHaveLength(1));
+		expect(heldIn(id)).toEqual([]);
+	});
+
+	it("drops a held Stop once a newer turn runs, and says so", async () => {
+		const fleet = swipeFleet();
+		const [row] = fleet.live[0] ?? [];
+		if (!row) throw new Error("no working row");
+		fleet.live[0] = [{ ...row, turn_ended_at: minutesAgo(10) }, ...(fleet.live[0] ?? []).slice(1)];
+		const fake = hub(fleet);
+		const { id, tree, nav } = await mountSwipeFleet(fake);
+		connect(id, fake.client, "reconnecting");
+		rerender(tree, nav);
+		pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
+		await settle();
+		// Meanwhile that turn ended and another began.
+		fleet.live[0] = [{ ...row, turn_ended_at: minutesAgo(1) }, ...(fleet.live[0] ?? []).slice(1)];
+		await reconnect(id, fake, tree, nav);
+		await vi.waitFor(() => expect(texts(tree)).toContain("The turn you stopped ended before you were back online"));
+		expect(interrupts(fake)).toEqual([]);
+		expect(heldIn(id)).toEqual([]);
+	});
+
+	it("sends what was held before a relaunch on the first ready connection, in the order held", async () => {
+		const fake = hub(swipeFleet());
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		harness.kv.set(
+			`evener.native.board-hold.${id}`,
+			JSON.stringify([
+				{
+					id: "a",
+					heldAt: 1,
+					action: { kind: "rename", ref: `local:${OTHER_SESSION_ID}`, title: "Write changelog", name: "Notes" },
+				},
+				{
+					id: "b",
+					heldAt: 2,
+					action: {
+						kind: "shutDown",
+						ref: `local:${OTHER_SESSION_ID}`,
+						title: "Write changelog",
+						seen: { turnEndedAt: null, running: false },
+					},
+				},
+			]),
+		);
+		connect(id, fake.client, "ready");
+		await mount(navigation());
+		await vi.waitFor(() => expect(heldIn(id)).toEqual([]));
+		expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/thread/name/set", "thread/shutdown"]);
+	});
+
+	it("offers no Cancel for a held action already on its way", async () => {
+		const fake = hub(swipeFleet());
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		const ref = `local:${OTHER_SESSION_ID}`;
+		harness.kv.set(
+			`evener.native.board-hold.${id}`,
+			JSON.stringify([
+				{
+					id: "a",
+					heldAt: 1,
+					action: { kind: "shutDown", ref, title: "Write changelog", seen: { turnEndedAt: null, running: false } },
+				},
+			]),
+		);
+		let answer: () => void = () => {};
+		const request = fake.client.request;
+		fake.client.request = ((method: string, params: unknown) => {
+			if (method !== "thread/shutdown") return request(method as never, params as never);
+			fake.mutations.push({ method, params });
+			return new Promise((resolve) => {
+				answer = () => resolve({} as never);
+			});
+		}) as typeof request;
+		connect(id, fake.client, "ready");
+		const tree = await mount(navigation());
+		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
+		const menu = menuHost(id);
+		expect(menu.held(menuItem(menu, ref))).toEqual([]);
+		expect(texts(tree)).toContain("Shut down is waiting to send");
+		answer();
+		await settle();
+		expect(texts(tree)).not.toContain("Shut down is waiting to send");
+	});
+
+	it("stops replaying a removed hub: its next Shut down never goes, and its hold's key stays gone", async () => {
+		const fake = hub(swipeFleet());
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		const shutDown = (key: string) => ({
+			id: key,
+			heldAt: 1,
+			action: {
+				kind: "shutDown",
+				ref: `local:${OTHER_SESSION_ID}`,
+				title: "Write changelog",
+				seen: { turnEndedAt: null, running: false },
+			},
+		});
+		harness.kv.set(
+			`evener.native.board-hold.${id}`,
+			JSON.stringify([
+				shutDown("a"),
+				{ ...shutDown("b"), action: { ...shutDown("b").action, ref: "paradise-park:pp" } },
+			]),
+		);
+		let answer: () => void = () => {};
+		const request = fake.client.request;
+		fake.client.request = ((method: string, params: unknown) => {
+			if (method !== "thread/shutdown") return request(method as never, params as never);
+			fake.mutations.push({ method, params });
+			return new Promise((resolve) => {
+				answer = () => resolve({} as never);
+			});
+		}) as typeof request;
+		connect(id, fake.client, "ready");
+		await mount(navigation());
+		await vi.waitFor(() => expect(fake.mutations).toHaveLength(1));
+		forgetBoardForHub(id);
+		answer();
+		await settle();
+		await settle();
+		expect(fake.mutations).toHaveLength(1);
+		expect(harness.kv.has(`evener.native.board-hold.${id}`)).toBe(false);
+	});
 });
 
 it("puts swipes on pinned categories' rows and project sessions too", async () => {
@@ -3588,6 +4298,23 @@ it("gives the row menu the copy it opened from, when a session shows in both Liv
 	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
 });
 
+it("keeps the row menu's row while the list is held, even once the read drops it", async () => {
+	const shape = swipeFleet();
+	const fake = hub(shape);
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	// Opening the menu from the row holds the list (ruling 22).
+	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
+	const ref = `local:${SESSION_ID}`;
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: false });
+	// A later read no longer has the row, but the held list keeps showing it,
+	// so the menu that is about it must still resolve one.
+	shape.live = [[swipeFinished, swipePark]];
+	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
+	await settle();
+	expect(hasRow(tree, "Refactor parser")).toBe(true);
+	expect(menuItem(menuHost(id), ref).row.ref).toBe(ref);
+});
+
 it("offers Rename only on iOS, where Alert.prompt exists", async () => {
 	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
 	const shape = swipeFleet();
@@ -3615,7 +4342,10 @@ it("asks before shutting a session down from the menu, then says it shut down", 
 		["Cancel", "cancel"],
 		["Shut down", "destructive"],
 	]);
+	playedHaptics.length = 0;
 	act(() => ask?.buttons?.[1]?.onPress?.());
+	// Spec 16.6: rigid on a destructive confirmation.
+	expect(playedHaptics).toEqual(["impact:rigid"]);
 	await settle();
 	expect(fake.mutations).toEqual([{ method: "thread/shutdown", params: { ref: `local:${SESSION_ID}` } }]);
 	expect(texts(tree)).toContain("Session shut down");
@@ -4257,15 +4987,40 @@ it("archives the chosen sessions one by one, leaves select mode, and Undo unarch
 	expect(texts(tree)).toContain("Unarchived 2 sessions");
 });
 
-it("says how many it archived when the hub refuses one, and archives nothing after it", async () => {
+it("says nothing archived when the hub can't confirm one, and holds the rest for when the journal is free", async () => {
 	const fake = hub(selectFleet(), undefined, undefined, { refuse: true });
 	const { tree } = await mountSwipeFleet(fake);
 	select(tree, "Refactor parser", "Write changelog");
 	pressLabel(tree, "Archive");
 	await settle();
-	expect(fake.mutations).toHaveLength(1);
 	expect(inSelectMode(tree)).toBe(false);
 	expect(texts(tree).filter((text) => text.startsWith("Archived"))).toEqual([]);
+	// The one after it was held, not dropped: it goes once the journal has
+	// settled the first.
+	await vi.waitFor(() =>
+		expect(fake.mutations.map((mutation) => mutation.params)).toEqual([
+			{ kind: "session", id: OTHER_SESSION_ID, archived: true },
+			{ kind: "session", id: SESSION_ID, archived: true },
+		]),
+	);
+});
+
+it("pins the chosen sessions with the Board's connection as it is when you pick, not as it was when the sheet opened", async () => {
+	const fake = hub(selectFleet());
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	select(tree, "Refactor parser");
+	harness.actionSheet.mockClear();
+	pressLabel(tree, "Pin");
+	const [, choose] = harness.actionSheet.mock.calls[0] as [unknown, (index: number) => void];
+	// The connection blips and returns while the sheet is up.
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	act(() => choose(0));
+	await settle();
+	expect(fake.mutations.map((mutation) => mutation.method)).toEqual(["evener/session-pin/assign"]);
 });
 
 it("pins the chosen sessions to a category picked from the sheet", async () => {
@@ -4361,17 +5116,22 @@ it("marks the chosen finished sessions read and leaves select mode", async () =>
 	expect(menuItem(menuHost(id), `local:${OTHER_SESSION_ID}`).state).toBe("idle");
 });
 
-it("keeps only Mark as read in the select bar while offline", async () => {
+it("keeps the select bar's actions offline, and holds an archive of what's chosen (phase 6 ruling 18)", async () => {
 	const fake = hub(selectFleet());
 	const { id, tree } = await mountSwipeFleet(fake);
 	connect(id, fake.client, "reconnecting");
 	rerender(tree, navigation());
 	select(tree, "Write changelog");
 	expect(["Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label)[0].props.disabled)).toEqual([
-		true,
-		true,
+		false,
+		false,
 		false,
 	]);
+	pressLabel(tree, "Archive");
+	await settle();
+	expect(inSelectMode(tree)).toBe(false);
+	expect(fake.mutations).toEqual([]);
+	expect(texts(tree)).toContain("Archive waits for the connection");
 });
 
 // The Board's Continue reading row (spec 7.1, ruling 20).
@@ -4384,8 +5144,7 @@ function leaveDocument(id: string, leftMinutesAgo: number) {
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
 			title: "Fix the settle/drain race",
-			reviewRef: "local:fix",
-			reviewTitle: "Fix race",
+			sessionTitle: "Fix race",
 			progress: 0.62,
 			leftAt: Date.now() - leftMinutesAgo * 60_000,
 		}),
@@ -4417,8 +5176,7 @@ it("offers to continue a document you left in the last two hours, under the noti
 				hubId: id,
 				sessionRef: "local:fix",
 				path: "docs/superpowers/plans/settle-race.md",
-				reviewRef: "local:fix",
-				reviewTitle: "Fix race",
+				sessionTitle: "Fix race",
 			},
 		],
 	]);

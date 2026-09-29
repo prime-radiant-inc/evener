@@ -7,8 +7,10 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
-import { Sheet, useSheet } from "../sheet/Sheet";
+import { Sheet } from "../sheet/Sheet";
+import { useSheet } from "../sheet/useSheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useReadingFace } from "../display/displayContext";
 import { useDocumentFacts } from "./DocumentChip";
 import { FreshDot } from "./FreshDot";
 import type { SessionDocument } from "./sessionDocuments";
@@ -25,8 +27,7 @@ export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 				hubId,
 				sessionRef: ref,
 				path,
-				reviewRef: ref,
-				reviewTitle: title,
+				sessionTitle: title,
 				...(updatedAt === undefined ? {} : { updatedAt }),
 			});
 		});
@@ -65,6 +66,7 @@ function DocumentRow({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const face = useReadingFace();
 	const { kind, title, lines, age, spokenAge, freshness } = useDocumentFacts(
 		hubId,
 		sessionRef,
@@ -102,7 +104,7 @@ function DocumentRow({
 					numberOfLines={1}
 					style={{
 						flexShrink: 1,
-						fontFamily: fonts.serifSemibold,
+						...face.semibold,
 						fontSize: 15 * scale,
 						lineHeight: 20 * scale,
 						color: palette.inkHi,

@@ -1,5 +1,7 @@
 import { expect, it, vi } from "vitest";
 import * as Clipboard from "expo-clipboard";
+import { DisplayProvider } from "./display/displayContext";
+import { DisplayPreferences } from "./display/displayPreferences";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { render } from "./renderNative.testkit";
 
@@ -88,6 +90,27 @@ it("drops native selection and its menu when the caller owns touch and hold", ()
 	const text = tree.root.findByType("EnrichedMarkdownText" as never);
 	expect(text.props.selectable).toBe(false);
 	expect(text.props.contextMenuItems).toBeUndefined();
+});
+
+it("drops the serif for agent prose when the phone reads in Sans (spec 12)", () => {
+	mode.scheme = "light";
+	const values = new Map<string, string>();
+	const prefs = new DisplayPreferences({
+		getItemSync: (key) => values.get(key) ?? null,
+		setItemSync: (key, value) => {
+			values.set(key, value);
+		},
+	});
+	prefs.set({ readingFont: "sans" });
+	const tree = render(
+		<DisplayProvider value={prefs}>
+			<MarkdownResponse markdown="Hello" />
+		</DisplayProvider>,
+	);
+	const style = tree.root.findByType("EnrichedMarkdownText" as never).props.markdownStyle;
+	expect(style.paragraph.fontFamily).toBeUndefined();
+	expect(style.paragraph).toMatchObject({ fontSize: 17, lineHeight: 26 });
+	expect(style.codeBlock).toMatchObject({ fontFamily: "Menlo" });
 });
 
 it("renders a mermaid fence as a diagram between prose segments", () => {

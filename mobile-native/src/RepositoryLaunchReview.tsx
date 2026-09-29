@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Modal, ScrollView, View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { RepoLaunchConfigStatus } from "@evener/appwire-client";
+import { HoldingModal } from "./alerts/HoldingModal";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const descriptions: Record<string, string> = {
@@ -34,7 +35,7 @@ export function RepositoryLaunchReview({
 					{descriptions[repo.trust] ?? "Review repository configuration"}
 				</Action>
 			)}
-			<Modal
+			<HoldingModal
 				visible={!!review}
 				animationType="slide"
 				onRequestClose={() => {
@@ -75,7 +76,7 @@ export function RepositoryLaunchReview({
 						)}
 					</ScrollView>
 				</SafeAreaView>
-			</Modal>
+			</HoldingModal>
 		</>
 	);
 }

@@ -322,7 +322,8 @@ func typeExpr(t reflect.Type) string {
 		if t.Elem().Kind() == reflect.Uint8 {
 			return "string" // []byte marshals as a base64 JSON string
 		}
-		return typeExpr(t.Elem()) + "[]"
+		elem := typeExpr(t.Elem())
+		return elem + "[]"
 	case t.Kind() == reflect.Map:
 		return "Record<" + typeExpr(t.Key()) + ", " + typeExpr(t.Elem()) + ">"
 	case t.Kind() == reflect.Struct:

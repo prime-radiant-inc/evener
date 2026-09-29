@@ -5,25 +5,54 @@ import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Notice } from "./notices";
 
-/** The Board's notices, one row each under the chips (spec 7.1). Each action
- * opens today's screen for its kind; phase 5's Hub opens at the subject. */
+/** Opens the Hub at a notice's subject: a host, a provider's sign-in or a
+ * plugin. The Board's notice rows and a tapped notice banner both use it. */
+export function openNotice(
+	navigation: Pick<NativeStackNavigationProp<Routes>, "navigate">,
+	hubId: string,
+	notice: Notice,
+): void {
+	if (notice.kind === "signIn")
+		// Ruling 25: the Hub opens at that provider's sign-in, its home kept under the page.
+		navigation.navigate("Hub", {
+			screen: "Providers",
+			params: { hubId, focus: notice.providerId, signIn: true },
+			initial: false,
+		});
+	else if (notice.kind === "host")
+		// Ruling 25: the Hub opens at that host, its home kept under the page.
+		navigation.navigate("Hub", { screen: "Hosts", params: { hubId, focus: notice.sourceId }, initial: false });
+	else {
+		// Ruling 25 again: the Hub opens at Plugins with that plugin's detail.
+		navigation.navigate("Hub", {
+			screen: "Plugins",
+			params: { hubId, focus: { plugin: notice.pluginId, marketplace: notice.marketplace } },
+			initial: false,
+		});
+	}
+}
+
+/** The Board's notices, one row each under the chips (spec 7.1). */
 export function BoardNotices({
 	hubId,
 	notices,
 	navigation,
+	connected,
 }: {
 	hubId: string;
 	notices: Notice[];
 	navigation: Pick<NativeStackNavigationProp<Routes>, "navigate">;
+	/** Whether the hub is reachable. A notice's action needs it (ruling 21):
+	 * while the hub is out of reach the action hides, and the sentence stays. */
+	connected: boolean;
 }) {
 	if (!notices.length) return null;
-	const open = (notice: Notice) => {
-		if (notice.kind === "signIn") navigation.navigate("Providers", { hubId });
-		else if (notice.kind === "host") navigation.navigate("HubSettings", { hubId });
-		else navigation.navigate("Plugins", { hubId });
-	};
 	return notices.map((notice) => (
-		<NoticeRow key={notice.key} text={notice.text} action={{ label: notice.action, onPress: () => open(notice) }} />
+		<NoticeRow
+			key={notice.key}
+			text={notice.text}
+			action={connected ? { label: notice.action, onPress: () => openNotice(navigation, hubId, notice) } : undefined}
+		/>
 	));
 }
 

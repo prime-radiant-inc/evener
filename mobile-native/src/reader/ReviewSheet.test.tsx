@@ -67,8 +67,7 @@ const PARAMS = {
 	hubId: "studio",
 	sessionRef: "local:fix",
 	path: PATH,
-	reviewRef: "local:fix",
-	reviewTitle: "Get PR 2138 Test Clean",
+	sessionTitle: "Get PR 2138 Test Clean",
 };
 
 const capabilities = (over: Partial<ThreadCapabilities> = {}): ThreadCapabilities => ({
@@ -236,6 +235,21 @@ it("names where the review goes, lists the comments, and waits for a verdict", a
 	expect(renderedText(tree)).not.toContain("Choose one to send your review.");
 	expect(pressable(tree, "Request changes")?.props.accessibilityState).toMatchObject({ selected: true });
 	expect(sendDisabled(tree)).toBe(false);
+});
+
+it("keeps a chosen verdict's words where they were, centred, at the same weight", async () => {
+	// A bolder "Request changes" no longer fit its third of the row and wrapped
+	// flush left (seen on the simulator, phase 4 PR 9).
+	const tree = await mount();
+	const label = () =>
+		pressable(tree, "Request changes")?.find((node) => String(node.type) === "Text").props.style as {
+			textAlign?: string;
+			fontWeight?: string;
+		};
+	const before = label().fontWeight;
+	choose(tree, "Request changes");
+	expect(label().textAlign).toBe("center");
+	expect(label().fontWeight).toBe(before);
 });
 
 it("says so when there are no comments", async () => {

@@ -26,7 +26,9 @@ export type RecoveryGhostRow = Pick<
 export type GhostOrigin =
 	| { kind: "queue"; entry: QueueEntryRef }
 	| { kind: "pending"; clientMutationId: string }
-	| { kind: "draft" }
+	// A draft that stands in for a matched outbox row carries that row's id, so
+	// its Discard can clear both (the draft's uncertainty and the row).
+	| { kind: "draft"; clientMutationId?: string }
 	| { kind: "recovery"; row: RecoveryGhostRow };
 
 export interface Ghost {
@@ -61,19 +63,27 @@ const CAPTIONS: Record<GhostState, string> = {
 	refused: "Couldn't send this",
 };
 
+/** A message the phone holds until it can send it (ruling 14): nothing is
+ * sending while the connection is down. */
+const WAITING_TO_SEND = "Will send when you're back online";
+
 const STEERS = new Set(["steer", "drain", "promote"]);
 
 /** `session` is null until the session first loads: the phone's own
- * unconfirmed send and refused messages still show. */
+ * unconfirmed send and refused messages still show. `connected` is whether
+ * the hub is reachable now: Check needs it, Discard never does (spec
+ * principle 2: a control shows only when it can act), and a message this
+ * phone still holds says it waits for the connection. */
 export function ghosts(
 	session: GhostSource | null,
 	pending: readonly PendingTurnEntry[] | null | undefined,
 	unconfirmedDraft: UnconfirmedSend | null,
 	recovery: readonly RecoveryGhostRow[],
+	connected: boolean,
 ): Ghost[] {
-	// Another client's rows aren't yours to watch. A row Stop canceled before
-	// it left the phone waits for phase 6's retry (ruling 3).
-	const own = (pending ?? []).filter((entry) => entry.fromThisClient && entry.state !== "canceled");
+	// Another client's rows aren't yours to watch.
+	const own = (pending ?? []).filter((entry) => entry.fromThisClient);
+	const confirmButtons: GhostAction[] = connected ? ["check", "discard"] : ["discard"];
 	const steering = (entry: PendingTurnEntry) =>
 		STEERS.has(entry.method) && (entry.state === "accepted" || entry.state === "claimed");
 	const out: Ghost[] = own.filter(steering).map((entry) => pendingGhost(entry, "steering", []));
@@ -91,15 +101,21 @@ export function ghosts(
 			: own.findLast(
 					(entry) =>
 						(entry.method === "send" || entry.method === "queue") &&
+						// A message a Stop held never left the phone: it shows as its
+						// own held ghost, never as the draft's send in flight.
+						entry.state !== "canceled" &&
 						normalizeText(entry.text) === normalizeText(unconfirmedDraft.sentText),
 				);
 	for (const entry of own) {
 		if (steering(entry) || entry === sameSend) continue;
-		out.push(
-			entry.state === "blockedUnknown"
-				? pendingGhost(entry, "unconfirmed", ["check"])
-				: pendingGhost(entry, "sending", []),
-		);
+		// A message a Stop held before it left the phone comes back as held,
+		// with Send now and Cancel, like a queue a Stop parks (spec 8.5).
+		if (entry.state === "canceled") out.push(pendingGhost(entry, "held", ["sendNow", "cancel"]));
+		else if (entry.state === "blockedUnknown") out.push(pendingGhost(entry, "unconfirmed", confirmButtons));
+		else {
+			const ghost = pendingGhost(entry, "sending", []);
+			out.push(connected ? ghost : { ...ghost, caption: WAITING_TO_SEND });
+		}
 	}
 	if (unconfirmedDraft !== null) {
 		// While the outbox still carries the send, nothing is yours to do yet,
@@ -110,13 +126,15 @@ export function ghosts(
 			key: "draft:unconfirmed",
 			state,
 			text: unconfirmedDraft.text,
-			caption: CAPTIONS[state],
-			buttons: sending ? [] : ["check", "discard"],
+			caption: sending && !connected ? WAITING_TO_SEND : CAPTIONS[state],
+			buttons: sending ? [] : confirmButtons,
 			menu: sending ? [] : ["edit"],
-			origin: { kind: "draft" },
+			// The outbox row this ghost stands in for, when there is one: Discard
+			// must clear both, or the row returns as its own ghost.
+			origin: sameSend === undefined ? { kind: "draft" } : { kind: "draft", clientMutationId: sameSend.id },
 		});
 	}
-	for (const row of recovery) out.push(recoveryGhost(row));
+	for (const row of recovery) out.push(recoveryGhost(row, confirmButtons));
 	return out;
 }
 
@@ -163,10 +181,10 @@ function pendingGhost(entry: PendingTurnEntry, state: GhostState, buttons: Ghost
 	};
 }
 
-function recoveryGhost(row: RecoveryGhostRow): Ghost {
+function recoveryGhost(row: RecoveryGhostRow, confirmButtons: GhostAction[]): Ghost {
 	const refused = row.status === "rejected";
 	const canEdit = row.actions.includes("restore");
-	const buttons: GhostAction[] = refused ? (canEdit ? ["edit", "discard"] : ["discard"]) : ["check", "discard"];
+	const buttons: GhostAction[] = refused ? (canEdit ? ["edit", "discard"] : ["discard"]) : confirmButtons;
 	return {
 		key: `recovery:${row.clientMutationId}`,
 		state: refused ? "refused" : "unconfirmed",

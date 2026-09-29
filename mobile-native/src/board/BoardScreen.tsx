@@ -1,5 +1,4 @@
 import {
-	errorText,
 	type NavigationPinSectionDescriptor,
 	type NavigationProjectSummary,
 	type NavigationSessionSummary,
@@ -42,7 +41,7 @@ import { useConnection } from "../ConnectionProvider";
 import type { NavigationActions } from "../navigationActions";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
-import { useReduceMotion } from "../reduceMotion";
+import { useReduceMotion } from "../accessibilitySettings";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -73,13 +72,23 @@ import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { ContinueReadingRow } from "./ContinueReadingRow";
 import { BandHeader, FoldChevron, Hairline, TITLE_INSET } from "./BoardRow";
 import { BoardListRow, type RowContext } from "./BoardRows";
-import { BoardToolbar } from "./BoardToolbar";
+import { BoardToolbar, type ToolbarPlacement } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
+import { type HeldAction, heldFor, heldProjectState, heldVerb, turnSeen, waitingLine } from "./boardHold";
+import { onBoardJump } from "./boardJump";
+import { BoardReplay } from "./boardReplay";
 import { BoardStops, stopToast } from "./boardStops";
-import { UPDATE_NEEDED_HINT } from "./connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
-import { foldedSections, organizeByPreference, recentSearches, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
+import {
+	boardHold,
+	foldedSections,
+	organizeByPreference,
+	recentSearches,
+	seenMarkers,
+	useBoardSeen,
+} from "./nativeBoardMemory";
 import { notices } from "./notices";
 import { PinnedEmptyHint, PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
@@ -98,25 +107,32 @@ import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTree
 import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
 import {
-	archiveSession,
 	archiveTarget,
 	archivingSessionId,
-	pinSession,
+	journalOutcome,
+	projectChange,
 	type RowAction,
 	type RowActionContext,
 	renameSession,
+	RENAMED,
+	renameFailed,
 	rowMenuActions,
+	SHUT_DOWN_DONE,
+	shutDownFailed,
 	shutDownSession,
 } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
-import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
+import { archiveRequest, archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
 import { SelectBar } from "./SelectBar";
 import { selectionActions, toggleSelected } from "./selection";
 import { listScrollHandlers } from "./settledList";
-import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
+import { organizationOpen } from "./organizationCheck";
+import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
+import { FLOAT_GAP, underBar, useBarHeight } from "../design/underBar";
+import { destructiveButton, haptic } from "../haptics";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -186,6 +202,15 @@ function Board({
 	// Select mode (spec 7.1): on from Select until Done or one of its
 	// actions completes (ruling 26), with the refs chosen so far.
 	const [selecting, setSelecting] = useState(false);
+	// How tall the toolbar (or the select bar) stands over the Board's end.
+	const toolbar = useBarHeight();
+	const toolbarHeight = toolbar.height ?? 0;
+	const boardUnderBar = underBar(toolbarHeight);
+	const toolbarPlacement: ToolbarPlacement = {
+		testID: "board-toolbar",
+		style: { position: "absolute", left: 0, right: 0, bottom: 0 },
+		onLayout: toolbar.onLayout,
+	};
 	const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set());
 	const leaveSelect = () => {
 		setSelecting(false);
@@ -273,6 +298,41 @@ function Board({
 	const [stops] = useState(() => new BoardStops(getNativeMutationRuntime, hubId));
 	useEffect(() => () => stops.dispose(), [stops]);
 	useEffect(() => () => stops.releaseAll(), [stops, client]);
+	// Board actions taken offline wait in the hold and go when the connection
+	// returns (phase 6 ruling 18): Stop, Shut down and Rename at once,
+	// wherever you are; organization changes through the journal once the
+	// Board is focused and it's free.
+	const [hold] = useState(() => boardHold(hubId));
+	const held = useSyncExternalStore(hold.subscribe, hold.getSnapshot);
+	const holdAction = (action: HeldAction) => hold.hold(action, Date.now());
+	// A press answered later (an alert, a sheet) asks what's true then.
+	const liveNow = useRef(actionsConnected);
+	liveNow.current = actionsConnected;
+	const clientNow = useRef(actionsClient);
+	clientNow.current = actionsClient;
+	const toastNow = useRef(toast);
+	toastNow.current = toast;
+	const [replay] = useState(
+		() =>
+			new BoardReplay(hold, {
+				stop: (on, ref, guard) => stops.stop(on, ref, guard),
+				toast: (text) => toastNow.current.show({ text }),
+			}),
+	);
+	useEffect(() => () => replay.dispose(), [replay]);
+	// Whether the connection a replay runs on is still live, asked of the
+	// client itself: a request lost to a drop fails before any render could
+	// say so, and must stay held rather than read as refused.
+	const liveOn = (on: typeof actionsClient) => () => on?.state === "ready" && clientNow.current === on;
+	useEffect(() => {
+		if (actionsClient && held.length) void replay.sendImmediate(actionsClient, liveOn(actionsClient));
+	}, [replay, actionsClient, held]);
+	const organizationNow = useRef(organization);
+	organizationNow.current = organization;
+	useEffect(() => {
+		if (focused && organization.ready && held.length)
+			void replay.organize(organizationNow.current, liveOn(clientNow.current));
+	}, [replay, focused, organization.ready, held]);
 	const categoryMenu = pinnedCategoryMenu(organization, () => board.getSnapshot().pins.rows);
 	const projectSections = useProjectSections(hubId);
 	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
@@ -309,7 +369,11 @@ function Board({
 	};
 
 	const scroller = useRef<ScrollView>(null);
-	const search = useSearch(connected ? client : null);
+	// Search is bound only while the Board is in view (the plugin poll's
+	// rule): a reconnect while a pushed screen covers the Board must not send
+	// one `evener/search` for the query the field still holds. A sheet over
+	// the Board is still the Board (ruling 28), so it stays bound then.
+	const search = useSearch(connected && inFront ? client : null);
 	const searchInput = useRef<TextInput>(null);
 	const [searchText, setSearchText] = useState("");
 	// Searching from the moment the field takes focus until Cancel.
@@ -368,6 +432,7 @@ function Board({
 	const liveEnd = useRef<number | null>(null);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
 		offsets.current[key] = event.nativeEvent.layout.y;
+		jumpWhenLaidOut.current();
 	};
 	const scrollTo = (key: string, withinLive = false) =>
 		scrollBoardTo((withinLive ? (offsets.current.live ?? 0) : 0) + (offsets.current[key] ?? 0));
@@ -375,6 +440,26 @@ function Board({
 		if (band === "idle") foldIdle(false);
 		scrollTo(band, true);
 	};
+	// A tapped "3 sessions need you" banner asks for Needs you here, since the
+	// Board's route takes no params (boardJump.ts). It can ask before the
+	// Board has laid out (it popped to a Board just mounted), so the jump
+	// waits until Live and the band have, then scrolls.
+	const pendingJump = useRef<Band | null>(null);
+	const jumpWhenLaidOut = useRef(() => {});
+	jumpWhenLaidOut.current = () => {
+		const band = pendingJump.current;
+		if (band === null || offsets.current.live === undefined || offsets.current[band] === undefined) return;
+		pendingJump.current = null;
+		jumpToBand(band);
+	};
+	useEffect(
+		() =>
+			onBoardJump((section) => {
+				pendingJump.current = section;
+				jumpWhenLaidOut.current();
+			}),
+		[],
+	);
 	// Within about a screen of the end of Live, read its next page. Layout
 	// checks too, so a first page too short to scroll keeps reading.
 	const viewport = useRef({ offset: 0, height: 0 });
@@ -392,9 +477,25 @@ function Board({
 	const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
 		const { contentOffset, layoutMeasurement } = event.nativeEvent;
 		viewport.current = { offset: contentOffset.y, height: layoutMeasurement.height };
+		scrolledFromTuck.current = true;
 		readMoreLiveIfNear();
 		readVisibleMore();
 	};
+	// iOS applies the scroller's initial content offset once, so a Dynamic
+	// Type change would leave the field tucked at the old height. Re-apply the
+	// offset for the new height, but only while the field is still tucked: a
+	// revealed field, a search in progress or a scroll down the list is left
+	// where the reader put it.
+	const tuckedHeight = useRef(searchFieldHeight);
+	const scrolledFromTuck = useRef(false);
+	useEffect(() => {
+		const was = tuckedHeight.current;
+		if (was === searchFieldHeight) return;
+		tuckedHeight.current = searchFieldHeight;
+		if (searching) return;
+		if (scrolledFromTuck.current && Math.abs(viewport.current.offset - was) > 1) return;
+		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: false });
+	}, [searchFieldHeight, searching]);
 
 	const manifest = snapshot.manifest;
 	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
@@ -447,17 +548,10 @@ function Board({
 			onPress: () => scrollTo("archived"),
 		});
 
-	// What a row's actions may do now (rulings 16 and 21), by whether it sits
-	// in an archived tier. It keeps its identity while those facts hold, so
-	// the row menu's host below changes when a row's actions can.
-	const rowContext = useCallback(
-		(archived: boolean): RowActionContext => ({
-			connected: actionsConnected,
-			organizationReady: organization.ready,
-			archived,
-		}),
-		[actionsConnected, organization.ready],
-	);
+	// What a row's actions depend on: whether it sits in an archived tier.
+	// Offline or with the journal busy the same actions are offered, and a
+	// change that can't go now is held (holdsChange below).
+	const rowContext = useCallback((archived: boolean): RowActionContext => ({ archived }), []);
 	// The row menu, a sheet route that asks the Board's host below for the
 	// row and its actions. It carries the tier it opened from, since a
 	// session can show twice (Live and a project's Archived tier) and the two
@@ -468,23 +562,87 @@ function Board({
 		list.setInteraction("menu", true);
 		navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref, archived });
 	};
+	/** Whether a change of this kind waits in the hold for this session. */
+	const waitsFor = (ref: string, kind: HeldAction["kind"]) =>
+		heldFor(hold.getSnapshot(), ref).some((record) => record.action.kind === kind);
+	/** Whether a Board change goes into the hold rather than out now (phase 6
+	 * ruling 18): offline; for an organization change (an archive, a pin, a
+	 * project setting), while the journal can't take one; and while a change
+	 * on the same subject waits in the hold, which the new one then replaces,
+	 * undoes or queues behind rather than racing its replay. A held change
+	 * goes when it can, so a Board change is never refused. */
+	const holdsChange = (waiting: boolean, organization: boolean) =>
+		waiting || !liveNow.current || (organization && !organizationOpen(organizationNow.current));
 	const runRowAction = (item: ClassifiedRow, action: Exclude<SwipeRowAction, "more">) => {
 		const { row } = item;
-		if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
-		else if (action === "stop" && actionsConnected && client)
+		const kind = action === "pin" ? "pin" : action === "stop" ? "stop" : "archive";
+		if (holdsChange(waitsFor(row.ref, kind), kind !== "stop")) holdRowAction(row, action);
+		else if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
+		else if (action === "stop" && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
-		else if (action === "archive" || action === "unarchive")
-			void archiveRow(organization, row, action === "archive", toast);
+		else if (action === "archive" || action === "unarchive") archiveOrHold(row, action === "archive");
+	};
+	/** Archive or Unarchive a row, and its Undo: through the journal, or held
+	 * when it can't go now (holdsChange), including when the journal turns
+	 * out not to take it. */
+	const holdArchive = (archived: boolean) => (row: NavigationSessionSummary) =>
+		holdRowAction(row, archived ? "archive" : "unarchive");
+	const archiveOrHold = (row: NavigationSessionSummary, archived: boolean) => {
+		const holdIt = () => holdArchive(archived)(row);
+		const actions = organizationNow.current.actions;
+		if (holdsChange(waitsFor(row.ref, "archive"), true) || !actions) holdIt();
+		else
+			void archiveRow(actions, row, archived, toast, () => archiveOrHold(row, !archived)).then((outcome) => {
+				if (outcome === "notTaken") holdIt();
+			});
+	};
+	/** A swipe's or the menu's action held until it can go: Pin asks for the
+	 * category over the Board's loaded catalog, and a Stop names the turn you
+	 * saw (phase 6 ruling 18). */
+	const holdRowAction = (row: NavigationSessionSummary, action: Exclude<SwipeRowAction, "more">) => {
+		if (action === "pin")
+			chooseCategory(
+				board.getSnapshot().pins.rows,
+				toast,
+				(section) => void holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } }),
+			);
+		else if (action === "stop") holdAction({ kind: "stop", ref: row.ref, title: row.title, seen: turnSeen(row) });
+		else {
+			const target = archiveTarget(row);
+			if (target) holdAction({ kind: "archive", ref: row.ref, target, archived: action === "archive" });
+		}
 	};
 	/** The menu's actions: Pin, Stop, Archive and Unarchive as the swipes do
 	 * them, the read marks on this phone, and Shut down and Rename as the
-	 * Session sends them (rulings 18-21). */
+	 * Session sends them (rulings 18-21), held when they can't go now. */
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
 		if (action === "markRead") seen.markRead(actionsClient, [row]);
 		else if (action === "markUnread") seen.markUnread(actionsClient, [row]);
-		else if (action === "shutDown") confirmShutDown(actionsClient, row, toast);
-		else if (action === "rename") promptRename(actionsClient, row, toast);
+		else if (action === "shutDown")
+			confirmShutDown(row, () => {
+				const on = holdsChange(waitsFor(row.ref, "shutDown"), false) ? null : clientNow.current;
+				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
+				else
+					shutDownSession(on, row.ref).then(
+						() => toast.show({ text: SHUT_DOWN_DONE }),
+						(error: unknown) => toast.show({ text: shutDownFailed(row.title, error) }),
+					);
+			});
+		else if (action === "rename")
+			promptRename(row, (name) => {
+				const on = holdsChange(waitsFor(row.ref, "rename"), false) ? null : clientNow.current;
+				if (!on) {
+					if (name.trim()) holdAction({ kind: "rename", ref: row.ref, title: row.title, name: name.trim() });
+					return;
+				}
+				renameSession(on, row.ref, name).then(
+					(renamed) => {
+						if (renamed) toast.show({ text: RENAMED });
+					},
+					(error: unknown) => toast.show({ text: renameFailed(row.title, error) }),
+				);
+			});
 		else runRowAction(item, action);
 	};
 	const archivingId = archivingSessionId(organization.state);
@@ -498,6 +656,7 @@ function Board({
 		draftRefs,
 		activityOf,
 		msSinceRead,
+		waiting: (ref) => waitingLine(held, ref, actionsConnected),
 		swipes: (item, archived) =>
 			rowSwipes(item, rowContext(archived), archivingId, (action) =>
 				action === "more" ? openRowMenu(item, archived) : runRowAction(item, action),
@@ -626,10 +785,17 @@ function Board({
 		() => list.setInteraction("select", selecting && inFront && appActive),
 		[list, selecting, inFront, appActive],
 	);
-	// The rows the row menu sheet can be about: Live's and the categories'
-	// (a fold hides them, but they stay loaded) and the project sessions in
-	// the shown tree.
+	// The session rows the Board's list shows now, a departed row a hold keeps
+	// on screen included (ruling 22).
+	const shownRowItems = settled.display.flatMap((item) =>
+		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
+	);
+	// The rows the row menu sheet can be about: those, then Live's and the
+	// categories' (a fold hides them, but they stay loaded) and the project
+	// sessions in the shown tree, so the menu stays on whichever row it opened
+	// from.
 	const shownRows = useShownRows([
+		...shownRowItems,
 		...[...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => ({
 			item,
 			archived: false,
@@ -647,17 +813,29 @@ function Board({
 	// The sheet reads the row live, so its actions follow the row while it's
 	// open, and hands each answer back to the Board's own handlers.
 	const menuHandlers = useRef({ actOnRow, openSession });
-	menuHandlers.current = { actOnRow, openSession };
+	// The sheet reads these at press time, so they are written after the commit
+	// that made them current, not during render.
+	useEffect(() => {
+		menuHandlers.current = { actOnRow, openSession };
+	});
 	const rowMenuHost = useMemo<RowMenuHost>(
 		() => ({
 			item: (ref, archived) => shownRows.get(shownRowKey(ref, archived))?.item,
 			actions: (item, archived) => menuActionsHere(item, rowContext(archived)),
 			hostLabel,
 			act: (item, action) => menuHandlers.current.actOnRow(item, action),
+			// What is on its way can't be taken back, so it offers no Cancel.
+			held: (item) =>
+				heldFor(hold.getSnapshot(), item.row.ref)
+					.filter((record) => !hold.isSending(record.id))
+					.map((record) => ({ id: record.id, label: `Cancel ${heldVerb(record.action)}` })),
+			cancel: (id) => hold.cancel(id),
 			openSession: (item) => menuHandlers.current.openSession(item.row),
 			closed: () => list.setInteraction("menu", false),
 		}),
-		[shownRows, rowContext, hostLabel, list],
+		// A new host whenever the hold changes, so an open menu re-reads its
+		// Cancel entries.
+		[shownRows, rowContext, hostLabel, list, hold, held],
 	);
 	useProvideSheetHost(rowMenuHosts, sheetKey(hubId), rowMenuHost);
 	const itemsOf = (section: ProjectSection) => shownSections.find((shown) => shown.section === section)?.items ?? [];
@@ -710,10 +888,10 @@ function Board({
 	// whose results replace the sections, so leaving search mounts them
 	// afresh and both layouts always arrive, even for a project already
 	// unfolded; the section's offset from before search could be stale.
-	const revealProject = (projectKey: string) => {
+	const revealProject = (projectKey: string): boolean => {
 		const { view } = projectSections.projects;
 		const project = view.projects.find((candidate) => candidate.key === projectKey);
-		if (!project) return;
+		if (!project) return false;
 		const target = projectRevealTarget({
 			project,
 			pages: view.pages.get(projectKey),
@@ -723,6 +901,7 @@ function Board({
 		for (const fold of target.unfold) setFolded(fold, false);
 		reveal.current = { sectionTop: null, row: null };
 		setRevealKey(target.scrollTo);
+		return true;
 	};
 	const finishReveal = () => {
 		const pending = reveal.current;
@@ -730,20 +909,45 @@ function Board({
 		reveal.current = null;
 		setRevealKey(null);
 		const top = pending.sectionTop + pending.row.y;
-		scrollBoardTo(Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height)));
+		// A row taller than the viewport leaves no room to sit it a third of
+		// the way down: scroll to its top instead of past it.
+		const inset = 0.3 * Math.max(0, viewport.current.height - pending.row.height);
+		scrollBoardTo(Math.max(0, top - inset));
 	};
 	const openProjectResult = (project: NavigationProjectSummary) => {
+		// A stale catalog can lose the project between the result's render and
+		// the tap: leave search only once the reveal has somewhere to land.
+		if (!revealProject(project.key)) return;
 		rememberSearch();
 		leaveSearch();
-		revealProject(project.key);
+	};
+	/** A project's change: through the journal, or held when it can't go now
+	 * (holdsChange), asked at the press since the journal may have moved
+	 * while the menu was up. */
+	const actOnProject = (project: NavigationProjectSummary, action: ProjectMenuAction) => {
+		const target = { key: project.key, workingDir: project.working_dir };
+		const pending = heldProjectState(hold.getSnapshot(), project.key);
+		const waits =
+			action === "pin" || action === "unpin" ? pending.favorite !== undefined : pending.archived !== undefined;
+		const actions = organizationNow.current.actions;
+		if (holdsChange(waits, true) || !actions) holdAction({ kind: "project", project: target, action });
+		else void projectChange(actions, target, action);
 	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
-		const actions = projectMenuActions(project, {
-			connected,
-			organizationReady: organization.ready,
-			archived: section === "archived",
-		});
-		return actions.length ? () => openProjectMenu(organization, project, actions) : undefined;
+		// The menu offers what the project will be once what's held goes, so a
+		// held Pin to top offers Unpin, which cancels it.
+		const pending = heldProjectState(held, project.key);
+		const actions = projectMenuActions(
+			{
+				...project,
+				favorite: pending.favorite ?? project.favorite,
+				is_archived: pending.archived ?? project.is_archived,
+			},
+			{ archived: pending.archived ?? section === "archived" },
+		);
+		return actions.length
+			? () => openProjectMenu(project, actions, (action) => actOnProject(project, action))
+			: undefined;
 	};
 	const treeItem = (section: ProjectSection, item: Exclude<ProjectTreeItem, { kind: "session" }>) => {
 		if (item.kind === "more" || item.kind === "moreProjects")
@@ -765,7 +969,11 @@ function Board({
 					if ("fold" in item) setFolded(item.fold, !item.folded);
 				}}
 				onLongPress={item.kind === "project" ? projectMenu(section, item.project) : undefined}
-				changing={item.kind === "project" && journalHoldsProject(organization, item.project.key)}
+				changing={
+					item.kind === "project" &&
+					(journalHoldsProject(organization, item.project.key) ||
+						Object.keys(heldProjectState(held, item.project.key)).length > 0)
+				}
 			/>
 		);
 		if (item.key !== revealKey) return row;
@@ -868,37 +1076,54 @@ function Board({
 		);
 	};
 	const liveShown = shownGroups.get("live");
-	const shownRowItems = settled.display.flatMap((item) =>
-		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
-	);
-	const selection = selectionActions(
-		shownRowItems.filter(({ item }) => chosen.has(item.row.ref)),
-		{ connected: actionsConnected, organizationReady: organization.ready },
-	);
+	const selection = selectionActions(shownRowItems.filter(({ item }) => chosen.has(item.row.ref)));
+	/** Select mode's change to many rows, one at a time through the journal,
+	 * reading the Board as it is now. A row whose change can't go now
+	 * (holdsChange) is held, and so is every row after one the journal
+	 * didn't take or couldn't confirm. Resolves the rows the hub confirmed,
+	 * and how many it tried. */
+	const changeEach = async (
+		rows: readonly NavigationSessionSummary[],
+		kind: "archive" | "pin",
+		holdOne: (row: NavigationSessionSummary) => void,
+		request: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<void>,
+	) => {
+		const actions = organizationNow.current.actions;
+		const sending: NavigationSessionSummary[] = [];
+		for (const row of rows) {
+			if (!actions || holdsChange(waitsFor(row.ref, kind), true)) holdOne(row);
+			else sending.push(row);
+		}
+		const confirmed = actions ? await confirmEach(actions, sending, request, (rest) => rest.forEach(holdOne)) : [];
+		return { confirmed, tried: sending.length };
+	};
+	const archiveEach = (rows: readonly NavigationSessionSummary[], archived: boolean) =>
+		changeEach(rows, "archive", holdArchive(archived), (actions, row) => archiveRequest(actions, row, archived));
 	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
-		const archived = await confirmEach(organization, rows, (actions, row) => archiveOne(actions, row, true));
+		const { confirmed, tried } = await archiveEach(rows, true);
 		leaveSelect();
-		if (archived.length)
+		if (confirmed.length)
 			toast.show({
-				text: sessionCount("Archived", archived.length, rows.length),
+				text: sessionCount("Archived", confirmed.length, tried),
 				action: {
 					label: "Undo",
 					run: () =>
-						void confirmEach(organization, archived, (actions, row) => archiveOne(actions, row, false)).then(
-							(unarchived) => {
-								if (unarchived.length)
-									toast.show({ text: sessionCount("Unarchived", unarchived.length, archived.length) });
-							},
-						),
+						void archiveEach(confirmed, false).then((undone) => {
+							if (undone.confirmed.length)
+								toast.show({ text: sessionCount("Unarchived", undone.confirmed.length, undone.tried) });
+						}),
 				},
 			});
 	};
 	const pinChosen = async (rows: readonly NavigationSessionSummary[], section: PinTarget, name: string) => {
-		const pinned = await confirmEach(organization, rows, (actions, row) =>
-			pinSession(actions, { sessionRef: row.ref, ...section }),
+		const { confirmed, tried } = await changeEach(
+			rows,
+			"pin",
+			(row) => void holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } }),
+			(actions, row) => actions.assignPin({ sessionRef: row.ref, ...section }),
 		);
 		leaveSelect();
-		if (pinned.length) toast.show({ text: `${sessionCount("Pinned", pinned.length, rows.length)} to ${name}` });
+		if (confirmed.length) toast.show({ text: `${sessionCount("Pinned", confirmed.length, tried)} to ${name}` });
 	};
 	const markChosenRead = () => {
 		seen.markRead(actionsClient, selection.markRead);
@@ -938,7 +1163,14 @@ function Board({
 					// iOS keeps that offset only while the content is taller than the
 					// viewport, so even a short Board (skeleton, empty, a few rows)
 					// is tall enough to keep the field hidden.
-					contentContainerStyle={{ paddingBottom: 24, minHeight: windowHeight + searchFieldHeight }}
+					contentContainerStyle={{
+						paddingBottom: 24 + boardUnderBar.endPadding,
+						minHeight: windowHeight + searchFieldHeight,
+					}}
+					// The Board runs under its toolbar's glass, its end and its
+					// scroll indicator clear of the toolbar.
+					contentInset={boardUnderBar.contentInset}
+					scrollIndicatorInsets={boardUnderBar.scrollIndicatorInsets}
 					onScroll={onScroll}
 					onLayout={(event) => {
 						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
@@ -973,8 +1205,8 @@ function Board({
 						/>
 					) : (
 						<>
-							{fatal ? <NoticeRow text={UPDATE_NEEDED_HINT} /> : null}
-							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
+							{fatal ? <NoticeRow text={INCOMPATIBLE_VERSIONS} /> : null}
+							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} connected={connected} />
 							{continueReading ? (
 								<ContinueReadingRow
 									trail={continueReading}
@@ -983,8 +1215,7 @@ function Board({
 											hubId,
 											sessionRef: trail.sessionRef,
 											path: trail.path,
-											reviewRef: trail.reviewRef,
-											reviewTitle: trail.reviewTitle,
+											sessionTitle: trail.sessionTitle,
 											...(trail.updatedAt === undefined ? {} : { updatedAt: trail.updatedAt }),
 										})
 									}
@@ -997,6 +1228,7 @@ function Board({
 									offsets.current.live = y;
 									liveEnd.current = y + height;
 									readMoreLiveIfNear();
+									jumpWhenLaidOut.current();
 								}}
 							>
 								{live}
@@ -1005,13 +1237,18 @@ function Board({
 						</>
 					)}
 				</Animated.ScrollView>
-				{/* The toast floats 10pt above the toolbar. */}
-				<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 10 }}>
+				<View
+					testID="board-toast"
+					pointerEvents="box-none"
+					style={{ position: "absolute", left: 0, right: 0, bottom: toolbarHeight + FLOAT_GAP }}
+				>
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
+			{/* The toolbar lies over the Board's end, so the Board runs under it. */}
 			{selecting ? (
 				<SelectBar
+					{...toolbarPlacement}
 					counts={{
 						archive: selection.archive.length,
 						// Pin's sheet asks through ActionSheetIOS and Alert.prompt.
@@ -1021,7 +1258,7 @@ function Board({
 					onDone={leaveSelect}
 					onArchive={() => void archiveChosen(selection.archive)}
 					onPin={() =>
-						chooseCategory(organization, board.getSnapshot().pins.rows, toast, (section, name) =>
+						chooseCategory(board.getSnapshot().pins.rows, toast, (section, name) =>
 							pinChosen(selection.pin, section, name),
 						)
 					}
@@ -1029,8 +1266,7 @@ function Board({
 				/>
 			) : (
 				<BoardToolbar
-					state={state}
-					fatal={fatal}
+					{...toolbarPlacement}
 					newSessionDisabled={!connected}
 					onNewSession={newSession}
 					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
@@ -1078,14 +1314,10 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 	const remove = (section: NavigationPinSectionDescriptor) =>
 		Alert.alert(`Delete “${section.name}”?`, "Its sessions stay; they're only unpinned.", [
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Delete",
-				style: "destructive",
-				onPress: () => {
-					if (!organizationOpen(organization) || !listed(section.id)) return;
-					void organization.actions?.deletePinSection({ sectionId: section.id });
-				},
-			},
+			destructiveButton("Delete", () => {
+				if (!organizationOpen(organization) || !listed(section.id)) return;
+				void organization.actions?.deletePinSection({ sectionId: section.id });
+			}),
 		]);
 	const open = (section: NavigationPinSectionDescriptor) => {
 		if (!organizationOpen(organization)) return;
@@ -1129,42 +1361,38 @@ function sessionCount(verb: string, done: number, of: number): string {
 }
 
 /** Makes one journaled change per session, in order, through the Board's
- * organization journal, stopping at the first the hub doesn't confirm (the
- * journal is then settled once). Resolves the sessions it confirmed. Does
- * nothing while a change can't go out. */
+ * organization journal, stopping at the first the hub doesn't confirm: an
+ * unconfirmed one is the journal's to settle, and `holdRest` gets the rows
+ * after it, or that row and the rows after it when the journal didn't take
+ * it. Resolves the sessions it confirmed. */
 async function confirmEach(
-	organization: BoardOrganization,
+	actions: NavigationActions,
 	rows: readonly NavigationSessionSummary[],
-	change: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<boolean>,
+	request: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<void>,
+	holdRest: (rows: readonly NavigationSessionSummary[]) => void,
 ): Promise<NavigationSessionSummary[]> {
-	const actions = organization.actions;
-	if (!actions || !organizationOpen(organization)) return [];
 	const confirmed: NavigationSessionSummary[] = [];
-	for (const row of rows) {
-		if (!(await change(actions, row))) {
-			void actions.reconcile();
-			break;
+	for (const [index, row] of rows.entries()) {
+		const outcome = await journalOutcome(actions, () => request(actions, row));
+		if (outcome === "confirmed") {
+			confirmed.push(row);
+			continue;
 		}
-		confirmed.push(row);
+		if (outcome === "unconfirmed") void actions.reconcile();
+		holdRest(rows.slice(outcome === "unconfirmed" ? index + 1 : index));
+		break;
 	}
 	return confirmed;
-}
-
-function archiveOne(actions: NavigationActions, row: NavigationSessionSummary, archived: boolean): Promise<boolean> {
-	const target = archiveTarget(row);
-	return target ? archiveSession(actions, target, archived) : Promise.resolve(false);
 }
 
 /** Select mode's Pin (ruling 18): the pin catalog's categories, then a new
  * one, as an action sheet. A new category's name is 1-80 characters, the
  * journal's own bound. */
 function chooseCategory(
-	organization: BoardOrganization,
 	categories: readonly NavigationPinSectionDescriptor[],
 	toast: Pick<ToastController, "show">,
 	pin: (section: PinTarget, name: string) => void,
 ) {
-	if (!organizationOpen(organization)) return;
 	const createCategory = () =>
 		Alert.prompt(
 			"New category",
@@ -1207,53 +1435,24 @@ function menuActionsHere(item: ClassifiedRow, context: RowActionContext): RowAct
 	return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
 }
 
-/** Shut down from the row menu: asked first, then the Session's own
- * request, then a toast either way. */
-function confirmShutDown(
-	client: ConversationClientLike | null,
-	row: NavigationSessionSummary,
-	toast: Pick<ToastController, "show">,
-) {
+/** Shut down from the row menu: asked first, online or offline, then
+ * `shutDown` runs (the Session's own request, or a hold). */
+function confirmShutDown(row: NavigationSessionSummary, shutDown: () => void) {
 	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
 		{ text: "Cancel", style: "cancel" },
-		{
-			text: "Shut down",
-			style: "destructive",
-			onPress: () => {
-				if (!client) return;
-				shutDownSession(client, row.ref).then(
-					() => toast.show({ text: "Session shut down" }),
-					(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
-				);
-			},
-		},
+		destructiveButton("Shut down", shutDown),
 	]);
 }
 
 /** Rename from the row menu (iOS only: Alert.prompt), starting from the
- * row's title. An empty name sends nothing. */
-function promptRename(
-	client: ConversationClientLike | null,
-	row: NavigationSessionSummary,
-	toast: Pick<ToastController, "show">,
-) {
+ * row's title; `rename` gets the name typed. */
+function promptRename(row: NavigationSessionSummary, rename: (name: string) => void) {
 	Alert.prompt(
 		"Rename session",
 		undefined,
 		[
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Rename",
-				onPress: (name?: string) => {
-					if (!client) return;
-					renameSession(client, row.ref, name ?? "").then(
-						(renamed) => {
-							if (renamed) toast.show({ text: "Renamed" });
-						},
-						(error: unknown) => toast.show({ text: `Couldn't rename “${row.title}”: ${errorText(error)}` }),
-					);
-				},
-			},
+			{ text: "Rename", onPress: (name?: string) => rename(name ?? "") },
 		],
 		"plain-text",
 		row.title,
@@ -1261,22 +1460,15 @@ function promptRename(
 }
 
 /** A project row's long-press menu (ruling 15): Pin to top or Unpin, and
- * Archive or Unarchive, as an action sheet, or an alert off iOS. */
+ * Archive or Unarchive, as an action sheet, or an alert off iOS. `act`
+ * decides at the press whether the change is held, goes through the
+ * journal, or can't go, since the connection or the journal may have moved
+ * while the menu was up. */
 function openProjectMenu(
-	organization: BoardOrganization,
 	project: NavigationProjectSummary,
 	actions: readonly ProjectMenuAction[],
+	act: (action: ProjectMenuAction) => void,
 ) {
-	if (!organizationOpen(organization)) return;
-	const act = (action: ProjectMenuAction) => {
-		if (!organizationOpen(organization)) return;
-		if (action === "pin" || action === "unpin") void organization.actions?.favorite(project.key, action === "pin");
-		else
-			void organization.actions?.archive(
-				{ kind: "project", id: project.key, workingDir: project.working_dir },
-				action === "archive",
-			);
-	};
 	const title = projectName(project);
 	if (Platform.OS === "ios") {
 		ActionSheetIOS.showActionSheetWithOptions(
@@ -1307,9 +1499,9 @@ function useSearch(client: ConversationClientLike | null) {
 	return { controller, snapshot };
 }
 
-/** The search field's row: an 8pt margin around a field that grows with
- * the text size. */
-const searchFieldHeightAt = (scale: number) => 16 + Math.round(36 * scale);
+/** The search field's row: an 8pt margin around a field that grows with the
+ * text size, never shorter than the 44pt touch target. */
+const searchFieldHeightAt = (scale: number) => Math.max(44, 16 + Math.round(36 * scale));
 
 /** Board search's field (spec 7.4), first in the Board's scroller. Cancel
  * shows while you search. */
@@ -1332,13 +1524,19 @@ function SearchField({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	// The field draws the stock iOS 36pt, but must offer a 44pt touch target:
+	// the input's own row carries the target height, and the 36pt pill is a
+	// background behind it, so the touch area is not clipped to the shorter
+	// pill (React Native clips hitSlop to the parent's bounds).
+	const pill = Math.round(36 * scale);
+	const target = Math.max(44, pill);
 	return (
 		<View
 			testID="search-field"
 			style={{
 				height,
 				paddingHorizontal: 16,
-				paddingVertical: 8,
+				paddingVertical: (height - target) / 2,
 				flexDirection: "row",
 				alignItems: "center",
 				columnGap: 12,
@@ -1347,15 +1545,24 @@ function SearchField({
 			<View
 				style={{
 					flex: 1,
-					alignSelf: "stretch",
+					height: target,
 					flexDirection: "row",
 					alignItems: "center",
 					columnGap: 6,
 					paddingHorizontal: 8,
-					borderRadius: 10,
-					backgroundColor: palette.inset,
 				}}
 			>
+				<View
+					style={{
+						position: "absolute",
+						left: 0,
+						right: 0,
+						top: (target - pill) / 2,
+						height: pill,
+						borderRadius: 10,
+						backgroundColor: palette.inset,
+					}}
+				/>
 				<SymbolView name="magnifyingglass" size={15 * scale} tintColor={palette.inkLow} />
 				<TextInput
 					ref={inputRef}
@@ -1625,7 +1832,10 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 						testID="chip"
 						accessibilityRole="button"
 						accessibilityLabel={chip.label}
-						onPress={chip.onPress}
+						onPress={() => {
+							haptic("selection");
+							chip.onPress();
+						}}
 						// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
 						hitSlop={{ top: 6, bottom: 6 }}
 						style={({ pressed }) => ({
@@ -1737,7 +1947,10 @@ function SummaryLine({
 					) : null}
 					<Pressable
 						accessibilityRole="button"
-						onPress={() => onJump(band)}
+						onPress={() => {
+							haptic("selection");
+							onJump(band);
+						}}
 						// Each count draws 30pt tall; the slop makes a 44pt target.
 						hitSlop={{ top: 7, bottom: 7 }}
 						style={({ pressed }) => ({

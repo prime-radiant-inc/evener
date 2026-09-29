@@ -40,6 +40,37 @@ type HostRecord struct {
 	// PresenceEpoch is the name's presence counter (spec §1): advanced on
 	// every add, remove, re-add and expiry purge.
 	PresenceEpoch uint64 `toml:"presence_epoch"`
+	// The six fields below are the retired crash-fencing bootstrap keys. They
+	// are decoded only so that a hub.toml written by the build that carried the
+	// bootstrap stack still loads: the reserved-record rule refuses a reserved
+	// field this build does not decode, and the removed first-contact caller
+	// persisted the attempt fence (bootstrap_attempted plus its epoch and token)
+	// before it refused, so existing files carry them. No behavior reads them:
+	// decodeConfig strips them from every loaded document, so the next rewrite
+	// drops the keys instead of preserving them. Their numeric halves are
+	// pointers because BurntSushi's omitempty does not omit numeric zeros, so a
+	// stripped zero would otherwise re-emit itself as a fresh key. They go away
+	// with the rest of the fencing removal.
+	RetiredBootstrapAttempted    bool    `toml:"bootstrap_attempted,omitempty"`
+	RetiredHelperInstalled       bool    `toml:"helper_installed,omitempty"`
+	RetiredHelperVersion         *uint64 `toml:"helper_version,omitempty"`
+	RetiredBootstrapEpochBoot    string  `toml:"bootstrap_epoch_boot,omitempty"`
+	RetiredBootstrapEpochOpSeq   *uint64 `toml:"bootstrap_epoch_op_seq,omitempty"`
+	RetiredBootstrapAttemptToken string  `toml:"bootstrap_attempt_token,omitempty"`
+}
+
+// withoutRetiredFencingFields returns r with the retired bootstrap keys
+// cleared. decodeConfig applies it to every loaded document, so the in-memory
+// record carries none of them and every rewrite derived from it re-emits the
+// record without them.
+func (r HostRecord) withoutRetiredFencingFields() HostRecord {
+	r.RetiredBootstrapAttempted = false
+	r.RetiredHelperInstalled = false
+	r.RetiredHelperVersion = nil
+	r.RetiredBootstrapEpochBoot = ""
+	r.RetiredBootstrapEpochOpSeq = nil
+	r.RetiredBootstrapAttemptToken = ""
+	return r
 }
 
 // HostGeneration is one [generations."<name>"] table: the per-name generation

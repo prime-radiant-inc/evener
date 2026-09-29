@@ -3,14 +3,14 @@
 // generic failed write), when it refetches the list, and what a clone-litter
 // rejection leaves on screen. The browser reports an applied outcome through
 // the guard slot PluginsScreen wires around it in production, so the mount
-// carries that wiring too. Mirrors ProvidersScreen.recovery.test.tsx's
+// carries that wiring too. Mirrors hub/ProvidersPage.recovery.test.tsx's
 // mocking: every native edge the screen reaches is mocked here, and the
 // stores are driven through the SDK's FakeClient. The install- and
 // removal-path tests beside them pin the write-gate posture every browser
 // mutation shares: a press the gate refuses on readiness runs nothing and
 // retires nothing.
 import { useMemo, useRef, useState } from "react";
-import { act, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { MarketplaceEntry } from "@evener/appwire-client";
 import { ErrorMarketplaceRemoveApplied, WireError } from "@evener/appwire-client";
@@ -20,7 +20,7 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { MarketplaceBrowser } from "./MarketplaceBrowser";
 import { createPluginMutationGate } from "./pluginMutationGate";
 import { ErrorMessage } from "./ui";
-import { alertRequests, nativeModuleMock, render, renderedText } from "./renderNative.testkit";
+import { alertRequests, render, renderedText } from "./renderNative.testkit";
 
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
@@ -28,7 +28,7 @@ vi.mock("react-native", async () => ({
 vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaView: "SafeAreaView",
 }));
-// ConnectionStatus, embedded in the browser's sheets, imports the connection
+// SheetStatus, embedded in the browser's sheets, imports the connection
 // provider; this suite renders only the ready state, so the banner never
 // calls the hook - but the module must load without the native expo graph
 // the provider pulls in.
@@ -36,7 +36,6 @@ vi.mock("./ConnectionProvider", () => ({
 	useConnection: () => ({
 		state: "ready",
 		error: null,
-		retry: () => {},
 		activeProfile: null,
 	}),
 }));

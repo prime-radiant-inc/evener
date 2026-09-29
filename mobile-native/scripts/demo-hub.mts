@@ -2,6 +2,7 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { WireError } from "@evener/appwire-client";
@@ -13,6 +14,7 @@ import type {
 	NavigationInvalidatedPayload,
 	NotesHumanSetParams,
 	Thread,
+	ThreadItem,
 	Turn,
 	TurnStartParams,
 	UrlsRemoveParams,
@@ -21,7 +23,9 @@ import {
 	ASKING_SESSION_ID,
 	createDemoFleet,
 	type DemoFleetOptions,
+	type DemoStep,
 	fleetSessionRef,
+	ROW_STEPS,
 	fleetSessions,
 } from "../src/dev/demoFleet.js";
 import { createDemoDocuments, SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "../src/dev/demoSubagents.js";
@@ -35,9 +39,11 @@ import {
 	resolveEscalation,
 	restFleetSession,
 	setHumanNote,
+	stageFleetState,
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
-import { createDemoSetup } from "../src/dev/demoSetup.js";
+import { latestPage, pageBefore, withOlderHistory } from "../src/dev/demoOlderHistory.js";
+import { createDemoSetup, demoUpdateCheck } from "../src/dev/demoSetup.js";
 
 // The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
 // answers model/list instead.
@@ -63,10 +69,45 @@ const FLEET_SESSION_METHODS = {
 } as const;
 type FleetSessionMethod = keyof typeof FLEET_SESSION_METHODS;
 
+// The phase 6 screenshots' staging (see the startup block below for the
+// environment variables that set these).
+export interface DemoHubModes {
+	// With the fleet on, one command per line: a DemoStep's name, or "burst"
+	// (EVENER_DEMO_COMMANDS=1 wires this to stdin).
+	commands?: NodeJS.ReadableStream;
+	// turn/start and turn/queue answer as a daemon that can't record a
+	// mutation's outcome does, so a send shows "Couldn't confirm this was
+	// sent".
+	unconfirmed?: boolean;
+	// The handshake's protocolVersion, to show the phone a version mismatch.
+	protocolVersion?: string;
+	// thread/start answers this many seconds late, so New session can be
+	// swiped away before its session opens (the Session started banner).
+	startDelaySeconds?: number;
+	// How often "grow" lands a step (default two seconds).
+	growEveryMs?: number;
+}
+
+const DEMO_STEPS: readonly DemoStep[] = [
+	"question",
+	"failure",
+	"approval",
+	"finish",
+	"host-offline",
+	"host-online",
+];
+// "grow": the working session gains GROW_STEPS finished steps, one at a
+// time, so the transcript's scrolling can be watched as rows land.
+const GROW_STEPS = 15;
+const COMMANDS = [...DEMO_STEPS, "burst", "grow"].join(", ");
+// Three alerts within a second, for the coalesced banner.
+const BURST: readonly DemoStep[] = ["question", "failure", "approval"];
+
 export async function createDemoHub(
 	port = 9196,
 	initialMarkdown?: string,
 	fleetOptions?: DemoFleetOptions,
+	modes: DemoHubModes = {},
 ) {
 	// One instant the fleet's rows and its sessions' threads both measure
 	// "ago" from, so a row and its thread agree on when it last changed.
@@ -88,7 +129,7 @@ export async function createDemoHub(
 						{
 							sessionRef: planSession.ref,
 							path: "docs/superpowers/plans/2026-09-25-settle-race.md",
-							versions: [SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED],
+							text: fleetOptions?.planRevised ? SETTLE_RACE_PLAN_REVISED : SETTLE_RACE_PLAN,
 						},
 					],
 					planSession.workingDir,
@@ -110,6 +151,8 @@ export async function createDemoHub(
 	if (typeof address === "string" || !address)
 		throw new Error("Missing demo address");
 	const subscribers = new Map<WebSocket, Set<string>>();
+	// thread/start replies held for startDelaySeconds, cleared on close.
+	const heldReplies = new Set<ReturnType<typeof setTimeout>>();
 	const thread: Thread = {
 		id: "demo-thread",
 		sessionId: "demo-session",
@@ -167,15 +210,19 @@ export async function createDemoHub(
 	// opening a row reads a real conversation. An empty fleet has none.
 	const fleetThreads =
 		fleetOptions && !fleetOptions.empty
-			? createDemoSessions({ now: startedAt })
+			? createDemoSessions({ now: startedAt, long: fleetOptions.long })
 			: [];
 	for (const fleetThread of fleetThreads)
 		threads.set(fleetThread.evener.ref, fleetThread);
+	const olderHistoryThread = fleetOptions?.olderHistory
+		? threads.get(fleetSessionRef("s-pr2138"))
+		: undefined;
+	if (olderHistoryThread) withOlderHistory(olderHistoryThread);
 	const fleetRefs = new Set(fleetThreads.map((value) => value.evener.ref));
 	let sessionNumber = 0;
 	const handshake: InitializeResponse = {
 		serverInfo: { name: "Native UI demonstration", version: "1" },
-		protocolVersion: "evener-appwire-v6",
+		protocolVersion: modes.protocolVersion ?? "evener-appwire-v6",
 		sourceId: "demo",
 		features: {
 			threadList: true,
@@ -193,6 +240,10 @@ export async function createDemoHub(
 		},
 	};
 	let turnNumber = 0;
+	// The Board-row changes a fleet session's turns made while answering one
+	// message: setTurnRunning appends them, and the handler broadcasts every one
+	// after it answers, the way it broadcasts an archive's invalidation.
+	const turnNavigations: NavigationInvalidatedPayload[] = [];
 	// Tells every socket connected at that moment that navigation changed,
 	// as a real hub broadcasts navigation changes to every navigation client.
 	function broadcastNavigation(payload: NavigationInvalidatedPayload) {
@@ -201,13 +252,21 @@ export async function createDemoHub(
 			method: "evener/navigation/invalidated",
 			params: payload,
 		});
-		for (const socket of server.clients)
-			if (socket.readyState === WebSocket.OPEN) socket.send(notification);
+		for (const socket of server.clients) {
+			if (socket.readyState !== WebSocket.OPEN) continue;
+			// One socket that fails mid-send must not skip the rest of the
+			// broadcast, as a real hub's per-client fan-out does.
+			try {
+				socket.send(notification);
+			} catch {
+				// The socket is gone; its close handler removes it.
+			}
+		}
 	}
 	// Makes the fleet's working row ask its question. Returned for tests to
 	// fire on demand.
 	function askQuestion() {
-		broadcastNavigation(requireFleet().askQuestion());
+		broadcastNavigation(requireFleet().step("question"));
 		const asking = threads.get(fleetSessionRef(ASKING_SESSION_ID));
 		// Asked once: a second ask finds the session already waiting.
 		if (asking?.status.type === "active") {
@@ -215,6 +274,79 @@ export async function createDemoHub(
 			resync(asking);
 		}
 	}
+	// Plays one scripted event for every connected client.
+	function play(step: DemoStep) {
+		if (step === "question") {
+			askQuestion();
+			return;
+		}
+		broadcastNavigation(requireFleet().step(step));
+		if (step === "host-offline" || step === "host-online") return;
+		// The session's own thread follows its row, as askQuestion's does.
+		const [id, state] = ROW_STEPS[step];
+		const thread = threads.get(fleetSessionRef(id));
+		if (thread?.status.type !== "active") return;
+		stageFleetState(thread, state as "failed" | "approval" | "yourmove", Date.now());
+		resync(thread);
+	}
+	// "grow": one finished shell step lands in s-pr2138's running turn at a
+	// time, each announced with a resync, as the hub announces a new round.
+	const growTimers = new Set<ReturnType<typeof setInterval>>();
+	let grown = 0;
+	function grow() {
+		const thread = threads.get(fleetSessionRef("s-pr2138"));
+		const turn = thread?.turns?.find((candidate) => candidate.id === thread.evener.activeTurnId);
+		if (!thread || !turn) throw new Error("s-pr2138 has no running turn to grow");
+		let landed = 0;
+		const timer = setInterval(() => {
+			grown += 1;
+			landed += 1;
+			const now = Date.now();
+			const step = {
+				id: `demo-grow-${grown}`,
+				type: "commandExecution",
+				toolName: "shell",
+				callId: `demo-grow-call-${grown}`,
+				description: `Ran check ${grown}`,
+				argumentsJson: JSON.stringify({ command: `go test ./agent/grow${grown}/...` }),
+				status: "completed",
+				startedAt: now - 3000,
+				completedAt: now,
+				output: "ok",
+			} satisfies ThreadItem;
+			turn.items = [...(turn.items ?? []), step];
+			if (landed >= GROW_STEPS) {
+				clearInterval(timer);
+				growTimers.delete(timer);
+			}
+			// A step that can't be announced says so; the timer runs on.
+			try {
+				resync(thread);
+			} catch (error) {
+				console.error("grow: resync failed:", error);
+			}
+		}, modes.growEveryMs ?? 2000);
+		growTimers.add(timer);
+	}
+	// The command input: a step's name plays it, "burst" plays three at once.
+	const commandLines =
+		demoFleet && modes.commands
+			? createInterface({ input: modes.commands, terminal: false })
+			: undefined;
+	commandLines?.on("line", (line) => {
+		const command = line.trim();
+		// A step that fails says so and leaves the hub running.
+		try {
+			if (command === "burst") for (const step of BURST) play(step);
+			else if (command === "grow") grow();
+			else if ((DEMO_STEPS as readonly string[]).includes(command))
+				play(command as DemoStep);
+			else if (command !== "")
+				console.info(`Unknown command ${command}. Commands: ${COMMANDS}`);
+		} catch (error) {
+			console.error(`Command ${command} failed:`, error);
+		}
+	});
 	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
 	// one client's connection.
 	const askTimer =
@@ -283,6 +415,10 @@ export async function createDemoHub(
 		if (fleetRefs.has(thread.evener.ref)) {
 			if (turn) startFleetTurn(thread, turn, Date.now());
 			else restFleetSession(thread, "idle", Date.now());
+			// The Board follows the turn: a running turn reads Working, a
+			// stopped one Idle, so a Stop leaves the row where its thread is.
+			const invalidated = requireFleet().setSessionState(thread.evener.ref, turn ? "working" : "idle");
+			if (invalidated) turnNavigations.push(invalidated);
 			return;
 		}
 		const running = turn !== undefined;
@@ -311,6 +447,24 @@ export async function createDemoHub(
 				let changed: Thread | null = null;
 				let navigationChange: NavigationInvalidatedPayload | null = null;
 				const selected = threads.get(params.ref);
+				// A daemon that can't record a send's outcome
+				// (appwire/errors.go's MutationUnknown).
+				if (
+					modes.unconfirmed &&
+					(request.method === "turn/start" ||
+						request.method === "turn/queue")
+				)
+					throw new WireError(
+						"The send's outcome couldn't be recorded",
+						-32603,
+						{
+							evenerErrorInfo: "mutationOutcomeUnknown",
+							clientMutationId: params.clientMutationId,
+							mutationOutcome: "unknown",
+							retryDisposition: "blocked",
+							cause: "persistenceUnavailable",
+						},
+					);
 				if (demoSetup?.handles(request.method))
 					result = demoSetup.answer(request.method, params);
 				else
@@ -322,6 +476,9 @@ export async function createDemoHub(
 						break;
 					case "ping":
 						result = {};
+						break;
+					case "evener/update/check":
+						result = demoUpdateCheck();
 						break;
 					case "evener/projects/recent":
 						result = { data: ["/demonstration"] };
@@ -351,7 +508,9 @@ export async function createDemoHub(
 						created.sessionId = `demo-session-created-${sessionNumber}`;
 						// Another host's session is named by that host, as a real
 						// hub qualifies a remote ref (appwire/refs.go).
-						created.evener.ref = `${params.source || "demo"}:created-${sessionNumber}`;
+						const source = params.source || "demo";
+						created.evener.ref = `${source}:created-${sessionNumber}`;
+						created.source = source;
 						created.evener.instanceId = `demo-instance-created-${sessionNumber}`;
 						created.cwd = params.cwd;
 						created.modelProvider = params.modelProvider ?? "demonstration";
@@ -401,6 +560,20 @@ export async function createDemoHub(
 							refs.add(selected.evener.ref);
 							subscribers.set(socket, refs);
 						}
+						// EVENER_DEMO_FLEET_OLDER: the latest page of items, and a cursor
+						// to the pages before it.
+						if (
+							selected === olderHistoryThread &&
+							params.includeTurns &&
+							typeof params.itemLimit === "number"
+						) {
+							const page = latestPage(selected.turns ?? [], params.itemLimit);
+							result = {
+								thread: { ...selected, turns: page.turns },
+								...(page.olderCursor ? { olderCursor: page.olderCursor } : {}),
+							};
+							break;
+						}
 						result = {
 							thread: {
 								...selected,
@@ -412,9 +585,16 @@ export async function createDemoHub(
 						subscribers.get(socket)?.delete(params.ref);
 						result = {};
 						break;
-					case "thread/turns/list":
-						result = { data: [] };
+					case "thread/turns/list": {
+						const page =
+							selected && selected === olderHistoryThread
+								? pageBefore(selected.turns ?? [], params.cursor, params.itemLimit ?? 40)
+								: null;
+						result = page
+							? { data: page.turns, ...(page.olderCursor ? { nextCursor: page.olderCursor } : {}) }
+							: { data: [] };
 						break;
+					}
 					case "turn/queue":
 					case "turn/steer":
 					case "turn/cancelQueued":
@@ -428,6 +608,34 @@ export async function createDemoHub(
 							throw new WireError("Session identity changed", -32013, {
 								evenerErrorInfo: "conflict",
 							});
+						// A message queued for a session at rest (idle, or waiting
+						// on you) runs the queue's head as its own turn, as the
+						// daemon's ProcessPendingUserInput does; queueing again also
+						// releases a Stop's hold (session_client_mutation_queue.go).
+						// With nothing queued, the head is this message.
+						const resting =
+							request.method === "turn/queue" &&
+							(selected.status.type === "idle" ||
+								selected.status.type === "awaiting");
+						if (resting && (selected.evener.queue.depth ?? 0) === 0) {
+							const turn = startScriptedTurn(
+								selected,
+								inputText(params.input),
+								params.clientMutationId,
+							);
+							result = {
+								receipt: {
+									clientMutationId: params.clientMutationId,
+									disposition: "applied",
+									threadId: selected.id,
+									instanceId: selected.evener.instanceId,
+									turnId: turn.id,
+									projectionState: "pending",
+								} satisfies MutationReceipt,
+							};
+							changed = selected;
+							break;
+						}
 						const queue = selected.evener.queue;
 						const ids = queue.ids ?? [];
 						const texts = queue.texts ?? [];
@@ -473,6 +681,16 @@ export async function createDemoHub(
 								mutationIds.splice(params.index, 1);
 							}
 						}
+						// At rest with a message parked ahead of this one, the
+						// parked one runs now and this one waits behind it.
+						let released: { text: string; mutationId: string } | undefined;
+						if (resting && ids.length > 1) {
+							ids.shift();
+							released = {
+								text: texts.shift() ?? "",
+								mutationId: mutationIds.shift() ?? "",
+							};
+						}
 						if (method !== "turn/steer") {
 							queue.revision += 1;
 							queue.ids = ids;
@@ -509,6 +727,8 @@ export async function createDemoHub(
 								removedTexts.join("\n"),
 								params.clientMutationId,
 							);
+						else if (released)
+							startScriptedTurn(selected, released.text, released.mutationId);
 						const receipt: MutationReceipt = {
 							clientMutationId: params.clientMutationId,
 							disposition: "applied",
@@ -609,7 +829,22 @@ export async function createDemoHub(
 				// What a fleet session offers follows every change to it.
 				if (changed && fleetRefs.has(changed.evener.ref))
 					refreshCapabilities(changed);
-				socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
+				const reply = JSON.stringify({ jsonrpc: "2.0", id, result });
+				if (request.method === "thread/start" && modes.startDelaySeconds) {
+					// Held, as a slow hub would; a client that leaves meanwhile takes
+					// the held reply with it.
+					const dropHeld = () => {
+						clearTimeout(held);
+						heldReplies.delete(held);
+					};
+					const held = setTimeout(() => {
+						heldReplies.delete(held);
+						socket.off("close", dropHeld);
+						socket.send(reply);
+					}, modes.startDelaySeconds * 1000);
+					heldReplies.add(held);
+					socket.once("close", dropHeld);
+				} else socket.send(reply);
 				if (changed) resync(changed);
 				if (navigationChange) broadcastNavigation(navigationChange);
 			} catch (error) {
@@ -625,6 +860,9 @@ export async function createDemoHub(
 						},
 					}),
 				);
+			} finally {
+				for (const invalidated of turnNavigations) broadcastNavigation(invalidated);
+				turnNavigations.length = 0;
 			}
 		});
 	});
@@ -634,6 +872,9 @@ export async function createDemoHub(
 		close: () =>
 			new Promise<void>((resolve, reject) => {
 				clearTimeout(askTimer);
+				for (const held of heldReplies) clearTimeout(held);
+				for (const timer of growTimers) clearInterval(timer);
+				commandLines?.close();
 				for (const socket of server.clients) socket.terminate();
 				server.close();
 				http.close((error) => (error ? reject(error) : resolve()));
@@ -647,22 +888,55 @@ function inputText(input: InputItem[] | undefined): string {
 	return (input ?? []).map((item) => item.text ?? "").join("\n");
 }
 
-// EVENER_DEMO_FLEET_ASK_AFTER is a number of seconds; anything else is a
-// typo worth stopping on rather than a demo that silently never changes.
-function askAfterSeconds(value: string | undefined): number | undefined {
+// EVENER_DEMO_FLEET_ASK_AFTER and EVENER_DEMO_START_DELAY are numbers of
+// seconds; anything else is a typo worth stopping on rather than a demo that
+// silently never changes.
+function secondsFrom(name: string): number | undefined {
+	const value = process.env[name];
 	if (value === undefined || value === "") return undefined;
 	const seconds = Number(value);
 	if (!Number.isFinite(seconds) || seconds < 0)
 		throw new Error(
-			`EVENER_DEMO_FLEET_ASK_AFTER must be a number of seconds, got ${JSON.stringify(value)}`,
+			`${name} must be a number of seconds, got ${JSON.stringify(value)}`,
 		);
 	return seconds;
 }
+
+const USAGE = `Usage: npx tsx scripts/demo-hub.mts [--help]
+
+A scripted hub for native UI checks: no Evener daemon, no LLM. Add it in the
+app as a hub at http://127.0.0.1:<port> with no token. Configured by
+environment variables:
+
+  EVENER_DEMO_PORT=<port>            listen here (default 9196)
+  EVENER_DEMO_MARKDOWN=<file>        the playground's reply text
+  EVENER_DEMO_FLEET=1                serve the redesign's fleet of sessions
+  EVENER_DEMO_FLEET_OFFLINE_HOST=1   with the fleet: paradise-park offline
+  EVENER_DEMO_FLEET_EMPTY=1          with the fleet: nothing live
+  EVENER_DEMO_FLEET_ASK_AFTER=<s>    with the fleet: s-gateway asks after s seconds
+  EVENER_DEMO_FLEET_PLAN_REVISED=1   with the fleet: serve the plan's revision
+  EVENER_DEMO_FLEET_OLDER=1          with the fleet: fifteen older turns ahead of
+                                     Get PR 2138's, paged by item as a v6 hub does
+  EVENER_DEMO_LONG=1                 with the fleet: long questions, approvals
+                                     and messages, many steps and notifications,
+                                     so screenshots exercise real-sized content
+  EVENER_DEMO_COMMANDS=1             with the fleet: read commands from stdin
+                                     (${COMMANDS})
+  EVENER_DEMO_UNCONFIRMED=1          answer sends as a daemon that can't confirm them
+  EVENER_DEMO_PROTOCOL=<version>     the handshake's protocol version
+  EVENER_DEMO_START_DELAY=<s>        thread/start answers s seconds late
+`;
 
 if (
 	process.argv[1] &&
 	import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
+	if (process.argv.includes("--help") || process.argv.includes("-h")) {
+		// Exit only once the help has drained: into a pipe, stdout is
+		// asynchronous, and exiting at once can cut it short.
+		await new Promise((resolve) => process.stdout.write(USAGE, resolve));
+		process.exit(0);
+	}
 	const hub = await createDemoHub(
 		Number(process.env.EVENER_DEMO_PORT ?? 9196),
 		process.env.EVENER_DEMO_MARKDOWN
@@ -672,13 +946,30 @@ if (
 			? {
 					offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1",
 					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
-					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
+					askAfterSeconds: secondsFrom("EVENER_DEMO_FLEET_ASK_AFTER"),
+					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
+					olderHistory: process.env.EVENER_DEMO_FLEET_OLDER === "1",
+					long: process.env.EVENER_DEMO_LONG === "1",
 				}
 			: undefined,
+		{
+			// Opt-in: a hub started in the background from a shell would
+			// stop (SIGTTIN) the moment it read the terminal.
+			commands:
+				process.env.EVENER_DEMO_COMMANDS === "1" ? process.stdin : undefined,
+			unconfirmed: process.env.EVENER_DEMO_UNCONFIRMED === "1",
+			protocolVersion: process.env.EVENER_DEMO_PROTOCOL || undefined,
+			startDelaySeconds: secondsFrom("EVENER_DEMO_START_DELAY"),
+		},
 	);
 	console.info(
 		`Scripted native UI demonstration: ${hub.origin} (no token, no LLM).`,
 	);
+	if (
+		process.env.EVENER_DEMO_FLEET === "1" &&
+		process.env.EVENER_DEMO_COMMANDS === "1"
+	)
+		console.info(`Type a command to stage an alert: ${COMMANDS}.`);
 	for (const signal of ["SIGINT", "SIGTERM"] as const)
 		process.once(signal, () => {
 			void hub.close();

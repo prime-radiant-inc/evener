@@ -987,26 +987,26 @@ func localDaemonDialError(err error) error {
 
 func localDaemonCallError(err error) error {
 	var wire appwire.WireError
-	if errors.As(err, &wire) && wire.Code != appwire.CodeInternalError {
-		return err
-	}
 	if !errors.As(err, &wire) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 		return localDaemonDialError(err)
 	}
-	msg := strings.ToLower(wire.Message)
-	if strings.Contains(msg, "failed to get reader") ||
-		strings.Contains(msg, "websocket") ||
-		strings.Contains(msg, "eof") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "use of closed network connection") ||
-		strings.Contains(msg, "i/o timeout") {
-		return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
+	if wire.Code != appwire.CodeInternalError {
+		return err
 	}
-	return err
+	// Only a failure the client synthesized because its read loop is gone is a
+	// transport failure; the client marks it with TransportFailureError. An
+	// InternalError that arrived intact is the daemon's own application verdict
+	// and is preserved. Guessing from message text reclassified errors such as
+	// "cannot parse transcript: unexpected EOF" (or, with a bare "eof"
+	// substring, "eoffice validation failed") as response loss and drove an
+	// automatic mutation retry for a failure that was never a transport loss.
+	if !appwire.IsTransportFailure(err) {
+		return err
+	}
+	return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
 }
 
 func localDaemonMutationCallError(clientMutationID string, err error) error {
@@ -1040,11 +1040,7 @@ func localDaemonMutationEntryError(clientMutationID string, err error) error {
 	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
 		return err
 	}
-	data.ClientMutationID = clientMutationID
-	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
-	data.RetryDisposition = appwire.RetryDispositionNone
-	wire.Data = data
-	return wire
+	return wire.NotAccepted(clientMutationID)
 }
 
 // DaemonInitializeError identifies failures before a daemon accepts session RPCs.
@@ -1058,8 +1054,12 @@ func (e DaemonInitializeError) Unwrap() error { return e.Err }
 
 func localDaemonInitializeError(err error) error {
 	mapped := localDaemonCallError(err)
-	var wire appwire.WireError
-	if errors.As(mapped, &wire) && wire.Code != appwire.CodeInternalError {
+	// localDaemonCallError already classifies a WireError: an intact
+	// InternalError is the daemon's application verdict and a synthesized
+	// transport failure is SessionUnavailable. Only a non-wire result — a raw
+	// dial or connect error — still needs the dial fallback, so a delivered
+	// InternalError can never be reclassified by its message text here.
+	if _, ok := errors.AsType[appwire.WireError](mapped); ok {
 		return DaemonInitializeError{Err: mapped}
 	}
 	return DaemonInitializeError{Err: localDaemonDialError(mapped)}
@@ -1067,8 +1067,7 @@ func localDaemonInitializeError(err error) error {
 
 func localDaemonSubscribeReadError(err error) error {
 	mapped := localDaemonCallError(err)
-	var wire appwire.WireError
-	if errors.As(mapped, &wire) && wire.Code != appwire.CodeInternalError {
+	if _, ok := errors.AsType[appwire.WireError](mapped); ok {
 		return mapped
 	}
 	return localDaemonDialError(mapped)
@@ -1208,13 +1207,14 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		thread.Evener.Subagents = &tally
 	}
 	if status == appwire.ThreadStatusRestartRequired {
-		// A restart-required session cannot act, but its saved notes are still
-		// readable: advertise the read capability alone and let the write gate
+		// A restart-required session cannot act, but its saved notes and its
+		// saved transcript (the hub pages it from a before position itself) are
+		// still readable: advertise the read capabilities alone and let the write gate
 		// (and the daemon's admission fence) refuse every mutation. The alias
 		// guard is redundant with the alias gate below, which clears every
 		// capability; it is here so this advertisement never depends on that
 		// branch running after it.
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: !item.ReadOnlyAlias}
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: !item.ReadOnlyAlias, PageBefore: !item.ReadOnlyAlias}
 	}
 	if item.ReadOnlyAlias {
 		// A read-only descendant alias still carries its own live watches: they

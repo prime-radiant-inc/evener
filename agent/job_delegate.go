@@ -81,6 +81,11 @@ type delegateResult struct {
 	Model                    string
 	Warnings                 []string
 	Err                      error
+	// ArtifactsDir is the delegation's durable per-delegate artifacts directory
+	// (<stateDir>/sessions/<childSessionID>/artifacts), set on creation and
+	// named in the delegate tool's creation result so the controller can hand
+	// the path to the delegate and to later seats.
+	ArtifactsDir string
 }
 
 type sendMessageResult struct {

@@ -153,8 +153,17 @@ func fuzzScenarioLocalDaemonSubscribeReadErrorPreservesApplicationWireErrors(t *
 }
 
 func fuzzScenarioLocalDaemonSubscribeReadErrorMapsInternalTransportWireErrors(t *testing.T) {
-	got := localDaemonSubscribeReadError(appwire.InternalError("read failed: i/o timeout"))
-	assertSessionUnavailable(t, got, "internal i/o timeout")
+	got := localDaemonSubscribeReadError(internalTransportFailure("read failed: i/o timeout"))
+	assertSessionUnavailable(t, got, "synthesized transport failure")
+}
+
+func fuzzScenarioLocalDaemonSubscribeReadErrorPreservesDeliveredInternalError(t *testing.T) {
+	delivered := appwire.InternalError("read failed: i/o timeout")
+	got := localDaemonSubscribeReadError(delivered)
+	var wire appwire.WireError
+	if !errors.As(got, &wire) || wire.Code != appwire.CodeInternalError || wire.Message != delivered.Message {
+		t.Fatalf("delivered InternalError rewritten: %+v", got)
+	}
 }
 
 func fuzzScenarioLocalDaemonCallErrorMapsRawTransportFailures(t *testing.T) {
@@ -187,8 +196,17 @@ func fuzzScenarioLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *tes
 }
 
 func fuzzScenarioLocalDaemonInitializeErrorMapsInternalTransportWireErrors(t *testing.T) {
-	got := localDaemonInitializeError(appwire.InternalError("initialize failed: i/o timeout"))
-	assertSessionUnavailable(t, got, "internal i/o timeout")
+	got := localDaemonInitializeError(internalTransportFailure("initialize failed: i/o timeout"))
+	assertSessionUnavailable(t, got, "synthesized transport failure")
+}
+
+func fuzzScenarioLocalDaemonInitializeErrorPreservesDeliveredInternalError(t *testing.T) {
+	delivered := appwire.InternalError("initialize failed: i/o timeout")
+	got := localDaemonInitializeError(delivered)
+	var wire appwire.WireError
+	if !errors.As(got, &wire) || wire.Code != appwire.CodeInternalError || wire.Message != delivered.Message {
+		t.Fatalf("delivered InternalError rewritten: %+v", got)
+	}
 }
 
 func fuzzScenarioLocalDaemonCallErrorPreservesCallerCancellation(t *testing.T) {
@@ -838,7 +856,7 @@ func TestLocalDaemonSourceListUsesProbedCapabilities(t *testing.T) {
 	if !unprobed.SkillInput || !unprobed.Queue || !unprobed.ChangeVisionModel {
 		t.Fatalf("unprobed row lost the fallback advertisement: %+v", unprobed)
 	}
-	if restart := capsBySession["sess_probed_restart"]; restart != (appwire.ThreadCapabilities{SharedNotes: true}) {
+	if restart := capsBySession["sess_probed_restart"]; restart != (appwire.ThreadCapabilities{SharedNotes: true, PageBefore: true}) {
 		t.Fatalf("restart-required row must replace even a probed set with the read-only one: %+v", restart)
 	}
 	if alias := capsBySession["sess_probed_alias"]; alias != (appwire.ThreadCapabilities{}) {
@@ -1383,7 +1401,7 @@ func TestLocalDaemonListPreservesRestartRequiredStatus(t *testing.T) {
 	if thread.Status.Type != appwire.ThreadStatusRestartRequired {
 		t.Fatalf("status=%s", thread.Status.Type)
 	}
-	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true}) {
+	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true, PageBefore: true}) {
 		t.Fatalf("capabilities=%+v", thread.Evener.Capabilities)
 	}
 	if _, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: "local:owner"}); err == nil {
@@ -1415,7 +1433,7 @@ func TestLocalDaemonListsSessionOnlyRestartRequiredEntry(t *testing.T) {
 			if thread.ID != "owner" || thread.Evener.Ref != "local:owner" || thread.Status.Type != appwire.ThreadStatusRestartRequired {
 				t.Fatalf("thread=%+v", thread)
 			}
-			if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true}) {
+			if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true, PageBefore: true}) {
 				t.Fatalf("capabilities=%+v", thread.Evener.Capabilities)
 			}
 		})

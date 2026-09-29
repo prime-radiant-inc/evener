@@ -183,22 +183,22 @@ func TestCloneNavigationSummaryCopiesOmittedWatches(t *testing.T) {
 }
 
 // A nested child summary is bounded exactly like a root row: the same cap keeps
-// its armed rows and the same omitted counter reports what it dropped. This runs
-// the whole path — BuildTreeAt attaches the parent's ChildWatches to the child
-// row, then the projector shapes it — because a hand-built Tree would only prove
-// the projector caps a node, not that the child row ever gets its watches.
+// its armed rows and the same omitted counter reports what it dropped. The only
+// nested rows are fork originals. This runs the whole path — BuildTreeAt gives
+// the original its own live watches, then the projector shapes it — because a
+// hand-built Tree would only prove the projector caps a node, not that the
+// child row ever gets its watches.
 func TestNavigationChildSummaryCapsItsOwnWatches(t *testing.T) {
 	const inert = 12
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: "child", CreatedAt: now, UpdatedAt: now, ParentSessionID: "parent", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "child", CreatedAt: now, UpdatedAt: now, ForkLabel: "before edit", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "parent", CreatedAt: now, UpdatedAt: now, ParentSessionID: "child", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
-	live := []hubcore.LiveEntry{{
-		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle,
-		RunningSubagentIDs: []string{"child"},
-		ChildWatches:       map[string][]appwire.EvenerWatchInfo{"child": watchListForCap(40, inert)},
-	}}
+	live := []hubcore.LiveEntry{
+		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle},
+		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusIdle, Watches: watchListForCap(40, inert)},
+	}
 	tree := hubcore.BuildTreeAt(metas, live, nil, now)
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree})
 	if err != nil {

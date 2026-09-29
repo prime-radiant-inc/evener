@@ -3,12 +3,38 @@
 // moves to the next or previous session in Live order (spec 6).
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useRef } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { markFor } from "../board/StateMark";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { SessionStateLine } from "./sessionState";
 import { titleSwipeDirection } from "./titleSwipe";
+
+/** How far in from each screen edge the nav bar's buttons reach: Back with
+ * its count pill on the left, ⋯ on the right, each with its margin and the
+ * gap before the title (measured on iOS 26's glass bar, iPhone 17 Pro). The
+ * native header sizes a custom title view by its content, so the title keeps
+ * inside the span between them itself (#2956). */
+export const NAV_BAR_BUTTON_SPAN = 80;
+
+/** The Back pill's chevron and one of its count's digits in BackButton.tsx (a
+ * 20pt chevron and 17pt tabular figures, about 10pt a digit): the parts of the
+ * span that grow with Dynamic Type. */
+const BACK_CHEVRON = 20;
+const BACK_COUNT_DIGIT = 10;
+
+/** The room the nav bar's buttons need on each side of the title: the span
+ * measured for a one-digit Back count at the default type, plus what the Back
+ * pill grows by. Dynamic Type enlarges its chevron and count (AX1-AX5), and
+ * each further digit widens the count, so a 3-digit count or an accessibility
+ * text size can no longer run under the title (#3063). The ⋯ button on the
+ * other side does not scale. */
+export function navBarButtonSpan(count: number, scale: number): number {
+	const digits = Math.max(1, String(count).length);
+	return (
+		NAV_BAR_BUTTON_SPAN + (scale - 1) * (BACK_CHEVRON + BACK_COUNT_DIGIT) + (digits - 1) * BACK_COUNT_DIGIT * scale
+	);
+}
 
 export function SessionTitle({
 	title,
@@ -16,6 +42,7 @@ export function SessionTitle({
 	onPress,
 	onSwipe,
 	neighbors,
+	backCount = 0,
 }: {
 	title: string;
 	line: SessionStateLine;
@@ -25,9 +52,14 @@ export function SessionTitle({
 	/** Whether Live order has a session on either side, for VoiceOver's
 	 * stand-ins for the swipe. */
 	neighbors: { previous: boolean; next: boolean };
+	/** How many other sessions need you: the Back pill's count, whose digits
+	 * widen the span the title must clear (#3063). */
+	backCount?: number;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const { width } = useWindowDimensions();
+	const span = navBarButtonSpan(backCount, scale);
 	const mark = markFor(line.state, false);
 	// The gesture is built once and reaches the latest onSwipe through the
 	// ref, so a re-render never hands the detector a new gesture mid-pan.
@@ -71,6 +103,9 @@ export function SessionTitle({
 				}}
 				style={({ pressed }) => ({
 					minHeight: 44,
+					// Floored at zero, so an extreme count at an accessibility
+					// size never asks for a negative width.
+					maxWidth: Math.max(0, width - 2 * span),
 					alignItems: "center",
 					justifyContent: "center",
 					opacity: pressed ? 0.6 : 1,
@@ -98,6 +133,8 @@ export function SessionTitle({
 							fontSize: 13 * scale,
 							lineHeight: 18 * scale,
 							fontVariant: ["tabular-nums"],
+							// A long state line truncates inside the title's width too.
+							flexShrink: 1,
 						}}
 					>
 						{line.text}

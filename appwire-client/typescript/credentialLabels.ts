@@ -1,6 +1,6 @@
 // credentialLabels.ts is the pure-logic half of a credentials display, shared
 // by the web Credentials section (cmd/evener-hub/frontend/src/panes/settings/
-// sections/credentials) and native's ProvidersScreen (parity-m7-settings.md
+// sections/credentials) and native's ProvidersPage (parity-m7-settings.md
 // §7c, updated for the provider registry's instance wire shape - spec
 // docs/superpowers/specs/2026-08-28-provider-registry-design.md §11.3):
 // computing the credential display from InstanceEntry's activeSource/

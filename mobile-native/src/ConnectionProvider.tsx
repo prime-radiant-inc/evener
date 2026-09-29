@@ -5,6 +5,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { AppState } from "react-native";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 import { forgetBoardForHub } from "./board/nativeBoardMemory";
+import { ConnectionClock, type ConnectionTimes } from "./connectionClock";
 import { type HubInput, type HubProfile, HubProfiles, type HubUpdate } from "./connection";
 import { runHubCleanups } from "./hubCleanups";
 import { useHubConnection } from "./hubConnection";
@@ -16,6 +17,7 @@ import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
 import { forgetDocumentSummaries } from "./reader/documentSummaries";
 import { forgetDocumentsForHub } from "./reader/nativeDocumentMemory";
+import { forgetCreationForHub, releaseCreations } from "./newSession/creations";
 import { forgetLaunchMemoryForHub } from "./newSession/nativeLaunchMemory";
 import { forgetStopRequestsForHub } from "./subagents/nativeStopRequests";
 import { forgetSubagentTrees } from "./subagents/subagentTree";
@@ -31,6 +33,12 @@ interface Connection {
 	client: AppwireClient | null;
 	state: ConnectionState;
 	fatal: boolean;
+	/** When this stretch in front without a live connection began (spec 14's
+	 * status clock); null while live or in the background. */
+	downSince: number | null;
+	/** When the connection's data was last live, background included; null
+	 * until it has been since launch or since the hub was chosen. */
+	lastLiveAt: number | null;
 	error: string | null;
 	loading: boolean;
 	saveHub(input: HubInput): Promise<boolean>;
@@ -38,7 +46,6 @@ interface Connection {
 	selectHub(id: string): void;
 	removeHub(id: string): Promise<void>;
 	disconnect(): void;
-	retry(): void;
 }
 const Context = createContext<Connection | null>(null);
 
@@ -71,6 +78,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		state: visibleState,
 		fatal,
 	} = useHubConnection(repository, activeId, activeOrigin, foreground, attempt, setError);
+	// A New session start bound to a client the connection has left (another
+	// hub, a new connection, or none after disconnecting) is let go, so it
+	// reads as uncertain rather than starting forever (#3104).
+	useEffect(() => releaseCreations(client), [client]);
+	// The status clock (spec 14): fed every change in hub, liveness and
+	// foreground, read by useConnectionStatusText wherever a status shows.
+	const [clock] = useState(() => new ConnectionClock());
+	const [times, setTimes] = useState<ConnectionTimes>({ downSince: null, lastLiveAt: null });
+	useEffect(() => {
+		setTimes(clock.observe({ hubId: activeId ?? null, live: visibleState === "ready", foreground }, Date.now()));
+	}, [clock, activeId, visibleState, foreground]);
 	useEffect(() => {
 		let cancelled = false;
 		selection
@@ -100,7 +118,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 	}, [selection]);
 	const selectHub = useCallback((id: string) => selection.select(id), [selection]);
 	const disconnect = useCallback(() => selection.disconnect(), [selection]);
-	const retry = useCallback(() => setAttempt((value) => value + 1), []);
 	const saveHub = useCallback((input: HubInput) => selection.save(input), [selection]);
 	const updateHub = useCallback((id: string, input: HubUpdate) => selection.update(id, input), [selection]);
 	const removeHub = useCallback(
@@ -118,6 +135,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 						forgetDocumentSummaries,
 						forgetSubagentTrees,
 						forgetLaunchMemoryForHub,
+						forgetCreationForHub,
 						forgetStopRequestsForHub,
 					]);
 				},
@@ -133,6 +151,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			client,
 			state: visibleState,
 			fatal,
+			downSince: times.downSince,
+			lastLiveAt: times.lastLiveAt,
 			error,
 			loading,
 			saveHub,
@@ -140,7 +160,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			selectHub,
 			removeHub,
 			disconnect,
-			retry,
 		}),
 		[
 			initialLocation,
@@ -150,6 +169,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			client,
 			visibleState,
 			fatal,
+			times,
 			error,
 			loading,
 			saveHub,
@@ -157,7 +177,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			selectHub,
 			removeHub,
 			disconnect,
-			retry,
 		],
 	);
 	return <Context.Provider value={value}>{children}</Context.Provider>;

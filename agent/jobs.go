@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -747,12 +748,21 @@ func (jm *jobManager) createJobOutputForID(jobID string) (string, *jobstore.Outp
 }
 
 func (jm *jobManager) close() error {
-	runtimeErr := jm.closeRuntimeState()
+	runtimeErr := jm.closeRuntimeState(context.Background())
 	storeErr := jm.closeStoreOnly()
 	return errors.Join(runtimeErr, storeErr)
 }
 
-func (jm *jobManager) closeRuntimeState() error {
+// closeRuntimeState tears down the manager's process-local runtime. ctx is the
+// shared close-cascade context (see ensureCloseBudget): its Done bounds the
+// running-job wait so serial child teardown cannot renew a fresh closeGrace
+// window per child after the inherited deadline has expired. A nil ctx carries
+// no deadline, preserving the previous behavior for callers with no cascade to
+// inherit from.
+func (jm *jobManager) closeRuntimeState(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
 	jm.closing = true
@@ -811,6 +821,10 @@ waitLoop:
 	for _, run := range running {
 		select {
 		case <-run.done:
+		case <-ctx.Done():
+			waitErr = errors.New("job manager close timed out waiting for running jobs")
+			jm.abandonRunningJobs()
+			break waitLoop
 		case <-deadline.C():
 			waitErr = errors.New("job manager close timed out waiting for running jobs")
 			jm.abandonRunningJobs()

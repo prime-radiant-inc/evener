@@ -11,6 +11,10 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+// The connection status (BoardToolbar's, spec 14) reads the provider.
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => ({ state: "ready", fatal: false, downSince: null, lastLiveAt: null }),
+}));
 
 const palette = paletteFor("light");
 
@@ -111,6 +115,14 @@ describe("the connection bar (spec 8.1, 14)", () => {
 		expect(
 			textNode(render(header({ status: "Reconnecting…" })), "Reconnecting…").props.accessibilityHint,
 		).toBeUndefined();
+	});
+
+	it("leaves the connection status unannounced: it is ambient and changes often (#2903)", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		const tree = render(header({ status: "Reconnecting…", chips: [goal] }));
+		act(() => tree.update(header({ status: "Offline · updated 3m ago", chips: [goal] })));
+		expect(announce).not.toHaveBeenCalled();
 	});
 });
 

@@ -8,6 +8,10 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+// The connection status (BoardToolbar's, spec 14) reads the provider.
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => ({ state: "ready", fatal: false, downSince: null, lastLiveAt: null }),
+}));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));

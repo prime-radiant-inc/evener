@@ -72,8 +72,14 @@ export type {
 export { createAskDockStore, nextUnansweredKey } from "./askDock";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
 export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
-export type { RejectableFile } from "./attachmentLimits";
-export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
+export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
+export {
+  admissionRejection,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS,
+  rejectionReason,
+  sizeRejection,
+} from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BootGenerationAction } from "./bootGeneration";
@@ -177,6 +183,7 @@ export {
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
   GENERIC_ERROR_MESSAGE,
+  HostMutationOutcomeError,
   HUB_UNREACHABLE_MESSAGE,
   hostFieldError,
   isHubLaunchError,
@@ -194,8 +201,35 @@ export {
 } from "./errors";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
+export type {
+  EditableHostField,
+  HostMutationPair,
+  HostMutationPorts,
+  HostMutationResult,
+  HostMutations,
+} from "./hostMutations";
+export {
+  committedMutationRow,
+  createHostMutations,
+  ErrorStaleEntry,
+  HOST_CHANGED_MESSAGE,
+  HOST_ENTRY_FIELD_ORDER,
+  HOST_ENTRY_FIELD_TEXT,
+  HOST_GATE_TIMEOUT_MS,
+  hostChangedSinceOpened,
+  rootsFromText,
+  rootsToText,
+} from "./hostMutations";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
+export type {
+  HubUpdateController,
+  HubUpdatePorts,
+  HubUpdateState,
+  HubUpdateStateStore,
+  UpdateChannel,
+} from "./hubUpdate";
+export { APPLY_TIMEOUT_MS, createHubUpdateController, INITIAL_HUB_UPDATE_STATE } from "./hubUpdate";
 export type { ItemFailureSignals } from "./itemFailure";
 export {
   displayTurnStatus,
@@ -417,6 +451,25 @@ export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSch
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
+export {
+  isSuppressedSteeringKind,
+  type LabelledSteeringKind,
+  STEERING_KIND_LABELS,
+  steeringLabel,
+} from "./steeringLabels";
+export {
+  decodeNotificationEntities,
+  escapeNotificationEntities,
+  isNotificationRemnant,
+  isValidTranscriptRef,
+  type NotificationOutcome,
+  type NotificationTone,
+  type ParsedNotification,
+  parseSteeringNotifications,
+  type SteeringFragment,
+  steeringNotificationFragments,
+  stripSystemReminder,
+} from "./steeringNotifications";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -438,6 +491,7 @@ export {
   sessionControls,
   TURN_RUNNING,
 } from "./submitRouting";
+export { ERROR_EVENT_KIND, echoesTurnError, isErrorEvent, systemEventWords } from "./systemEventCopy";
 export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
 export { parseTaskListData, taskAggregateLabel } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";

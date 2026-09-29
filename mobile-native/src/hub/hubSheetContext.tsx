@@ -2,12 +2,30 @@
 // client and the connection's readiness. It lives apart from HubSheet.tsx, the
 // navigator, so the pages HubSheet mounts can read it without importing their
 // own navigator.
-import type { AppwireClient } from "@evener/appwire-client";
+import type { AppwireClient, HubUpdateController } from "@evener/appwire-client";
+import type { HostsController } from "../hosts/hostsController";
+import type { LiveSessionsReader } from "../hosts/liveCounts";
+import type { How } from "../hubs/AddHub";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 
-/** The Hub's pages. Every page names the hub it was opened for. */
+/** The Hub's pages. A page about the connected hub names the hub it was
+ * opened for; Hubs and its pages are about the phone's saved hubs. */
 export type HubRoutes = {
 	HubHome: { hubId: string };
+	Alerts: { hubId: string };
+	Display: { hubId: string };
+	DetailLevel: { hubId: string };
+	/** focus opens that host's detail once. */
+	Hosts: { hubId: string; focus?: string };
+	HostDetail: { hubId: string; name: string };
+	HostEdit: { hubId: string; name: string };
+	/** focus opens that provider's detail once; signIn starts its sign-in instead. */
+	Providers: { hubId: string; focus?: string; signIn?: boolean };
+	/** focus opens that plugin's detail once. */
+	Plugins: { hubId: string; focus?: { plugin: string; marketplace: string } };
+	Hubs: undefined;
+	AddHub: { how: How };
+	HubDetails: { id: string };
 };
 
 export interface HubSheetContextValue {
@@ -19,6 +37,12 @@ export interface HubSheetContextValue {
 	ready: boolean;
 	/** Whether a control that needs the hub may act right now. */
 	canUseConnection: () => boolean;
+	/** The hub's own update: the header's "up to date" or "Update available",
+	 * and About's "Update hub" (ruling 22). */
+	updates: HubUpdateController;
+	/** The hub's hosts and its live sessions, per client; null before one. */
+	hosts: HostsController | null;
+	live: LiveSessionsReader | null;
 }
 
 const HubSheetContext = createContext<HubSheetContextValue | null>(null);

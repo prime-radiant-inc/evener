@@ -64,12 +64,6 @@ package hostops
 //   - The live `quarantineEpoch`: the custody-first quarantine (S8) persists
 //     and advances the counter outside the store file. The comparison itself
 //     is implemented here; CursorEpoch returns zero until that slice lands.
-//   - The fencing paths' `orphanResolved`/`attestation` fields: the read
-//     passes records through untouched and the wire carries those fields when
-//     their owning slice adds them (see appwire.OperationRecord's own
-//     comment). The compacted-ID tombstone replay's `compacted: true` field
-//     ships with S6 in ops.go and the wire carries it now.
-//
 // §11 pins a closed stale-entry value set with no cursor-specific value; every
 // cursor stale-entry arm names `generation`, the value the token paths use for
 // any move of the pinned (generation, incarnationId) identity. The handler

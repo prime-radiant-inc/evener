@@ -32,6 +32,18 @@ export interface DemoCoordinator {
 	subagentRef: (id: string) => string;
 }
 
+const DEFAULT_ELAPSED_SECONDS = 300;
+
+/** When a subagent's run started, from data.js's elapsed: a running one's
+ * counts back from now, an ended one's from when it ended. The Subagents list,
+ * the coordinator's transcript and the subagent's own screen all read this
+ * one fact (demoSessions.ts), so their times agree. */
+export function demoRunStartedAt(sub: Pick<DemoSubagent, "state" | "ago" | "elapsed">, startupMs: number): number {
+	const elapsed = (sub.elapsed ?? DEFAULT_ELAPSED_SECONDS) * 1000;
+	const until = sub.state === "running" ? startupMs : startupMs - sub.ago * 1000;
+	return until - elapsed;
+}
+
 export function demoTokens(label: string | undefined): number {
 	const match = /^(\d+(?:\.\d+)?)([KM]?)$/.exec(label ?? "");
 	if (!match) return 0;
@@ -41,7 +53,6 @@ export function demoTokens(label: string | undefined): number {
 
 const idOf = (ref: string) => ref.slice(ref.indexOf(":") + 1);
 const iso = (ms: number) => new Date(ms).toISOString();
-const DEFAULT_ELAPSED_SECONDS = 300;
 const MANDATE = (title: string) => `${title}. Report what you find; don't change unrelated code.`;
 
 interface Counts {
@@ -70,7 +81,6 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 		const ref = coordinator.subagentRef(sub.id);
 		const sessionId = idOf(ref);
 		const running = sub.state === "running";
-		const elapsed = (sub.elapsed ?? DEFAULT_ELAPSED_SECONDS) * 1000;
 		const lastEvent = startupMs - sub.ago * 1000;
 		const counts: Counts = {
 			active: running ? 1 : 0,
@@ -118,7 +128,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 			mandate: MANDATE(sub.title),
 			task: MANDATE(sub.title),
 			...(sub.model ? { resolvedModel: sub.model, model: sub.model } : {}),
-			runStartedAt: iso(running ? startupMs - elapsed : lastEvent - elapsed),
+			runStartedAt: iso(demoRunStartedAt(sub, startupMs)),
 			...(running
 				? { latestActivityAt: iso(lastEvent) }
 				: {
@@ -156,7 +166,8 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 	};
 }
 
-// data.js's settle-race plan (data.js:505-531), as the first read serves it.
+// data.js's settle-race plan (data.js:505-531), the text the demo hub serves
+// unless EVENER_DEMO_FLEET_PLAN_REVISED is set.
 export const SETTLE_RACE_PLAN = `# Fix the settle/drain race
 
 ## Problem
@@ -185,8 +196,9 @@ The retirement drain and the tree settle pass both take the tree lock. When sett
 | Flake loops | 3 |
 `;
 
-// The version later reads serve: three changed blocks, so reading the plan
-// twice shows "3 changes since you read it earlier today" (frame 17).
+// The revision a restarted hub serves with EVENER_DEMO_FLEET_PLAN_REVISED:
+// three changed blocks, so reading the plan before and after shows "3 changes
+// since you read it earlier today" (frame 17).
 export const SETTLE_RACE_PLAN_REVISED = SETTLE_RACE_PLAN.replace(
 	"so the root's attention is never delivered.",
 	"so the root's attention is never delivered. It shows up as three flaky tests.",
@@ -204,17 +216,18 @@ export interface DemoDocument {
 	sessionRef: string;
 	/** Relative to the demo sessions' folder (createDemoDocuments' `folder`). */
 	path: string;
-	versions: readonly string[];
+	text: string;
 }
 
 /** /doc/file for the demo hub, as the hub answers it (doc_serve.go): a known
  * document's text by session and path (relative, or absolute under the demo
  * folder, as a file link names it), 404 for anything else, 400 without
- * format=raw. A document's first read after startup gets its first version;
- * later reads get its last. */
+ * format=raw. A document reads the same every time: chips and Files rows
+ * read it too, so the Reader can't be told apart by when it reads. A demo
+ * shows a revision by restarting the hub with the other text
+ * (EVENER_DEMO_FLEET_PLAN_REVISED). */
 export function createDemoDocuments(documents: readonly DemoDocument[], folder: string) {
 	const root = `${folder}/`;
-	const reads = new Map<string, number>();
 	return {
 		answerDocFile(url: URL): { status: number; body: string } {
 			const session = url.searchParams.get("session") ?? "";
@@ -223,10 +236,7 @@ export function createDemoDocuments(documents: readonly DemoDocument[], folder: 
 			const document = documents.find((candidate) => candidate.sessionRef === session && candidate.path === path);
 			if (!document) return { status: 404, body: "not found" };
 			if (url.searchParams.get("format") !== "raw") return { status: 400, body: "format=raw required" };
-			const key = JSON.stringify([session, path]);
-			const count = reads.get(key) ?? 0;
-			reads.set(key, count + 1);
-			return { status: 200, body: document.versions[Math.min(count, document.versions.length - 1)] ?? "" };
+			return { status: 200, body: document.text };
 		},
 	};
 }

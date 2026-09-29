@@ -90,7 +90,7 @@ no router (reserved).
 | `thread/list` | both | `ThreadListParams` | `ThreadListResponse` | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items. |
 | `thread/unsubscribe` | both | `ThreadUnsubscribeParams` | `EmptyResponse` | Drops this connection's live-update subscription to a thread without reading it. |
-| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages atomic projected items backward (older) for lazy transcript loading; requests require an opaque item cursor. |
+| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages atomic projected items backward (older) for lazy transcript loading; requests carry an opaque item cursor, a before position (which rebases the cursor, or with no cursor pages before it in the current transcript, for threads advertising pageBefore), or both. |
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
@@ -1856,6 +1856,25 @@ _(no fields)_
 | `notices` | `[]appwire.HubNotice` |  |  |
 
 
+### `OperationRecord`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `clientOperationId` | `string` |  |  |
+| `host` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `state` | `appwire.OperationState` |  |  |
+| `progress` | `[]appwire.OperationProgressEntry` | yes |  |
+| `result` | `*appwire.OperationResult` | yes |  |
+| `createdAt` | `string` |  |  |
+| `updatedAt` | `string` |  |  |
+| `hostRemoved` | `bool` |  |  |
+| `compacted` | `bool` | yes |  |
+
+
 ### `OverlayDeltaParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2635,6 +2654,7 @@ _(no fields)_
 | `cursor` | `string` | yes |  |
 | `itemsView` | `string` | yes |  |
 | `itemLimit` | `int` | yes |  |
+| `before` | `*appwire.ThreadItemPosition` | yes |  |
 
 
 ### `ThreadTurnsListResponse`

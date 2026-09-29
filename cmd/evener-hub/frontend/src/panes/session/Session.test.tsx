@@ -255,39 +255,13 @@ const CONTAINER_HEIGHT = 500;
 let offsetHeightDescriptor: PropertyDescriptor | undefined;
 let mutationStorage: MutationOutboxIndexedDB;
 
-// jsdom has no IntersectionObserver either, and LoadOlderRow's automatic paging
-// sentinel needs one. This stub reports the observed element as visible
-// immediately, which is what a real browser does for a sentinel sitting at the
-// top of a short transcript - so a pane rendered here pages exactly as it would
-// there. LoadOlderRow's own suite drives a scriptable version for the
-// enter/leave/blocked cases; this one only has to make the pane's own wiring
-// reachable.
-class StubIntersectionObserver {
-  static instances: StubIntersectionObserver[] = [];
-  static autoTrigger = true;
-  readonly observed: Element[] = [];
-  constructor(private readonly callback: IntersectionObserverCallback) {
-    StubIntersectionObserver.instances.push(this);
-  }
-  observe(target: Element): void {
-    this.observed.push(target);
-    if (StubIntersectionObserver.autoTrigger) this.enter();
-  }
-  unobserve(): void {}
-  disconnect(): void {}
-  enter(): void {
-    this.callback(
-      this.observed.map((target) => ({ target, isIntersecting: true }) as IntersectionObserverEntry),
-      this as unknown as IntersectionObserver,
-    );
-  }
-}
-
-function latestStubIntersectionObserver(): StubIntersectionObserver {
-  const observer = StubIntersectionObserver.instances.at(-1);
-  if (!observer) throw new Error("no IntersectionObserver was constructed");
-  return observer;
-}
+// jsdom computes no layout, so the transcript's scroll port reads as
+// zero-tall (every scroll* property is 0). The offsetHeight stub below is what
+// gives it a rendered box, which is what scrollMetrics.shouldAutoLoadOlder
+// requires before it reads "nothing overflows" as the "too short to fill"
+// shape - so a pane rendered here pages on its own, the way a real browser's
+// short first page does. LoadOlderRow's own suite drives the geometry and the
+// resize re-check explicitly.
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -306,9 +280,6 @@ beforeEach(() => {
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
   localStorage.clear();
-  StubIntersectionObserver.instances = [];
-  StubIntersectionObserver.autoTrigger = true;
-  vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
   offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: CONTAINER_HEIGHT });
 });
@@ -496,6 +467,39 @@ test("a deleted ref shows an honest empty state instead of loading forever, and 
   expect(window.location.pathname).toBe("/");
 });
 
+// UI-01's cached-model half at the surface: a deletion fence that lands after
+// the pane already hydrated must replace the stale transcript with the deleted
+// state instead of leaving it on screen. The store keeps the cached model, so
+// the surface has to key off the deletion flag, not "no model".
+test("a deletion fence after hydration replaces a cached transcript with the deleted surface", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_gone", { name: "Soon gone" }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_gone" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByText("Soon gone")).toBeTruthy());
+
+  fake.on("thread/read", () => {
+    throw new WireError("target has been deleted: local:ref_gone", -32001, {
+      evenerErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  await act(async () => {
+    await threadsStore
+      .getState()
+      .refreshThread("ref_gone")
+      .catch(() => undefined);
+  });
+
+  await waitFor(() => expect(screen.getByText(/this session was deleted/i)).toBeTruthy());
+  expect(screen.queryByText("Soon gone")).toBeNull();
+  expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
+});
+
 test("shows the thread's live name once hydrated, not the raw ref", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { name: "My session" }));
@@ -532,10 +536,9 @@ test("omits the old live Detail toolbar while transcript and older-history conte
   );
 
   expect(await screen.findByText("hello")).toBeTruthy();
-  // Idle paging is silent now (no "Older turns" banner); the row and its
-  // automatic-fetch sentinel are what must remain reachable.
+  // Idle paging is silent now (no "Older turns" banner); the row is what must
+  // remain reachable.
   expect(screen.getByTestId("load-older-row")).toBeTruthy();
-  expect(screen.getByTestId("load-older-sentinel")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
   act(() => {
     transcriptDisplayStore.setState({ viewport: "desktop" });
@@ -1786,10 +1789,11 @@ test("the liveness line renders in the reserved footer beside the composer, neve
 
 // --- older-turn paging failure (round-3 C3) ------------------------------
 //
-// Paging is automatic (LoadOlderRow's own IntersectionObserver sentinel), so a
-// failure has no user gesture to report back to and would be silent. It surfaces
-// INLINE, at the top of the transcript where history stops, with a Retry - not
-// as a toast, which is reserved for actions the user actually initiated.
+// Paging is automatic (LoadOlderRow's geometry fill and the near-top trigger),
+// so a failure has no user gesture to report back to and would be silent. It
+// surfaces INLINE, at the top of the transcript where history stops, with a
+// Retry - not as a toast, which is reserved for actions the user actually
+// initiated.
 test("a failed older-page fetch surfaces inline with a retry instead of failing silently", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => ({
@@ -1816,13 +1820,13 @@ test("a failed older-page fetch surfaces inline with a retry instead of failing 
     </ClientProvider>,
   );
 
-  // No click anywhere: the sentinel's own visibility is what fetched, which is
+  // No click anywhere: the automatic paging trigger is what fetched, which is
   // the whole point of C3. The failure still has to be visible.
   await screen.findByText(/couldn't load older turns: boom/i);
   expect(screen.getByTestId("load-older-retry")).toBeTruthy();
 });
 
-test("older turns load with no click at all once the paging sentinel is in view", async () => {
+test("older turns load with no click at all once the paging trigger fires", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => ({
     thread: testThread("ref_a", {
@@ -1859,7 +1863,6 @@ test("older turns load with no click at all once the paging sentinel is in view"
 });
 
 test("folds a result-only partial turn with its older call and earlier fragment", async () => {
-  StubIntersectionObserver.autoTrigger = false;
   const fake = connectFakeClient();
   fake.on("thread/read", () => ({
     thread: testThread("ref_a", {
@@ -1920,12 +1923,9 @@ test("folds a result-only partial turn with its older call and earlier fragment"
     </ClientProvider>,
   );
 
-  const sentinel = await screen.findByTestId("load-older-sentinel");
-  expect(latestStubIntersectionObserver().observed).toContain(sentinel);
-  expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
-  await act(async () => {
-    latestStubIntersectionObserver().enter();
-  });
+  // The older page loads on its own: jsdom's zero-height port is exactly the
+  // "too short to fill" shape the row's geometry check fills, so the fragment
+  // arrives and folds into the turn it belongs to.
   expect(await screen.findByText("earlier fragment")).toBeTruthy();
   expect(screen.getAllByText("earlier fragment")).toHaveLength(1);
   const foldedTool = threadsStore
@@ -2510,8 +2510,8 @@ test("a dormant live session renders an idle drain in the live-edge row", async 
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
 
   await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
   expect(document.querySelector('[data-row-id="live-edge"]')).not.toBeNull();
@@ -2551,8 +2551,8 @@ test("a restart-required session renders no held ghost for a seeded hold", async
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
   expect(screen.queryByTestId("held-steer-stack")).toBeNull();
@@ -2607,8 +2607,8 @@ test("a dormant session's last held departure still announces its outcome", asyn
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
 
   // The departure: Stop cancels the ref's non-attempted rows - the entry
@@ -2617,8 +2617,8 @@ test("a dormant session's last held departure still announces its outcome", asyn
   await act(async () => {
     await mutationStorage.cancelUnattempted("ref_a");
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
 
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe(
@@ -2662,8 +2662,8 @@ test("a resume-required live session renders no held ghost", async () => {
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
   expect(screen.queryByTestId("held-steer-stack")).toBeNull();
@@ -2706,8 +2706,8 @@ test("a recovery-fenced live session renders no held ghost", async () => {
       optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
     });
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
   expect(screen.queryByTestId("held-steer-stack")).toBeNull();
@@ -2892,8 +2892,8 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
     const answerSteer = await act(() => steerSent.promise);
     await act(async () => {
       answerSteer();
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
     expect(Math.max(...epochs)).toBe(1); // removal never bumps the epoch
     // ...and never RESETS it either: the last observed value is still the
@@ -2970,6 +2970,51 @@ test("explains that an incompatible daemon needs an explicit restart", async () 
   // clear an incompatible daemon on its own.
   expect(screen.getByRole("button", { name: "Force stop…" })).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});
+
+// A merely-resumable local session needs no special UI: sending a prompt resumes
+// it (the hub folds the resume into turn/start), so its standalone Resume notice
+// and button are dropped. The two other causes of the obligation keep the
+// notice - a restartRequired daemon above, and a session with uncertain messages
+// (which the Resume action reconciles).
+test("a merely-resumable local session shows no standalone Resume notice", async () => {
+  const fake = connectFakeClient();
+  const ref = "local:resume-only-notice";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        // The hub's resume fence pairs resumeRequired with send:false
+        // (applyThreadResumeRequirement); this is that wire shape.
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  const tree = () => (
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>
+  );
+  const { rerender } = render(tree());
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  // The resume-only predicate now fails closed until the ref's durable outbox
+  // has loaded (hasQueuedNonSend / hasBlockedUnknown). Session reads that at
+  // render, so load the outbox and re-render - the pane's own liveness tick
+  // does the same within a tick - before asserting the notice is dropped.
+  await refreshPendingTurnsProjection(ref);
+  // Readiness now follows the fence's own ownership check: the runtime's
+  // startup discovery scan starts an all-targets read that out-ranks this
+  // specific one, so settle the outstanding projection work and let the latest
+  // read be the one that marks the ref loaded.
+  await flushPendingTurnsProjectionForTests();
+  rerender(tree());
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 test("refreshes a restarted session without closing its pane", async () => {
@@ -3156,8 +3201,8 @@ test("explicit Resume follows the returned identity through transcript and new s
     await Promise.all(hydration.mock.results.map((result) => result.value));
     await Promise.all(refresh.mock.results.map((result) => result.value));
     await readyDiscovery;
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   expect(await mutationStorage.listOutbox(stableRef)).toEqual([
     // The Force stop above owns this row now: it was never attempted (the
     // seed wrote blockedUnknown directly onto an undispatched record), so the
@@ -3602,8 +3647,8 @@ test.each(["notLoaded", "active", "idle"])(
       mutationId = await seedPendingSend();
       await mutationStorage.markUnknown(mutationId, "blockedUnknown");
       await refreshPendingTurnsProjection("ref_a");
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     const holds: ReturnType<typeof holdIndexedDBEvent>[] = [];
     let announceRead: (() => void) | undefined;
     const readHeld = new Promise<void>((resolve) => {
@@ -3922,25 +3967,25 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
     });
     await act(async () => {
       await threadsStore.getState().queue(ref, "preserve this uncertain message");
-      await flushPendingTurnsProjectionForTests();
       // The blocked write's store publications re-render the session; they
       // land inside this act() rather than after it.
       await blockedWritten;
     });
+    await flushPendingTurnsProjectionForTests();
     expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
     expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
     const reconciled = nextReconciliation();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2000);
       await reconciled;
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
     expect(reads).toBeGreaterThan(1);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4000);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect((await mutationStorage.getOutbox(mutationId))?.composerText).toBe("preserve this uncertain message");
     expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
@@ -4008,8 +4053,8 @@ test.each(["pending", "failed"])(
       await user.keyboard("{Escape}");
       await act(async () => {
         await threadsStore.getState().send(ref, "continue the saved conversation");
-        await flushPendingTurnsProjectionForTests();
       });
+      await flushPendingTurnsProjectionForTests();
       await waitFor(() => expect(daemonStarted).toBe(true));
       if (outcome === "failed") {
         await act(async () => rejectRead(blocked()));
@@ -4031,8 +4076,8 @@ test.each(["pending", "failed"])(
       expect(refresh).toHaveBeenCalledWith(ref);
       await act(async () => {
         await Promise.all(refresh.mock.results.map((result) => result.value));
-        await flushPendingTurnsProjectionForTests();
       });
+      await flushPendingTurnsProjectionForTests();
       expect((await mutationStorage.getOutbox(mutationId))?.composerText).toBe("continue the saved conversation");
     } finally {
       await act(async () => rejectRead(blocked()));

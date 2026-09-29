@@ -2,22 +2,20 @@ import { memo, useMemo } from "react";
 import { type AccessibilityActionEvent, type AccessibilityActionInfo, Alert, Linking } from "react-native";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { copyText } from "./clipboard";
-import { typeRoles } from "./design/tokens";
+import { useReadingType } from "./display/displayContext";
 import { externalMarkdownLink } from "./markdownLinks";
 import { splitNativeSegments } from "./markdownSegments";
 import { type MarkdownRoles, markdownStyle } from "./markdownStyle";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { useColors } from "./ui";
 
-// Agent prose in the serif, headings in the system font.
-const TRANSCRIPT_ROLES: MarkdownRoles = {
-	body: typeRoles.agentProse,
-	headings: [
-		{ fontSize: 20, lineHeight: 26, fontWeight: "600" },
-		{ fontSize: 17, lineHeight: 24, fontWeight: "600" },
-		{ fontSize: 15, lineHeight: 21, fontWeight: "600" },
-	],
-};
+// Agent prose in the phone's reading font (the serif unless Display says
+// Sans), headings in the system font.
+const TRANSCRIPT_HEADINGS: MarkdownRoles["headings"] = [
+	{ fontSize: 20, lineHeight: 26, fontWeight: "600" },
+	{ fontSize: 17, lineHeight: 24, fontWeight: "600" },
+	{ fontSize: 15, lineHeight: 21, fontWeight: "600" },
+];
 
 /** A link's destination, with Open in browser when it's a web address. */
 export function showLink(target: string) {
@@ -85,8 +83,12 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	const colors = useColors();
 	// useColors returns a new object each render, but every color in it comes
 	// from the palette, one constant per color scheme.
+	const reading = useReadingType();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the palette, as above
-	const style = useMemo(() => markdownStyle(colors, TRANSCRIPT_ROLES), [colors.palette]);
+	const style = useMemo(
+		() => markdownStyle(colors, { body: reading.agentProse, headings: TRANSCRIPT_HEADINGS }),
+		[colors.palette, reading],
+	);
 	const segments = useMemo(() => splitNativeSegments(markdown), [markdown]);
 	return (
 		<>

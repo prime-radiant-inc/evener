@@ -7,6 +7,17 @@ import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
+/** The diamond in a system event's 16pt gutter. */
+export function SystemEventMark() {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ width: 16 }}>
+			<SymbolView name="diamond" tintColor={palette.inkLow} size={8 * scale} />
+		</View>
+	);
+}
+
 export function SystemEvent({
 	label,
 	text,
@@ -25,9 +36,11 @@ export function SystemEvent({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const quiet = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
+	// A long label truncates to one line so its chevron stays in view; the
+	// button's accessibility label still says it in full.
 	const line = label ? (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-			<Text allowFontScaling={allowFontScaling} style={quiet}>
+			<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...quiet, flexShrink: 1 }}>
 				{label}
 			</Text>
 			<SymbolView name={expanded ? "chevron.down" : "chevron.right"} tintColor={palette.inkLow} size={10 * scale} />
@@ -46,9 +59,7 @@ export function SystemEvent({
 				onPress={onToggle}
 				style={{ flexDirection: "row", alignItems: "center", minHeight: 44 }}
 			>
-				<View style={{ width: 16 }}>
-					<SymbolView name="diamond" tintColor={palette.inkLow} size={8 * scale} />
-				</View>
+				<SystemEventMark />
 				<View style={{ flex: 1, minWidth: 0 }}>{line}</View>
 			</Pressable>
 			{label && expanded ? (

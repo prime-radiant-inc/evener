@@ -9,7 +9,7 @@ import type { ContentLevel } from "@evener/appwire-client";
 import { liveAsksFor, projectConversation } from "../projectedRows.js";
 import { projectNativeTranscript } from "../transcriptPresentation.js";
 import { groupTimeline, type TimelineRow } from "../timeline.js";
-import { configForLevel } from "../session/detailLevels.js";
+import { displayForLevel } from "../session/detailLevels.js";
 import { EVIDENCE_PREVIEW_LINES, stepEvidence } from "../session/evidence.js";
 import { ghosts, shownGhosts } from "../session/ghosts.js";
 import { modelChipLabel, notesSummary } from "../session/sessionFacts.js";
@@ -18,7 +18,7 @@ import { canWriteHumanNote, notesBarPreview } from "../session/sessionNotes.js";
 import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
 import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
-import { demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
+import { createDemoFleet, demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
 import { createDemoSessions } from "./demoSessions.js";
 import { DEMO_MODEL_LIST } from "./demoSetup.js";
 
@@ -38,9 +38,13 @@ const hostOf = (ref: string) => ref.slice(0, ref.indexOf(":"));
 function open(slug: string, level: ContentLevel = "intent") {
 	const thread = threadOf(slug);
 	const model = hydrateThread({ thread }, thread.evener.ref, NOW);
-	const config = configForLevel(level, null) ?? undefined;
+	const display = displayForLevel(level, null);
+	const config = display.config ?? undefined;
 	const conversation = projectConversation(model, liveAsksFor(model), config);
-	const rows = sessionRows(groupTimeline(projectNativeTranscript(conversation, config).items), model.turns);
+	const presentation = projectNativeTranscript(conversation, config, {
+		justTheConversation: display.justTheConversation,
+	});
+	const rows = sessionRows(groupTimeline(presentation.items), model.turns);
 	return { thread, model, conversation, rows };
 }
 
@@ -148,6 +152,38 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		);
 	});
 
+	// A real delegate call settles as soon as its launch receipt returns, so a
+	// demo that gave the call its subagent's state would hide a row that reads
+	// the call instead of the subagent (the transcript audit's first gap).
+	it("settles every subagent call at launch with its receipt, as the hub does", () => {
+		const calls = sessions.flatMap((thread) =>
+			(thread.turns ?? []).flatMap((turn) => turn.items ?? []).filter((item) => item.toolName === "delegate"),
+		);
+		expect(calls.length).toBeGreaterThan(0);
+		for (const call of calls) {
+			expect(call.status).toBe("completed");
+			expect(JSON.parse(call.output ?? "{}")).toMatchObject({
+				delegate_id: expect.any(String),
+				transcript_ref: expect.any(String),
+			});
+		}
+	});
+
+	it.each(["s-pr2138", "s-retry", "s-tasklist"])(
+		"reads each subagent row in %s at Intent by its subagent's own state, and can open it",
+		(slug) => {
+			const { model, rows } = open(slug);
+			const subagentRows = subagentsOf(rows);
+			expect(subagentRows.length).toBeGreaterThan(0);
+			for (const row of subagentRows) {
+				const delegate = model.delegates?.find((candidate) => candidate.originToolCallId === row.detail.callId);
+				const line = subagentLine(row, model.delegates, NOW);
+				expect(line.ref).toBe(delegate?.transcriptRef);
+				expect(line.stateText).toMatch(/^(running|failed|done) · \d+[smhd]/);
+			}
+		},
+	);
+
 	it("frames 13 and 14: frame 7's session names its model and effort from a catalog with two providers", () => {
 		const { model } = open("s-pr2138");
 		expect(modelChipLabel(model, DEMO_MODEL_LIST.data)).toBe("DeepSeek 4.1 Flash · XHigh");
@@ -195,7 +231,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("frame 10: a working session whose one queued message offers Steer now", () => {
 		const { model } = open("s-tasklist");
 		expect(model.status.type).toBe("active");
-		const queued = ghosts(model, [], null, []);
+		const queued = ghosts(model, [], null, [], true);
 		expect(queued).toHaveLength(1);
 		expect(queued[0]).toMatchObject({ state: "queued", buttons: ["steerNow"] });
 	});
@@ -203,7 +239,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("queues enough on one working session to open the Queue sheet from 'N more queued'", () => {
 		const { model } = open("s-stumble");
 		expect(model.status.type).toBe("active");
-		expect(shownGhosts(ghosts(model, [], null, [])).moreQueued).toBeGreaterThan(0);
+		expect(shownGhosts(ghosts(model, [], null, [], true)).moreQueued).toBeGreaterThan(0);
 	});
 
 	it("frame 11: the last turn failed on a sign-in error", () => {
@@ -295,6 +331,50 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		expect(subagent("Fix race in tree settle").evener.capabilities).toEqual(threadOf("s-roster").evener.capabilities);
 	});
 
+	it("times a running subagent the same in its row, its transcript entry and its own screen", () => {
+		// The Subagents list reads evener/jobs/list, the transcript the thread's
+		// delegates, and the subagent's screen its own thread's turn: one fact,
+		// its run's start, so the three can't disagree.
+		const fleet = createDemoFleet({ now: NOW });
+		const tree = fleet.answerJobsList({ ref: fleetSessionRef("s-pr2138") }).data as {
+			root: { entries: unknown[] };
+		};
+		const started = new Map<string, string>();
+		const visit = (entries: unknown[]) => {
+			for (const entry of entries as {
+				kind: string;
+				delegate?: { childRef: string; runStartedAt: string; child?: { entries: unknown[] } };
+			}[]) {
+				if (entry.kind === "delegate" && entry.delegate) {
+					started.set(entry.delegate.childRef, entry.delegate.runStartedAt);
+					if (entry.delegate.child) visit(entry.delegate.child.entries);
+				}
+			}
+		};
+		visit(tree.root.entries);
+		const running = sessions.filter((thread) => thread.evener.parentRef && thread.status.type === "active");
+		expect(running.length).toBeGreaterThan(0);
+		const transcript = new Map(
+			(threadOf("s-pr2138").evener.diagnostics?.delegates ?? []).map((delegate) => [
+				delegate.transcriptRef,
+				delegate.runStartedAt,
+			]),
+		);
+		// Get PR 2138 Test Clean's running subagents, each in all three places.
+		const compared = running.filter((thread) => started.has(thread.evener.ref));
+		expect(compared.length).toBeGreaterThan(20);
+		// Nested ones too, such as the subagents a subagent started.
+		expect(compared.some((thread) => thread.evener.parentRef !== threadOf("s-pr2138").evener.ref)).toBe(true);
+		expect(transcript.size).toBeGreaterThan(0);
+		for (const thread of compared) {
+			const listed = started.get(thread.evener.ref);
+			expect(new Date(thread.evener.activeTurnStartedAt ?? 0).toISOString()).toBe(listed);
+			if (transcript.has(thread.evener.ref)) expect(transcript.get(thread.evener.ref)).toBe(listed);
+		}
+		const inTranscript = compared.filter((thread) => transcript.has(thread.evener.ref));
+		expect(inTranscript.length).toBeGreaterThan(0);
+	});
+
 	it("advertises only readable notes on a session that needs a restart", () => {
 		// cmd/evener-hub/internal/appsource/local_daemon.go, ThreadStatusRestartRequired.
 		expect(threadOf("s-namer").evener.capabilities).toEqual({
@@ -328,5 +408,57 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			text: "Your note: Measure on magic-kingdom, not a laptop.",
 			links: "1 link",
 		});
+	});
+});
+
+// EVENER_DEMO_LONG: content longer than any frame, so a screenshot pass
+// exercises long questions, approvals and messages, and many rows.
+describe("the demo sessions with long content", () => {
+	const long = createDemoSessions({ now: NOW, long: true });
+	const longThread = (slug: string) => {
+		const thread = long.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
+		if (!thread) throw new Error(`no demo thread for ${slug}`);
+		return thread;
+	};
+	const items = (thread: Thread) => (thread.turns ?? []).flatMap((turn) => turn.items ?? []);
+	const hydrated = (slug: string) => {
+		const thread = longThread(slug);
+		return hydrateThread({ thread }, thread.evener.ref, NOW);
+	};
+	const notifications = (thread: Thread) =>
+		items(thread).filter((item) => item.type === "steering" && item.steeringKind === "notification");
+
+	it("asks four questions, the first long, with five long options", () => {
+		const model = hydrated("s-audit");
+		const questions = [...liveAsksFor(model).values()].flat();
+		expect(questions).toHaveLength(4);
+		expect(questions[0]?.question.length).toBeGreaterThan(250);
+		expect(questions[0]?.why?.length).toBeGreaterThan(600);
+		expect(questions[0]?.options).toHaveLength(5);
+		expect(longThread("s-audit").evener.pendingQuestion).toMatchObject({ count: 4 });
+	});
+
+	it("asks to write to a deep path that may have partly run", () => {
+		expect(hydrated("s-mirror").pendingEscalations).toEqual([
+			expect.objectContaining({
+				deniedPath:
+					"/home/jesse/sites/docs/reference/wire/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
+				partiallyRan: true,
+			}),
+		]);
+	});
+
+	it("gives the working session a long message from each side, many steps and notifications", () => {
+		const shown = items(longThread("s-pr2138"));
+		const usual = items(threadOf("s-pr2138"));
+		expect(shown.length).toBeGreaterThan(usual.length + 24);
+		expect(shown.some((item) => item.type === "userMessage" && (item.text ?? "").length > 500)).toBe(true);
+		expect(shown.some((item) => item.type === "agentMessage" && (item.text ?? "").length > 1500)).toBe(true);
+		expect(notifications(longThread("s-pr2138"))).not.toHaveLength(0);
+	});
+
+	it("leaves every session's usual content alone without the flag", () => {
+		expect(notifications(threadOf("s-pr2138"))).toHaveLength(0);
+		expect(threadOf("s-audit").evener.pendingQuestion).toMatchObject({ count: 2 });
 	});
 });

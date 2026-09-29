@@ -70,7 +70,7 @@ export async function refreshPinNavigation(
 	const checkedPage = () => {
 		const state = pages.getSnapshot();
 		if (!state.loaded || state.loading || state.stale || state.error)
-			throw Error("The pinned sections could not be confirmed. Refresh to try again.");
+			throw Error("The pinned sections could not be confirmed. Try again.");
 		return state;
 	};
 	let page = checkedPage();
@@ -94,13 +94,13 @@ export async function refreshPinNavigation(
 	if (!version) throw Error("The pin catalog version could not be confirmed.");
 	for (const value of locations.values())
 		if (value.generationId !== version.generationId)
-			throw Error("The hub restarted while reading pin assignments. Refresh to try again.");
+			throw Error("The hub restarted while reading pin assignments. Try again.");
 	if (assignedIds.some((id) => !page.rows.some((section) => section.id === id)))
-		throw Error("A pin assignment changed while reading the sections. Refresh to try again.");
+		throw Error("A pin assignment changed while reading the sections. Try again.");
 	const receipt = checkpoint?.receipt;
 	if (receipt) {
 		if (confirmReceipt && version.generationId !== receipt.generation_id)
-			throw Error("The hub restarted before the pin change could be confirmed. Refresh to read its current state.");
+			throw Error("The hub restarted before the pin change could be confirmed. Check its current state.");
 		if (
 			version.generationId === receipt.generation_id &&
 			version.revision < requiredRevision(pages.resourceKey, receipt.targets)

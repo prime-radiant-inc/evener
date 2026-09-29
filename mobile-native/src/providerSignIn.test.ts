@@ -161,6 +161,17 @@ it("stops polling on expiry and never automatically restarts", async () => {
 	expect(calls).toHaveLength(2);
 	flow.dispose();
 });
+it("says to look at Providers when a poll answers with a state it doesn't know", async () => {
+	vi.useFakeTimers();
+	const { flow, io } = boundary();
+	await flow.start();
+	io.request = async () => ({ state: "surprising" });
+	await vi.advanceTimersByTimeAsync(20000);
+	expect(flow.getSnapshot().error).toBe(
+		"Sign-in has not been confirmed. See whether Providers shows it signed in before starting again.",
+	);
+	flow.dispose();
+});
 it("retains the flow after a poll transport failure and retries only on request", async () => {
 	vi.useFakeTimers();
 	const { flow, io, calls } = boundary();
@@ -233,7 +244,7 @@ it("does not publish late authorization after disposal", async () => {
 });
 it("retains the device flow across a hub connection replacement", async () => {
 	vi.useFakeTimers();
-	const { flow, calls, store, connect } = boundary();
+	const { flow, calls, connect } = boundary();
 	await flow.start();
 	connect(null);
 	await vi.advanceTimersByTimeAsync(10000);
@@ -269,7 +280,7 @@ it("does not accept a late poll from the disconnected client", async () => {
 	flow.dispose();
 });
 it("keeps browser continuation across reconnect without replaying completion", async () => {
-	const { flow, io, store, connect } = boundary();
+	const { flow, io, connect } = boundary();
 	io.request = async (method) =>
 		method === "evener/auth/device/start"
 			? { ...device, fallback: true }
@@ -292,7 +303,9 @@ it("keeps browser continuation across reconnect without replaying completion", a
 	connect(signInClient({ request }, []));
 	expect(request).not.toHaveBeenCalled();
 	expect(flow.getSnapshot().phase).toBe("browser");
-	expect(flow.getSnapshot().error).toContain("confirmed");
+	expect(flow.getSnapshot().error).toBe(
+		"Sign-in could not be confirmed before the connection changed. See whether Providers shows it signed in before trying again.",
+	);
 	expect(flow.getSnapshot().browser?.flowId).toBe("browser-flow");
 	flow.dispose();
 });
@@ -455,7 +468,7 @@ it("restores the device timer after a read outlasts the polling interval", async
 
 it("does not let a stale rejected poll poison a newly started flow", async () => {
 	vi.useFakeTimers();
-	const { flow, io, store, connect } = boundary();
+	const { flow, io, connect } = boundary();
 	await flow.start();
 	let reject!: (reason: unknown) => void;
 	io.request = async () =>
@@ -544,12 +557,14 @@ it("keeps the re-check prompt after a failed completion", async () => {
 	expect(flow.getSnapshot().phase).toBe("browser");
 
 	await flow.complete("https://example.test/callback?code=fixture");
-	expect(flow.getSnapshot().error).toContain("confirmed");
+	expect(flow.getSnapshot().error).toBe(
+		"Sign-in completion could not be confirmed. See whether Providers shows it signed in before submitting again.",
+	);
 
 	// A completion that could not be confirmed leaves the flow uncertain, so a
 	// later status check must keep saying so rather than reading clean.
 	await flow.checkStatus();
 	expect(flow.getSnapshot().error).toBe(
-		"Sign-in status could not be confirmed. Check credential status before trying again.",
+		"Sign-in status could not be confirmed. See whether Providers shows it signed in before trying again.",
 	);
 });

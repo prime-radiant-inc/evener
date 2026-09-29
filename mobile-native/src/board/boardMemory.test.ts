@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import { FoldedSections, forgetBoard, OrganizeByPreference, RecentSearches, SeenMarkers } from "./boardMemory";
 
-function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
-	return {
-		values,
-		getItemSync: (key) => values.get(key) ?? null,
-		setItemSync: (key, value) => void values.set(key, value),
-		removeItemSync: (key) => void values.delete(key),
-	};
-}
 const at = (minutes: number) => new Date(Date.UTC(2026, 8, 26, 12, minutes)).toISOString();
 
 describe("seen markers", () => {
@@ -274,6 +267,7 @@ describe("forgetBoard", () => {
 				["evener.native.board-sections.hub-a", "{}"],
 				["evener.native.board-organize.hub-a", '"host-project"'],
 				["evener.native.recent-searches.hub-a", "[]"],
+				["evener.native.board-hold.hub-a", "[]"],
 				["evener.native.seen.hub-b", "{}"],
 				["evener.native.board-organize.hub-b", '"host-project"'],
 			]),
@@ -300,6 +294,7 @@ describe("forgetBoard", () => {
 			"evener.native.board-sections.hub-a",
 			"evener.native.board-organize.hub-a",
 			"evener.native.recent-searches.hub-a",
+			"evener.native.board-hold.hub-a",
 		]);
 	});
 });

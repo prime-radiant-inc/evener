@@ -14,6 +14,7 @@ import type { AppwireClient } from "./client";
 import { canonicalJson, createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
+import { isPlainObject } from "./plainObject";
 import { createReadyGenerationFence, type ReadyGenerationFence } from "./readyGenerationFence";
 import {
   createSettingsHubGeneration,
@@ -208,10 +209,6 @@ const SAVE_CANCELLED_MESSAGE = "Transcript preference save was cancelled.";
 
 class InvalidPatchResponseError extends Error {}
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isRevision(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -246,7 +243,7 @@ function calculateHubDefault(
 }
 
 function fromWirePatchResponse(value: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!isRecord(value) || value.layout !== layout) return undefined;
+  if (!isPlainObject(value) || value.layout !== layout) return undefined;
   return fromWireDefault(value);
 }
 
@@ -261,7 +258,7 @@ function canonicalErrorPayload(
   field: string,
   layout: ViewportClass,
 ): HubTranscriptDisplayDefault | undefined {
-  if (!(error instanceof WireError) || !isRecord(error.data) || error.data.layout !== layout) return undefined;
+  if (!(error instanceof WireError) || !isPlainObject(error.data) || error.data.layout !== layout) return undefined;
   return wireRejectionPayload(error, info, field, fromWireDefault);
 }
 
@@ -290,7 +287,7 @@ function decodePatchReply(
 }
 
 export function fromWireChange(value: unknown): TranscriptDisplayChange | undefined {
-  if (!isRecord(value) || !isViewportClass(value.layout) || !isRevision(value.revision)) return undefined;
+  if (!isPlainObject(value) || !isViewportClass(value.layout) || !isRevision(value.revision)) return undefined;
   const config = fromWireConfig(value.config);
   return config === undefined ? undefined : { layout: value.layout, revision: value.revision, config };
 }
@@ -339,7 +336,7 @@ function invalidDraft(): never {
  * (a shape the native host wrote before layouts were recorded) can never be
  * guessed at. Throws on anything else. */
 function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
-  if (!isRecord(value)) invalidDraft();
+  if (!isPlainObject(value)) invalidDraft();
   if (
     typeof value.id !== "string" ||
     !value.id.length ||
@@ -728,6 +725,31 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     if (writeSerialAtStart !== fence.writeToken || saving || savingAtReadStart) return {};
     if (draft !== null && writeUncertain) {
       if (draft !== draftAtReadStart) return {};
+      // The read proves the uncertain write landed exactly what the draft
+      // proposed: the hub moved PAST the draft's base revision while holding
+      // the user's chosen value, so the draft is confirmed, not stale. Drop it
+      // and its checkpoint instead of marking the proposal for a review it
+      // does not need. An unchanged revision proves the write never landed -
+      // the proposal is still current and stays for review.
+      const confirmed = finalHub[draft.layout];
+      if (
+        confirmed !== undefined &&
+        confirmed.revision > draft.revision &&
+        configFingerprint(confirmed.config) === configFingerprint(draft.config)
+      ) {
+        let removed: boolean;
+        try {
+          removed = draftRepository.discardClassified();
+        } catch {
+          return { storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE };
+        }
+        // A refusal means another window replaced the checkpoint while the
+        // outcome was unknown: adopt whatever is actually on disk now,
+        // judged against the FINAL hub this publication is about to carry.
+        return removed
+          ? { writeUncertain: false, draft: null, draftConflict: false }
+          : restoreDraft({ loaded: true, hub: finalHub });
+      }
       let replaced: boolean;
       try {
         // A fresh id: settledWrite has no checkpoint reference to reuse one

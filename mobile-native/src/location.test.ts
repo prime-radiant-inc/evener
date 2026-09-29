@@ -21,8 +21,11 @@ describe("last mobile location", () => {
 		repository.save(locationForRoute({ name: "KeybindingPreferences", params: { hubId: "studio", editor } }, "studio"));
 		const saved = new LocationRepository(disk).read(["studio"]);
 		expect(saved).toEqual({ hubId: "studio", keybindings: { editor } });
-		expect(restoredStack(saved).routes.slice(-2)).toEqual([
-			{ name: "HubSettings", params: { hubId: "studio" } },
+		// The Hub's MORE row opens the shortcuts from the Board, so the editor
+		// reopens over the Board, with no Hub settings screen under it.
+		expect(restoredStack(saved).routes).toEqual([
+			{ name: "Hubs" },
+			{ name: "Sessions" },
 			{ name: "KeybindingPreferences", params: { hubId: "studio", editor } },
 		]);
 		expect(new LocationRepository(disk).read(["other"])).toBeNull();
@@ -431,15 +434,14 @@ describe("last mobile location", () => {
 			hubId: "studio",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle.md",
-			reviewRef: "local:coord",
-			reviewTitle: "Get PR 2138 Test Clean",
+			sessionTitle: "Fix race",
 			updatedAt: "2026-09-26T11:39:00.000Z",
 		};
 		repository.save(locationForRoute({ name: "Reader", params }, "studio"));
 		const saved = new LocationRepository(disk).read(["studio"]);
 		expect(saved).toEqual({
 			hubId: "studio",
-			conversation: { ref: "local:coord", title: "Get PR 2138 Test Clean" },
+			conversation: { ref: "local:fix", title: "Fix race" },
 			reader: {
 				sessionRef: "local:fix",
 				path: "docs/superpowers/plans/settle.md",
@@ -448,7 +450,7 @@ describe("last mobile location", () => {
 		});
 		expect(restoredStack(saved).routes.slice(-3)).toEqual([
 			{ name: "Sessions" },
-			{ name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Get PR 2138 Test Clean" } },
+			{ name: "Conversation", params: { hubId: "studio", ref: "local:fix", title: "Fix race" } },
 			{ name: "Reader", params },
 		]);
 	});
@@ -495,6 +497,26 @@ describe("last mobile location", () => {
 		expect(
 			locationForRoute(
 				{ name: "Reader", params: { hubId: "studio", sessionRef: "local:fix", path: "a.md" } },
+				"studio",
+			),
+		).toBeNull();
+	});
+
+	it("refuses Reader params that predate the single-ref route", () => {
+		// A pre-#2871 Reader named its session twice; the route now takes one ref
+		// and its title, so these params have no sessionTitle and are rejected.
+		expect(
+			locationForRoute(
+				{
+					name: "Reader",
+					params: {
+						hubId: "studio",
+						sessionRef: "local:fix",
+						path: "a.md",
+						reviewRef: "local:fix",
+						reviewTitle: "Fix race",
+					},
+				},
 				"studio",
 			),
 		).toBeNull();

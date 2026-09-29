@@ -17,7 +17,7 @@
 // (toasts, a clear's response, a shared note's authority) are callbacks the
 // app supplies. No clock, no timer, no DOM.
 import type { AppwireClientLike } from "../../clientLike";
-import { mutationErrorData, WireError } from "../../errors";
+import { mutationErrorData, refusedBeforeRunning, WireError } from "../../errors";
 import type { MethodName, MutationReceipt, NotesHumanSetResponse, ThreadClearResponse } from "../../types.gen";
 import { isClientReady, type MutationOutboxStorage } from "./outbox";
 import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
@@ -27,7 +27,14 @@ import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from
 // (which asks for the runtime's current client): keeping the parameter required
 // preserves assignability for a consumer that already implements
 // `(targetRef: string) => ...`.
-export type MutationDispatchClientLookup = (targetRef: string) => AppwireClientLike | null | undefined;
+//
+// `method` names the record the dispatcher is about to send for `targetRef`, so
+// a host can fence a queued verb the daemon would refuse while admitting the
+// others (the hub's recovery admission carves only turn/start out of the
+// resume-only fence). Optional, so a lookup that answers for the ref alone
+// (`(targetRef: string) => ...`) stays assignable and keeps its previous
+// answer.
+export type MutationDispatchClientLookup = (targetRef: string, method?: string) => AppwireClientLike | null | undefined;
 
 export interface MutationDispatcherOptions<A extends MutationAttachmentRef = MutationAttachmentRef> {
   getClient: MutationDispatchClientLookup;
@@ -126,13 +133,16 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       // tab's list read. Sending is allowed only after an extant-state recheck.
       const current = await this.#storage.getOutbox(loaded.clientMutationId);
       if (current?.state !== "submitting") continue;
-      if (this.#getClient(targetRef) !== client) return false;
+      // The method-aware recheck: the top-of-loop lookup answered for the ref
+      // alone (it runs before nextDispatchable picks a record), so a host that
+      // fences one queued verb must still be able to park THIS record here.
+      if (this.#getClient(targetRef, current.method) !== client) return false;
 
       if (!(await this.#storage.markAttempted(current.clientMutationId))) continue;
       // Keep the committed attempt evidence if this client was retired: another
       // tab may have dispatched the same record, so absence of this send is not
       // proof of non-delivery. Live recovery retries the original payload.
-      if (this.#getClient(targetRef) !== client) return false;
+      if (this.#getClient(targetRef, current.method) !== client) return false;
       const outcome = await this.#attempt(client, current);
       if (outcome === "stop") return false;
     }
@@ -198,11 +208,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // here turned one malformed intent at the FIFO head into a
         // permanently parked thread (kata wr3s). Recovery preserves the text
         // and surfaces the failure; the FIFO advances.
-        if (
-          data?.clientMutationId === undefined &&
-          error instanceof WireError &&
-          (error.code === JSONRPC_INVALID_PARAMS || error.code === JSONRPC_INVALID_REQUEST)
-        ) {
+        if (data?.clientMutationId === undefined && refusedBeforeRunning(error)) {
           await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
           this.#onStorageChange([record.targetRef]);
           return "advance";
@@ -237,13 +243,6 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     }
   }
 }
-
-// Wire values of appwire's CodeInvalidRequest / CodeInvalidParams
-// (appwire/errors.go) — the standard JSON-RPC codes. Both mean the request
-// was refused on shape alone, before execution, so they are deterministic:
-// resending the identical payload can never produce a different answer.
-const JSONRPC_INVALID_REQUEST = -32600;
-const JSONRPC_INVALID_PARAMS = -32602;
 
 const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "turn/start",

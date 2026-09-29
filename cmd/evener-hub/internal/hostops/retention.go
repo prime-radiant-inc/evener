@@ -587,15 +587,6 @@ func (s *Store) compactLocked(next *snapshot) {
 		if !record.State.Terminal() {
 			continue
 		}
-		// §3: an open pending-spawn intent is the only thing that can name a
-		// live orphan, so a terminal record still carrying one is not
-		// compactable — compacting it would drop the intent and leave the orphan
-		// invisible, exactly what the intent exists to prevent. The intent drops
-		// at the next boot's local reap or at orphan-resolve, after which the
-		// record compacts normally.
-		if len(record.PendingSpawns) > 0 {
-			continue
-		}
 		candidates = append(candidates, compactionCandidate{
 			id:           record.ID,
 			removedFirst: pastHorizon[record.Host],
@@ -764,9 +755,6 @@ func normalizeSnapshotCollections(state *snapshot) {
 	}
 	if state.RemovedHosts == nil {
 		state.RemovedHosts = map[string]RemovedHost{}
-	}
-	if state.FencingQuarantines == nil {
-		state.FencingQuarantines = map[string]FencingQuarantine{}
 	}
 }
 

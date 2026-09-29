@@ -7767,12 +7767,29 @@ func expectRelayResync(t *testing.T, notifications <-chan appwire.Notification, 
 	}
 }
 
+// relayResyncTimeout is the bound awaitRelayResync waits: the requested timeout,
+// raised to relayResyncRaceFloor under the race detector. The relay's ordered
+// goroutines run ~10x slower under -race, so a request-sized bound can expire
+// while the resync is genuinely on its way (issue #2977). Outside -race the
+// requested bound stands. The floor is a build-tagged constant, not t.Deadline:
+// the CI shards run a prebuilt test binary directly with no -test.timeout, so a
+// test there has no deadline to scale against.
+func relayResyncTimeout(requested time.Duration) time.Duration {
+	return max(requested, relayResyncRaceFloor)
+}
+
 // awaitRelayResync is expectRelayResync for a client that also receives other
 // traffic (navigation invalidations, status frames): those are skipped, and
 // the resync may take as long as timeout to arrive.
+//
+// The resync is awaited on its channel; the bound is only a tripwire. It is
+// scaled under -race (relayResyncTimeout) because a fixed wall-clock bound can
+// expire before a resync that is genuinely on its way — which is what failed
+// under -race on a loaded runner.
 func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.After(timeout)
+	bound := relayResyncTimeout(timeout)
+	timer := time.After(bound)
 	for {
 		select {
 		case got := <-notifications:
@@ -7781,10 +7798,48 @@ func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, w
 			}
 			expectResyncParams(t, got, wantThreadID, wantRef)
 			return
-		case <-deadline:
-			t.Fatalf("no thread resync for %s within %v", wantRef, timeout)
+		case <-timer:
+			t.Fatalf("no thread resync for %s within %v", wantRef, bound)
 		}
 	}
+}
+
+// TestRelayResyncTimeout pins the scaling in both build modes: under -race a
+// request-sized bound is raised to the floor, and a larger bound is untouched.
+func TestRelayResyncTimeout(t *testing.T) {
+	want := time.Millisecond
+	if raceDetectorEnabled {
+		want = relayResyncRaceFloor
+	}
+	if got := relayResyncTimeout(time.Millisecond); got != want {
+		t.Errorf("relayResyncTimeout(1ms) = %v, want %v", got, want)
+	}
+	if got := relayResyncTimeout(time.Hour); got != time.Hour {
+		t.Errorf("relayResyncTimeout(1h) = %v, want 1h", got)
+	}
+}
+
+// TestAwaitRelayResyncWaitsPastTheRequestedBound pins the -race scaling: a
+// resync delivered after a small requested bound is still accepted because the
+// wait is raised to relayResyncRaceFloor. Under the old fixed time.After(bound)
+// this 200ms-late delivery against a 50ms bound failed at once (issue #2977).
+func TestAwaitRelayResyncWaitsPastTheRequestedBound(t *testing.T) {
+	if !raceDetectorEnabled {
+		t.Skip("relay resync scaling is a -race guarantee; run with -race")
+	}
+	const (
+		threadID = "late"
+		ref      = "codex:late"
+	)
+	notifications := make(chan appwire.Notification, 1)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		notifications <- *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+			ThreadID: threadID,
+			Ref:      ref,
+		}).Notification
+	}()
+	awaitRelayResync(t, notifications, threadID, ref, 50*time.Millisecond)
 }
 
 func expectResyncParams(t *testing.T, got appwire.Notification, wantThreadID, wantRef string) {
@@ -8846,6 +8901,67 @@ func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
 	}
 }
 
+// TestHubLogfForSinkIsFixedAtConstruction pins that hubLogfFor resolves its
+// default sink once, when it builds the logger, rather than reading the
+// os.Stderr global on every call. A live server goroutine logging through a
+// per-call read races any test that redirects os.Stderr (captureHubStderr);
+// the real startup path already sets the sink before any server runs (#2783).
+func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
+	first, err := os.CreateTemp(t.TempDir(), "hub-logf-first-")
+	if err != nil {
+		t.Fatalf("os.CreateTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+
+	original := os.Stderr
+	t.Cleanup(func() { os.Stderr = original })
+	os.Stderr = first
+	logf := hubLogfFor(hubcore.WebConfig{})
+
+	second, err := os.CreateTemp(t.TempDir(), "hub-logf-second-")
+	if err != nil {
+		t.Fatalf("os.CreateTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	// Probe the race a live logging goroutine would hit: log from another
+	// goroutine while the test redirects os.Stderr, the shape that filed #2783.
+	started := make(chan struct{})
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		close(started)
+		for range 1 << 20 {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			logf("sink probe")
+		}
+	}()
+	<-started
+	os.Stderr = second
+	close(stop)
+	<-done
+
+	// The sink resolved at construction still receives a later line; the
+	// redirect now in effect does not, because the logger no longer reads the
+	// global per call.
+	logf("after swap")
+	os.Stderr = original
+
+	if size, err := first.Stat(); err != nil || size.Size() == 0 {
+		t.Fatalf("sink set at construction captured nothing (stat err=%v)", err)
+	}
+	if size, err := second.Stat(); err != nil {
+		t.Fatalf("stat later redirect: %v", err)
+	} else if size.Size() != 0 {
+		t.Fatalf("sink followed os.Stderr after construction: %d bytes went to the later redirect", size.Size())
+	}
+}
+
 func TestHubRPCModelListUsesEvenerLaunchContractWhenDaemonFails(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
@@ -8968,6 +9084,36 @@ func TestHubRPCModelListPrefersEvenerLaunchContract(t *testing.T) {
 	}
 	if len(resp.Data) != 1 || resp.Data[0].Provider != "openai" || resp.Data[0].Model != "gpt-5.5" {
 		t.Fatalf("models=%+v", resp.Data)
+	}
+}
+
+// TestHubRPCModelListCachesLaunchContract: two model/list RPCs (two picker
+// opens) must spawn `evener launch-check --models` once, not once per open.
+// Before the hub cached the launch contract, every open paid the full live
+// provider listing again.
+func TestHubRPCModelListCachesLaunchContract(t *testing.T) {
+	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Spawner: spawner})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	for range 2 {
+		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+		if err != nil {
+			t.Fatalf("ModelList: %v", err)
+		}
+		if len(resp.Data) != 1 || resp.Data[0].Model != "gpt-5.5" {
+			t.Fatalf("models=%+v", resp.Data)
+		}
+	}
+	if got := spawner.callCount(); got != 1 {
+		t.Fatalf("launch contract called %d times for two model/list RPCs, want 1", got)
 	}
 }
 
