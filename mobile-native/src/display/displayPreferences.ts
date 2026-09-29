@@ -72,11 +72,13 @@ export class DisplayPreferences {
 		const unchanged = next.appearance === this.choices.appearance && next.readingFont === this.choices.readingFont;
 		// The same choice again still stores it when the last store failed.
 		if (unchanged && this.stored) return;
+		// Marked unstored before anything that can throw: a listener or the
+		// store failing leaves the next set to store it.
+		this.stored = false;
 		if (!unchanged) {
 			this.choices = next;
 			for (const listener of this.listeners) listener();
 		}
-		this.stored = false;
 		this.storage.setItemSync(DISPLAY_KEY, JSON.stringify(next));
 		this.stored = true;
 	}

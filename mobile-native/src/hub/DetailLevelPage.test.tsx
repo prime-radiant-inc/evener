@@ -357,6 +357,21 @@ it.each([
 	expect(renderedText(tree)).toContain("That didn't go through. Try it again.");
 });
 
+it("leaves a refused conflict action to the storage footer when the phone can't keep a change", async () => {
+	const { tree, fake, press } = mount(
+		transcript({
+			conflict: true,
+			draft: { revision: 2, config: CUSTOM },
+			storageUnavailable: true,
+			error: "Could not save the transcript draft locally.",
+		}),
+	);
+	fake.rebaseTranscriptDraft.mockRejectedValueOnce(new Error("refused"));
+	await press("Keep mine");
+	expect(renderedText(tree)).toContain("This phone couldn't update its copy of this setting.");
+	expect(renderedText(tree)).not.toContain("That didn't go through.");
+});
+
 it("offers no Save it while the hub's setting is being checked or a conflict needs resolving", () => {
 	const draft = { revision: 2, config: CUSTOM };
 	expect(mount(transcript({ draft, writeUncertain: true })).button("Save it")).toBeNull();

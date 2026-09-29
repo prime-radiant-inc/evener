@@ -105,15 +105,17 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	// A choice the phone still holds after its save failed, or after an
 	// uncertain write settled without the hub taking it: the rows show it, so
 	// the page says it hasn't landed and offers to send it again.
-	// A draft kept because the phone couldn't clear it (a confirmed save
-	// whose cleanup failed) is the storage footer's to explain.
+	// A draft the phone can't keep in step (a confirmed save whose cleanup
+	// failed, a draft it couldn't save or restore) is the storage footer's to
+	// explain; every write is held until then anyway.
 	const unsaved = !!state.draft && !state.saving && !writeUncertain && !state.conflict && !state.storageUnavailable;
 	const stateErrorShown =
 		!!state.error && !state.draftUnreadable && !writeUncertain && (!conflict || state.storageUnavailable);
 	// A choice that failed can be chosen again; a failed conflict action or
 	// discard stays on screen, so the page says it didn't go through unless
 	// the store's own failure already says why.
-	const failedChoice = failed && !unsaved && !writeUncertain && !conflict && !state.storageUnavailable;
+	const failedChoice =
+		failed && !unsaved && !writeUncertain && !conflict && !state.storageUnavailable && !state.draftUnreadable;
 	const failedAction = failed && !writeUncertain && (conflict || state.draftUnreadable) && !stateErrorShown;
 	return (
 		<GroupedPage>
