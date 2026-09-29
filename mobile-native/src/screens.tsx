@@ -1387,6 +1387,9 @@ export function ConversationScreen({
 			setFind({ ...find, seeking: false });
 			return;
 		}
+		// Paging older history reads away from the live end, so new rows stop
+		// pulling the list down while find looks.
+		follow.dispatch({ type: "unfollow" });
 		loadOlderPage();
 	});
 	// The current match comes into view, 30% down the list. A row the list

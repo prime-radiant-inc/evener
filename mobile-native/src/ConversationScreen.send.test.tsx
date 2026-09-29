@@ -2808,6 +2808,21 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		expect(renderedText(tree)).toContain("1 of 3");
 	});
 
+	// Paging older history for a match reads away from the live end, so new
+	// rows no longer pull the list back down while find looks.
+	it("leaves the live end when it pages older history for a match", async () => {
+		const { tree, hub } = await mount(findTurns("ref-find-unfollows"), {
+			olderCursor: "cursor-1",
+			olderTurns: [askReplyTurn("turn_0", "Unrelated?", "Yes.")],
+		});
+		chooseMenu("Find in session");
+		await search(tree, "nowhere");
+		expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+		flatListCalls.length = 0;
+		act(() => transcriptList(tree).props.onContentSizeChange(390, 9_000));
+		expect(flatListCalls.filter((call) => call.method === "scrollToEnd")).toEqual([]);
+	});
+
 	it("says there are no older matches once history ends", async () => {
 		const { tree, hub } = await mount(findTurns("ref-find-end"), { olderCursor: "cursor-1" });
 		chooseMenu("Find in session");
