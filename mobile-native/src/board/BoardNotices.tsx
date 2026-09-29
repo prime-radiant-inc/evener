@@ -13,7 +13,9 @@ export function openNotice(
 	notice: Notice,
 ): void {
 	if (notice.kind === "signIn") navigation.navigate("Providers", { hubId });
-	else if (notice.kind === "host") navigation.navigate("HubSettings", { hubId });
+	else if (notice.kind === "host")
+		// Ruling 25: the Hub opens at that host, its home kept under the page.
+		navigation.navigate("Hub", { screen: "Hosts", params: { hubId, focus: notice.sourceId }, initial: false });
 	else navigation.navigate("Plugins", { hubId });
 }
 

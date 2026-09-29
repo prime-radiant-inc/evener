@@ -162,12 +162,12 @@ export interface ThreadsStoreState {
   // lands here it stays - unlike `threads`, this is not cleared on a
   // re-hydration attempt, because a deleted ref never gets one that
   // succeeds. A consumer (Session.tsx) reads this to tell "still loading" a
-  // ref apart from "gone", which ensureThread's own retry-forever contract
-  // (scheduleOwnedHydrationRetry has no terminal state - a rejection here is
-  // always presumed transport, never a proof the ref itself is gone) cannot
-  // otherwise distinguish: its returned promise never settles for a deleted
-  // ref, since nothing about that loop treats this error as different from
-  // an ordinary transient one.
+  // ref apart from "gone". It is also the terminal marker for that ref's
+  // hydration lifecycle: scheduleOwnedHydrationRetry retires the lifecycle
+  // (settling any awaiting owner, cancelling its retry) and arms no further
+  // read once this is set, and ensureThread/watchThread return on it - see
+  // markThreadDeletedIfFenced. An ordinary transient rejection is still
+  // presumed transport and keeps its retry-forever contract.
   deletedRefs: Set<string>;
   ensureThread(ref: string): Promise<void>;
   // beforePublish, when given, is evaluated synchronously immediately before
@@ -1707,10 +1707,12 @@ async function hydrateAndSubscribe(
 // (data.mutationOutcome === "targetDeleted" - cmd/evener-hub/app_sources.go's
 // deletionFenceError) and recorded into `deletedRefs`, which Session.tsx
 // reads to tell a genuinely gone ref apart from one merely slow to hydrate.
-// Purely additive: it changes no control flow here (the retry above still
-// fires exactly as it always has, since retiring a deleted ref's retry loop
-// is a separate concern this function does not take on), only what state a
-// caller can observe once the retry loop is running.
+// The fence never clears, so this rejection is terminal for the ref's
+// hydration lifecycle: scheduleOwnedHydrationRetry below reads the flag this
+// sets and retires the lifecycle (settling any owner awaiting a first model
+// and cancelling its retry) instead of arming another read, and
+// ensureThread/watchThread's loops return on it. Recording the flag here is
+// what lets all three paths agree on one terminal deleted state.
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
   releaseSubagentRows(ref);
@@ -3083,6 +3085,13 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
   // attempt already owns the entry, so leave that one — and its retry — alone.
   if (pendingHydrations.get(ref) !== pending) return;
   pendingHydrations.delete(ref);
+  // A durably deleted target is terminal (see the `deletedRefs` field doc):
+  // retire the lifecycle — cancelling its retry and settling any owner — and
+  // arm nothing. markThreadDeletedIfFenced recorded the flag on the way here.
+  if (threadsStore.getState().deletedRefs.has(ref)) {
+    retireOwnedHydration(kind, ref);
+    return;
+  }
   const client = pending.client;
   const epoch = pending.epoch;
   if (wiredClient !== client || readyEpoch !== epoch) return;
@@ -3715,6 +3724,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // Release is terminal even when the failed read belongs to an old
           // connection. A reconnect cannot re-arm a pane that no longer exists.
           if (!lifecycleActive) return;
+          // Durable deletion is the other terminal: return the result of the
+          // lifecycle scheduleOwnedHydrationRetry already retired (see the
+          // `deletedRefs` field doc) instead of re-arming another read.
+          if (threadsStore.getState().deletedRefs.has(ref)) return;
           if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
             if (threadsStore.getState().threads.has(ref)) return;
             // requireReadyClient re-reads the CURRENT client on the way out,
@@ -3740,9 +3753,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
         if ((refCounts.get(ref) ?? 0) <= 0) return;
         if (threadsStore.getState().threads.has(ref)) return;
+        if (threadsStore.getState().deletedRefs.has(ref)) return;
 
         client = await requireReadyClient();
         if ((refCounts.get(ref) ?? 0) <= 0) return;
+        // Recheck after the possibly-long ready wait: a deletion fence can
+        // land while this loop is waiting out a reconnect, and a ref known
+        // deleted must not start another read on becoming ready.
+        if (threadsStore.getState().deletedRefs.has(ref)) return;
         inflight = inflightHydrates.get(ref);
         if (!inflight) inflight = startHydration(client);
       }
@@ -3883,6 +3901,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         }
         const hydrated = threadsStore.getState().watchedThreads.get(ref);
         if (lifecycleActive && hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
+        // Durable deletion is terminal for this watcher (see the `deletedRefs`
+        // field doc), and it is checked here - before the client/epoch branch
+        // below, exactly as ensureThread does - so a fenced rejection that
+        // coincides with a rewire returns instead of starting another read
+        // against a ref already known deleted.
+        if (threadsStore.getState().deletedRefs.has(ref)) return;
         if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
           if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
           if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
@@ -3904,8 +3928,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
       const hydrated = threadsStore.getState().watchedThreads.get(ref);
       if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
+      if (threadsStore.getState().deletedRefs.has(ref)) return;
 
       client = await requireReadyClient();
+      // Recheck after the possibly-long ready wait: a deletion fence can land
+      // while this loop waits out a reconnect, and a ref known deleted must
+      // not start another read on becoming ready.
+      if (threadsStore.getState().deletedRefs.has(ref)) return;
       inflight = inflightWatchHydrates.get(ref);
       const currentInflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
       if (!inflight || (needTurns && !currentInflightHasTurns)) inflight = startHydration(client);
