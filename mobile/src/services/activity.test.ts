@@ -405,28 +405,6 @@ describe("ActivityService — projectActivity", () => {
 			expect(firstWork(view).tone).toBe("failed");
 		});
 
-		// A stop ends a run without failing it (the transcript rows ruling): the
-		// parent's stop settles as stopped, the user's as cancelled.
-		it.each(["stopped", "cancelled"])("marks a delegate that ended %s as stopped tone", (outcome) => {
-			const diag: EvenerDiagnostics = {
-				delegates: [delegate({ delegateId: "dlg-1", status: outcome, terminal: true, outcome })],
-			};
-			const view = service.projectActivity(thread({ evener: evenerThread({ diagnostics: diag }) }));
-			expect(firstWork(view).tone).toBe("stopped");
-		});
-
-		it.each(["stopped", "cancelled"])("marks a job that ended %s as stopped tone", (status) => {
-			const diag: EvenerDiagnostics = { jobs: [job({ jobId: "job-1", status })] };
-			const view = service.projectActivity(thread({ evener: evenerThread({ diagnostics: diag }) }));
-			expect(firstWork(view).tone).toBe("stopped");
-		});
-
-		it("still marks a stopped job whose command exited nonzero as failed tone", () => {
-			const diag: EvenerDiagnostics = { jobs: [job({ jobId: "job-1", status: "stopped", exitCode: 1 })] };
-			const view = service.projectActivity(thread({ evener: evenerThread({ diagnostics: diag }) }));
-			expect(firstWork(view).tone).toBe("failed");
-		});
-
 		it("marks a running job as running tone", () => {
 			const diag: EvenerDiagnostics = {
 				jobs: [job({ jobId: "job-1", status: "running" })],

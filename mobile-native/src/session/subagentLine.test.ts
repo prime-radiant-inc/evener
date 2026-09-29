@@ -74,6 +74,7 @@ describe("a subagent's row (spec 8.2)", () => {
 	it("says how long ago a failed one failed, and why", () => {
 		const failed = delegate({
 			status: "failed",
+			outcome: "failed",
 			terminal: true,
 			runEndedAt: ago(360_000),
 			reason: "model refused the task",

@@ -17,7 +17,6 @@ import {
 	jobIsFailed,
 	plainQuoteLine,
 } from "@evener/appwire-client";
-import { isStoppedStatus } from "../../../mobile/src/services/activity";
 import { compactCount, compactDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
@@ -43,6 +42,16 @@ export interface SubagentRow {
 }
 
 const STATE_WORDS: Record<SubagentState, string> = { running: "Running", failed: "Failed", done: "Done" };
+
+// A stop ends a run without failing it: a parent's stop settles as stopped, the
+// user's as cancelled (agent/internal/delegatestore and jobstore record.go).
+const STOPPED_STATUSES: ReadonlySet<string> = new Set(["stopped", "cancelled", "canceled"]);
+
+/** True for the outcome a stop leaves a subagent's run, or the status it
+ * leaves a command, with: a subagent that ended so is done, and says Stopped. */
+export function isStoppedStatus(status: string | undefined): boolean {
+	return STOPPED_STATUSES.has(status ?? "");
+}
 
 /** The delegate fields the state rule reads. The Subagents list passes its
  * ActivityDelegate (turns included); the Session chip passes an

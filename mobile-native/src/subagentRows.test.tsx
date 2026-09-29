@@ -63,6 +63,7 @@ function subagent(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
 const FAILED = subagent({
 	phase: "settled",
 	status: "failed",
+	outcome: "failed",
 	terminal: true,
 	reason: "go test exited 1 three times",
 	runEndedAt: new Date(T0 + 360_000).toISOString(),
@@ -176,6 +177,17 @@ describe("a stopped subagent", () => {
 			expect(renderedText(tree)).not.toMatch(/failed/);
 			expect(rail(tree)).not.toBe(DANGER);
 		}
+	});
+});
+
+// A subagent whose run ended but can take another message (idle, resumable)
+// is not terminal, so it reads running here as it does in the Subagents list
+// and on its chip: one rule (subagentState) for all three.
+describe("an idle subagent", () => {
+	it.each(LEVELS)("reads as running, as the list and chip count it, at %s", (level) => {
+		const idle = subagent({ phase: "idle", status: "idle", terminal: false, resumable: true });
+		const { tree } = subagentRow(level, idle);
+		expect(renderedText(tree)).toMatch(/running · \d+/);
 	});
 });
 
