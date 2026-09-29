@@ -25,7 +25,6 @@ vi.mock("react-native", async () => ({
 	useColorScheme: () => mode.scheme,
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: native.setStringAsync }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
