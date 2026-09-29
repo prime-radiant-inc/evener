@@ -11,6 +11,7 @@ import type {
 	Thread,
 	ThreadCapabilities,
 	ThreadItem,
+	ThreadItemPosition,
 	ThreadTurnsListResponse,
 	Turn,
 } from "@evener/appwire-client";
@@ -42,7 +43,13 @@ import type { ActivityView } from "../services/activity";
 import type { ConversationReadProjection, LiveConversationService } from "../services/conversation";
 import type { ActivityIdentity } from "./activity";
 import { createActivityStore } from "./activity";
-import { createConversationStore, type LiveActivitySink, MAX_ITEM_BYTES, TRUNCATION_MARKER } from "./conversation";
+import {
+	createConversationStore,
+	type LiveActivitySink,
+	MAX_ITEM_BYTES,
+	olderPageKey,
+	TRUNCATION_MARKER,
+} from "./conversation";
 import type {
 	ConversationMutationPendingPort,
 	ConversationMutationRequest,
@@ -99,6 +106,8 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
 	queue: true,
 	goal: true,
 	rename: true,
+	// The hub pages the thread from a before position, so the cap may trim.
+	pageBefore: true,
 };
 
 // The hub refusing a mutation whose capability moved on without a status frame
@@ -561,12 +570,18 @@ class FakeConversationService implements LiveConversationService {
 			olderCursor: this.olderCursor,
 		};
 	}
-	async loadOlder(_cursor: string): Promise<{
+	// The requests loadOlder made: its cursor and before.
+	olderRequests: { cursor: string | null; before?: ThreadItemPosition }[] = [];
+	async loadOlder(
+		cursor: string | null,
+		before?: ThreadItemPosition,
+	): Promise<{
 		turnsPage: ThreadTurnsListResponse;
 		nextCursor?: string;
 		hasEarlierItems?: boolean;
 		hasLaterItems?: boolean;
 	}> {
+		this.olderRequests.push({ cursor, ...(before !== undefined ? { before } : {}) });
 		// Support hanging for stale-safety tests: if olderItems is a Promise,
 		// await it so it resolves when the test wants.
 		if (this.olderItems instanceof Promise) {
@@ -783,7 +798,7 @@ describe("ConversationStore", () => {
 			expect(store.getState().loadingOlder).toBe(false);
 		});
 
-		it("F8: does not request when olderCursor is null", async () => {
+		it("does not request when olderCursor is null and nothing was trimmed", async () => {
 			const service = new FakeConversationService();
 			service.olderItems = { items: [], nextCursor: "next" };
 			const store = createConversationStore();
@@ -2970,6 +2985,242 @@ describe("ConversationStore", () => {
 	});
 
 	describe("loadOlder retained cap and ordering (I7)", () => {
+		// A long live session trims its oldest rows at the cap. Scrolling up
+		// must still bring older history into view.
+		it("shows an older page past the cap while you read above the live end", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({
+				items: Array.from({ length: 600 }, (_, i) => ({ kind: "user" as const, id: `live-${i}`, text: `live ${i}` })),
+			});
+			const store = createConversationStore();
+			await store.getState().open(service, "ref-1");
+			store.setState({ olderCursor: "cursor-1" });
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = {
+				items: Array.from({ length: 20 }, (_, i) => ({ kind: "user" as const, id: `older-${i}`, text: `older ${i}` })),
+				nextCursor: "cursor-2",
+				hasEarlierItems: true,
+			};
+			await store.getState().loadOlder(service);
+			const ids = store.getState().conversation?.items.map((row) => row.id) ?? [];
+			expect(ids[0]).toBe("older-0");
+			expect(ids.at(-1)).toBe("live-599");
+			expect(store.getState().olderCursor).toBe("cursor-2");
+		});
+
+		// Positioned rows, as a hub serves them: row i sits at entry i.
+		const positionedRow = (i: number) => ({
+			kind: "user" as const,
+			id: `row-${i}`,
+			text: `row ${i}`,
+			position: { entry: i, item: 0 },
+		});
+		const positionedRows = (from: number, to: number) =>
+			Array.from({ length: to - from }, (_, i) => positionedRow(from + i));
+
+		it("pages the rows the cap trimmed back, in order, once you scroll up", async () => {
+			const service = new FakeConversationService();
+			// Watched from its start, so the first read held it all: no cursor.
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			await store.getState().open(service, "ref-1");
+			expect(store.getState().conversation?.items[0]?.id).toBe("row-100");
+			expect(store.getState().trimmedAbove).toBe(true);
+			expect(store.getState().olderCursor).toBeNull();
+
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			// The page names the oldest row kept, with no cursor to rebase.
+			expect(service.olderRequests).toEqual([{ cursor: null, before: { entry: 100, item: 0 } }]);
+			expect(store.getState().conversation?.items.map((row) => row.id)).toEqual(
+				positionedRows(0, 600).map((row) => row.id),
+			);
+			expect(store.getState().trimmedAbove).toBe(false);
+		});
+
+		it("rebases the cursor it holds onto the oldest row kept", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 700) });
+			const store = createConversationStore();
+			await store.getState().open(service, "ref-1");
+			store.setState({ olderCursor: "cursor-1" });
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(100, 200), nextCursor: "cursor-1" };
+			await store.getState().loadOlder(service);
+			expect(service.olderRequests).toEqual([{ cursor: "cursor-1", before: { entry: 200, item: 0 } }]);
+		});
+
+		it("keeps the pages you load while reading above, and trims them when you return to the live end", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 550) });
+			const store = createConversationStore();
+			await store.getState().open(service, "ref-1");
+			store.setState({ olderCursor: "cursor-1" });
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined };
+			await store.getState().loadOlder(service);
+			// 550 rows, past the cap: none trimmed while you read above them.
+			expect(store.getState().conversation?.items).toHaveLength(550);
+			expect(store.getState().conversation?.items[0]?.id).toBe("row-0");
+			expect(store.getState().trimmedAbove).toBe(false);
+
+			store.getState().setFollowingLiveEnd(true);
+			expect(store.getState().conversation?.items).toHaveLength(500);
+			expect(store.getState().conversation?.items[0]?.id).toBe("row-50");
+			expect(store.getState().trimmedAbove).toBe(true);
+		});
+
+		// Trimmed rows could never come back from a hub that doesn't page
+		// from a before position (an older hub, or a thread on another host
+		// until #3176), so its threads keep every row.
+		it("never trims a thread whose read doesn't say pageBefore", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({
+				items: positionedRows(0, 600),
+				capabilities: { ...ALL_TRUE_CAPS, pageBefore: false },
+			});
+			const store = createConversationStore();
+			await store.getState().open(service, "host:thread-1");
+			expect(store.getState().conversation?.items).toHaveLength(600);
+			expect(store.getState().trimmedAbove).toBe(false);
+		});
+
+		// A daemon's status frame names no pageBefore (the hub stamps the frames
+		// it relays, and the service keeps that); the store takes the hub's
+		// answer from reads alone, so such a frame leaves trimming on.
+		it("keeps trimming after a status frame that doesn't name pageBefore", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			const { pageBefore: _dropped, ...daemonCaps } = ALL_TRUE_CAPS;
+			store.getState().applyNotification({
+				method: "thread/status/changed",
+				params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" }, capabilities: daemonCaps },
+			} as unknown as AnyNotification);
+			// Read above, page the trimmed rows back, and return: the window
+			// trims again.
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
+			expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+			expect(store.getState().conversation?.items).toHaveLength(600);
+			store.getState().setFollowingLiveEnd(true);
+			expect(store.getState().conversation?.items).toHaveLength(500);
+			expect(store.getState().conversation?.items[0]?.id).toBe("row-100");
+		});
+
+		// A read of the same instance from a hub that no longer pages from a
+		// before position (a hub downgraded under a running daemon) can't bring
+		// the trimmed rows back, so the store asks it for nothing above them.
+		it("asks for no page above a trim once a read stops saying pageBefore", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			const sink = createFakeSink();
+			await store.getState().openProjected(service, sink, "ref-1");
+			expect(store.getState().trimmedAbove).toBe(true);
+			service.openConv = makeConversation({
+				items: positionedRows(0, 600),
+				capabilities: { ...ALL_TRUE_CAPS, pageBefore: false },
+			});
+			await store.getState().rehydrate(service, sink);
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
+			expect((await store.getState().loadOlder(service)).status).toBe("ignored");
+			expect(service.olderRequests).toEqual([]);
+		});
+
+		// A page attempt's key tells every cursor and trim boundary apart, whatever
+		// characters the hub's opaque cursor holds.
+		it("keys a page attempt so no cursor can pass for a cursor and a boundary", () => {
+			const conversation = makeConversation({ items: positionedRows(1, 3) });
+			const cursorOnly = olderPageKey({ olderCursor: "abc@1.0", trimmedAbove: false, conversation });
+			const cursorAndBoundary = olderPageKey({ olderCursor: "abc", trimmedAbove: true, conversation });
+			expect(cursorOnly).not.toBe(cursorAndBoundary);
+		});
+
+		// Back at the end while an older page is in flight: the trim drops the
+		// rows the page was asked from above, so the page is dropped too, or
+		// merged it would leave those rows a hole nothing pages back.
+		it("drops a page in flight when the return to the end trims", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(100, 700) });
+			const store = createConversationStore();
+			await store.getState().open(service, "ref-1");
+			store.setState({ olderCursor: "cursor-1" });
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: "cursor-2", hasEarlierItems: true };
+			await store.getState().loadOlder(service);
+			expect(store.getState().conversation?.items[0]?.id).toBe("row-0");
+
+			let deliver!: (page: unknown) => void;
+			service.olderItems = new Promise((resolve) => {
+				deliver = resolve;
+			}) as never;
+			const inFlight = store.getState().loadOlder(service);
+			store.getState().setFollowingLiveEnd(true);
+			expect(store.getState().loadingOlder).toBe(false);
+			expect(store.getState().trimmedAbove).toBe(true);
+			deliver({ turnsPage: { data: [], nextCursor: "cursor-3" }, nextCursor: "cursor-3" });
+			expect(await inFlight).toEqual({ status: "ignored" });
+			expect(store.getState().olderCursor).toBe("cursor-2");
+			expect(store.getState().conversation?.items[0]?.id).toBe("row-200");
+		});
+
+		// A read of another instance replaces the window, and the rows it
+		// trimmed with it.
+		it("forgets a trim when a read replaces the instance", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			const sink = createFakeSink();
+			await store.getState().openProjected(service, sink, "ref-1");
+			expect(store.getState().trimmedAbove).toBe(true);
+			service.openConv = makeConversation({ items: positionedRows(0, 10), instanceId: "instance-2" });
+			await store.getState().rehydrate(service, sink);
+			expect(store.getState().conversation?.items).toHaveLength(10);
+			expect(store.getState().trimmedAbove).toBe(false);
+		});
+
+		// The hub answers stale only for a boundary the transcript doesn't hold:
+		// the thread was reset or rewritten since the read. Re-read it, as for
+		// any stale cursor, with or without a cursor held.
+		it.each([
+			["with a cursor", "cursor-1"],
+			["without one", null],
+		] as const)("re-reads a thread whose page above the trimmed rows comes back stale %s", async (_held, cursor) => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			store.setState({ olderCursor: cursor });
+			store.getState().setFollowingLiveEnd(false);
+			const reads = service.readProjectionCalls.length;
+			service.olderItems = Promise.reject(
+				new WireError("stale transcript cursor", -32020, { evenerErrorInfo: "transcriptItemCursorStale" }),
+			) as never;
+			await store.getState().loadOlder(service);
+			expect(service.readProjectionCalls).toHaveLength(reads + 1);
+		});
+
+		// The hub answers the page before the transcript's first item with an
+		// empty, exhausted page: nothing is older, so the trim is spent.
+		it("stops paging when the page above the trimmed rows is empty and exhausted", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			store.getState().setFollowingLiveEnd(false);
+			const reads = service.readProjectionCalls.length;
+			service.olderItems = { turnsPage: { data: [] }, hasEarlierItems: false };
+			await store.getState().loadOlder(service);
+			expect(service.readProjectionCalls).toHaveLength(reads);
+			expect(store.getState().trimmedAbove).toBe(false);
+			expect(store.getState().olderCursor).toBeNull();
+			expect(await store.getState().loadOlder(service)).toEqual({ status: "ignored" });
+		});
+
 		it("enforces a 500-item retained cap at the store level", async () => {
 			const service = new FakeConversationService();
 			// Generate 600 items from loadOlder; only 500 should be retained.
@@ -3022,12 +3273,10 @@ describe("ConversationStore", () => {
 			expect(conv?.items[499]?.id).toBe("existing-599");
 		});
 
-		// F8's stop signal is "the cap discarded rows", not "the final count
-		// reached the cap": capItems slices to the newest RETAINED_ITEM_CAP rows
-		// and then drops a leading attachment whose source fell off the cut, so a
-		// full merge that drops an orphan ends below the cap. A count-based proxy
-		// then keeps paging enabled through a load that discarded its whole page,
-		// and stops paging after a merge that discarded nothing.
+		// A trim is "the cap discarded rows", not "the final count reached the
+		// cap": capItems slices to the newest RETAINED_ITEM_CAP rows and then
+		// drops a leading attachment whose source fell off the cut, so a full
+		// merge that drops an orphan ends below the cap.
 		const pairSource = {
 			kind: "user" as const,
 			id: "src-1",
@@ -3045,7 +3294,7 @@ describe("ConversationStore", () => {
 				text: `filler ${i}`,
 			}));
 
-		it("stops paging when the cap discards the whole page, even though the orphan drop leaves the count below the cap", async () => {
+		it("keeps paging when the cap discards a whole page while following, even though the orphan drop leaves the count below the cap", async () => {
 			const service = new FakeConversationService();
 			// Open with 502 rows whose 500-cut splits the pair: the attachment
 			// survives the slice as its first row (index 2 of 502, the first the
@@ -3068,9 +3317,12 @@ describe("ConversationStore", () => {
 			await store.getState().loadOlder(service);
 			const conv = store.getState().conversation;
 			expect(conv?.items.some((row) => row.id === "src-1" || row.id === "src-1:attachments")).toBe(false);
-			// A load that discarded everything it fetched must end paging.
-			expect(store.getState().olderCursor).toBeNull();
-			expect(store.getState().hasEarlierItems).toBe(false);
+			// Paging goes on: the page landed while the reader followed the live
+			// end, so the cap trimmed it, and the next page names the oldest row
+			// kept.
+			expect(store.getState().olderCursor).toBe("cursor-2");
+			expect(store.getState().trimmedAbove).toBe(true);
+			expect(store.getState().hasEarlierItems).toBe(true);
 		});
 
 		it("keeps paging after a merge the cap did not trim, even when the retained count reaches the cap", async () => {
@@ -6929,7 +7181,7 @@ describe("ConversationStore", () => {
 			).toHaveLength(1);
 		});
 
-		it("loadOlder retains newest 500 and disables further paging at cap", async () => {
+		it("loadOlder retains the newest 500 while following, and keeps paging", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
 			// Start with 400 items.
@@ -6952,12 +7204,12 @@ describe("ConversationStore", () => {
 
 			const conv = store.getState().conversation;
 			expect(conv?.items.length).toBe(500);
-			// F8: When at cap, further paging should be disabled honestly —
-			// olderCursor set to null so we don't repeatedly load discarded rows.
-			expect(store.getState().olderCursor).toBeNull();
+			// Paging goes on from the oldest row kept (trimmedAbove).
+			expect(store.getState().olderCursor).toBe("more");
+			expect(store.getState().trimmedAbove).toBe(true);
 		});
 
-		it("does not orphan an attachment at the cap boundary, and ends paging honestly when the trimmed source cannot render", async () => {
+		it("does not orphan an attachment at the cap boundary, and keeps paging when the trimmed source cannot render", async () => {
 			// capItems slices by row count with no source/attachment awareness. A
 			// turn with exactly 501 rows — [source, attachment, 499 filler] — caps
 			// to the newest 500, and the orphan rule drops the attachment that
@@ -6966,10 +7218,9 @@ describe("ConversationStore", () => {
 			// bound), so a page that re-serves it folds into the held copy — one
 			// identity, its images intact — while the cap owns the render: the
 			// fillers hold the newest 500 slots, so the source's rows re-project
-			// and re-drop on every merge. Paging must stop honestly (F8) — the
-			// page contributed the row the cap discarded, so the next pages'
-			// rows would be discarded the same way — rather than offer a load
-			// button that can never add a row.
+			// and re-drop on every merge. Paging goes on from the oldest row
+			// kept: once the reader leaves the live end the cap stops trimming,
+			// and the next page names that row.
 			const filler: ThreadItem[] = [];
 			for (let i = 0; i < 499; i++) filler.push(userMessageItem(`filler-${i}`, ""));
 			const service = new FakeConversationService();
@@ -7035,12 +7286,12 @@ describe("ConversationStore", () => {
 				.filter((item) => item.id === "src-1");
 			expect(held).toHaveLength(1);
 			expect(held[0]?.outputImages).toHaveLength(1);
-			// F8: the cap discarded a row the page contributed, so the real
-			// "more" cursor the wire offered is honestly withdrawn.
-			expect(store.getState().olderCursor).toBeNull();
+			// The wire's "more" cursor stands, and the trim is recorded.
+			expect(store.getState().olderCursor).toBe("more");
+			expect(store.getState().trimmedAbove).toBe(true);
 		});
 
-		it("stops offering earlier items once the cap nulls the cursor", async () => {
+		it("keeps offering earlier items after the cap trims a page", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
 			const items: MobileConversation["items"] = [];
@@ -7055,8 +7306,8 @@ describe("ConversationStore", () => {
 			for (let i = 0; i < 200; i++) {
 				olderItems.push({ kind: "user", id: `item-old-${i}`, text: "" });
 			}
-			// The server still reports earlier items — the cap, not the server, is
-			// what ends paging here.
+			// The server still reports earlier items, and the cap trimming the
+			// page no longer ends paging.
 			service.olderItems = {
 				items: olderItems,
 				nextCursor: "more",
@@ -7064,13 +7315,13 @@ describe("ConversationStore", () => {
 			};
 			await store.getState().loadOlder(service);
 
-			expect(store.getState().olderCursor).toBeNull();
-			// The flag must agree with the cursor: offering a load that
-			// early-returns "ignored" is a button that can never add a row.
-			expect(store.getState().hasEarlierItems).toBe(false);
-			expect(await store.getState().loadOlder(service)).toEqual({
-				status: "ignored",
-			});
+			expect(store.getState().olderCursor).toBe("more");
+			expect(store.getState().trimmedAbove).toBe(true);
+			// The flag agrees with the wire, and the next load asks for a page.
+			expect(store.getState().hasEarlierItems).toBe(true);
+			service.olderRequests = [];
+			expect((await store.getState().loadOlder(service)).status).not.toBe("ignored");
+			expect(service.olderRequests.map((request) => request.cursor)).toEqual(["more"]);
 		});
 	});
 
@@ -7222,8 +7473,8 @@ describe("ConversationStore", () => {
 				// rows one refresh at a time (by rehydrate 24 every page row is
 				// gone) while the row-less pages keep paging: a partially-evicted
 				// in-window turn re-projects rows the cap had already discarded, but
-				// those re-discards lose nothing the page brought, so F8's honest
-				// stop never fires and the loop keeps loading.
+				// those re-discards lose nothing the page brought, and the loop
+				// keeps loading.
 				const freshRows = i <= ROW_PAGES ? 40 : 40 + 40 * (i - ROW_PAGES);
 				service.readProjectionResult = freshRead(freshRows);
 				await store.getState().rehydrate(service, sink);
@@ -9866,7 +10117,7 @@ describe("ConversationStore", () => {
 			});
 			await store.getState().open(service, "ref-1");
 			// The store's own cursor is a UI-only pagination-enablement value that
-			// plain open() always starts at null (F8's live path establishes it
+			// plain open() always starts at null (the live path establishes it
 			// separately) - it is not the wire truth conversation.olderCursor is.
 			expect(store.getState().olderCursor).toBeNull();
 			const conv = store.getState().conversation!;
@@ -9882,14 +10133,14 @@ describe("ConversationStore", () => {
 		// "rehydrate preserves the older turns..." test doesn't distinguish the
 		// two), but diverges the moment the cap forces the store's cursor to
 		// null while the wire still has more.
-		it("cap hit then rehydrate: conversation.olderCursor stays the wire truth, not the store's capped null", async () => {
+		it("cap hit then rehydrate: conversation.olderCursor stays the wire truth", async () => {
 			const service = new FakeConversationService();
 			const sink = createFakeSink();
 			const store = createConversationStore();
 			// The window sits exactly at the row cap. The page's own rows all
-			// sit below it, so they all fall off the cut when they merge: the
-			// store's own paging honestly stops at null while the wire still
-			// says there is more, and the page's payloads bound away with its
+			// sit below it, so they all fall off the cut when they merge (the
+			// reader follows the live end): the store keeps paging from the
+			// oldest row kept, and the page's payloads bound away with its
 			// rows, leaving its usage as the only trace.
 			const windowItems: ThreadItem[] = [];
 			for (let i = 0; i < 500; i++) {
@@ -9920,8 +10171,7 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, sink, "ref-1");
 
 			// 200 more rows below the window: the cap discards every one of them,
-			// and the page contributed what the cut removed — so the store's own
-			// paging stops honestly — but the wire truth is still "more".
+			// and the wire truth is still "more".
 			const pageItems: ThreadItem[] = [];
 			for (let i = 0; i < 200; i++) {
 				pageItems.push({
@@ -9934,7 +10184,8 @@ describe("ConversationStore", () => {
 				nextCursor: "more",
 			};
 			await store.getState().loadOlder(service);
-			expect(store.getState().olderCursor).toBeNull();
+			expect(store.getState().olderCursor).toBe("more");
+			expect(store.getState().trimmedAbove).toBe(true);
 			expect(store.getState().conversation?.olderCursor).toBe("more");
 
 			// A same-session rehydrate must keep the fresh cursor: the page's
@@ -10109,7 +10360,7 @@ describe("ConversationStore", () => {
 	// entryLoadOlderToken disjunct (round 2, for failed pages) had let a held
 	// rehydrate regress that advancement to the fresh read's own window
 	// cursor — re-offering a page the racing loadOlder had already consumed,
-	// or resurrecting paging at a cursor that had honestly stopped. What
+	// or resurrecting paging at a cursor exhausted history had stopped. What
 	// separates the racing outcomes is not the token (a FAILED page bumps it
 	// too) but whether the store's own cursor actually MOVED during the await.
 	describe("D18 B3 round 6: turn merges reuse the package's own identity-aware merge, never an id-only filter", () => {
@@ -10422,7 +10673,7 @@ describe("ConversationStore", () => {
 			// The racing page reaches the beginning of history: every row
 			// duplicates one already in hand (no retained rows, pageOwnedIds
 			// empty) and the wire offers no next cursor, so the store's own
-			// paging cursor honestly stops at null.
+			// paging cursor stops at null.
 			service.olderItems = {
 				turnsPage: turnsPage([wireTurn("t1", 500, 20)]),
 				nextCursor: undefined,
@@ -10451,11 +10702,10 @@ describe("ConversationStore", () => {
 
 		// RoboRev review round 2: page turn ownership alone must not pin the
 		// store's own paging cursor across a DISJOINT refresh. After the cap
-		// honestly stopped the store's paging (cursor null, its page turn a
-		// usage-only compact survivor), a fresh window that shares no history
-		// with what the model retains speaks for a range the cap never judged —
-		// the wire's own cursor is the only truth the UI can page from, and
-		// keeping the null strands it ("ignored" forever).
+		// trimmed a page (its page turn a usage-only compact survivor), a fresh
+		// window that shares no history with what the model retains speaks for
+		// a range the cap never judged — the wire's own cursor is the only truth
+		// the UI can page from.
 		it("restores the store's paging cursor when a disjoint refresh opens new history", async () => {
 			const service = new FakeConversationService();
 			const sink = createFakeSink();
@@ -10489,8 +10739,8 @@ describe("ConversationStore", () => {
 			await store.getState().openProjected(service, sink, "ref-1");
 
 			// The page's rows all fall below the full window: the cap discards
-			// every one and honestly stops the store's own paging at null, the
-			// page's turn surviving as a usage-only compact page turn.
+			// every one, the page's turn surviving as a usage-only compact page
+			// turn.
 			const pageItems: ThreadItem[] = [];
 			for (let i = 0; i < 200; i++) {
 				pageItems.push({
@@ -10503,7 +10753,8 @@ describe("ConversationStore", () => {
 				nextCursor: "more",
 			};
 			await store.getState().loadOlder(service);
-			expect(store.getState().olderCursor).toBeNull();
+			expect(store.getState().olderCursor).toBe("more");
+			expect(store.getState().trimmedAbove).toBe(true);
 
 			// A disjoint refresh: its window shares nothing with the retained
 			// history, and the wire says there is more beyond it.
@@ -10775,11 +11026,10 @@ describe("ConversationStore", () => {
 	});
 
 	// RoboRev round 1 (Medium): a failed page turn projects its own row keyed
-	// failure:<turnId> (projectedRows.ts), never an item identity — the F8
-	// honest-stop must count it or paging never stops offering a cursor whose
-	// every page discards its own contribution.
-	describe("F8 honest-stop counts a page's own failure-row contribution", () => {
-		it("ends paging when the cap discards a page's failed-turn row", async () => {
+	// failure:<turnId> (projectedRows.ts), never an item identity. A trim that
+	// discards it keeps paging like any other.
+	describe("a trim of a page's own failure-row contribution", () => {
+		it("keeps paging when the cap discards a page's failed-turn row", async () => {
 			const windowItems: ThreadItem[] = [];
 			for (let i = 0; i < 500; i++) {
 				windowItems.push({ ...userMessageItem(`item-${i}`, ""), position: { entry: 100 + i, item: 0 } });
@@ -10809,10 +11059,10 @@ describe("ConversationStore", () => {
 			const result = await store.getState().loadOlder(service);
 			expect(result.status).toBe("loaded");
 			// The cap discarded the page's only contribution (its failure row,
-			// identified failure:t-failed — never a raw item identity) — paging
-			// must stop honestly rather than keep offering a cursor whose every
-			// page discards its own history.
-			expect(store.getState().olderCursor).toBeNull();
+			// identified failure:t-failed — never a raw item identity), and
+			// paging goes on from the oldest row kept.
+			expect(store.getState().olderCursor).toBe("cursor-2");
+			expect(store.getState().trimmedAbove).toBe(true);
 		});
 	});
 
@@ -11012,15 +11262,14 @@ describe("ConversationStore", () => {
 			expect(conv.turns.find((t) => t.id === "t2")?.usage).toEqual({ inputTokens: 1, outputTokens: 1 });
 		});
 
-		// D18 B3 round 4 (1): the item cap forces the STORE's own olderCursor to
-		// null so paging stops honestly (F8), but conversation.olderCursor must
-		// still tell sessionTokens the WIRE truth — the daemon has more history
-		// even though this client has decided not to fetch it further.
-		it("keeps conversation.olderCursor at the wire's cursor even when the item cap stops paging", async () => {
+		// D18 B3 round 4 (1): conversation.olderCursor must tell sessionTokens
+		// the WIRE truth — the daemon has more history — whatever the cap
+		// trimmed.
+		it("keeps conversation.olderCursor at the wire's cursor when the item cap trims a page", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
 			// A window exactly at the row cap: the page merging below it falls
-			// off the cut, so the store's own paging honestly stops.
+			// off the cut.
 			const windowItems: ThreadItem[] = [];
 			for (let i = 0; i < 500; i++) {
 				windowItems.push({
@@ -11045,8 +11294,7 @@ describe("ConversationStore", () => {
 			await store.getState().open(service, "ref-1");
 			store.setState({ olderCursor: "cursor-1" });
 
-			// 200 more rows below the window: the cap discards them all (F8's
-			// existing scenario, on real rows).
+			// 200 more rows below the window: the cap discards them all.
 			const pageItems: ThreadItem[] = [];
 			for (let i = 0; i < 200; i++) {
 				pageItems.push({
@@ -11060,8 +11308,9 @@ describe("ConversationStore", () => {
 			};
 			await store.getState().loadOlder(service);
 
-			// ...even though the cap disables further paging in the UI.
-			expect(store.getState().olderCursor).toBeNull();
+			// ...and the store keeps paging from the oldest row kept.
+			expect(store.getState().olderCursor).toBe("more");
+			expect(store.getState().trimmedAbove).toBe(true);
 			const conv = store.getState().conversation!;
 			expect(conv.olderCursor).toBe("more");
 			expect(sessionTokens(conv)?.scope).toBe("loaded");
@@ -11127,16 +11376,16 @@ describe("ConversationStore", () => {
 
 	// D18 B3 round 5: closes the class rounds 3-4 kept re-opening at different
 	// sites — the store's own top-level olderCursor (a UI-only, intentionally
-	// capped "is there another page to fetch" signal, F8) and the
+	// "is there another page to fetch" signal) and the
 	// conversation's own ThreadModel olderCursor (the wire truth sessionTokens
 	// reads) are two different values, and code kept collapsing one into the
 	// other. Per-state table (a session with no thread-level cumulative usage,
 	// so sessionTokens is always summing turns):
 	//
 	//   state                          | store cursor | conv cursor | turns   | scope
-	//   initial (open)                 | null (F8)    | "cursor-1"  | [t2]    | loaded
+	//   initial (open)                 | null         | "cursor-1"  | [t2]    | loaded
 	//   loadOlder (wire has more)      | "cursor-2"   | "cursor-2"  | [t1,t2] | loaded
-	//   cap hit (wire still has more)  | null         | "more"      | [t1,t2] | loaded
+	//   cap hit (wire still has more)  | "more"       | "more"      | [t1,t2] | loaded
 	//   rehydrate, page history kept   | (unchanged)  | prior conv's| [t1,t2] | loaded
 	//                                  |              | own cursor  |         |
 	//   rehydrate, no page history     | fresh read's | fresh read's| fresh   | per fresh
@@ -15455,12 +15704,10 @@ describe("ConversationStore", () => {
 		// keeps it.
 
 		// RoboRev review round 4: a seated notice consumes a cap slot like
-		// any row, so the overflow the honest stop reads must count it. A
-		// window the cap fills with 499 rows plus a notice must end paging
-		// when the next page's row would displace the notice — otherwise
-		// the store keeps offering a cursor whose every further page
-		// discards its own rows at the publish.
-		it("ends paging when a page's row would displace a seated warning", async () => {
+		// any row. A window the cap fills with 499 rows plus a notice trims
+		// when the next page's row would displace the notice, and paging goes
+		// on from the oldest row kept.
+		it("keeps paging when a page's row would displace a seated warning", async () => {
 			const service = new FakeConversationService();
 			service.readProjectionResult = makeReadProjectionResult(makeThread());
 			const store = createConversationStore();
@@ -15514,9 +15761,8 @@ describe("ConversationStore", () => {
 			expect(rows(store)).toHaveLength(500);
 			expect(rows(store)[0]?.kind).toBe("failure");
 			// One older row arrives below the window: seated, the merged
-			// window is 501 rows and the cap's discard is the honest stop's
-			// evidence — the page offered a next cursor, but the load
-			// displaced a row the entry window held.
+			// window is 501 rows and the cap trims a row the entry window
+			// held.
 			store.setState({ olderCursor: "cursor-1" });
 			service.olderItems = {
 				turnsPage: turnsPage(
@@ -15538,27 +15784,13 @@ describe("ConversationStore", () => {
 			};
 			const loaded = await store.getState().loadOlder(service);
 			expect(loaded.status).toBe("loaded");
-			expect(store.getState().olderCursor).toBeNull();
+			expect(store.getState().olderCursor).toBe("more");
+			expect(store.getState().trimmedAbove).toBe(true);
 			// The page's own row stays in the window: the notice took the
 			// eviction, so this page was not discarded.
 			expect(rows(store).some((row) => row.id === "older-row")).toBe(true);
 			expect(rows(store)).toHaveLength(500);
 		});
-
-		// RoboRev review round 5: a failed page turn contributes a row no
-		// page item backs — its tool result folds into a retained call, the
-		// turn survives for its error, and the projection adds a separate
-		// failure row. The honest stop must count that row: at a full window
-		// the cap discards it, and a discard nobody owns keeps offering a
-		// cursor whose every further page discards its own history.
-
-		// RoboRev round 2 (panel Medium 2): the honest stop must recognize a
-		// page's contribution by the merged OUTPUT identities it landed on, not
-		// only by the raw page input identities. A call-result fold moves the
-		// page's result onto the retained call's identity — the discarded
-		// output row then names an identity no raw page item carries, and the
-		// raw-identity check would keep offering a cursor whose every further
-		// page discards its own contribution the same way.
 
 		// RoboRev review round 5, progress reporting: itemKeys must name
 		// every identity this page contributed that the window retains —
@@ -18098,7 +18330,7 @@ describe("ConversationStore", () => {
 		});
 
 		// RoboRev panel: the loadOlder bound against its level-projected window
-		// as well. The page's own accounting (the admitted item keys, F8/F10's
+		// as well. The page's own accounting (the admitted item keys, F10's
 		// inputs) is level-independent; only the payload bound was not.
 		it("an older page loaded at a coarse level keeps the hidden turn's payload", async () => {
 			const service = new FakeConversationService();
