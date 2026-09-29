@@ -475,6 +475,13 @@ test("an uncoded daemon warning renders as the warning block, with its title, me
   expect(screen.queryByTestId("system-notice-line")).toBeNull();
 });
 
+test("a daemon warning with only a title draws its chip and no empty message", () => {
+  const titleOnly = item("t", { eventKind: "warning", text: " ", raw: { warning: { title: "Evener error" } } });
+  renderTurnFull(turnWith([titleOnly]));
+  expect(screen.getByTestId("warning-item").textContent).toBe("Evener error");
+  expect(screen.queryByTestId("warning-message")).toBeNull();
+});
+
 test("an informational daemon warning keeps the quiet line", () => {
   const budget = item("b", {
     eventKind: "warning",

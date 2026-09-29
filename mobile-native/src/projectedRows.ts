@@ -762,15 +762,18 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 	// the attention tone, with its hint beneath (#3387).
 	const attention = attentionWarningNotice(it);
 	if (attention) {
+		// The phone draws no title chip, so the row's words are the message,
+		// or the title, or the hint when the warning carries nothing else.
+		const text = [it.text, attention.title, attention.hint].find(hasWarningText) ?? "";
 		return {
 			kind: "notice",
 			id: it.id,
 			origin: "system",
 			family: "warning",
 			tone: "attention",
-			text: it.text ?? "",
+			text,
 			eventKind: "warning",
-			...(attention.hint ? { hint: attention.hint } : {}),
+			...(attention.hint && attention.hint !== text ? { hint: attention.hint } : {}),
 		};
 	}
 	// A system family of "warning" IS the warning tone (systemFamily's own

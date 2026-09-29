@@ -406,6 +406,18 @@ describe("projectedRow — item entries", () => {
 		});
 	});
 
+	// The phone draws no title chip (Jesse's ruling), so a warning's message
+	// is its row's words; one with no message reads its title, then its hint.
+	it("reads a daemon warning's message over its title, and the title when it has no message", () => {
+		const warning = (text: string | undefined, fields: Record<string, unknown>) =>
+			projectedRow(itemEntry(item({ type: "systemMessage", eventKind: "warning", text, raw: { warning: fields } })));
+		expect(warning("disk full", { title: "Evener error" })).toMatchObject({ tone: "attention", text: "disk full" });
+		expect(warning(" ", { title: "Evener error" })).toMatchObject({ tone: "attention", text: "Evener error" });
+		const hintOnly = warning(undefined, { hint: "Check the state directory." });
+		expect(hintOnly).toMatchObject({ tone: "attention", text: "Check the state directory." });
+		expect(hintOnly).not.toHaveProperty("hint");
+	});
+
 	it("keeps an informational daemon warning a quiet system line", () => {
 		const row = projectedRow(
 			itemEntry(

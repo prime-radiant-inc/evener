@@ -30,6 +30,7 @@ import {
   firstLine,
   formatCharCount,
   formatDurationMs,
+  hasWarningText,
   isErrorEvent,
   scopedDisclosureId,
   systemEventWords,
@@ -274,7 +275,14 @@ function SystemLine({
   // A daemon warning a human should see (not an informational one) gets the
   // warning block a type:"warning" item gets, not the quiet line (#3387).
   const attention = attentionWarningNotice(item);
-  if (attention) return <WarningBlock title={attention.title} message={item.text ?? ""} hint={attention.hint} />;
+  if (attention)
+    return (
+      <WarningBlock
+        title={attention.title}
+        message={hasWarningText(item.text) ? item.text : ""}
+        hint={attention.hint}
+      />
+    );
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   return (
