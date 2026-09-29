@@ -17,7 +17,7 @@
 // (toasts, a clear's response, a shared note's authority) are callbacks the
 // app supplies. No clock, no timer, no DOM.
 import type { AppwireClientLike } from "../../clientLike";
-import { mutationErrorData, WireError } from "../../errors";
+import { mutationErrorData, refusedBeforeRunning, WireError } from "../../errors";
 import type { MethodName, MutationReceipt, NotesHumanSetResponse, ThreadClearResponse } from "../../types.gen";
 import { isClientReady, type MutationOutboxStorage } from "./outbox";
 import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
@@ -208,11 +208,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // here turned one malformed intent at the FIFO head into a
         // permanently parked thread (kata wr3s). Recovery preserves the text
         // and surfaces the failure; the FIFO advances.
-        if (
-          data?.clientMutationId === undefined &&
-          error instanceof WireError &&
-          (error.code === JSONRPC_INVALID_PARAMS || error.code === JSONRPC_INVALID_REQUEST)
-        ) {
+        if (data?.clientMutationId === undefined && refusedBeforeRunning(error)) {
           await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
           this.#onStorageChange([record.targetRef]);
           return "advance";
@@ -247,13 +243,6 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     }
   }
 }
-
-// Wire values of appwire's CodeInvalidRequest / CodeInvalidParams
-// (appwire/errors.go) — the standard JSON-RPC codes. Both mean the request
-// was refused on shape alone, before execution, so they are deterministic:
-// resending the identical payload can never produce a different answer.
-const JSONRPC_INVALID_REQUEST = -32600;
-const JSONRPC_INVALID_PARAMS = -32602;
 
 const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "turn/start",

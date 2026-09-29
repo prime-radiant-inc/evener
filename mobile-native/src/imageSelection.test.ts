@@ -2,7 +2,13 @@ import { afterEach, expect, it } from "vitest";
 import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
-import { CameraAccessDenied, ImageSelection, type PickedImage } from "./imageSelection";
+import {
+	CameraAccessDenied,
+	type EncodedImage,
+	ImageSelection,
+	MAX_SOURCE_BYTES,
+	type PickedImage,
+} from "./imageSelection";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 const databases: SqliteDoubleDatabase[] = [];
@@ -11,7 +17,8 @@ afterEach(() => {
 });
 function setup(
 	pick: () => Promise<PickedImage[]>,
-	encode: (image: PickedImage) => Promise<string>,
+	/** A string is the image as JPEG. */
+	encode: (image: PickedImage) => Promise<string | EncodedImage>,
 	capture: () => Promise<PickedImage[]> = async () => [],
 ) {
 	const { database: db, port } = openSqliteSyncDouble();
@@ -25,7 +32,10 @@ function setup(
 		selection: new ImageSelection(document, {
 			pick,
 			capture,
-			encode,
+			encode: async (image) => {
+				const encoded = await encode(image);
+				return typeof encoded === "string" ? { data: encoded, mediaType: "image/jpeg" } : encoded;
+			},
 			id: () => `image-${++id}`,
 		}),
 	};
@@ -37,7 +47,70 @@ const photo = {
 	size: 10,
 };
 
-it("rejects an encoded PNG over the server byte limit without persisting it", async () => {
+it("takes a photo bigger than the limit on disk when the phone's encoding of it fits", async () => {
+	// A camera photo is often over 8 MB as picked; the phone scales it down.
+	const source = { ...photo, size: MAX_ATTACHMENT_BYTES * 3 };
+	const { document, selection } = setup(
+		async () => [source],
+		async () => "AQID",
+	);
+
+	await selection.choose();
+
+	expect(selection.getSnapshot().error).toBeNull();
+	expect(document.getSnapshot().record.images).toHaveLength(1);
+	expect(document.getSnapshot().record.images?.[0]?.mediaType).toBe("image/jpeg");
+});
+
+const TOO_LARGE = "This photo is too large to attach. Try a screenshot or a smaller image.";
+
+/** Picks `images`, counting the decodes the selection asks for. */
+async function chooseCounting(images: PickedImage[]) {
+	let decoded = 0;
+	const { document, selection } = setup(
+		async () => images,
+		async () => {
+			decoded++;
+			return "AQID";
+		},
+	);
+	await selection.choose();
+	return { decoded, attached: document.getSnapshot().record.images ?? [], error: selection.getSnapshot().error };
+}
+
+it("refuses a file over 25 MB before decoding it, and says what to do", async () => {
+	const result = await chooseCounting([{ ...photo, name: "huge.jpg", size: MAX_SOURCE_BYTES + 1 }]);
+	expect(result.decoded).toBe(0);
+	expect(result.attached).toHaveLength(0);
+	expect(result.error).toBe(`huge.jpg: ${TOO_LARGE}`);
+});
+
+it("takes a file at exactly 25 MB", async () => {
+	const result = await chooseCounting([{ ...photo, size: MAX_SOURCE_BYTES }]);
+	expect(result.error).toBeNull();
+	expect(result.attached).toHaveLength(1);
+});
+
+it("refuses a photo over 48 megapixels by the size the picker reports, before decoding it", async () => {
+	const result = await chooseCounting([{ ...photo, name: "pano.jpg", width: 16000, height: 4000 }]);
+	expect(result.decoded).toBe(0);
+	expect(result.attached).toHaveLength(0);
+	expect(result.error).toBe(`pano.jpg: ${TOO_LARGE}`);
+});
+
+it("takes a full-frame 48 megapixel camera photo", async () => {
+	const result = await chooseCounting([{ ...photo, width: 8064, height: 6048 }]);
+	expect(result.error).toBeNull();
+	expect(result.attached).toHaveLength(1);
+});
+
+it("takes a photo whose pixel size the picker doesn't know", async () => {
+	const result = await chooseCounting([{ ...photo, width: 0, height: 0 }]);
+	expect(result.error).toBeNull();
+	expect(result.attached).toHaveLength(1);
+});
+
+it("rejects an encoded image over the server byte limit without persisting it", async () => {
 	const source = { ...photo, size: MAX_ATTACHMENT_BYTES - 1 };
 	const valid = { ...source, name: "valid.png" };
 	const encoded = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1).toString("base64");
@@ -56,7 +129,7 @@ it("rejects an encoded PNG over the server byte limit without persisting it", as
 	expect(selection.getSnapshot().pending).toHaveLength(0);
 });
 
-it("accepts an encoded PNG at the server byte limit", async () => {
+it("accepts an encoded image at the server byte limit", async () => {
 	const source = { ...photo, size: MAX_ATTACHMENT_BYTES - 1 };
 	const encoded = Buffer.alloc(MAX_ATTACHMENT_BYTES).toString("base64");
 	const { document, selection } = setup(
@@ -71,7 +144,7 @@ it("accepts an encoded PNG at the server byte limit", async () => {
 	expect(selection.getSnapshot().error).toBeNull();
 });
 
-it("accepts valid encoded PNGs through the padded size boundary", async () => {
+it("accepts valid encoded images through the padded size boundary", async () => {
 	const source = { ...photo, size: MAX_ATTACHMENT_BYTES - 1 };
 	const sizes = [MAX_ATTACHMENT_BYTES - 2, MAX_ATTACHMENT_BYTES - 1, MAX_ATTACHMENT_BYTES];
 	const picked = sizes.map((size) => ({
@@ -94,7 +167,7 @@ it("enforces current-web type, count and source-size limits before encoding", as
 	const { document, selection } = setup(
 		async () => [
 			{ ...photo, type: "text/plain" },
-			{ ...photo, size: 9 * 1024 * 1024 },
+			{ ...photo, size: MAX_SOURCE_BYTES + 1 },
 			...Array.from({ length: 9 }, () => photo),
 		],
 		async () => {
@@ -203,4 +276,26 @@ it("says how to turn the camera on when its permission is refused", async () => 
 	expect(document.getSnapshot().record.images).toBeUndefined();
 	expect(selection.getSnapshot().error).toBe("Camera access is off. Turn it on in Settings to take photos here.");
 	expect(selection.getSnapshot().busy).toBe(false);
+});
+
+it("keeps the type the phone encoded an image as, a screenshot's PNG included", async () => {
+	const { document, selection } = setup(
+		async () => [{ ...photo, name: "shot.png", type: "image/png" }],
+		async () => ({ data: "UE5H", mediaType: "image/png" }),
+	);
+	await selection.choose();
+	expect(document.getSnapshot().record.images?.[0]).toMatchObject({ name: "shot.png", mediaType: "image/png" });
+});
+
+it("says an image the phone couldn't encode couldn't be processed, and attaches the rest", async () => {
+	const { document, selection } = setup(
+		async () => [{ ...photo, name: "broken.heic" }, photo],
+		async (image) => {
+			if (image.name === "broken.heic") throw new Error("could not decode");
+			return "AQID";
+		},
+	);
+	await selection.choose();
+	expect(selection.getSnapshot().error).toBe("broken.heic (could not process image)");
+	expect(document.getSnapshot().record.images).toHaveLength(1);
 });

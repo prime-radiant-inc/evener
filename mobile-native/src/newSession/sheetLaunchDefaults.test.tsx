@@ -31,7 +31,12 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("../nativeImagePicker", () => ({
-	nativeImagePicker: { pick: async () => [], capture: async () => [], encode: async () => "", id: () => "image-1" },
+	nativeImagePicker: {
+		pick: async () => [],
+		capture: async () => [],
+		encode: async () => ({ data: "", mediaType: "image/jpeg" }),
+		id: () => "image-1",
+	},
 }));
 
 const settle = () =>
