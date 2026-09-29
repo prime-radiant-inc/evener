@@ -441,7 +441,8 @@ it("clears the flag once the draft matches the baseline again", async () => {
   f.layer = { ...f.layer, maxRounds: 9 };
   expect(await f.model.save()).toBe(false);
   expect(f.model.getSnapshot().changedElsewhere).toBe(true);
-  f.model.edit("maxRounds", 3);
+  // The refused save read the hub's layer, so that is the baseline now.
+  f.model.edit("maxRounds", 9);
   expect(f.model.getSnapshot().dirty).toBe(false);
   expect(f.model.getSnapshot().changedElsewhere).toBe(false);
 });
@@ -483,4 +484,31 @@ it("reports a read-back that differs from what it saved as an error, not as a ch
   expect(f.model.getSnapshot().changedElsewhere).toBe(false);
   expect(f.model.getSnapshot().error).toBe("The hub saved something different. Review the values before saving again.");
   expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
+});
+it("keeps the flag when an edit returns to the old baseline after the hub moved", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  f.layer = { ...f.layer, maxRounds: 9 };
+  expect(await f.model.save()).toBe(false);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(true);
+  // 3 was the baseline this edit started from; the hub now holds 9.
+  f.model.edit("maxRounds", 3);
+  expect(f.model.getSnapshot().dirty).toBe(true);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(true);
+  f.model.edit("maxRounds", 9);
+  expect(f.model.getSnapshot().dirty).toBe(false);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(false);
+});
+it("keeps a dirty editor editable while an update notification re-reads its layer", async () => {
+  const f = fixture();
+  f.model.start();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  for (const listener of f.listeners)
+    listener({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } });
+  expect(() => f.model.edit("maxRounds", 10)).not.toThrow();
+  await new Promise((done) => setTimeout(done, 0));
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(10);
+  f.model.dispose();
 });

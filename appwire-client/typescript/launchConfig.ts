@@ -201,7 +201,10 @@ export class LaunchSettings {
     if (this.disposed || !this.client || this.state.saving || (this.state.dirty && !discardDraft && !reconcile)) return;
     const rpc = launchConfigRequests(this.client);
     const version = ++this.version;
-    this.publish({ loading: true, error: null });
+    // A reconcile under an unsaved edit leaves the editor editable: it reads
+    // quietly and keeps whatever draft stands when it lands.
+    const quiet = reconcile && this.state.dirty;
+    this.publish(quiet ? { error: null } : { loading: true, error: null });
     try {
       const [schema, current, resolved] = await Promise.all([
         rpc.schema(),
@@ -272,7 +275,10 @@ export class LaunchSettings {
       const latest = await rpc.getLayer(this.cwd, this.layer);
       if (!active()) return false;
       if (!equalJSON(latest, baseline)) {
-        this.publish({ changedElsewhere: true });
+        // The hub's layer is the baseline now: the draft stays, flagged, and
+        // it clears only once it matches what the hub holds.
+        const dirty = !equalJSON(latest, draft);
+        this.publish({ current: latest, dirty, changedElsewhere: dirty });
         return false;
       }
       sent = true;
@@ -300,7 +306,7 @@ export class LaunchSettings {
               dirty: differs,
               ...(differs && confirmed
                 ? { error: "The hub saved something different. Review the values before saving again." }
-                : null),
+                : {}),
             });
           if (differs) confirmed = false;
         } catch {
