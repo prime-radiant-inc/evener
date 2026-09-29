@@ -98,6 +98,18 @@ export function outputTails(output: string): string[] {
   return tails;
 }
 
+/** A tool's JSON object result, read before any intervention the registry
+ * appended after it (a repetition nudge follows a repeated call's result);
+ * undefined for output that isn't one. */
+export function toolJSONResult(output: string | undefined): Record<string, unknown> | undefined {
+  if (!output) return undefined;
+  for (const tail of outputTails(output)) {
+    const result = parseJSONObject(tail);
+    if (result) return result;
+  }
+  return undefined;
+}
+
 function withoutTrailingNewlines(text: string): string {
   return text.replace(/\n+$/, "");
 }

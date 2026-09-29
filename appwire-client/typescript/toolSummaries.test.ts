@@ -38,6 +38,24 @@ test.each<[ToolWireCall, string]>([
   ["call_read_transcript_outline", "Read transcript 02wMz5Txv5aIxgf9yVdd0N · outline of 1 turn"],
   ["call_find_sessions", 'Searched sessions for "settle race" · 1 match'],
   ["call_find_sessions_catalog", "Listed recent sessions · 2 sessions"],
+  // A worktree step says what the settled result says it did: a switch to
+  // the worktree the session is in already changed nothing.
+  ["call_worktree_create", "Created worktree settle-fix"],
+  ["call_worktree_list", "Listed worktrees · 1 found"],
+  [
+    "call_worktree_exit",
+    "Exited worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix",
+  ],
+  ["call_worktree_switch", "Switched to worktree settle-fix"],
+  ["call_worktree_switch_again", "Already in worktree settle-fix"],
+  // The registry's repetition nudge follows this exit's JSON.
+  [
+    "call_worktree_exit_again",
+    "Exited worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix",
+  ],
+  ["call_worktree_remove", "Removed worktree settle-fix"],
+  ["call_worktree_prune", "Pruned worktrees · 0 removed, 2 skipped"],
+  ["call_worktree_adopt", "Adopted worktree lane"],
 ])("says %s as %s", (call, summary) => {
   expect(toolStepSummary(toolWireStep(call), { cwd: toolWireCwd() })).toBe(summary);
 });
@@ -81,6 +99,14 @@ test("counts a transcript's turns and a search's finds in their own number", () 
     });
   expect(read({ turns_total: 5, turns_rendered: 5 })).toBe("Read transcript abc · all 5 turns");
   expect(read({ turns_total: 5, turns_rendered: 2 })).toBe("Read transcript abc · 2 of 5 turns");
+  // The registry's repetition nudge after the envelope doesn't hide it.
+  expect(
+    toolStepSummary({
+      toolName: "read_transcript",
+      argumentsJSON: JSON.stringify({ transcript_ref: "local:abc" }),
+      output: `${JSON.stringify({ transcript_ref: "local:abc", content: "x", meta: { turns_total: 5, turns_rendered: 5 } })}\n\nYou have now made this same call and received the identical result 2 times in a row.`,
+    }),
+  ).toBe("Read transcript abc · all 5 turns");
   const found = (args: Record<string, unknown>, output: string) =>
     toolStepSummary({ toolName: "find_session_transcripts", argumentsJSON: JSON.stringify(args), output });
   expect(found({ query: "x" }, "…\n\n3 matches (scope: current_project)")).toBe(
@@ -112,6 +138,38 @@ test("reads a session search's count only from its footer", () => {
   );
 });
 
+test("says what a worktree adopt or dispose did, and an operation it doesn't know in words", () => {
+  const worktree = (args: Record<string, unknown>, result?: Record<string, unknown>) =>
+    toolStepSummary({
+      toolName: "manage_worktree",
+      argumentsJSON: JSON.stringify(args),
+      output: result ? JSON.stringify(result) : undefined,
+    });
+  expect(
+    worktree({ operation: "adopt", path: "/src/lane" }, { status: "adopted", name: "lane", path: "/src/lane" }),
+  ).toBe("Adopted worktree lane");
+  expect(worktree({ operation: "adopt", path: "/src/lane" })).toBe("Adopted worktree /src/lane");
+  expect(worktree({ operation: "dispose", id: "dlg_1", force_dirty: true })).toBe(
+    "Disposed dlg_1 · discarded uncommitted changes",
+  );
+  expect(worktree({ operation: "dispose", id: "dlg_1", force_dirty: true }, { status: "already_disposed" })).toBe(
+    "Already disposed dlg_1",
+  );
+  expect(worktree({ operation: "reticulate" })).toBe("Used manage worktree: reticulate");
+  // A call that names no worktree says so, with no dangling space.
+  expect(worktree({ operation: "dispose" })).toBe("Disposed a worktree");
+  expect(worktree({})).toBe("Used manage worktree");
+  expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: "{}" })).toBe("Using manage worktree");
+  expect(worktree({ operation: "create" })).toBe("Created a worktree");
+  expect(worktree({ operation: "switch" }, { status: "unchanged" })).toBe("Already in a worktree");
+  expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: '{"operation":"dispose"}' })).toBe(
+    "Disposing a worktree",
+  );
+  expect(toolStepProgress({ toolName: "manage_worktree", argumentsJSON: '{"operation":"remove"}' })).toBe(
+    "Removing a worktree",
+  );
+});
+
 test("keeps a shell command's cd when the session is somewhere else", () => {
   expect(toolStepSummary(toolWireStep("call_shell"), { cwd: "/elsewhere" })).toBe(
     "Ran cd /home/jesse/git/evener && cat agent/tree_order.go",
@@ -130,6 +188,7 @@ test("sorts each tool into the family a run's summary counts it under", () => {
   expect(toolFamily("task_list")).toBe("tasks");
   for (const name of ["read_transcript", "read_session_transcript"]) expect(toolFamily(name)).toBe("transcript");
   expect(toolFamily("find_session_transcripts")).toBe("sessions");
+  expect(toolFamily("manage_worktree")).toBe("worktree");
   expect(toolFamily("github__create_issue")).toBe("mcp");
   expect(toolFamily("compact_context")).toBe("tool");
 });
@@ -198,6 +257,15 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["find_session_transcripts", { query: "settle" }, 'Searching sessions for "settle"'],
   ["find_session_transcripts", { children_of: "local:abc" }, "Searching sessions spawned by local:abc"],
   ["find_session_transcripts", {}, "Listing recent sessions"],
+  ["manage_worktree", { operation: "create", name: "settle-fix" }, "Creating worktree settle-fix"],
+  ["manage_worktree", { operation: "switch", name: "settle-fix" }, "Switching to worktree settle-fix"],
+  ["manage_worktree", { operation: "list" }, "Listing worktrees"],
+  ["manage_worktree", { operation: "exit" }, "Leaving the worktree"],
+  ["manage_worktree", { operation: "remove", name: "settle-fix" }, "Removing worktree settle-fix"],
+  ["manage_worktree", { operation: "prune" }, "Pruning worktrees"],
+  ["manage_worktree", { operation: "adopt", path: "/src/lane" }, "Adopting worktree /src/lane"],
+  ["manage_worktree", { operation: "dispose", id: "dlg_1" }, "Disposing dlg_1"],
+  ["manage_worktree", { operation: "reticulate" }, "Using manage worktree: reticulate"],
   ["github__create_issue", {}, "Using github: create issue"],
   ["compact_context", {}, "Using compact context"],
 ])("says a running %s as %s", (toolName, args, progress) => {
