@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,11 +12,12 @@ import (
 
 func TestDelegateArtifactsDir_LivesUnderDelegationState(t *testing.T) {
 	t.Parallel()
-	got, err := delegateArtifactsDir("/state", "sess_child")
+	const stateDir = "state-root"
+	got, err := delegateArtifactsDir(stateDir, "sess_child")
 	if err != nil {
 		t.Fatalf("delegateArtifactsDir: %v", err)
 	}
-	want := filepath.Join("/state", sessionsSubdir, "sess_child", delegateArtifactsSubdir)
+	want := filepath.Join(stateDir, sessionsSubdir, "sess_child", delegateArtifactsSubdir)
 	if got != want {
 		t.Fatalf("delegateArtifactsDir = %q, want %q", got, want)
 	}
@@ -23,7 +25,7 @@ func TestDelegateArtifactsDir_LivesUnderDelegationState(t *testing.T) {
 	if _, err := delegateArtifactsDir("", "sess_child"); err == nil {
 		t.Fatal("empty state dir accepted")
 	}
-	if _, err := delegateArtifactsDir("/state", "../escape"); err == nil {
+	if _, err := delegateArtifactsDir(stateDir, "../escape"); err == nil {
 		t.Fatal("invalid session id accepted")
 	}
 }
@@ -104,5 +106,72 @@ func TestDisposeUnadoptedSubagentSession_RemovesArtifactsDir(t *testing.T) {
 
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("artifacts dir survived unadopted-child disposal: err=%v", err)
+	}
+}
+
+// TestMarshalStableDelegateCreateResult_KeepsArtifactsDirWithinBound pins the
+// bounded-result contract: artifacts_dir is the delegation's routing path, so
+// the marshaler drops every supplementary field before it and keeps the path
+// whenever the core can still fit.
+func TestMarshalStableDelegateCreateResult_KeepsArtifactsDirWithinBound(t *testing.T) {
+	t.Parallel()
+	in := stableDelegateCreateResult{
+		DelegateID:     "dlg_bounded",
+		ChildSessionID: "sess_child",
+		Type:           "delegate",
+		Status:         "failed",
+		TranscriptRef:  "local:sess_child",
+		ArtifactsDir:   "/state/sessions/sess_child/artifacts",
+		StartError:     strings.Repeat("oversized post-commit diagnostic ", 200),
+		Warnings:       []string{strings.Repeat("w", 600)},
+		Model:          "openai/gpt-5.2",
+	}
+	out, err := marshalStableDelegateCreateResult(in, jobToolResultMinJSONChars)
+	if err != nil {
+		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+	}
+	if got := jsonCharLen([]byte(out)); got > jobToolResultMinJSONChars {
+		t.Fatalf("bounded result length = %d, want <= %d", got, jobToolResultMinJSONChars)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &fields); err != nil {
+		t.Fatalf("decode bounded result %q: %v", out, err)
+	}
+	if _, ok := fields["artifacts_dir"]; !ok {
+		t.Fatalf("bounded result dropped artifacts_dir: %s", out)
+	}
+	if _, ok := fields["error"]; ok {
+		t.Fatalf("bounded result retained oversized error diagnostic: %s", out)
+	}
+}
+
+// TestCreateDelegate_ConstructFailureRemovesArtifactsDir pins the leak fix: a
+// start that dies during construction (before a child run exists to dispose)
+// must take the just-created artifacts directory with it.
+func TestCreateDelegate_ConstructFailureRemovesArtifactsDir(t *testing.T) {
+	t.Parallel()
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+		if point == "new_session" {
+			return errors.New("injected construct failure")
+		}
+		return nil
+	}
+	result := root.createDelegate(context.Background(), delegateArgs{
+		Task:                "fail during construction",
+		DelegationAllowance: new(0),
+	})
+	if result.Err == nil {
+		t.Fatalf("createDelegate err = nil, want construct failure")
+	}
+	if result.ChildSessionID == "" {
+		t.Fatalf("construct failure returned no child session id: %#v", result)
+	}
+	dir, err := delegateArtifactsDir(root.stateDir, result.ChildSessionID)
+	if err != nil {
+		t.Fatalf("delegateArtifactsDir: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("artifacts dir leaked after construct failure: err=%v", err)
 	}
 }

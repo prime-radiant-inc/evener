@@ -1795,6 +1795,17 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	// result. A failure here aborts the committed start through the same
 	// construction-failure path as any later failure.
 	var artifactsDir string
+	// removeArtifacts takes back the just-created artifacts directory on an exit
+	// that leaves no child session to dispose. A start that fails before a child
+	// run exists (ensure or construct failing) reaches failCommittedStart with a
+	// nil prepared run, so its disposeUnadopted arm never runs and nothing else
+	// would remove the directory.
+	removeArtifacts := func() {
+		if artifactsDir == "" {
+			return
+		}
+		_ = removeDelegateArtifacts(s.stateDir, started.descriptor.ChildSessionID)
+	}
 	createResult := func(result delegateResult) delegateResult {
 		if selection.warning != nil {
 			result.Warnings = []string{selection.warning.Message}
@@ -1806,9 +1817,8 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if childID := strings.TrimSpace(started.descriptor.ChildSessionID); childID != "" {
 		artifactsDir, err = ensureDelegateArtifactsDir(s.stateDir, childID)
 		if err != nil {
-			// No child session exists yet, so the directory this call may have
-			// partially created is not covered by the unadopted-child disposal
-			// below; take it back here.
+			// ensure reported no path, so removeArtifacts is a no-op here; take
+			// back whatever a partial MkdirAll may have left.
 			_ = removeDelegateArtifacts(s.stateDir, childID)
 			return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "artifacts_dir_failed"))
 		}
@@ -1816,6 +1826,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	s.delegateController.emitDelegateUpdate(started.plan)
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)
 	if err != nil {
+		removeArtifacts()
 		return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "construction_failed"))
 	}
 	if err := s.delegateController.AttachRuntime(started.lease, prepared.sub.sess); err != nil {

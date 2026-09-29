@@ -222,11 +222,13 @@ func marshalStableDelegateCreateResult(out stableDelegateCreateResult, maxChars 
 	}
 	// Preserve the durable identity and outcome by dropping optional diagnostics
 	// from least to most useful before falling back to the bounded core.
+	// ArtifactsDir is the delegation's routing contract, so it is dropped only
+	// after the large supplementary diagnostics (StartError, Warnings, Worktree)
+	// and only when the core plus the path still cannot fit. It is dropped before
+	// Model and Sandbox because the minimum-bound contract
+	// (TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentityWithinMinimumLimit)
+	// pins the model diagnostic as retained at the floor.
 	out.StartError = ""
-	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
-		return fit, err
-	}
-	out.ArtifactsDir = ""
 	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
 		return fit, err
 	}
@@ -235,6 +237,10 @@ func marshalStableDelegateCreateResult(out stableDelegateCreateResult, maxChars 
 		return fit, err
 	}
 	out.Worktree = nil
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.ArtifactsDir = ""
 	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
 		return fit, err
 	}
