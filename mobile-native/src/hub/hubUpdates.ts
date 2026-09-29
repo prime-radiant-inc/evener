@@ -63,14 +63,16 @@ export function createPhoneHubUpdates(
 					resolve(back);
 				};
 				const end = () => finish(false);
+				// The wait owns the check the return to ready makes (useHubUpdates
+				// skips its own while restarting), so one answer both shows the
+				// hub's version and ends the wait. A check that fails while the
+				// hub settles waits for the next time the connection is ready.
 				const unsubscribe = readiness.subscribe(() => {
-					if (!client || !readiness.isReady()) return;
-					client
-						.request("evener/update/check", { channel: controller.getState().channel ?? "" })
-						.then((check) => finish(check.currentVersion !== previousVersion))
-						// A check that fails while the hub settles waits for the
-						// next time the connection is ready.
-						.catch(() => {});
+					if (!readiness.isReady()) return;
+					void controller.runCheck().then(() => {
+						const check = controller.getState().check;
+						if (check) finish(check.currentVersion !== previousVersion);
+					});
 				});
 				endWaits.add(end);
 			}),
@@ -95,8 +97,9 @@ export function useHubUpdates(client: Pick<AppwireClientLike, "request"> | null,
 	useEffect(() => () => updates.dispose(), [updates]);
 	const reachable = ready && client !== null;
 	useEffect(() => {
+		// While a restart waits, its own check answers the return to ready.
+		if (reachable && !updates.controller.getState().restarting) void updates.controller.runCheck();
 		readiness.set(reachable);
-		if (reachable) void updates.controller.runCheck();
 	}, [reachable, readiness, updates]);
 	return updates.controller;
 }

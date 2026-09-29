@@ -152,3 +152,24 @@ it("lets go of a replaced connection's controller and checks through the new cli
 	expect(first.calls).toEqual(["evener/update/check"]);
 	hook.unmount();
 });
+
+it("asks once when the hub comes back from an update, and shows what that answer says", async () => {
+	const h = hub();
+	const current = { client: h.client, ready: true };
+	const hook = renderHook(() => useHubUpdates(current.client, current.ready));
+	await settle();
+	const applying = hook.result.current.apply();
+	await settle();
+	expect(hook.result.current.getState().restarting).toBe(true);
+	h.calls.length = 0;
+	h.state.version = "0.9.413";
+	current.ready = false;
+	hook.rerender();
+	current.ready = true;
+	hook.rerender();
+	await applying;
+	await settle();
+	expect(h.calls).toEqual(["evener/update/check"]);
+	expect(hook.result.current.getState()).toMatchObject({ restarting: false, check: { currentVersion: "0.9.413" } });
+	hook.unmount();
+});
