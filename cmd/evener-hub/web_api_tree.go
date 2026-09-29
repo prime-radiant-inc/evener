@@ -566,7 +566,7 @@ func selectNavigationProjects(candidates map[string]map[string]identifier.Projec
 }
 
 func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
-	snapshot := s.navigationSnapshotInputs(ctx)
+	snapshot := s.navigationSnapshot(ctx)
 	return snapshot.metas, snapshot.live, snapshot.projects
 }
 
