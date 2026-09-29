@@ -229,8 +229,11 @@ through `putThreadModel` (read merges, reconnect invalidations),
 `threadsStore.setState` (every live `history/updated`, `thread/status/changed`
 and friends, which is most of a live session's content). A hook on any one
 function would miss the others. The write seam is therefore a **subscription
-to the store's `threads` map** that debounces per ref (1 s trailing, the
-interval injected). When the debounced callback fires it re-reads the
+to the store's `threads` map** that debounces per ref (1 s trailing with a
+5 s max-wait, both injected) — a trailing-only debounce would starve a
+continuously streaming session until quiescence, and a crash would then
+lose the whole live growth, not the tail. When the debounced callback
+fires it re-reads the
 store's current model for the ref and applies every gate then — never a
 model captured at scheduling time — so a write scheduled before a clear,
 a delete, or an invalidation evaluates against the state that exists when
@@ -245,10 +248,14 @@ the recorded history refreshes the record like any read merge.
 
 The flush is load-bearing, not a nicety: live content arrives by
 notification between reads, and a tab closed without a flush (a crash, a
-killed tab) loses the tail. `releaseThread` flushes a pending write, and so
-does the pinned-mutation drain (`dropUnpinnedModel`, the path a pinned
-ref's model finally leaves through, since `releaseThread` returns early
-while pinned). A tab destroyed anyway loses its tail: accepted, because the
+killed tab) loses the tail. `releaseThread` flushes a pending write, and
+so does the pinned-mutation drain (`dropUnpinnedModel`, the path a
+pinned ref's model finally leaves through, since `releaseThread` returns
+early while pinned). The flush runs **before** removal: both paths
+snapshot the model, evaluate the gates on that snapshot, write, and only
+then let the model leave the map — a flush after removal would read an
+empty map and drop the tail on every graceful close. A tab destroyed
+anyway loses its tail: accepted, because the
 lost tail costs only a larger first delta on the next reload, never
 correctness. Correctness never depends on write freshness: a record is a
 `(model, identity)` pair written atomically, and the server reconciles any
@@ -325,13 +332,17 @@ anchored set is non-empty (an empty record takes the ordinary cold
 merge), and the fresh window's first item position is strictly greater
 than the anchored item's position — `comparePositions` on
 `ThreadItemPosition`, so only a window that starts above everything the
-record verified replaces. One cost is accepted and stated: a window that
-begins exactly at the verified boundary's successor replaces too, because
-the position model has no predecessor function to distinguish one-item
-adjacency from a one-item hole — the cached pages re-fetch rather than
-risk a hole, a bounded loss of one window's worth of growth. The check
-lives at a seam the design already owns; no reducer or protocol change
-is involved.
+record verified replaces. The watermark is stable by construction:
+`history.length` is written only by a read response's identity
+(`readIdentity`), a `history/updated` merge returns `{ ...held, turns }`
+and never touches it, and the page path's own disposition guards against
+"a page pushed forward" — so no notification can move the anchor. One
+cost is accepted and stated: a window that begins exactly at the verified
+boundary's successor replaces too, because the position model has no
+predecessor function to distinguish one-item adjacency from a one-item
+hole — the cached pages re-fetch rather than risk a hole, a bounded loss
+of one window's worth of growth. The check lives at a seam the design
+already owns; no reducer or protocol change is involved.
 
 ### Eviction, cap, and cross-tab
 
@@ -349,10 +360,19 @@ is involved.
   makes unnecessary.
 - One oversize rule closes the loop the cut left: a record whose own
   serialized length exceeds `SESSION_CACHE_MAX_BYTES` is skipped whole,
-  never written, and that session keeps today's behavior. Without this a
+  never written, and a stored row for the same ref is deleted with it —
+  a session that outgrew its cache leaves nothing stale behind and keeps
+  today's behavior. Without this a
   monster record would evict every neighbor forever and still not fit.
   `bytes` is the serialized record's encoded length — the exact length
-  the write stores, and what the cap counts.
+  the write stores, and what the cap counts. The cap bounds payload
+  bytes; IndexedDB's structural overhead rides above it and is bounded,
+  finally, by the browser quota and the clear action.
+- Records expire `SESSION_CACHE_TTL_DAYS = 14` after their last write
+  (`savedAt`), enforced by the same enumeration — at every adapter open
+  and inside every write transaction — so out-of-band-deleted content
+  cannot outlive the cache by more than that bound even with no cap
+  pressure. The cap bounds volume; the TTL bounds lifetime.
 - The cap is enforced atomically per write: the enumeration of the `meta`
   store's rows, the insert, and any evictions run in one read-write
   IndexedDB transaction, which the database serializes across tabs, so no
@@ -372,23 +392,26 @@ Settings gains a storage row with one action, "Clear cached session
 content". The row renders a state, not an estimate: **empty**,
 **unavailable** (a failed open, with a retry — never shown as empty, so
 the privacy remedy cannot silently claim to have worked), or **cleared**.
-The clear is durable against racing writers, in this order, inside one
-read-write transaction: delete every record, cancel every pending
-debounce timer, and increment a durable clear epoch held in the store's
-`meta` row. Every write transaction carries the epoch it was scheduled
-under and skips itself when it sees a newer one — so a sibling tab's
-write that started before the clear cannot commit a record after it.
-The suppression set (every ref open in this tab until the next reload,
-the write gate above) covers publications after the clear, and it
-propagates to sibling tabs through one BroadcastChannel message (the
-crossTabSync pattern the tree already uses) carrying the epoch, so their
-open panes neither re-create records from new publications nor complete
-stale scheduled ones. A fresh `ensureThread` of a ref the user
-deliberately re-opens caches again — that is the feature working, not
-the remedy failing. Deletion is the storage adapter's own operation so a
-wedged open degrades to the unavailable state rather than a failed
-button. No per-session management and no cap slider; both are YAGNI
-until someone asks.
+The clear is durable against racing writers, in the only order that
+works, since in-memory timer state cannot commit transactionally:
+first, synchronously and in memory, bump the local epoch view, arm the
+suppression, and cancel every pending debounce timer — a write scheduled
+after this moment already sees the new epoch and skips; then one
+read-write transaction deletes every record and increments the durable
+clear epoch held in the store's `meta` row. Every write transaction
+carries the epoch it was scheduled under and skips itself when it sees
+a newer one — so a sibling tab's write that started before the clear
+cannot commit a record after it, and the BroadcastChannel message (the
+crossTabSync pattern the tree already uses) carries the epoch so their
+scheduled writes drop the same way. The suppression attaches to the
+refs open at clear time and ends with each one's final release: a ref
+deliberately re-opened afterwards establishes a fresh cache lease and
+caches again — that is the feature working, not the remedy failing —
+while the durable epoch still kills anything scheduled before the
+clear. Deletion is the storage adapter's own operation so a wedged
+open degrades to the unavailable state rather than a failed button. No
+per-session management and no cap slider; both are YAGNI until someone
+asks.
 
 ### Failure and degradation
 
@@ -435,7 +458,8 @@ output. Three facts bound the exposure:
 What the cache deliberately never holds: credentials (auth lives in the hub
 and the outbox's own rows), attachments, drafts, and the human-client
 `pendingEscalations` set. Out-of-band deletions that are never re-opened
-rely on the cap and the clear action, as stated in the write seam. A shared
+rely on the cap, the 14-day expiry, and the clear action, as stated in the
+eviction and write-seam sections. A shared
 browser profile shares the cache, the same way it shares every origin's
 storage; that is a browser-account boundary, not an app one. The hub this
 design targets is single-principal: the appwire protocol carries no user
@@ -464,13 +488,14 @@ Adapter (new `stores/sessionCacheIndexedDB.ts`):
    failed open (timeout, blocked, VersionError) returns nothing and never
    throws; the diagnostic seam records the open failure; a lookup still
    resolves as a miss at its own 250 ms deadline.
-3. Cap: writing past `SESSION_CACHE_MAX_BYTES` evicts the
+3. Cap and expiry: writing past `SESSION_CACHE_MAX_BYTES` evicts the
    least-recently-saved record; the enumeration reads the `meta` store's
    rows without touching record bodies, and enumeration, insert, and
    eviction share one transaction (a sibling tab's interleaved write is
    either fully seen or fully unseen); a record whose own length exceeds
-   the cap is skipped whole; a forced write during quota failure drops
-   silently.
+   the cap is skipped whole and its stored row deleted; a record past
+   `SESSION_CACHE_TTL_DAYS` expires at adapter open and inside every write
+   transaction; a forced write during quota failure drops silently.
 4. Clear: deletes every record and resets the accounting.
 
 Store integration (`stores/threads.test.ts` additions and a new
@@ -516,7 +541,9 @@ Store integration (`stores/threads.test.ts` additions and a new
     turns-bearing model into `watchedThreads` and produces no cache write.
 11. Live-notification capture: a `history/updated` merge (the notification
     handler's direct `setState`) refreshes the record without any
-    `putThreadModel` call, pinning the subscription seam.
+    `putThreadModel` call, pinning the subscription seam; and a rapid
+    sub-second notification run still writes within the max-wait, so a busy
+    session's record does not starve until quiescence.
 12. Scroll-back, the volume case: a ref hydrated, paged back twice,
     reloaded; the pane renders window plus both pages from the shell;
     `loadOlderTurns` requests only the page before the cached boundary (the
@@ -530,17 +557,18 @@ Store integration (`stores/threads.test.ts` additions and a new
 14. Deletion and clearing: a `deleteSession` success removes the record;
     the deletion fence removes the record on a fenced read; the release
     flush skips a ref closed by deletion; the settings clear empties the
-    adapter, cancels pending debounce timers, and increments the epoch —
-    a write scheduled under an older epoch skips itself, including a
-    timer armed before the clear and firing after it — the suppression
-    reaches sibling tabs through the channel carrying the epoch (their
-    open refs stop writing without a reload), and a re-open of a cleared
-    ref starts caching again.
+    adapter in the specified order (in-memory epoch and timer
+    cancellation before the awaited transaction) — a write scheduled under
+    an older epoch skips itself, including a timer armed before the clear
+    and firing after it — the suppression reaches sibling tabs through the
+    channel carrying the epoch, ends with the final release of each open
+    ref, and a deliberate re-open of a cleared ref starts caching again.
 15. Write gating: `failed` history writes nothing; a zero-turn record's
     reload takes the ordinary cold merge (the gap rule's empty case).
-16. Flush: `releaseThread` commits a pending debounced write; the pinned
-    drain (`dropUnpinnedModel`) commits it too; a reload after an unflushed
-    crash still reconciles to the same content.
+16. Flush: `releaseThread` commits a pending debounced write, ordered
+    before removal (the gates evaluate on the pre-removal snapshot); the
+    pinned drain (`dropUnpinnedModel`) commits it too; a reload after an
+    unflushed crash still reconciles to the same content.
 17. Degradation: the same replay with an adapter that always fails leaves
     behavior identical to today's reload (full window read, no heldSnapshot,
     scroll-back pages fetched as before).
