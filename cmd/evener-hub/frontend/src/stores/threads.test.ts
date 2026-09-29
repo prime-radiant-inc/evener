@@ -12754,6 +12754,69 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // Round-11 Medium: a background pin refresh can clear the ref's arm while the
+  // write is in flight (it reads the outbox empty before the commit), so the
+  // commit must re-arm rather than wait for the next hydration's re-arm.
+  test("a successful commit re-arms dispatch cleared by a refresh during the write", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-commit-rearm";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await nextMacrotask();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    const realEnqueue = storage.enqueueIntent.bind(storage);
+    let releaseWrite: () => void = () => {};
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let writeReached: () => void = () => {};
+    const reached = new Promise<void>((resolve) => {
+      writeReached = resolve;
+    });
+    let held = false;
+    storage.enqueueIntent = async (intent, barrier) => {
+      if (!held) {
+        held = true;
+        writeReached();
+        await writeGate;
+      }
+      return realEnqueue(intent, barrier);
+    };
+
+    const send = threadsStore.getState().send("ref_a", "hello");
+    // Probe the arm at the commit's OWN persistence notify, which runs before
+    // its discovery could re-arm via a hydration. A listener that consults the
+    // store's scheduler here sees the arm only if the commit re-armed it.
+    const dispatchTargets = vi.spyOn(MutationDispatcher.prototype, "dispatchTargets");
+    let armedAtCommit: boolean | undefined;
+    const unsubscribe = subscribeMutationPersistence((refs, committed) => {
+      if (committed === undefined || !refs.includes("ref_a")) return;
+      const before = dispatchTargets.mock.calls.length;
+      notifyReadyForMutationDispatch(["ref_a"]);
+      armedAtCommit = dispatchTargets.mock.calls.length > before;
+    });
+    try {
+      await reached;
+      // A refresh during the in-flight write reads the outbox empty and clears
+      // the arm (refreshMutationPins deletes dispatchableMutationRefs when the
+      // outbox is empty).
+      await threadsStore.getState().refreshThread("ref_a");
+      await nextMacrotask();
+      releaseWrite();
+      await send;
+    } finally {
+      unsubscribe();
+      dispatchTargets.mockRestore();
+    }
+    expect(armedAtCommit).toBe(true);
+  });
+
   // Round-8 Medium/Low: the arm is shared state, so ownership cannot clean it
   // up - two clicks can each decline to remove it (A because B was still in
   // flight, B because B never added it) and leave it stale with no durable row.

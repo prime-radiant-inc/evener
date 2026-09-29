@@ -850,7 +850,9 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
 // that set for its own sake, and the clause's absence only means "the client is
 // current and the ref is not fenced" - the admission the fallback needs. The
 // refs that DO hold durable work are covered separately, by the fallback's own
-// pinnedMutationRefs ordering guard.
+// ordering guard: undeliveredMutationRefs (the ref's outbox holding a
+// non-canceled row) plus inflightDurableEnqueues (a durable enqueue for the ref
+// still in flight).
 function currentDispatchClient(targetRef?: string, method?: string, requireArmed = true): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && requireArmed && !dispatchableMutationRefs.has(targetRef)) return null;
@@ -2362,18 +2364,12 @@ async function enqueueMutationIntent(
   // the fallback must not jump stays visible even though it has not committed
   // (and so has not pinned, and its arm a refresh can clear).
   inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
+  let record: MutationOutboxRecord;
   try {
     // The click-time capture, awaited at the write it fences, and the durable
     // enqueue behind it, retried once on a storage timeout (see
     // enqueueDurableMutation).
-    const record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead);
-    releaseInflightDurableEnqueue(ref);
-    pinnedMutationRefs.add(ref);
-    // A committed row is undelivered work unless the stop barrier committed it
-    // born-canceled.
-    if (record.state !== "canceled") undeliveredMutationRefs.add(ref);
-    notifyMutationPersistence([ref], { record });
-    return record;
+    record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead);
   } catch (error) {
     // This click's write has settled; only OTHER enqueues remain counted.
     releaseInflightDurableEnqueue(ref);
@@ -2450,6 +2446,30 @@ async function enqueueMutationIntent(
     await dispatchMutationDirectly(dispatchClient, intent);
     return undefined;
   }
+  // The success path releases exactly once, here, BEFORE the post-commit
+  // bookkeeping and its listeners run: a listener that consults
+  // inflightDurableEnqueues sees this click already decremented, which is the
+  // ordering the previous structure had. Keeping the bookkeeping OUTSIDE the
+  // try means a throw from it can no longer re-enter a release (the
+  // double-release bug), and this release is unreachable from an error path
+  // because the only other exit from the try is the catch above.
+  releaseInflightDurableEnqueue(ref);
+  pinnedMutationRefs.add(ref);
+  // A committed row is undelivered work unless the stop barrier committed it
+  // born-canceled.
+  const committedUndelivered = record.state !== "canceled";
+  if (committedUndelivered) undeliveredMutationRefs.add(ref);
+  // A background pin refresh can clear the ref's arm while this write was in
+  // flight (it reads the outbox empty before the commit), so re-arm on a
+  // successful non-canceled commit rather than wait for the next hydration's
+  // re-arm in publishAndReconcileThreadHydration. Gated by the same replay-gate
+  // predicate as the click's own arming: a pending hydration still keeps the
+  // gate closed.
+  if (committedUndelivered && (pending?.client !== wiredClient || pending.epoch !== readyEpoch)) {
+    dispatchableMutationRefs.add(ref);
+  }
+  notifyMutationPersistence([ref], { record });
+  return record;
 }
 
 // A durable write that timed out may mean only that storage is slow to
