@@ -80,6 +80,7 @@ it.each([null, undefined])(
 		);
 		expect(result.items).not.toBe(items);
 		expect(result.expandByDefault).toBe(false);
+		expect(result.liveRunsOpen).toBe(false);
 		expect(result.usage).toBeNull();
 	},
 );
@@ -218,6 +219,9 @@ it.each(["chat", "intent", "tools", "activity", "full"] as const)(
 			makeTranscriptDisplayConfig({ kind: "preset", level }),
 		);
 		expect(result.expandByDefault).toBe(presetContent(level).expandByDefault);
+		// A live run shows its steps where tool calls show; at Chat and Intent
+		// the tray shows the live step instead (S7).
+		expect(result.liveRunsOpen).toBe(level === "tools" || level === "activity" || level === "full");
 		// The reasoning row survives every level: whether it exists at all is
 		// the projector's decision at the seam (D24-6), never this layer's.
 		expect(result.items).toHaveLength(1);

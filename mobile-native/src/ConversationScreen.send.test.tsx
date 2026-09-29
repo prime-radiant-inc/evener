@@ -26,6 +26,8 @@ import {
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure";
+import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
@@ -1428,6 +1430,41 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 	const { tree } = await mount(thread("ref-empty", "idle"));
 	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation")).toEqual([]);
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
+});
+
+// Rows' open state lives in one app-wide store, scoped by session. Leaving a
+// session drops its scope, so the store stays bounded.
+it("forgets a session's open rows when you leave it", async () => {
+	const { tree } = await mount(twoTurns("ref-disclosure-scope"));
+	const run = { kind: "run" as const, id: "run:x", turnId: "turn_1", steps: [] };
+	act(() => setDisclosureOpenAll(rowDisclosureIds("hub-1", "ref-disclosure-scope", run), true));
+	const inScope = () =>
+		[...nativeDisclosureStore.getState().open.keys()].filter((id) =>
+			id.startsWith(`${sessionDisclosureScope("hub-1", "ref-disclosure-scope")}\0`),
+		);
+	expect(inScope()).toHaveLength(1);
+	act(() => tree.unmount());
+	expect(inScope()).toEqual([]);
+});
+
+// A short transcript rests just above the composer (spec 8.5), not at the top
+// with the page's empty middle between it and the bar.
+it("rests a short transcript's end just above the composer", async () => {
+	const { tree } = await mount(twoTurns("ref-short-rests"), { barLaysOut: false });
+	const opacity = () => transcriptList(tree).props.style?.opacity;
+	// It shows once the viewport and the bar have both laid out.
+	expect(opacity()).toBe(0);
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	await settle();
+	expect(opacity()).toBe(0);
+	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
+	await settle();
+	expect(opacity()).toBe(1);
+	expect(transcriptList(tree).props.contentContainerStyle).toMatchObject({
+		minHeight: 450,
+		justifyContent: "flex-end",
+	});
 });
 
 it("loads older history as you drag near the top", async () => {

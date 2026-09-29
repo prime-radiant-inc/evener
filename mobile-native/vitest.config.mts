@@ -39,6 +39,15 @@ export default defineConfig({
 			"@evener/appwire-client": fileURLToPath(
 				new URL("../appwire-client/typescript/index.ts", import.meta.url),
 			),
+			// The shared headless sources import react, and a checkout that also
+			// has cmd/evener-hub/frontend/node_modules would resolve it to the
+			// frontend's copy for a frontend source while the suite holds this
+			// app's. Pin it, as Metro does by rewriting a shared source's origin
+			// module path (metro.config.js), so one React serves the whole graph
+			// (issue #3076).
+			react: fileURLToPath(
+				new URL("./node_modules/react", import.meta.url),
+			),
 			zustand: fileURLToPath(
 				new URL("./node_modules/zustand", import.meta.url),
 			),
