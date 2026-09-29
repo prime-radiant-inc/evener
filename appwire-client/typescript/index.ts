@@ -450,6 +450,7 @@ export {
   type LabelledSteeringKind,
   STEERING_KIND_LABELS,
   steeringKindLabel,
+  steeringLabel,
 } from "./steeringLabels";
 export {
   decodeNotificationEntities,

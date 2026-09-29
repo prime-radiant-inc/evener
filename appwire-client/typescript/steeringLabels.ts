@@ -59,6 +59,19 @@ export function steeringKindLabel(kind: string | undefined): string | undefined 
     : undefined;
 }
 
+// Every daemon steer says it is the system's before it says what it did
+// (docs/web-ui/design-system.md: the steering glyph carries no accessible
+// name, because the row's own words say "System steered").
+const STEERED = "System steered";
+
+/** The label a daemon steer folds to in both clients: "System steered:
+ * <what it did>", or a bare "System steered" for a kind with no label, since
+ * a colon promises a value. */
+export function steeringLabel(kind: string | undefined): string {
+  const label = steeringKindLabel(kind);
+  return label === undefined ? STEERED : `${STEERED}: ${label}`;
+}
+
 /** True for the kinds a transcript leaves out: the current task and the task
  * list, which the tasks surfaces already show. */
 export function isSuppressedSteeringKind(kind: string | undefined): boolean {

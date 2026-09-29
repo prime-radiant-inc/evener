@@ -54,7 +54,7 @@ import {
 	pendingTextJoined,
 	pluginLoadedText,
 	projectThread,
-	steeringKindLabel,
+	steeringLabel,
 	steeringNotificationFragments,
 	stripSystemReminder,
 } from "@evener/appwire-client";
@@ -671,13 +671,11 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	return "unknown-system";
 }
 
-// A steer whose kind this build has no label for (a newer daemon, or none).
-const STEERED = "System steered";
-
 // A daemon steer is instructions to the agent, never the conversation: it
 // folds to what it did, and opens to what it said (spec 8.2 "System event"),
-// with the label the web shows for its kind (steeringKindLabel). One the
-// daemon sends as notification markup reads as its cards instead. A
+// with the label the web shows for it (steeringLabel: "System steered:
+// <what it did>"). One the daemon sends as notification markup reads as its
+// cards instead. A
 // loop-detected or provider-failure steer is quiet too: the failure it answers
 // shows as the turn's own error. The current task and the task list are left
 // out, as the web leaves them: the tasks surfaces own them.
@@ -693,7 +691,7 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 		tone: "info" as const,
 	};
 	if (notifications) return { ...common, text: it.text, notifications };
-	return { ...common, text: stripSystemReminder(it.text), label: steeringKindLabel(it.steeringKind) ?? STEERED };
+	return { ...common, text: stripSystemReminder(it.text), label: steeringLabel(it.steeringKind) };
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {

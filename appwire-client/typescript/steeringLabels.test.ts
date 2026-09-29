@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { isSuppressedSteeringKind, STEERING_KIND_LABELS, steeringKindLabel } from "./steeringLabels";
+import { isSuppressedSteeringKind, STEERING_KIND_LABELS, steeringKindLabel, steeringLabel } from "./steeringLabels";
 import { STEERING_KINDS } from "./types.gen";
 
 test("labels every daemon steer the transcript shows, and no other", () => {
@@ -41,4 +41,12 @@ test("names no kind it doesn't know, rather than inventing a label from a slug",
   expect(steeringKindLabel("some-future-kind")).toBeUndefined();
   expect(steeringKindLabel(undefined)).toBeUndefined();
   expect(steeringKindLabel("toString")).toBeUndefined();
+});
+
+test("says a steer as the system's, naming its kind, or bare when the kind has no label", () => {
+  expect(steeringLabel("compact-nudge")).toBe("System steered: Running low on context");
+  expect(steeringLabel("human-note")).toBe("System steered: Human note");
+  // A colon promises a value, so a kind with no label gets none.
+  expect(steeringLabel("some-future-kind")).toBe("System steered");
+  expect(steeringLabel(undefined)).toBe("System steered");
 });
