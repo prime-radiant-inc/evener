@@ -59,19 +59,11 @@ var (
 
 // startRefused is a thread/start refusal that came before the hub spawned
 // anything: no session exists, so it says the start was not accepted and a
-// client may start that draft again (#3184). The code, message and
-// evenerErrorInfo stay as they were. A refusal whose data isn't the standard
-// ErrorData goes out unchanged, its outcome left open, which a client reads as
-// a start that may have happened.
+// client may let the person start that draft again (#3184). Like any refusal
+// marked so, it asks for no automatic retry: the same start would be refused
+// the same way.
 func startRefused(err error) (appwire.ThreadStartResponse, error) {
-	wire := appserver.WireError(err)
-	data, ok := wire.Data.(appwire.ErrorData)
-	if !ok {
-		return appwire.ThreadStartResponse{}, err
-	}
-	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
-	wire.Data = data
-	return appwire.ThreadStartResponse{}, wire
+	return appwire.ThreadStartResponse{}, appserver.WireError(err).NotAccepted("")
 }
 
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
@@ -86,7 +78,6 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err != nil {
 		return startRefused(err)
 	}
-	workingDir, spawnResolved, modelRef := plan.workingDir, plan.resolved, plan.modelRef
 	// The mutation is admitted here: every validation has passed and the spawn
 	// is about to happen. From this point the outcome must not depend on the
 	// connection's fate — a disconnecting client still gets a fully-formed
@@ -99,12 +90,12 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	ctx, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
 	defer cancelDetached()
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
-		Project:       spawnResolved.Project,
-		Resolved:      spawnResolved,
-		WorkingDir:    workingDir,
+		Project:       plan.resolved.Project,
+		Resolved:      plan.resolved,
+		WorkingDir:    plan.workingDir,
 		PluginRoot:    cfg.PluginRoot,
 		AgentsDocPath: hubAgentsDocPath(cfg),
-		Provider:      modelRef.Provider,
+		Provider:      plan.modelRef.Provider,
 	})
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
@@ -149,8 +140,8 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			ID:            entry.ThreadID,
 			SessionID:     entry.SessionID,
 			Preview:       entry.SessionID,
-			ModelProvider: modelRef.Provider,
-			CWD:           workingDir,
+			ModelProvider: plan.modelRef.Provider,
+			CWD:           plan.workingDir,
 			Source:        "local",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Evener:        appwire.EvenerThread{Ref: ref, InstanceID: localSpawnInstanceID(entry, appwire.Thread{})},
@@ -184,7 +175,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	if err != nil {
 		threadResp.Thread = appwire.Thread{
-			ID: entry.ThreadID, SessionID: entry.SessionID, CWD: workingDir,
+			ID: entry.ThreadID, SessionID: entry.SessionID, CWD: plan.workingDir,
 			Source: "local", Evener: appwire.EvenerThread{Ref: ref, InstanceID: localSpawnInstanceID(entry, appwire.Thread{})},
 		}
 	}
@@ -275,7 +266,7 @@ func routeThreadStart(ctx context.Context, sources *appsource.Registry, params a
 		}
 		return source, forward, nil
 	}
-	return nil, forward, nil
+	return nil, appwire.ThreadStartParams{}, nil
 }
 
 // localSpawnPlan is what a local thread/start spawns with, once every check
