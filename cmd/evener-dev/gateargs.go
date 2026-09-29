@@ -126,9 +126,17 @@ func rootTestFlags(args []string, stdout, stderr io.Writer) int {
 	}
 	// walkFlags consumes each value with the shared tables and fails on a flag
 	// whose value is missing, so a value that spells -short is emitted as the
-	// value it is and a dangling flag is a usage error, not a panic.
+	// value it is and a dangling flag is a usage error, not a panic. `-args`
+	// and the build-level `--` end the `go test` flags: everything after
+	// either is the test binary's own argument list, so it is passed through
+	// as written rather than classified -- a -short there is an argument, not
+	// short mode.
+	afterArgs := false
 	err := walkFlags(fs.Args(), func(tok flagToken) error {
-		if tok.name == "-short" {
+		if tok.name == "-args" || tok.name == "--" {
+			afterArgs = true
+		}
+		if tok.name == "-short" && !afterArgs {
 			// A bare or inline boolean: dropping it drops short mode, and it
 			// takes no separate value to keep.
 			return nil
