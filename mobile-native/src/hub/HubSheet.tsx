@@ -16,6 +16,7 @@ import { DisplayPage } from "./DisplayPage";
 import { HostDetailPage } from "./HostDetailPage";
 import { HostsPage } from "./HostsPage";
 import { HubHome } from "./HubHome";
+import { ProvidersPage } from "./ProvidersPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
 import { useHubUpdates } from "./hubUpdates";
 
@@ -79,6 +80,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					component={HostDetailPage}
 					options={({ route }) => ({ title: route.params.name })}
 				/>
+				<HubStack.Screen name="Providers" component={ProvidersPage} options={{ title: "Providers" }} />
 			</HubStack.Navigator>
 		</HubSheetProvider>
 	);

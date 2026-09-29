@@ -1,10 +1,12 @@
-import type { UpdateCheckResponse } from "@evener/appwire-client";
+import type { AuthStatusResponse, InstanceEntry, UpdateCheckResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
+import { Tag } from "../sheet/Grouped";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 import { createPhoneHubUpdates, createReadiness, type PhoneHubUpdates } from "./hubUpdates";
@@ -14,7 +16,13 @@ vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
 	useConnectionStatusText: () => status.line,
 }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready", fatal: false }) }));
+// The connection the Providers row's credential store binds to; the hub's
+// client when a test lists providers.
+const connection = vi.hoisted(() => ({
+	value: { state: "ready", fatal: false, client: null, activeProfile: null } as Record<string, unknown>,
+}));
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection.value }));
+vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
@@ -58,10 +66,34 @@ function hub(check: UpdateCheckResponse | Error) {
 	return { client, calls, script };
 }
 
+/** A ready hub listing provider instances named `names`, with the sign-in
+ * statuses `auth`. */
+function providersHub(names: string[], auth: Pick<AuthStatusResponse, "provider" | "needsLogin">[]) {
+	const fake = new FakeClient("ready");
+	const instances = names.map(
+		(name): InstanceEntry => ({
+			name,
+			providerId: name,
+			protocol: "https",
+			auth: "oauth",
+			implicit: false,
+			isDefault: false,
+			activeSource: "oauth",
+			hasStoredOAuth: true,
+			credentialRequired: true,
+		}),
+	);
+	fake.on("evener/instance/list", () => ({ instances, availableProviders: [] }));
+	fake.on("evener/auth/list", () => ({ providers: auth as AuthStatusResponse[] }));
+	return fake;
+}
+
 let updates: PhoneHubUpdates;
 let context: HubSheetContextValue;
 
-async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boolean; fleet?: ScriptedFleet } = {}) {
+async function mount(
+	options: { check?: UpdateCheckResponse | Error; ready?: boolean; fleet?: ScriptedFleet; providers?: FakeClient } = {},
+) {
 	const fake = hub(options.check ?? UP_TO_DATE);
 	const readiness = createReadiness();
 	readiness.set(true);
@@ -70,7 +102,7 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 	context = {
 		hubId: "hub-1",
 		hubName: "Work hub",
-		client: null,
+		client: (options.providers ?? null) as HubSheetContextValue["client"],
 		ready: options.ready ?? true,
 		canUseConnection: () => live.usable,
 		updates: updates.controller,
@@ -78,6 +110,12 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 		live: null,
 	};
 	if (options.check) await updates.controller.runCheck();
+	connection.value = {
+		state: "ready",
+		fatal: false,
+		client: options.providers ?? null,
+		activeProfile: { id: "hub-1", name: "Work hub" },
+	};
 	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
 	const sheet = { navigate: vi.fn() };
 	const navigation = { getParent: () => root, navigate: sheet.navigate } as unknown as NativeStackScreenProps<
@@ -135,6 +173,28 @@ it("opens Hosts inside the sheet, counting the hub's own machine and tagging the
 	expect(fleet.calls.filter((call) => call.method === "evener/host/list")).toHaveLength(1);
 });
 
+it("opens Providers inside the sheet, counting them and tagging the ones to sign in (spec 12)", async () => {
+	const providers = providersHub(
+		["codex-jesse-fsck.com", "lunaroute", "meta"],
+		[
+			{ provider: "codex-jesse-fsck.com", needsLogin: true },
+			{ provider: "meta", needsLogin: false },
+		],
+	);
+	const { find, press, sheet } = await mount({ check: UP_TO_DATE, providers });
+	expect(find("Providers, 3, 1 to sign in")).not.toBeNull();
+	press("Providers, 3, 1 to sign in");
+	expect(sheet.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
+	const tags = find("Providers, 3, 1 to sign in")?.findAllByType(Tag);
+	expect(tags?.map((tag) => tag.props)).toEqual([{ text: "1 to sign in", tone: "amber" }]);
+});
+
+it("counts providers with no tag when none needs signing in", async () => {
+	const providers = providersHub(["lunaroute", "meta"], []);
+	const { find } = await mount({ providers });
+	expect(find("Providers, 2")).not.toBeNull();
+});
+
 it("tags hosts on another version when none is offline", async () => {
 	const fleet = scriptedFleet([
 		hostRow("paradise-park", { hubVersion: "0.9.409" }),
@@ -158,7 +218,6 @@ it("says the hub is connected and lists its pages", async () => {
 it("leaves the sheet for today's screens until their pages land (rulings 10 and 12)", async () => {
 	const { root, press } = await mount();
 	const interim: [string, string][] = [
-		["Providers", "Providers"],
 		["Plugins", "Plugins"],
 		["Keyboard shortcuts", "KeybindingPreferences"],
 		["Launch defaults", "LaunchSettings"],
@@ -181,7 +240,7 @@ it("keeps every row, pressable, while the connection is down, and never asks to 
 	expect(renderedText(tree)).toContain("Reconnecting…");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
 	for (const label of ROWS) expect(find(label)?.props.disabled).toBe(false);
-	press("Providers");
+	press("Plugins");
 	expect(root.dispatch).toHaveBeenCalledTimes(1);
 });
 

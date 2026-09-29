@@ -83,6 +83,8 @@ function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
 
 export interface RowProps {
 	label: string;
+	/** The label is a model id or similar machine text: Menlo. */
+	machineLabel?: boolean;
 	/** A second line in ink-low. */
 	sub?: string;
 	/** The second line is a path or an id: Menlo. */
@@ -105,6 +107,7 @@ export interface RowProps {
 
 export function Row({
 	label,
+	machineLabel = false,
 	sub,
 	machineSub = false,
 	icon,
@@ -131,7 +134,12 @@ export function Row({
 			<View style={{ flex: 1, gap: 2 }}>
 				<Text
 					allowFontScaling={allowFontScaling}
-					style={{ color: labelColor, fontSize: 17 * scale, lineHeight: 22 * scale }}
+					style={{
+						color: labelColor,
+						fontSize: 17 * scale,
+						lineHeight: 22 * scale,
+						...(machineLabel ? { fontFamily: fonts.mono } : null),
+					}}
 				>
 					{label}
 				</Text>

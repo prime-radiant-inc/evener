@@ -15,6 +15,8 @@ export type HubRoutes = {
 	/** focus opens that host's detail once. */
 	Hosts: { hubId: string; focus?: string };
 	HostDetail: { hubId: string; name: string };
+	/** focus opens that provider's detail once; signIn starts its sign-in instead. */
+	Providers: { hubId: string; focus?: string; signIn?: boolean };
 };
 
 export interface HubSheetContextValue {

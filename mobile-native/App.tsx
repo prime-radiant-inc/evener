@@ -39,7 +39,6 @@ import {
 	ProjectsScreen,
 	SessionLocationScreen,
 } from "./src/ProjectsScreen";
-import { ProvidersScreen } from "./src/ProvidersScreen";
 import { SessionDeletionScreen } from "./src/SessionDeletionScreen";
 import {
 	ConversationScreen,
@@ -211,7 +210,6 @@ function Navigation() {
 						component={KeybindingPreferencesScreen}
 						options={{ title: "Keyboard shortcuts" }}
 					/>
-					<Stack.Screen name="Providers" component={ProvidersScreen} />
 					<Stack.Screen name="Plugins" component={PluginsScreen} />
 					<Stack.Screen
 						name="HubSettings"

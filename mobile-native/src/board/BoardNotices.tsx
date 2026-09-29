@@ -5,14 +5,20 @@ import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Notice } from "./notices";
 
-/** Opens today's screen for a notice's kind; phase 5's Hub opens at the
- * subject. The Board's notice rows and a tapped notice banner both use it. */
+/** Opens the Hub at a notice's subject, or today's screen until its page
+ * lands. The Board's notice rows and a tapped notice banner both use it. */
 export function openNotice(
 	navigation: Pick<NativeStackNavigationProp<Routes>, "navigate">,
 	hubId: string,
 	notice: Notice,
 ): void {
-	if (notice.kind === "signIn") navigation.navigate("Providers", { hubId });
+	if (notice.kind === "signIn")
+		// Ruling 25: the Hub opens at that provider's sign-in, its home kept under the page.
+		navigation.navigate("Hub", {
+			screen: "Providers",
+			params: { hubId, focus: notice.providerId, signIn: true },
+			initial: false,
+		});
 	else if (notice.kind === "host")
 		// Ruling 25: the Hub opens at that host, its home kept under the page.
 		navigation.navigate("Hub", { screen: "Hosts", params: { hubId, focus: notice.sourceId }, initial: false });

@@ -1,14 +1,15 @@
-// ProvidersScreen's provider list issues its listing read from a mount effect,
+// ProvidersPage's provider list issues its listing read from a mount effect,
 // and React flushes a child's passive effects before its parent's: that read
 // only finds a bound credential store because useCredentialStore binds it from
-// a layout effect. The ordering is observable only by mounting the real screen,
-// which renderNative.testkit makes possible; every native edge the screen
+// a layout effect. The ordering is observable only by mounting the real page,
+// which renderNative.testkit makes possible; every native edge the page
 // reaches is mocked here and nowhere else.
 import type { ComponentProps } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import {
+	type AuthStatusResponse,
 	ErrorEndpointConflict,
 	ErrorInstanceRemoveApplied,
 	WireError,
@@ -16,18 +17,28 @@ import {
 	type InstanceListResponse,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ProviderSignIn } from "./providerSignIn";
-import { recordClientReadyHub } from "./connectionIdentity";
-import { ProviderEditor } from "./ProviderEditor";
-import { ProvidersScreen } from "./ProvidersScreen";
-import { alertRequests, dropped, render, renderedText, screenConnection, scriptedClient } from "./renderNative.testkit";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { ProviderSignIn } from "../providerSignIn";
+import { recordClientReadyHub } from "../connectionIdentity";
+import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
+import { ProviderEditor } from "../ProviderEditor";
+import { Tag } from "../sheet/Grouped";
+import { ProvidersPage } from "./ProvidersPage";
+import {
+	alertRequests,
+	dropped,
+	render,
+	renderedText,
+	screenConnection,
+	scriptedClient,
+} from "../renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 vi.mock("react-native", async () => ({
-	...(await import("./renderNative.testkit")).nativeModuleMock(),
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	AppState: {
 		currentState: "active",
 		addEventListener: () => ({ remove: () => {} }),
@@ -36,7 +47,8 @@ vi.mock("react-native", async () => ({
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
-vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 
 const rows: InstanceListResponse = {
 	instances: [
@@ -87,19 +99,55 @@ function subtreeText(node: ReactTestInstance): string {
 	return chunks.join(" ");
 }
 
+/** Drops the connection under a mounted page, as the hub going away does,
+ * and lets the page's status line say so: it has been on screen since the
+ * connection was live, so it speaks when its clock reaches spec 14's 2
+ * seconds (useConnectionStatusText). */
+async function dropUnder(update: () => void) {
+	vi.useFakeTimers();
+	try {
+		harness.connection = dropped(harness.connection, "reconnecting", 0);
+		await act(async () => update());
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(RECONNECTING_AFTER_MS);
+		});
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
+/** The page also reads the hub's sign-in statuses (evener/auth/list) for the
+ * words beside each provider; these tests pin the instance calls. */
+function instanceCalls(methods: string[]): string[] {
+	return methods.filter((method) => method !== "evener/auth/list");
+}
+
+/** The one rendered (host) control labelled `name`: Row forwards its label
+ * to the Pressable it draws, so the composite and the host both carry it. */
+function control(tree: ReactTestRenderer, name: string): ReactTestInstance {
+	return tree.root.find((node) => typeof node.type === "string" && node.props.accessibilityLabel === name);
+}
+
+/** Whether a control labelled `name` is on screen. */
+function hasControl(tree: ReactTestRenderer, name: string): boolean {
+	return (
+		tree.root.findAll((node) => typeof node.type === "string" && node.props.accessibilityLabel === name).length > 0
+	);
+}
+
 it("mounts on a ready client and issues and publishes the listing read", async () => {
 	const hub = scriptedClient(rows);
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	// The read is issued from the list's mount effect and answered asynchronously.
 	await act(async () => {});
-	expect(hub.methods).toEqual(["evener/instance/list"]);
+	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list"]);
 	// Published: the row the store applied and the listing's diagnostics are
-	// what the screen renders. A read that found no bound client would throw
-	// and leave the screen on its empty state instead.
+	// what the page renders. A read that found no bound client would throw
+	// and leave the page on its empty state instead.
 	const text = renderedText(tree);
 	expect(text).toContain("work");
 	expect(text).toContain("from the hub");
@@ -110,18 +158,15 @@ it("ready -> reconnecting keeps the screen tree mounted and shows the banner", a
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("work");
 	expect(renderedText(tree)).not.toContain("Reconnecting…");
 
-	harness.connection = dropped(harness.connection);
-	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
-	});
+	await dropUnder(() => tree.update(<ProvidersPage {...props} />));
 	const text = renderedText(tree);
-	// The list stayed mounted through the flap (never replaced by the wall) ...
+	// The list stayed mounted through the flap (never replaced by Connecting) ...
 	expect(text).toContain("work");
 	// ... behind a banner announcing it, with no Reconnect: the app
 	// reconnects on its own (spec principle 2).
@@ -134,60 +179,56 @@ it("reconnecting -> ready removes the banner", async () => {
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
-	harness.connection = dropped(harness.connection);
-	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
-	});
+	await dropUnder(() => tree.update(<ProvidersPage {...props} />));
 	expect(renderedText(tree)).toContain("Reconnecting…");
 
 	harness.connection = { ...harness.connection, state: "ready" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	const text = renderedText(tree);
 	expect(text).toContain("work");
 	expect(text).not.toContain("Reconnecting…");
 });
 
-it("a fatal (protocol) close replaces the mounted list with the wall", async () => {
+it("a fatal (protocol) close replaces the mounted list with the compatibility sentence", async () => {
 	const hub = scriptedClient(rows);
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("work");
 
 	// `client: hub.client` deliberately kept set - a real hubConnection.ts
-	// keeps it set on "closed" too, and this test must prove the wall comes
+	// keeps it set on "closed" too, and this test must prove the sentence comes
 	// from `fatal`, not from `client` dropping to null.
 	harness.connection = { ...harness.connection, state: "closed", fatal: true };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	const text = renderedText(tree);
 	expect(text).not.toContain("work");
-	expect(text).toContain("Connect to");
-	expect(text).toContain("to manage providers.");
+	expect(text).toContain(INCOMPATIBLE_VERSIONS);
 });
 
-it("keeps the provider wall through a fatal retry until the replacement is ready", async () => {
+it("keeps the list away through a fatal retry until the replacement is ready", async () => {
 	const hub = scriptedClient(rows);
 	const replacement = scriptedClient(rows);
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 
 	harness.connection = { ...harness.connection, state: "closed", fatal: true };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 
 	harness.connection = {
@@ -197,19 +238,19 @@ it("keeps the provider wall through a fatal retry until the replacement is ready
 		fatal: false,
 	};
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
-	expect(renderedText(tree)).toContain("Connect to");
-	expect(renderedText(tree)).toContain("to manage providers.");
+	expect(renderedText(tree)).toContain("Connecting to Work hub…");
 	expect(replacement.methods).toEqual([]);
 
 	harness.connection = { ...harness.connection, state: "ready" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	await act(async () => {});
 	expect(replacement.methods.length).toBeGreaterThan(0);
-	expect(replacement.methods.every((method) => method === "evener/instance/list")).toBe(true);
+	expect(instanceCalls(replacement.methods).length).toBeGreaterThan(0);
+	expect(instanceCalls(replacement.methods).every((method) => method === "evener/instance/list")).toBe(true);
 });
 
 it("keeps the provider editor draft through a flap, with no Reconnect anywhere", async () => {
@@ -217,12 +258,12 @@ it("keeps the provider editor draft through a flap, with no Reconnect anywhere",
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "Add provider instance" }).props.onPress();
+		control(tree, "Add provider").props.onPress();
 	});
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Instance name" }).props.onChangeText("draft-name");
@@ -230,7 +271,7 @@ it("keeps the provider editor draft through a flap, with no Reconnect anywhere",
 
 	harness.connection = { ...harness.connection, state: "reconnecting" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	const editorInput = tree.root.findByProps({ accessibilityLabel: "Instance name" });
 	expect(editorInput.props.value).toBe("draft-name");
@@ -243,8 +284,8 @@ it("a flap disables provider mutation controls, not only OAuth sign-in", async (
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	const row = tree.root.findAll(
 		(node) =>
@@ -255,41 +296,43 @@ it("a flap disables provider mutation controls, not only OAuth sign-in", async (
 	await act(async () => {
 		row.props.onPress();
 	});
-	// Named by their button text, which Action forwards as accessibilityLabel
-	// when no separate `label` is given (ui.tsx).
-	const label = (name: string) => tree.root.findByProps({ accessibilityLabel: name });
-	expect(label("Add provider instance").props.disabled).toBe(false);
-	expect(label("Test credentials").props.disabled).toBe(false);
-	expect(label("Edit instance").props.disabled).toBe(false);
+	// Named by their row text, which Row forwards as accessibilityLabel.
+	const label = (name: string) => control(tree, name);
+	expect(label("Add provider").props.disabled).toBe(false);
+	expect(label("Test connection").props.disabled).toBe(false);
+	expect(label("Edit").props.disabled).toBe(false);
 	expect(label("Clear credentials").props.disabled).toBe(false);
-	expect(label("Remove instance").props.disabled).toBe(false);
+	expect(label("Remove").props.disabled).toBe(false);
 
 	harness.connection = { ...harness.connection, state: "reconnecting" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
-	expect(label("Add provider instance").props.disabled).toBe(true);
-	expect(label("Test credentials").props.disabled).toBe(true);
-	expect(label("Edit instance").props.disabled).toBe(true);
+	expect(label("Add provider").props.disabled).toBe(true);
+	expect(label("Test connection").props.disabled).toBe(true);
+	expect(label("Edit").props.disabled).toBe(true);
 	expect(label("Clear credentials").props.disabled).toBe(true);
-	expect(label("Remove instance").props.disabled).toBe(true);
+	expect(label("Remove").props.disabled).toBe(true);
 });
 
 /** Presses the one rendered control whose accessibility label matches. */
 function press(tree: ReactTestRenderer, matches: (label: string) => boolean) {
 	const target = tree.root.find(
-		(node) => typeof node.props.accessibilityLabel === "string" && matches(node.props.accessibilityLabel),
+		(node) =>
+			typeof node.type === "string" &&
+			typeof node.props.accessibilityLabel === "string" &&
+			matches(node.props.accessibilityLabel),
 	);
 	act(() => {
 		target.props.onPress();
 	});
 }
 
-/** Drives the screen to a selected instance's removal confirmation. */
+/** Drives the page to a selected instance's removal confirmation. */
 async function openRemoveConfirmation(tree: ReactTestRenderer) {
 	press(tree, (label) => label.startsWith("work"));
 	await act(async () => {});
-	press(tree, (label) => label === "Remove instance");
+	press(tree, (label) => label === "Remove");
 	const request = alertRequests.at(-1);
 	const confirm = request?.buttons?.find((button) => button.style === "destructive");
 	if (!confirm?.onPress) throw new Error("the remove confirmation was not opened");
@@ -322,13 +365,17 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 
 	await openRemoveConfirmation(tree);
 
-	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/remove", "evener/instance/list"]);
+	expect(instanceCalls(hub.methods)).toEqual([
+		"evener/instance/list",
+		"evener/instance/remove",
+		"evener/instance/list",
+	]);
 	const text = renderedText(tree);
 	expect(text).toContain("The instance was removed on the hub");
 	expect(text).not.toContain("The operation could not be confirmed");
@@ -336,8 +383,8 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 	// warning above must never carry it.
 	expect(text).not.toContain("the hub left work's stored key behind");
 	// The editor and its selection are gone, like a completed removal.
-	expect(text).not.toContain("Remove instance");
-	expect(text).not.toContain("Test credentials");
+	expect(hasControl(tree, "Remove")).toBe(false);
+	expect(hasControl(tree, "Test connection")).toBe(false);
 });
 
 // An ordinary refusal keeps today's behavior: the generic error line and no
@@ -354,18 +401,18 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 
 	await openRemoveConfirmation(tree);
 
-	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/remove"]);
+	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/remove"]);
 	const text = renderedText(tree);
 	expect(text).toContain("The operation could not be confirmed");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor stays open on the instance the refusal names.
-	expect(text).toContain("Remove instance");
+	expect(hasControl(tree, "Remove")).toBe(true);
 });
 
 // The editor was opened on one row of the listing, so its save asserts that
@@ -386,13 +433,13 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 
 	press(tree, (label) => label.startsWith("work"));
 	await act(async () => {});
-	press(tree, (label) => label === "Edit instance");
+	press(tree, (label) => label === "Edit");
 	await act(async () => {});
 	press(tree, (label) => label === "Save instance");
 	await act(async () => {});
@@ -403,13 +450,13 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 		name: "work",
 		expectedEndpointFingerprint: "fp-work",
 	});
-	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/edit", "evener/instance/list"]);
+	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/edit", "evener/instance/list"]);
 	const text = renderedText(tree);
 	expect(text).toContain("changed to a different endpoint");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor cleared like a completed save; the instance's detail remains.
 	expect(text).not.toContain("Save instance");
-	expect(text).toContain("Edit instance");
+	expect(hasControl(tree, "Edit")).toBe(true);
 });
 
 // A removal asserts the row's endpoint too. The hub's refusal of that
@@ -432,8 +479,8 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 
 	await openRemoveConfirmation(tree);
@@ -443,15 +490,19 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 		name: "work",
 		expectedEndpointFingerprint: "fp-work",
 	});
-	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/remove", "evener/instance/list"]);
+	expect(instanceCalls(hub.methods)).toEqual([
+		"evener/instance/list",
+		"evener/instance/remove",
+		"evener/instance/list",
+	]);
 	const text = renderedText(tree);
 	expect(text).toContain("changed to a different endpoint");
 	expect(text).not.toContain("The operation could not be confirmed");
 	// Secret-safety: the hub's text can echo submitted values and never renders.
 	expect(text).not.toContain("work no longer resolves");
 	// Cleared like a completed removal: the detail and its actions are gone.
-	expect(text).not.toContain("Remove instance");
-	expect(text).not.toContain("Test credentials");
+	expect(hasControl(tree, "Remove")).toBe(false);
+	expect(hasControl(tree, "Test connection")).toBe(false);
 });
 
 // Finding 1: a create collision is a genuine hub conflict (evenerErrorInfo
@@ -531,12 +582,12 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	press(tree, (label) => label.startsWith("work"));
 	await act(async () => {});
-	press(tree, (label) => label === "Edit instance");
+	press(tree, (label) => label === "Edit");
 	await act(async () => {});
 
 	// The flap: the editor and its draft survive behind the banner, and the
@@ -544,11 +595,11 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 	// was away.
 	harness.connection = { ...harness.connection, state: "reconnecting" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	harness.connection = { ...harness.connection, state: "ready" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	await act(async () => {});
 	press(tree, (label) => label === "Save instance");
@@ -565,7 +616,7 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 	});
 	// The refusal reconciles exactly like the credential flow: the editor
 	// clears, the list re-reads, and the warning is this screen's own words.
-	expect(hub.methods).toEqual([
+	expect(instanceCalls(hub.methods)).toEqual([
 		"evener/instance/list",
 		"evener/instance/list",
 		"evener/instance/edit",
@@ -591,12 +642,12 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	press(tree, (label) => label.startsWith("work"));
 	await act(async () => {});
-	press(tree, (label) => label === "Edit instance");
+	press(tree, (label) => label === "Edit");
 	await act(async () => {});
 	const url = tree.root.find((node) => node.props.accessibilityLabel === "Base URL (optional)");
 	act(() => {
@@ -605,11 +656,11 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 
 	harness.connection = { ...harness.connection, state: "reconnecting" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	harness.connection = { ...harness.connection, state: "ready" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	await act(async () => {});
 	press(tree, (label) => label === "Save instance");
@@ -624,7 +675,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	});
 	// The save applied: no conflict warning, and the editor closed on the
 	// completed write.
-	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/list", "evener/instance/edit"]);
+	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/list", "evener/instance/edit"]);
 	const text = renderedText(tree);
 	expect(text).not.toContain("changed to a different endpoint");
 	expect(text).not.toContain("Save instance");
@@ -635,21 +686,18 @@ it("shows the connection status inside an open editor modal, with no Reconnect",
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	press(tree, (label) => label.startsWith("work"));
 	await act(async () => {});
-	press(tree, (label) => label === "Edit instance");
+	press(tree, (label) => label === "Edit");
 	await act(async () => {});
 
 	// The connection drops with the editor modal open. The native modal
-	// covers the screen's banner, so the status and the manual reconnect
-	// have to live inside it - with the draft still intact.
-	harness.connection = dropped(harness.connection);
-	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
-	});
+	// covers the page's status line, so the status has to live inside it -
+	// with the draft still intact.
+	await dropUnder(() => tree.update(<ProvidersPage {...props} />));
 	const modal = modalContaining(tree, "Save instance");
 	expect(subtreeText(modal)).toContain("Reconnecting…");
 	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
@@ -675,13 +723,13 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	// A flap the screen survives behind its banner.
 	harness.connection = dropped(harness.connection);
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	press(tree, (label) => label.startsWith("work"));
 	await act(async () => {});
@@ -700,7 +748,7 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	// exchange proceeds.
 	harness.connection = { ...harness.connection, state: "ready" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	await act(async () => {});
 	await act(async () => {});
@@ -720,12 +768,12 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 	harness.connection = screenConnection(first as unknown as ConversationClientLike, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	harness.connection = { ...harness.connection, state: "reconnecting" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	press(tree, (label) => label.startsWith("work"));
 	await act(async () => {});
@@ -755,11 +803,11 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 		state: "connecting",
 	};
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	harness.connection = { ...harness.connection, state: "ready" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	await act(async () => {});
 
@@ -782,15 +830,15 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	fakeA.on("evener/instance/list", () => rows);
 	harness.connection = screenConnection(fakeA as unknown as ConversationClientLike, "ready");
 	const forHub = (hubId: string) =>
-		({ route: { params: { hubId } } }) as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...forHub("hub-1")} />);
+		({ route: { params: { hubId } } }) as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...forHub("hub-1")} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("work");
 
 	// The mounted instance is re-keyed to another hub while that hub's
 	// connection is still opening: hub-1's rows must not render under
-	// hub-2's params, and the screen must meet the new hub like a fresh
-	// mount - a wall for a hub it has never been ready for.
+	// hub-2's params, and the page must meet the new hub like a fresh
+	// mount - connecting, for a hub it has never been ready for.
 	const fakeB = new FakeClient("connecting");
 	const rowsB: InstanceListResponse = {
 		instances: [{ ...rows.instances[0]!, name: "from-b" }],
@@ -802,13 +850,16 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: null,
 		state: "connecting",
 		fatal: false,
+		// The status clock a real connection always reports: never down yet.
+		downSince: null,
+		lastLiveAt: null,
 	};
 	await act(async () => {
-		tree.update(<ProvidersScreen {...forHub("hub-2")} />);
+		tree.update(<ProvidersPage {...forHub("hub-2")} />);
 	});
 	const rekeyed = renderedText(tree);
 	expect(rekeyed).not.toContain("work");
-	expect(rekeyed).toContain("to manage providers.");
+	expect(rekeyed).toContain("Connecting to Two hub…");
 
 	// The new hub is a fresh mount: its own rows render once its
 	// connection is ready.
@@ -819,7 +870,7 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		state: "ready",
 	};
 	await act(async () => {
-		tree.update(<ProvidersScreen {...forHub("hub-2")} />);
+		tree.update(<ProvidersPage {...forHub("hub-2")} />);
 	});
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("from-b");
@@ -830,12 +881,12 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 // still-ready client rendered the normal provider surface while the client
 // and readiness hooks refused the pairing - a sign-in opened there had a
 // surface to run from. The display now requires the identity record's
-// verdict before a ready state earns trust, so the window renders the
-// connection wall instead: no affordance mounts and no exchange can run
+// verdict before a ready state earns trust, so the window renders
+// Connecting instead: no affordance mounts and no exchange can run
 // against the previous hub's client. The resume arm's own mechanics stay
 // pinned by the banner-retry test above; the cross-hub window it used to
 // guard alone is now closed before the surface can mount.
-it("walls the re-key window against the previous hub's recorded client", async () => {
+it("holds the re-key window back from the previous hub's recorded client", async () => {
 	const oauth: InstanceListResponse = {
 		instances: [{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] }],
 		availableProviders: [],
@@ -857,18 +908,21 @@ it("walls the re-key window against the previous hub's recorded client", async (
 		client: stale as unknown as ConversationClientLike,
 		state: "ready",
 		fatal: false,
+		// The status clock a real connection always reports: never down yet.
+		downSince: null,
+		lastLiveAt: null,
 	};
 	const props = {
 		route: { params: { hubId: "hub-2" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	await act(async () => {});
 
-	// The wall replaces the surface: no sign-in affordance mounts and no
+	// Connecting replaces the surface: no sign-in affordance mounts and no
 	// exchange runs against the previous hub's client — the strongest form
 	// of the round-58 contract, closed one layer up.
-	expect(renderedText(tree)).toContain("Connect to New hub");
+	expect(renderedText(tree)).toContain("Connecting to New hub…");
 	expect(tree.root.findAll((node) => typeof node.props.onSignIn === "function")).toHaveLength(0);
 	expect(stale.calls.map((call) => call.method)).not.toContain("evener/auth/device/start");
 
@@ -892,7 +946,7 @@ it("walls the re-key window against the previous hub's recorded client", async (
 		state: "reconnecting",
 	};
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	harness.connection = {
 		...harness.connection,
@@ -900,7 +954,7 @@ it("walls the re-key window against the previous hub's recorded client", async (
 		state: "ready",
 	};
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	await act(async () => {});
 
@@ -918,4 +972,206 @@ it("walls the re-key window against the previous hub's recorded client", async (
 	expect(replacement.calls.map((call) => call.method)).toContain("evener/auth/device/start");
 	expect(renderedText(tree)).toContain("WORK-5678");
 	setConnection.mockRestore();
+});
+
+// The redesign's list and detail (spec 12's Providers; rulings 6, 9 and 12).
+
+/** A ready hub serving `instances` and the sign-in statuses `auth`. */
+function providersHub(instances: InstanceListResponse["instances"], auth: AuthStatusResponse[] = []) {
+	const fake = new FakeClient("ready");
+	fake.on("evener/instance/list", () => ({ instances, availableProviders: [] }));
+	fake.on("evener/auth/list", () => ({ providers: auth }));
+	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
+	return fake;
+}
+
+function mountPage(params: { focus?: string; signIn?: boolean } = {}) {
+	const navigation = { setParams: vi.fn() };
+	const props = {
+		route: { params: { hubId: "hub-1", ...params } },
+		navigation,
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	return { tree, navigation };
+}
+
+const instance = (over: Partial<InstanceListResponse["instances"][number]>) => ({
+	...rows.instances[0]!,
+	...over,
+});
+
+it("says each provider's sign-in state, with only an expired sign-in in amber", async () => {
+	providersHub(
+		[
+			instance({
+				name: "codex-jesse-fsck.com",
+				providerId: "openai-codex",
+				activeSource: "oauth",
+				authModes: ["oauth"],
+			}),
+			instance({ name: "lunaroute", providerId: "openai", isDefault: false, authModes: ["apiKey"] }),
+			instance({
+				name: "kimi-code",
+				providerId: "moonshot",
+				isDefault: false,
+				activeSource: "none",
+				authModes: ["apiKey"],
+			}),
+		],
+		[{ provider: "codex-jesse-fsck.com", needsLogin: true } as AuthStatusResponse],
+	);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await act(async () => {});
+	expect(hasControl(tree, "codex-jesse-fsck.com, openai-codex · default, Sign-in expired")).toBe(true);
+	expect(hasControl(tree, "lunaroute, openai, Key set")).toBe(true);
+	expect(hasControl(tree, "kimi-code, moonshot, No key")).toBe(true);
+	const tags = tree.root.findAllByType(Tag);
+	expect(tags.map((tag) => tag.props)).toEqual([{ text: "Sign-in expired", tone: "amber" }]);
+});
+
+it("offers no pull-to-refresh and never asks to reconnect", async () => {
+	providersHub([rows.instances[0]!]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await dropUnder(() =>
+		tree.update(
+			<ProvidersPage
+				{...({ route: { params: { hubId: "hub-1" } } } as unknown as ComponentProps<typeof ProvidersPage>)}
+			/>,
+		),
+	);
+	expect(renderedText(tree)).toContain("Reconnecting…");
+	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(tree.root.findAll((node) => "refreshing" in node.props || "onRefresh" in node.props)).toHaveLength(0);
+});
+
+it("says Connecting before the first listing, in place of a wall", async () => {
+	const fake = new FakeClient("ready");
+	fake.on("evener/instance/list", () => new Promise(() => {}));
+	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
+	const { tree } = mountPage();
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Connecting to Work hub…");
+	expect(hasControl(tree, "Add provider")).toBe(false);
+});
+
+it("opens the provider a notice names and starts its sign-in", async () => {
+	const fake = providersHub(
+		[instance({ activeSource: "oauth", auth: "oauth", authModes: ["oauth"], hasStoredOAuth: true })],
+		[{ provider: "work", needsLogin: true } as AuthStatusResponse],
+	);
+	fake.on("evener/auth/device/start", () => ({
+		provider: "work",
+		flowId: "flow-1",
+		userCode: "WORK-1234",
+		verificationUrl: "https://example.test/verify",
+		intervalSeconds: 5,
+	}));
+	const { tree, navigation } = mountPage({ focus: "work", signIn: true });
+	await act(async () => {});
+	await act(async () => {});
+	await act(async () => {});
+	expect(fake.calls.map((call) => call.method)).toContain("evener/auth/device/start");
+	expect(renderedText(tree)).toContain("WORK-1234");
+	expect(navigation.setParams).toHaveBeenCalledWith({ focus: undefined, signIn: undefined });
+});
+
+it("opens the provider a link names, once, without signing in", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"] })]);
+	const { tree, navigation } = mountPage({ focus: "work" });
+	await act(async () => {});
+	await act(async () => {});
+	expect(hasControl(tree, "Test connection")).toBe(true);
+	expect(fake.calls.map((call) => call.method)).not.toContain("evener/auth/device/start");
+	expect(navigation.setParams).toHaveBeenCalledTimes(1);
+});
+
+it("shows how each provider signs in, and the actions its sign-in allows", async () => {
+	providersHub([
+		instance({
+			name: "codex",
+			providerId: "openai-codex",
+			activeSource: "oauth",
+			authModes: ["oauth"],
+			hasStoredOAuth: true,
+			models: [{ id: "gpt-5.6" }, { id: "gpt-5.5", disabled: true }],
+		}),
+		instance({ name: "lunaroute", isDefault: false, authModes: ["apiKey"], hasStoredFile: true }),
+		instance({
+			name: "vertex",
+			isDefault: false,
+			activeSource: "none",
+			authModes: ["credentialJson"],
+			hasStoredFile: false,
+		}),
+	]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	const open = async (name: string) => {
+		press(tree, (label) => label.startsWith(`${name},`));
+		await act(async () => {});
+	};
+	await open("codex");
+	expect(hasControl(tree, "Status, Signed in")).toBe(true);
+	expect(hasControl(tree, "Type, openai-codex")).toBe(true);
+	expect(hasControl(tree, "Sign-in, Account")).toBe(true);
+	expect(hasControl(tree, "gpt-5.6")).toBe(true);
+	expect(hasControl(tree, "gpt-5.5")).toBe(false);
+	expect(hasControl(tree, "Sign in again")).toBe(true);
+	expect(hasControl(tree, "Set key")).toBe(false);
+	expect(hasControl(tree, "Replace key")).toBe(false);
+	await open("lunaroute");
+	expect(hasControl(tree, "Sign-in, API key")).toBe(true);
+	expect(hasControl(tree, "Replace key")).toBe(true);
+	expect(hasControl(tree, "Sign in")).toBe(false);
+	expect(hasControl(tree, "Make default")).toBe(true);
+	expect(renderedText(tree)).toContain("No models listed");
+	await open("vertex");
+	expect(hasControl(tree, "Sign-in, API key")).toBe(true);
+	expect(hasControl(tree, "Set credential JSON")).toBe(true);
+	expect(hasControl(tree, "Status, No key")).toBe(true);
+});
+
+it("replaces a key in place, saving it against the endpoint the row was read from", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => ({ provider: "work", activeSource: "store" }) as never);
+	const { tree } = mountPage();
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("work,"));
+	await act(async () => {});
+	press(tree, (label) => label === "Replace key");
+	expect(renderedText(tree)).toContain("The key is stored on the hub, not on this phone.");
+	const input = control(tree, "API key");
+	expect(input.props.placeholder).toBe("Paste the API key");
+	expect(input.props.secureTextEntry).toBe(true);
+	act(() => input.props.onChangeText(" sk-fixture "));
+	press(tree, (label) => label === "Save key");
+	await act(async () => {});
+	await act(async () => {});
+	const save = fake.calls.find((call) => call.method === "evener/auth/apiKey/set");
+	expect(save?.params).toMatchObject({ provider: "work", value: "sk-fixture", expectedEndpointFingerprint: "fp-work" });
+	// Saved: the group is the actions again.
+	expect(hasControl(tree, "API key")).toBe(false);
+	expect(hasControl(tree, "Replace key")).toBe(true);
+});
+
+it("says a connection test's result under the actions", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"] })]);
+	let status = "success";
+	fake.on("evener/auth/test", () => ({ provider: "work", status, message: "" }));
+	const { tree } = mountPage();
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("work,"));
+	await act(async () => {});
+	press(tree, (label) => label === "Test connection");
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Works");
+	status = "auth_rejected";
+	press(tree, (label) => label === "Test connection");
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Works");
+	expect(renderedText(tree)).toContain("The provider rejected these credentials.");
 });

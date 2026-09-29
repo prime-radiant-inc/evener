@@ -19,7 +19,7 @@ import { Copy, ErrorMessage } from "./ui";
 export const HUB_NO_LONGER_SELECTED = "This hub is no longer selected. Choose it again in Hubs.";
 
 /** The connection wiring every retained ready-only screen runs at the top of
- * its body - the block PluginsScreen, HubSettingsScreen and ProvidersScreen
+ * its body - the block PluginsScreen, HubSettingsScreen and ProvidersPage
  * each carried in their own copy (#1942): the active connection, the display
  * the connection yields for the screen, the live readiness a deferred write
  * or a re-read checks against, and the client a fresh attempt's dialing gap
@@ -45,7 +45,7 @@ export const HUB_NO_LONGER_SELECTED = "This hub is no longer selected. Choose it
  *
  * A screen whose store rebinds itself across a flap (useCredentialStore,
  * credentialStore.ts) needs no retained client: it never reads
- * `renderClient`, and its wall waits on the display alone (ProvidersScreen).
+ * `renderClient`, and its wall waits on the display alone (hub/ProvidersPage).
  * A screen that renders through a client keeps the previous one across a
  * fresh attempt's gap - never the not-yet-ready replacement, which the
  * connection layer reports while it is still dialing - rather than dropping

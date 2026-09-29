@@ -1,8 +1,8 @@
-// Screen-level tests for the two async paths `useProviderSurface` cannot cover:
+// Page-level tests for the two async paths `useProviderSurface` cannot cover:
 // which provider a late probe error names, whether a superseded instance write
 // is reported as success, and whether a save with no fingerprint is refused.
-// Every native edge the screen reaches is mocked here, exactly as
-// ProvidersScreen.test.tsx does; the store is driven through a scripted client.
+// Every native edge the page reaches is mocked here, exactly as
+// ProvidersPage.test.tsx does; the store is driven through a scripted client.
 import type { ComponentProps } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
@@ -13,28 +13,29 @@ import {
 	FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
 	WireError,
 } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ProvidersScreen } from "./ProvidersScreen";
-import { render, renderedText, screenConnection } from "./renderNative.testkit";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { ProvidersPage } from "./ProvidersPage";
+import { render, renderedText, screenConnection } from "../renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 }));
 const alerts = vi.hoisted(() => ({ alert: vi.fn() }));
 vi.mock("react-native", async () => {
-	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
+	const mock = (await import("../renderNative.testkit")).nativeModuleMock();
 	return { ...mock, Alert: { alert: alerts.alert } };
 });
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
-vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 
 afterEach(() => {
 	vi.useRealTimers();
 });
 
-// alpha and beta are two rows of one hub; each field the screen reads is present.
+// alpha and beta are two rows of one hub; each field the page reads is present.
 const row = (name: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
 	name,
 	providerId: "anthropic",
@@ -87,8 +88,8 @@ function mount(io: { request: (method: string, params: unknown) => Promise<unkno
 	harness.connection = screenConnection(scripted.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	return { tree, scripted };
 }
 
@@ -116,7 +117,7 @@ it("does not surface a late probe error on the provider selected after it", asyn
 	});
 	await act(async () => {});
 	pressRow(tree, "alpha");
-	pressLabel(tree, "Test credentials");
+	pressLabel(tree, "Test connection");
 	// The user moves to another provider while alpha's probe is in flight.
 	pressRow(tree, "beta");
 	probe.reject(new WireError("conflict", -32013, { evenerErrorInfo: "conflict" }));
@@ -216,7 +217,7 @@ it("does not report a destination change for a conflict on a non-asserting write
 });
 
 it("refuses endpoint-sensitive destructive actions without a fingerprint, with a reason", async () => {
-	for (const label of ["Clear stored key", "Clear credentials", "Remove instance"]) {
+	for (const label of ["Clear stored key", "Clear credentials", "Remove"]) {
 		alerts.alert.mockClear();
 		const listing = rows(
 			row("alpha", {
@@ -252,7 +253,7 @@ it("refuses a probe for a row the hub cannot fingerprint", async () => {
 	const { tree, scripted } = mount({ request: async () => listing });
 	await act(async () => {});
 	pressRow(tree, "alpha");
-	pressLabel(tree, "Test credentials");
+	pressLabel(tree, "Test connection");
 	await act(async () => {});
 	expect(renderedText(tree)).toContain(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
 	expect(scripted.methods).not.toContain("evener/auth/test");
@@ -296,8 +297,8 @@ it("leaves only the store's own reconcile read after an in-flight write outlives
 	harness.connection = screenConnection(first.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
-	} as unknown as ComponentProps<typeof ProvidersScreen>;
-	const tree = render(<ProvidersScreen {...props} />);
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	pressRow(tree, "alpha");
 	pressLabel(tree, "Make default");
@@ -305,11 +306,11 @@ it("leaves only the store's own reconcile read after an in-flight write outlives
 	// replacement connection remounts it.
 	harness.connection = { ...harness.connection, client: null, state: "closed" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	harness.connection = { ...harness.connection, client: second.client, state: "ready" };
 	await act(async () => {
-		tree.update(<ProvidersScreen {...props} />);
+		tree.update(<ProvidersPage {...props} />);
 	});
 	await act(async () => {});
 	const reads = second.methods.filter((method) => method === "evener/instance/list").length;
@@ -346,12 +347,12 @@ it("clears a stale probe error when a new probe starts", async () => {
 	});
 	await act(async () => {});
 	pressRow(tree, "alpha");
-	pressLabel(tree, "Test credentials");
+	pressLabel(tree, "Test connection");
 	await act(async () => {});
 	expect(renderedText(tree)).toContain(ENDPOINT_CHANGED_TEST_MESSAGE);
-	pressLabel(tree, "Test credentials");
+	pressLabel(tree, "Test connection");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Credentials verified.");
+	expect(renderedText(tree)).toContain("Works");
 	expect(renderedText(tree)).not.toContain(ENDPOINT_CHANGED_TEST_MESSAGE);
 });
 

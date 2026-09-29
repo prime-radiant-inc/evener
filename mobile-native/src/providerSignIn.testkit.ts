@@ -25,7 +25,7 @@ export function signInClient(io: ScriptedIO, calls: RecordedCall[]): Conversatio
 
 /** One sign-in flow over its own credential store, connected to a scripted
  * client whose default reply per method is `answer`. `connect` does what
- * ProvidersScreen's connection effect does: the store's transport and the
+ * ProvidersPage's connection effect does: the store's transport and the
  * flow's connected gate move to one client together. */
 export function boundary(answer: (method: string) => unknown) {
 	const calls: RecordedCall[] = [];
