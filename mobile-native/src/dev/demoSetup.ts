@@ -8,6 +8,7 @@ import type {
 	AuthStatusResponse,
 	HostRow,
 	InstanceEntry,
+	InstanceModelEntry,
 	LaunchConfigLayer,
 	MarketplaceEntry,
 	MethodTypes,
@@ -85,6 +86,8 @@ const MODELS: [string, string, string, number, number, number, boolean, string[]
 	["qwen3-coder:30b", "Qwen3 Coder 30B (local)", "ollama", 128, 0, 0, false, ["low", "medium", "high"]],
 ];
 const RECENT_MODELS = ["deepseek-4.1-flash", "glm-5.3-vision", "gpt-5.6"];
+// What a provider's "Check for new models" finds that its listing lacks.
+const FOUND_ON_CHECK: Record<string, string[]> = { lunaroute: ["glm-5.4"] };
 
 function modelById(id: string): (typeof MODELS)[number] {
 	const found = MODELS.find(([model]) => model === id);
@@ -201,6 +204,8 @@ const SETUP_METHODS = [
 	"evener/host/request",
 	"evener/update/check",
 	"evener/instance/list",
+	"evener/instance/setModelDisabled",
+	"evener/instance/refreshModels",
 	"evener/auth/list",
 	"evener/marketplace/list",
 	"evener/marketplace/browse",
@@ -305,7 +310,22 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		} satisfies Partial<Answers>;
 	}
 	const localLaunch = launchAnswers(local);
-	const instanceList = () => ({ instances: PROVIDERS.map(instanceEntry), availableProviders: [] });
+	// The models each provider has turned off, and the providers whose models
+	// were checked; the hub keeps both in its own config.
+	const disabledModels = new Set<string>();
+	const checked = new Set<string>();
+	const providerModels = (provider: (typeof PROVIDERS)[number]): InstanceModelEntry[] =>
+		[...provider.models, ...(checked.has(provider.id) ? (FOUND_ON_CHECK[provider.id] ?? []) : [])].map((id) =>
+			disabledModels.has(`${provider.id}/${id}`) ? { id, disabled: true } : { id },
+		);
+	const instanceList = () => ({
+		instances: PROVIDERS.map((provider, index) => instanceEntry(provider, index, providerModels(provider))),
+		availableProviders: [],
+	});
+	// app_instances.go's refusal for a name it doesn't have.
+	const requireInstance = (name: string) => {
+		if (!PROVIDERS.some((provider) => provider.id === name)) throw new Error(`instance "${name}" not found`);
+	};
 	// What paradise-park answers through the hub: its own folders, and the
 	// hub's providers.
 	const paradiseForwards = { ...launchAnswers(paradise), "evener/instance/list": instanceList };
@@ -334,6 +354,17 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		},
 		"evener/update/check": demoUpdateCheck,
 		"evener/instance/list": instanceList,
+		"evener/instance/setModelDisabled": ({ name, model, disabled }) => {
+			requireInstance(name);
+			if (disabled) disabledModels.add(`${name}/${model}`);
+			else disabledModels.delete(`${name}/${model}`);
+			return instanceList();
+		},
+		"evener/instance/refreshModels": ({ name }) => {
+			requireInstance(name);
+			checked.add(name);
+			return instanceList();
+		},
 		// Extends the fleet's answer (the Board's expired sign-in) with the
 		// other providers that sign in with an account.
 		"evener/auth/list": () => {
@@ -433,7 +464,11 @@ const SIGN_IN: Record<
 	none: { authModes: ["none"], activeSource: "none", hasStoredOAuth: false, credentialRequired: false },
 };
 
-function instanceEntry(provider: (typeof PROVIDERS)[number], index: number): InstanceEntry {
+function instanceEntry(
+	provider: (typeof PROVIDERS)[number],
+	index: number,
+	models: InstanceModelEntry[],
+): InstanceEntry {
 	return {
 		name: provider.id,
 		providerId: provider.base,
@@ -441,7 +476,7 @@ function instanceEntry(provider: (typeof PROVIDERS)[number], index: number): Ins
 		auth: provider.auth,
 		implicit: false,
 		isDefault: index === 0,
-		models: provider.models.map((id) => ({ id })),
+		models,
 		...SIGN_IN[provider.auth],
 	};
 }
