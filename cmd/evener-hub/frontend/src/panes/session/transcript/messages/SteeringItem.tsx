@@ -15,8 +15,8 @@
 //     routing stays content-driven, since structured markup can't
 //     false-positive the way a prose pattern could, so it still fires for a
 //     steer projected before the wire carried a kind. Everything else keeps
-//     the collapsible divider, labeled from the shared steeringKindLabel
-//     table - an unrecognized or absent kind renders unlabelled rather than
+//     the collapsible divider, labeled by the shared steeringLabel - an
+//     unrecognized or absent kind reads a bare "System steered" rather than
 //     inventing a label from a raw slug.
 //
 // The label table and the suppression (@evener/appwire-client steeringLabels)
@@ -30,7 +30,7 @@
 
 import {
   isSuppressedSteeringKind,
-  steeringKindLabel,
+  steeringLabel,
   steeringNotificationFragments,
   stripSystemReminder,
 } from "@evener/appwire-client";
@@ -52,8 +52,6 @@ const CLASS = {
   chevron: requireClass(styles.chevron, "steeringitem.module.css", "chevron"),
   body: requireClass(styles.body, "steeringitem.module.css", "body"),
 };
-
-const STEERED = "System steered";
 
 // The quiet collapsed-by-default steering divider (parity-m4 §8:
 // appendSteeringDivider) - summary is the glyph, the kind label (or the bare
@@ -119,14 +117,8 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // Every other user-sourced steer still renders as a user message below.
   if (item.steeringKind === "human-note") {
     if (!item.text) return null; // no text, no images path here - nothing to show
-    const humanLabel = steeringKindLabel("human-note");
     return (
-      <SteeringDivider
-        id={item.id}
-        label={humanLabel ? `${STEERED}: ${humanLabel}` : STEERED}
-        text={item.text}
-        sessionRef={sessionRef}
-      />
+      <SteeringDivider id={item.id} label={steeringLabel("human-note")} text={item.text} sessionRef={sessionRef} />
     );
   }
   // opensExchange={false}: a steer the human typed lands MID-turn, interrupting
@@ -139,7 +131,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // Card routing stays content-driven: the trigger is <job-notification>
   // markup, which cannot false-positive, so a steer projected before the kind
   // field existed still renders its cards.
-  const label = steeringKindLabel(item.steeringKind);
+  const label = steeringLabel(item.steeringKind);
   if (fragments) {
     return (
       <>
@@ -178,7 +170,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
               // biome-ignore lint/suspicious/noArrayIndexKey: index is stable - see comment above
               key={index}
               id={`${item.id}:${index}`}
-              label={label ? `${STEERED}: ${label}` : STEERED}
+              label={label}
               text={fragment.text}
               sessionRef={sessionRef}
             />
@@ -188,14 +180,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
     );
   }
 
-  return (
-    <SteeringDivider
-      id={item.id}
-      label={label ? `${STEERED}: ${label}` : STEERED}
-      text={stripSystemReminder(item.text)}
-      sessionRef={sessionRef}
-    />
-  );
+  return <SteeringDivider id={item.id} label={label} text={stripSystemReminder(item.text)} sessionRef={sessionRef} />;
 }, ignoringTurn);
 
 registerItemRenderer("steering", SteeringItem);
