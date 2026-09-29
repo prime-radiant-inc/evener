@@ -105,8 +105,8 @@ and `rm -rf` `$WORK` plus your own run dir. Leave any real hub untouched.
   reading a thumb off it.
 - **The shell row has no open-beside control**, unlike `read_file` /
   `write_file` / `edit_file`. `openBesidePath` is defined only on those three
-  (`tools/fsTools.tsx:64-67`, `tools/editTools.tsx:78,96`), and `apply_patch`
-  opts out explicitly (`editTools.tsx:99`). Do not treat its absence here as a
+  (`tools/fsTools.tsx:70`, `tools/editTools.tsx:48,63`), and `apply_patch`
+  opts out explicitly (`editTools.tsx:66`). Do not treat its absence here as a
   regression — see `output-image-lightbox-and-pane.md`, which is why that card
   cannot use this one as its source session.
 - **Keep the printed path plain and relative.** The scanner is deliberately
