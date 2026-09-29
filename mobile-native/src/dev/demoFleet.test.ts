@@ -494,6 +494,13 @@ describe("demo fleet search, auth and plugins", () => {
 			version: "6.4.1",
 		});
 	});
+
+	it("dates each plugin in Unix seconds, as the hub does: installed 30 days ago, updated 1 day ago", () => {
+		const [first] = createDemoFleet({ now: STARTUP }).answerPluginList().plugins;
+		const startupSeconds = Math.floor(STARTUP / 1000);
+		expect(first?.installedAt).toBe(startupSeconds - 30 * 86400);
+		expect(first?.lastUpdated).toBe(startupSeconds - 86400);
+	});
 });
 
 describe("demo fleet error handling", () => {

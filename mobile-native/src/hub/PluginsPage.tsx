@@ -40,6 +40,7 @@ import { destructiveButton } from "../haptics";
 import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "../MarketplaceBrowser";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { space } from "../design/tokens";
+import { compactDuration } from "../session/format";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, Segmented, SwitchRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
 import { SearchField } from "../sheet/SearchField";
@@ -439,6 +440,19 @@ function Plugins({
 	const entry = state.plugins?.find(
 		(item) => item.plugin === selected?.plugin && item.marketplace === selected?.marketplace,
 	);
+	// The open plugin's description comes from its marketplace's catalog, read
+	// once per marketplace as the web's detail does (browseMarketplace skips a
+	// marketplace it already holds, loaded, failed or in flight).
+	const catalogs = useSyncExternalStore(marketplaces.subscribe, () => marketplaces.getState().browseCatalogs);
+	useEffect(() => {
+		if (selected && !marketplaces.getState().browseCatalogs.has(selected.marketplace))
+			void marketplaces.getState().browseMarketplace(selected.marketplace);
+	}, [selected, marketplaces]);
+	const catalog = selected ? catalogs.get(selected.marketplace) : undefined;
+	const description =
+		catalog?.status === "loaded"
+			? catalog.plugins.find((item) => item.name === selected?.plugin)?.description
+			: undefined;
 	// The browser's first list read is a passive effect. Bind this screen-owned
 	// store before child effects run so that first read is not mistaken for a
 	// reconnect and issued twice by the lifecycle's wanted-list recovery.
@@ -627,9 +641,6 @@ function Plugins({
 					<GroupedPage>
 						{/* The sheet covers the page's status line, so it carries its own. */}
 						{connectionState === "ready" ? null : <SheetStatus />}
-						{entry.broken ? (
-							<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
-						) : null}
 						<Group>
 							<SwitchRow
 								label="On by default"
@@ -657,20 +668,33 @@ function Plugins({
 								onPress={remove}
 							/>
 						</Group>
+						{/* Beneath the actions that fix it. */}
+						{entry.broken ? (
+							<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
+						) : null}
 						{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 						{notice ? <GroupFooter>{notice}</GroupFooter> : null}
 						{busy ? <Spinner label="Updating plugin" /> : null}
 						<Group label="Details">
+							{description ? <Row label="About" sub={description} /> : null}
 							<Row label="Version" value={entry.version || "Unknown version"} />
 							<Row label="Marketplace" sub={entry.marketplace} machineSub />
 							<Row label={`Path on ${hubName}`} sub={entry.installPath} machineSub />
 							{entry.gitCommitSha ? <Row label="Commit" sub={entry.gitCommitSha} machineSub /> : null}
+							{/* The hub sends 0 for a time it doesn't know. */}
+							{entry.installedAt > 0 ? <Row label="Installed" value={agoText(entry.installedAt)} /> : null}
+							{entry.lastUpdated > 0 ? <Row label="Updated" value={agoText(entry.lastUpdated)} /> : null}
 						</Group>
 					</GroupedPage>
 				</ModalSheet>
 			)}
 		</GroupedPage>
 	);
+}
+
+/** How long ago a time the hub sends in Unix seconds was: "3d ago". */
+function agoText(unixSeconds: number): string {
+	return `${compactDuration(Date.now() - unixSeconds * 1000)} ago`;
 }
 
 /** The installed plugins by marketplace, in the order the hub lists them. */

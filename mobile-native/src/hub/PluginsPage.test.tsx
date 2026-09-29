@@ -32,6 +32,7 @@ import { AddMarketplace } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
 import { PluginsStack } from "./pluginsStackTestUtils";
 import { SearchField } from "../sheet/SearchField";
+import { Group, GroupFooter } from "../sheet/Grouped";
 import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
@@ -3351,4 +3352,45 @@ it("asks before Cancel or a swipe throws away a typed source (spec 6)", () => {
 			?.onPress?.(),
 	);
 	expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("says when a plugin was installed and last updated, and leaves out a time the hub doesn't know (audit M9)", async () => {
+	const nowSeconds = Math.floor(Date.now() / 1000);
+	const hub = pageHub([
+		entry("demo-plugin", { installedAt: nowSeconds - 3 * 86400, lastUpdated: nowSeconds - 5 * 3600 }),
+		entry("fresh", { installedAt: 0, lastUpdated: 0 }),
+	]);
+	const { tree } = await mountPage(hub);
+	const detail = await openDetail(tree, "demo-plugin");
+	expect(detail.findAllByProps({ accessibilityLabel: "Installed, 3d ago" }).length).toBeGreaterThan(0);
+	expect(detail.findAllByProps({ accessibilityLabel: "Updated, 5h ago" }).length).toBeGreaterThan(0);
+	await act(async () => {
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
+	});
+	const fresh = await openDetail(tree, "fresh");
+	expect(fresh.findAll((node) => node.props.label === "Installed" || node.props.label === "Updated")).toHaveLength(0);
+});
+
+it("describes an installed plugin from its marketplace's catalog, as the web does (audit M9)", async () => {
+	const hub = pageHub([entry("tool", { marketplace: "acme" })]);
+	const { tree } = await mountPage(hub);
+	await openDetail(tree, "tool");
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("A tool");
+	expect(hub.calls.filter((call) => call.method === "evener/marketplace/browse")).toHaveLength(1);
+});
+
+it("says a broken plugin is broken under the actions that fix it, not floating above them (audit M9)", async () => {
+	const hub = pageHub([entry("cracked", { broken: true })]);
+	const { tree } = await mountPage(hub);
+	const detail = await openDetail(tree, "cracked");
+	const nodes = detail.findAll(() => true);
+	const actions = nodes.findIndex(
+		(node) => node.type === Group && node.findAllByProps({ label: "Upgrade" }).length > 0,
+	);
+	const warning = nodes.findIndex(
+		(node) => node.type === GroupFooter && node.props.children === "This plugin is broken. Upgrade it or remove it.",
+	);
+	expect(actions).toBeGreaterThan(-1);
+	expect(warning).toBeGreaterThan(actions);
 });
