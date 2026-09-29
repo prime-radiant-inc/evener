@@ -117,7 +117,9 @@ func setTreeNodeApproval(nodes []hubTreeNode, ref string, pending bool) bool {
 }
 
 // headEscalation returns the front-of-queue escalation for the CURRENTLY-VIEWED
-// session, or nil when none is answerable here.
+// session, or nil when that ref's queue is empty. It is queue presence for the
+// viewed ref — the queue holds only escalations not yet resolved — so callers
+// may read "non-nil" as "the viewed session is blocked on an approval".
 func (m *hubModel) headEscalation() *hubEscalation {
 	q := m.escalationsByRef[strings.TrimSpace(m.detail.Ref)]
 	if len(q) == 0 {

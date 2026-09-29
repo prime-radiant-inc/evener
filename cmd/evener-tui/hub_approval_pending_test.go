@@ -333,3 +333,24 @@ func sessionModel(rows []hubRow, ref string) string {
 	}
 	return "<none>"
 }
+
+func TestUpdateDashboardRowTitle_SurvivesApprovalRebuild(t *testing.T) {
+	m := approvalTestModel(t, false)
+	m.updateDashboardRowTitle("local:th_1", "renamed")
+	if got := sessionTitle(m.rows, "local:th_1"); got != "renamed" {
+		t.Fatalf("title = %q, want renamed", got)
+	}
+	m.setDashboardRowApproval("local:th_1", true)
+	if got := sessionTitle(m.rows, "local:th_1"); got != "renamed" {
+		t.Fatalf("an approval rebuild reverted the live title to %q", got)
+	}
+}
+
+func sessionTitle(rows []hubRow, ref string) string {
+	for _, row := range rows {
+		if row.kind == hubRowSession && row.ref.String() == ref {
+			return row.title
+		}
+	}
+	return "<none>"
+}
