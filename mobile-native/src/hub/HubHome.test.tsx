@@ -113,6 +113,7 @@ const ROWS = [
 	"Providers",
 	"Plugins",
 	"Display, System",
+	"In-app alerts",
 	"Hubs, 2",
 	"Keyboard shortcuts",
 	"Launch defaults",
@@ -188,6 +189,18 @@ it("pushes Hubs inside the sheet, valued with the number of saved hubs", async (
 	expect(sheet.navigate).toHaveBeenCalledWith("Hubs");
 	expect(root.navigate).not.toHaveBeenCalled();
 	expect(root.dispatch).not.toHaveBeenCalled();
+});
+
+it("opens In-app alerts inside the sheet, between Display and Hubs", async () => {
+	const { tree, sheet, press } = await mount();
+	const labels = tree.root
+		.findAllByProps({ accessibilityRole: "button" })
+		.map((node) => node.props.accessibilityLabel)
+		.filter((label): label is string => ROWS.includes(label));
+	const display = labels.indexOf("Display, System");
+	expect(labels.slice(display, display + 3)).toEqual(["Display, System", "In-app alerts", "Hubs, 2"]);
+	press("In-app alerts");
+	expect(sheet.navigate).toHaveBeenLastCalledWith("Alerts", { hubId: "hub-1" });
 });
 
 it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", async () => {
