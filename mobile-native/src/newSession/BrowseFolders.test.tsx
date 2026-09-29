@@ -129,11 +129,15 @@ it("makes a new folder on the host and moves into it", async () => {
 	expect(page.text()).toContain("/Users/jesse/git/scratch");
 });
 
-it("names home in the new folder question", async () => {
+it("makes a new folder at home under ~/, the one relative form the hub expands", async () => {
 	const page = mount("");
 	await settle();
 	await page.press("New folder");
 	expect(promptRequests.at(-1)?.message).toBe("In your home folder");
+	await act(async () => promptRequests.at(-1)?.callback?.("scratch"));
+	await settle();
+	const create = page.hub.calls.find((call) => (call.params as { method: string }).method === "evener/dirs/create");
+	expect((create?.params as { params: { path: string } }).params.path).toBe("~/scratch");
 });
 
 it("shows the hub's refusal to make a folder, and stays where it was", async () => {

@@ -45,7 +45,11 @@ export function BrowseFolders({ navigation, route }: NativeStackScreenProps<NewS
 	const create = async (name: string) => {
 		if (!client || !name.trim()) return;
 		try {
-			const made = await createNewSessionService(client).createDirectory(source, childrenPrefix(dir) + name.trim());
+			// The hub makes only an absolute path, or one under "~/" (hubDirsCreate,
+			// cmd/evener-hub/app_dirs.go); home is the one folder the phone can't
+			// name, so a folder made there goes under "~/".
+			const parent = dir ? childrenPrefix(dir) : "~/";
+			const made = await createNewSessionService(client).createDirectory(source, parent + name.trim());
 			open(made);
 		} catch (error) {
 			setCreateError(friendlyErrorMessage(error));
