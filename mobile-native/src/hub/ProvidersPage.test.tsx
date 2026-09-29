@@ -1711,6 +1711,18 @@ it("keeps the model search clearable when a refresh drops the list below the cap
 	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(2);
 });
 
+it("clears the model search when a notice opens a different provider", async () => {
+	providersHub([withManyModels(60), { ...withManyModels(2), name: "home", isDefault: false }]);
+	const { tree, relink } = linkedPage("work");
+	await act(async () => {});
+	await act(async () => {});
+	act(() => control(tree, "Search models").props.onChangeText("zzz"));
+	await relink("home");
+	// The detail remounted on the new provider, so its models are not filtered by the old query.
+	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(2);
+	expect(control(tree, "model-00").props.value).toBe(true);
+});
+
 it("turns a model on or off through the hub", async () => {
 	const fake = providersHub([withModels()]);
 	fake.on("evener/instance/setModelDisabled", (params: { name: string; model: string; disabled: boolean }) => ({

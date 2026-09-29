@@ -593,6 +593,10 @@ function Providers({
 							{instance ? (
 								<>
 									<ProviderFacts
+										// A notice or focus can swap the detail to another provider while
+										// the sheet stays mounted; keying by name remounts the facts so a
+										// search typed on one provider never filters another (issue #3279).
+										key={instance.name}
 										instance={instance}
 										auth={auth}
 										togglesHeld={writeHeld}
