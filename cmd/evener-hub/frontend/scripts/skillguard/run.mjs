@@ -21,15 +21,14 @@
 // Deterministic: no credentials, no network beyond the loopback hub, no
 // shared dev server.
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
 import path from "node:path";
-import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
   createBrowserProcessCleanup,
+  createChromeProfileDir,
   describeBrowserStartupFailure,
   findChrome,
   parseChromeDevToolsAnnouncement,
@@ -42,6 +41,18 @@ const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
 const PROFILE_PREFIX = "skillguard-chrome-";
 const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
 const CHILD_EXIT_GRACE_MS = 2_000;
+
+// Mint the profile Chrome is pointed at under a short root, never the ambient
+// temp directory. This guard runs under a deep TMPDIR (a test harness nested in
+// an agent sandbox is two temp layers deep); minting straight under os.tmpdir()
+// there pushed the derived singleton socket path past sun_path and Chrome
+// aborted with "Socket path too long" before DevTools was ready, failing the
+// guard on a path-length accident rather than the behavior under test
+// (issue #3198). createChromeProfileDir picks a short root and trims the prefix
+// so the socket Chrome binds always fits, the same helper the other guards use.
+export function skillGuardChromeProfileDir(options = {}) {
+  return createChromeProfileDir(PROFILE_PREFIX, options);
+}
 
 // Fixture vocabulary, shared with cmd/evener-hub/skill_composer_browser_test.go.
 // The Go owner asserts these exact strings in the daemons' request logs and
@@ -264,7 +275,7 @@ export class Driver {
 
   async start() {
     this.chromeBinary = findChrome();
-    this.profileDir = mkdtempSync(path.join(tmpdir(), PROFILE_PREFIX));
+    this.profileDir = skillGuardChromeProfileDir();
     this.lifecycle = createBrowserProcessCleanup({ profileDir: this.profileDir });
     this.chromeArgv = [
       "--headless=new",
