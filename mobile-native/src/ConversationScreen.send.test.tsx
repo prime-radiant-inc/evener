@@ -1430,6 +1430,13 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
 });
 
+// A short transcript rests just above the composer (spec 8.5), not at the top
+// with the page's empty middle between it and the bar.
+it("rests a short transcript's end just above the composer", async () => {
+	const { tree } = await mount(twoTurns("ref-short-rests"));
+	expect(transcriptList(tree).props.contentContainerStyle).toMatchObject({ flexGrow: 1, justifyContent: "flex-end" });
+});
+
 it("loads older history as you drag near the top", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-older"), { olderCursor: "cursor-1" });
 	const drag = (y: number) => {

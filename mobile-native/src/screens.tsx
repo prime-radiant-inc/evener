@@ -2602,6 +2602,9 @@ export function ConversationScreen({
 							// so Next never sits on the last line and nothing coming or
 							// going there moves the list.
 							contentContainerStyle={{
+								// A short transcript rests just above the composer (spec 8.5).
+								flexGrow: 1,
+								justifyContent: "flex-end",
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,
 								paddingBottom: listUnderBar.endPadding + transcriptEnd,
