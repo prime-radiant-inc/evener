@@ -173,10 +173,7 @@ func TestLocalDaemonCallErrorNonWireNonContext(t *testing.T) {
 // client-synthesized transport failure surfacing as a wire error: its
 // TransportFailureError provenance maps it to SessionUnavailable.
 func TestLocalDaemonCallErrorWireInternalFailedToGetReader(t *testing.T) {
-	original := appwire.TransportFailureError{WireError: appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "failed to get reader: connection closed",
-	}}
+	original := internalTransportFailure("failed to get reader: connection closed")
 	err := localDaemonCallError(original)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
@@ -187,10 +184,7 @@ func TestLocalDaemonCallErrorWireInternalFailedToGetReader(t *testing.T) {
 // TestLocalDaemonCallErrorWireInternalWebsocket covers a synthesized transport
 // failure whose text names a websocket close.
 func TestLocalDaemonCallErrorWireInternalWebsocket(t *testing.T) {
-	original := appwire.TransportFailureError{WireError: appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "websocket: connection closed",
-	}}
+	original := internalTransportFailure("websocket: connection closed")
 	err := localDaemonCallError(original)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
@@ -201,10 +195,7 @@ func TestLocalDaemonCallErrorWireInternalWebsocket(t *testing.T) {
 // TestLocalDaemonCallErrorWireInternalEOF covers a synthesized transport
 // failure whose text names an EOF.
 func TestLocalDaemonCallErrorWireInternalEOF(t *testing.T) {
-	original := appwire.TransportFailureError{WireError: appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "unexpected eof during read",
-	}}
+	original := internalTransportFailure("unexpected eof during read")
 	err := localDaemonCallError(original)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
@@ -215,10 +206,7 @@ func TestLocalDaemonCallErrorWireInternalEOF(t *testing.T) {
 // TestLocalDaemonCallErrorWireInternalConnectionReset covers a synthesized
 // transport failure whose text names a connection reset.
 func TestLocalDaemonCallErrorWireInternalConnectionReset(t *testing.T) {
-	original := appwire.TransportFailureError{WireError: appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "connection reset by peer",
-	}}
+	original := internalTransportFailure("connection reset by peer")
 	err := localDaemonCallError(original)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
@@ -229,10 +217,7 @@ func TestLocalDaemonCallErrorWireInternalConnectionReset(t *testing.T) {
 // TestLocalDaemonCallErrorWireInternalBrokenPipe covers a synthesized transport
 // failure whose text names a broken pipe.
 func TestLocalDaemonCallErrorWireInternalBrokenPipe(t *testing.T) {
-	original := appwire.TransportFailureError{WireError: appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "broken pipe",
-	}}
+	original := internalTransportFailure("broken pipe")
 	err := localDaemonCallError(original)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
@@ -243,10 +228,7 @@ func TestLocalDaemonCallErrorWireInternalBrokenPipe(t *testing.T) {
 // TestLocalDaemonCallErrorWireInternalClosedNetwork covers a synthesized
 // transport failure whose text names a closed network connection.
 func TestLocalDaemonCallErrorWireInternalClosedNetwork(t *testing.T) {
-	original := appwire.TransportFailureError{WireError: appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "use of closed network connection",
-	}}
+	original := internalTransportFailure("use of closed network connection")
 	err := localDaemonCallError(original)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
@@ -257,10 +239,7 @@ func TestLocalDaemonCallErrorWireInternalClosedNetwork(t *testing.T) {
 // TestLocalDaemonCallErrorWireInternalIOTimeout covers a synthesized transport
 // failure whose text names an i/o timeout.
 func TestLocalDaemonCallErrorWireInternalIOTimeout(t *testing.T) {
-	original := appwire.TransportFailureError{WireError: appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "i/o timeout",
-	}}
+	original := internalTransportFailure("i/o timeout")
 	err := localDaemonCallError(original)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
@@ -453,3 +432,11 @@ func TestCompareLocalOrderText(t *testing.T) {
 
 // Ensure net.Error is used for the fakeTimeoutError
 var _ net.Error = fakeTimeoutError{}
+
+// internalTransportFailure builds the provenance-marked failure the client
+// returns when its read loop is gone, so these mapping tests exercise the
+// synthesized-transport branch rather than an intact InternalError.
+func internalTransportFailure(message string) appwire.TransportFailureError {
+	wire := appwire.WireError{Code: appwire.CodeInternalError, Message: message}
+	return appwire.TransportFailureError{WireError: wire}
+}
