@@ -312,7 +312,13 @@ function SessionInfoBody({
 					<Row label="Delete" tone="danger" onPress={() => leaveFor("delete")} />
 				) : null}
 			</Group>
-			{error ? <GroupFooter tone="danger">{error}</GroupFooter> : null}
+			{error ? (
+				// The shared GroupFooter is a plain Text; keep the alert so VoiceOver
+				// still announces a failed action.
+				<View accessible accessibilityRole="alert">
+					<GroupFooter tone="danger">{error}</GroupFooter>
+				</View>
+			) : null}
 		</GroupedPage>
 	);
 }

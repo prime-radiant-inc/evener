@@ -236,6 +236,7 @@ describe("what the sheet shows (spec 8.6)", () => {
 		const surface = tree.root.findAll(
 			(node) => String(node.type) === "View" && styleOf(node).backgroundColor === palette.surface,
 		);
+		expect(surface.length).toBeGreaterThan(0);
 		expect(styleOf(surface[0])).toMatchObject({ marginHorizontal: 16, borderRadius: 12 });
 	});
 
@@ -389,6 +390,19 @@ describe("what the sheet shows (spec 8.6)", () => {
 			}) as unknown as SessionControls,
 		});
 		expect(renderedText(sheet())).toContain("Could not confirm the action: refused");
+	});
+
+	it("announces a failed action to VoiceOver, not just shows it", () => {
+		const { host } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
+		replaceHost({
+			...host,
+			controls: fakeControls({
+				lastAction: "compact",
+				error: "Could not confirm the action: refused",
+			}) as unknown as SessionControls,
+		});
+		const tree = sheet();
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
 	});
 
 	it("stays open while the hub is away, showing what it knows with its actions held", () => {
