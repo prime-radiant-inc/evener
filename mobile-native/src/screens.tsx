@@ -1307,7 +1307,10 @@ export function ConversationScreen({
 			});
 	}
 	const findQuery = find?.query ?? "";
-	const findHits = useMemo(() => findMatches(timelineRows, findQuery), [timelineRows, findQuery]);
+	const findHits = useMemo(
+		() => findMatches(timelineRows, findQuery, conversation?.delegates),
+		[timelineRows, findQuery, conversation?.delegates],
+	);
 	const findKey = find?.key ?? null;
 	const findIndex = findKey === null ? -1 : timelineRows.findIndex((row) => readerKey(row) === findKey);
 	const findCurrent = findIndex < 0 ? null : findIndex;
