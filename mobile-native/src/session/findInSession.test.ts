@@ -37,6 +37,41 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 		expect(rowText(rows[0] as TimelineRow)).toBe("");
 	});
 
+	it("matches a fetched page or a search by its argument, not just its target", () => {
+		const web: TimelineRow[] = [
+			{
+				kind: "run",
+				id: "run:web",
+				steps: [
+					{
+						kind: "activity",
+						id: "fetch",
+						label: "web_fetch",
+						family: "tool",
+						state: "completed",
+						detail: {
+							description: "Read the docs",
+							arguments: JSON.stringify({ url: "https://example.com/guide" }),
+						},
+					},
+					{
+						kind: "activity",
+						id: "search",
+						label: "web_search",
+						family: "tool",
+						state: "completed",
+						detail: {
+							description: "Look it up",
+							arguments: JSON.stringify({ query: "rust lifetimes" }),
+						},
+					},
+				],
+			},
+		];
+		expect(findMatches(web, "example.com/guide")).toEqual([0]);
+		expect(findMatches(web, "rust lifetimes")).toEqual([0]);
+	});
+
 	it("starts at the newest match and steps both ways", () => {
 		const matches = [1, 2, 4];
 		expect(stepMatch(matches, null, -1)).toBe(4);

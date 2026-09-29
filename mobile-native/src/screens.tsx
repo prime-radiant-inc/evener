@@ -794,6 +794,11 @@ export function ConversationScreen({
 			Keyboard.dismiss();
 			const current = store.getState().conversation;
 			if (!current) return;
+			if (destination === "find") {
+				// The one place a find opens, whatever menu asked for it.
+				chooseSessionActionRef.current({ kind: "find" });
+				return;
+			}
 			if (destination === "delete") {
 				if (!canDeleteSavedSession(current)) return;
 				navigation.navigate("SessionDeletion", {
