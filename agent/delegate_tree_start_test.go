@@ -641,6 +641,11 @@ func TestDelegateControllerRuntimeAttachmentIsOneToOne(t *testing.T) {
 		if _, err := c.FinishGeneration(first.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
 			t.Fatalf("FinishGeneration: %v", err)
 		}
+		// Report the finished runtime quiesced, as the child's finalize tail
+		// does, so the delegate is ready for its successor.
+		if err := c.ReportFinalizationQuiesced(first.lease, retained); err != nil {
+			t.Fatalf("ReportFinalizationQuiesced: %v", err)
+		}
 
 		reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
 		if err != nil {

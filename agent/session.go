@@ -955,6 +955,11 @@ type Session struct {
 	rootAttentionWakeIDs map[string]struct{}
 	rootAttentionWake    bool
 	rootAttentionRetry   notificationRetry
+	// rootAttentionPaused records that a permanent provider failure deferred
+	// the pending root attention and the session has said so (see
+	// finishRootDelegateAttentionTurn); a delivery or a model switch ends
+	// the episode. Guarded by attentionMu.
+	rootAttentionPaused bool
 	// rootAttentionCoveredIDs is the running turn's coverage set. Stage it per
 	// round, promote it on settle, and read it at turn finish; the contract
 	// lives on stageRootDelegateAttentionCoverage and
@@ -1646,6 +1651,7 @@ func (s *Session) SetModel(model string) error {
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
+	s.resumeRootAttentionAfterModelSwitch()
 	return nil
 }
 

@@ -407,6 +407,11 @@ type testConfig struct {
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
+	// subagentAfterFinalizationQuiesced observes a stable child's finalize
+	// tail right after it reports its generation quiesced to the controller,
+	// the point from which the delegate takes its next start. Nil in
+	// production.
+	subagentAfterFinalizationQuiesced func(*subagent)
 
 	// registerTool injects deterministic registration failures. Nil preserves
 	// direct Registry.Register calls.

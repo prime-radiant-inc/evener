@@ -1871,6 +1871,27 @@ it("puts the hub's name on the left, opening the Hub, and search on the right", 
 	act(() => tree.unmount());
 });
 
+it("stops the hub button's label growing at xxxLarge and offers the full name in the Large Content Viewer (#3364)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// Accessibility XXXL: Body is 53pt, about 3.1 times its 17pt default. The
+	// navigation bar's height is fixed, so a name that big would clip.
+	harness.fontScale = 53 / 17;
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const hubButton = render(headerOptions(nav).unstable_headerLeftItems({})[0].element);
+	const label = hubButton.root.findByType("Text" as never);
+	// Body's xxxLarge size, the largest before the accessibility sizes.
+	expect(label.props.style.fontSize).toBe(23);
+	// Text that stops growing offers the whole name in the Large Content Viewer.
+	const press = hubButton.root.findByType("Pressable" as never);
+	expect(press.props.accessibilityShowsLargeContentViewer).toBe(true);
+	expect(press.props.accessibilityLargeContentTitle).toBe("Work hub");
+	act(() => hubButton.unmount());
+	act(() => tree.unmount());
+});
+
 const liveReads = (fake: ReturnType<typeof hub>) =>
 	fake.requests.filter((read) => read.section === "live").map((read) => read.offset ?? 0);
 const FIRST_READ_FAILED = "Couldn't load this hub's sessions. Trying again shortly.";
