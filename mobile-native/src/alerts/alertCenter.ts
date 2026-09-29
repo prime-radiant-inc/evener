@@ -27,7 +27,19 @@ export interface NoticeAlert {
 	title: string;
 }
 
-export type Alert = SessionAlert | NoticeAlert;
+/** A start New session sent failed, or couldn't be confirmed, after its sheet
+ * closed (#3104): nothing else would say so, and the draft waits in New
+ * session. */
+export interface StartFailedAlert {
+	kind: "startFailed";
+	/** The hub it was started on, whichever hub is selected when it lands. */
+	hubId: string;
+	hubName: string;
+	/** The start reached the hub, so the session may exist. */
+	uncertain: boolean;
+}
+
+export type Alert = SessionAlert | NoticeAlert | StartFailedAlert;
 
 /** Hub > In-app alerts (spec 12). Read-only, since the defaults and each
  * snapshot are shared by reference: the store, the center and the page all
@@ -72,7 +84,8 @@ export type AlertScreen = { kind: "board" } | { kind: "session"; ref: string } |
 export type BannerTarget =
 	| { kind: "session"; ref: string; title: string }
 	| { kind: "needsYou" }
-	| { kind: "notice"; key: string };
+	| { kind: "notice"; key: string }
+	| { kind: "newSession"; hubId: string; hubName: string };
 
 export type Haptic = "warning" | "light";
 
@@ -97,8 +110,32 @@ export const COALESCE_MS = 5_000;
 export const RELEASE_MS = 200;
 const RECENT_LIMIT = 20;
 
+const NEEDS_YOU_KINDS: ReadonlySet<Alert["kind"]> = new Set<NeedsYouKind>([
+	"failed",
+	"question",
+	"approval",
+	"warning",
+	"restartNeeded",
+]);
+
 export function needsYou(alert: Alert): alert is SessionAlert & { kind: NeedsYouKind } {
-	return alert.kind !== "notice" && alert.kind !== "finished" && alert.kind !== "started";
+	return NEEDS_YOU_KINDS.has(alert.kind);
+}
+
+/** The session an alert is about, or null for a notice or a failed start. */
+export function sessionRef(alert: Alert): string | null {
+	return alert.kind === "notice" || alert.kind === "startFailed" ? null : alert.ref;
+}
+
+/** An alert about what you did yourself in New session: it never joins or
+ * replaces a banner that is up, and it is never lost. It follows that banner,
+ * or waits out a hold, since you may otherwise start it again. */
+function followsInTurn(alert: Alert): boolean {
+	return alert.kind === "started" || alert.kind === "startFailed";
+}
+
+function aboutSession(alert: Alert, ref: string): boolean {
+	return sessionRef(alert) === ref;
 }
 
 /** An alert that brings news rather than asks for you: no haptic, and it
@@ -108,7 +145,10 @@ function quiet(alert: Alert): boolean {
 }
 
 function subject(alert: Alert): string {
-	return alert.kind === "notice" ? `notice:${alert.key}` : `session:${alert.ref}`;
+	if (alert.kind === "notice") return `notice:${alert.key}`;
+	// One failed start per hub: the newest on a hub says it.
+	if (alert.kind === "startFailed") return `startFailed:${alert.hubId}`;
+	return `session:${alert.ref}`;
 }
 
 export class AlertCenter {
@@ -151,11 +191,11 @@ export class AlertCenter {
 		// banner that is up, a notice's included, and never waits (spec 13.3;
 		// the prototype's EV.alert drops it behind any banner).
 		if (alert.kind === "finished" && (this.banner !== null || this.holding())) return;
-		// A session you started never joins or replaces a banner that is up
-		// either, but it is never lost: it follows that banner, or waits out a
-		// hold. It lands while you're elsewhere, often reading or typing, and
-		// without it you may start it again.
-		if (alert.kind === "started" && this.banner !== null && !this.holding()) {
+		// A session you started, or a start that failed, never joins or replaces
+		// a banner that is up either, but it is never lost: it follows that
+		// banner, or waits out a hold. It lands while you're elsewhere, often
+		// reading or typing, and without it you may start it again.
+		if (followsInTurn(alert) && this.banner !== null && !this.holding()) {
 			this.queueAfterBanner([alert]);
 			this.publish();
 			return;
@@ -175,7 +215,7 @@ export class AlertCenter {
 		this.screen = screen;
 		if (screen.kind === "other") return;
 		const about = (alert: Alert) =>
-			screen.kind === "board" ? alert.kind === "notice" : alert.kind !== "notice" && alert.ref === screen.ref;
+			screen.kind === "board" ? alert.kind === "notice" : aboutSession(alert, screen.ref);
 		const recent = screen.kind === "session" ? this.recent.filter((ref) => ref !== screen.ref) : this.recent;
 		const dropped = this.dropAlerts(about);
 		if (!dropped && recent.length === this.recent.length) return;
@@ -187,7 +227,13 @@ export class AlertCenter {
 	 * alert about it that waits or still shows would be stale news, so it
 	 * goes. The recent order stays; Next reads who needs you now. */
 	retract(ref: string): void {
-		if (this.dropAlerts((alert) => alert.kind !== "notice" && alert.ref === ref)) this.publish();
+		if (this.dropAlerts((alert) => aboutSession(alert, ref))) this.publish();
+	}
+
+	/** A hub's New session is open: it shows why its start failed itself, so
+	 * the alert saying so goes. Another hub's stays. */
+	startFailureSeen(hubId: string): void {
+		if (this.dropAlerts((alert) => alert.kind === "startFailed" && alert.hubId === hubId)) this.publish();
 	}
 
 	setPreferences(preferences: AlertPreferences): void {
@@ -229,33 +275,38 @@ export class AlertCenter {
 		this.showAfterBanner();
 		const [only] = banner.alerts;
 		if (only === undefined || banner.alerts.length > 1) return { kind: "needsYou" };
-		return only.kind === "notice"
-			? { kind: "notice", key: only.key }
-			: { kind: "session", ref: only.ref, title: only.title };
+		if (only.kind === "notice") return { kind: "notice", key: only.key };
+		if (only.kind === "startFailed") return { kind: "newSession", hubId: only.hubId, hubName: only.hubName };
+		return { kind: "session", ref: only.ref, title: only.title };
 	}
 
 	/** Next took you on: it serves the held sessions itself now, so they
 	 * don't drop in later (the prototype's goNext). */
 	nextUsed(): void {
-		// Next serves sessions that need you; a session you started isn't one,
-		// so it keeps waiting.
-		const kept = this.held.filter((alert) => alert.kind === "started");
+		// Next serves sessions that need you; a session you started, or a start
+		// that failed, isn't one, so it keeps waiting.
+		const kept = this.held.filter(followsInTurn);
 		if (kept.length === this.held.length) return;
 		this.held = kept;
 		this.publish();
 	}
 
 	/** Another hub, or none: nothing carries over, not even what is on screen,
-	 * whose ref named the old hub's session. The provider reports the screen
-	 * again after a reset. */
+	 * whose ref named the old hub's session, except a failed start, which
+	 * names its own hub and would otherwise be lost (#3104). The provider
+	 * reports the screen again after a reset. */
 	reset(): void {
+		const failedStarts = [...(this.banner?.alerts ?? []), ...this.afterBanner, ...this.held].filter(
+			(alert) => alert.kind === "startFailed",
+		);
 		this.stopBanner();
 		this.cancelRelease();
 		this.held = [];
 		this.afterBanner = [];
 		this.recent = [];
 		this.screen = { kind: "other" };
-		this.publish();
+		this.queueAfterBanner(failedStarts);
+		this.showAfterBanner();
 	}
 
 	/** Takes the alerts `about` matches out of the held ones and the banner,
@@ -290,6 +341,8 @@ export class AlertCenter {
 		if (alert.kind === "failed" && !failures) return false;
 		if ((alert.kind === "question" || alert.kind === "approval") && !questions) return false;
 		if (alert.kind === "finished" && !finished) return false;
+		// A start that failed is about what you just did, whatever the settings.
+		if (alert.kind === "startFailed") return true;
 		// Nothing alerts about what is on screen: the session you're looking
 		// at, or a notice while the Board, which lists it, is up.
 		if (alert.kind === "notice") return this.screen.kind !== "board";
@@ -320,7 +373,7 @@ export class AlertCenter {
 			};
 		} else {
 			this.replaceBanner([alert]);
-			if (!quiet(alert)) this.buzz(alert.kind === "failed" ? "warning" : "light");
+			if (!quiet(alert)) this.buzz(alert.kind === "failed" || alert.kind === "startFailed" ? "warning" : "light");
 		}
 		this.shownAt = now;
 		this.armExpiry();
@@ -336,8 +389,9 @@ export class AlertCenter {
 		const current = this.banner;
 		const showing = current?.alerts.every(needsYou) ? current.alerts : [];
 		const sessions = waiting.filter(needsYou);
-		// Sessions you started always follow in turn, never dropped.
-		this.queueAfterBanner(waiting.filter((alert) => alert.kind === "started"));
+		// Sessions you started, and failed starts, always follow in turn, never
+		// dropped.
+		this.queueAfterBanner(waiting.filter(followsInTurn));
 		if (sessions.length === 0) {
 			// With no session waiting and no banner up, the oldest session you
 			// started shows first; else a held notice shows, only the latest. The
@@ -415,7 +469,7 @@ export class AlertCenter {
 	 * this banner ends. */
 	private replaceBanner(alerts: readonly Alert[]): void {
 		const interrupted = (this.banner?.alerts ?? []).filter(
-			(other) => other.kind === "started" && !alerts.some((alert) => subject(alert) === subject(other)),
+			(other) => followsInTurn(other) && !alerts.some((alert) => subject(alert) === subject(other)),
 		);
 		if (interrupted.length > 0)
 			this.afterBanner = [

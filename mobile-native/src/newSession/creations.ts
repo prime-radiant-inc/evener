@@ -73,8 +73,7 @@ export function forgetCreationForHub(hubId: string): void {
 
 /** The form showing a store: when a start lands, the form in front then
  * (perhaps a sheet reopened meanwhile) opens the session or shows why it
- * failed. With none in front, a session made is announced, and a failure
- * waits on the store for the form to show when it opens. */
+ * failed, and with none in front an alert says so. */
 export interface FormFront {
 	navigation: Pick<NativeStackNavigationProp<NewSessionRoutes, "Form">, "isFocused" | "getParent">;
 	latest: { current: { ready: boolean; client: unknown } };

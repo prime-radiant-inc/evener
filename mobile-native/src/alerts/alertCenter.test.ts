@@ -8,6 +8,7 @@ import {
 	type Haptic,
 	RELEASE_MS,
 	type SessionAlert,
+	sessionRef,
 } from "./alertCenter";
 
 const timer = {
@@ -30,7 +31,9 @@ function center() {
 	return { alerts: new AlertCenter(timer, (kind) => haptics.push(kind)), haptics };
 }
 function shown(alerts: AlertCenter): string[] | undefined {
-	return alerts.getSnapshot().banner?.alerts.map((alert) => (alert.kind === "notice" ? alert.key : alert.ref));
+	return alerts
+		.getSnapshot()
+		.banner?.alerts.map((alert) => sessionRef(alert) ?? (alert.kind === "notice" ? alert.key : alert.kind));
 }
 
 beforeEach(() => {
@@ -605,4 +608,103 @@ it("tells subscribers when something changes", () => {
 	stop();
 	alerts.dismiss();
 	expect(calls).toBe(1);
+});
+
+describe("a New session start that failed after its sheet closed (#3104)", () => {
+	const failed: Alert = { kind: "startFailed", hubId: "hub-a", hubName: "magic-kingdom", uncertain: false };
+
+	it("shows, buzzes as a failure, and opens New session on a tap", () => {
+		const { alerts, haptics } = center();
+		alerts.offer(failed);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+		expect(haptics).toEqual(["warning"]);
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+	});
+
+	it("shows whatever the failures setting, since it's about what you just did", () => {
+		const { alerts } = center();
+		alerts.setPreferences({ ...DEFAULT_ALERT_PREFERENCES, failures: false });
+		alerts.offer(failed);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
+	it("is never lost: it waits behind a banner that is up, and out a hold, and keeps waiting when Next is used", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(failed);
+		expect(shown(alerts)).toEqual(["a"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["startFailed"]);
+		alerts.dismiss();
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.offer(session("q"));
+		alerts.nextUsed();
+		expect(alerts.getSnapshot().held).toBe(1);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
+	it("keeps a failed start on each hub, one after the other", () => {
+		const { alerts } = center();
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.offer({ kind: "startFailed", hubId: "hub-b", hubName: "paradise-park", uncertain: true });
+		expect(alerts.getSnapshot().held).toBe(2);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-b", hubName: "paradise-park" });
+	});
+
+	it("survives switching hubs, shown or waiting, since it names its own hub", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(failed);
+		alerts.reset();
+		expect(shown(alerts)).toEqual(["startFailed"]);
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.offer(session("q"));
+		alerts.reset();
+		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 1 });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
+	it("tells its listeners about a hub switch, with the failed start still on the banner", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(failed);
+		const snapshots: (string[] | undefined)[] = [];
+		alerts.subscribe(() => snapshots.push(shown(alerts)));
+		alerts.reset();
+		expect(snapshots.length).toBeGreaterThan(0);
+		expect(snapshots.at(-1)).toEqual(["startFailed"]);
+	});
+
+	it("goes only for the hub whose New session is opened", () => {
+		const { alerts } = center();
+		alerts.offer(failed);
+		alerts.offer({ kind: "startFailed", hubId: "hub-b", hubName: "paradise-park", uncertain: false });
+		alerts.startFailureSeen("hub-b");
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+		expect(alerts.getSnapshot().banner).toBeNull();
+	});
+
+	it("goes once New session is opened, which shows the same reason", () => {
+		const { alerts } = center();
+		alerts.offer(failed);
+		alerts.startFailureSeen("hub-a");
+		expect(alerts.getSnapshot().banner).toBeNull();
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.startFailureSeen("hub-a");
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
+	});
 });

@@ -745,6 +745,74 @@ it("lets a sheet reopened mid-start open the session its start makes (#3104)", a
 	act(() => reopened.tree.unmount());
 });
 
+it("says so when a start fails after its sheet closed, and the alert opens New session with the draft (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		holdStart: true,
+		refuseStart: new WireError("the hub is shutting down", -32000),
+	});
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	form.dispose();
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: true },
+	]);
+	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go" });
+	expect(form.alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-1", hubName: "magic-kingdom" });
+});
+
+it("says a start the hub never got couldn't start, once, and New session answers it (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { enabledPlugins: ["superpowers"] } },
+		plugins: new Error("plugin cache locked"),
+	});
+	await debounce();
+	// The sheet closes before the hub answers the plugin check.
+	await act(async () => {
+		void form.header("headerRight").props.onPress();
+		form.focus.focused = false;
+		form.dispose();
+	});
+	await settle();
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false },
+	]);
+	// Opening New session shows the same reason in the form, so the alert goes.
+	const reopened = await form.reopen();
+	expect(form.alerts.getSnapshot().banner).toBeNull();
+	expect(reopened.text()).toContain("Couldn't check the selected plugins, so no session was started.");
+	act(() => reopened.tree.unmount());
+});
+
+it("raises no alert for a failure the form in front already shows", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		refuseStart: new WireError("the hub is shutting down", -32000),
+	});
+	await act(async () => form.header("headerRight").props.onPress());
+	await settle();
+	expect(form.text()).toContain("the hub is shutting down");
+	expect(form.alerts.getSnapshot().banner).toBeNull();
+	form.dispose();
+});
+
+it("says a start the connection lost after its sheet closed may exist (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	form.dispose();
+	// The connection drops while the hub is still starting it.
+	await act(async () => form.store.getState().bind(null));
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: true },
+	]);
+	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: true });
+});
+
 it("raises nothing for a start whose hub was removed while it was on its way (#3104)", async () => {
 	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true, hubStore: true });
 	await act(async () => void form.header("headerRight").props.onPress());
@@ -752,6 +820,34 @@ it("raises nothing for a start whose hub was removed while it was on its way (#3
 	form.dispose();
 	// The hub is removed: its store goes, unbound, so the start comes back obsolete.
 	await act(async () => forgetCreationForHub("hub-1"));
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
+});
+
+it("leaves a failure to a sheet reopened while the hub is away, which shows it itself (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	const reopened = await form.reopen();
+	await reopened.setReady(false);
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(reopened.text()).toContain("Creation could not be confirmed.");
+	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
+	act(() => reopened.tree.unmount());
+});
+
+it("raises nothing for a start the connection ended before the hub got it (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go", launchOverrides: { enabledPlugins: ["superpowers"] } },
+		holdPreview: true,
+	});
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	form.dispose();
+	// The connection drops while the plugin check is still out: nothing was sent.
+	await act(async () => form.store.getState().bind(null));
+	expect(form.store.getState().error).toBeNull();
 	await act(async () => form.releaseStart());
 	await settle();
 	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
@@ -769,6 +865,67 @@ it("holds Start after a new connection leaves its start unconfirmed, until the d
 	await act(async () => form.prompt().props.onChangeText("go, and fix the docs"));
 	expect(form.header("headerRight").props.disabled).toBe(false);
 	await act(async () => form.releaseStart());
+	form.dispose();
+});
+
+it("retires a failed start's alert when the form comes back into focus, not only when it opens (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		holdStart: true,
+		refuseStart: new WireError("the hub is shutting down", -32000),
+	});
+	await act(async () => void form.header("headerRight").props.onPress());
+	// A picker is pushed over the form while the start is out.
+	screen.focused = false;
+	form.focus.focused = false;
+	await form.rerender();
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.alerts.getSnapshot().banner?.alerts[0]).toMatchObject({ kind: "startFailed" });
+	// Back on the form, which shows the reason itself.
+	screen.focused = true;
+	form.focus.focused = true;
+	await form.rerender();
+	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
+	expect(form.text()).toContain("the hub is shutting down");
+	form.dispose();
+});
+
+it("never loses a failed start on a hub you switched away from (#3104)", async () => {
+	const form = await mount({
+		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
+		holdStart: true,
+		refuseStart: new WireError("the hub is shutting down", -32000),
+	});
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	form.dispose();
+	// Another hub is selected: the alert center starts over for it.
+	await act(async () => form.alerts.reset());
+	await act(async () => form.releaseStart());
+	await settle();
+	const shown = form.alerts.getSnapshot().banner?.alerts;
+	expect(shown).toEqual([{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: true }]);
+	// Switching once more keeps it, and a tap goes to its own hub.
+	await act(async () => form.alerts.reset());
+	expect(form.alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-1", hubName: "magic-kingdom" });
+});
+
+it("retires only its own hub's failed-start alert when it comes into focus (#3104)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" } });
+	screen.focused = false;
+	await form.rerender();
+	await act(async () => {
+		form.alerts.offer({ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: false });
+		form.alerts.offer({ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false });
+	});
+	screen.focused = true;
+	await form.rerender();
+	// This form is hub-1's: hub-2's alert stays.
+	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: false },
+	]);
+	expect(form.alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-2", hubName: "paradise-park" });
 	form.dispose();
 });
 

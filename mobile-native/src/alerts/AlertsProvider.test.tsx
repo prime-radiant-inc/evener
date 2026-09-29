@@ -15,7 +15,7 @@ import {
 	tick,
 } from "../board/navigationHubTestUtils";
 import { render } from "../renderNative.testkit";
-import { type AlertSnapshot, DEFAULT_ALERT_PREFERENCES, RELEASE_MS } from "./alertCenter";
+import { type AlertSnapshot, DEFAULT_ALERT_PREFERENCES, RELEASE_MS, sessionRef } from "./alertCenter";
 import { alertPreferences } from "./nativeAlertPreferences";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
@@ -88,7 +88,9 @@ async function needsYouNow(hub: Hub, sequence: number, rows: NavigationSessionSu
 	});
 }
 const shownRefs = () =>
-	probe.snapshot?.banner?.alerts.map((alert) => (alert.kind === "notice" ? alert.key : alert.ref)) ?? [];
+	probe.snapshot?.banner?.alerts.map(
+		(alert) => sessionRef(alert) ?? (alert.kind === "notice" ? alert.key : alert.kind),
+	) ?? [];
 
 beforeEach(() => {
 	alertPreferences().set(DEFAULT_ALERT_PREFERENCES);
