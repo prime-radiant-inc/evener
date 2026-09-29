@@ -54,7 +54,7 @@ func pageAllArchived(t *testing.T, p navigationProjection, catalog navigationRes
 		if page.NextCursor == "" {
 			return ids, page.Total
 		}
-		after, err := decodeArchivedCursor(page.NextCursor)
+		after, err := decodeArchivedCursor(page.NextCursor, catalog, key)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -226,5 +226,42 @@ func TestHubArchivedListOmittedLimitServesOneMaximumPage(t *testing.T) {
 	}
 	if len(rows) != maxNavigationSectionRows || response.NextCursor == "" || response.Total != maxNavigationSectionRows+10 {
 		t.Fatalf("omitted limit served %d rows, cursor %q, total %d", len(rows), response.NextCursor, response.Total)
+	}
+}
+
+// A cursor names the list it continues: one minted for another project, or
+// for the same key in another catalog, is rejected rather than misapplied.
+func TestHubArchivedListRejectsACursorFromAnotherList(t *testing.T) {
+	source := newTestNavigationSource(testNavigationNow())
+	old := testNavigationNow().Add(-30 * 24 * time.Hour)
+	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
+	service := newTestNavigationService(t, source)
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerArchivedListHandler(server, service)
+	key := source.inputs.Tree.Projects[0].Key
+	first, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: key, Limit: 1})
+	if err != nil || first.NextCursor == "" {
+		t.Fatalf("first page: cursor %q, err %v", first.NextCursor, err)
+	}
+	for _, params := range []appwire.ArchivedListParams{
+		{Catalog: "projects", ProjectKey: "another-project", Cursor: first.NextCursor},
+		{Catalog: "archived_projects", ProjectKey: key, Cursor: first.NextCursor},
+	} {
+		_, err := dispatchArchivedList(t, server, params)
+		assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
+	}
+}
+
+// An empty page carries an empty array, never null.
+func TestHubArchivedListEmptyPageIsAnEmptyArray(t *testing.T) {
+	service := newTestNavigationService(t, newTestNavigationSource(testNavigationNow()))
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerArchivedListHandler(server, service)
+	response, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response.Sessions) != "[]" {
+		t.Fatalf("sessions = %s, want []", response.Sessions)
 	}
 }

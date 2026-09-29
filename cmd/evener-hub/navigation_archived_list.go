@@ -50,7 +50,7 @@ func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navig
 	}
 	request := navigationArchivedListRequest{Catalog: catalog, ProjectKey: params.ProjectKey, Limit: params.Limit}
 	if params.Cursor != "" {
-		after, err := decodeArchivedCursor(params.Cursor)
+		after, err := decodeArchivedCursor(params.Cursor, catalog, params.ProjectKey)
 		if err != nil {
 			return navigationArchivedListRequest{}, err
 		}
@@ -59,23 +59,26 @@ func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navig
 	return request, nil
 }
 
-// archivedCursor is a hubcore.SessionOrderKey on the wire. A zero time.Time
-// round-trips through JSON as the zero time, so a row with no timestamps keeps
-// its place in the order.
+// archivedCursor is a hubcore.SessionOrderKey on the wire, bound to the list
+// it continues (catalog and project key), so a cursor from another list is
+// rejected instead of misapplied. A zero time.Time round-trips through JSON as
+// the zero time, so a row with no timestamps keeps its place in the order.
 type archivedCursor struct {
-	Updated time.Time `json:"u"`
-	Created time.Time `json:"c"`
-	Title   string    `json:"t"`
-	ID      string    `json:"i"`
+	Catalog navigationResourceKind `json:"k"`
+	Project string                 `json:"p"`
+	Updated time.Time              `json:"u"`
+	Created time.Time              `json:"c"`
+	Title   string                 `json:"t"`
+	ID      string                 `json:"i"`
 }
 
-func encodeArchivedCursor(key hubcore.SessionOrderKey) string {
+func encodeArchivedCursor(catalog navigationResourceKind, projectKey string, key hubcore.SessionOrderKey) string {
 	// A struct of times and strings always encodes.
-	raw, _ := json.Marshal(archivedCursor{Updated: key.Updated, Created: key.Created, Title: strings.TrimSpace(key.Title), ID: key.ID})
+	raw, _ := json.Marshal(archivedCursor{Catalog: catalog, Project: projectKey, Updated: key.Updated, Created: key.Created, Title: strings.TrimSpace(key.Title), ID: key.ID})
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
-func decodeArchivedCursor(cursor string) (hubcore.SessionOrderKey, error) {
+func decodeArchivedCursor(cursor string, catalog navigationResourceKind, projectKey string) (hubcore.SessionOrderKey, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
 		return hubcore.SessionOrderKey{}, errors.New("invalid cursor")
@@ -83,6 +86,9 @@ func decodeArchivedCursor(cursor string) (hubcore.SessionOrderKey, error) {
 	var c archivedCursor
 	if err := json.Unmarshal(raw, &c); err != nil || c.ID == "" {
 		return hubcore.SessionOrderKey{}, errors.New("invalid cursor")
+	}
+	if c.Catalog != catalog || c.Project != projectKey {
+		return hubcore.SessionOrderKey{}, errors.New("cursor belongs to another archived list")
 	}
 	return hubcore.SessionOrderKey{Updated: c.Updated, Created: c.Created, Title: c.Title, ID: c.ID}, nil
 }
@@ -116,7 +122,7 @@ func (p navigationProjection) ArchivedList(request navigationArchivedListRequest
 	}
 	out := navigationArchivedPage{Sessions: page.Sessions, Total: len(rows)}
 	if page.Remaining > 0 {
-		out.NextCursor = encodeArchivedCursor(hubcore.TreeNodeOrderKey(rows[start+len(page.Sessions)-1]))
+		out.NextCursor = encodeArchivedCursor(request.Catalog, request.ProjectKey, hubcore.TreeNodeOrderKey(rows[start+len(page.Sessions)-1]))
 	}
 	return out, nil
 }
