@@ -525,9 +525,14 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   // same way).
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
-  // The Activity ✓ means the sidebar is open ON THIS SESSION (the predicate
-  // is shared with the session chrome so the two menus can never disagree).
-  const activityOpen = useActivitySidebarOpenFor(ref);
+  // The Activity ✓ marks what this row's Activity action opens: the desktop
+  // sidebar (the predicate is shared with the session chrome so the two menus
+  // can never disagree), or the sessionActivity pane the mobile rail still
+  // opens from the tree drawer. Two unconditional hook calls - combining
+  // inside one expression would short-circuit the second hook.
+  const activitySidebarOpen = useActivitySidebarOpenFor(ref);
+  const activityPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
+  const activityOpen = activitySidebarOpen || activityPaneOpen;
   const notesOpen = useTopNotesExpanded(ref);
   // Navigation summaries do not carry notes capability. Observe only an
   // already-hydrated snapshot; opening the session owns any needed fetch.

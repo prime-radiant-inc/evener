@@ -6,10 +6,13 @@
 // the closed state rendering nothing, and the reduced-motion contract.
 
 import type { NavigationManifest } from "@evener/appwire-client";
+import { createKeybindingsRegistry } from "@evener/appwire-client";
 import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { parseKeybinding } from "tinykeys";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { createKeybindingDispatcher } from "../../keybindings/dispatcher";
 import { MotionProvider } from "../../motion";
 import { navigationStore } from "../../stores/navigation/store";
 import { resetFocusedActivityScopeForTests } from "../focusedSession";
@@ -243,6 +246,26 @@ describe("ActivitySidebar", () => {
     expect(screen.getByText("No subagents at this level.")).toBeTruthy();
   });
 
+  test("the open transition is read once per mount, not re-read on every render", () => {
+    // getComputedStyle forces a style pass; calling it per render taxes every
+    // scope change and tab switch for a token that changes with the theme, if
+    // ever. Resolve it once when the aside mounts.
+    installTree();
+    const spy = vi.spyOn(window, "getComputedStyle");
+    try {
+      workspaceStore.getState().openPane("session", { ref: "local:a" });
+      activitySidebarStore.getState().openWith("agents");
+      renderSidebar();
+      const readsAfterMount = spy.mock.calls.length;
+      act(() => {
+        activitySidebarStore.getState().setTab("jobs");
+      });
+      expect(spy.mock.calls.length).toBe(readsAfterMount);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   test("Escape closes the open sidebar", () => {
     installTree();
     workspaceStore.getState().openPane("session", { ref: "local:a" });
@@ -251,6 +274,33 @@ describe("ActivitySidebar", () => {
     expect(screen.getByTestId("activity-sidebar")).toBeTruthy();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(activitySidebarStore.getState().open).toBe(false);
+  });
+
+  test("an Escape the keybinding dispatcher claims (settings scope) dismisses that, not the sidebar", () => {
+    // The app's dispatcher attaches to window at boot (installKeybindings),
+    // before any sidebar can open. A scope-bound Escape - Settings' close
+    // chord - claims the key there and preventDefaults. The sidebar's
+    // listener must run AFTER that claim: one Esc, one dismissal.
+    const registry = createKeybindingsRegistry(parseKeybinding);
+    const dispatcher = createKeybindingDispatcher({ registry });
+    const detach = dispatcher.attach(window);
+    try {
+      const state = registry.getState();
+      const closeSettings = vi.fn();
+      state.registerAction("settings.close", closeSettings);
+      state.registerBinding({ id: "esc-settings", actionId: "settings.close", chord: "Escape", scope: "settings" });
+      state.pushScope("settings");
+      installTree();
+      workspaceStore.getState().openPane("session", { ref: "local:a" });
+      activitySidebarStore.getState().openWith("agents");
+      renderSidebar();
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(closeSettings).toHaveBeenCalledTimes(1);
+      expect(activitySidebarStore.getState().open).toBe(true);
+    } finally {
+      detach();
+      dispatcher.dispose();
+    }
   });
 
   test("Escape with a handled default does not close (a composer Esc keeps its meaning)", () => {

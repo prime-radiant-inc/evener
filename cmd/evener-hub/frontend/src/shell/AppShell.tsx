@@ -944,22 +944,24 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             ) : isMobile ? (
               <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
             ) : (
-              // The workspace host carries its flex share by class, not by
-              // :last-child: the activity sidebar mounts as a sibling AFTER it,
-              // and a positional rule would either stretch the sidebar or drop
-              // the host's sizing the moment the sidebar opens.
-              <div className={styles.workspaceHost} data-testid="workspace-host">
-                <DockRegion />
+              // The workspace column owns everything that reports on the
+              // workspace: the dock host, then the status bar (the spec's
+              // "30px strip under the workspace" - right of the rail, never
+              // beneath it). The column carries the row's flex share by class,
+              // not by :last-child: the activity sidebar mounts as a sibling
+              // AFTER it, and a positional rule would either stretch the
+              // sidebar or drop the column's sizing the moment it opens.
+              <div className={styles.workspaceColumn} data-testid="workspace-column">
+                <div className={styles.workspaceHost} data-testid="workspace-host">
+                  <DockRegion />
+                </div>
+                <StatusBar />
               </div>
             )}
             {/* The activity sidebar: the zoom system's triage surface, a right
               shell region scoped to the session being read. Desktop only. */}
             {!isMobile && route !== null && <ActivitySidebar />}
           </div>
-          {/* The activity status bar: the zoom system's glance surface, a
-              full-width strip under the content row. Desktop only; mobile
-              keeps the per-session sheet. */}
-          {!isMobile && route !== null && <StatusBar />}
         </div>
       </MotionProvider>
     </ClientProvider>

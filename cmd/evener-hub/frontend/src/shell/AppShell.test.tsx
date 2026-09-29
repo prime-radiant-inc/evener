@@ -2172,6 +2172,22 @@ test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", as
   expect(await screen.findByTestId("rail-search")).toBeTruthy();
 });
 
+test("the status bar sits in the workspace column right of the rail, never beneath it", async () => {
+  // The spec: "a 30px strip under the workspace". The bar reports on the
+  // session in the workspace; drawn shell-wide it would sit beneath the
+  // navigation rail too, which has nothing to do with that session.
+  window.history.pushState({}, "", "/s/local:ref_normal");
+  installLocationForRoute("local:ref_normal");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  const bar = await screen.findByTestId("statusbar");
+  const column = bar.closest("[data-testid='workspace-column']");
+  expect(column).not.toBeNull();
+  // The column owns the workspace host; the rail stands beside it, outside.
+  expect(column?.querySelector("[data-testid='workspace-host']")).not.toBeNull();
+  expect(column?.contains(await screen.findByTestId("rail-search"))).toBe(false);
+});
+
 // --- settings routing (this task) -------------------------------------
 
 test("navigating to /settings/{section} shows that section, replacing main settings and removing secondary settings", async () => {

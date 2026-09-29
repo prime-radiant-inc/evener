@@ -37,6 +37,7 @@ import { useRef, useState } from "react";
 import {
   activitySidebarOpenFor,
   activitySidebarStore,
+  closeSessionActivityPanes,
   useActivitySidebarOpenFor,
 } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
@@ -224,10 +225,15 @@ export function SessionChrome({
     // Desktop: the activity sidebar (the zoom system's triage surface).
     // Mobile: the per-session Sheet, unchanged. Desktop toggles only when the
     // sidebar already shows THIS session; open on another session, the item
-    // re-scopes it here instead of closing it under the user.
+    // re-scopes it here instead of closing it under the user. The open also
+    // retires a leftover sessionActivity pane for this session - nothing on
+    // desktop can open or mark one anymore.
     if (isMobile) activityRef.current?.open();
     else if (activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
-    else activitySidebarStore.getState().openWith();
+    else {
+      closeSessionActivityPanes(sessionRef);
+      activitySidebarStore.getState().openWith();
+    }
   };
   const openNotes = () => {
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;

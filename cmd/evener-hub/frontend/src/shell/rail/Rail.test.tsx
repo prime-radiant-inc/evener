@@ -1825,6 +1825,43 @@ describe("resource-backed Rail", () => {
     }
   });
 
+  test("a rail row's Activity action on desktop closes a leftover sessionActivity pane for that session", async () => {
+    // An upgrade or a restored layout can carry the pre-sidebar pane into the
+    // desktop shell, where no affordance opens it and no ✓ marks it: an
+    // orphan. Opening the sidebar on that session supersedes the pane.
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    const restoreActivityPane = registerPaneForTests({
+      id: "sessionActivity",
+      title: () => "activity",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      workspaceStore.getState().openPane("sessionActivity", { ref: "local:active" });
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      // The open pane marks the item (the ✓ names what the action opens -
+      // RailRow.test.tsx pins the predicate); the supersede still fires.
+      fireEvent.click(screen.getByRole("menuitem", { name: "Activity ✓" }));
+      await waitFor(() => {
+        expect(activitySidebarStore.getState().open).toBe(true);
+      });
+      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+    } finally {
+      restoreSessionPane();
+      restoreActivityPane();
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
   test("a rail row's Activity action on mobile keeps the old pane (no sidebar exists there)", async () => {
     // The sidebar is desktop chrome; on the phone the rail lives in the tree
     // drawer and Activity keeps its pre-sidebar behavior: the sessionActivity

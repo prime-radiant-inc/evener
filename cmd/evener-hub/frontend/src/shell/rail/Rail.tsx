@@ -62,7 +62,7 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu } from "../../widgets/menu";
 import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
-import { activitySidebarStore } from "../activitybar/activitySidebarStore";
+import { activitySidebarStore, closeSessionActivityPanes } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate } from "../routing";
@@ -1457,9 +1457,14 @@ function NavigationRail({
           // by the just-focused session. On mobile there is no sidebar (the
           // rail lives in the tree drawer), so the sessionActivity pane keeps
           // its pre-sidebar behavior. Both idempotent opens: the rail
-          // navigates, it never toggles closed.
+          // navigates, it never toggles closed. The sidebar open also retires
+          // a leftover sessionActivity pane for this session - nothing on
+          // desktop can open or mark one anymore.
           if (isMobile) workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
-          else activitySidebarStore.getState().openWith();
+          else {
+            closeSessionActivityPanes(session.ref);
+            activitySidebarStore.getState().openWith();
+          }
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }

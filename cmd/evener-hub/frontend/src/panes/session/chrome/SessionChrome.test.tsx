@@ -901,6 +901,39 @@ test("desktop Activity toggles closed only when the sidebar is scoped to this se
   }
 });
 
+test("desktop Activity closes a leftover sessionActivity pane for this session when it opens the sidebar", async () => {
+  // The rail's twin: an upgrade or a restored layout can carry the
+  // pre-sidebar pane into the desktop shell, where no affordance opens it and
+  // no ✓ marks it. Opening the sidebar on the session supersedes the pane.
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_orphan"));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_orphan");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "session",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  const restoreActivityPane = registerPaneForTests({
+    id: "sessionActivity",
+    title: () => "activity",
+    component: lazy(() => Promise.resolve({ default: () => null })),
+  });
+  try {
+    workspaceStore.getState().openPane("session", { ref: "ref_orphan" });
+    workspaceStore.getState().openPane("sessionActivity", { ref: "ref_orphan" });
+    render(<SessionChrome ref="ref_orphan" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Activity" }));
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+  } finally {
+    restoreSession();
+    restoreActivityPane();
+  }
+});
+
 test("mobile chrome opens Sheets without changing workspace panes", async () => {
   const restoreViewport = installMobileViewport();
   const user = userEvent.setup();

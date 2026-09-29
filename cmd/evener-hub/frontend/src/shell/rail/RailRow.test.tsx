@@ -2089,6 +2089,17 @@ describe("session row", () => {
     expect(panes).toContain("sessionDetails");
   });
 
+  test("the Activity check marks a sessionActivity pane open for this session", async () => {
+    // The ✓ names what the row's own Activity action opens. On mobile that
+    // is the sessionActivity pane (the desktop sidebar retarget never
+    // reaches the tree drawer), so the pane predicate marks the item there,
+    // beside the desktop sidebar predicate.
+    workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
+    renderRow();
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+  });
+
   test("shut down confirms through onShutdownSession", async () => {
     const acts = actions();
     const session = renderRow({}, acts);

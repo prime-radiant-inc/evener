@@ -36,18 +36,26 @@ export function ActivitySidebar() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
   const scope = useMemo(() => (ref === null ? null : deriveScope(navigationStore.getState(), ref)), [resources, ref]);
   const Body = scope === null ? null : activityTabSpec(tab).Body;
+  // Resolved once per mount: spatialTransition reads getComputedStyle (a
+  // style pass), and the token changes with the theme at most, so paying
+  // that read on every render taxes each scope change for nothing.
+  const transition = useMemo(() => spatialTransition(), []);
 
   // Esc closes the sidebar while it's open - the dismiss gesture every
   // transient surface in this app honors. defaultPrevented means something
-  // closer to the focus already claimed it (the composer's own Esc), so the
-  // sidebar stands.
+  // already claimed it, so the sidebar stands. Attached to WINDOW, not
+  // document: the app's keybinding dispatcher attaches to window at boot
+  // (installKeybindings), before any sidebar can open, and window listeners
+  // run in attach order - so a scope-bound Esc (Settings' close chord,
+  // SelectionQuote) is claimed and preventDefaulted before this listener
+  // ever sees it, and one Esc never dismisses two surfaces.
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) activitySidebarStore.getState().close();
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [open]);
   return (
     <AnimatePresence initial={false}>
@@ -57,7 +65,7 @@ export function ActivitySidebar() {
           initial={{ x: 320 }}
           animate={{ x: 0 }}
           exit={{ x: 320 }}
-          transition={spatialTransition()}
+          transition={transition}
           data-testid="activity-sidebar"
         >
           <div className={CLASS.head}>
