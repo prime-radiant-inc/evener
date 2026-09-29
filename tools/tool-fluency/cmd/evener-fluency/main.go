@@ -82,6 +82,8 @@ func run(args []string) error {
 		return runRankScore(args[1:])
 	case "matrix":
 		return runMatrixCommand(args[1:])
+	case "respond":
+		return runRespond(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -104,6 +106,7 @@ USAGE
   evener-fluency rank-score --key FILE --reviews FILE [...] [--detail] [--json]
   evener-fluency matrix --version LABEL=BIN [...] --models M1,M2 --out DIR [--max-concurrent N] [run flags]
   evener-fluency matrix --version-manifest FILE --version-cache DIR --models M1,M2 --out DIR [run flags]
+  evener-fluency respond --brief-file FILE --model provider/model [--log FILE]
 
 `)
 }
@@ -207,6 +210,24 @@ type probeFile struct {
 	// Reference is a shell script that solves the task. Only the offline
 	// task test runs it, to prove the checks can pass; the runner ignores it.
 	Reference string `yaml:"reference,omitempty"`
+	// Person, when set, makes the CLI harness point the probe's evener run at
+	// --ask-responder: an evener-fluency respond invocation that plays this
+	// person's part when the agent calls ask_user.
+	Person *personSpec `yaml:"person,omitempty"`
+}
+
+// personSpec is a task manifest's optional "person:" block. When present,
+// cliProbeArgs wires the probe's evener run to --ask-responder, pointed at
+// this same binary's own "respond" subcommand: the model plays Person from
+// Brief alone, in its own voice, and says "I don't know" for anything the
+// brief does not cover (see respond in respond.go).
+type personSpec struct {
+	// Brief is who the person is and the facts only they know, passed to
+	// `respond --brief-file` verbatim.
+	Brief string `yaml:"brief"`
+	// Model is the provider/model that plays the person; empty defaults to
+	// the run's --fast-cheap-model.
+	Model string `yaml:"model,omitempty"`
 }
 
 // metricsSpec is the validated form of a probe manifest's `metrics:` block
@@ -544,6 +565,11 @@ type probeResult struct {
 	Findings            []finding      `json:"findings"`
 	DurationMS          int64          `json:"duration_ms"`
 	Error               string         `json:"error,omitempty"`
+	// AskUserCalls is how many times the session called ask_user (only set
+	// for a task with a person: block); Asks is every question/answer pair
+	// the --ask-responder logged (readAskLog, applyAskExchanges).
+	AskUserCalls int           `json:"ask_user_calls,omitempty"`
+	Asks         []askExchange `json:"asks,omitempty"`
 }
 
 // probeMetrics holds the phase-discipline metrics the runner computes from
@@ -866,6 +892,7 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	// rather than through the enumeration the counts above walk, and reported
 	// per the probe's metrics block.
 	applyProbeMetrics(&res, probe, stateDir, wireNames)
+	applyAskExchanges(&res, probe)
 	if err != nil {
 		res.Error = err.Error()
 		category, status := classifyProbeError(err, ctx.Err(), stderr.String())
@@ -924,6 +951,13 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, er
 			netName = "off"
 		}
 		args = append(args, "--sandbox", mode.String(), "--sandbox-net", netName)
+	}
+	if probe.Person != nil {
+		askResponder, err := personAskResponderCommand(cfg, probe, res)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "--ask-responder", askResponder)
 	}
 	args = append(args,
 		"--dir", res.WorkDir,
