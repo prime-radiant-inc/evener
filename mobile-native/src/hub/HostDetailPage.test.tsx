@@ -1,4 +1,4 @@
-import { createHubUpdateController, type HostRow } from "@evener/appwire-client";
+import { createHubUpdateController, type HostRow, WireError } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
@@ -7,7 +7,7 @@ import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { VERSION_DRIFT_FOOTER } from "../hosts/hostStatus";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { render, renderedText } from "../renderNative.testkit";
+import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import { HostDetailPage } from "./HostDetailPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -41,7 +41,7 @@ async function mount(fleet: ScriptedFleet, name: string, options: { ready?: bool
 		awaitRestart: async () => true,
 	});
 	await updates.runCheck();
-	const hosts = new HostsController(fleet.client);
+	const hosts = new HostsController(fleet.client, fleet.newMutationId);
 	const live = new LiveSessionsReader(fleet.client);
 	const context: HubSheetContextValue = {
 		hubId: "hub-1",
@@ -53,7 +53,7 @@ async function mount(fleet: ScriptedFleet, name: string, options: { ready?: bool
 		hosts,
 		live,
 	};
-	const navigation = { goBack: vi.fn() };
+	const navigation = { goBack: vi.fn(), navigate: vi.fn() };
 	const tree = render(
 		<HubSheetProvider value={context}>
 			<HostDetailPage
@@ -197,5 +197,56 @@ it("goes back when the host leaves the hub's list", async () => {
 	fleet.hosts = [];
 	await act(async () => page.hosts.read());
 	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
+	page.dispose();
+});
+
+const confirmRemove = async () => {
+	const alert = alertRequests.at(-1);
+	await act(async () => alert?.buttons?.find((button) => button.text === "Remove")?.onPress?.());
+	await settle();
+};
+
+it.each([
+	["a host the app or web added", "sidecar"],
+	["a host from hub.toml", "hub.toml"],
+])("offers Edit and Remove on %s (spec 12)", async (_name, origin) => {
+	const page = await mount(scriptedFleet([hostRow("attic", { origin })]), "attic");
+	await act(async () => page.button("Edit")?.props.onPress());
+	expect(page.navigation.navigate).toHaveBeenCalledWith("HostEdit", { hubId: "hub-1", name: "attic" });
+	expect(page.button("Remove")).not.toBeNull();
+	page.dispose();
+});
+
+it("removes a host once confirmed, then goes back as it leaves the list", async () => {
+	alertRequests.length = 0;
+	const fleet = scriptedFleet([hostRow("attic")]);
+	const page = await mount(fleet, "attic");
+	await act(async () => page.button("Remove")?.props.onPress());
+	expect(alertRequests.at(-1)?.title).toBe("Remove attic?");
+	expect(alertRequests.at(-1)?.message).toBe("The hub forgets this host. Add it again from the web app.");
+	expect(alertRequests.at(-1)?.buttons?.find((button) => button.text === "Remove")?.style).toBe("destructive");
+	expect(fleet.calls.some((call) => call.method === "evener/host/remove")).toBe(false);
+	await confirmRemove();
+	expect(fleet.calls.some((call) => call.method === "evener/host/remove")).toBe(true);
+	expect(page.navigation.goBack).toHaveBeenCalledTimes(1);
+	page.dispose();
+});
+
+it("says why the hub refused to remove a host, and stays", async () => {
+	alertRequests.length = 0;
+	const fleet = scriptedFleet([hostRow("attic")]);
+	fleet.refuse.remove = new WireError('host "attic" has live sessions', -32000);
+	const page = await mount(fleet, "attic");
+	await act(async () => page.button("Remove")?.props.onPress());
+	await confirmRemove();
+	expect(renderedText(page.tree)).toContain('host "attic" has live sessions');
+	expect(page.navigation.goBack).not.toHaveBeenCalled();
+	page.dispose();
+});
+
+it("holds Edit and Remove while the phone's connection is down", async () => {
+	const page = await mount(scriptedFleet([hostRow("attic")]), "attic", { ready: false });
+	expect(page.button("Edit")?.props.accessibilityState.disabled).toBe(true);
+	expect(page.button("Remove")?.props.accessibilityState.disabled).toBe(true);
 	page.dispose();
 });
