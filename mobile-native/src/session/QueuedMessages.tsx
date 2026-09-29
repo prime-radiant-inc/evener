@@ -1,12 +1,13 @@
 // Everything waiting to reach the agent, above the composer (spec 8.5 and
 // 14): the ghosts `ghosts()` lists, at most three of them queued. The rest of
-// the queue is one quiet row that opens the Queue sheet (ruling 18).
+// the queue is one quiet row that opens the Queue sheet (ruling 18). While
+// you type, the queue folds to one line so the transcript keeps its room.
 import { SymbolView } from "expo-symbols";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type GhostBackdrop, GhostBubble } from "./GhostBubble";
-import { type Ghost, type GhostAction, shownGhosts } from "./ghosts";
+import { type GhostBackdrop, GhostBubble, GhostButton } from "./GhostBubble";
+import { foldQueue, type Ghost, type GhostAction, type QueueFold, shownGhosts } from "./ghosts";
 
 export interface QueuedMessagesProps {
 	ghosts: readonly Ghost[];
@@ -18,6 +19,9 @@ export interface QueuedMessagesProps {
 	backdrop: GhostBackdrop;
 	/** The images an unconfirmed send carried, shown in its bubble. */
 	draftAttachments?: ReactNode;
+	/** Whether you're typing (the keyboard is up): the queue folds to one
+	 * line until you tap it open. */
+	typing?: boolean;
 	onAction(ghost: Ghost, action: GhostAction): void;
 	onMore(): void;
 }
@@ -29,16 +33,22 @@ export function QueuedMessages({
 	editHint,
 	backdrop,
 	draftAttachments,
+	typing = false,
 	onAction,
 	onMore,
 }: QueuedMessagesProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	// Opened while typing; the next time you type, the queue folds again.
+	const [opened, setOpened] = useState(false);
+	if (!typing && opened) setOpened(false);
 	if (ghosts.length === 0) return null;
-	const { shown, moreQueued } = shownGhosts(ghosts);
+	const { fold, rest } = typing && !opened ? foldQueue(ghosts) : { fold: null, rest: ghosts };
+	const { shown, moreQueued } = fold ? { shown: rest, moreQueued: 0 } : shownGhosts(ghosts);
 	const more = `${moreQueued} more queued`;
 	return (
 		<View style={{ gap: 8 }}>
+			{fold ? <FoldedQueue fold={fold} disabled={disabled} onAction={onAction} onOpen={() => setOpened(true)} /> : null}
 			{shown.map((ghost) => (
 				<GhostBubble
 					key={ghost.key}
@@ -71,6 +81,63 @@ export function QueuedMessages({
 					</Text>
 					<SymbolView name="chevron.right" tintColor={palette.inkLow} size={11 * scale} />
 				</Pressable>
+			) : null}
+		</View>
+	);
+}
+
+/** The queue as one line while you type: its count, which shows the
+ * messages, and with one, its action, as "1 queued · Steer now". */
+function FoldedQueue({
+	fold,
+	disabled,
+	onAction,
+	onOpen,
+}: {
+	fold: QueueFold;
+	disabled: boolean;
+	onAction(ghost: Ghost, action: GhostAction): void;
+	onOpen(): void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const { label, act } = fold;
+	const text = { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkLow } as const;
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end" }}>
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel={label}
+				accessibilityHint="Shows the queued messages"
+				onPress={onOpen}
+				style={({ pressed }) => ({
+					minHeight: 44,
+					paddingHorizontal: 8,
+					justifyContent: "center",
+					opacity: pressed ? 0.6 : 1,
+				})}
+			>
+				<Text allowFontScaling={allowFontScaling} style={[text, { fontVariant: ["tabular-nums"] }]}>
+					{label}
+				</Text>
+			</Pressable>
+			{act ? (
+				<>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={text}
+						accessibilityElementsHidden
+						importantForAccessibility="no"
+					>
+						·
+					</Text>
+					<GhostButton
+						action={act.action}
+						subject={act.ghost.text}
+						disabled={disabled}
+						onPress={() => onAction(act.ghost, act.action)}
+					/>
+				</>
 			) : null}
 		</View>
 	);
