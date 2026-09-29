@@ -43,7 +43,13 @@ vi.mock("@react-navigation/native", async () => ({
 	StackActions: (await import("@react-navigation/routers")).StackActions,
 }));
 vi.mock("../ConnectionProvider", () => ({
-	useConnection: () => ({ activeProfile: { id: "hub-1", name: "magic-kingdom" } }),
+	useConnection: () => ({
+		activeProfile: { id: "hub-1", name: "magic-kingdom" },
+		profiles: [
+			{ id: "hub-1", name: "magic-kingdom" },
+			{ id: "hub-2", name: "paradise-park" },
+		],
+	}),
 }));
 vi.mock("./alertsContext", async () => {
 	const { useSyncExternalStore } = await import("react");
@@ -136,23 +142,24 @@ it("opens a notice where the Board's notice row does, and nothing once it has re
 	expect(harness.opened).toHaveLength(1);
 });
 
-it("opens New session, with its draft, for a start that failed after its sheet closed (#3104)", () => {
+it("opens the New session of the hub whose start failed, with its draft, whichever hub is selected (#3104)", () => {
 	const { card, dispatched } = mount();
-	act(() =>
-		harness.center?.offer({
-			kind: "startFailed",
-			title: "Couldn't start the new session",
-			reason: "Couldn't check the selected plugins, so no session was started. Your selection is kept.",
-		}),
-	);
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: false }));
 	act(() => card().props.onPress());
 	expect(dispatched).toEqual([
 		expect.objectContaining({
 			type: "PUSH",
 			payload: expect.objectContaining({
 				name: "NewSession",
-				params: { hubId: "hub-1", hubName: "magic-kingdom" },
+				params: { hubId: "hub-2", hubName: "paradise-park" },
 			}),
 		}),
 	]);
+});
+
+it("opens nothing for a failed start whose hub has since been removed (#3104)", () => {
+	const { card, dispatched } = mount();
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-gone", hubName: "attic", uncertain: false }));
+	act(() => card().props.onPress());
+	expect(dispatched).toEqual([]);
 });

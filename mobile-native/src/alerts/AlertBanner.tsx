@@ -27,7 +27,20 @@ function words(banner: Banner): { title: string; why: WhyLine | null; hint: stri
 	if (banner.alerts.length > 1 || only === undefined)
 		return { title: `${banner.alerts.length} sessions need you`, why: null, hint: COALESCED_LINE };
 	if (only.kind === "started") return { title: only.title, why: null, hint: STARTED_LINE };
-	if (only.kind === "startFailed") return { title: only.title, why: null, hint: `${only.reason} ${START_FAILED_HINT}` };
+	// The form in New session keeps the store's full reason; the banner says
+	// only what happened, on which hub, in one short line.
+	if (only.kind === "startFailed")
+		return only.uncertain
+			? {
+					title: "Couldn't confirm the new session started",
+					why: null,
+					hint: `On ${only.hubName}. It may have started. ${START_FAILED_HINT}`,
+				}
+			: {
+					title: "Couldn't start the new session",
+					why: null,
+					hint: `On ${only.hubName}. Your draft is kept. ${START_FAILED_HINT}`,
+				};
 	return { title: only.title, why: only.kind === "notice" ? null : only.why, hint: null };
 }
 

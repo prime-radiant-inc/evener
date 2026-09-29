@@ -726,14 +726,10 @@ it("says so when a start fails after its sheet closed, and the alert opens New s
 	await act(async () => form.releaseStart());
 	await settle();
 	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
-		{
-			kind: "startFailed",
-			title: "Couldn't confirm the new session started",
-			reason: expect.stringContaining("the hub is shutting down"),
-		},
+		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: true },
 	]);
 	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go" });
-	expect(form.alerts.tap()).toEqual({ kind: "newSession" });
+	expect(form.alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-1", hubName: "magic-kingdom" });
 });
 
 it("says a start the hub never got couldn't start, once, and New session answers it (#3104)", async () => {
@@ -750,11 +746,7 @@ it("says a start the hub never got couldn't start, once, and New session answers
 	});
 	await settle();
 	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
-		{
-			kind: "startFailed",
-			title: "Couldn't start the new session",
-			reason: "Couldn't check the selected plugins, so no session was started. Your selection is kept.",
-		},
+		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false },
 	]);
 	// Opening New session shows the same reason in the form, so the alert goes.
 	const reopened = await form.reopen();
@@ -785,11 +777,7 @@ it("says a start the connection lost after its sheet closed may exist (#3104)", 
 	await act(async () => form.releaseStart());
 	await settle();
 	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
-		{
-			kind: "startFailed",
-			title: "Couldn't confirm the new session started",
-			reason: "Creation could not be confirmed. Check the session list before trying again; the session may exist.",
-		},
+		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: true },
 	]);
 	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: true });
 });

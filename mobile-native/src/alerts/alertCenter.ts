@@ -32,9 +32,11 @@ export interface NoticeAlert {
  * session. */
 export interface StartFailedAlert {
 	kind: "startFailed";
-	title: string;
-	/** Why, in the creation store's words. */
-	reason: string;
+	/** The hub it was started on, whichever hub is selected when it lands. */
+	hubId: string;
+	hubName: string;
+	/** The start reached the hub, so the session may exist. */
+	uncertain: boolean;
 }
 
 export type Alert = SessionAlert | NoticeAlert | StartFailedAlert;
@@ -83,7 +85,7 @@ export type BannerTarget =
 	| { kind: "session"; ref: string; title: string }
 	| { kind: "needsYou" }
 	| { kind: "notice"; key: string }
-	| { kind: "newSession" };
+	| { kind: "newSession"; hubId: string; hubName: string };
 
 export type Haptic = "warning" | "light";
 
@@ -264,7 +266,7 @@ export class AlertCenter {
 		const [only] = banner.alerts;
 		if (only === undefined || banner.alerts.length > 1) return { kind: "needsYou" };
 		if (only.kind === "notice") return { kind: "notice", key: only.key };
-		if (only.kind === "startFailed") return { kind: "newSession" };
+		if (only.kind === "startFailed") return { kind: "newSession", hubId: only.hubId, hubName: only.hubName };
 		return { kind: "session", ref: only.ref, title: only.title };
 	}
 

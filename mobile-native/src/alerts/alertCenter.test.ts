@@ -612,18 +612,14 @@ it("tells subscribers when something changes", () => {
 });
 
 describe("a New session start that failed after its sheet closed (#3104)", () => {
-	const failed: Alert = {
-		kind: "startFailed",
-		title: "Couldn't start the new session",
-		reason: "Couldn't check the selected plugins, so no session was started. Your selection is kept.",
-	};
+	const failed: Alert = { kind: "startFailed", hubId: "hub-a", hubName: "magic-kingdom", uncertain: false };
 
 	it("shows, buzzes as a failure, and opens New session on a tap", () => {
 		const { alerts, haptics } = center();
 		alerts.offer(failed);
 		expect(shown(alerts)).toEqual(["startFailed"]);
 		expect(haptics).toEqual(["warning"]);
-		expect(alerts.tap()).toEqual({ kind: "newSession" });
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
 	});
 
 	it("shows whatever the failures setting, since it's about what you just did", () => {

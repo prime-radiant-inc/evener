@@ -17,7 +17,7 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 	const center = useAlertCenter();
 	const { banner } = useAlertSnapshot();
 	const noticeFor = useNoticeFor();
-	const { activeProfile } = useConnection();
+	const { activeProfile, profiles } = useConnection();
 	const frame = useSafeAreaFrame();
 	const insets = useSafeAreaInsets();
 	const top = getDefaultHeaderHeight(frame, false, insets.top) + 4;
@@ -30,10 +30,12 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 		if (target.kind === "session")
 			// Pushed, so Back returns to where you were (spec 6).
 			navigation.dispatch(StackActions.push("Conversation", { hubId, ref: target.ref, title: target.title }));
-		else if (target.kind === "newSession")
-			// The draft waits in the hub's creation store (#3104).
-			navigation.dispatch(StackActions.push("NewSession", { hubId, hubName: activeProfile?.name ?? "" }));
-		else if (target.kind === "needsYou") {
+		else if (target.kind === "newSession") {
+			// The draft waits in that hub's creation store (#3104); a hub removed
+			// since has none.
+			if (profiles.some((profile) => profile.id === target.hubId))
+				navigation.dispatch(StackActions.push("NewSession", { hubId: target.hubId, hubName: target.hubName }));
+		} else if (target.kind === "needsYou") {
 			navigation.dispatch(StackActions.popTo("Sessions"));
 			requestBoardJump("needsYou");
 		} else {

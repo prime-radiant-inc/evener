@@ -51,7 +51,7 @@ interface FormFront {
 const fronts = new WeakMap<NewSessionStore, FormFront>();
 
 export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Form">) {
-	const { store, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
+	const { store, hubId, hubName, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const form = useStore(store);
@@ -121,13 +121,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 			// A form in front shows the store's error itself; else an alert says it.
 			const { error, unconfirmedCreation } = store.getState();
 			if (inFront || (outcome.status === "blocked" && !error)) return;
-			offerAlert({
-				kind: "startFailed",
-				title: unconfirmedCreation ? "Couldn't confirm the new session started" : "Couldn't start the new session",
-				reason: error
-					? error.replace(/\s+/g, " ").trim()
-					: "The connection to the hub changed before it started. Your draft is kept.",
-			});
+			offerAlert({ kind: "startFailed", hubId, hubName, uncertain: unconfirmedCreation });
 			return;
 		}
 		try {
@@ -153,7 +147,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				title: outcome.thread.name || "Conversation",
 			}),
 		);
-	}, [store, memory, imageSelection, offerAlert]);
+	}, [store, hubId, hubName, memory, imageSelection, offerAlert]);
 	const cancel = useCallback(() => {
 		const { prompt, images, submitting } = store.getState();
 		// A draft whose start is on its way can't be discarded: Cancel only closes.
