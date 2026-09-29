@@ -2105,6 +2105,124 @@ func TestRemoteHubSourceCursorlessBeforeBelowWindowKeepsRetainedCursor(t *testin
 	}
 }
 
+// A non-empty before page that is exhausted on its own (nothing below it) still
+// must not discard the retained continuation cursor, and must not advertise a
+// continuation for itself: nothing follows the page. A later continuation from
+// the retained window must still reach the remote.
+func TestRemoteHubSourceCursorlessBeforeNonEmptyExhaustedKeepsRetainedCursor(t *testing.T) {
+	firstCursor := remoteItemCursor(t, 10)
+	belowCursor := remoteItemCursor(t, 7)
+	continuations := 0
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		switch {
+		case remote.Cursor == "" && remote.Before == nil:
+			return scriptedReply{result: itemPageWithKeyedEntries(firstCursor, 10, 11, 12)}
+		case remote.Cursor == "" && remote.Before != nil:
+			// Non-empty but exhausted: the remote reached the thread bottom below
+			// the far boundary.
+			return scriptedReply{result: itemPageWithKeyedEntries("", 1, 2)}
+		case remote.Cursor == firstCursor:
+			continuations++
+			return scriptedReply{result: itemPageWithKeyedEntries(belowCursor, 7, 8, 9)}
+		default:
+			t.Errorf("unexpected remote cursor %q", remote.Cursor)
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+		}
+	})
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", first)
+	}
+
+	far := appwire.ThreadItemPosition{Entry: 5}
+	page, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &far,
+	})
+	if err != nil {
+		t.Fatalf("far non-empty before page: %v", err)
+	}
+	if !page.Exhausted || page.Candidates.OlderCursor != "" {
+		t.Fatalf("far non-empty before page = %+v, want exhausted with no continuation", page)
+	}
+	if !sameItemEntries(page.Candidates.Candidates, 1, 2) {
+		t.Fatalf("far non-empty before page = %v, want [1 2]", itemEntryPositions(page.Candidates.Candidates))
+	}
+
+	cont, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("continuation after a non-empty exhausted far before: %v", err)
+	}
+	if continuations != 1 {
+		t.Fatalf("remote continuations = %d, want the retained cursor to still reach the remote", continuations)
+	}
+	if !sameItemEntries(cont.Candidates.Candidates, 7, 8, 9) {
+		t.Fatalf("continuation = %v, want [7 8 9]", itemEntryPositions(cont.Candidates.Candidates))
+	}
+}
+
+// A page carrying only the inclusive boundary item serves nothing, but if that
+// item was rewritten the retained incarnation must still rotate so cursors that
+// pinned the replaced history fail closed instead of being served from it.
+func TestRemoteHubSourceCursorlessBeforeBoundaryOnlyRewriteInvalidates(t *testing.T) {
+	firstCursor := remoteItemCursor(t, 10)
+	continuations := 0
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		switch {
+		case remote.Cursor == "" && remote.Before != nil:
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{
+				Data: []appwire.Turn{{ID: "turn-1", Items: []appwire.ThreadItem{{
+					Type: "text", ID: "item-12", TranscriptKey: "rewritten-12", Position: &appwire.ThreadItemPosition{Entry: 12},
+				}}}},
+			}}
+		case remote.Cursor == firstCursor:
+			continuations++
+			return scriptedReply{result: itemPageWithKeyedEntries("", 7, 8, 9)}
+		default:
+			return scriptedReply{result: itemPageWithKeyedEntries(firstCursor, 10, 11, 12)}
+		}
+	})
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", first)
+	}
+
+	boundary := appwire.ThreadItemPosition{Entry: 12}
+	_, err = source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &boundary,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || !strings.Contains(wireErr.Message, "stale") {
+		t.Fatalf("boundary-only rewrite: error = %T %v, want a stale cursor", err, err)
+	}
+
+	// The rewrite rotated the incarnation, so the cursor minted against the
+	// replaced history is stale and the remote is never asked to continue it.
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+	}); err == nil {
+		t.Fatal("a cursor minted before the boundary rewrite was still served")
+	}
+	if continuations != 0 {
+		t.Fatalf("remote continuations = %d, want the rewritten cursor to fail closed", continuations)
+	}
+}
+
 // A cursorless before with no retained window still forwards: the remote mints
 // its own cursor and the controller records the page under a fresh identity.
 func TestRemoteHubSourceCursorlessBeforeWithoutRetainedWindow(t *testing.T) {

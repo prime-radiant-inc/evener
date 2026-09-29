@@ -1622,6 +1622,11 @@ func (s *RemoteHubSource) recordRemoteBeforePage(
 	native string,
 	history HistoryIdentity,
 ) (ItemCandidateResult, error) {
+	state, hasState := s.itemPaging.peek(key)
+	compatible := true
+	if hasState {
+		_, compatible = remoteMergeCandidates(state.candidates, page)
+	}
 	if len(page) == 0 {
 		// Nothing precedes the boundary: an empty page, answered exhausted. It
 		// carries no continuation, so the retained state — and the cursor other
@@ -1629,26 +1634,39 @@ func (s *RemoteHubSource) recordRemoteBeforePage(
 		if err := validateRemotePageCursor(native, page); err != nil {
 			return ItemCandidateResult{}, err
 		}
-		identity := s.mintRemoteItemIdentity(key)
-		if state, ok := s.itemPaging.peek(key); ok {
-			identity = state.identity
+		if hasState {
+			return ItemCandidateResult{Identity: state.identity, Exhausted: true, History: history}, nil
 		}
-		return ItemCandidateResult{Identity: identity, Exhausted: true, History: history}, nil
+		return ItemCandidateResult{Identity: s.mintRemoteItemIdentity(key), Exhausted: true, History: history}, nil
 	}
 	older := remoteCandidatesBefore(page, before)
 	if len(older) == 0 {
+		// Only the boundary item came back. Nothing is served, but a contradiction
+		// on that item is still a rewrite under the retained identity: rotate so
+		// cursors that pinned the replaced history fail closed.
+		if hasState && !compatible {
+			s.itemPaging.put(key, remoteItemPagingState{identity: s.mintRemoteItemIdentity(key)})
+		}
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 	}
 	if err := validateRemotePageCursor(native, older); err != nil {
 		return ItemCandidateResult{}, err
 	}
-	if state, ok := s.itemPaging.peek(key); ok {
-		if _, compatible := remoteMergeCandidates(state.candidates, page); compatible {
-			if remoteSpanContaining(state.spans, before) < 0 && native == "" {
-				native = state.native
+	if hasState && compatible {
+		if remoteSpanContaining(state.spans, before) < 0 && native == "" {
+			// The page starts a run of its own and is exhausted on its own; its
+			// emptiness says nothing about the region between it and the retained
+			// window. Keep the retained cursor cached for the window it belongs to,
+			// but answer this page exhausted: nothing continues below it.
+			result, err := s.recordRemoteItemPage(key, state.identity, older, state.native, history, state.head, state.hasHead, &before)
+			if err != nil {
+				return ItemCandidateResult{}, err
 			}
-			return s.recordRemoteItemPage(key, state.identity, older, native, history, state.head, state.hasHead, &before)
+			result.Exhausted = true
+			result.Candidates.OlderCursor = ""
+			return result, nil
 		}
+		return s.recordRemoteItemPage(key, state.identity, older, native, history, state.head, state.hasHead, &before)
 	}
 	identity := s.mintRemoteItemIdentity(key)
 	head, hasHead := remoteItemPageHead(older)
