@@ -124,9 +124,7 @@ export function ProviderSignInSheet({
 			onRequestClose={onClose}
 		>
 			<GroupedPage>
-				{state.phase === "idle" || state.phase === "starting" ? (
-					<Loading label="Starting sign-in" />
-				) : null}
+				{state.phase === "idle" || state.phase === "starting" ? <Loading label="Starting sign-in" /> : null}
 				{device && !waiting ? (
 					// A poll's error or a failed copy or open lands in a footer
 					// right under the explanation.

@@ -502,9 +502,7 @@ function Plugins({
 					</GroupFooter>
 					{listError ? <GroupFooter tone="danger">{listError}</GroupFooter> : null}
 					{!selected && actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
-					{state.plugins === null && state.pluginsLoading ? (
-						<Loading label="Loading installed plugins" />
-					) : null}
+					{state.plugins === null && state.pluginsLoading ? <Loading label="Loading installed plugins" /> : null}
 					{/* The field stays while a filter is set, so it can always be cleared. */}
 					{state.plugins?.length || query !== "" ? (
 						<SearchField label="Filter installed plugins" query={query} onChange={setQuery} />
