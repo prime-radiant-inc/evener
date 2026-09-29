@@ -65,7 +65,9 @@ vi.mock("./HostPicker", () => ({ HostPicker: () => null }));
 vi.mock("./ProjectPicker", () => ({ ProjectPicker: () => null }));
 vi.mock("./BrowseFolders", () => ({ BrowseFolders: () => null }));
 vi.mock("./ModelPicker", () => ({ ModelPicker: () => null }));
-vi.mock("./SessionOptionsPage", () => ({ SessionOptionsPage: () => null }));
+vi.mock("./PluginChecklist", () => ({ PluginChecklist: () => null }));
+vi.mock("./AccessPicker", () => ({ AccessPicker: () => null }));
+vi.mock("./MoreOptions", () => ({ MoreOptions: () => null }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));

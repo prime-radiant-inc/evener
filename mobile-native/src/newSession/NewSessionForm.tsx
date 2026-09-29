@@ -9,7 +9,6 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { useStore } from "zustand";
-import { CreationPlugins } from "../CreationPlugins";
 import { creationImageDraft } from "../creationImageDraft";
 import { destructiveButton } from "../haptics";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
@@ -21,16 +20,26 @@ import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row, RowValue, S
 import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { effortLabel, projectName } from "./launchSetup";
+import type { NewSessionService } from "../../../mobile/src/services/newSession";
+import { accessOf, effortLabel, projectName } from "./launchSetup";
 import { type NewSessionRoutes, useNewSession } from "./newSessionContext";
+import { pluginChoice } from "./sheetPlugins";
 import { hostReach, startBlock } from "./startGate";
+import { useHostRead } from "./useHostRead";
+import { useLaunchDefaults } from "./useLaunchDefaults";
 
 /** The prompt grows to six lines, then scrolls. */
 const PROMPT_LINES = 6;
 const PROMPT_LINE_HEIGHT = 22;
 
+/** The project's current branch, or null outside a repository. */
+const readBranch = (service: NewSessionService, host: string, cwd: string) => service.branch(host, cwd);
+
+/** The launch settings More options sets. */
+const MORE_OPTIONS = ["contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
+
 export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Form">) {
-	const { store, hubId, client, ready, hosts, memory, hostLabel } = useNewSession();
+	const { store, client, ready, hosts, memory, hostLabel, plugins } = useNewSession();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const form = useStore(store);
@@ -44,6 +53,10 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	const hostRows = useOptionalSnapshot(hosts)?.rows ?? null;
 	const reach = hostReach(form.source, hostRows);
 	const model = creationModel(form.models, form.model, form.launchOverrides);
+	const pluginsChosen = pluginChoice(form.launchOverrides, plugins);
+	const branch = useHostRead(form.source, form.cwd, readBranch);
+	const defaults = useLaunchDefaults(form.source, form.cwd);
+	const access = accessOf(form.launchOverrides.sandbox, defaults?.sandbox);
 	const block = startBlock({
 		ready,
 		busy: !form.storageLoaded || form.submitting || form.loadingModels || form.movingHost || imageState.busy,
@@ -51,9 +64,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		host: form.source,
 		hostLabel: hostLabel(form.source),
 		reach,
-		// The plugin checklist's blocking problems join in PR 10; until then
-		// submit's own plugin check refuses them and says why.
-		pluginIssues: [],
+		pluginIssues: pluginsChosen.issues,
 		// submit starts on a chosen model only once the host's list has it.
 		unconfirmedModel: model && form.modelError ? model.displayName || model.model : null,
 	});
@@ -189,6 +200,9 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 					chevron
 					onPress={() => navigation.navigate("Project")}
 				/>
+				{/* Information only: the hub can't start a session on a new branch
+				    (ruling 15), so there is nothing to choose. */}
+				{branch ? <Row key="branch" icon="arrow.triangle.branch" label="Branch" value={branch} /> : null}
 			</Group>
 			{form.hostNote ? <GroupFooter>{form.hostNote}</GroupFooter> : null}
 			<GroupLabel>Agent</GroupLabel>
@@ -214,27 +228,30 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 						/>
 					</View>
 				) : null}
-			</Group>
-			<GroupGap />
-			<Group>
-				{client ? (
-					<View key="plugins" style={{ paddingHorizontal: 16, paddingVertical: 4 }}>
-						<CreationPlugins
-							key={JSON.stringify([hubId, form.source, form.cwd.trim()])}
-							client={client}
-							host={form.source}
-							cwd={form.cwd.trim()}
-							value={form.launchOverrides}
-							onChange={form.setLaunchOverrides}
-							disabled={!ready || !editable}
-						/>
-					</View>
-				) : null}
 				<Row
-					label="Session options"
+					icon="puzzlepiece.extension"
+					label="Plugins"
+					tone={block?.field === "plugins" ? "danger" : "normal"}
+					sub={pluginsChosen.issues.length > 0 ? `${pluginsChosen.issues.length} need attention` : undefined}
+					subTone="danger"
+					value={pluginsChosen.response ? `${pluginsChosen.on.length} of ${pluginsChosen.total}` : "…"}
 					chevron
-					disabled={!form.cwd.trim()}
-					onPress={() => navigation.navigate("SessionOptions")}
+					onPress={() => navigation.navigate("Plugins")}
+				/>
+				<Row
+					icon="lock.shield"
+					label="Access"
+					sub={access.detail || undefined}
+					value={access.label}
+					chevron
+					onPress={() => navigation.navigate("Access")}
+				/>
+				<Row
+					label="More options"
+					sub="Context strategy, subagent depth, turn limit"
+					value={MORE_OPTIONS.some((field) => form.launchOverrides[field] !== undefined) ? "Custom" : undefined}
+					chevron
+					onPress={() => navigation.navigate("MoreOptions")}
 				/>
 			</Group>
 			<GroupFooter>

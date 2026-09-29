@@ -20,14 +20,16 @@ import type { Routes } from "../screens";
 import { sheetStackOptions } from "../sheet/sheetStack";
 import { useColors } from "../ui";
 import { BrowseFolders } from "./BrowseFolders";
+import { AccessPicker } from "./AccessPicker";
 import { HostPicker } from "./HostPicker";
 import { ModelPicker } from "./ModelPicker";
+import { MoreOptions } from "./MoreOptions";
 import { launchMemory } from "./nativeLaunchMemory";
 import { NewSessionForm } from "./NewSessionForm";
 import { type NewSessionContextValue, NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
 import { openForm } from "./openForm";
+import { PluginChecklist } from "./PluginChecklist";
 import { ProjectPicker } from "./ProjectPicker";
-import { SessionOptionsPage } from "./SessionOptionsPage";
 import { useSheetPlugins } from "./sheetPlugins";
 
 const NewSessionStack = createNativeStackNavigator<NewSessionRoutes>();
@@ -77,11 +79,9 @@ export function NewSessionSheet({ route }: NativeStackScreenProps<Routes, "NewSe
 				<NewSessionStack.Screen name="Project" component={ProjectPicker} options={{ title: "Project" }} />
 				<NewSessionStack.Screen name="Browse" component={BrowseFolders} options={{ title: "Browse folders" }} />
 				<NewSessionStack.Screen name="Model" component={ModelPicker} options={{ title: "Model" }} />
-				<NewSessionStack.Screen
-					name="SessionOptions"
-					component={SessionOptionsPage}
-					options={{ title: "Session options" }}
-				/>
+				<NewSessionStack.Screen name="Plugins" component={PluginChecklist} options={{ title: "Plugins" }} />
+				<NewSessionStack.Screen name="Access" component={AccessPicker} options={{ title: "Access" }} />
+				<NewSessionStack.Screen name="MoreOptions" component={MoreOptions} options={{ title: "More options" }} />
 			</NewSessionStack.Navigator>
 		</NewSessionProvider>
 	);

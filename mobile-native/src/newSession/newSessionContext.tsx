@@ -11,14 +11,16 @@ import type { createNewSessionStore } from "../newSession";
 import type { PluginPreviewLoadState } from "../../../cmd/evener-hub/frontend/src/panes/spawn/usePluginPreview";
 import type { LaunchMemory } from "./launchMemory";
 
-/** The sheet's pages. SessionOptions is interim until PR 10. */
+/** The sheet's pages. */
 export type NewSessionRoutes = {
 	Form: undefined;
 	Host: undefined;
 	Project: undefined;
 	Browse: { dir: string };
 	Model: undefined;
-	SessionOptions: undefined;
+	Plugins: undefined;
+	Access: undefined;
+	MoreOptions: undefined;
 };
 
 export type NewSessionStore = ReturnType<typeof createNewSessionStore>;
