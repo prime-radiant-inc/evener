@@ -31,9 +31,9 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { AddMarketplace } from "../MarketplaceBrowser";
 import { PluginsPage } from "./PluginsPage";
 import { PluginsStack } from "./pluginsStackTestUtils";
-import { SearchField } from "../sheet/SearchField";
-import { Group, GroupFooter } from "../sheet/Grouped";
 import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { Group, GroupFooter } from "../sheet/Grouped";
+import { SearchField } from "../sheet/SearchField";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -3393,6 +3393,52 @@ it("says a broken plugin is broken under the actions that fix it, not floating a
 	);
 	expect(actions).toBeGreaterThan(-1);
 	expect(warning).toBeGreaterThan(actions);
+});
+
+it("says a time from a clock ahead of this phone's was just now, not a count of 0 (audit M9)", async () => {
+	const nowSeconds = Math.floor(Date.now() / 1000);
+	const hub = pageHub([entry("demo-plugin", { installedAt: nowSeconds + 3600, lastUpdated: nowSeconds + 3600 })]);
+	const { tree } = await mountPage(hub);
+	const detail = await openDetail(tree, "demo-plugin");
+	expect(detail.findAllByProps({ accessibilityLabel: "Installed, just now" }).length).toBeGreaterThan(0);
+	expect(detail.findAllByProps({ accessibilityLabel: "Updated, just now" }).length).toBeGreaterThan(0);
+});
+
+it("says a time under a second old was just now", async () => {
+	// The clock stands still, so however long the mount takes the time is
+	// half a second old when the detail reads it.
+	vi.useFakeTimers({ toFake: ["Date"] });
+	try {
+		const halfASecondAgo = (Date.now() - 500) / 1000;
+		const hub = pageHub([entry("demo-plugin", { installedAt: halfASecondAgo, lastUpdated: halfASecondAgo })]);
+		const { tree } = await mountPage(hub);
+		const detail = await openDetail(tree, "demo-plugin");
+		expect(detail.findAllByProps({ accessibilityLabel: "Installed, just now" }).length).toBeGreaterThan(0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it.each([
+	[
+		"the catalog read fails",
+		() => {
+			throw new Error("catalog unavailable");
+		},
+	],
+	[
+		"the catalog doesn't list the plugin",
+		() => ({ name: "acme", plugins: [{ name: "other", description: "Another" }] }),
+	],
+])("leaves out About when %s, and shows the rest", async (_name, browse) => {
+	const hub = pageHub([entry("tool", { marketplace: "acme" })]);
+	hub.on("evener/marketplace/browse", browse);
+	const { tree } = await mountPage(hub);
+	const detail = await openDetail(tree, "tool");
+	await act(async () => {});
+	expect(detail.findAll((node) => node.props.label === "About")).toHaveLength(0);
+	expect(detail.findAllByProps({ label: "Version" }).length).toBeGreaterThan(0);
+	expect(detail.findAllByProps({ label: "Upgrade" }).length).toBeGreaterThan(0);
 });
 
 it("points an empty plugin list at Browse when the hub has marketplaces, and at adding one when it has none (audit L6)", async () => {

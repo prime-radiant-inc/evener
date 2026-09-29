@@ -1,10 +1,11 @@
-import { AccessibilityInfo, Platform, type TextInput, View } from "react-native";
+import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
 import { createRef } from "react";
-import { act } from "react-test-renderer";
+import { act, type ReactTestInstance } from "react-test-renderer";
 import {
+	Button,
 	FormError,
 	Group,
 	GroupedPage,
@@ -537,5 +538,42 @@ describe("a text field row", () => {
 		).root.findByType("TextInput" as never);
 		expect(input.props.multiline).toBe(true);
 		expect(input.props.editable).toBe(false);
+	});
+});
+
+describe("Button", () => {
+	const pressable = (tree: ReturnType<typeof render>) => tree.root.find((node) => node.type === Pressable);
+	const styleOf = (node: ReactTestInstance, pressed = false) =>
+		Object.assign(
+			{},
+			...[typeof node.props.style === "function" ? node.props.style({ pressed }) : node.props.style].flat(),
+		);
+
+	it("draws the primary call to action filled in the accent, full width and 50pt, as the prototype's .btn.primary.big", () => {
+		const onPress = vi.fn();
+		const tree = render(<Button label="Open sign-in page" primary onPress={onPress} />);
+		const button = pressable(tree);
+		expect(button.props.accessibilityRole).toBe("button");
+		expect(styleOf(button)).toMatchObject({ backgroundColor: light.accentFill, minHeight: 50, alignSelf: "stretch" });
+		// Pressed, it dims as the app's other buttons do.
+		expect(styleOf(button, true).opacity).toBe(0.65);
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
+			color: light.onFill,
+			fontSize: 17,
+			fontWeight: "600",
+		});
+		act(() => button.props.onPress());
+		expect(onPress).toHaveBeenCalledTimes(1);
+	});
+
+	it("draws a plain button as a 36pt capsule on the surface, as the prototype's .btn, touchable over 44pt", () => {
+		const tree = render(<Button label="Copy code" onPress={() => {}} />);
+		const button = pressable(tree);
+		expect(styleOf(button)).toMatchObject({ backgroundColor: light.surface, minHeight: 36 });
+		// The capsule is drawn at 36; its touch reaches the 44pt minimum.
+		expect(36 + button.props.hitSlop.top + button.props.hitSlop.bottom).toBeGreaterThanOrEqual(44);
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({ color: light.inkHi, fontSize: 15 });
 	});
 });

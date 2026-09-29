@@ -486,6 +486,50 @@ export function TextFieldRow({
 	);
 }
 
+/** A button, as the prototype draws one (styles.css .btn): `primary` is the
+ * page's call to action, filled in the accent and full width at 50pt
+ * (.btn.primary.big); the plain one is a 36pt capsule on the surface, beside
+ * what it acts on (.btn), whose touch reaches the 44pt minimum (48 on
+ * Android, as Action's does). Its label follows Dynamic Type, so the height
+ * is a minimum. Most actions are rows; a page's one call to action is this.
+ * It dims when pressed as the app's other buttons do. */
+export function Button({ label, onPress, primary = false }: { label: string; onPress(): void; primary?: boolean }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const reach = ((Platform.OS === "android" ? 48 : 44) - 36) / 2;
+	return (
+		<Pressable
+			accessibilityRole="button"
+			onPress={onPress}
+			hitSlop={primary ? undefined : { top: reach, bottom: reach }}
+			style={({ pressed }) => ({
+				minHeight: primary ? 50 : 36,
+				borderRadius: primary ? 25 : 18,
+				paddingHorizontal: primary ? 20 : 14,
+				paddingVertical: 6,
+				alignItems: "center",
+				justifyContent: "center",
+				alignSelf: primary ? "stretch" : "auto",
+				backgroundColor: primary ? palette.accentFill : palette.surface,
+				borderWidth: primary ? 0 : 0.5,
+				borderColor: palette.edgeStrong,
+				opacity: pressed ? 0.65 : 1,
+			})}
+		>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{
+					color: primary ? palette.onFill : palette.inkHi,
+					fontWeight: "600",
+					...scaledType(primary ? uiType.listRow : uiType.subheadline, scale),
+				}}
+			>
+				{label}
+			</Text>
+		</Pressable>
+	);
+}
+
 /** What went wrong with a form, at its top in danger ink. The Save that
  * caused it sits up in the header, so each new message is spoken: iOS has no
  * live region, so it's announced there; Android reads the polite live region
