@@ -1,0 +1,113 @@
+#!/bin/sh
+# pre-commit — format the staged TypeScript with the Biome that owns each tree,
+# and re-stage the result, so formatting never reaches review as a finding.
+#
+# Install with `make hooks`. Each tree is formatted by its own pinned Biome and
+# config, run from that tree's directory (never from the repo root, where
+# `npx biome` resolves an unrelated package and checks nothing):
+#   mobile-native/src, mobile/src              -> mobile-native's Biome
+#   cmd/evener-hub/frontend/src,
+#   appwire-client/typescript                  -> the frontend's Biome
+#
+# Only staged files are touched. A file with unstaged edits on top of its staged
+# version is refused, because re-staging the formatted file would sweep those
+# edits into the commit. A tree whose Biome is not installed fails the commit
+# with the command that installs it; it is never skipped.
+#
+# After formatting, this runs the repo's own .git/hooks/pre-commit if there is
+# one, since core.hooksPath (set by `make hooks`) replaces that directory.
+set -eu
+
+case "${1:-}" in
+-h | --help)
+	echo "usage: pre-commit   (run by git; install with 'make hooks'; see the header of $0)"
+	exit 0
+	;;
+esac
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+# Names are matched as literal paths, and unquoted (a quoted non-ASCII name
+# would never match a tree prefix and be skipped without a word). Both settings
+# are per-call flags so they do not leak into the chained hook.
+git() { command git --literal-pathspecs -c core.quotePath=false "$@"; }
+
+# Git still C-quotes a name holding a backslash, quote, tab, or newline, and the
+# name lists here are newline-delimited, so such a name cannot be routed. Refuse
+# it rather than let it reach the commit unformatted.
+quoted=$(git diff --cached --name-only --diff-filter=ACMR | grep '^"' || true)
+if [ -n "$quoted" ]; then
+	echo "pre-commit: staged names with a backslash, quote, tab, or newline are not supported:" >&2
+	printf '%s\n' "$quoted" | sed 's/^/  /' >&2
+	echo "  Fix: rename them." >&2
+	exit 1
+fi
+
+# formattable lists the staged added/copied/modified/renamed files under
+# $1 (an extended-regex path prefix) that Biome formats, one per line.
+formattable() {
+	git diff --cached --name-only --diff-filter=ACMR |
+		grep -E "^$1.*\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc)$" || true
+}
+
+# format_tree runs the Biome installed in $1 over the staged files in $2 (a
+# newline-separated list), from inside $1. $3 is the Biome subcommand (with
+# flags) that rewrites files in place.
+format_tree() {
+	tree=$1 files=$2 subcommand=$3
+	[ -n "$files" ] || return 0
+
+	biome="$root/$tree/node_modules/.bin/biome"
+	if [ ! -x "$biome" ]; then
+		echo "pre-commit: no Biome installed in $tree, so staged TypeScript cannot be formatted." >&2
+		if [ -L "$root/$tree/node_modules" ]; then
+			echo "  $tree/node_modules is a symlink to a shared install that lacks Biome; never npm ci through it." >&2
+			echo "  Fix: rm $tree/node_modules && (cd $tree && npm ci)" >&2
+		else
+			echo "  Fix: (cd $tree && npm ci)" >&2
+		fi
+		return 1
+	fi
+
+	partial=$(printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 git --literal-pathspecs -c core.quotePath=false diff --name-only --)
+	if [ -n "$partial" ]; then
+		echo "pre-commit: these files have unstaged edits on top of what is staged; formatting would stage the edits too:" >&2
+		printf '%s\n' "$partial" | sed 's/^/  /' >&2
+		echo "  Fix: stage the whole file (git add), or stash the unstaged part, then commit again." >&2
+		return 1
+	fi
+
+	# Absolute paths, NUL-separated, so names with spaces survive and the
+	# tree's own Biome config still governs (it is found from the cwd).
+	(
+		cd "$root/$tree"
+		printf '%s\n' "$files" | while IFS= read -r file; do printf '%s\0' "$root/$file"; done |
+			xargs -0 "$biome" $subcommand --no-errors-on-unmatched --colors=off
+	) || {
+		echo "pre-commit: Biome failed in $tree (output above); the commit is aborted." >&2
+		return 1
+	}
+	printf '%s\n' "$files" | tr '\n' '\0' | git add --pathspec-from-file=- --pathspec-file-nul
+}
+
+# During a merge the index differs from HEAD by everything the other side
+# brought in, not just the conflict resolution; formatting that would rewrite
+# files this commit never edited.
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+	echo "pre-commit: merge in progress; not formatting (run 'npm run format' in the tree if needed)." >&2
+else
+	native_files=$(formattable '(mobile-native|mobile)/src/')
+	web_files=$(formattable '(cmd/evener-hub/frontend/src|appwire-client/typescript)/')
+
+	failed=0
+	format_tree mobile-native "$native_files" "format --write" || failed=1
+	format_tree cmd/evener-hub/frontend "$web_files" "check --write --linter-enabled=false" || failed=1
+	[ "$failed" -eq 0 ] || exit 1
+fi
+
+# A copy or symlink of this very hook in .git/hooks would re-exec forever.
+existing="$(git rev-parse --git-common-dir)/hooks/pre-commit"
+if [ -x "$existing" ] && [ ! "$existing" -ef "$0" ]; then
+	exec "$existing" "$@"
+fi

@@ -1,101 +1,25 @@
-import { expect, it, vi } from "vitest";
-import type {
-	AnyNotification,
-	AuthStatusResponse,
-	NavigationInvalidationTarget,
-	NavigationReadParams,
-	NavigationReadResponse,
-	PluginEntry,
-} from "@evener/appwire-client";
-import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { describe, expect, it, vi } from "vitest";
+import type { PluginEntry } from "@evener/appwire-client";
+import { manifest } from "@evener/appwire-client/testing/navigation";
 import { type BoardSnapshot, createBoardController } from "./boardData";
+import {
+	answer,
+	answerAuth,
+	authUpdated,
+	boundary,
+	expired,
+	fail,
+	type Hub,
+	invalidate,
+	next,
+	readerOf,
+	requestsFor,
+	response,
+	session,
+	sessions,
+	tick,
+} from "./navigationHubTestUtils";
 
-function boundary() {
-	const requests: Array<{
-		method: string;
-		params: NavigationReadParams;
-		resolve: (value: NavigationReadResponse) => void;
-		reject: (error: Error) => void;
-		answered: boolean;
-	}> = [];
-	const listeners = new Set<(event: AnyNotification) => void>();
-	const client: ConversationClientLike = {
-		request: (method, params) =>
-			new Promise((resolve, reject) => {
-				requests.push({
-					method,
-					params: params as NavigationReadParams,
-					resolve,
-					reject,
-					answered: false,
-				});
-			}),
-		onNotification: (listener) => {
-			listeners.add(listener);
-			return () => listeners.delete(listener);
-		},
-	};
-	return { client, requests, listeners };
-}
-type Hub = ReturnType<typeof boundary>;
-function response(params: NavigationReadParams, data: unknown, revision = 1) {
-	return wireV2(
-		{
-			...params,
-			representationVersion: 2,
-			offset: params.offset ?? 0,
-			limit: params.limit ?? 50,
-		},
-		data,
-		`etag-${params.offset ?? 0}-${revision}`,
-		revision,
-		"generation-test",
-	);
-}
-const session = (ref: string) => ({
-	ref,
-	host_id: "local",
-	session_id: ref,
-	title: ref,
-	project: "p",
-	state: "idle",
-	kind: "session",
-	live: true,
-	children: [],
-});
-const sessions = (prefix: string, count: number, from = 0) =>
-	Array.from({ length: count }, (_, index) => session(`${prefix}${from + index}`));
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-/** Each category's reads are a reader of their own, named by its id. */
-type Reader = "live" | "needs_you" | "pin_catalog" | "manifest" | `pin_section:${string}` | "auth" | "plugins";
-const readerOf = ({ method, params }: Hub["requests"][number]): Reader =>
-	method === "evener/auth/list"
-		? "auth"
-		: method === "evener/plugin/list"
-			? "plugins"
-			: params.resource === "section"
-				? (params.section as Reader)
-				: params.resource === "pin_section"
-					? `pin_section:${params.sectionId}`
-					: (params.resource as Reader);
-/** The oldest unanswered request for one reader. */
-function next(hub: Hub, reader: Reader) {
-	const request = hub.requests.find((candidate) => !candidate.answered && readerOf(candidate) === reader);
-	if (!request) throw new Error(`no pending ${reader} request`);
-	request.answered = true;
-	return request;
-}
-function answer(hub: Hub, reader: Reader, data: unknown, revision = 1) {
-	const request = next(hub, reader);
-	request.resolve(response(request.params, data, revision));
-	return request;
-}
-function fail(hub: Hub, reader: Reader, message: string) {
-	next(hub, reader).reject(new Error(message));
-}
-const requestsFor = (hub: Hub, reader: Reader) => hub.requests.filter((request) => readerOf(request) === reader);
 const sources = [{ id: "laptop", label: "Laptop", kind: "local", online: true }];
 async function answerAll(hub: Hub, { live = sessions("live-", 2), needsYou = [session("ask-0")] } = {}) {
 	answer(hub, "live", { sessions: live, remaining: 0 });
@@ -109,18 +33,6 @@ async function answerAll(hub: Hub, { live = sessions("live-", 2), needsYou = [se
 	// The catalog's one category is read once the catalog lands.
 	answer(hub, "pin_section:pins-1", { sessions: [session("pinned-0")], remaining: 0 });
 	await tick();
-}
-function invalidate(
-	hub: Hub,
-	sequence: number,
-	targets: NavigationInvalidationTarget[],
-	generationId = "generation-test",
-) {
-	for (const listener of hub.listeners)
-		listener({
-			method: "evener/navigation/invalidated",
-			params: { generationId, sequence, targets },
-		});
 }
 const refs = (page: { rows: Array<{ ref: string }> }) => page.rows.map((row) => row.ref);
 
@@ -721,14 +633,6 @@ it("dispose leaves no listeners", async () => {
 	expect(notified).toBe(after);
 });
 
-const expired = (provider: string): AuthStatusResponse => ({
-	provider,
-	supported: true,
-	signedIn: false,
-	activeSource: "oauth",
-	hasStoredOAuth: true,
-	needsLogin: true,
-});
 const brokenPlugin = (plugin: string): PluginEntry => ({
 	plugin,
 	marketplace: "evener",
@@ -740,15 +644,8 @@ const brokenPlugin = (plugin: string): PluginEntry => ({
 	installedAt: 0,
 	lastUpdated: 0,
 });
-function answerAuth(hub: Hub, providers: AuthStatusResponse[]) {
-	next(hub, "auth").resolve({ providers } as never);
-}
 function answerPlugins(hub: Hub, plugins: PluginEntry[]) {
 	next(hub, "plugins").resolve({ plugins } as never);
-}
-function authUpdated(hub: Hub, provider?: string) {
-	for (const listener of hub.listeners)
-		listener({ method: "evener/auth/updated", params: provider ? { provider } : {} } as AnyNotification);
 }
 const FIVE_MINUTES = 5 * 60_000;
 /** Runs a test on fake timers, the plugin poll's clock. */
@@ -1188,4 +1085,39 @@ it("dispose stops the category readers too", async () => {
 	invalidate(hub, 1, [{ kind: "pin_section", sectionId: "pins-1", revision: 2 }]);
 	await tick();
 	expect(requestsFor(hub, "pin_section:pins-1")).toHaveLength(1);
+});
+
+describe("the attention scope, the in-app alerts' own reads (phase 6)", () => {
+	it("reads Live, Needs you, the manifest and the sign-ins, and never the pins, a category or the plugins", async () =>
+		withFakeTimers(async () => {
+			const hub = boundary();
+			const board = createBoardController({ scope: "attention" });
+			board.setClient(hub.client);
+			answer(hub, "live", { sessions: sessions("live-", 2), remaining: 0 });
+			answer(hub, "needs_you", { sessions: [session("ask-0")], remaining: 0 });
+			answer(hub, "manifest", manifest({ sources }));
+			answerAuth(hub, []);
+			await flush();
+			vi.advanceTimersByTime(FIVE_MINUTES * 2);
+			board.pause();
+			board.resume();
+			await flush();
+			expect(new Set(hub.requests.map(readerOf))).toEqual(new Set(["live", "needs_you", "manifest", "auth"]));
+			expect(board.getSnapshot()).toMatchObject({ loaded: true, pins: { rows: [] }, pinSections: {} });
+			expect(refs(board.getSnapshot().needsYou)).toEqual(["ask-0"]);
+		}));
+
+	it("says when its own first sign-in read has landed, even when it finds the same list", async () => {
+		const hub = boundary();
+		const board = createBoardController({ scope: "attention" });
+		expect(board.getSnapshot().authRead).toBe(false);
+		board.setClient(hub.client);
+		fail(hub, "auth", "boom");
+		await tick();
+		expect(board.getSnapshot().authRead).toBe(false);
+		authUpdated(hub);
+		answerAuth(hub, []);
+		await tick();
+		expect(board.getSnapshot()).toMatchObject({ authRead: true, auth: [] });
+	});
 });
