@@ -39,7 +39,7 @@ import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retained
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue, TextFieldRow } from "../sheet/Grouped";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
-import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 import { useAuthStatuses } from "./useAuthStatuses";
 
@@ -88,7 +88,7 @@ function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRout
 	// useCredentialStore already survives a flap on its own (connectionChanged
 	// rebinds it - credentialStore.ts), so unlike Plugins/HubSettings this
 	// page reads no retained client: <Providers> below takes only `store`,
-	// never `client` directly, and Connecting below waits on the display alone.
+	// never `client` directly, and FirstLoad below waits on the display alone.
 	const store = useCredentialStore();
 	// The sign-in statuses read under the same authorization the sign-in flow
 	// gets below, so a re-key window never reads the previous hub's.
@@ -134,7 +134,7 @@ function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRout
 		return (
 			<GroupedPage>
 				<SheetStatus />
-				<Connecting hubName={activeProfile.name} />
+				<FirstLoad hubName={activeProfile.name} />
 			</GroupedPage>
 		);
 	const { focus, signIn: signInFocus } = route.params;
@@ -432,7 +432,7 @@ function Providers({
 		<>
 			<GroupedPage>
 				<SheetStatus />
-				{core.listingEstablished ? null : <Connecting hubName={hubName} />}
+				{core.listingEstablished ? null : <FirstLoad hubName={hubName} />}
 				{loadError ? <GroupFooter tone="danger">{loadError}</GroupFooter> : null}
 				{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
 				{core.listingEstablished ? (

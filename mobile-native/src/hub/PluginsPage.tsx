@@ -40,7 +40,7 @@ import {
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, SearchField, Segmented, SwitchRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
-import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 
 type Segment = "installed" | "marketplaces" | "browse";
@@ -272,7 +272,7 @@ function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes
 		return (
 			<GroupedPage>
 				<SheetStatus />
-				<Connecting hubName={activeProfile.name} />
+				<FirstLoad hubName={activeProfile.name} />
 			</GroupedPage>
 		);
 	return (

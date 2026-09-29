@@ -7,7 +7,7 @@ import { type ConnectionState, createHubOverviewStore, friendlyErrorMessage } fr
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
-import { Connecting, SheetStatus } from "./sheet/SheetStatus";
+import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -31,7 +31,7 @@ function HubSettingsScreenBody({ route }: Props) {
 		return (
 			<>
 				<SheetStatus />
-				<Connecting hubName={activeProfile.name} />
+				<FirstLoad hubName={activeProfile.name} />
 			</>
 		);
 	return (
