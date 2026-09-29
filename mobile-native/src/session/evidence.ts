@@ -11,6 +11,7 @@ import {
 	lineCount,
 	parseArgs,
 	prettyJSON,
+	type ShellOutput,
 	shellOutput,
 	skillContext,
 	str,
@@ -26,6 +27,9 @@ export type Evidence =
 	| { kind: "wrote"; path: string }
 	// A command that exited nonzero with no error of its own.
 	| { kind: "exit"; code: number }
+	// What the shell tool's footer says besides the exit: a timed-out wait, a
+	// command still running, an output only partly here.
+	| { kind: "note"; text: string }
 	// A fetched page: the model's answer (or the page's content), from where.
 	| { kind: "page"; text: string; url?: string; bytes?: number }
 	// Markdown with a heading: the instructions a skill loaded.
@@ -52,9 +56,23 @@ function rawOutput(text: string): Evidence[] {
 }
 
 // A skill's markdown is its author's, and the phone's markdown view loads
-// images from their URLs, so each image reads as its alt text instead.
+// images from their URLs, so each image, inline (![alt](url)), by reference
+// (![alt][ref]) or shortcut (![alt]), reads as its alt text instead.
 function withoutImages(markdown: string): string {
-	return markdown.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1");
+	return markdown.replace(/!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])?/g, "$1");
+}
+
+// What the shell tool's footer says besides the exit.
+function shellNotes(run: ShellOutput): Evidence[] {
+	const notes: Evidence[] = [];
+	if (run.windowed) notes.push({ kind: "note", text: "A long output: only its start and end are here" });
+	if (run.stillRunning)
+		notes.push({
+			kind: "note",
+			text: run.timedOut ? "Still running in the background after its wait timed out" : "Still running in the background",
+		});
+	else if (run.timedOut) notes.push({ kind: "note", text: "Timed out" });
+	return notes;
 }
 
 // What a tool's output shows, by its family: a command without its exit
@@ -71,6 +89,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			// shell tool's sentinel for a command stopped by a signal or by
 			// evener's runtime limit, not an exit code.
 			if (code !== undefined && code !== 0 && code !== -1 && !detail.error) evidence.push({ kind: "exit", code });
+			evidence.push(...shellNotes(run));
 			return evidence;
 		}
 		case "fetch": {

@@ -34,7 +34,14 @@ const TRAILING_REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>\s*$/;
 // line (runBufferedShell), after an "[ERROR: …]" block when it timed out or
 // was cancelled.
 const BUFFERED_TRAILER_RE = /^exit_code=(-?\d+) duration_ms=\d+ timed_out=(true|false)$/;
-const TRAILING_ERROR_RE = /\n?\[ERROR: [\s\S]*\]\s*$/;
+
+// The body without the final "[ERROR: …]" block the buffered environment
+// wrote, when it ends in one; an earlier block the command printed stays.
+function withoutTrailingError(body: string): string {
+  const start = body.lastIndexOf("[ERROR: ");
+  if (start === -1 || !body.trimEnd().endsWith("]")) return body;
+  return body.slice(0, start);
+}
 
 /** A command's output, read from the tail the shell tool ends it with. */
 export interface ShellOutput {
@@ -45,6 +52,8 @@ export interface ShellOutput {
   timedOut?: boolean;
   /** The command kept running as a background job. */
   stillRunning?: boolean;
+  /** The output was long, so only its start and end are here. */
+  windowed?: boolean;
 }
 
 // Where the tail starts: the output without an intervention the registry
@@ -72,9 +81,14 @@ function readBracketed(text: string): ShellOutput | undefined {
   for (const segment of segments) {
     const exit = /^exit (-?\d+)$/.exec(segment);
     if (exit) result.exitCode = Number(exit[1]);
-    if (/^(?:timed out|the foreground wait ended|stopped by evener's runtime limit)/.test(segment))
+    if (
+      /^(?:timed out|the foreground wait ended|stopped by evener's runtime limit|no output before the limit)/.test(
+        segment,
+      )
+    )
       result.timedOut = true;
     if (/^(?:still running as|running in background as)/.test(segment)) result.stillRunning = true;
+    if (segment.startsWith("output windowed")) result.windowed = true;
   }
   return result;
 }
@@ -84,7 +98,7 @@ function readBuffered(text: string): ShellOutput | undefined {
   const cut = trimmed.lastIndexOf("\n");
   const trailer = BUFFERED_TRAILER_RE.exec(trimmed.slice(cut + 1));
   if (!trailer) return undefined;
-  const body = cut === -1 ? "" : trimmed.slice(0, cut).replace(TRAILING_ERROR_RE, "");
+  const body = cut === -1 ? "" : withoutTrailingError(trimmed.slice(0, cut));
   return {
     text: withoutTrailingNewlines(body),
     exitCode: Number(trailer[1]),
@@ -127,7 +141,10 @@ const SKILL_CONTEXT_RE = /^\s*<skill-context>\s*([\s\S]*?)\s*<\/skill-context>\s
  * returns: its name, description and instructions (markdown). Undefined for
  * any other output. */
 export function skillContext(output: string): { name: string; description?: string; instructions: string } | undefined {
-  const body = SKILL_CONTEXT_RE.exec(output)?.[1];
+  // An intervention the registry appended after a blank line is not the skill.
+  const body = footerSearches(output)
+    .map((search) => SKILL_CONTEXT_RE.exec(search)?.[1])
+    .find((found) => found !== undefined);
   if (body === undefined) return undefined;
   const record = parseJSONObject(body);
   if (record === undefined) return undefined;

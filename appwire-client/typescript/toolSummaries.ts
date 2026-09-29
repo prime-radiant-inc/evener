@@ -100,13 +100,16 @@ function listTarget(args: Record<string, unknown>): string | undefined {
 // returned; an output without a count counts its lines. The footer is always
 // the last line, so only the last line is read: an entry named like a count
 // ("2 entries.md") never reads as one.
-const LIST_DIR_COUNT_RE = /^(\d+)(?: of (\d+))? entries/;
+const LIST_DIR_COUNT_RE = /^(\d+)(?: of (\d+))? entries(?: \(|$)/;
 
 function listDirCount(output: string | undefined): string | undefined {
   if (!output) return undefined;
   const trimmed = output.trimEnd();
   const stated = LIST_DIR_COUNT_RE.exec(trimmed.slice(trimmed.lastIndexOf("\n") + 1))?.[1];
-  if (stated === undefined) return outputCount(output, "entries");
+  if (stated === undefined) {
+    const n = lineCount(output);
+    return `${n} ${n === 1 ? "entry" : "entries"}`;
+  }
   return `${stated} ${stated === "1" ? "entry" : "entries"}`;
 }
 

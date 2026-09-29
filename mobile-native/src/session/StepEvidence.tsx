@@ -143,6 +143,15 @@ export function EvidenceView({ evidence, title }: { evidence: Evidence; title: s
 					{`Exited ${evidence.code}`}
 				</Text>
 			);
+		case "note":
+			return (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+				>
+					{evidence.text}
+				</Text>
+			);
 		case "page":
 			return (
 				<View style={{ gap: 4 }}>

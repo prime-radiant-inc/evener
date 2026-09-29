@@ -136,6 +136,11 @@ describe("each tool's evidence, drawn", () => {
 	const drawn = (evidence: Parameters<typeof StepEvidence>[0]["evidence"]) =>
 		render(<StepEvidence step={step("tool", {})} evidence={evidence} hubId="hub-1" />);
 
+	it("says what the shell tool's footer notes, quietly", () => {
+		const tree = drawn([{ kind: "note", text: "Timed out" }]);
+		expect(byText(tree.root, "Timed out")?.props.style).toMatchObject({ color: INK_LOW });
+	});
+
 	it("says a nonzero exit in danger ink", () => {
 		const tree = drawn([{ kind: "exit", code: 1 }]);
 		expect(byText(tree.root, "Exited 1")?.props.style).toMatchObject({ color: DANGER_INK });

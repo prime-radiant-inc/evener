@@ -90,6 +90,18 @@ describe("each tool's evidence, as the tools print it", () => {
 		expect(real("call_shell")).toEqual([{ kind: "output", text: "package agent", lines: 1 }]);
 	});
 
+	it("says a windowed output shows only its start and end", () => {
+		const evidence = real("call_shell_windowed");
+		expect(evidence.at(-1)).toEqual({ kind: "note", text: "A long output: only its start and end are here" });
+	});
+
+	it("says a command whose wait timed out is still running in the background", () => {
+		expect(real("call_shell_timeout")).toEqual([
+			{ kind: "output", text: "started", lines: 1 },
+			{ kind: "note", text: "Still running in the background after its wait timed out" },
+		]);
+	});
+
 	it("says a command exited nonzero, when that is all it printed", () => {
 		expect(real("call_shell_failed")).toEqual([{ kind: "exit", code: 1 }]);
 	});
@@ -120,10 +132,15 @@ describe("each tool's evidence, as the tools print it", () => {
 	it("shows a skill's images as their alt text, never loading them", () => {
 		const loaded = `<skill-context>\n${JSON.stringify({
 			name: "diagrams",
-			instructions: "# Diagrams\n\n![the flow](https://example.com/flow.png)\n\nThen ![](https://t.test/x.gif) done.",
+			instructions:
+				"# Diagrams\n\n![the flow](https://example.com/flow.png)\n\nThen ![](https://t.test/x.gif) done.\n\n![by ref][logo] and ![short]\n\n[logo]: https://t.test/logo.png",
 		})}\n</skill-context>`;
 		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
-			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\nthe flow\n\nThen  done." },
+			{
+				kind: "markdown",
+				title: "diagrams",
+				markdown: "# Diagrams\n\nthe flow\n\nThen  done.\n\nby ref and short\n\n[logo]: https://t.test/logo.png",
+			},
 		]);
 	});
 
@@ -136,9 +153,9 @@ describe("each tool's evidence, as the tools print it", () => {
 	});
 
 	it("shows arguments that aren't a JSON object as they were sent", () => {
-		expect(
-			stepEvidence({ label: "github__search", detail: { arguments: "plain words", output: "" } }),
-		).toEqual([{ kind: "output", text: "plain words", lines: 1 }]);
+		expect(stepEvidence({ label: "github__search", detail: { arguments: "plain words", output: "" } })).toEqual([
+			{ kind: "output", text: "plain words", lines: 1 },
+		]);
 	});
 
 	it("pretty-prints an MCP tool's arguments and result", () => {

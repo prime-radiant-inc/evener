@@ -532,7 +532,7 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
-export { prettyJSON, shellOutput, skillContext, webFetchResult } from "./toolEvidence";
+export { prettyJSON, type ShellOutput, shellOutput, skillContext, webFetchResult } from "./toolEvidence";
 export {
   applyPatchSummary,
   BINARY_PAYLOAD_HEADER,

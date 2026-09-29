@@ -38,6 +38,27 @@ test("reads a footer after CRLF line endings, and mixed stdout and stderr", () =
   });
 });
 
+test("strips only the final [ERROR: …] block, never one the command printed", () => {
+  expect(
+    shellOutput(
+      "x\n[ERROR: mine]\nmiddle\n[ERROR: Command timed out after 300ms. Partial output is shown above.]\nexit_code=-1 duration_ms=1 timed_out=true\n",
+    ),
+  ).toEqual({ text: "x\n[ERROR: mine]\nmiddle", exitCode: -1, timedOut: true });
+});
+
+test("reads a footer's windowed output and a runtime-limit stop as what they are", () => {
+  expect(shellOutput(toolWireStep("call_shell_windowed").output ?? "").windowed).toBe(true);
+  expect(
+    shellOutput(
+      "[stopped by evener's runtime limit (max_runtime_ms) — not a command failure · no output before the limit — it may still have been working, e.g. compiling]",
+    ),
+  ).toEqual({ text: "", timedOut: true });
+  expect(shellOutput("[no output before the limit — it may still have been working]")).toEqual({
+    text: "",
+    timedOut: true,
+  });
+});
+
 test("reads the buffered environment's trailer and its timeout error", () => {
   expect(shellOutput("built\nexit_code=2 duration_ms=40 timed_out=false\n")).toEqual({ text: "built", exitCode: 2 });
   expect(
@@ -71,6 +92,9 @@ test("reads the skill an activation loaded", () => {
     instructions: "# Systematic debugging\n\nFind the root cause first.\n",
   });
   expect(skillContext("# Just markdown")).toBeUndefined();
+  // An intervention the registry appended after a blank line is not the skill.
+  const nudged = `${toolWireStep("call_use_skill").output ?? ""}\n\nYou have now made this same call and received the identical result 2 times in a row.`;
+  expect(skillContext(nudged)?.name).toBe("systematic-debugging");
 });
 
 test("pretty-prints JSON, and nothing else", () => {

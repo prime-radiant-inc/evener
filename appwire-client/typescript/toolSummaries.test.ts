@@ -153,6 +153,10 @@ test("says the count list_dir states, one entry or many", () => {
   expect(listed("0 entries.md\t9\n\n1 of 4 entries (offset 3)")).toBe("Listed a · 1 entry");
   // A trailing newline after the footer still leaves it the last line.
   expect(listed("b.go\t3\nc.go\t4\n\n2 entries\n")).toBe("Listed a · 2 entries");
+  // An entry named like a count is an entry even as the last line of an
+  // output without the footer, which counts its lines.
+  expect(listed("2 entries.md\t9\n")).toBe("Listed a · 1 entry");
+  expect(listed("b.go\t3\nc.go\t4\n2 entries.md\t9")).toBe("Listed a · 3 entries");
   // An output without the count counts its lines.
   expect(listed("b.go\nc.go\n")).toBe("Listed a · 2 entries");
 });
