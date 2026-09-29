@@ -9,6 +9,11 @@ import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "
 import { fonts, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
+/** Above a section label. */
+const SECTION_TOP = 20;
+/** A row's leading glyph slot. */
+const GLYPH = 22;
+
 /** The scrolling page a grouped sheet page sits in. */
 export function GroupedPage({ children }: { children: ReactNode }) {
 	const { palette } = useColors();
@@ -42,7 +47,7 @@ export function GroupLabel({ children, machine = false }: { children: string; ma
 					fontSize,
 					lineHeight,
 					paddingHorizontal: space.labelInset,
-					paddingTop: space.sectionTop,
+					paddingTop: SECTION_TOP,
 					paddingBottom: 6,
 				},
 				machine ? { fontFamily: fonts.mono } : sectionCase,
@@ -54,8 +59,11 @@ export function GroupLabel({ children, machine = false }: { children: string; ma
 }
 
 /** Where a row's text starts when the row carries a symbol. */
-const ICON_ROW_TEXT = space.rowInset + space.glyph + space.rowGap;
+const ICON_ROW_TEXT = space.rowInset + GLYPH + space.rowGap;
 
+/** Reads a child's `icon` prop, so only a Row or SwitchRow placed directly in
+ * the group counts: a row wrapped in another component, or a custom child,
+ * gets the plain 16pt hairline inset even if it draws a symbol. */
 function carriesSymbol(row: ReactNode): boolean {
 	return isValidElement<{ icon?: unknown }>(row) && Boolean(row.props.icon);
 }
@@ -123,7 +131,7 @@ export function GroupGap() {
  * picker row keeps so its label lines up with the checked one. */
 function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
 	return (
-		<View style={{ width: space.glyph, alignItems: "center" }}>
+		<View style={{ width: GLYPH, alignItems: "center" }}>
 			{name ? <SymbolView name={name} tintColor={color} size={17} /> : null}
 		</View>
 	);
@@ -279,10 +287,7 @@ export function SwitchRow({
 	const scale = useTextScale();
 	const text = (
 		<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-			<Text
-				allowFontScaling={allowFontScaling}
-				style={{ color: palette.inkHi, ...scaledType(uiType.listRow, scale) }}
-			>
+			<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkHi, ...scaledType(uiType.listRow, scale) }}>
 				{label}
 			</Text>
 			{sub ? (

@@ -16,6 +16,7 @@ import { type MarketplacesStore, type PluginsStore } from "@evener/appwire-clien
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
+import { space, uiType } from "./design/tokens";
 import { PLUGIN_MUTATION_BUSY, runGatedMutation, type PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
 import {
@@ -373,7 +374,12 @@ export function MarketplaceBrowser({
 									autoCapitalize="none"
 									autoCorrect={false}
 									allowFontScaling={allowFontScaling}
-									style={{ minHeight: 44, paddingHorizontal: 16, fontSize: 17 * scale, color: palette.inkHi }}
+									style={{
+										minHeight: 44,
+										paddingHorizontal: space.rowInset,
+										fontSize: uiType.listRow.fontSize * scale,
+										color: palette.inkHi,
+									}}
 								/>
 							</Group>
 							{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}

@@ -1,3 +1,4 @@
+import { View } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
@@ -13,6 +14,9 @@ const symbols = (tree: ReturnType<typeof render>) =>
 	tree.root.findAll((node) => node.type === ("SymbolView" as never)).map((node) => node.props.name);
 const texts = (tree: ReturnType<typeof render>) => tree.root.findAllByType("Text" as never);
 const merged = (style: unknown) => Object.assign({}, ...[style].flat());
+const isSurface = (node: { type: unknown; props: { style?: unknown } }) =>
+	node.type === "View" && merged(node.props.style).backgroundColor === light.surface;
+const surfaces = (tree: ReturnType<typeof render>) => tree.root.findAll(isSurface);
 
 describe("a row", () => {
 	it("reads as its label, detail and value, and opens on a tap", () => {
@@ -25,6 +29,11 @@ describe("a row", () => {
 		button.props.onPress();
 		expect(onPress).toHaveBeenCalledTimes(1);
 		expect(symbols(tree)).toEqual(["server.rack", "chevron.right"]);
+	});
+
+	it("pads its text 12pt above and below (spec 16.3)", () => {
+		const tree = render(<Row label="Version" value="0.9.412" />);
+		expect(merged(tree.root.findAllByType("View" as never)[0]?.props.style).paddingVertical).toBe(12);
 	});
 
 	it("is one quiet element when it has no action", () => {
@@ -85,31 +94,58 @@ describe("a group", () => {
 		expect(tree.root.findAllByProps({ testID: "hairline" })).toHaveLength(2);
 	});
 
-	it("keeps its distance from what comes before it, and hangs its label right over it", () => {
-		const isSurface = (node: { type: unknown; props: { style?: unknown } }) =>
-			node.type === "View" && merged(node.props.style).backgroundColor === light.surface;
-		const surface = (tree: ReturnType<typeof render>) => tree.root.findAll(isSurface)[0];
-		const plain = render(
+	it("keeps 16pt from whatever comes before it when it has no label", () => {
+		const tree = render(
 			<Group>
 				<Row label="One" />
 			</Group>,
 		);
-		expect(merged(surface(plain)?.props.style).marginTop).toBe(16);
-		const labelled = render(
+		expect(merged(surfaces(tree)[0]?.props.style).marginTop).toBe(16);
+	});
+
+	it("hangs its label right over it, with no gap between them", () => {
+		const tree = render(
 			<Group label="Fleet">
 				<Row label="Hosts" />
 			</Group>,
 		);
-		const header = labelled.root.findByProps({ accessibilityRole: "header" });
+		const header = tree.root.findByProps({ accessibilityRole: "header" });
 		expect(header.props.children).toBe("Fleet");
 		expect(merged(header.props.style)).toMatchObject({ textTransform: "uppercase" });
-		expect(merged(surface(labelled)?.props.style).marginTop).toBe(0);
-		const machine = render(
+		expect(merged(surfaces(tree)[0]?.props.style).marginTop).toBe(0);
+	});
+
+	it("sets a machine label, such as a marketplace, in Menlo as typed", () => {
+		const tree = render(
 			<Group label="superpowers-marketplace" machineLabel>
 				<Row label="superpowers" />
 			</Group>,
 		);
-		expect(merged(machine.root.findByProps({ accessibilityRole: "header" }).props.style).fontFamily).toBe("Menlo");
+		const style = merged(tree.root.findByProps({ accessibilityRole: "header" }).props.style);
+		expect(style.fontFamily).toBe("Menlo");
+		expect(style.textTransform).toBeUndefined();
+	});
+
+	it("never touches the group before it, and a labelled group follows its label", () => {
+		const tree = render(
+			<View>
+				<Group>
+					<Row label="Status" />
+				</Group>
+				<Group>
+					<Row label="Edit" />
+				</Group>
+				<Group label="Models">
+					<Row label="gpt-5.6" />
+				</Group>
+			</View>,
+		);
+		// findAll walks the tree in order, so this is the page from top to bottom.
+		const blocks = tree.root
+			.findAll((node) => node.props.accessibilityRole === "header" || surfaces(tree).includes(node))
+			.map((node) => (node.type === ("Text" as never) ? "label" : "group"));
+		expect(blocks).toEqual(["group", "group", "label", "group"]);
+		expect(surfaces(tree).map((group) => merged(group.props.style).marginTop)).toEqual([16, 16, 0]);
 	});
 
 	it("starts a hairline under the text when both rows beside it carry a symbol", () => {

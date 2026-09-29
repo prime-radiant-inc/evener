@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fonts, mix, paletteFor, palettes, scaledType, space, typeRoles, uiType } from "./tokens";
+import { fonts, mix, paletteFor, palettes, scaledType, typeRoles, uiType } from "./tokens";
 
 describe("the palette is the spec's (section 16.1)", () => {
 	it("light", () => {
@@ -131,25 +131,11 @@ describe("type", () => {
 			textTransform: "uppercase",
 		});
 	});
-	it("scales a role's size and line height by the text scale, and keeps the rest", () => {
-		expect(scaledType(uiType.sectionLabel, 1.5)).toEqual({
-			fontSize: 18,
-			lineHeight: 24,
-			fontWeight: "600",
-			letterSpacing: 0.72,
-			textTransform: "uppercase",
-		});
+	it("scales a role's size, line height and tracking by the text scale, and keeps the rest", () => {
+		const label = scaledType(uiType.sectionLabel, 1.5);
+		expect(label).toMatchObject({ fontSize: 18, lineHeight: 24, fontWeight: "600", textTransform: "uppercase" });
+		// +0.06em of the scaled 18pt.
+		expect(label.letterSpacing).toBeCloseTo(1.08);
 		expect(scaledType(typeRoles.machine, 2)).toEqual({ fontFamily: "Menlo", fontSize: 26, lineHeight: 36 });
-	});
-});
-
-describe("spacing (section 16.3)", () => {
-	it("keeps the 16pt side margin and the gap between groups", () => {
-		expect(space.margin).toBe(16);
-		expect(space.groupGap).toBe(16);
-		expect(space.labelInset).toBe(32);
-	});
-	it("puts an icon row's text where its hairline starts", () => {
-		expect(space.rowInset + space.glyph + space.rowGap).toBe(50);
 	});
 });

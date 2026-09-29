@@ -7,7 +7,7 @@ import { getStringAsync } from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
 import { AppState, Linking, Text, TextInput, type TextInputProps, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
-import { fonts } from "../design/tokens";
+import { fonts, space, uiType } from "../design/tokens";
 import { Group, GroupedPage, GroupFooter, Row } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type PairingTarget, pairingFrom, suggestedHubName } from "./pairing";
@@ -285,7 +285,12 @@ function Field({
 			autoCorrect={false}
 			secureTextEntry={secure}
 			placeholderTextColor={palette.inkLow}
-			style={{ minHeight: 44, paddingHorizontal: 16, color: palette.inkHi, fontSize: 17 * scale }}
+			style={{
+				minHeight: 44,
+				paddingHorizontal: space.rowInset,
+				color: palette.inkHi,
+				fontSize: uiType.listRow.fontSize * scale,
+			}}
 			{...input}
 		/>
 	);
@@ -296,7 +301,14 @@ function MachineRow({ text }: { text: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 16, paddingVertical: 11 }}>
+		<View
+			style={{
+				minHeight: 44,
+				justifyContent: "center",
+				paddingHorizontal: space.rowInset,
+				paddingVertical: space.rowPadding,
+			}}
+		>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ color: palette.inkMid, fontFamily: fonts.mono, fontSize: 15 * scale, lineHeight: 20 * scale }}

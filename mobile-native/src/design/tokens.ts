@@ -233,9 +233,14 @@ export const uiType = {
 } as const;
 
 /** A type role sized for the text scale: a React Native Text with font scaling
- * off multiplies fontSize and lineHeight by the iOS font scale. */
-export function scaledType<Role extends { fontSize: number; lineHeight: number }>(role: Role, scale: number): Role {
-	return { ...role, fontSize: role.fontSize * scale, lineHeight: role.lineHeight * scale };
+ * off multiplies fontSize, lineHeight and letterSpacing by the iOS font scale. */
+export function scaledType<Role extends { fontSize: number; lineHeight: number; letterSpacing?: number }>(
+	role: Role,
+	scale: number,
+): Role {
+	const scaled = { ...role, fontSize: role.fontSize * scale, lineHeight: role.lineHeight * scale };
+	// Tracking is in points but specified in ems (+0.06em), so it grows with the size.
+	return role.letterSpacing === undefined ? scaled : { ...scaled, letterSpacing: role.letterSpacing * scale };
 }
 
 /** Spacing from spec 16.3 (a 4pt base) and the prototype's grouped list. */
@@ -244,16 +249,12 @@ export const space = {
 	margin: 16,
 	/** Between two groups (the prototype's `.group + .group`). */
 	groupGap: 16,
-	/** Above a section label. */
-	sectionTop: 20,
 	/** A section label's and a footer's text: the margin plus a row's inset. */
 	labelInset: 32,
 	/** A row's padding from the group's edge. */
 	rowInset: 16,
-	/** A row's vertical padding: with a 22pt line it makes the 44pt target. */
-	rowPadding: 11,
-	/** A row's leading glyph slot. */
-	glyph: 22,
+	/** A row's vertical padding (spec 16.3): with a 22pt line, a 46pt row. */
+	rowPadding: 12,
 	/** Between a row's glyph, text, value and chevron. */
 	rowGap: 12,
 } as const;

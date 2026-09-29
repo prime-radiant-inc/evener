@@ -10,6 +10,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } f
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { useStore } from "zustand";
 import { creationImageDraft } from "../creationImageDraft";
+import { space } from "../design/tokens";
 import { destructiveButton } from "../haptics";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { ImageAttachments } from "../ImageAttachments";
@@ -132,7 +133,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		<GroupedPage>
 			<SheetStatus />
 			<Group>
-				<View style={{ paddingHorizontal: 16, paddingVertical: 11, gap: 8 }}>
+				<View style={{ paddingHorizontal: space.rowInset, paddingVertical: space.rowPadding, gap: 8 }}>
 					<TextInput
 						accessibilityLabel="What should the agent do?"
 						placeholder="What should the agent do?"
