@@ -69,9 +69,29 @@ describe("the long-press menu per state (spec 7.3)", () => {
 			{ ...online, organizationReady: false },
 			["pin", "stop", "shutDown", "rename"],
 		],
-		["a finished one offline", row({ state: "awaiting" }), "finished", { ...online, connected: false }, ["markRead"]],
-		["a seen one offline", row({ state: "idle" }), "idle", { ...online, connected: false }, ["markUnread"]],
-		["a working one offline", row(), "working", { ...online, connected: false }, []],
+		// Offline, the actions stay and are held (phase 6 ruling 18), whatever
+		// the journal says, since a held change reaches it only on replay.
+		[
+			"a finished one offline",
+			row({ state: "awaiting" }),
+			"finished",
+			{ ...online, connected: false },
+			["pin", "markRead", "shutDown", "archive"],
+		],
+		[
+			"a seen one offline",
+			row({ state: "idle" }),
+			"idle",
+			{ ...online, connected: false },
+			["pin", "markUnread", "shutDown", "archive"],
+		],
+		[
+			"a working one offline, the journal not ready",
+			row({ rename: true }),
+			"working",
+			{ ...online, connected: false, organizationReady: false },
+			["pin", "stop", "shutDown", "archive", "rename"],
+		],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(rowMenuActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
 	});
@@ -107,7 +127,13 @@ describe("swipes (spec 7.3)", () => {
 			{ ...online, archived: true },
 			{ leading: "unarchive", trailing: ["pin", "more"] },
 		],
-		["any row offline", row(), "working", { ...online, connected: false }, { leading: null, trailing: ["more"] }],
+		[
+			"a working row offline",
+			row(),
+			"working",
+			{ ...online, connected: false },
+			{ leading: "archive", trailing: ["stop", "pin", "more"] },
+		],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(swipeActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
 	});

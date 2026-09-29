@@ -23,9 +23,12 @@ export const ROW_ACTION_LABELS: Record<RowAction, string> = {
 };
 
 export interface RowActionContext {
-	/** The hub connection is ready (ruling 21). */
+	/** The hub connection is ready. Offline, every action is still offered
+	 * and is held until the connection returns (phase 6 ruling 18). */
 	connected: boolean;
-	/** The Board's organization journal can take a change now (ruling 16). */
+	/** The Board's organization journal can take a change now (ruling 16);
+	 * it gates only a connected Board, since a held change reaches the
+	 * journal on replay. */
 	organizationReady: boolean;
 	/** The row sits in an archived tier. */
 	archived: boolean;
@@ -51,19 +54,24 @@ export function archiveTarget(row: NavigationSessionSummary): Omit<ArchiveParams
 }
 
 /** The long-press menu, in spec 7.3's order. Copy link waits for a session
- * deep link (ruling 27). Offline, only the phone's own read marks remain. */
+ * deep link (ruling 27). Offline it offers the same actions, held until the
+ * connection returns (phase 6 ruling 18). */
 export function rowMenuActions({ row, state }: ClassifiedRow, context: RowActionContext): RowAction[] {
-	const { connected } = context;
 	const actions: RowAction[] = [];
-	if (connected && isTopLevel(row)) actions.push("pin");
+	if (isTopLevel(row)) actions.push("pin");
 	if (state === "finished") actions.push("markRead");
 	if (state === "idle") actions.push("markUnread");
-	if (connected && state === "working") actions.push("stop");
-	if (connected && row.live && !row.offline && row.state !== "restartRequired") actions.push("shutDown");
-	if (connected && context.organizationReady && archiveTarget(row))
-		actions.push(context.archived ? "unarchive" : "archive");
-	if (connected && row.rename === true) actions.push("rename");
+	if (state === "working") actions.push("stop");
+	if (row.live && !row.offline && row.state !== "restartRequired") actions.push("shutDown");
+	if (organizes(context) && archiveTarget(row)) actions.push(context.archived ? "unarchive" : "archive");
+	if (row.rename === true) actions.push("rename");
 	return actions;
+}
+
+/** Whether an organization change can be taken now: held while offline,
+ * and while connected only when the journal can take it (ruling 16). */
+export function organizes(context: Pick<RowActionContext, "connected" | "organizationReady">): boolean {
+	return !context.connected || context.organizationReady;
 }
 
 export interface SwipeActions {
