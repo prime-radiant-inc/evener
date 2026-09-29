@@ -4,7 +4,7 @@
 // `sandboxNet`; choosing what the hub already defaults to for this project
 // drops the override, so the setup keeps following the hub.
 import { useStore } from "zustand";
-import { Group, GroupedPage, GroupFooter, GroupGap, Row, SwitchRow } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, SwitchRow } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { ACCESS_LEVELS, knownAccess, networkApplies } from "./launchSetup";
 import { useNewSession } from "./newSessionContext";
@@ -37,7 +37,6 @@ export function AccessPicker() {
 	return (
 		<GroupedPage>
 			<SheetStatus />
-			<GroupGap />
 			<Group>
 				{ACCESS_LEVELS.map((level) => (
 					<Row
@@ -52,7 +51,6 @@ export function AccessPicker() {
 			</Group>
 			{access && networkApplies(access) ? (
 				<>
-					<GroupGap />
 					<Group>
 						<SwitchRow
 							label="Network"

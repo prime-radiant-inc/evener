@@ -9,7 +9,7 @@ import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react
 import { ActivityIndicator, AppState, Pressable, Text, TextInput, View } from "react-native";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { fonts } from "./design/tokens";
+import { fonts, space } from "./design/tokens";
 import type { ProviderSignIn } from "./providerSignIn";
 import { Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 import { SheetStatus } from "./sheet/SheetStatus";
@@ -240,7 +240,6 @@ export function ProviderSignInSheet({
 									}}
 								/>
 							</Group>
-							<View style={{ height: 20 }} />
 							<Group>
 								<TextInput
 									accessibilityLabel="Redirect URL"
@@ -302,13 +301,16 @@ export function ProviderSignInSheet({
 	);
 }
 
-/** A stretch of the sheet outside any group: its prose, the code, a button. */
+/** A stretch of the sheet outside any group: its prose, the code, a button.
+ * The group that follows brings its own 16pt, so the bottom padding is what's
+ * left of the space under it. */
 function Section({ children, centered = false }: { children: ReactNode; centered?: boolean }) {
 	return (
 		<View
 			style={{
 				paddingHorizontal: 20,
-				paddingVertical: centered ? 28 : 16,
+				paddingTop: centered ? 28 : 16,
+				paddingBottom: centered ? 28 - space.groupGap : 0,
 				gap: centered ? 8 : 16,
 				alignItems: centered ? "center" : "stretch",
 			}}

@@ -13,12 +13,13 @@ import { useConnection } from "../ConnectionProvider";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { whenReady } from "../connectionDisplay";
 import { useCredentialStore } from "../credentialStore";
+import { scaledType, space, uiType } from "../design/tokens";
 import { useDisplayChoices } from "../display/displayContext";
 import { APPEARANCE_LABELS } from "../display/displayPreferences";
 import { versionDriftTag } from "../hosts/hostStatus";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { statusOf } from "../providers/providerStatus";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, RowValue } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { appVersionText, hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
@@ -85,16 +86,14 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				allowFontScaling={allowFontScaling}
 				style={{
 					color: palette.inkMid,
-					fontSize: 15 * scale,
-					lineHeight: 20 * scale,
-					paddingHorizontal: 32,
+					...scaledType(uiType.subheadline, scale),
+					paddingHorizontal: space.labelInset,
 					paddingTop: 4,
 				}}
 			>
 				{line}
 			</Text>
-			<GroupLabel>Fleet</GroupLabel>
-			<Group>
+			<Group label="Fleet">
 				<Row
 					icon="server.rack"
 					label="Hosts"
@@ -104,8 +103,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					onPress={() => navigation.navigate("Hosts", { hubId })}
 				/>
 			</Group>
-			<GroupLabel>Setup</GroupLabel>
-			<Group>
+			<Group label="Setup">
 				<Row
 					icon="key"
 					label="Providers"
@@ -126,8 +124,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					onPress={() => navigation.navigate("Plugins", { hubId })}
 				/>
 			</Group>
-			<GroupLabel>This phone</GroupLabel>
-			<Group>
+			<Group label="This phone">
 				<Row
 					icon="textformat.size"
 					label="Display"
@@ -149,14 +146,12 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					onPress={() => navigation.navigate("Hubs")}
 				/>
 			</Group>
-			<GroupLabel>More</GroupLabel>
-			<Group>
+			<Group label="More">
 				<Row icon="keyboard" label="Keyboard shortcuts" chevron onPress={() => leaveFor("KeybindingPreferences")} />
 				<Row icon="slider.horizontal.3" label="Launch defaults" chevron onPress={() => leaveFor("LaunchSettings")} />
 				<Row icon="gearshape" label="Hub settings" chevron onPress={() => leaveFor("HubSettings")} />
 			</Group>
-			<GroupLabel>About</GroupLabel>
-			<Group>
+			<Group label="About">
 				<Row
 					icon="info.circle"
 					label="Evener for iPhone"

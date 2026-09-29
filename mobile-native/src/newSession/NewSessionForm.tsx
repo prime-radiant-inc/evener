@@ -9,14 +9,16 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { useStore } from "zustand";
+import { useOfferAlert } from "../alerts/alertsContext";
 import { creationImageDraft } from "../creationImageDraft";
+import { space } from "../design/tokens";
 import { destructiveButton } from "../haptics";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { ImageAttachments } from "../ImageAttachments";
 import { ImageSelection } from "../imageSelection";
 import { nativeImagePicker } from "../nativeImagePicker";
 import { creationModel, startedSetup } from "../newSession";
-import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row, RowValue, Segmented } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, RowValue, Segmented } from "../sheet/Grouped";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -78,6 +80,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		// submit starts on a chosen model only once the host's list has it.
 		unconfirmedModel: model && form.modelError ? model.displayName || model.model : null,
 	});
+	const offerAlert = useOfferAlert();
 	const latest = useRef({ ready, client, blocked: block !== null });
 	latest.current = { ready, client, blocked: block !== null };
 	const close = useCallback(() => navigation.getParent()?.goBack(), [navigation]);
@@ -92,7 +95,17 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		} catch {
 			// A start this phone couldn't remember still opens its session.
 		}
-		if (!navigation.isFocused() || !latest.current.ready || latest.current.client !== submittedClient) return;
+		if (!navigation.isFocused() || !latest.current.ready || latest.current.client !== submittedClient) {
+			// The session exists but this sheet can no longer open it: say so
+			// where the person is, so it isn't started twice (#3048).
+			offerAlert({
+				kind: "started",
+				ref: outcome.thread.evener.ref,
+				title: outcome.thread.name || "New session",
+				why: null,
+			});
+			return;
+		}
 		navigation.getParent()?.dispatch(
 			StackActions.replace("Conversation", {
 				hubId: outcome.hubId,
@@ -100,7 +113,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				title: outcome.thread.name || "Conversation",
 			}),
 		);
-	}, [store, memory, navigation, imageSelection]);
+	}, [store, memory, navigation, imageSelection, offerAlert]);
 	const cancel = useCallback(() => {
 		const { prompt, images } = store.getState();
 		if (!prompt.trim() && images.length === 0) {
@@ -131,9 +144,8 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	return (
 		<GroupedPage>
 			<SheetStatus />
-			<GroupGap />
 			<Group>
-				<View style={{ paddingHorizontal: 16, paddingVertical: 11, gap: 8 }}>
+				<View style={{ paddingHorizontal: space.rowInset, paddingVertical: space.rowPadding, gap: 8 }}>
 					<TextInput
 						accessibilityLabel="What should the agent do?"
 						placeholder="What should the agent do?"
@@ -191,8 +203,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 					</Group>
 				</>
 			) : null}
-			<GroupLabel>Where</GroupLabel>
-			<Group>
+			<Group label="Where">
 				<Row
 					icon="server.rack"
 					label="Host"
@@ -215,8 +226,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				{branch ? <Row icon="arrow.triangle.branch" label="Branch" value={branch} /> : null}
 			</Group>
 			{form.hostNote ? <GroupFooter>{form.hostNote}</GroupFooter> : null}
-			<GroupLabel>Agent</GroupLabel>
-			<Group>
+			<Group label="Agent">
 				<Row
 					icon="cpu"
 					label="Model"

@@ -146,6 +146,15 @@ it("marks a notice with the triangle and no second line, and edges a finished re
 	});
 });
 
+it("says a session started, marks it working, and edges it in the accent", () => {
+	const started: Alert = { kind: "started", ref: "local:s", title: "Fix the flaky test", why: null };
+	const { tree, card } = mount(banner(started));
+	expect(renderedText(tree)).toContain("Fix the flaky test");
+	expect(renderedText(tree)).toContain("Session started. Tap to open it.");
+	expect(bannerLabel(banner(started))).toBe("Fix the flaky test, Session started. Tap to open it.");
+	expect(card.props.style).toMatchObject({ borderColor: palette.accentEdge });
+});
+
 it("keeps the banner while a finger is on it, and opens it on a tap", () => {
 	const { card, calls } = mount(banner(session("a")));
 	act(() => card.props.onPressIn());

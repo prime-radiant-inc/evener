@@ -6,7 +6,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useState } from "react";
 import { View } from "react-native";
 import { useStore } from "zustand";
-import { Group, GroupedPage, GroupFooter, GroupGap, GroupLabel, Row } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row } from "../sheet/Grouped";
 import { SearchField } from "../sheet/SearchField";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { projectName } from "./launchSetup";
@@ -29,8 +29,7 @@ export function ProjectPicker({ navigation }: NativeStackScreenProps<NewSessionR
 			{metadataError ? <GroupFooter tone="danger">{metadataError}</GroupFooter> : null}
 			{shown.length > 0 ? (
 				<>
-					<GroupLabel>{`Recent on ${host}`}</GroupLabel>
-					<Group>
+					<Group label={`Recent on ${host}`}>
 						{shown.map((path) => (
 							<Row
 								key={path}
@@ -47,7 +46,6 @@ export function ProjectPicker({ navigation }: NativeStackScreenProps<NewSessionR
 					</Group>
 				</>
 			) : null}
-			<GroupGap />
 			<Group>
 				<Row
 					label={`Browse folders on ${host}…`}

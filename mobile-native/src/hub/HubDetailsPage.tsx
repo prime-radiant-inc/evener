@@ -58,12 +58,10 @@ export function HubDetailsPage({ navigation, route }: NativeStackScreenProps<Hub
 	return (
 		<GroupedPage>
 			{editing ? <HubEditor profile={profile} save={updateHub} close={() => setEditing(false)} /> : null}
-			<GroupGap />
 			<Group>
 				<Row label="Name" value={profile.name} chevron onPress={() => setEditing(true)} />
 				<Row label="Address" sub={profile.origin} machineSub />
 			</Group>
-			<GroupGap />
 			<Group>
 				<Row label="Remove this hub" tone="danger" onPress={() => confirmRemove(profile.id, profile.name)} />
 			</Group>
