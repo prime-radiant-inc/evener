@@ -191,3 +191,21 @@ func TestTimingBudgetStillEnforcesTheCeilingWithoutTheMarker(t *testing.T) {
 		t.Fatalf("no ceiling FAIL while the metric marker is absent:\n%s", out)
 	}
 }
+
+// TestTimingBudgetRecordsAPackageWithNoDuration pins that a package whose
+// terminal event carries no Elapsed (a PKG row with no SUM — a package with no
+// test files) is still recorded, at 0. The full-rebaseline drop keys on that
+// recorded set, so without this a full rebaseline would delete a still-present
+// package's budget entry even though it only claims to drop packages go list no
+// longer reports.
+func TestTimingBudgetRecordsAPackageWithNoDuration(t *testing.T) {
+	measured := "PKG\texample.com/empty\nSUM\texample.com/other\t0.10\n"
+	budget := `{"perTestCeilingSeconds":3,"packages":{"example.com/empty":0,"example.com/other":1}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err != nil {
+		t.Fatalf("a complete fixture must not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "example.com/empty: 0.00s") {
+		t.Fatalf("a no-duration package was not recorded, so a full rebaseline would drop it:\n%s", out)
+	}
+}
