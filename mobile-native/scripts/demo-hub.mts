@@ -210,7 +210,11 @@ export async function createDemoHub(
 	// opening a row reads a real conversation. An empty fleet has none.
 	const fleetThreads =
 		fleetOptions && !fleetOptions.empty
-			? createDemoSessions({ now: startedAt, long: fleetOptions.long })
+			? createDemoSessions({
+					now: startedAt,
+					long: fleetOptions.long,
+					toolFamilies: fleetOptions.toolFamilies,
+				})
 			: [];
 	for (const fleetThread of fleetThreads)
 		threads.set(fleetThread.evener.ref, fleetThread);
@@ -922,6 +926,9 @@ environment variables:
   EVENER_DEMO_LONG=1                 with the fleet: long questions, approvals
                                      and messages, many steps and notifications,
                                      so screenshots exercise real-sized content
+  EVENER_DEMO_FLEET_TOOLS=1          with the fleet: add Show Every Tool Family,
+                                     one step of every tool family, replayed
+                                     from the recorded wire corpora
   EVENER_DEMO_COMMANDS=1             with the fleet: read commands from stdin
                                      (${COMMANDS})
   EVENER_DEMO_UNCONFIRMED=1          answer sends as a daemon that can't confirm them
@@ -952,6 +959,7 @@ if (
 					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
 					olderHistory: process.env.EVENER_DEMO_FLEET_OLDER === "1",
 					long: process.env.EVENER_DEMO_LONG === "1",
+					toolFamilies: process.env.EVENER_DEMO_FLEET_TOOLS === "1",
 				}
 			: undefined,
 		{
