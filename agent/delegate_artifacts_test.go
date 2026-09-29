@@ -51,6 +51,59 @@ func TestAdvertiseArtifactsDir_OnlyWhenPresent(t *testing.T) {
 	}
 }
 
+// TestEnsureDelegateArtifactsDir_RefusesNonDirectoryCollisions pins that a
+// planted regular file or symlink at either the session dir or the artifacts
+// leaf is refused and left untouched, rather than followed or deleted.
+func TestEnsureDelegateArtifactsDir_RefusesNonDirectoryCollisions(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessions := filepath.Join(stateDir, sessionsSubdir)
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+
+	// A regular file where the session dir belongs is refused and kept.
+	sessionFile := filepath.Join(sessions, "sess_file")
+	if err := os.WriteFile(sessionFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+	if _, err := ensureDelegateArtifactsDir(stateDir, "sess_file"); err == nil {
+		t.Fatal("regular file at session path accepted")
+	}
+	if _, err := os.Lstat(sessionFile); err != nil {
+		t.Fatalf("session file removed by cleanup: %v", err)
+	}
+
+	// A regular file where the artifacts leaf belongs is refused and kept.
+	child := "sess_leaf"
+	if err := os.MkdirAll(filepath.Join(sessions, child), 0o700); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+	leafFile := filepath.Join(sessions, child, delegateArtifactsSubdir)
+	if err := os.WriteFile(leafFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write leaf file: %v", err)
+	}
+	if _, err := ensureDelegateArtifactsDir(stateDir, child); err == nil {
+		t.Fatal("regular file at artifacts leaf accepted")
+	}
+	if _, err := os.Lstat(leafFile); err != nil {
+		t.Fatalf("leaf file removed by cleanup: %v", err)
+	}
+
+	// A symlinked session dir is refused and kept (skipped where symlinks need
+	// privilege).
+	link := filepath.Join(sessions, "sess_link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := ensureDelegateArtifactsDir(stateDir, "sess_link"); err == nil {
+		t.Fatal("symlinked session dir accepted")
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("symlink removed by cleanup: %v", err)
+	}
+}
+
 // TestCreateDelegate_CreationResultNamesArtifactsDir pins the issue's core
 // contract: every delegation gets its own durable artifacts directory at
 // creation, the delegate tool's creation result names it, a report written

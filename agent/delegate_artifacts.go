@@ -52,13 +52,22 @@ func ensureDelegateArtifactsDir(stateDir, childSessionID string) (string, error)
 		return "", err
 	}
 	// Record which entries already existed before MkdirAll so a failure never
-	// removes state this call did not create — a pre-existing file, directory, or
-	// symlink at either path must be left alone.
+	// removes state this call did not create. Lstat (not Stat) and a required
+	// directory type refuse a symlink or a regular file planted at either path:
+	// MkdirAll would follow a symlinked session dir and could place artifacts
+	// outside stateDir, and a dangling symlink would otherwise be deleted as if
+	// this call had created it.
 	parent := filepath.Dir(dir)
-	_, statErr := os.Stat(parent)
-	parentExisted := statErr == nil
-	_, leafErr := os.Lstat(dir)
+	parentInfo, parentErr := os.Lstat(parent)
+	parentExisted := parentErr == nil
+	if parentExisted && !parentInfo.IsDir() {
+		return "", fmt.Errorf("delegate artifacts dir: session path %s exists and is not a real directory", parent)
+	}
+	leafInfo, leafErr := os.Lstat(dir)
 	leafExisted := leafErr == nil
+	if leafExisted && !leafInfo.IsDir() {
+		return "", fmt.Errorf("delegate artifacts dir: %s exists and is not a real directory", dir)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		// Take back only what this call created: the leaf, and the session dir
 		// when it did not pre-exist (os.Remove removes a directory only if it is

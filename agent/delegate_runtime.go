@@ -1799,18 +1799,26 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	// that leaves no child session to dispose. A start that fails before a child
 	// run exists (ensure or construct failing) reaches failCommittedStart with a
 	// nil prepared run, so its disposeUnadopted arm never runs and nothing else
-	// would remove the directory.
+	// would remove the directory. If the removal fails, keep advertising the
+	// path (so the residue stays discoverable) and surface the failure.
+	var artifactsCleanupWarning string
 	removeArtifacts := func() {
 		if artifactsDir == "" {
 			return
 		}
-		_ = removeDelegateArtifacts(s.stateDir, started.descriptor.ChildSessionID)
+		if err := removeDelegateArtifacts(s.stateDir, started.descriptor.ChildSessionID); err != nil {
+			artifactsCleanupWarning = "delegate artifacts directory cleanup failed: " + err.Error()
+			return
+		}
 		// The path is gone, so the failure result must not advertise it.
 		artifactsDir = ""
 	}
 	createResult := func(result delegateResult) delegateResult {
 		if selection.warning != nil {
 			result.Warnings = []string{selection.warning.Message}
+		}
+		if artifactsCleanupWarning != "" {
+			result.Warnings = append(result.Warnings, artifactsCleanupWarning)
 		}
 		result.Worktree = s.stableDelegateWorktreeReport(started.descriptor)
 		// Advertise the artifacts directory only when it still exists: a failure
