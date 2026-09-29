@@ -585,7 +585,7 @@ function Plugins({
 						</View>
 					) : null}
 					{state.plugins?.length === 0 && query === "" ? (
-						<GroupFooter>No plugins installed on this hub.</GroupFooter>
+						<GroupFooter>No plugins installed on this hub. Browse a marketplace to install one.</GroupFooter>
 					) : null}
 					{state.plugins !== null && query !== "" && visible.length === 0 ? (
 						<GroupFooter>No matching plugins.</GroupFooter>

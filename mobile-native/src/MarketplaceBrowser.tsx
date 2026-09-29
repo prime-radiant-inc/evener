@@ -184,7 +184,7 @@ export function MarketplaceBrowser({
 			/>
 			{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
 			{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
-				<GroupFooter>No marketplaces on this hub.</GroupFooter>
+				<GroupFooter>No marketplaces on this hub. Add one to browse its plugins.</GroupFooter>
 			) : null}
 			{rows.length > 0 ? (
 				<Group>

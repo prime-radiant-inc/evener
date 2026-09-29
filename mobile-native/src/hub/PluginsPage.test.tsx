@@ -3394,3 +3394,12 @@ it("says a broken plugin is broken under the actions that fix it, not floating a
 	expect(actions).toBeGreaterThan(-1);
 	expect(warning).toBeGreaterThan(actions);
 });
+
+it("points an empty plugin list and an empty marketplace list at their one action (audit L6)", async () => {
+	const hub = pageHub([]);
+	hub.on("evener/marketplace/list", () => ({ marketplaces: [] }));
+	const { tree } = await mountPage(hub);
+	expect(renderedText(tree)).toContain("No plugins installed on this hub. Browse a marketplace to install one.");
+	await choose(tree, "Marketplaces");
+	expect(renderedText(tree)).toContain("No marketplaces on this hub. Add one to browse its plugins.");
+});

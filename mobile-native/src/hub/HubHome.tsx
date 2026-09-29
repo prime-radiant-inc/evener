@@ -12,7 +12,7 @@ import { useConnection } from "../ConnectionProvider";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { whenReady } from "../connectionDisplay";
 import { useCredentialStore } from "../credentialStore";
-import { scaledType, space, uiType } from "../design/tokens";
+import { scaledType, uiType } from "../design/tokens";
 import { useDisplayChoices } from "../display/displayContext";
 import { APPEARANCE_LABELS } from "../display/displayPreferences";
 import { versionDriftTag } from "../hosts/hostStatus";
@@ -80,8 +80,10 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				style={{
 					color: palette.inkMid,
 					...scaledType(uiType.subheadline, scale),
-					paddingHorizontal: space.labelInset,
-					paddingTop: 4,
+					// The prototype's status line (hub.js:17): 20pt in, 2 above, 6 below.
+					paddingHorizontal: 20,
+					paddingTop: 2,
+					paddingBottom: 6,
 				}}
 			>
 				{line}
