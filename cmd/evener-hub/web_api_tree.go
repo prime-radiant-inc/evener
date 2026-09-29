@@ -321,14 +321,66 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 	}
 }
 
+// sessionsUnderIncompatibleDaemons selects the past sessions whose ownership
+// a restartRequired or unconfirmed daemon can decide: those daemons' own
+// sessions and everything reachable from them through parent or job-tree-root
+// links. Any other session has no path to such a daemon, so verifying it
+// could only report ancestry gaps that no daemon could account for. An
+// unconfirmed claim without a usable identity cannot exclude any session.
+func sessionsUnderIncompatibleDaemons(past []hubcore.PastEntry, live []hubcore.LiveEntry, unconfirmed []rendezvous.Entry) []hubcore.PastEntry {
+	var pending []string
+	addDaemon := func(entry rendezvous.Entry, sessionID string) {
+		pending = append(pending, sessionID, entry.SessionID, entry.ThreadID)
+		if ref, err := appwire.ParseRef(localSpawnWorkspaceRef(entry)); err == nil {
+			pending = append(pending, ref.ThreadID)
+		}
+	}
+	for _, entry := range live {
+		if !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired {
+			addDaemon(entry.Entry, entry.SessionID)
+		}
+	}
+	for _, entry := range unconfirmed {
+		if _, err := appwire.ParseRef(localSpawnWorkspaceRef(entry)); err != nil {
+			return past
+		}
+		addDaemon(entry, "")
+	}
+	linked := make(map[string][]string, len(past))
+	for _, entry := range past {
+		for _, owner := range []string{entry.Meta.ParentSessionID, entry.Meta.JobTreeRootSessionID} {
+			if owner != "" {
+				linked[owner] = append(linked[owner], entry.Meta.ID)
+			}
+		}
+	}
+	reached := make(map[string]bool)
+	for len(pending) > 0 {
+		id := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if id == "" || reached[id] {
+			continue
+		}
+		reached[id] = true
+		pending = append(pending, linked[id]...)
+	}
+	var affected []hubcore.PastEntry
+	for _, entry := range past {
+		if reached[entry.Meta.ID] {
+			affected = append(affected, entry)
+		}
+	}
+	return affected
+}
+
 func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnapshot {
 	var live []hubcore.LiveEntry
 	var unconfirmedOwnership bool
 	var ownershipErr error
-	var daemons *daemonIndex
+	var unconfirmed []rendezvous.Entry
 	if s.cfg.Roster != nil {
 		roster := s.cfg.Roster.Snapshot()
-		daemons = newDaemonIndex(s.cfg.Roster, roster)
+		unconfirmed = roster.Unconfirmed
 		ownershipErr = roster.OwnershipError
 		live = roster.Live
 		unconfirmedOwnership = len(roster.Unconfirmed) > 0
@@ -348,8 +400,8 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	}) {
 		// Persisted delegates have no rendezvous of their own. Preserve the
 		// authenticated owner's restart restriction in every navigation projection.
-		for _, past := range pastEntries {
-			owner, incompatible, err := walkDaemonOwner(ctx, s.cfg, daemons, past.Meta.ID, false)
+		for _, past := range sessionsUnderIncompatibleDaemons(pastEntries, live, unconfirmed) {
+			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
 			if err != nil {
 				if ownershipErr == nil {
 					ownershipErr = err

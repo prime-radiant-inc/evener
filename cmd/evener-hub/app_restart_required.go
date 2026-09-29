@@ -48,38 +48,7 @@ func lookupDaemonOwner(ctx context.Context, cfg hubcore.WebConfig, ref, threadID
 		}
 		threadID = parsed.ThreadID
 	}
-	if cfg.Roster == nil {
-		return hubcore.LiveEntry{}, false, nil
-	}
-	return walkDaemonOwner(ctx, cfg, rosterDaemons{cfg.Roster}, threadID, verifyCompatibleAncestry)
-}
-
-// daemonLookup answers the roster questions an ownership walk asks. A single
-// request asks them of the live roster; a navigation build walks every past
-// session and asks them of one indexed roster snapshot instead.
-type daemonLookup interface {
-	forThread(threadID string) (hubcore.LiveEntry, bool)
-	forSession(sessionID string) (hubcore.LiveEntry, bool)
-	unconfirmedForThread(threadID string) bool
-}
-
-// rosterDaemons reads the live roster afresh on every question.
-type rosterDaemons struct{ roster *hubcore.Roster }
-
-func (d rosterDaemons) forThread(threadID string) (hubcore.LiveEntry, bool) {
-	return liveDaemonForThread(d.roster, threadID)
-}
-
-func (d rosterDaemons) forSession(sessionID string) (hubcore.LiveEntry, bool) {
-	return liveDaemonForSession(d.roster, sessionID)
-}
-
-func (d rosterDaemons) unconfirmedForThread(threadID string) bool {
-	return unconfirmedDaemonForThread(d.roster, threadID)
-}
-
-func walkDaemonOwner(ctx context.Context, cfg hubcore.WebConfig, daemons daemonLookup, threadID string, verifyCompatibleAncestry bool) (hubcore.LiveEntry, bool, error) {
-	if threadID == "" {
+	if cfg.Roster == nil || threadID == "" {
 		return hubcore.LiveEntry{}, false, nil
 	}
 	type ownershipEdge struct {
@@ -113,14 +82,14 @@ func walkDaemonOwner(ctx context.Context, cfg hubcore.WebConfig, daemons daemonL
 	seen := make(map[string]bool)
 	for !seen[threadID] {
 		seen[threadID] = true
-		if daemons.unconfirmedForThread(threadID) {
+		if unconfirmedDaemonForThread(cfg.Roster, threadID) {
 			return verifyOwner(hubcore.LiveEntry{SessionID: threadID}, true)
 		}
-		findOwner := daemons.forThread
+		findOwner := liveDaemonForThread
 		if len(edges) != 0 {
-			findOwner = daemons.forSession
+			findOwner = liveDaemonForSession
 		}
-		if entry, ok := findOwner(threadID); ok {
+		if entry, ok := findOwner(cfg.Roster, threadID); ok {
 			return verifyOwner(entry, false)
 		}
 		// Ancestry locates a possible daemon. Every edge must have a persisted
@@ -165,85 +134,16 @@ func walkDaemonOwner(ctx context.Context, cfg hubcore.WebConfig, daemons daemonL
 	// An incomplete ancestry chain cannot establish that an incompatible
 	// job-tree owner has released this descendant. Report uncertainty until
 	// its metadata and descriptor chain can be verified.
-	if owner, ok := daemons.forSession(jobTreeRootID); ok && owner.Status == appwire.ThreadStatusRestartRequired {
+	if owner, ok := liveDaemonForSession(cfg.Roster, jobTreeRootID); ok && owner.Status == appwire.ThreadStatusRestartRequired {
 		return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify delegate ownership at session %s in incompatible job tree %s", threadID, jobTreeRootID)
 	}
-	if daemons.unconfirmedForThread(jobTreeRootID) {
+	if unconfirmedDaemonForThread(cfg.Roster, jobTreeRootID) {
 		return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify daemon ownership in job tree %s", jobTreeRootID)
 	}
 	if err := cfg.Roster.OwnershipError(); err != nil {
 		return hubcore.LiveEntry{}, false, &daemonDiscoveryError{err: err}
 	}
 	return hubcore.LiveEntry{}, false, nil
-}
-
-// daemonIndex answers the same questions as rosterDaemons from one roster
-// snapshot, so walking every past session lists the roster once.
-type daemonIndex struct {
-	roster            *hubcore.Roster
-	bySession         map[string]hubcore.LiveEntry
-	byWorkspace       map[string]hubcore.LiveEntry
-	unconfirmedAny    bool
-	unconfirmedClaims map[string]bool // session IDs, thread IDs and workspace refs
-}
-
-// newDaemonIndex keeps liveDaemonForSession's and liveDaemonForThread's
-// precedence: the first non-crashed entry in roster order wins each key.
-func newDaemonIndex(roster *hubcore.Roster, snapshot hubcore.RosterSnapshot) *daemonIndex {
-	index := &daemonIndex{
-		roster:            roster,
-		bySession:         make(map[string]hubcore.LiveEntry, len(snapshot.Live)),
-		byWorkspace:       make(map[string]hubcore.LiveEntry, len(snapshot.Live)),
-		unconfirmedClaims: make(map[string]bool),
-	}
-	for _, entry := range snapshot.Live {
-		if entry.Crashed {
-			continue
-		}
-		if id := liveEntrySessionID(entry); id != "" {
-			if _, ok := index.bySession[id]; !ok {
-				index.bySession[id] = entry
-			}
-		}
-		workspaceRef := localSpawnWorkspaceRef(entry.Entry)
-		if _, ok := index.byWorkspace[workspaceRef]; !ok {
-			index.byWorkspace[workspaceRef] = entry
-		}
-	}
-	for _, entry := range snapshot.Unconfirmed {
-		// A live claim without a usable identity cannot exclude any target.
-		route := localSpawnWorkspaceRef(entry)
-		if _, err := appwire.ParseRef(route); err != nil {
-			index.unconfirmedAny = true
-		}
-		index.unconfirmedClaims[entry.SessionID] = true
-		index.unconfirmedClaims[entry.ThreadID] = true
-		index.unconfirmedClaims[route] = true
-	}
-	return index
-}
-
-func (d *daemonIndex) forSession(sessionID string) (hubcore.LiveEntry, bool) {
-	entry, ok := d.bySession[sessionID]
-	return entry, ok
-}
-
-func (d *daemonIndex) forThread(threadID string) (hubcore.LiveEntry, bool) {
-	if threadID == "" {
-		return hubcore.LiveEntry{}, false
-	}
-	if entry, ok := d.roster.Find(threadID); ok && !entry.Crashed {
-		return entry, true
-	}
-	entry, ok := d.byWorkspace[localAppRef(threadID)]
-	return entry, ok
-}
-
-func (d *daemonIndex) unconfirmedForThread(threadID string) bool {
-	if threadID == "" {
-		return false
-	}
-	return d.unconfirmedAny || d.unconfirmedClaims[threadID] || d.unconfirmedClaims[localAppRef(threadID)]
 }
 
 // Indexed entries carry their project directory. Without one, inspect only the
@@ -298,15 +198,11 @@ func liveDaemonForSession(roster *hubcore.Roster, sessionID string) (hubcore.Liv
 		return hubcore.LiveEntry{}, false
 	}
 	for _, entry := range roster.List() {
-		if !entry.Crashed && liveEntrySessionID(entry) == sessionID {
+		if !entry.Crashed && cmp.Or(entry.SessionID, entry.Entry.SessionID, entry.ThreadID) == sessionID {
 			return entry, true
 		}
 	}
 	return hubcore.LiveEntry{}, false
-}
-
-func liveEntrySessionID(entry hubcore.LiveEntry) string {
-	return cmp.Or(entry.SessionID, entry.Entry.SessionID, entry.ThreadID)
 }
 
 func liveDaemonForThread(roster *hubcore.Roster, threadID string) (hubcore.LiveEntry, bool) {
