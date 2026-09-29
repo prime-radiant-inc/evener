@@ -134,7 +134,11 @@ one cache lookup before arming the hydration. Two properties are load-bearing:
 
 - **The lookup is bounded by its own short deadline** (250 ms,
   `Promise.race`), not the outbox adapter's 10-second storage timeout
-  (`STORAGE_WAIT_MS = 10_000`). On deadline, open failure, or miss, the
+  (`STORAGE_WAIT_MS = 10_000`). It captures the current clear epoch when
+  it starts and compares it before publishing: a lookup that began before
+  a clear and resolves after it discards its result, so a cleared cache
+  cannot resurrect a shell. On deadline, open failure, miss, or an epoch
+  change, the
   hydration proceeds exactly as today, with `beginThreadHydration` receiving
   `undefined` as its model. No pane ever waits on storage longer than 250 ms.
   The lookup is serial by necessity, and the trade is stated rather than
@@ -241,6 +245,8 @@ it fires. The gates:
 
 - `history.incarnation` is present (a completed v6 content-bearing read),
 - the ref's shell flag is clear (the shell skip, above),
+- the ref is not in `deletedRefs` (the deletion fence, re-checked at fire
+  time),
 - `history.failed` is unset.
 
 The subscription sees every publication, so a `history/updated` that grows
@@ -269,24 +275,30 @@ Three events invalidate rather than write:
   pre-clear content from the shell.
 - **Session delete** (the UI's shared `deleteSession` action): the record
   is deleted on the action's success path (`result.deleted`) and the
-  ref's pending debounce timer is cancelled with it — the same
-  local-tab protection the clear has, per ref. The flush skips refs
+  ref's pending debounce timer is cancelled with it. The flush skips refs
   closed by deletion, so closing a deleted session's pane cannot
-  re-persist it. A sibling tab's already-scheduled or in-flight write
-  for that ref can still land after the delete; that residual is
-  accepted rather than closed with a durable per-ref tombstone, and the
-  reasoning is stated: a tombstone table is unbounded machinery (it
-  needs its own lifetime policy) to close a two-tab race whose worst
-  case is already bounded by the 14-day TTL, and any sibling tab
-  holding the session open learns of the deletion through the fence on
-  its next read, which deletes the record again. The clear-all epoch
-  remains the durable remedy when gone-now is the requirement.
+  re-persist it. Deletion also propagates cross-tab: one BroadcastChannel
+  message per deleted ref, the same channel and the same shape the clear
+  uses, and each sibling tab adds the ref to its suppression set and
+  re-checks it at write-fire time. An earlier draft of this spec refuted
+  a per-ref tombstone as over-building and claimed the sibling "learns of
+  the deletion through the fence on its next read" — that retraction is
+  recorded because it was wrong: a sibling tab holding the session open
+  receives `history/updated` pushes, not a rejected read, so the fence
+  never fires there and its continuously scheduled writes would resurrect
+  the record indefinitely, which is not the one-time residual the draft
+  claimed. The propagation is deliberately the clear's existing mechanism
+  scoped to one ref, not a new durable tombstone table: the clear epoch
+  stays the only durable generation, a deleted session's pane releases
+  on close, and a re-open of a deleted session fails its read through
+  the existing fence, which keeps the record gone.
 - **The deletion fence** (`markThreadDeletedIfFenced` setting `deletedRefs`):
-  deletes the ref's record. This is the out-of-band cleanup — a session
-  deleted on another machine, or by a project delete — and it only runs when
-  a tab actually reads the deleted ref. Out-of-band deletions that are never
-  re-opened keep their records until the cap evicts them, the 14-day
-  expiry removes them, or the user clears everything; that residual is
+  deletes the ref's record, cancels its pending debounce timer, and
+  publishes the same per-ref propagation — out-of-band deletions (another
+  machine, a project delete) must reach the tab that holds the session
+  open just as UI deletions do, and the `deletedRefs` gate above makes
+  every later fire-time write refuse the ref. Records for sessions no tab
+  ever reads again are removed by the 14-day expiry; that residual is
   stated here rather than papered over.
 
 ### Scroll-back: the deepest held cursor
@@ -376,7 +388,12 @@ involved.
   serialized length exceeds `SESSION_CACHE_MAX_BYTES` is skipped whole,
   never written, and a stored row for the same ref is deleted with it —
   a session that outgrew its cache leaves nothing stale behind and keeps
-  today's behavior. Without this a
+  today's behavior. A proposed window-only fallback for oversize records
+  was rejected with the same evidence as the trimming cut: the model
+  carries no window-boundary marker (`mergeOlderItemPage` folds pages
+  into one flat turns array), so a "window-only record" needs persisted
+  page-boundary metadata — machinery for a rare case whose accepted cost
+  is one session keeping today's behavior. Without this rule a
   monster record would evict every neighbor forever and still not fit.
   `bytes` is the serialized record's encoded length — the exact length
   the write stores, and what the cap counts. The cap bounds payload
@@ -384,16 +401,21 @@ involved.
   finally, by the browser quota and the clear action.
 - Records expire `SESSION_CACHE_TTL_DAYS = 14` after their last write
   (`savedAt`). An expired record is dead everywhere: the load seam reads
-  it as a miss (never serving it), and the same enumeration that
-  enforces the cap removes it — at every adapter open and inside every
-  write transaction. The guarantee is therefore stated as it is: an
-  expired record is never served and does not survive any storage
-  access; between accesses its bytes may sit on disk in a long-lived
-  tab until the next open, write, or read touches the store. The cap
-  bounds volume; the TTL bounds lifetime. No in-app sweep timer is
-  added for the between-accesses window — it would be a timer whose
-  only job is to hasten a deletion the next storage access performs
+  it as a miss and deletes the row it found, and the same enumeration
+  that enforces the cap removes the rest — at every adapter open and
+  inside every write transaction. The guarantee is exact: an expired
+  record is never served and does not survive any storage access (an
+  open, a write, or a read that finds it). Between accesses its bytes
+  may sit on disk in a long-lived tab until the next access touches the
+  store. The cap bounds volume; the TTL bounds lifetime. No in-app sweep
+  timer is added for the between-accesses window — it would be a timer
+  whose only job is to hasten a deletion the next storage access performs
   anyway.
+- Every removal — a delete, an expiry, an eviction, an oversize skip —
+  removes the `records` row and its `meta` row in the same transaction, so
+  accounting never leaks a deleted record's bytes, and the cap's
+  enumeration skips the reserved epoch key so the epoch row is never
+  evicted or double-counted.
 - The cap is enforced atomically per write: the enumeration of the `meta`
   store's rows, the insert, and any evictions run in one read-write
   IndexedDB transaction, which the database serializes across tabs, so no
@@ -509,7 +531,8 @@ Adapter (new `stores/sessionCacheIndexedDB.ts`):
    failed open (timeout, blocked, VersionError) returns nothing and never
    throws; the diagnostic seam records the open failure; a lookup still
    resolves as a miss at its own 250 ms deadline; a record past
-   `SESSION_CACHE_TTL_DAYS` reads as a miss.
+   `SESSION_CACHE_TTL_DAYS` reads as a miss and the row it found is
+   deleted; a lookup that began before a clear discards its result.
 3. Cap and expiry: writing past `SESSION_CACHE_MAX_BYTES` evicts the
    least-recently-saved record; the enumeration reads the `meta` store's
    rows without touching record bodies, and enumeration, insert, and
@@ -577,11 +600,14 @@ Store integration (`stores/threads.test.ts` additions and a new
     own deadline race resolving late (publishes nothing, arms nothing),
     and hydration still completing within the 250 ms bound.
 14. Deletion and clearing: a `deleteSession` success removes the record
-    and cancels the ref's pending debounce timer; a sibling tab's
-    in-flight write landing after the delete is the stated TTL-bounded
-    residual, and the fence re-deletes it on that tab's next read; the
-    deletion fence removes the record on a fenced read; the release
-    flush skips a ref closed by deletion; the settings clear empties the
+    and cancels the ref's pending debounce timer; the deletion propagates
+    through the channel, and a sibling tab holding the session open —
+    continuously receiving `history/updated` and scheduling writes —
+    stops writing without a reload and never re-creates the record; a
+    write scheduled before the fence or delete and firing after it is
+    refused by the `deletedRefs` gate; the deletion fence removes the
+    record on a fenced read; the release flush skips a ref closed by
+    deletion; the settings clear empties the
     adapter in the specified order (in-memory epoch and timer
     cancellation before the awaited transaction) — a write scheduled under
     an older epoch skips itself, including a timer armed before the clear
