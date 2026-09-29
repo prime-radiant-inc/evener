@@ -6,7 +6,8 @@ import type { ToastController } from "../Toast";
 import type { ClassifiedRow } from "./attention";
 import { archiveSession, archiveTarget, type RowActionContext, swipeActions } from "./rowActions";
 import type { SwipeAction } from "./SwipeRow";
-import { type BoardOrganization, organizationOpen } from "./useBoardOrganization";
+import { organizationOpen } from "./organizationCheck";
+import type { BoardOrganization } from "./useBoardOrganization";
 
 /** The actions a Board row's swipes can do. */
 export type SwipeRowAction = "archive" | "unarchive" | "stop" | "pin" | "more";

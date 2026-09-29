@@ -1,5 +1,6 @@
 import { Storage } from "expo-sqlite/kv-store";
 import { useMemo, useSyncExternalStore } from "react";
+import { BoardHold } from "./boardHold";
 import { FoldedSections, forgetBoard, OrganizeByPreference, RecentSearches, SeenMarkers } from "./boardMemory";
 import { BoardSeen, forgetHubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { perHub } from "./perHub";
@@ -10,6 +11,7 @@ const seen = perHub((hubId) => new SeenMarkers(Storage, hubId));
 const folded = perHub((hubId) => new FoldedSections(Storage, hubId));
 const organize = perHub((hubId) => new OrganizeByPreference(Storage, hubId));
 const recent = perHub((hubId) => new RecentSearches(Storage, hubId));
+const holds = perHub((hubId) => new BoardHold(Storage, hubId));
 
 export function seenMarkers(hubId: string): SeenMarkers {
 	return seen.get(hubId);
@@ -43,8 +45,16 @@ export function recentSearches(hubId: string): RecentSearches {
 	return recent.get(hubId);
 }
 
+/** The Board's actions taken offline for a hub (boardHold.ts). */
+export function boardHold(hubId: string): BoardHold {
+	return holds.get(hubId);
+}
+
 export function forgetBoardForHub(hubId: string): void {
-	for (const memory of [seen, folded, organize, recent]) memory.forget(hubId);
+	// The hold goes inert first, so a replay still answering for the removed
+	// hub finds nothing held and never writes its key back.
+	holds.get(hubId).forget();
+	for (const memory of [seen, folded, organize, recent, holds]) memory.forget(hubId);
 	forgetHubSeenMarks(hubId);
 	forgetBoard(Storage, hubId);
 }

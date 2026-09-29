@@ -1,5 +1,4 @@
 import {
-	errorText,
 	type NavigationPinSectionDescriptor,
 	type NavigationProjectSummary,
 	type NavigationSessionSummary,
@@ -76,11 +75,20 @@ import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
+import { type HeldAction, heldFor, heldProjectState, heldVerb, turnSeen, waitingLine } from "./boardHold";
 import { onBoardJump } from "./boardJump";
+import { BoardReplay } from "./boardReplay";
 import { BoardStops, stopToast } from "./boardStops";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
-import { foldedSections, organizeByPreference, recentSearches, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
+import {
+	boardHold,
+	foldedSections,
+	organizeByPreference,
+	recentSearches,
+	seenMarkers,
+	useBoardSeen,
+} from "./nativeBoardMemory";
 import { notices } from "./notices";
 import { PinnedEmptyHint, PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
@@ -103,10 +111,15 @@ import {
 	archiveTarget,
 	archivingSessionId,
 	pinSession,
+	projectChange,
 	type RowAction,
 	type RowActionContext,
 	renameSession,
+	RENAMED,
+	renameFailed,
 	rowMenuActions,
+	SHUT_DOWN_DONE,
+	shutDownFailed,
 	shutDownSession,
 } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
@@ -115,7 +128,8 @@ import { SearchResults } from "./SearchResults";
 import { SelectBar } from "./SelectBar";
 import { selectionActions, toggleSelected } from "./selection";
 import { listScrollHandlers } from "./settledList";
-import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
+import { organizationOpen } from "./organizationCheck";
+import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
 import { destructiveButton, haptic } from "../haptics";
@@ -275,6 +289,43 @@ function Board({
 	const [stops] = useState(() => new BoardStops(getNativeMutationRuntime, hubId));
 	useEffect(() => () => stops.dispose(), [stops]);
 	useEffect(() => () => stops.releaseAll(), [stops, client]);
+	// Board actions taken offline wait in the hold and go when the connection
+	// returns (phase 6 ruling 18): Stop, Shut down and Rename at once,
+	// wherever you are; organization changes through the journal once the
+	// Board is focused and it's free.
+	const [hold] = useState(() => boardHold(hubId));
+	const held = useSyncExternalStore(hold.subscribe, hold.getSnapshot);
+	const heldNow = useRef(held);
+	heldNow.current = held;
+	const holdAction = (action: HeldAction) => hold.hold(action, Date.now());
+	// A press answered later (an alert, a sheet) asks what's true then.
+	const liveNow = useRef(actionsConnected);
+	liveNow.current = actionsConnected;
+	const clientNow = useRef(actionsClient);
+	clientNow.current = actionsClient;
+	const toastNow = useRef(toast);
+	toastNow.current = toast;
+	const [replay] = useState(
+		() =>
+			new BoardReplay(hold, {
+				stop: (on, ref, guard) => stops.stop(on, ref, guard),
+				toast: (text) => toastNow.current.show({ text }),
+			}),
+	);
+	useEffect(() => () => replay.dispose(), [replay]);
+	// Whether the connection a replay runs on is still live, asked of the
+	// client itself: a request lost to a drop fails before any render could
+	// say so, and must stay held rather than read as refused.
+	const liveOn = (on: typeof actionsClient) => () => on?.state === "ready" && clientNow.current === on;
+	useEffect(() => {
+		if (actionsClient && held.length) void replay.sendImmediate(actionsClient, liveOn(actionsClient));
+	}, [replay, actionsClient, held]);
+	const organizationNow = useRef(organization);
+	organizationNow.current = organization;
+	useEffect(() => {
+		if (focused && organization.ready && held.length)
+			void replay.organize(organizationNow.current, liveOn(clientNow.current));
+	}, [replay, focused, organization.ready, held]);
 	const categoryMenu = pinnedCategoryMenu(organization, () => board.getSnapshot().pins.rows);
 	const projectSections = useProjectSections(hubId);
 	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
@@ -491,23 +542,69 @@ function Board({
 		list.setInteraction("menu", true);
 		navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref, archived });
 	};
+	/** Whether a change of this kind waits in the hold for this session. A
+	 * new one on it goes through the hold too, even online, so it replaces,
+	 * undoes or queues behind the held one instead of racing its replay. */
+	const waitsFor = (ref: string, kind: HeldAction["kind"]) =>
+		heldFor(heldNow.current, ref).some((record) => record.action.kind === kind);
 	const runRowAction = (item: ClassifiedRow, action: Exclude<SwipeRowAction, "more">) => {
 		const { row } = item;
-		if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
+		const kind = action === "pin" ? "pin" : action === "stop" ? "stop" : "archive";
+		if (!actionsConnected || (kind !== "stop" && waitsFor(row.ref, kind))) holdRowAction(row, action);
+		else if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
 		else if (action === "stop" && actionsConnected && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
 		else if (action === "archive" || action === "unarchive")
 			void archiveRow(organization, row, action === "archive", toast);
 	};
+	/** A swipe's or the menu's action taken offline, held until the
+	 * connection returns: Pin asks for the category over the Board's loaded
+	 * catalog, and a Stop names the turn you saw (phase 6 ruling 18). */
+	const holdRowAction = (row: NavigationSessionSummary, action: Exclude<SwipeRowAction, "more">) => {
+		if (action === "pin")
+			chooseCategory(
+				() => true,
+				board.getSnapshot().pins.rows,
+				toast,
+				(section) => void holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } }),
+			);
+		else if (action === "stop") holdAction({ kind: "stop", ref: row.ref, title: row.title, seen: turnSeen(row) });
+		else {
+			const target = archiveTarget(row);
+			if (target) holdAction({ kind: "archive", ref: row.ref, target, archived: action === "archive" });
+		}
+	};
 	/** The menu's actions: Pin, Stop, Archive and Unarchive as the swipes do
 	 * them, the read marks on this phone, and Shut down and Rename as the
-	 * Session sends them (rulings 18-21). */
+	 * Session sends them (rulings 18-21), held while offline. */
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
 		if (action === "markRead") seen.markRead(actionsClient, [row]);
 		else if (action === "markUnread") seen.markUnread(actionsClient, [row]);
-		else if (action === "shutDown") confirmShutDown(actionsClient, row, toast);
-		else if (action === "rename") promptRename(actionsClient, row, toast);
+		else if (action === "shutDown")
+			confirmShutDown(row, () => {
+				const on = liveNow.current ? clientNow.current : null;
+				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
+				else
+					shutDownSession(on, row.ref).then(
+						() => toast.show({ text: SHUT_DOWN_DONE }),
+						(error: unknown) => toast.show({ text: shutDownFailed(row.title, error) }),
+					);
+			});
+		else if (action === "rename")
+			promptRename(row, (name) => {
+				const on = liveNow.current && !waitsFor(row.ref, "rename") ? clientNow.current : null;
+				if (!on) {
+					if (name.trim()) holdAction({ kind: "rename", ref: row.ref, title: row.title, name: name.trim() });
+					return;
+				}
+				renameSession(on, row.ref, name).then(
+					(renamed) => {
+						if (renamed) toast.show({ text: RENAMED });
+					},
+					(error: unknown) => toast.show({ text: renameFailed(row.title, error) }),
+				);
+			});
 		else runRowAction(item, action);
 	};
 	const archivingId = archivingSessionId(organization.state);
@@ -521,6 +618,7 @@ function Board({
 		draftRefs,
 		activityOf,
 		msSinceRead,
+		waiting: (ref) => waitingLine(held, ref),
 		swipes: (item, archived) =>
 			rowSwipes(item, rowContext(archived), archivingId, (action) =>
 				action === "more" ? openRowMenu(item, archived) : runRowAction(item, action),
@@ -677,10 +775,16 @@ function Board({
 			actions: (item, archived) => menuActionsHere(item, rowContext(archived)),
 			hostLabel,
 			act: (item, action) => menuHandlers.current.actOnRow(item, action),
+			// What is on its way can't be taken back, so it offers no Cancel.
+			held: (item) =>
+				heldFor(heldNow.current, item.row.ref)
+					.filter((record) => !hold.isSending(record.id))
+					.map((record) => ({ id: record.id, label: `Cancel ${heldVerb(record.action)}` })),
+			cancel: (id) => hold.cancel(id),
 			openSession: (item) => menuHandlers.current.openSession(item.row),
 			closed: () => list.setInteraction("menu", false),
 		}),
-		[shownRows, rowContext, hostLabel, list],
+		[shownRows, rowContext, hostLabel, list, hold],
 	);
 	useProvideSheetHost(rowMenuHosts, sheetKey(hubId), rowMenuHost);
 	const itemsOf = (section: ProjectSection) => shownSections.find((shown) => shown.section === section)?.items ?? [];
@@ -760,13 +864,40 @@ function Board({
 		leaveSearch();
 		revealProject(project.key);
 	};
+	/** A project's change: held while offline, or through the journal. */
+	const actOnProject = (project: NavigationProjectSummary, action: ProjectMenuAction) => {
+		const target = { key: project.key, workingDir: project.working_dir };
+		// A change waiting on the same setting goes through the hold too, as a
+		// row's does (waitsFor).
+		const pending = heldProjectState(heldNow.current, project.key);
+		const waits =
+			action === "pin" || action === "unpin" ? pending.favorite !== undefined : pending.archived !== undefined;
+		if (!liveNow.current || waits) holdAction({ kind: "project", project: target, action });
+		else {
+			// Asked at the press: the journal may have moved since the render.
+			const now = organizationNow.current;
+			if (now.actions && organizationOpen(now)) void projectChange(now.actions, target, action);
+		}
+	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
-		const actions = projectMenuActions(project, {
-			connected,
-			organizationReady: organization.ready,
-			archived: section === "archived",
-		});
-		return actions.length ? () => openProjectMenu(organization, project, actions) : undefined;
+		// The menu offers what the project will be once what's held goes, so a
+		// held Pin to top offers Unpin, which cancels it.
+		const pending = heldProjectState(held, project.key);
+		const actions = projectMenuActions(
+			{
+				...project,
+				favorite: pending.favorite ?? project.favorite,
+				is_archived: pending.archived ?? project.is_archived,
+			},
+			{
+				connected,
+				organizationReady: organization.ready,
+				archived: pending.archived ?? section === "archived",
+			},
+		);
+		return actions.length
+			? () => openProjectMenu(project, actions, (action) => actOnProject(project, action))
+			: undefined;
 	};
 	const treeItem = (section: ProjectSection, item: Exclude<ProjectTreeItem, { kind: "session" }>) => {
 		if (item.kind === "more" || item.kind === "moreProjects")
@@ -788,7 +919,11 @@ function Board({
 					if ("fold" in item) setFolded(item.fold, !item.folded);
 				}}
 				onLongPress={item.kind === "project" ? projectMenu(section, item.project) : undefined}
-				changing={item.kind === "project" && journalHoldsProject(organization, item.project.key)}
+				changing={
+					item.kind === "project" &&
+					(journalHoldsProject(organization, item.project.key) ||
+						Object.keys(heldProjectState(held, item.project.key)).length > 0)
+				}
 			/>
 		);
 		if (item.key !== revealKey) return row;
@@ -899,6 +1034,11 @@ function Board({
 		{ connected: actionsConnected, organizationReady: organization.ready },
 	);
 	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
+		if (!liveNow.current) {
+			for (const row of rows) holdRowAction(row, "archive");
+			leaveSelect();
+			return;
+		}
 		const archived = await confirmEach(organization, rows, (actions, row) => archiveOne(actions, row, true));
 		leaveSelect();
 		if (archived.length)
@@ -917,6 +1057,11 @@ function Board({
 			});
 	};
 	const pinChosen = async (rows: readonly NavigationSessionSummary[], section: PinTarget, name: string) => {
+		if (!liveNow.current) {
+			for (const row of rows) holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } });
+			leaveSelect();
+			return;
+		}
 		const pinned = await confirmEach(organization, rows, (actions, row) =>
 			pinSession(actions, { sessionRef: row.ref, ...section }),
 		);
@@ -1045,8 +1190,11 @@ function Board({
 					onDone={leaveSelect}
 					onArchive={() => void archiveChosen(selection.archive)}
 					onPin={() =>
-						chooseCategory(organization, board.getSnapshot().pins.rows, toast, (section, name) =>
-							pinChosen(selection.pin, section, name),
+						chooseCategory(
+							() => !liveNow.current || organizationOpen(organizationNow.current),
+							board.getSnapshot().pins.rows,
+							toast,
+							(section, name) => pinChosen(selection.pin, section, name),
 						)
 					}
 					onMarkRead={markChosenRead}
@@ -1177,12 +1325,12 @@ function archiveOne(actions: NavigationActions, row: NavigationSessionSummary, a
  * one, as an action sheet. A new category's name is 1-80 characters, the
  * journal's own bound. */
 function chooseCategory(
-	organization: BoardOrganization,
+	canChoose: () => boolean,
 	categories: readonly NavigationPinSectionDescriptor[],
 	toast: Pick<ToastController, "show">,
 	pin: (section: PinTarget, name: string) => void,
 ) {
-	if (!organizationOpen(organization)) return;
+	if (!canChoose()) return;
 	const createCategory = () =>
 		Alert.prompt(
 			"New category",
@@ -1225,49 +1373,24 @@ function menuActionsHere(item: ClassifiedRow, context: RowActionContext): RowAct
 	return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
 }
 
-/** Shut down from the row menu: asked first, then the Session's own
- * request, then a toast either way. */
-function confirmShutDown(
-	client: ConversationClientLike | null,
-	row: NavigationSessionSummary,
-	toast: Pick<ToastController, "show">,
-) {
+/** Shut down from the row menu: asked first, online or offline, then
+ * `shutDown` runs (the Session's own request, or a hold). */
+function confirmShutDown(row: NavigationSessionSummary, shutDown: () => void) {
 	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
 		{ text: "Cancel", style: "cancel" },
-		destructiveButton("Shut down", () => {
-			if (!client) return;
-			shutDownSession(client, row.ref).then(
-				() => toast.show({ text: "Session shut down" }),
-				(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
-			);
-		}),
+		destructiveButton("Shut down", shutDown),
 	]);
 }
 
 /** Rename from the row menu (iOS only: Alert.prompt), starting from the
- * row's title. An empty name sends nothing. */
-function promptRename(
-	client: ConversationClientLike | null,
-	row: NavigationSessionSummary,
-	toast: Pick<ToastController, "show">,
-) {
+ * row's title; `rename` gets the name typed. */
+function promptRename(row: NavigationSessionSummary, rename: (name: string) => void) {
 	Alert.prompt(
 		"Rename session",
 		undefined,
 		[
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Rename",
-				onPress: (name?: string) => {
-					if (!client) return;
-					renameSession(client, row.ref, name ?? "").then(
-						(renamed) => {
-							if (renamed) toast.show({ text: "Renamed" });
-						},
-						(error: unknown) => toast.show({ text: `Couldn't rename “${row.title}”: ${errorText(error)}` }),
-					);
-				},
-			},
+			{ text: "Rename", onPress: (name?: string) => rename(name ?? "") },
 		],
 		"plain-text",
 		row.title,
@@ -1275,22 +1398,15 @@ function promptRename(
 }
 
 /** A project row's long-press menu (ruling 15): Pin to top or Unpin, and
- * Archive or Unarchive, as an action sheet, or an alert off iOS. */
+ * Archive or Unarchive, as an action sheet, or an alert off iOS. `act`
+ * decides at the press whether the change is held, goes through the
+ * journal, or can't go, since the connection or the journal may have moved
+ * while the menu was up. */
 function openProjectMenu(
-	organization: BoardOrganization,
 	project: NavigationProjectSummary,
 	actions: readonly ProjectMenuAction[],
+	act: (action: ProjectMenuAction) => void,
 ) {
-	if (!organizationOpen(organization)) return;
-	const act = (action: ProjectMenuAction) => {
-		if (!organizationOpen(organization)) return;
-		if (action === "pin" || action === "unpin") void organization.actions?.favorite(project.key, action === "pin");
-		else
-			void organization.actions?.archive(
-				{ kind: "project", id: project.key, workingDir: project.working_dir },
-				action === "archive",
-			);
-	};
 	const title = projectName(project);
 	if (Platform.OS === "ios") {
 		ActionSheetIOS.showActionSheetWithOptions(
