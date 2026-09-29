@@ -1636,6 +1636,12 @@ describe("edit", () => {
     });
 
     expect(onRestoreToComposer).toHaveBeenCalledWith("", undefined, ["probe"]);
+    // Settle the removal this click started before the test ends. Left in
+    // flight, the next test's resetThreadsStoreForTests closes the runtime's
+    // storage out from under it; close() is terminal now, so the late
+    // completion would report "Mutation outbox storage was closed" as a toast
+    // in the NEXT test (the queue-edit failure toast this file asserts on).
+    await flushPendingTurnsProjectionForTests();
   });
 
   // The restore runs after the row is locked, so a failure there owes the row
