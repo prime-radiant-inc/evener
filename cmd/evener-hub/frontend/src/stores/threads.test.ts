@@ -13039,11 +13039,14 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
-  // Round-13 Medium: the guard's own marker must not disable the fallback. A
-  // settled send's clearing refresh is fire-and-forget and swallows failures,
-  // so a marker left true with nothing undelivered behind it would refuse every
-  // later send for the ref once storage wedges - the outage this feature exists
-  // to cover. An unprovable read now clears instead of preserving the true.
+  // Round-13 Medium: the guard must not disable the fallback for a row that is
+  // already delivered. A settled send's clearing refresh is fire-and-forget and
+  // swallows failures, so a row left counted with nothing undelivered behind it
+  // would refuse every later send for the ref once storage wedges - the outage
+  // this feature exists to cover. The cause is the settle: it resolves the
+  // row's id itself, so nothing here depends on this failed read clearing
+  // anything (the direct test of that cause is "a settle re-enables the
+  // fallback with no read involved" below).
   test("a settled send whose clearing refresh cannot read does not block the fallback", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-stale-marker";
