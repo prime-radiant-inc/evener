@@ -52,7 +52,25 @@ it("takes a photo bigger than the limit on disk when the phone's encoding of it 
 	expect(document.getSnapshot().record.images?.[0]?.mediaType).toBe("image/jpeg");
 });
 
-it("rejects an encoded PNG over the server byte limit without persisting it", async () => {
+it("refuses a file too big to process before decoding it", async () => {
+	const huge = { ...photo, name: "huge.jpg", size: 200 * 1024 * 1024 };
+	let decoded = 0;
+	const { document, selection } = setup(
+		async () => [huge],
+		async () => {
+			decoded++;
+			return "AQID";
+		},
+	);
+
+	await selection.choose();
+
+	expect(decoded).toBe(0);
+	expect(document.getSnapshot().record.images ?? []).toHaveLength(0);
+	expect(selection.getSnapshot().error).toContain("huge.jpg (too large to process)");
+});
+
+it("rejects an encoded image over the server byte limit without persisting it", async () => {
 	const source = { ...photo, size: MAX_ATTACHMENT_BYTES - 1 };
 	const valid = { ...source, name: "valid.png" };
 	const encoded = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1).toString("base64");
@@ -71,7 +89,7 @@ it("rejects an encoded PNG over the server byte limit without persisting it", as
 	expect(selection.getSnapshot().pending).toHaveLength(0);
 });
 
-it("accepts an encoded PNG at the server byte limit", async () => {
+it("accepts an encoded image at the server byte limit", async () => {
 	const source = { ...photo, size: MAX_ATTACHMENT_BYTES - 1 };
 	const encoded = Buffer.alloc(MAX_ATTACHMENT_BYTES).toString("base64");
 	const { document, selection } = setup(
@@ -86,7 +104,7 @@ it("accepts an encoded PNG at the server byte limit", async () => {
 	expect(selection.getSnapshot().error).toBeNull();
 });
 
-it("accepts valid encoded PNGs through the padded size boundary", async () => {
+it("accepts valid encoded images through the padded size boundary", async () => {
 	const source = { ...photo, size: MAX_ATTACHMENT_BYTES - 1 };
 	const sizes = [MAX_ATTACHMENT_BYTES - 2, MAX_ATTACHMENT_BYTES - 1, MAX_ATTACHMENT_BYTES];
 	const picked = sizes.map((size) => ({

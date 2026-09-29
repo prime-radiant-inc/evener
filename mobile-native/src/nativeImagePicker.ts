@@ -1,8 +1,8 @@
+import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
 import { randomUUID } from "expo-crypto";
 import { File } from "expo-file-system";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import * as Picker from "expo-image-picker";
-import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
 import { encodeToFit, type FitAttempt } from "./imageFit";
 import { base64ByteLength, CameraAccessDenied, type ImagePicker, type PickedImage } from "./imageSelection";
 

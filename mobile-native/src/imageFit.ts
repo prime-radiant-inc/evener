@@ -25,7 +25,7 @@ export function fitAttempts(width: number, height: number): FitAttempt[] {
 }
 
 /** Encodes each attempt in turn and keeps the first whose bytes fit;
- * when none does, the last and smallest, for the size check to name. */
+ * when none does, the last, for the size check to name. */
 export async function encodeToFit(
 	width: number,
 	height: number,
