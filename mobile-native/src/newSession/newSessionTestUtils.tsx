@@ -1,9 +1,12 @@
 // The context a New session page reads, as NewSessionSheet builds it, for
 // tests that mount one page: the hub is "magic-kingdom" (hub-1), its own
-// machine is named after it, and the launch memory lives in memory.
+// machine is named after it, and the launch memory lives in memory. TestSheet
+// runs the sheet's own plugin preview over the context's client.
 import type { SyncStringStorage } from "../syncStringStorage";
 import { LaunchMemory } from "./launchMemory";
-import type { NewSessionContextValue, NewSessionStore } from "./newSessionContext";
+import type { ReactNode } from "react";
+import { type NewSessionContextValue, NewSessionProvider, type NewSessionStore } from "./newSessionContext";
+import { useSheetPlugins } from "./sheetPlugins";
 
 export function memoryStorage(): SyncStringStorage {
 	const items = new Map<string, string>();
@@ -28,6 +31,13 @@ export function sheetContext(
 		live: null,
 		memory: new LaunchMemory(memoryStorage(), "hub-1"),
 		hostLabel: (host) => (host === "local" ? "magic-kingdom" : host),
+		plugins: { status: "loading" },
 		...over,
 	};
+}
+
+/** The page under test inside the context, with the sheet's plugin preview. */
+export function TestSheet({ value, children }: { value: NewSessionContextValue; children: ReactNode }) {
+	const plugins = useSheetPlugins(value.store, value.client, value.ready);
+	return <NewSessionProvider value={{ ...value, plugins }}>{children}</NewSessionProvider>;
 }
