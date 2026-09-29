@@ -9,7 +9,7 @@ import { AccessibilityInfo, Animated, PanResponder, Pressable, Text, View } from
 import type { WhyLine } from "../board/attention";
 import { StateMark } from "../board/StateMark";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type Alert, type Banner, needsYou } from "./alertCenter";
+import type { Alert, Banner } from "./alertCenter";
 import { swipeDismisses } from "./bannerGesture";
 
 const COALESCED_LINE = "Tap to see them on the Board.";
