@@ -222,7 +222,7 @@ export class LaunchSettings {
     } catch {
       if (version === this.version)
         this.publish({
-          error: "Could not load launch settings. Try again when connected.",
+          error: "Could not load launch settings.",
         });
     } finally {
       if (version === this.version) this.publish({ loading: false });
@@ -282,7 +282,7 @@ export class LaunchSettings {
       this.publish({
         error: sent
           ? "Could not confirm the save. Review the current layer before trying again."
-          : "Could not check the current layer. Nothing was sent; try again when connected.",
+          : "Could not check the current layer. Nothing was sent.",
       });
     } finally {
       if (sent && active()) {
