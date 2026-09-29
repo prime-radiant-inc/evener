@@ -25,6 +25,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
@@ -135,6 +136,7 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   topNotesStore.getState().resetForTests();
   seedPinCatalogForPicker();
+  resetActivitySidebarStoreForTests();
 });
 
 afterEach(() => {
@@ -1917,6 +1919,22 @@ describe("session row", () => {
     renderRow();
     await openMenu(/actions for/i);
     expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
+  });
+
+  test("a pure focus move refreshes the Activity check (the ✓ names the session the sidebar shows)", async () => {
+    // The sidebar's scope follows workspace focus. Subscribing to the sidebar
+    // store alone leaves the ✓ on the session the sidebar showed BEFORE the
+    // focus move - and clicking it re-scopes where a close was implied.
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    activitySidebarStore.getState().openWith();
+    renderRow();
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "local:other" });
+    });
+    // The row re-rendered on the focus change: the item is plain again.
+    expect(await screen.findByRole("menuitem", { name: "Activity" })).toBeTruthy();
   });
 
   test("shut down confirms through onShutdownSession", async () => {
