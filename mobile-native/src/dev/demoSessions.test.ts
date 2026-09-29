@@ -25,8 +25,8 @@ import { DEMO_MODEL_LIST } from "./demoSetup.js";
 const NOW = Date.parse("2026-09-28T21:00:00.000Z");
 const sessions = createDemoSessions({ now: NOW });
 
-function threadOf(slug: string): Thread {
-	const thread = sessions.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
+function threadOf(slug: string, from: Thread[] = sessions): Thread {
+	const thread = from.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
 	if (!thread) throw new Error(`no demo thread for ${slug}`);
 	return thread;
 }
@@ -35,8 +35,8 @@ const hostOf = (ref: string) => ref.slice(0, ref.indexOf(":"));
 
 // One session as the Session screen sees it at a detail level: the store's
 // projection, then the screen's presentation and transcript rows.
-function open(slug: string, level: ContentLevel = "intent") {
-	const thread = threadOf(slug);
+function open(slug: string, level: ContentLevel = "intent", from: Thread[] = sessions) {
+	const thread = threadOf(slug, from);
 	const model = hydrateThread({ thread }, thread.evener.ref, NOW);
 	const display = displayForLevel(level, null);
 	const config = display.config ?? undefined;
@@ -460,5 +460,42 @@ describe("the demo sessions with long content", () => {
 	it("leaves every session's usual content alone without the flag", () => {
 		expect(notifications(threadOf("s-pr2138"))).toHaveLength(0);
 		expect(threadOf("s-audit").evener.pendingQuestion).toMatchObject({ count: 2 });
+	});
+});
+
+// One session replays the recorded wire corpora (agent/testdata/*wire), so
+// every tool family the phone summarizes can be seen and screenshotted in the
+// shapes the daemon sends.
+describe("the demo session with every tool family", () => {
+	const withTools = createDemoSessions({ now: NOW, toolFamilies: true });
+
+	it("is served only when asked for, leaving the mockup's fleet as it is", () => {
+		expect(sessions.some((thread) => thread.evener.ref === fleetSessionRef("s-tools"))).toBe(false);
+		expect(withTools.some((thread) => thread.evener.ref === fleetSessionRef("s-tools"))).toBe(true);
+	});
+
+	it("replays every recorded call and its result, with every family the phone summarizes", () => {
+		const { thread, rows } = open("s-tools", "tools", withTools);
+		const items = thread.turns?.flatMap((turn) => turn.items ?? []) ?? [];
+		const calls = items.filter((item) => item.type === "commandExecution");
+		const families = new Set(calls.map((call) => call.toolName));
+		for (const family of [
+			"shell",
+			"read_file",
+			"edit_file",
+			"web_fetch",
+			"use_skill",
+			"list_dir",
+			"task_list",
+			"delegate",
+		])
+			expect(families).toContain(family);
+		// Each announcement has its result beside it, sharing its callId.
+		const settledCalls = new Set(calls.filter((call) => call.status !== "inProgress").map((call) => call.callId));
+		expect(calls.filter((call) => !settledCalls.has(call.callId))).toEqual([]);
+		expect(items.some((item) => item.type === "systemMessage")).toBe(true);
+		expect(items.some((item) => item.type === "steering")).toBe(true);
+		expect(new Set(items.map((item) => item.id)).size).toBe(items.length);
+		expect(runsOf(rows)).not.toEqual([]);
 	});
 });

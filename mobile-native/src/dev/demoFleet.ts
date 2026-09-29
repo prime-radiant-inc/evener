@@ -819,15 +819,30 @@ export interface FleetSession {
 }
 
 // The ref the fleet names a session by, from its fixture slug.
+// Not in the Board mockup, so served only with EVENER_DEMO_FLEET_TOOLS: a
+// session whose transcript replays the recorded wire corpora, one step of
+// every tool family (demoToolFamilies.ts).
+const TOOL_FAMILIES_SESSION: RawSession = {
+	id: "s-tools",
+	title: "Show Every Tool Family",
+	state: "yourmove",
+	ago: 4 * H,
+};
+
+/** The fleet's sessions, with the tool families session when asked for. */
+function fleetList(toolFamilies = false): RawSession[] {
+	return toolFamilies ? [...SESSIONS, TOOL_FAMILIES_SESSION] : SESSIONS;
+}
+
 export function fleetSessionRef(slug: string): string {
-	const raw = SESSIONS.find((candidate) => candidate.id === slug);
+	const raw = fleetList(true).find((candidate) => candidate.id === slug);
 	if (!raw) throw new Error(`Unknown demonstration session: ${slug}`);
 	return sessionRef(raw);
 }
 
 // Every session the fleet holds, in the fleet's own order.
-export function fleetSessions(): FleetSession[] {
-	return SESSIONS.map((raw) => {
+export function fleetSessions(toolFamilies = false): FleetSession[] {
+	return fleetList(toolFamilies).map((raw) => {
 		const projectKey = projectKeyOf(raw);
 		return {
 			slug: raw.id,
@@ -940,6 +955,9 @@ export interface DemoFleetOptions {
 	// Mirrors EVENER_DEMO_LONG: demo-hub.mts serves the sessions' long content
 	// (demoSessions.ts LONG_CONTENT) in place of the usual.
 	long?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_TOOLS: adds "Show Every Tool Family" to
+	// Finished, a session replaying the recorded wire corpora.
+	toolFamilies?: boolean;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
@@ -1013,7 +1031,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	// answer, keeps every count, section and catalog below in step for free:
 	// a hub with nothing live just has nothing to filter, page or search over.
 	// The fleet as it stands; each change replaces it with a changed copy.
-	let sessionsList = options.empty ? [] : SESSIONS;
+	let sessionsList = options.empty ? [] : fleetList(options.toolFamilies);
 	// Every resource's revision is one ahead of the navigation sequence: both
 	// start there and each change advances them together.
 	let sequence = 0;
