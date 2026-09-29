@@ -3,6 +3,7 @@
 // whether the organization journal holds one.
 import type { NavigationProjectSummary } from "@evener/appwire-client";
 import { controllerOwnedProject } from "../organizationNavigation";
+import { organizes } from "./rowActions";
 import type { BoardOrganization } from "./useBoardOrganization";
 
 export type ProjectMenuAction = "pin" | "unpin" | "archive" | "unarchive";
@@ -18,13 +19,9 @@ export function projectMenuActions(
 	project: NavigationProjectSummary,
 	context: { connected: boolean; organizationReady: boolean; archived: boolean },
 ): ProjectMenuAction[] {
-	if (
-		!context.connected ||
-		!context.organizationReady ||
-		project.key === "no-project" ||
-		!controllerOwnedProject(project.sources)
-	)
-		return [];
+	// Offline the changes are held until the connection returns (phase 6
+	// ruling 18); connected, the journal must be free.
+	if (!organizes(context) || project.key === "no-project" || !controllerOwnedProject(project.sources)) return [];
 	const actions: ProjectMenuAction[] = [project.favorite ? "unpin" : "pin"];
 	if (project.working_dir) actions.push(context.archived || project.is_archived ? "unarchive" : "archive");
 	return actions;

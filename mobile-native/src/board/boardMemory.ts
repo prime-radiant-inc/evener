@@ -6,6 +6,7 @@ import { isPlainObject } from "@evener/appwire-client";
 import { readJson, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { hubTime } from "./attention";
+import { boardHoldKey } from "./boardHold";
 
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
@@ -222,7 +223,13 @@ export class RecentSearches {
 
 export function forgetBoard(storage: SyncStringStorage, hubId: string): void {
 	let failed = false;
-	for (const key of [seenKey(hubId), foldedKey(hubId), organizeKey(hubId), recentSearchesKey(hubId)])
+	for (const key of [
+		seenKey(hubId),
+		foldedKey(hubId),
+		organizeKey(hubId),
+		recentSearchesKey(hubId),
+		boardHoldKey(hubId),
+	])
 		try {
 			storage.removeItemSync(key);
 		} catch {

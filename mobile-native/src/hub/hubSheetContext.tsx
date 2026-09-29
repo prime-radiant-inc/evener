@@ -18,6 +18,7 @@ export type HubRoutes = {
 	/** focus opens that host's detail once. */
 	Hosts: { hubId: string; focus?: string };
 	HostDetail: { hubId: string; name: string };
+	HostEdit: { hubId: string; name: string };
 	Hubs: undefined;
 	AddHub: { how: How };
 	HubDetails: { id: string };

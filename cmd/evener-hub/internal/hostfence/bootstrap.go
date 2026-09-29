@@ -82,6 +82,11 @@ type StaleAttemptError struct {
 
 // Error renders the refusal with both registrations.
 func (e *StaleAttemptError) Error() string {
+	if e.Live.IsZero() {
+		return fmt.Sprintf(
+			"host %q: the bootstrap attempt is bound to generation %d/%q/%d but the host is no longer live; re-resolve the host and retry",
+			e.Host, e.Bound.Generation, e.Bound.IncarnationID, e.Bound.PresenceEpoch)
+	}
 	return fmt.Sprintf(
 		"host %q: the bootstrap attempt is bound to generation %d/%q/%d but the live host carries %d/%q/%d; re-resolve the host and retry",
 		e.Host, e.Bound.Generation, e.Bound.IncarnationID, e.Bound.PresenceEpoch,
@@ -144,8 +149,12 @@ func ExemptDeliveryPermitted(p Provisioning, ev BootstrapEvidence) bool {
 // and a failure returns the record as it stands, so the flow never reports a
 // convergence the file does not carry.
 type BootstrapStore interface {
-	// Provisioning reads the host's current record.
-	Provisioning(host string) (Provisioning, error)
+	// Provisioning reads the host's current record, bound to identity: a live
+	// host whose registration differs — or a host that is no longer live —
+	// refuses with the typed *StaleAttemptError, so every caller (the flow's
+	// entry read, recovery's re-reads) validates the registration before any
+	// host-side interaction.
+	Provisioning(host string, identity BootstrapIdentity) (Provisioning, error)
 	// PersistAttemptFence writes the durable bootstrap-attempt fence with the
 	// attempt's epoch in its own atomic hub.toml write, before the attempt's
 	// first remote side effect. The write is conditional and atomic: a record
@@ -338,6 +347,9 @@ func (e *AttemptOrphanError) Error() string {
 }
 
 // Bootstrap runs §6's first-contact attempt for the host's current record. It
+// validates the attempt's bound identity at the entry read — before any decision
+// and before any host-side interaction (a claim or a probe), so a stale attempt
+// whose host was removed and re-added can never touch the new incarnation — and
 // decides from the store's record (re-read at entry, so a retry racing the
 // finalize replays under dedup rather than delivering again, §6:139); on an
 // eligible never-provisioned host it persists the attempt fence in its own
@@ -375,7 +387,7 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 		}
 	}
 
-	record, err := req.Store.Provisioning(req.Host)
+	record, err := req.Store.Provisioning(req.Host, req.Identity)
 	if err != nil {
 		return BootstrapOutcome{}, err
 	}
@@ -551,6 +563,8 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 // from a live attempt about to deliver, and opening the fenced path while an
 // attempt is active would overlap it. Recovery therefore:
 //
+//  0. validates the bound identity through the same read (a changed or removed
+//     host refuses with the typed *StaleAttemptError before the claim or probe);
 //  1. refuses an unidentifiable attempt (a fence with no epoch) as absent;
 //  2. requires the claim-plus-quiesce primitive and refuses without it as
 //     absent (an active attempt cannot be excluded);
@@ -628,7 +642,7 @@ func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Prov
 	// have finalized while this recovery waited for the claim. Re-read under the
 	// held claim and replay as provisioned when it converged — never probe or
 	// report an orphan/absent posture for an attempt that already succeeded.
-	fresh, err := req.Store.Provisioning(req.Host)
+	fresh, err := req.Store.Provisioning(req.Host, req.Identity)
 	if err != nil {
 		return BootstrapOutcome{}, err
 	}

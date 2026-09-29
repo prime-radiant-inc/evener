@@ -23,7 +23,19 @@ describe("a project row's long-press actions (ruling 15)", () => {
 		["a project another host shares", project({ sources: ["local", "paradise-park"] }), ready, []],
 		["a project only another host owns", project({ sources: ["paradise-park"] }), ready, []],
 		["the sessions outside any project", project({ key: "no-project" }), ready, []],
-		["any project while offline", project(), { ...ready, connected: false }, []],
+		// Offline, a change is held until the connection returns (ruling 18).
+		[
+			"a project while offline",
+			project(),
+			{ ...ready, connected: false, organizationReady: false },
+			["pin", "archive"],
+		],
+		[
+			"a shared project while offline",
+			project({ sources: ["local", "paradise-park"] }),
+			{ ...ready, connected: false },
+			[],
+		],
 		["any project while organization isn't ready", project(), { ...ready, organizationReady: false }, []],
 	] as const)("%s", (_name, summary, context, expected) => {
 		expect(projectMenuActions(summary, context)).toEqual(expected);

@@ -585,22 +585,23 @@ func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 // the record machinery's one derive-then-install path, so the file and the
 // store cannot disagree about the flags.
 //
-// BOUNDARY (S21): the first-contact caller that drives hostfence.Bootstrap —
-// the attach/Ensure wiring that runs the flow on a host's first contact — is
-// the deploy-pipeline surface's later slice. This slice lands the record
-// machinery, the fence and the gate the flow needs; until that caller lands,
-// bootstrapStore is consumed by the tests that pin both crash windows.
+// The first-contact caller is wired: hubHostManager.BootstrapFirstContact
+// drives the flow for a host at first contact, reached from the attach ladder's
+// first-attach repair through sshconn's BootstrapHook. bootstrapStore therefore
+// serves a production caller beside the tests that pin both crash windows.
 type hostBootstrapStore struct{ m *hubHostManager }
 
 // bootstrapStore returns the bootstrap record seam the first-contact flow
 // writes through.
 func (m *hubHostManager) bootstrapStore() hostfence.BootstrapStore { return hostBootstrapStore{m: m} }
 
-// Provisioning reads the host's current bootstrap record.
-func (s hostBootstrapStore) Provisioning(host string) (hostfence.Provisioning, error) {
+// Provisioning reads the host's current bootstrap record, bound to identity: a
+// changed registration or a host that is no longer live refuses with the typed
+// stale-attempt error before the flow takes any host-side step.
+func (s hostBootstrapStore) Provisioning(host string, identity hostfence.BootstrapIdentity) (hostfence.Provisioning, error) {
 	s.m.cfg.mu.Lock()
 	defer s.m.cfg.mu.Unlock()
-	return s.m.cfg.store.provisioningFor(host), nil
+	return s.m.boundProvisioning(host, identity)
 }
 
 // PersistAttemptFence writes §6:133's durable bootstrap-attempt fence in its
@@ -742,7 +743,9 @@ func (m *hubHostManager) boundProvisioning(host string, identity hostfence.Boots
 		break
 	}
 	if !ok {
-		return hostfence.Provisioning{}, fmt.Errorf("host %q is not a live host, so no bootstrap record was written", host)
+		// A host that is no longer live is the same class: the attempt's
+		// registration cannot stand, and a zero Live identity says so.
+		return hostfence.Provisioning{}, &hostfence.StaleAttemptError{Host: host, Bound: identity}
 	}
 	if identity.IsZero() || live != identity {
 		// The typed stale-registration refusal: the deploy-pipeline's stale-entry

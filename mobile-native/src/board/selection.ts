@@ -2,7 +2,7 @@
 // bar's actions applies to.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import type { ClassifiedRow } from "./attention";
-import { archiveTarget, isTopLevel } from "./rowActions";
+import { archiveTarget, isTopLevel, organizes } from "./rowActions";
 
 export interface SelectedRow {
 	item: ClassifiedRow;
@@ -25,7 +25,7 @@ export function selectionActions(
 	context: { connected: boolean; organizationReady: boolean },
 ): SelectionActions {
 	const actions: SelectionActions = { archive: [], pin: [], markRead: [] };
-	const organize = context.connected && context.organizationReady;
+	const organize = organizes(context);
 	const seen = new Set<string>();
 	for (const { item, archived } of selected) {
 		if (seen.has(item.row.ref)) continue;

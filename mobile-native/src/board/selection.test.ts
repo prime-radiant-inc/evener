@@ -46,16 +46,21 @@ it("applies each action to the sessions it can act on, once each", () => {
 	expect(refs(actions.markRead)).toEqual([local("a"), "paradise-park:c", local("d")]);
 });
 
-it("keeps only Mark as read while offline or while a change is unresolved", () => {
+it("keeps only Mark as read while a change is unresolved", () => {
 	const selected = [chosen(row(local("a")), "finished")];
-	for (const context of [
-		{ connected: false, organizationReady: true },
-		{ connected: true, organizationReady: false },
-	]) {
-		const actions = selectionActions(selected, context);
-		expect([actions.archive, actions.pin].map(refs)).toEqual([[], []]);
-		expect(refs(actions.markRead)).toEqual([local("a")]);
-	}
+	const actions = selectionActions(selected, { connected: true, organizationReady: false });
+	expect([actions.archive, actions.pin].map(refs)).toEqual([[], []]);
+	expect(refs(actions.markRead)).toEqual([local("a")]);
+});
+
+it("keeps every action offline, to be held until the connection returns (phase 6 ruling 18)", () => {
+	const selected = [chosen(row(local("a")), "finished")];
+	const actions = selectionActions(selected, { connected: false, organizationReady: false });
+	expect([actions.archive, actions.pin, actions.markRead].map(refs)).toEqual([
+		[local("a")],
+		[local("a")],
+		[local("a")],
+	]);
 });
 
 it("toggles one session in and out of the selection", () => {
