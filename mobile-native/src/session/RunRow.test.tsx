@@ -264,12 +264,16 @@ describe("a step's evidence", () => {
 		kind: "run",
 		id: "run:t",
 		turnId: "t1",
-		steps: [step("t", "task_list", {}, { detail: { arguments: "{}", output: "1. [in_progress] fix", tasks: tasks() } })],
+		steps: [
+			step("t", "task_list", {}, { detail: { arguments: "{}", output: "1. [in_progress] fix", tasks: tasks() } }),
+		],
 	});
 
 	it("opens a task_list step to the task list it returned", () => {
 		const run = withTasks();
-		const tree = render(<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-t" />);
+		const tree = render(
+			<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-t" />,
+		);
 		act(() => line(tree.root, "Checked the task list, done").props.onPress());
 		expect(shown(tree.root).map((node) => node.props.evidence)).toEqual([
 			[{ kind: "tasks", tasks: [{ id: 1, status: "in_progress", description: "Fix the drain" }] }],
