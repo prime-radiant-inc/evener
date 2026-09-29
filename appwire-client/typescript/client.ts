@@ -161,7 +161,6 @@ const FEATURE_KEYS = [
   "auth",
 ] as const;
 const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings"] as const;
-const NAVIGATION_CAPABILITY_KEYS = ["version", "generationId", "sequence"] as const;
 
 function hasRequiredAndOptionalKeys(
   value: Record<string, unknown>,
@@ -184,9 +183,12 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
   const serverInfo = value.serverInfo;
   const features = value.features;
   const navigation = value.navigation;
+  // serverInfo and navigation, like features, check the fields this client
+  // knows and let a field a newer hub added through: an additive field must
+  // not fail older clients' handshakes (#3226). The response's own keys stay
+  // exact.
   if (
     !isPlainObject(serverInfo) ||
-    !hasRequiredAndOptionalKeys(serverInfo, ["name", "version"]) ||
     typeof serverInfo.name !== "string" ||
     serverInfo.name.trim() === "" ||
     typeof serverInfo.version !== "string" ||
@@ -213,10 +215,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
     throw new InitializeValidationError("features");
   }
   if (Object.hasOwn(value, "navigation")) {
-    if (
-      !isPlainObject(navigation) ||
-      !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS, ["readVersions"])
-    ) {
+    if (!isPlainObject(navigation)) {
       throw new InitializeValidationError("navigation");
     }
     if (

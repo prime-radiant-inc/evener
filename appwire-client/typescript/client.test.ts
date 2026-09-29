@@ -158,6 +158,38 @@ describe("decodeInitializeResponse", () => {
     expect(error).toHaveProperty("message", `invalid initialize response at ${field}`);
   });
 
+  // A newer hub may add fields to serverInfo or navigation: additive, so the
+  // handshake goes on, and the fields the client knows stay strictly checked
+  // (#3226). The top level stays exact (see "rejects extra top-level key").
+  test("ignores a serverInfo or navigation field this client doesn't know", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      serverInfo: { ...FAKE_INITIALIZE_RESULT.serverInfo, build: "2026.09.29" },
+      navigation: { version: 1, generationId: "generation", sequence: 0, somethingLater: { shape: "any" } },
+    };
+    expect(decodeInitializeResponse(response)).toMatchObject({
+      serverInfo: FAKE_INITIALIZE_RESULT.serverInfo,
+      navigation: { version: 1, generationId: "generation", sequence: 0 },
+    });
+  });
+
+  test.each([
+    ["serverInfo", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub", build: "x" } }],
+    [
+      "navigation",
+      { ...FAKE_INITIALIZE_RESULT, navigation: { version: 1, generationId: "generation", somethingLater: true } },
+    ],
+    [
+      "navigation.readVersions",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: { version: 1, generationId: "generation", sequence: 0, readVersions: [0], somethingLater: true },
+      },
+    ],
+  ])("still refuses a malformed known %s field beside an unknown one", (field, value) => {
+    expect(() => decodeInitializeResponse(value)).toThrow(`invalid initialize response at ${field}`);
+  });
+
   test("accepts and preserves maximum safe navigation integers", () => {
     const response = {
       ...FAKE_INITIALIZE_RESULT,
