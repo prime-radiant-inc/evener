@@ -64,6 +64,9 @@ export interface RailProject {
   session_count?: number;
   /** The catalog the project was listed in; its archived list is keyed by it. */
   catalog?: "projects" | "archived_projects" | "test_runs";
+  /** The navigation summary's archived session count. A loaded archived list
+   * whose total differs is stale (rows were archived elsewhere) and refetches. */
+  archived_total?: number;
   sessions: RailSession[];
   loaded?: boolean;
   resourceError?: string;

@@ -817,10 +817,12 @@ function withArchivedList(project: RailProject, catalog: CatalogKind, list: Arch
   const cached = archivedListProjectCache.get(project);
   if (cached && cached.list === list) return cached.result;
   const rows = list ? sessions(list.rows, `project:${project.key}:archived`, "archived", undefined, project.key) : [];
-  const total = list ? list.total : (project.more_archived ?? 0);
+  const summaryTotal = project.more_archived ?? 0;
+  const total = list ? list.total : summaryTotal;
   const result = {
     ...project,
     catalog,
+    archived_total: summaryTotal,
     sessions: [...project.sessions, ...rows],
     more_archived: Math.max(0, total - rows.length),
   };
@@ -1261,11 +1263,24 @@ function NavigationRail({
       loadProjectRoot(project.key);
     }
   }, [navigationMode, resources, isExpanded, loadProjectRoot, groupingMode]);
-  // A hydrated project with archived sessions loads its archived list.
+  // A hydrated project with archived sessions loads its archived list, and a
+  // loaded list refetches when the navigation count moves from the count it
+  // was fetched against: rows were archived or unarchived elsewhere (another
+  // client, the CLI, age). Comparing with the list's own total instead would
+  // refetch without end while the two counts disagree.
+  const archivedFetchCounts = useRef(new Map<string, number>());
   useEffect(() => {
     for (const project of allRailProjects(resources)) {
-      if (!project.loaded || !project.catalog || (project.more_archived ?? 0) === 0) continue;
-      if (archivedLists[archivedListKey(project.catalog, project.key)]) continue;
+      if (!project.loaded || !project.catalog) continue;
+      const total = project.archived_total ?? 0;
+      const key = archivedListKey(project.catalog, project.key);
+      const list = archivedLists[key];
+      // A list this rail did not fetch (another rail, a test) was fetched
+      // against its own first total.
+      if (list && !archivedFetchCounts.current.has(key)) archivedFetchCounts.current.set(key, list.total);
+      const fetchedAt = archivedFetchCounts.current.get(key);
+      if (fetchedAt === undefined ? total === 0 : fetchedAt === total) continue;
+      archivedFetchCounts.current.set(key, total);
       void refreshArchivedList(project.catalog, project.key);
     }
   }, [resources, archivedLists]);

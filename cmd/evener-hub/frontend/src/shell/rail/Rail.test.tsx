@@ -3075,6 +3075,38 @@ describe("archived rows come from evener/archived/list", () => {
     restoreScroll();
   });
 
+  test("a loaded list refetches when the navigation count moves past it", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0), archivedRow(1), archivedRow(2)], total: 3 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    await waitFor(() => expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]));
+    await act(async () => undefined);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a list whose total still disagrees with the navigation count is not refetched again", async () => {
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0), archivedRow(1)], total: 2 };
+    });
+    connectionStore.getState().connect(client);
+    installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([archivedRow(0), archivedRow(1)], 2);
+    render(<Rail />, client);
+    await waitFor(() => expect(seen).toHaveLength(1));
+    for (let turn = 0; turn < 5; turn++) await act(async () => undefined);
+    expect(seen).toHaveLength(1);
+  });
+
   test("the archived fold's overflow row loads the list's next page", async () => {
     const client = new FakeClient("ready");
     const seen: Array<{ cursor?: string }> = [];
