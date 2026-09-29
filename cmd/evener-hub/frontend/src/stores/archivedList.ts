@@ -14,8 +14,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { connectedClientPort } from "./connection";
 
-export const ARCHIVED_LIST_CATALOGS = ["projects", "archived_projects", "test_runs"] as const;
-export type ArchivedListCatalog = (typeof ARCHIVED_LIST_CATALOGS)[number];
+export type ArchivedListCatalog = "projects" | "archived_projects" | "test_runs";
 
 export interface ArchivedList {
   rows: NavigationSessionSummary[];
@@ -32,8 +31,10 @@ export interface ArchivedListState {
   lists: Record<string, ArchivedList>;
 }
 
+// archivedListKey is an encoded pair, so a project key holding any character
+// still parses back (refreshLoadedArchivedLists).
 export function archivedListKey(catalog: ArchivedListCatalog, projectKey: string): string {
-  return `${catalog}|${projectKey}`;
+  return JSON.stringify([catalog, projectKey]);
 }
 
 export const archivedListStore = createStore<ArchivedListState>(() => ({ lists: {} }));
@@ -88,12 +89,17 @@ export function loadMoreArchivedList(catalog: ArchivedListCatalog, projectKey: s
   return fetchPage(catalog, projectKey, cursor);
 }
 
-/** Refreshes every loaded list of the project, in any catalog: an action on
- * one of its sessions can move rows in or out of its archived tier. */
-export async function refreshArchivedListsForProject(projectKey: string): Promise<void> {
-  const { lists } = archivedListStore.getState();
-  const loaded = ARCHIVED_LIST_CATALOGS.filter((catalog) => lists[archivedListKey(catalog, projectKey)]);
-  await Promise.all(loaded.map((catalog) => refreshArchivedList(catalog, projectKey)));
+/** Refreshes every loaded list: an archive, unarchive, pin, unpin or delete
+ * can move rows in or out of a project's archived tier, and only the lists a
+ * user has opened are loaded, so refreshing them all is cheap. */
+export async function refreshLoadedArchivedLists(): Promise<void> {
+  const keys = Object.keys(archivedListStore.getState().lists);
+  await Promise.all(
+    keys.map((key) => {
+      const [catalog, projectKey] = JSON.parse(key) as [ArchivedListCatalog, string];
+      return refreshArchivedList(catalog, projectKey);
+    }),
+  );
 }
 
 export function useArchivedList(catalog: ArchivedListCatalog, projectKey: string): ArchivedList | undefined {

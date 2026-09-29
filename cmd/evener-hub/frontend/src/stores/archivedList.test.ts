@@ -9,7 +9,7 @@ import {
   archivedListStore,
   loadMoreArchivedList,
   refreshArchivedList,
-  refreshArchivedListsForProject,
+  refreshLoadedArchivedLists,
   resetArchivedListStoreForTests,
 } from "./archivedList";
 import { connectionStore } from "./connection";
@@ -161,8 +161,8 @@ describe("loadMoreArchivedList", () => {
   });
 });
 
-describe("refreshArchivedListsForProject", () => {
-  test("refreshes every loaded list for the project, in any catalog, and no other", async () => {
+describe("refreshLoadedArchivedLists", () => {
+  test("refreshes every loaded list, including a project key holding a separator", async () => {
     const fake = connectFakeClient();
     const seen: string[] = [];
     fake.on("evener/archived/list", (params) => {
@@ -171,11 +171,11 @@ describe("refreshArchivedListsForProject", () => {
     });
     await refreshArchivedList("projects", "proj");
     await refreshArchivedList("archived_projects", "proj");
-    await refreshArchivedList("projects", "other");
+    await refreshArchivedList("projects", "a|b");
     seen.length = 0;
 
-    await refreshArchivedListsForProject("proj");
+    await refreshLoadedArchivedLists();
 
-    expect(seen.sort()).toEqual(["archived_projects|proj", "projects|proj"]);
+    expect(seen.sort()).toEqual(["archived_projects|proj", "projects|a|b", "projects|proj"]);
   });
 });
