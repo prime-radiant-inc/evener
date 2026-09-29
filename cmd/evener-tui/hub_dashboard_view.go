@@ -506,7 +506,7 @@ func dashboardSessionDetails(row hubRow) string {
 		fmt.Fprintf(&b, "Source:   %s\n", row.sourceLabel)
 	}
 	if row.state != "" {
-		fmt.Fprintf(&b, "State:    %s\n", stateLabel(row.state))
+		fmt.Fprintf(&b, "State:    %s\n", attentionState(row.state, row.approvalPending))
 	}
 	if row.model != "" {
 		fmt.Fprintf(&b, "Model:    %s\n", row.model)

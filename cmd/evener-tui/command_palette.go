@@ -202,7 +202,7 @@ func commandPaletteEntriesForSession(mode hubMode, caps hubSessionCapabilities, 
 		case hubRowSession:
 			ref := row.ref
 			refText := ref.String()
-			detail := strings.TrimSpace(fmt.Sprintf("%s %s %s", row.sourceLabel, stateLabel(row.state), row.model))
+			detail := strings.TrimSpace(fmt.Sprintf("%s %s %s", row.sourceLabel, attentionState(row.state, row.approvalPending), row.model))
 			entries = append(entries, commandPaletteEntry{
 				Item: tuipick.PickerPanelItem{
 					ID:     "session:" + refText,

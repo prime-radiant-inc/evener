@@ -121,3 +121,38 @@ func TestSessionHeader_ApprovalReadsNotWorking(t *testing.T) {
 		t.Fatalf("session header should read Your move for a pending approval, got %q", header)
 	}
 }
+
+// The row's own details pane and the command palette's session entry are two
+// more places that render a row's state; both must read an approval as
+// awaiting too, or they contradict the row beside them (roborev #3129).
+func TestDashboardSessionDetails_ApprovalReadsNeedsYou(t *testing.T) {
+	row := hubRow{kind: hubRowSession, state: "active", approvalPending: true}
+	got := dashboardSessionDetails(row)
+	if !strings.Contains(got, "State:    awaiting") {
+		t.Fatalf("details pane must show the approval as awaiting, got %q", got)
+	}
+	if strings.Contains(got, "State:    active") {
+		t.Fatalf("details pane must not show the approval as active, got %q", got)
+	}
+}
+
+func TestCommandPaletteSessionEntry_ApprovalReadsNeedsYou(t *testing.T) {
+	rows := []hubRow{{
+		kind: hubRowSession, state: "active", approvalPending: true, title: "s",
+		ref: appwire.Ref{ThreadID: "t"},
+	}}
+	entries := commandPaletteEntriesForRows(hubModeDashboard, hubSessionCapabilities{}, rows)
+	found := false
+	for _, e := range entries {
+		if e.Kind != commandPaletteSession {
+			continue
+		}
+		found = true
+		if !strings.Contains(e.Item.Detail, "awaiting") || strings.Contains(e.Item.Detail, "active") {
+			t.Fatalf("palette session detail must read the approval as awaiting, got %q", e.Item.Detail)
+		}
+	}
+	if !found {
+		t.Fatal("expected a session entry in the palette rows")
+	}
+}
