@@ -7,6 +7,7 @@ import {
 	createPluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import type { HubRoutes } from "./hubSheetContext";
@@ -231,4 +232,49 @@ it("opens an installed plugin back on the Plugins page", async () => {
 		hubId: "hub-1",
 		focus: { plugin: "tool", marketplace: "acme" },
 	});
+});
+
+it.each([
+	["stood", () => ({ marketplaces: [] }), "onRemovedMarketplace"],
+	[
+		"stood but left a clone behind",
+		() => {
+			throw new WireError("clone cleanup failed", -32603, {
+				evenerErrorInfo: "marketplaceUnregisteredCloneRemains",
+				applied: [],
+			});
+		},
+		"onAppliedRemoval",
+	],
+] as const)("still tells the Plugins page about a removal that %s after its page went", async (_name, answer, report) => {
+	const navigation = { goBack: vi.fn(), popTo: vi.fn() };
+	const { slot, hub } = hubSlot("hub-1");
+	let settle: () => void = () => {};
+	hub.on(
+		"evener/marketplace/remove",
+		() =>
+			new Promise((resolve, reject) => {
+				settle = () => {
+					try {
+						resolve(answer());
+					} catch (error) {
+						reject(error);
+					}
+				};
+			}),
+	);
+	const reported = { onRemovedMarketplace: vi.fn(), onAppliedRemoval: vi.fn(() => true) };
+	const watched = { ...slot, ...reported };
+	const tree = await pushedOver(watched, navigation);
+	await act(async () => tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress());
+	const confirm = alertRequests.at(-1)?.buttons?.find((button) => button.text === "Remove");
+	await act(async () => {
+		confirm?.onPress?.();
+	});
+	// The page goes back while the removal is still out.
+	await act(async () => tree.update(page(watched, navigation, false)));
+	await act(async () => settle());
+	await act(async () => {});
+	expect(reported[report]).toHaveBeenCalledTimes(1);
+	expect(reported[report].mock.calls[0]?.[0]).toBe("acme");
 });
