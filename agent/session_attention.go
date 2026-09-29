@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"os"
 	"reflect"
@@ -15,7 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/foldcache"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -817,6 +821,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		err := s.resolveAttentionDurably(ids, delegateAttentionConsumed)
 		if err == nil {
 			s.attentionMu.Lock()
+			s.rootAttentionPaused = false
 			for _, id := range ids {
 				delete(s.rootAttentionWakeIDs, id)
 			}
@@ -857,13 +862,75 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 	// skips the notification rung right after a notification turn, so the
 	// flagged wake alone can strand the item. The retry owns the next wake.
 	s.rootAttentionWake = false
+	announce := false
 	if permanent {
 		s.resetRootAttentionRetryLocked()
+		announce = !s.rootAttentionPaused
+		s.rootAttentionPaused = true
 	} else {
 		s.scheduleRootAttentionRetryLocked()
 	}
 	s.attentionMu.Unlock()
+	if announce {
+		s.announceRootAttentionPaused(turnErr)
+	}
 	return resolutionErr
+}
+
+// announceRootAttentionPaused says, once per deferral episode, that a
+// permanent provider failure has paused background updates, which provider
+// and how to resume. Without it the updates just stop arriving. It is
+// visible at every level (its code is not informational) and goes to the
+// daemon log too.
+func (s *Session) announceRootAttentionPaused(turnErr error) {
+	message := rootAttentionPausedMessage(turnErr)
+	cause := turnErr.Error()
+	slog.Warn("background updates paused", "session", s.ID(), "error", cause)
+	cause, _, _ = strings.Cut(cause, "\n")
+	s.emit(events.EventWarning, events.WarningData{
+		Message: message,
+		Source:  string(diagnostic.SourceEvener),
+		Title:   "Background updates paused",
+		Hint:    runetrim.Cut(cause, 512),
+		Code:    events.WarningCodeAttentionPaused,
+	})
+}
+
+// rootAttentionPausedMessage names the provider that refused and what would
+// resume delivery, by the failure's kind as llm classifies it.
+func rootAttentionPausedMessage(turnErr error) string {
+	instance := "the provider"
+	var providerErr interface{ Provider() string }
+	if errors.As(turnErr, &providerErr) && strings.TrimSpace(providerErr.Provider()) != "" {
+		instance = strings.TrimSpace(providerErr.Provider())
+	}
+	const paused = "Background updates from subagents and jobs are paused: "
+	switch {
+	case errors.Is(turnErr, llm.ErrSignInRequired) || llm.Kind(turnErr) == llm.KindAuthentication:
+		return paused + instance + " rejected the credential. Sign in to " + instance + ", then send a message to continue."
+	case llm.Kind(turnErr) == llm.KindAccessDenied:
+		return paused + instance + " refused access. Check your access to " + instance + ", then send a message to continue."
+	case llm.Kind(turnErr) == llm.KindQuotaExceeded:
+		if resetAt, ok := llm.UsageLimitResetAt(turnErr); ok {
+			return paused + instance + "'s usage limit is reached until " + resetAt.Local().Format("Jan 2 15:04") + ". Send a message after that, or switch models, to continue."
+		}
+		return paused + instance + "'s usage limit is reached. Switch models, or send a message once it resets, to continue."
+	default:
+		return paused + instance + " refused the request. Switch models or send a message to continue."
+	}
+}
+
+// resumeRootAttentionAfterModelSwitch re-arms attention a permanent failure
+// deferred: a new model is a change that can make it deliverable. A Stop's
+// park still wins; its re-engagement re-arms instead.
+func (s *Session) resumeRootAttentionAfterModelSwitch() {
+	if s.rootAttentionRailParked() {
+		return
+	}
+	s.attentionMu.Lock()
+	s.rootAttentionPaused = false
+	s.attentionMu.Unlock()
+	s.unparkRootDelegateAttention()
 }
 
 // stageRootDelegateAttentionCoverage records one built request's candidate
