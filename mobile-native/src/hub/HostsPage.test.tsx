@@ -43,7 +43,7 @@ async function mount(fleet: ScriptedFleet, options: { ready?: boolean; focus?: s
 	await updates.runCheck();
 	const hosts = new HostsController(fleet.client);
 	const live = new LiveSessionsReader(fleet.client);
-	const context: HubSheetContextValue = {
+	let context: HubSheetContextValue = {
 		hubId: "hub-1",
 		hubName: "magic-kingdom",
 		client: null,
@@ -54,14 +54,22 @@ async function mount(fleet: ScriptedFleet, options: { ready?: boolean; focus?: s
 		live,
 	};
 	const navigation = { navigate: vi.fn(), setParams: vi.fn() };
-	const tree = render(
+	const page = () => (
 		<HubSheetProvider value={context}>
 			<HostsPage
 				navigation={navigation as unknown as NativeStackScreenProps<HubRoutes, "Hosts">["navigation"]}
 				route={{ key: "Hosts", name: "Hosts", params: { hubId: "hub-1", focus: options.focus } }}
 			/>
-		</HubSheetProvider>,
+		</HubSheetProvider>
 	);
+	const tree = render(page());
+	const setReady = async (ready: boolean) => {
+		context = { ...context, ready, canUseConnection: () => ready };
+		await act(async () => {
+			tree.update(page());
+			await settle();
+		});
+	};
 	await act(async () => {
 		await settle();
 	});
@@ -69,7 +77,7 @@ async function mount(fleet: ScriptedFleet, options: { ready?: boolean; focus?: s
 		tree.root.findAll(
 			(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith(label),
 		)[0] ?? null;
-	return { tree, navigation, hosts, live, row, dispose: () => (hosts.dispose(), live.dispose()) };
+	return { tree, navigation, hosts, live, row, setReady, dispose: () => (hosts.dispose(), live.dispose()) };
 }
 
 beforeEach(() => {
@@ -148,6 +156,22 @@ it("says why the hub's hosts didn't load when its first answer is a refusal", as
 	}) as never;
 	const page = await mount(fleet);
 	expect(renderedText(page.tree)).toContain("Couldn't list this hub's hosts: the hub is still starting");
+	page.dispose();
+});
+
+it("reads the live sessions again when the connection comes back", async () => {
+	const fleet = scriptedFleet([hostRow("paradise-park")], [liveSession("paradise-park:a", "paradise-park")]);
+	const answer = fleet.client.request;
+	let down = true;
+	fleet.client.request = (async (method: string, params: unknown) => {
+		if (down && method === "evener/navigation/read") throw new WireError("not connected", -32000);
+		return answer(method as never, params as never);
+	}) as never;
+	const page = await mount(fleet, { ready: false });
+	expect(page.row("paradise-park")?.props.accessibilityLabel).toContain("No live sessions");
+	down = false;
+	await page.setReady(true);
+	expect(page.row("paradise-park")?.props.accessibilityLabel).toContain("1 live");
 	page.dispose();
 });
 

@@ -86,7 +86,8 @@ export class HostsController {
 			this.again = true;
 			return this.inFlight;
 		}
-		this.inFlight = (async () => {
+		let ended = false;
+		const loop = (async () => {
 			do {
 				this.again = false;
 				try {
@@ -96,10 +97,14 @@ export class HostsController {
 					this.publish({ error: friendlyErrorMessage(error) });
 				}
 			} while (this.again && !this.disposed);
-		})().finally(() => {
+			// Cleared in the same step as the loop's last check: a read asked
+			// for after it starts a new loop instead of joining this one.
+			ended = true;
 			this.inFlight = null;
-		});
-		return this.inFlight;
+		})();
+		// A client that refuses without awaiting ends the loop before this line.
+		if (!ended) this.inFlight = loop;
+		return loop;
 	}
 
 	/** Asks the hub to attach a host (evener/host/attach, the web's Connect),

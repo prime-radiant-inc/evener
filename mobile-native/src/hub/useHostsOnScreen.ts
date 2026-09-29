@@ -1,6 +1,6 @@
 // What the Hub's host pages read: the hub's host rows, polled while the page
-// is on screen, each host's live-session count, and the hub's own version for
-// the drift tag.
+// is on screen, each host's live-session count, read on focus and on each
+// return of the connection, and the hub's own version for the drift tag.
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useSyncExternalStore } from "react";
 import type { HostsState } from "../hosts/hostsController";
@@ -18,15 +18,17 @@ export interface HostsOnScreen {
 }
 
 export function useHostsOnScreen(): HostsOnScreen {
-	const { hosts, live, updates } = useHubSheet();
+	const { hosts, live, updates, ready } = useHubSheet();
 	const hubVersion = useSyncExternalStore(updates.subscribe, updates.getState).check?.currentVersion;
 	const state = useOptionalSnapshot(hosts);
 	const counts = liveCountsByHost(useOptionalSnapshot(live)?.rows ?? []);
+	useFocusEffect(useCallback(() => hosts?.start(), [hosts]));
+	// The live counts are read once per focus, and again whenever the
+	// connection comes back, so a read that failed while it was down recovers.
 	useFocusEffect(
 		useCallback(() => {
-			void live?.load();
-			return hosts?.start();
-		}, [hosts, live]),
+			if (ready) void live?.load();
+		}, [live, ready]),
 	);
 	return {
 		state: state?.rows ? state : null,

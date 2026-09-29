@@ -116,6 +116,33 @@ describe("the hosts controller", () => {
 		expect(hosts.getSnapshot().rows?.[0]?.attached).toBe(true);
 	});
 
+	it("asks the hub again for a read requested at any moment after an answer lands", async () => {
+		for (let ticks = 0; ticks < 8; ticks++) {
+			const h = hub();
+			const hosts = new HostsController(h.client);
+			void hosts.read();
+			h.take("evener/host/list").resolve({ hosts: [row("paradise-park")] });
+			for (let tick = 0; tick < ticks; tick++) await Promise.resolve();
+			void hosts.read();
+			await settle();
+			expect(h.count("evener/host/list"), `a read asked for ${ticks} microtasks after the answer`).toBe(1);
+		}
+	});
+
+	it("reads again after a client that refuses before it answers", async () => {
+		let asked = 0;
+		const hosts = new HostsController({
+			request: () => {
+				asked += 1;
+				throw new Error("not connected");
+			},
+			onNotification: () => () => {},
+		} as never);
+		await hosts.read();
+		await hosts.read();
+		expect(asked).toBe(2);
+	});
+
 	it("asks the hub nothing once disposed", async () => {
 		const h = hub();
 		const hosts = new HostsController(h.client);
