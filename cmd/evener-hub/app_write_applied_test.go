@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -59,12 +60,29 @@ func blockProvidersWrites(t *testing.T, tomlPath string) {
 // blockWritesInDir removes the write bit from dir for the rest of the test,
 // which is how a test refuses a writer that stages its temp file under a random
 // name in dir. The mode is restored when the test ends so the temp-dir cleanup
-// can still remove the tree.
+// can still remove the tree. Root bypasses the permission check and Windows
+// does not refuse the create the POSIX way, so a test that relies on this must
+// call requireWritableDirRefusal first.
 func blockWritesInDir(t *testing.T, dir string) {
 	t.Helper()
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Errorf("blocking writes in %s: %v", dir, err)
+	}
+}
+
+// requireWritableDirRefusal skips a test whose write-refusal injection makes a
+// directory unwritable: root bypasses the write-permission check, and Windows
+// does not refuse the create as POSIX does, so the writer would succeed and the
+// test would assert the wrong branch. It must run on the test goroutine, not
+// from a registry-loader callback (t.Skip uses runtime.Goexit).
+func requireWritableDirRefusal(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("write-refusal injection relies on POSIX directory permission, which Windows does not enforce")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("write-refusal injection relies on directory write permission, which root bypasses")
 	}
 }
 
@@ -80,6 +98,7 @@ type instanceRollbackFixture struct {
 
 func newInstanceRollbackFixture(t *testing.T) *instanceRollbackFixture {
 	t.Helper()
+	requireWritableDirRefusal(t)
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	// providers.toml gets its own directory so blocking its writes (below) does
@@ -299,6 +318,7 @@ func TestInstances_RemoveMarksAppliedWhenTheConfigWriteFailsAndTheCredentialCann
 // writeApplied mark stays, because the deleted key is what every other
 // client's credential status for this name is stale against.
 func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheStoredKeyCannotBeRestored(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newFlakyReloadFixture(t, "groq", func(int) bool { return false })
 	if before := entry(t, f.ctl.List(), "groq"); !before.Implicit || before.ActiveSource != "store" {
 		t.Fatalf("fixture: groq = %+v, want an implicit instance resolving the stored key", before)
@@ -350,6 +370,7 @@ func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheStoredKeyCan
 // that carries it - cannot be put back. Same standing removal, same frame and
 // discriminator, because supplyOAuth names the layer that is gone.
 func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheOAuthRecordCannotBeRestored(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newFlakyReloadFixture(t, "", func(int) bool { return false })
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
 	if before := entry(t, f.ctl.List(), "openai-codex"); !before.Implicit || before.ActiveSource != "oauth" {
@@ -405,6 +426,7 @@ func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheOAuthRecordC
 // mark have to come back around the leftovers, exactly as the reload-rollback
 // path folds them.
 func TestInstances_RemoveRollsBackWhenTheImplicitConfigWriteFailsAndTheCarryingRecordIsRestored(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newFlakyReloadFixture(t, "", func(int) bool { return false })
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
 	// The stray key beside the carrying record: it cannot be restored, while
@@ -619,6 +641,7 @@ type partialRollbackFixture struct {
 
 func newPartialRollbackFixture(t *testing.T) *partialRollbackFixture {
 	t.Helper()
+	requireWritableDirRefusal(t)
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()

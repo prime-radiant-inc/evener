@@ -1951,6 +1951,7 @@ func TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload(t *testing
 // the name the caller re-authors after being told the removal failed, so they
 // still go back - losing them would report the failure and take the secret too.
 func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -4101,9 +4102,9 @@ func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *test
 // breakCredentialWrites makes every later credentials.toml save fail for a real
 // filesystem reason rather than a stubbed one: the store stages its temp file
 // under a random name in the target's directory, so the directory is made
-// unwritable and the exclusive create is refused whoever the test runs as. What
-// the save does with that refusal is then the real store, the real move and the
-// real providers.toml write.
+// unwritable and the exclusive create is refused. What the save does with that
+// refusal is then the real store, the real move and the real providers.toml
+// write. The caller must have passed requireWritableDirRefusal.
 func breakCredentialWrites(t *testing.T, credsPath string) {
 	t.Helper()
 	blockWritesInDir(t, filepath.Dir(credsPath))
@@ -4113,6 +4114,7 @@ func breakCredentialWrites(t *testing.T, credsPath string) {
 // credential, and the move is one persist: the entry stays under the old name
 // in memory and in the file, and the rename says what it left behind.
 func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -4180,6 +4182,7 @@ func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
 // reach between the move and that reload, so the unreadable config is written
 // from there.
 func TestInstances_EditRenameReportsTheMoveAndReloadFailuresTogether(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)

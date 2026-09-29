@@ -12197,6 +12197,7 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 // comes back an error naming what was left behind. The failure is injected on
 // the credentials store's own temp path, so the whole move is the real one.
 func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing.T) {
+	requireWritableDirRefusal(t)
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
