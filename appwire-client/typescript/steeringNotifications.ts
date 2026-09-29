@@ -393,6 +393,17 @@ export function decodeNotificationEntities(text: string): string {
     .replace(/&amp;/g, "&");
 }
 
+// escapeNotificationEntities is decodeNotificationEntities run backward: the
+// producer-side escaping (agent/job_notify.go's escapeNotificationText) for
+// text interpolated into a <job-notification> wrapper. The parser no longer
+// re-escapes any output of its own (it decodes once and hands callers plain
+// text, issue #3086), but the paired encoder stays a package export: it is the
+// wire contract's TypeScript half, and dropping it would break consumers of
+// @evener/appwire-client.
+export function escapeNotificationEntities(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 interface CommunicateEnvelope {
   message: string;
   status: string;

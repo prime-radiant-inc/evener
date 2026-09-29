@@ -459,6 +459,7 @@ export {
 } from "./steeringLabels";
 export {
   decodeNotificationEntities,
+  escapeNotificationEntities,
   isNotificationRemnant,
   isValidTranscriptRef,
   type NotificationOutcome,

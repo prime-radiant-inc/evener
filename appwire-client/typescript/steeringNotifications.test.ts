@@ -539,6 +539,13 @@ test("an Observer callback with no output surfaces its message prose (not just t
   expect(n.excerpt).toBe("the sidecar noticed the build broke");
 });
 
+test("an observer callback's excerpt is handed back as plain text", () => {
+  const notifications = notificationsOf(parseSteeringNotifications("Observer callback:\nmessage: a &amp; b"));
+  const n = notif(notifications, 0);
+  expect(n.type).toBe("observer-callback");
+  expect(n.excerpt).toBe("a & b");
+});
+
 test("text around a notification block is kept as its own fragment before and after it, not merged into one leftover", () => {
   const fragments = parseSteeringNotifications(`some preface\n${oneBlock}\nsome epilogue`);
   expect(fragments.map((f) => f.kind)).toEqual(["text", "notification", "text"]);
@@ -1320,6 +1327,15 @@ test("the quiet watchdog parses how long the subagent has been quiet", () => {
   });
   expect(n?.outcome).toBeUndefined();
   expect(n?.message).toBeUndefined();
+});
+
+test("the quiet watchdog's prose is handed back as plain text", () => {
+  const frame = `<delegate-notification delegate_id="dlg_1" event="quiet" status="quiet">
+quiet for 10m; last activity: 2026&amp;01
+</delegate-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(frame)), 0);
+  expect(n.quiet).toEqual({ window: "10m", lastActivityAt: "2026&01" });
+  expect(n.prose).toBe("quiet for 10m; last activity: 2026&01");
 });
 
 test("a background job's frames parse their outcome", () => {
