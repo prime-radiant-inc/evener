@@ -43,7 +43,13 @@ import type { ActivityView } from "../services/activity";
 import type { ConversationReadProjection, LiveConversationService } from "../services/conversation";
 import type { ActivityIdentity } from "./activity";
 import { createActivityStore } from "./activity";
-import { createConversationStore, type LiveActivitySink, MAX_ITEM_BYTES, TRUNCATION_MARKER } from "./conversation";
+import {
+	createConversationStore,
+	type LiveActivitySink,
+	MAX_ITEM_BYTES,
+	olderPageKey,
+	TRUNCATION_MARKER,
+} from "./conversation";
 import type {
 	ConversationMutationPendingPort,
 	ConversationMutationRequest,
@@ -3119,6 +3125,38 @@ describe("ConversationStore", () => {
 				capabilities: { ...ALL_TRUE_CAPS, pageBefore: false },
 			});
 			await store.getState().rehydrate(service, sink);
+			store.getState().setFollowingLiveEnd(false);
+			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
+			expect((await store.getState().loadOlder(service)).status).toBe("ignored");
+			expect(service.olderRequests).toEqual([]);
+		});
+
+		// A page attempt's key tells every cursor and trim boundary apart, whatever
+		// characters the hub's opaque cursor holds.
+		it("keys a page attempt so no cursor can pass for a cursor and a boundary", () => {
+			const conversation = makeConversation({ items: positionedRows(1, 3) });
+			const cursorOnly = olderPageKey({ olderCursor: "abc@1.0", trimmedAbove: false, conversation });
+			const cursorAndBoundary = olderPageKey({ olderCursor: "abc", trimmedAbove: true, conversation });
+			expect(cursorOnly).not.toBe(cursorAndBoundary);
+		});
+
+		// The hub stamps pageBefore on the status frames it relays, so a frame
+		// that says false is the hub's answer too.
+		it("stops paging above a trim when a status frame says the hub doesn't page before", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: positionedRows(0, 600) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			expect(store.getState().trimmedAbove).toBe(true);
+			store.getState().applyNotification({
+				method: "thread/status/changed",
+				params: {
+					threadId: "thread-1",
+					ref: "ref-1",
+					status: { type: "idle" },
+					capabilities: { ...ALL_TRUE_CAPS, pageBefore: false },
+				},
+			} as unknown as AnyNotification);
 			store.getState().setFollowingLiveEnd(false);
 			service.olderItems = { items: positionedRows(0, 100), nextCursor: undefined, hasEarlierItems: false };
 			expect((await store.getState().loadOlder(service)).status).toBe("ignored");
