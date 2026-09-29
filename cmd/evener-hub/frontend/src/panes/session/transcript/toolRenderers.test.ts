@@ -24,14 +24,17 @@ test("an unregistered tool name falls back to the default descriptor (raw output
   expect(d.body).toBeTypeOf("function");
 });
 
-test("the default descriptor's summary is the tool name", () => {
-  const d = toolRendererFor("tt-unregistered-tool-2");
-  expect(d.summary(item({ toolName: "tt-unregistered-tool-2" }))).toBe("tt-unregistered-tool-2");
+// A tool no descriptor covers reads as words, never its raw name
+// (@evener/appwire-client's fallbackToolSummary, which the phone uses too).
+test("the default descriptor's summary says the tool in words", () => {
+  const d = toolRendererFor("tt_unregistered_tool_2");
+  expect(d.summary(item({ toolName: "tt_unregistered_tool_2" }))).toBe("Used tt unregistered tool 2");
+  expect(d.summary(item({ toolName: "github__create_issue" }))).toBe("Used github: create issue");
 });
 
 test("the default descriptor's summary falls back to a literal label when toolName is (unusually) absent", () => {
   const d = toolRendererFor("tt-unregistered-tool-3");
-  expect(d.summary(item({ toolName: undefined }))).toBe("tool");
+  expect(d.summary(item({ toolName: undefined }))).toBe("Used a tool");
 });
 
 test("registerToolRenderer with an exact string match resolves for that tool name", () => {
