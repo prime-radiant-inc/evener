@@ -181,6 +181,15 @@ invariant panics, so the existing never-panic oracle reports it for free. The wh
 fuzz path (`make fuzz`, `run-fuzz.sh`, `fuzz-triage`) builds with
 that tag automatically; `make test` and `go build` stay tag-free.
 
+The agent module's ordinary (non-Fuzz) tests do **not** run under the tag in
+`make fuzz` — that suite is ~14k tests and costs more than the entire `make
+test` budget. That is a deliberate choice, not a gap: every agent-side
+`invariant.Hold` site is reached under the tag by a registered fuzz or rapid
+target the gate already replays (`TestJobstoreSeqFuzz` for the jobstore fold
+monotonicity, `FuzzFc1RepairOrphanedToolResults` for the history-repair rescan).
+A new agent invariant must be reached by a registered tagged target too, exactly
+as "prove it's reached" below requires.
+
 To add one: import the module and assert a load-bearing assumption where it must
 hold (e.g. a folded job status never leaves a terminal state; an emitted item
 carries its turn id). Conditions and args must be **side-effect-free** (they don't
