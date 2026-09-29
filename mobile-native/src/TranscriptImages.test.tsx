@@ -70,6 +70,17 @@ describe("a row of images (spec 8.2)", () => {
 		expect(title.props.children).toBe("first.png");
 		expect(renderedText(tree)).toContain("1 of 2");
 	});
+
+	it("pages by the sheet's own width, not the window's, on a narrow page sheet", () => {
+		const tree = render(<TranscriptImages images={images} hubId="hub-1" />);
+		act(() => thumbnails(tree.root)[0].props.onPress());
+		// An iPad page sheet is a centered card narrower than the 390pt window.
+		act(() => pager(tree.root).props.onLayout({ nativeEvent: { layout: { width: 300 } } }));
+		expect(pager(tree.root).props.getItemLayout([], 1)).toEqual({ length: 300, offset: 300, index: 1 });
+		expect(pager(tree.root).props.renderItem({ item: images[0] }).props.style.width).toBe(300);
+		act(() => pager(tree.root).props.onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 300 } } }));
+		expect(renderedText(tree)).toContain("2 of 2");
+	});
 });
 
 describe("the viewer with VoiceOver", () => {

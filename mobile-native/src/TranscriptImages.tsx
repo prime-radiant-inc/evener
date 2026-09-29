@@ -67,7 +67,17 @@ export function TranscriptImages({ images, hubId }: { images: AttachmentRef[]; h
 	const { width } = useWindowDimensions();
 	// The page the viewer shows, or null while it's closed.
 	const [page, setPage] = useState<number | null>(null);
+	// A page sheet is narrower than the window on iPad, so the pager pages by
+	// its own measured width rather than the window's.
+	const [pageWidth, setPageWidth] = useState(width);
 	const pager = useRef<FlatList<AttachmentRef>>(null);
+	const shown = useRef(page);
+	shown.current = page;
+	// Re-anchor the open page once the sheet's width settles: it starts at the
+	// window width, then onLayout reports the sheet's own width.
+	useEffect(() => {
+		if (shown.current !== null) pager.current?.scrollToIndex({ index: shown.current, animated: false });
+	}, [pageWidth]);
 	// VoiceOver moves between images with a swipe up or down on the viewer
 	// (the adjustable actions), as well as by paging.
 	function turnTo(next: number) {
@@ -122,12 +132,15 @@ export function TranscriptImages({ images, hubId }: { images: AttachmentRef[]; h
 						keyExtractor={(image) => image.id}
 						horizontal
 						pagingEnabled
+						onLayout={(event) => setPageWidth(event.nativeEvent.layout.width)}
 						showsHorizontalScrollIndicator={false}
 						initialScrollIndex={page}
-						getItemLayout={(_data, index) => ({ length: width, offset: width * index, index })}
-						onMomentumScrollEnd={(event) => setPage(Math.round(event.nativeEvent.contentOffset.x / Math.max(1, width)))}
+						getItemLayout={(_data, index) => ({ length: pageWidth, offset: pageWidth * index, index })}
+						onMomentumScrollEnd={(event) =>
+							setPage(Math.round(event.nativeEvent.contentOffset.x / Math.max(1, pageWidth)))
+						}
 						renderItem={({ item }) => (
-							<View style={{ width, flex: 1, padding: 16 }}>
+							<View style={{ width: pageWidth, flex: 1, padding: 16 }}>
 								<HubImage image={item} hubId={hubId} />
 							</View>
 						)}
