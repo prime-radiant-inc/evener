@@ -12610,6 +12610,52 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
+  // A Stop is the one durable write that must NOT take the direct fallback.
+  // Its enqueue is enqueueInterruptAndCancel: the ref's cancelable rows turn
+  // "canceled" in the same transaction that writes the turn/interrupt record,
+  // both land or neither does. A fallback that dispatched turn/interrupt while
+  // writing no cancels would interrupt the turn and leave the queued messages
+  // the click was cancelling still queued - to be dispatched later, exactly
+  // what the click meant to stop. So a Stop whose storage never answers must
+  // fail closed: nothing reaches the daemon and nothing is durably written.
+  test("a Stop whose storage never answers stays fail-closed: no interrupt reaches the daemon and no durable row is written", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-stop-wedged";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    // Hydrate on working storage first, exactly like the send case: the
+    // runtime's connection opens here, so it is the Stop that meets the wedge.
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    // Retire the connection, then make the factory's next open never answer.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const stop = threadsStore.getState().interrupt("ref_a");
+      const rejection = expect(stop).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      // Both enqueue attempts end on their own watchdog before the failure.
+      await vi.advanceTimersByTimeAsync(21_000);
+      await rejection;
+      // Stop must not fall back: the interrupt never reaches the daemon.
+      expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    // ...and no durable row was written for it.
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
   // §4's stop barrier is the click's OWN storage observation. When the durable
   // write times out, the enqueue retries it - but the retry must reuse the
   // capture taken at the click, never re-read the epoch, or a Stop landing

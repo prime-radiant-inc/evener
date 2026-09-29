@@ -2236,22 +2236,31 @@ async function enqueueMutationIntent(
     notifyMutationPersistence([ref], { record });
     return record;
   } catch (error) {
-    // A failure that is not the storage-unavailable timeout is a submission
-    // failure exactly as before: disarm the ref this click armed so no later
-    // discovery pass dispatches work for a ref with no durable row, and
-    // propagate. The timeout case falls through to the direct fallback below.
-    if (!isStorageUnavailable(error)) {
+    // The direct fallback answers ONLY the enqueue path. A Stop
+    // (interruptAndCancel) stays fail-closed: its durable write is the one
+    // transaction in which the ref's cancelable rows turn "canceled" AND the
+    // turn/interrupt record is written - both land or neither does
+    // (enqueueInterruptAndCancel) - so a Stop that could not commit it has
+    // cancelled nothing. Falling back would dispatch the interrupt while
+    // writing no cancels, and the queued messages the click was cancelling
+    // would dispatch later anyway: exactly the outcome the click asked to
+    // prevent. A storage-unavailable failure therefore propagates like every
+    // other submission failure: the ref this click armed is disarmed and the
+    // caller sees the refusal. Every non-enqueue durable write is excluded
+    // here, and every failure that is not the storage-unavailable timeout is
+    // excluded below; only a timeout on an enqueue reaches the fallback.
+    if (durableWrite !== "enqueue" || !isStorageUnavailable(error)) {
       if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
       throw error;
     }
   }
-  // Persistent storage failure: the durable write could not be made, so send
-  // the mutation as a plain RPC right now, exactly as the non-durable
-  // operations do (setModel, rename, compact, ...). The outbox row, the
-  // dispatcher, the receipt/settle machinery and the recovery list are all
-  // skipped - there is nothing durable to settle or replay. The click armed
-  // the ref's dispatch bookkeeping for a durable row that now does not exist,
-  // so disarm it first (a pin, if any, is not this click's to drop).
+  // Persistent storage failure on an enqueue: the durable write could not be
+  // made, so send the mutation as a plain RPC right now, exactly as the
+  // non-durable operations do (setModel, rename, compact, ...). The outbox
+  // row, the dispatcher, the receipt/settle machinery and the recovery list
+  // are all skipped - there is nothing durable to settle or replay. The click
+  // armed the ref's dispatch bookkeeping for a durable row that now does not
+  // exist, so disarm it first (a pin, if any, is not this click's to drop).
   //
   // The forfeited cross-tab Stop fence: this send carries no click-time stop
   // epoch when the capture read itself timed out, so a Stop landing in another
