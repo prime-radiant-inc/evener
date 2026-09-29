@@ -18,9 +18,15 @@ function corpus(file: string): unknown {
 type Cases = { item: ThreadItem }[];
 
 /** A corpus's items, each id tagged with the corpus and its place there,
- * so none collides: the corpora, and the cases within one, reuse ids. */
+ * so none collides: the corpora, and the cases within one, reuse ids. A
+ * callId is tagged with the corpus alone, so a call and its result keep a
+ * matching callId and fold together, while no two corpora's calls share one. */
 function tagged(items: ThreadItem[], name: string): ThreadItem[] {
-	return items.map((item, index) => ({ ...item, id: `${item.id}_${name}_${index}` }));
+	return items.map((item, index) => ({
+		...item,
+		id: `${item.id}_${name}_${index}`,
+		...("callId" in item && item.callId ? { callId: `${item.callId}_${name}` } : {}),
+	}));
 }
 
 /** Every recorded item: the core tools, then subagents and the task list,

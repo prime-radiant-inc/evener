@@ -499,6 +499,22 @@ describe("the demo session with every tool family", () => {
 		expect(runsOf(rows)).not.toEqual([]);
 	});
 
+	// The corpora are recorded apart, so a callId one reuses must not fold
+	// another's call into it: each callId names one call and its result.
+	it("gives each recorded call a callId of its own across the corpora", () => {
+		const items = threadOf("s-tools", withTools).turns?.flatMap((turn) => turn.items ?? []) ?? [];
+		const byCallId = new Map<string, string[]>();
+		for (const item of items)
+			if (item.type === "commandExecution" && item.callId)
+				byCallId.set(item.callId, [...(byCallId.get(item.callId) ?? []), item.id]);
+		const shared = [...byCallId].filter(
+			([, ids]) =>
+				ids.filter((id) => !id.startsWith("item_tool_result_")).length > 1 ||
+				ids.filter((id) => id.startsWith("item_tool_result_")).length > 1,
+		);
+		expect(shared).toEqual([]);
+	});
+
 	// The package folds a call and its result into one step by callId, as a
 	// reload serves them, so an edit keeps both its arguments and its output.
 	it("folds each recorded call with its result, as the phone reads a reloaded transcript", () => {
