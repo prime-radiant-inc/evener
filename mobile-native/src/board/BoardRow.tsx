@@ -162,7 +162,7 @@ export function BoardRow({
 	// The chip reads the navigation row's tally (the shared gate the web rail
 	// uses), which the hub revises on invalidation; it is not the Board's S5
 	// activity read, which is Board-only and can lag behind this count.
-	const tally = subagentTallyToShow(row);
+	const tally = chipTally(row);
 	// A working row with nothing more specific to say reads "Working" once.
 	const reason = why && why.text !== word ? why.text : undefined;
 	// The chip's own accessibilityLabel mirrors its text; the row speaks the
@@ -280,12 +280,13 @@ export function BoardRow({
 export function SubagentChip({ session }: { session: NavigationSessionSummary }): ReactElement | null {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const tally = subagentTallyToShow(session);
+	const tally = chipTally(session);
 	if (!tally) return null;
 	const failed = tally.failed > 0;
 	return (
 		<View
 			testID="subagent-chip"
+			accessible
 			accessibilityLabel={subagentChipText(tally)}
 			style={{
 				backgroundColor: palette.inset,
@@ -310,11 +311,21 @@ export function SubagentChip({ session }: { session: NavigationSessionSummary })
 	);
 }
 
+// A row kind that is not a top-level session: a subagent, a fork original or a
+// cluster member (board/rowActions.ts NESTED). Only a live root carries a
+// subagent tally (S3, D1), and the hub may set one on a nested fork row, so the
+// chip gates on the kind the way the web rail's isTopLevelSession does.
+const NESTED_KINDS = new Set(["subagent", "fork", "cluster"]);
+/** The tally a row's chip shows, or null for a nested row or one with nothing
+ * to show (subagentTallyToShow gates on live and non-empty). */
+const chipTally = (session: NavigationSessionSummary) =>
+	NESTED_KINDS.has(session.kind) ? null : subagentTallyToShow(session);
+
 /** A session row's subagent chip, for the lists that render their own rows
  * (Projects, Project and Pin sections) rather than a BoardRow. Null when the
  * row has no chip, so a list can tell whether it has one. */
 export const sessionSubagentChip = (session: NavigationSessionSummary): ReactElement | null =>
-	subagentTallyToShow(session) ? <SubagentChip session={session} /> : null;
+	chipTally(session) ? <SubagentChip session={session} /> : null;
 
 /** The amber wash behind a row that just entered Needs you (spec 7.3): full
  * at once, then fading out over WASH_MS. Reduce Motion keeps it (ruling 23):

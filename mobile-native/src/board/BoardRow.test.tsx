@@ -232,6 +232,8 @@ describe("a Board row (spec 7.2)", () => {
 		// The chip's own label mirrors its text; the row keeps the why line's
 		// single source so VoiceOver never hears two subagent counts.
 		expect(chip[0]?.props.accessibilityLabel).toBe("2 running");
+		// A plain View's label is silent to VoiceOver; it has to be accessible.
+		expect(chip[0]?.props.accessible).toBe(true);
 		expect(pressable(running).props.accessibilityLabel).not.toContain("2 running");
 
 		const failed = mount({ item: item("failed", { subagents: { running: 0, failed: 3, done: 4 } }) });
@@ -250,6 +252,7 @@ describe("a Board row (spec 7.2)", () => {
 		for (const settled of [
 			item("working", { state: "active", subagents: { running: 0, failed: 0, done: 5 } }),
 			item("working", { state: "active", live: false, subagents: { running: 2, failed: 0, done: 0 } }),
+			item("working", { state: "active", kind: "fork", subagents: { running: 2, failed: 0, done: 0 } }),
 		]) {
 			expect(mount({ item: settled }).root.findAll((node) => node.props.testID === "subagent-chip")).toEqual([]);
 		}
@@ -261,6 +264,9 @@ describe("a Board row (spec 7.2)", () => {
 		expect(sessionSubagentChip(row())).toBeNull();
 		expect(sessionSubagentChip(row({ subagents: { running: 0, failed: 0, done: 3 } }))).toBeNull();
 		expect(sessionSubagentChip(row({ subagents: { running: 1, failed: 0, done: 0 } }))).not.toBeNull();
+		// Only a live root: a nested fork original shows no chip even with a tally,
+		// as the web rail's chip gates on isTopLevelSession.
+		expect(sessionSubagentChip(row({ kind: "fork", subagents: { running: 1, failed: 0, done: 0 } }))).toBeNull();
 	});
 
 	it("counts a working row's quiet time from its read, plus the time since that read landed", () => {
