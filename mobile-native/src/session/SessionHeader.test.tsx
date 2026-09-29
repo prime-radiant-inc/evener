@@ -399,12 +399,22 @@ describe("under the nav bar's glass (spec 16.3)", () => {
 	const barRoom = (tree: ReactTestRenderer) =>
 		tree.root.find((node) => node.props.testID === "nav-bar-room").props.style.height;
 	const preview = { glyph: "person" as const, text: "Your note" };
+	const statusLine = (tree: ReactTestRenderer) => {
+		const line = textNode(tree, "Reconnecting…").parent;
+		if (!line) throw new Error("no status line");
+		return line;
+	};
 	const measured = (tree: ReactTestRenderer) =>
 		act(() => chipsRow(tree).props.onLayout({ nativeEvent: { layout: { width: 390, height: 48, x: 0, y: 64 } } }));
 
 	it("spans one glass from the screen's top through the rows, and draws the rows clear on it", async () => {
 		const tree = render(
-			header({ chips: [goal], notes: <NotesBar preview={preview} onPress={() => {}} />, glassTop: 64 }),
+			header({
+				chips: [goal],
+				status: "Reconnecting…",
+				notes: <NotesBar preview={preview} onPress={() => {}} onGlass />,
+				glassTop: 64,
+			}),
 		);
 		await flushReduceMotion();
 		expect(glass(tree)).toHaveLength(1);
@@ -412,6 +422,7 @@ describe("under the nav bar's glass (spec 16.3)", () => {
 		expect(barRoom(tree)).toBe(64);
 		const chipsFill = tree.root.findAll((node) => node.props.testID === "chips-row")[0]?.props.style.backgroundColor;
 		expect(chipsFill).toBe("transparent");
+		expect(statusLine(tree).props.style.backgroundColor).toBe("transparent");
 		const note = tree.root.findAll(
 			(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Your note",
 		)[0];
@@ -432,6 +443,24 @@ describe("under the nav bar's glass (spec 16.3)", () => {
 		const tree = render(header({ glassTop: 64 }));
 		expect(glass(tree)).toHaveLength(1);
 		expect(barRoom(tree)).toBe(64);
+	});
+
+	// The chips row still fades at its trailing edge on the glass, so a
+	// cut-off chip reads as "there's more".
+	it("keeps the chips' overflow fade on the glass", () => {
+		const tree = render(header({ chips: [goal], glassTop: 64 }));
+		const row = tree.root.find((node) => node.props.testID === "chips-row");
+		const scroller = row.findAll((node) => node.props.horizontal === true)[0];
+		act(() => scroller?.props.onLayout({ nativeEvent: { layout: { width: 300, height: 48, x: 0, y: 0 } } }));
+		act(() => scroller?.props.onContentSizeChange(500, 48));
+		expect(tree.root.findAll((node) => node.props.testID === "chips-fade")).toHaveLength(1);
+	});
+
+	it("clips its sliding rows once, at their own top", () => {
+		const tree = render(header({ chips: [goal], glassTop: 64 }));
+		const clips = tree.root.findAll((node) => node.props.style?.overflow === "hidden");
+		expect(clips).toHaveLength(1);
+		expect(clips[0]?.findAll((node) => node.props.testID === "chips-row")).toHaveLength(1);
 	});
 
 	it("keeps the opaque page fill, and no glass, without it", () => {

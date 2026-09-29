@@ -21,3 +21,18 @@ export function useSystemGlass(): boolean {
 	const reduceTransparency = useReduceTransparency();
 	return systemGlassAvailable() && reduceTransparency === false;
 }
+
+/** A stack screen's nav bar options for `glass`: transparent over the
+ * screen, which draws its own glass under the bar and the rows beneath it,
+ * or opaque on the page color `page` the stack's bar otherwise wears. */
+export function navBarGlassOptions(glass: boolean, page: string) {
+	return {
+		headerTransparent: glass,
+		// react-native-screens draws a transparent bar clear only when its
+		// background color is itself clear.
+		headerStyle: { backgroundColor: glass ? "transparent" : page },
+		// The screen's glass is the bar's edge; the system's own edge effect
+		// would draw a second one over it.
+		scrollEdgeEffects: { top: glass ? ("hidden" as const) : ("automatic" as const) },
+	};
+}

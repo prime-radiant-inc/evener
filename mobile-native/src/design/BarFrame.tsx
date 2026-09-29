@@ -40,6 +40,10 @@ export function BarFrame({
 	// How far the keyboard has risen, 0 to 1, on every frame of its move.
 	const { progress } = useReanimatedKeyboardAnimation();
 	const indicatorRoom = useAnimatedStyle(() => ({ paddingBottom: bottom * (1 - progress.value) }));
+	// Asked apart on purpose: whether the device has the glass picks the host
+	// view and never changes while the app runs; whether the bar wears it now
+	// also waits on Reduce Transparency and only switches the effect (see the
+	// host below).
 	const hasGlass = systemGlassAvailable();
 	const glass = useSystemGlass();
 	// The screen's layout goes first, so it can't undo what the frame owns:

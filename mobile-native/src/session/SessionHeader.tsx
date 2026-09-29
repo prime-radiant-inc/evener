@@ -12,7 +12,7 @@ import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useReduceMotion } from "../accessibilitySettings";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { FreshDot } from "../reader/FreshDot";
-import { OnHeaderGlass, useHeaderRowFill } from "./headerGlass";
+import { headerRowFill } from "./headerGlass";
 import type { ChipKind, ContextChip } from "./sessionState";
 
 const SYMBOLS: Record<ChipKind, SFSymbol> = {
@@ -63,7 +63,7 @@ export function SessionHeader({
 	if (!onGlass && status === null && !hasRow) return null;
 	return (
 		// box-none lets touches on the list's uncovered top reach the list.
-		<View pointerEvents="box-none" style={{ overflow: "hidden" }}>
+		<View pointerEvents="box-none">
 			{onGlass ? (
 				// The glass moves with the rows, so as they slide away its lower
 				// edge rises with them to the bar's.
@@ -88,7 +88,7 @@ export function SessionHeader({
 						minHeight: 24,
 						justifyContent: "center",
 						paddingHorizontal: 16,
-						backgroundColor: onGlass ? "transparent" : palette.page,
+						backgroundColor: headerRowFill(onGlass, palette),
 					}}
 				>
 					<Text
@@ -122,10 +122,8 @@ export function SessionHeader({
 						accessibilityElementsHidden={slidAway}
 						importantForAccessibility={slidAway ? "no-hide-descendants" : "auto"}
 					>
-						<OnHeaderGlass.Provider value={onGlass}>
-							{find ?? (chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} /> : null)}
-							{notes}
-						</OnHeaderGlass.Provider>
+						{find ?? (chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} onGlass={onGlass} /> : null)}
+						{notes}
 					</Animated.View>
 				</View>
 			) : null}
@@ -133,16 +131,21 @@ export function SessionHeader({
 	);
 }
 
-function ChipsRow({ chips, onChip }: { chips: readonly ContextChip[]; onChip: (kind: ChipKind) => void }) {
+function ChipsRow({
+	chips,
+	onChip,
+	onGlass,
+}: {
+	chips: readonly ContextChip[];
+	onChip: (kind: ChipKind) => void;
+	onGlass: boolean;
+}) {
 	const { palette } = useColors();
 	const [viewportWidth, setViewportWidth] = useState(0);
 	const [contentWidth, setContentWidth] = useState(0);
 	const overflows = viewportWidth > 0 && contentWidth > viewportWidth;
-	const fill = useHeaderRowFill();
-	// On the glass the row has no page color to fade into, so it doesn't fade.
-	const fades = overflows && fill !== "transparent";
 	return (
-		<View testID="chips-row" style={{ backgroundColor: fill }}>
+		<View testID="chips-row" style={{ backgroundColor: headerRowFill(onGlass, palette) }}>
 			<ScrollView
 				horizontal
 				showsHorizontalScrollIndicator={false}
@@ -154,7 +157,7 @@ function ChipsRow({ chips, onChip }: { chips: readonly ContextChip[]; onChip: (k
 					<Chip key={chip.kind} chip={chip} onPress={() => onChip(chip.kind)} />
 				))}
 			</ScrollView>
-			{fades ? (
+			{overflows ? (
 				<View
 					testID="chips-fade"
 					pointerEvents="none"

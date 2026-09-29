@@ -88,7 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
-import { useSystemGlass } from "./design/systemGlass";
+import { navBarGlassOptions, useSystemGlass } from "./design/systemGlass";
 import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
@@ -360,16 +360,11 @@ export function ConversationScreen({
 	// header's own glass spans the bar and the rows under it.
 	const navGlass = useSystemGlass();
 	const underNavBar = navGlass ? headerHeight : 0;
-	useEffect(() => {
-		navigation.setOptions({
-			headerTransparent: navGlass,
-			// react-native-screens draws a transparent bar clear only when its
-			// background color is itself clear.
-			headerStyle: { backgroundColor: navGlass ? "transparent" : colors.background },
-			// The header's glass is the bar's edge; the system's own edge
-			// effect would draw a second one over it.
-			scrollEdgeEffects: { top: navGlass ? "hidden" : "automatic" },
-		});
+	// Before paint, so a session never opens with an opaque bar that turns to
+	// glass; Reduce Transparency's last known value (accessibilitySettings)
+	// is there on the first render of every screen after the first.
+	useLayoutEffect(() => {
+		navigation.setOptions(navBarGlassOptions(navGlass, colors.background));
 	}, [navigation, navGlass, colors.background]);
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
@@ -967,19 +962,26 @@ export function ConversationScreen({
 		: [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
-	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
-	// What the list's top keeps clear: the header block, which on the glass
-	// includes the nav bar's room (until it has measured, that room alone).
-	const reservedTop = Math.max(underNavBar, sessionHeaderHeight);
+	// The block's measured height, and whether it was measured on the glass,
+	// where it includes the nav bar's room.
+	const [sessionHeader, setSessionHeader] = useState({ height: 0, onGlass: false });
+	// The block's rows (the connection line, the chips, the note): its height
+	// less the bar's room it measured with.
+	const headerRows = Math.max(0, sessionHeader.height - (sessionHeader.onGlass ? headerHeight : 0));
+	// What the list's top keeps clear: the bar where the screen runs under it,
+	// and the rows.
+	const reservedTop = underNavBar + headerRows;
 	const listOffset = useRef(0);
-	const reservedHeaderHeight = useRef(0);
-	// When the block grows or shrinks (the connection bar comes or goes, or
-	// the nav bar turns glass or opaque), the list's top padding moves by the
-	// same amount; scrolling the list by it too keeps every row where it was
-	// on screen. At the top the list stays at the top, and the rows make room.
+	const reservedRows = useRef(0);
+	// When the rows grow or shrink (the connection line comes or goes), the
+	// list's top padding moves by the same amount; scrolling the list by it
+	// too keeps every row where it was on screen. At the top the list stays
+	// at the top, and the rows make room. The bar turning glass or opaque
+	// asks for no scroll: it moves the list's frame by the bar's height as
+	// the padding moves by the same, so the rows stay where they are.
 	useLayoutEffect(() => {
-		const change = reservedTop - reservedHeaderHeight.current;
-		reservedHeaderHeight.current = reservedTop;
+		const change = headerRows - reservedRows.current;
+		reservedRows.current = headerRows;
 		if (change === 0 || listOffset.current <= 0) return;
 		const target = Math.max(0, listOffset.current + change);
 		// Set optimistically: the list's own onScroll is throttled
@@ -988,7 +990,7 @@ export function ConversationScreen({
 		// with the last offset the list actually reported.
 		listOffset.current = target;
 		timeline.current?.scrollToOffset({ offset: target, animated: false });
-	}, [reservedTop]);
+	}, [headerRows]);
 	function openChip(kind: ChipKind) {
 		if (kind === "queue") openQueue();
 		else if (kind === "files") openFiles();
@@ -2865,7 +2867,7 @@ export function ConversationScreen({
 						<View
 							pointerEvents="box-none"
 							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
-							onLayout={(event) => setSessionHeaderHeight(event.nativeEvent.layout.height)}
+							onLayout={(event) => setSessionHeader({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
 						>
 							<SessionHeader
 								glassTop={navGlass ? headerHeight : undefined}
@@ -2886,6 +2888,7 @@ export function ConversationScreen({
 												Keyboard.dismiss();
 												setFind(null);
 											}}
+											onGlass={navGlass}
 										/>
 									) : undefined
 								}
@@ -2894,6 +2897,7 @@ export function ConversationScreen({
 								notes={
 									notesPreview ? (
 										<NotesBar
+											onGlass={navGlass}
 											preview={notesPreview}
 											onPress={() => {
 												Keyboard.dismiss();

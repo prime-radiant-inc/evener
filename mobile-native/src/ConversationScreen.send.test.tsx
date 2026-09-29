@@ -31,6 +31,7 @@ import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure"
 import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
+import { FindBar } from "./session/FindBar";
 import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
@@ -1551,6 +1552,32 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		// The header's height covers the bar's room and the rows under it.
 		measureHeader(tree, 64 + 48);
 		expect(layout(tree).listTop).toBe(16 + 64 + 48);
+		// The find bar, in the chips' place, draws clear on the glass too.
+		chooseMenu("Find in session");
+		expect(tree.root.findByType(FindBar).props.onGlass).toBe(true);
+	});
+
+	// Turning the bar glass or opaque moves the list's frame by the bar's
+	// height and its top padding by the same, so the rows stay where they are
+	// with no scroll of the list's own; only the rows block growing or
+	// shrinking asks for one.
+	it("keeps the rows where they are when Reduce Transparency flips while scrolled", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass-flip"));
+		await act(async () => {});
+		measureHeader(tree, 64 + 48);
+		scrollTo(tree, 500);
+		flatListCalls.length = 0;
+		act(() => systemGlass.setReduceTransparency(true));
+		measureHeader(tree, 48);
+		act(() => systemGlass.setReduceTransparency(false));
+		measureHeader(tree, 64 + 48);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
+		// The rows block itself growing (the connection line arriving) still does.
+		measureHeader(tree, 64 + 48 + 24);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+			{ method: "scrollToOffset", args: { offset: 524, animated: false } },
+		]);
 	});
 
 	it("keeps an opaque bar the screen starts below where there is no glass", async () => {
