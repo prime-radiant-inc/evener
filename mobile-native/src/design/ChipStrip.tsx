@@ -7,7 +7,8 @@
 // a cut-off chip reads as "there's more"; the fade is into the page color, so
 // on the glass it would paint an opaque band and the chips run under the
 // glass's edge instead. The fade's width and its `chips-fade` id are the
-// strip's own, shared by every caller.
+// strip's own, shared by every caller; 28pt is the prototype's fade for both
+// the section and context rows (docs/design/mobile/redesign/prototype/styles.css).
 import { type ReactNode, useState } from "react";
 import { ScrollView, View } from "react-native";
 import { useColors } from "../ui";
@@ -47,7 +48,7 @@ export function ChipStrip({
 						top: 0,
 						bottom: 0,
 						right: 0,
-						width: 24,
+						width: 28,
 						experimental_backgroundImage: `linear-gradient(to right, ${palette.page}00, ${palette.page})`,
 					}}
 				/>

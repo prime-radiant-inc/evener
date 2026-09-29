@@ -50,6 +50,8 @@ describe("ChipStrip", () => {
 		act(() => scroll.props.onContentSizeChange(520, 48));
 		expect(fade()).toHaveLength(1);
 		expect(fade()[0]?.props.pointerEvents).toBe("none");
+		// 28pt, the prototype's fade width for both chip rows.
+		expect(fade()[0]?.props.style.width).toBe(28);
 		expect(fade()[0]?.props.style.experimental_backgroundImage).toBe(
 			`linear-gradient(to right, ${palette.page}00, ${palette.page})`,
 		);
