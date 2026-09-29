@@ -3405,10 +3405,18 @@ it("says a time from a clock ahead of this phone's was just now, not a count of 
 });
 
 it("says a time under a second old was just now", async () => {
-	const hub = pageHub([entry("demo-plugin", { installedAt: Date.now() / 1000, lastUpdated: Date.now() / 1000 })]);
-	const { tree } = await mountPage(hub);
-	const detail = await openDetail(tree, "demo-plugin");
-	expect(detail.findAllByProps({ accessibilityLabel: "Installed, just now" }).length).toBeGreaterThan(0);
+	// The clock stands still, so however long the mount takes the time is
+	// half a second old when the detail reads it.
+	vi.useFakeTimers({ toFake: ["Date"] });
+	try {
+		const halfASecondAgo = (Date.now() - 500) / 1000;
+		const hub = pageHub([entry("demo-plugin", { installedAt: halfASecondAgo, lastUpdated: halfASecondAgo })]);
+		const { tree } = await mountPage(hub);
+		const detail = await openDetail(tree, "demo-plugin");
+		expect(detail.findAllByProps({ accessibilityLabel: "Installed, just now" }).length).toBeGreaterThan(0);
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 it.each([
