@@ -1,8 +1,9 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import { composeStepWords, type StepWords } from "./stepWords";
 import { type ToolWireCall, toolWireCwd, toolWireStep } from "./testing/toolWireFixtures";
-import { composeStepWords, type StepWords, toolStepSummary, toolStepWords } from "./toolSummaries";
+import { toolStepSummary, toolStepWords } from "./toolSummaries";
 
 // Every recorded call's line as the web drew it before a step's words came in
 // parts. Composing the parts must give these back byte for byte, so the web's

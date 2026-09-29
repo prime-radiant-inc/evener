@@ -23,6 +23,14 @@ export function composeStepWords(words: StepWords): string {
   return line;
 }
 
+/** A tool's one-line summary from its words: the words composed, as the web
+ * draws them. */
+export function summaryOf<Step, Ctx = undefined>(
+  words: (step: Step, ctx?: Ctx) => StepWords,
+): (step: Step, ctx?: Ctx) => string {
+  return (step, ctx) => composeStepWords(words(step, ctx));
+}
+
 /** The words with a detail added, when there is one. */
 export function withDetail(words: StepWords, detail: string | undefined): StepWords {
   return detail === undefined ? words : { ...words, detail };

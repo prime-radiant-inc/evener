@@ -4,7 +4,7 @@
 // and the phone's step lines read these.
 
 import type { ItemModel } from "./model";
-import { composeStepWords, type StepWords, withDetail } from "./stepWords";
+import { type StepWords, summaryOf, withDetail } from "./stepWords";
 import { clip, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, toolJSONResult } from "./toolEvidence";
 
@@ -116,9 +116,7 @@ export function readTranscriptWords(step: TranscriptStep): StepWords {
 }
 
 /** The read's words as one line. */
-export function readTranscriptSummary(step: TranscriptStep): string {
-  return composeStepWords(readTranscriptWords(step));
-}
+export const readTranscriptSummary = summaryOf(readTranscriptWords);
 
 /** "Reading transcript 02wMz5…", while the read runs. */
 export function readTranscriptProgress(step: Pick<TranscriptStep, "argumentsJSON">): string {
@@ -179,9 +177,7 @@ export function findSessionsWords(step: TranscriptStep): StepWords {
 }
 
 /** The search's words as one line. */
-export function findSessionsSummary(step: TranscriptStep): string {
-  return composeStepWords(findSessionsWords(step));
-}
+export const findSessionsSummary = summaryOf(findSessionsWords);
 
 /** 'Searching sessions for "settle"', "Listing recent sessions", while it runs. */
 export function findSessionsProgress(step: Pick<TranscriptStep, "argumentsJSON">): string {

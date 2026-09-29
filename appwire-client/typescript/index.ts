@@ -473,6 +473,7 @@ export {
   steeringNotificationFragments,
   stripSystemReminder,
 } from "./steeringNotifications";
+export { composeStepWords, type StepWords } from "./stepWords";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -549,7 +550,6 @@ export { prettyJSON, type ShellOutput, shellOutput, skillContext, webFetchResult
 export {
   applyPatchSummary,
   BINARY_PAYLOAD_HEADER,
-  composeStepWords,
   editFileSummary,
   fallbackToolSummary,
   filePathArg,
@@ -559,7 +559,6 @@ export {
   listDirSummary,
   mcpToolParts,
   readFileSummary,
-  type StepWords,
   shellCommand,
   shellSummary,
   skillName,

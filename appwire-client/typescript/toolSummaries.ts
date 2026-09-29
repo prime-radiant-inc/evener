@@ -9,7 +9,7 @@
 
 import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
-import { composeStepWords, type StepWords, withDetail } from "./stepWords";
+import { composeStepWords, type StepWords, summaryOf, withDetail } from "./stepWords";
 import { taskMutationSummary } from "./taskListStep";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
 import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
@@ -26,8 +26,6 @@ import { worktreeProgress, worktreeWords } from "./worktreeSteps";
 export interface ToolSummaryContext {
   cwd?: string;
 }
-
-export { composeStepWords, type StepWords } from "./stepWords";
 
 /** The parts of a step its summary reads. */
 export type ToolStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "output" | "raw">;
@@ -456,12 +454,6 @@ const TOOLS: Record<string, ToolEntry> = {
   find_session_transcripts: { family: "sessions", words: findSessionsWords },
   manage_worktree: { family: "worktree", words: worktreeWords },
 };
-
-// A tool's one-line summary: its words composed, as the web draws it.
-const summaryOf =
-  (words: WordsOf) =>
-  (step: ToolStep, ctx?: ToolSummaryContext): string =>
-    composeStepWords(words(step, ctx));
 
 export const readFileSummary = summaryOf(readFileWords);
 export const grepSummary = summaryOf(grepWords);

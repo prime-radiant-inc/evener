@@ -11,7 +11,7 @@
 // because nothing was torn down to discard.
 
 import type { ItemModel } from "./model";
-import { composeStepWords, type StepWords, withDetail } from "./stepWords";
+import { type StepWords, summaryOf, withDetail } from "./stepWords";
 import { parseArgs, str } from "./toolCallText";
 import { toolJSONResult } from "./toolEvidence";
 
@@ -112,9 +112,7 @@ export function worktreeWords(item: WorktreeStep): StepWords {
 }
 
 /** The operation's words as one line. */
-export function worktreeSummary(item: WorktreeStep): string {
-  return composeStepWords(worktreeWords(item));
-}
+export const worktreeSummary = summaryOf(worktreeWords);
 
 /** What the operation says it did, in its own words (its result's
  * `message`); undefined for output that isn't the tool's JSON. */
