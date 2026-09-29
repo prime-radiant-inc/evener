@@ -555,8 +555,10 @@ function Board({
 	/** Archive or Unarchive a row, and its Undo: through the journal, or held
 	 * when it can't go now (holdsChange), including when the journal turns
 	 * out not to take it. */
+	const holdArchive = (archived: boolean) => (row: NavigationSessionSummary) =>
+		holdRowAction(row, archived ? "archive" : "unarchive");
 	const archiveOrHold = (row: NavigationSessionSummary, archived: boolean) => {
-		const holdIt = () => holdRowAction(row, archived ? "archive" : "unarchive");
+		const holdIt = () => holdArchive(archived)(row);
 		const actions = organizationNow.current.actions;
 		if (holdsChange(waitsFor(row.ref, "archive"), true) || !actions) holdIt();
 		else
@@ -1051,8 +1053,6 @@ function Board({
 		const confirmed = actions ? await confirmEach(actions, sending, request, (rest) => rest.forEach(holdOne)) : [];
 		return { confirmed, tried: sending.length };
 	};
-	const holdArchive = (archived: boolean) => (row: NavigationSessionSummary) =>
-		holdRowAction(row, archived ? "archive" : "unarchive");
 	const archiveEach = (rows: readonly NavigationSessionSummary[], archived: boolean) =>
 		changeEach(rows, "archive", holdArchive(archived), (actions, row) => archiveRequest(actions, row, archived));
 	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
