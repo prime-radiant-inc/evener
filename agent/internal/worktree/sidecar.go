@@ -96,7 +96,7 @@ func WriteSidecarExcl(metaDir, name string, sc Sidecar) error {
 // rather than dropped; the wrap preserves cause for errors.Is/As.
 func removePartialCreate(path string, cause error) error {
 	if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
-		return fmt.Errorf("%w (removing partial sidecar %s: %v)", cause, path, rmErr)
+		return fmt.Errorf("%w (removing partial sidecar %s: %w)", cause, path, rmErr)
 	}
 	return cause
 }
