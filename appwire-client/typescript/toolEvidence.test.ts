@@ -10,8 +10,45 @@ test("splits a command's output from the exit footer the shell tool ends it with
   expect(shellOutput(toolWireStep("call_shell").output ?? "")).toEqual({ text: "package agent", exitCode: 0 });
   expect(shellOutput(toolWireStep("call_shell_failed").output ?? "")).toEqual({ text: "", exitCode: 1 });
   expect(shellOutput("no footer here\n")).toEqual({ text: "no footer here" });
-  // The buffered environment's trailer is a footer too.
-  expect(shellOutput("built\nexit_code=2 duration_ms=40 timed_out=false")).toEqual({ text: "built", exitCode: 2 });
+});
+
+test("reads a windowed output's multi-part footer", () => {
+  const windowed = shellOutput(toolWireStep("call_shell_windowed").output ?? "");
+  expect(windowed.exitCode).toBe(0);
+  expect(windowed.text.endsWith("3000")).toBe(true);
+  expect(windowed.text).not.toContain("output windowed");
+});
+
+test("reads a command whose foreground wait timed out, still running in the background", () => {
+  const promoted = shellOutput(toolWireStep("call_shell_timeout").output ?? "");
+  expect(promoted).toEqual({ text: "started", timedOut: true, stillRunning: true });
+});
+
+test("leaves out what the registry appends after the footer", () => {
+  const nudged = "ok\n[exit 0]\n\nYou have now made this same call and received the identical result 3 times in a row.";
+  expect(shellOutput(nudged)).toEqual({ text: "ok", exitCode: 0 });
+});
+
+test("reads a footer after CRLF line endings, and mixed stdout and stderr", () => {
+  expect(shellOutput("out\r\nerr\r\n[exit 3]\r\n")).toEqual({ text: "out\nerr", exitCode: 3 });
+  expect(shellOutput("out\nwarning: deprecated [x]\nerr\n[exit 2 · timed out]")).toEqual({
+    text: "out\nwarning: deprecated [x]\nerr",
+    exitCode: 2,
+    timedOut: true,
+  });
+});
+
+test("reads the buffered environment's trailer and its timeout error", () => {
+  expect(shellOutput("built\nexit_code=2 duration_ms=40 timed_out=false\n")).toEqual({ text: "built", exitCode: 2 });
+  expect(
+    shellOutput(
+      "partial\n[ERROR: Command timed out after 300ms. Partial output is shown above.\nYou can retry with a longer timeout by setting the max_runtime_ms parameter.]\nexit_code=-1 duration_ms=301 timed_out=true\n",
+    ),
+  ).toEqual({ text: "partial", exitCode: -1, timedOut: true });
+  // A command's own "exit_code=" line mid-output is output, not a trailer.
+  expect(shellOutput("exit_code=5 duration_ms=1 timed_out=false\nmore\n")).toEqual({
+    text: "exit_code=5 duration_ms=1 timed_out=false\nmore",
+  });
 });
 
 test("reads a fetched page's answer, where it came from and its size", () => {

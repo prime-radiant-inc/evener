@@ -9,7 +9,8 @@
 
 import { diffStats, editDiffText } from "./editDiff";
 import type { ItemModel } from "./model";
-import { clip, formatByteCount, lineCount, parseArgs, parseJSONObject, str } from "./toolCallText";
+import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
+import { webFetchResult } from "./toolEvidence";
 
 /** What a step's summary reads besides the step: the session's directory,
  * which a shell command's leading `cd <cwd> && ` repeats. */
@@ -103,7 +104,8 @@ const LIST_DIR_COUNT_RE = /^(\d+)(?: of (\d+))? entries/;
 
 function listDirCount(output: string | undefined): string | undefined {
   if (!output) return undefined;
-  const stated = LIST_DIR_COUNT_RE.exec(output.slice(output.lastIndexOf("\n") + 1))?.[1];
+  const trimmed = output.trimEnd();
+  const stated = LIST_DIR_COUNT_RE.exec(trimmed.slice(trimmed.lastIndexOf("\n") + 1))?.[1];
   if (stated === undefined) return outputCount(output, "entries");
   return `${stated} ${stated === "1" ? "entry" : "entries"}`;
 }
@@ -199,10 +201,10 @@ export function shellSummary(step: ToolStep, ctx?: ToolSummaryContext): string {
 
 // --- web ----------------------------------------------------------------------
 
-/** How big a fetched page was: web_fetch's size_bytes, else its output. */
+/** How big a fetched page was: web_fetch's size_bytes (from the one parse,
+ * webFetchResult), else its output. */
 export function webFetchByteCount(output: string): number {
-  const sizeBytes = parseJSONObject(output)?.size_bytes;
-  return typeof sizeBytes === "number" ? sizeBytes : output.length;
+  return webFetchResult(output)?.bytes ?? output.length;
 }
 
 /** "Fetched https://example.com/release-notes · 48213 bytes", or "Fetched a
