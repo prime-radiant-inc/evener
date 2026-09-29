@@ -16,6 +16,13 @@ export const NOTE_LIMIT = 1000;
 /** Leaving the field saves ten seconds later, as the web does
  * (cmd/evener-hub/frontend/src/stores/humanNoteDrafts.ts). */
 export const SAVE_AFTER_BLUR_MS = 10_000;
+/** How long after the last keystroke the draft reaches the kv-store. The
+ * store parses and stringifies the whole per-hub drafts map on every write, so
+ * one write per burst keeps typing smooth; a crash inside this window loses at
+ * most the last few keystrokes (they stay in memory until then). Shorter than
+ * the save-after-blur wait, and flushed at once when you leave the field, the
+ * app backgrounds or the sheet closes. */
+export const DRAFT_WRITE_DEBOUNCE_MS = 500;
 
 export type NotesGlyph = "person" | "sparkles" | "link";
 
@@ -128,6 +135,8 @@ interface NoteState {
 export class NotesController {
 	private state: NoteState;
 	private timer: ReturnType<typeof setTimeout> | null = null;
+	private draftTimer: ReturnType<typeof setTimeout> | null = null;
+	private draftValue: string | undefined;
 	private saving: Promise<SaveOutcome> | null = null;
 	private listeners = new Set<() => void>();
 
@@ -166,11 +175,11 @@ export class NotesController {
 		// later hub update would sit unseen behind this stale "editing" text,
 		// and a blur's save would overwrite it (RoboRev #2769).
 		if (clipped === this.options.savedNote()) {
-			this.storeDraft(undefined);
+			this.clearDraft();
 			this.publish({ text: clipped, phase: "clean" });
 			return;
 		}
-		this.storeDraft(clipped);
+		this.scheduleDraft(clipped);
 		this.publish({ text: clipped, phase: "editing" });
 	}
 
@@ -182,6 +191,8 @@ export class NotesController {
 	}
 
 	blur(): void {
+		// Leaving the field flushes the draft now, before the debounce would.
+		this.writeDraft();
 		if (!this.unsaved()) return;
 		this.cancelTimer();
 		this.timer = setTimeout(() => {
@@ -195,6 +206,9 @@ export class NotesController {
 	 * app and opening the session connected all call this. */
 	flush(): Promise<SaveOutcome> {
 		this.cancelTimer();
+		// Backgrounding the app and closing the sheet both land here: the draft
+		// reaches the kv-store before the save (or the return) does.
+		this.writeDraft();
 		const nothing: SaveOutcome = { saved: false, woke: false };
 		if (!this.unsaved()) {
 			// The hub caught up with the scheduled text: nothing to save.
@@ -251,6 +265,7 @@ export class NotesController {
 
 	dispose(): void {
 		this.cancelTimer();
+		this.cancelDraftTimer();
 		this.listeners.clear();
 	}
 
@@ -278,6 +293,9 @@ export class NotesController {
 			return { saved: false, woke: false };
 		}
 		const working = this.options.working();
+		// The hub's note as this save begins. A different value at settle time,
+		// that is neither this nor what we sent, is a third writer's newer note.
+		const startedHubNote = this.options.savedNote();
 		this.publish({ ...this.state, phase: "saving" });
 		try {
 			const response: NotesHumanSetResponse = await this.options.client.request("notes/human/set", {
@@ -287,8 +305,14 @@ export class NotesController {
 				note: text,
 			});
 			if (this.state.text === text) {
-				this.storeDraft(undefined);
-				this.publish({ text: response.note, phase: "saved" });
+				this.clearDraft();
+				const hub = this.options.savedNote();
+				// Someone else (the web, another device) wrote while our set was
+				// in flight: showing our text as Saved would hide their newer note
+				// and our next edit would overwrite it, so adopt theirs as clean
+				// (RoboRev #2769).
+				if (hub !== startedHubNote && hub !== response.note) this.publish({ text: hub, phase: "clean" });
+				else this.publish({ text: response.note, phase: "saved" });
 			} else {
 				// Typed on during the save: the newer text stays kept and unsaved,
 				// unless it went back to the hub's note, which leaves nothing to send.
@@ -302,6 +326,34 @@ export class NotesController {
 			this.publish({ ...this.state, phase: "failed" });
 			return { saved: false, woke: false };
 		}
+	}
+
+	/** Arm the debounced draft write, restarting the window on every keystroke.
+	 * The text itself is already in `state.text`; only the kv-store write waits. */
+	private scheduleDraft(text: string): void {
+		this.draftValue = text;
+		this.cancelDraftTimer();
+		this.draftTimer = setTimeout(() => {
+			this.draftTimer = null;
+			this.writeDraft();
+		}, DRAFT_WRITE_DEBOUNCE_MS);
+	}
+
+	/** Write the draft now, if a debounced one is waiting. */
+	private writeDraft(): void {
+		this.cancelDraftTimer();
+		if (this.draftValue === undefined) return;
+		const text = this.draftValue;
+		this.draftValue = undefined;
+		this.storeDraft(text);
+	}
+
+	/** Drop the draft at once: the text went back to the hub's own, or a save
+	 * just landed, so a waiting debounced write must not re-add it. */
+	private clearDraft(): void {
+		this.cancelDraftTimer();
+		this.draftValue = undefined;
+		this.storeDraft(undefined);
 	}
 
 	/** Keep `text` on the phone, or forget it (`undefined`) once it's saved.
@@ -318,6 +370,11 @@ export class NotesController {
 	private cancelTimer(): void {
 		if (this.timer !== null) clearTimeout(this.timer);
 		this.timer = null;
+	}
+
+	private cancelDraftTimer(): void {
+		if (this.draftTimer !== null) clearTimeout(this.draftTimer);
+		this.draftTimer = null;
 	}
 
 	private publish(state: NoteState): void {

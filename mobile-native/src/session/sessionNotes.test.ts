@@ -2,7 +2,14 @@ import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities } from "@eve
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { memoryStorage } from "../syncStringStorageTestUtils";
-import { NOTE_LIMIT, NotesController, notesBarPreview, noteStatusLine, SAVE_AFTER_BLUR_MS } from "./sessionNotes";
+import {
+	DRAFT_WRITE_DEBOUNCE_MS,
+	NOTE_LIMIT,
+	NotesController,
+	notesBarPreview,
+	noteStatusLine,
+	SAVE_AFTER_BLUR_MS,
+} from "./sessionNotes";
 
 const sharedNotes = { sharedNotes: true } as ThreadCapabilities;
 const url = (id: string, label?: string): SessionURL => ({ id, url: `https://example.com/${id}`, label });
@@ -200,6 +207,20 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(notes.getSnapshot()).toEqual({ text: "Someone else's later note", phase: "clean" });
 	});
 
+	it("adopts a hub note that changed while its own save was in flight, rather than showing its own as Saved (RoboRev #2769)", async () => {
+		const hub = harness();
+		hub.setSaved("first");
+		const notes = hub.make();
+		notes.edit("mine");
+		const saving = notes.flush();
+		// The web or another device writes a third value while ours is in flight.
+		hub.setSaved("third");
+		expect(await saving).toEqual({ saved: true, woke: true });
+		// Showing "mine" as Saved would hide "third" and let the next edit
+		// overwrite it; the hub's newer note wins and reads clean.
+		expect(notes.getSnapshot()).toEqual({ text: "third", phase: "clean" });
+	});
+
 	it("saves at once on flush and says whether it woke the agent", async () => {
 		const idle = harness();
 		const first = idle.make();
@@ -346,10 +367,43 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		const second = make("local:s2");
 		first.edit("From the first session");
 		second.edit("From the second session");
+		// The write is debounced now, so nothing reaches the store until the
+		// typing pauses (RoboRev #2769): advance to that point.
+		vi.advanceTimersByTime(DRAFT_WRITE_DEBOUNCE_MS);
 		expect(JSON.parse(storage.values.get("evener.native.note-draft.hub-1") ?? "{}")).toEqual({
 			"local:s1": "From the first session",
 			"local:s2": "From the second session",
 		});
+	});
+
+	it("writes the draft once the typing pauses, not on every keystroke (RoboRev #2769)", () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("a");
+		notes.edit("ab");
+		notes.edit("abc");
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+		vi.advanceTimersByTime(DRAFT_WRITE_DEBOUNCE_MS);
+		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "abc" }));
+	});
+
+	it("keeps the draft at once when you leave the field, before the debounce fires", () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("Fix causes");
+		notes.blur();
+		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "Fix causes" }));
+	});
+
+	it("keeps the draft at once on flush, which backgrounding and closing the sheet both call", async () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("Fix causes");
+		// The session ends before the flush: nothing is sent, so only the
+		// pre-save draft write can keep the text on this phone.
+		hub.setWritable(false);
+		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "Fix causes" }));
 	});
 });
 

@@ -89,7 +89,7 @@ const mounted: ReactTestRenderer[] = [];
 
 /** The screen's side: a controller over a hub that saves and removes, and the
  * host it provides under the session's key. */
-function provide(current: Session, { removeFails = false } = {}) {
+function provide(current: Session, { removeThrows }: { removeThrows?: string } = {}) {
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const client = {
 		request: async (method: string, params: Record<string, unknown>) => {
@@ -99,7 +99,7 @@ function provide(current: Session, { removeFails = false } = {}) {
 					note: params.note,
 					receipt: { projectionState: "pending" },
 				} as unknown as NotesHumanSetResponse;
-			if (method === "urls/remove" && removeFails) throw new Error("hub unreachable");
+			if (method === "urls/remove" && removeThrows) throw new Error(removeThrows);
 			return {};
 		},
 	};
@@ -399,12 +399,24 @@ describe("links", () => {
 	});
 
 	it("says so in the sheet when a link couldn't be removed", async () => {
-		provide(session({ sessionUrls: [web] }), { removeFails: true });
+		provide(session({ sessionUrls: [web] }), { removeThrows: "hub unreachable" });
 		const tree = sheet();
 		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
 		act(() => actionSheet.mock.calls[0]?.[1](2));
 		await flush();
 		expect(renderedText(tree)).toContain("Couldn't remove that link.");
+	});
+
+	it("drops a link the hub already removed, rather than leaving it listed (RoboRev #2769)", async () => {
+		const { requests } = provide(session({ sessionUrls: [web] }), { removeThrows: 'no URL entry with id "u1"' });
+		const tree = sheet();
+		act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
+		act(() => actionSheet.mock.calls[0]?.[1](2));
+		await flush();
+		expect(requests.filter((request) => request.method === "urls/remove")).toHaveLength(1);
+		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
+		expect(renderedText(tree)).not.toContain("example.com");
+		expect(symbols(tree)).toEqual([]);
 	});
 
 	it("removes a link on a full swipe left, with the same toast as its menu (spec 8.8)", async () => {
