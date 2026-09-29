@@ -134,10 +134,12 @@ describe("the Board's hold (phase 6 ruling 18)", () => {
 		const hold = new BoardHold(memory(), "hub-1");
 		hold.hold({ kind: "rename", ref: "local:a", title: "A", name: "One" }, 1);
 		hold.hold(stop("local:a"), 2);
-		expect(waitingLine(hold.getSnapshot(), "local:a")).toBe("Stop waits for the connection");
+		expect(waitingLine(hold.getSnapshot(), "local:a", false)).toBe("Stop waits for the connection");
 		// The second rename takes the first one's place, but it is the latest word.
 		hold.hold({ kind: "rename", ref: "local:a", title: "A", name: "Two" }, 3);
-		expect(waitingLine(hold.getSnapshot(), "local:a")).toBe("Rename waits for the connection");
+		expect(waitingLine(hold.getSnapshot(), "local:a", false)).toBe("Rename waits for the connection");
+		// Connected, it waits only for the journal to be free.
+		expect(waitingLine(hold.getSnapshot(), "local:a", true)).toBe("Rename is waiting to send");
 	});
 
 	it("finds what waits for one session", () => {
