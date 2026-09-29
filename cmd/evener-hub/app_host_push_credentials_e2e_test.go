@@ -145,14 +145,24 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	// adopted (its contents would then be deleted by the cleanup below).
 	host.mustRun("mkdir " + shellquote.RemoteWord(hostDir))
 
+	// Remove the test-owned directory on EVERY exit path. It is registered here,
+	// immediately after the exclusive creation and before any other host
+	// operation, so a failure resolving the guard paths or hashing below cannot
+	// strand the directory (or a staged binary or credential files) on the host.
+	// The guard comparison registers its own cleanup just after; by t.Cleanup's
+	// LIFO order that one runs FIRST, so the guarded files are read before this
+	// removal.
+	t.Cleanup(func() {
+		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+		}
+	})
+
 	// The two files this check must leave untouched: the host's REAL credential
 	// store and its real install. They are hashed BEFORE anything is written or
-	// launched, and the comparison is registered right here — immediately after
-	// the exclusive creation — so a setup failure at any point below still
-	// removes the directory and cannot strand a staged binary or credential
-	// files on the host. The credential path is resolved from the host's own
-	// environment (hostRealCredentialsPath), so the guard follows the host's
-	// actual credential store rather than an assumed ~/.config default.
+	// launched. The credential path is resolved from the host's own environment
+	// (hostRealCredentialsPath), so the guard follows the host's actual
+	// credential store rather than an assumed ~/.config default.
 	realCredsPath := hostGuardedCredentialsPath("EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE",
 		hostRealCredentialsPath(t, host, home), hostDir+"/evener/credentials.toml")
 	realCredsBefore := host.sha256IfFile(realCredsPath)
@@ -165,9 +175,6 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 		// after the removal would fire on "absent" rather than on "changed".
 		realCredsAfter := host.sha256IfFile(realCredsPath)
 		installAfter := host.sha256IfFile(installPath)
-		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
-		}
 		assertGuardedFileIntact(t, host, "the push", realCredsPath,
 			"it must write only the test-owned "+credsPath, realCredsBefore, realCredsAfter)
 		assertGuardedFileIntact(t, host, "this check", installPath,

@@ -193,21 +193,37 @@ func hostGuardedCredentialsPath(hookEnv, realPath, disposablePath string) string
 // leave the guard hashing a path nothing touches.
 func hostRealCredentialsPath(t *testing.T, host *hostSSH, home string) string {
 	t.Helper()
-	creds := host.output(`printf '%s' "${EVENER_CREDENTIALS_CONFIG-}"`)
-	providers := host.output(`printf '%s' "${EVENER_PROVIDERS_CONFIG-}"`)
-	xdg := host.output(`printf '%s' "${XDG_CONFIG_HOME-}"`)
+	creds := hostRawEnvValue(t, host, "EVENER_CREDENTIALS_CONFIG")
+	providers := hostRawEnvValue(t, host, "EVENER_PROVIDERS_CONFIG")
+	xdg := hostRawEnvValue(t, host, "XDG_CONFIG_HOME")
 	return hostAmbientCredentialsPath(creds, providers, xdg, home)
 }
 
-// hostAmbientCredentialsPath mirrors cmdutil.CredentialsPath for the override
-// values a host reports. An empty override is treated as unset — the tri-state's
-// "present but empty" cases all fall through here, exactly as they do in
-// cmdutil — so the guard and the product agree on where a stray write lands.
+// hostRawEnvValue reads a host environment variable RAW: no trimming, so a
+// whitespace-padded override survives to be resolved exactly as the product
+// would resolve it. It uses runStdout, not output, because output trims.
+func hostRawEnvValue(t *testing.T, host *hostSSH, name string) string {
+	t.Helper()
+	out, err := host.runStdout(`printf '%s' "${` + name + `-}"`)
+	if err != nil {
+		t.Fatalf("read %s from host %s: %v: %s", name, host.target, err, out)
+	}
+	return string(out)
+}
+
+// hostAmbientCredentialsPath mirrors cmdutil.CredentialsPath (cmdutil/registry.go)
+// for the override values a host reports. It reproduces the product's tri-state
+// rule bound for bound, INCLUDING its whitespace handling: an override that is
+// empty or whitespace-only is "present but empty" and falls through, while a
+// non-empty override is used RAW and untrimmed. Reading a trimmed host value
+// here would hash a different path than the product writes — silently disarming
+// the guard, which is exactly what TestHostAmbientCredentialsPathMatchesCmdutil
+// pins against.
 func hostAmbientCredentialsPath(credsConfig, providersConfig, xdgConfigHome, home string) string {
 	switch {
-	case credsConfig != "":
+	case strings.TrimSpace(credsConfig) != "":
 		return credsConfig
-	case providersConfig != "":
+	case strings.TrimSpace(providersConfig) != "":
 		return filepath.Join(filepath.Dir(providersConfig), "credentials.toml")
 	case xdgConfigHome != "":
 		return filepath.Join(xdgConfigHome, "evener", "credentials.toml")

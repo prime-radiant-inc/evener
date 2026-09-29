@@ -58,6 +58,10 @@ func TestHostAmbientCredentialsPathMatchesCmdutil(t *testing.T) {
 		{"xdg config home wins over home", "", "", "/xdg-config"},
 		{"credentials override wins", "/c/creds.toml", "/c/providers.toml", "/xdg-config"},
 		{"providers sibling when credentials unset", "", "/c/providers.toml", "/xdg-config"},
+		{"whitespace credentials falls through", "   ", "", ""},
+		{"whitespace providers falls through", "", "   ", ""},
+		{"padded credentials used raw", " /p ", "", ""},
+		{"whitespace xdg used raw", "", "", "   "},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
