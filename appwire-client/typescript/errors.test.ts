@@ -23,6 +23,7 @@ import {
   isInstanceRemoveApplied,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
+  refusedBeforeRunning,
   sessionActionError,
   sessionActionHeadline,
   WireError,
@@ -433,4 +434,22 @@ test("friendlyLaunchErrorMessage keeps every other WireError's own message untou
 
 test("friendlyLaunchErrorMessage gives an unknown rejection the same generic sentence friendlyErrorMessage would", () => {
   expect(friendlyLaunchErrorMessage(new Error("switch boom"))).toBe("Something went wrong.");
+});
+
+describe("a refusal before running is bound to appwire/errors.go's codes", () => {
+  // The codes are Go ints, which goConstantValue (strings only) doesn't read.
+  const code = (name: string) => {
+    const value = appwireErrorsGo.match(new RegExp(`\\n\\s*${name}\\s*=\\s*(-?\\d+)`))?.[1];
+    if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
+    return Number(value);
+  };
+  test("a validation refusal or a malformed request ran nothing", () => {
+    expect(refusedBeforeRunning(new WireError("cwd is required", code("CodeInvalidParams")))).toBe(true);
+    expect(refusedBeforeRunning(new WireError("bad request", code("CodeInvalidRequest")))).toBe(true);
+  });
+  test("any other failure may have run", () => {
+    expect(refusedBeforeRunning(new WireError("internal", code("CodeInternalError")))).toBe(false);
+    expect(refusedBeforeRunning(new WireError("unavailable", code("CodeUnavailable")))).toBe(false);
+    expect(refusedBeforeRunning(new Error("socket closed"))).toBe(false);
+  });
 });
