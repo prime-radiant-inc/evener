@@ -2383,7 +2383,11 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 	pressLabel(tree, "Sign in, openai sign-in expired");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Providers", { hubId: id });
 	pressLabel(tree, "Details, Studio Mac is offline · 2 sessions");
-	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Hosts",
+		params: { hubId: id, focus: "studio" },
+		initial: false,
+	});
 	pressLabel(tree, "Plugins, superpowers is broken");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: id });
 	// Update needed comes first.

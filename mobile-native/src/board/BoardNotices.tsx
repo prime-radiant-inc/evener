@@ -19,7 +19,9 @@ export function BoardNotices({
 	if (!notices.length) return null;
 	const open = (notice: Notice) => {
 		if (notice.kind === "signIn") navigation.navigate("Providers", { hubId });
-		else if (notice.kind === "host") navigation.navigate("HubSettings", { hubId });
+		else if (notice.kind === "host")
+			// Ruling 25: the Hub opens at that host, its home kept under the page.
+			navigation.navigate("Hub", { screen: "Hosts", params: { hubId, focus: notice.sourceId }, initial: false });
 		else navigation.navigate("Plugins", { hubId });
 	};
 	return notices.map((notice) => (
