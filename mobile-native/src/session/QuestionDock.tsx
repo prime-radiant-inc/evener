@@ -251,12 +251,11 @@ export function QuestionDock({
  * keyboard up, VoiceOver says so: they return below where you were. A folded
  * dock shows no options, so the keyboard going down there says nothing. */
 function useOptionsReturnAnnounced(typing: boolean, folded: boolean) {
-	const hiddenByTyping = typing && !folded;
-	const wasHiddenByTyping = useRef(hiddenByTyping);
+	const wasHiddenByTyping = useRef(typing && !folded);
 	useEffect(() => {
 		if (wasHiddenByTyping.current && !typing && !folded) AccessibilityInfo.announceForAccessibility("Options shown");
-		wasHiddenByTyping.current = hiddenByTyping;
-	}, [hiddenByTyping, typing, folded]);
+		wasHiddenByTyping.current = typing && !folded;
+	}, [typing, folded]);
 }
 
 /** An option as the dock shows it: where the agent offered it, and its

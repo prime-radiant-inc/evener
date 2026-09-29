@@ -289,13 +289,40 @@ describe("while you type your own answer (spec 8.4, Other answer…)", () => {
 		expect(announced).toHaveBeenCalledWith("Options shown");
 	});
 
-	it("says nothing about options when you fold the dock while typing, or the keyboard goes down on it folded", () => {
+	it("says nothing about options when you fold the dock while typing", () => {
 		const { tree } = typing();
 		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
 		announced.mockClear();
 		press(tree, "Fold");
+		expect(announced).not.toHaveBeenCalledWith("Options shown");
+	});
+
+	it("says nothing about options when the keyboard goes down on a folded dock", () => {
+		const { tree } = typing();
+		press(tree, "Fold");
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
 		act(() => keyboard.hide());
 		expect(renderedText(tree)).toContain("Answer 2 questions");
+		expect(announced).not.toHaveBeenCalledWith("Options shown");
+	});
+
+	it("says Options shown once when the keyboard goes down on a dock unfolded while typing", () => {
+		const { tree } = typing();
+		press(tree, "Fold");
+		press(tree, "Answer 2 questions");
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
+		act(() => keyboard.hide());
+		expect(announced.mock.calls.filter(([words]) => words === "Options shown")).toHaveLength(1);
+	});
+
+	it("says nothing about options when you unfold with the keyboard down", () => {
+		const { tree } = mount(two, { composerUp: true, folded: true });
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
+		press(tree, "Answer 2 questions");
+		expect(optionLabels(tree)).toEqual(["Keep them", "Drop them"]);
 		expect(announced).not.toHaveBeenCalledWith("Options shown");
 	});
 
