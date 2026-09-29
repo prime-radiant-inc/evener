@@ -42,6 +42,13 @@ func TestAdvertiseArtifactsDir_OnlyWhenPresent(t *testing.T) {
 	if got := advertiseArtifactsDir(dir); got != dir {
 		t.Fatalf("advertiseArtifactsDir(existing) = %q, want %q", got, dir)
 	}
+	file := filepath.Join(t.TempDir(), "regular")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if got := advertiseArtifactsDir(file); got != "" {
+		t.Fatalf("advertiseArtifactsDir(regular file) = %q, want empty", got)
+	}
 }
 
 // TestCreateDelegate_CreationResultNamesArtifactsDir pins the issue's core
@@ -190,5 +197,12 @@ func TestCreateDelegate_ConstructFailureRemovesArtifactsDir(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("artifacts dir leaked after construct failure: err=%v", err)
+	}
+	sessionDir, err := delegateSessionDir(root.stateDir, result.ChildSessionID)
+	if err != nil {
+		t.Fatalf("delegateSessionDir: %v", err)
+	}
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Fatalf("empty session dir residue after construct failure: err=%v", err)
 	}
 }
