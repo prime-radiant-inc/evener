@@ -133,8 +133,10 @@ export interface RestoredViewAnchor {
 
 // The end-anchored VirtualList owns the transcript's position; this is the one
 // call that tells it "the end". The mount landing, an append's follow, and a
-// leading-edge change's re-target all make exactly this request.
-function scrollToLastRow(listRef: RefObject<VirtualListHandle | null>, count: number): void {
+// leading-edge change's re-target all make exactly this request. Shared with
+// the read-only transcript pane, whose own mount landing and prepend
+// correction make it too.
+export function scrollToLastRow(listRef: RefObject<VirtualListHandle | null>, count: number): void {
   if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
 }
 
