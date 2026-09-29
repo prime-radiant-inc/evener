@@ -761,15 +761,17 @@ export async function createDemoHub(
 				if (request.method === "thread/start" && modes.startDelaySeconds) {
 					// Held, as a slow hub would; a client that leaves meanwhile takes
 					// the held reply with it.
+					const dropHeld = () => {
+						clearTimeout(held);
+						heldReplies.delete(held);
+					};
 					const held = setTimeout(() => {
 						heldReplies.delete(held);
+						socket.off("close", dropHeld);
 						socket.send(reply);
 					}, modes.startDelaySeconds * 1000);
 					heldReplies.add(held);
-					socket.once("close", () => {
-						clearTimeout(held);
-						heldReplies.delete(held);
-					});
+					socket.once("close", dropHeld);
 				} else socket.send(reply);
 				if (changed) resync(changed);
 				if (navigationChange) broadcastNavigation(navigationChange);
