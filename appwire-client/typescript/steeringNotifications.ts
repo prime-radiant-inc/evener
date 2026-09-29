@@ -16,6 +16,7 @@
 // the way a prose pattern could (see parseSteeringNotifications below).
 
 import { jobStatusDisplay } from "./activityData";
+import { delegateEndingText } from "./delegateDetails";
 import { isPlainObject } from "./plainObject";
 
 export type NotificationTone = "success" | "warning" | "error" | "neutral";
@@ -283,7 +284,9 @@ interface TerminalPacket {
   // stop packet, agent/internal/delegatestore/fold.go, #3114).
   outcome: string;
   message: string;
+  // A code (delegatestore reasons); `error` is a failed run's cause in words.
   reason: string;
+  error: string;
   name: string;
   description: string;
 }
@@ -306,6 +309,7 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
     outcome: text(metadata.outcome) || (PACKET_KIND_OUTCOMES.get(parsed.kind) ?? ""),
     message: text(parsed.message),
     reason: text(metadata.reason),
+    error: text(metadata.error),
     name: text(metadata.name),
     description: text(metadata.description),
   };
@@ -321,18 +325,19 @@ function delegatePacketNotification(
   const name = frameName || packet.name;
   const label = name || packet.description || delegateId;
   const outcome = DELEGATE_OUTCOMES.get(packet.outcome);
+  const ending = delegateEndingText(packet);
   return {
     type: "delegate",
     // In the outcome's own words; an ending this client doesn't know still reported.
     title: `Delegate ${outcome ?? "reported"}`,
     tone,
-    secondary: [label, tone === "error" || tone === "warning" ? packet.reason : ""].filter(Boolean).join(" · "),
+    secondary: [label, tone === "error" || tone === "warning" ? ending : ""].filter(Boolean).join(" · "),
     outcome,
     delegateId,
     name: name || undefined,
     description: packet.description || undefined,
     status: packet.outcome,
-    reason: packet.reason || undefined,
+    reason: ending,
     excerpt: "",
     message: packet.message || undefined,
     concerns: [],
