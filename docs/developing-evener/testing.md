@@ -956,10 +956,10 @@ predates issue #172's switch to package wall time, so the Go-package ratio check
 stays warn-only even under `CHECK=1` until `make test-rebaseline` rewrites it
 under the new metric (#141): a budget whose Go-package numbers were blessed
 under a different metric is never enforced, and a full rebaseline records the
-metric marker that re-enables enforcement (a narrowed `--modules`/`--no-web`
-rebaseline leaves it off until a full one lands). The `"web"` row and the
-per-test ceiling keep the metrics issue #172 did not change, so both stay
-enforced either way.
+metric marker that re-enables enforcement. A narrowed `--modules`/`--no-web`
+rebaseline never adds the marker; it only preserves one a full rebaseline
+already stamped. The `"web"` row and the per-test ceiling keep the metrics
+issue #172 did not change, so both stay enforced either way.
 
 A broken measurement is not conditional. `go list` or `go test` exiting
 nonzero, or a package `go list` reported that the `go test -json` stream never
