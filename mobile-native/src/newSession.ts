@@ -78,6 +78,16 @@ export function creationModel(
 	return modelFromId(id, models);
 }
 
+/** The per-launch overrides without a model or effort of their own: the
+ * form's model and effort are the choice, so a stale override can never
+ * quietly outrank one the person just made or applied. */
+function withoutModelChoice(layer: LaunchConfigLayer): LaunchConfigLayer {
+	const next = { ...layer };
+	delete next.model;
+	delete next.reasoningEffort;
+	return next;
+}
+
 export function createNewSessionStore(
 	hubId: string,
 	storage?: () => Pick<CreationDraftRepository, "read" | "write" | "clear">,
@@ -226,10 +236,8 @@ export function createNewSessionStore(
 		},
 		selectModel(value) {
 			const model = get().models.find((m) => m.provider === value?.provider && m.model === value.model) ?? null;
-			const launchOverrides = { ...get().launchOverrides };
-			const reasoning = launchOverrides.reasoningEffort || get().reasoning;
-			delete launchOverrides.model;
-			delete launchOverrides.reasoningEffort;
+			const reasoning = get().launchOverrides.reasoningEffort || get().reasoning;
+			const launchOverrides = withoutModelChoice(get().launchOverrides);
 			set({
 				model,
 				launchOverrides,
@@ -479,7 +487,7 @@ export function createNewSessionStore(
 				hostNote: null,
 				model: setup.model ? { provider: setup.model.provider, model: setup.model.model } : null,
 				reasoning: setup.effort,
-				launchOverrides: withOwnedOverrides(previous.launchOverrides, setup.overrides),
+				launchOverrides: withOwnedOverrides(withoutModelChoice(previous.launchOverrides), setup.overrides),
 			});
 			if (setup.host !== previous.source) void get().loadMetadata();
 			void get().loadModels(true);
@@ -496,6 +504,7 @@ export function createNewSessionStore(
 				hostNote: null,
 				model: null,
 				reasoning: seed.effort ?? "",
+				launchOverrides: withoutModelChoice(previous.launchOverrides),
 			});
 			if (seed.host !== previous.source) void get().loadMetadata();
 			void get().loadModels(true);

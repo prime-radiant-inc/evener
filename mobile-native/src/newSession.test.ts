@@ -597,6 +597,25 @@ it("applies a session's seed and finds its model once the host's models arrive",
 	expect(store.getState()).toMatchObject({ source: "local", cwd: "/project", model, reasoning: "low" });
 });
 
+it.each([
+	[
+		"a setup",
+		(store: ReturnType<typeof setup>["store"]) =>
+			store.getState().applySetup({ host: "local", cwd: "/project", model: null, effort: "", overrides: {} }),
+	],
+	[
+		"a seed",
+		(store: ReturnType<typeof setup>["store"]) => store.getState().applySeed({ host: "local", cwd: "/project" }),
+	],
+])("drops a stale per-launch model and effort when %s is applied, as choosing a model does", (_name, apply) => {
+	const { store } = setup();
+	store.getState().setLaunchOverrides({ model: "p/stale", reasoningEffort: "max", sandbox: "read-only" });
+	apply(store);
+	const overrides = store.getState().launchOverrides;
+	expect(overrides.model).toBeUndefined();
+	expect(overrides.reasoningEffort).toBeUndefined();
+});
+
 it("restores a draft's host, and a draft saved before hosts as the hub's own machine (ruling 28)", () => {
 	const saved = new Map<string, CreationDraft>();
 	const storage = () => ({
