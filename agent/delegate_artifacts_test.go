@@ -90,6 +90,27 @@ func TestEnsureDelegateArtifactsDir_RefusesNonDirectoryCollisions(t *testing.T) 
 		t.Fatalf("leaf file removed by cleanup: %v", err)
 	}
 
+	// A symlink where the artifacts leaf belongs is refused, and both the link
+	// and its target are preserved.
+	linkChild := "sess_leaf_link"
+	if err := os.MkdirAll(filepath.Join(sessions, linkChild), 0o700); err != nil {
+		t.Fatalf("mkdir link child: %v", err)
+	}
+	leafTarget := t.TempDir()
+	leafLink := filepath.Join(sessions, linkChild, delegateArtifactsSubdir)
+	if err := os.Symlink(leafTarget, leafLink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := ensureDelegateArtifactsDir(stateDir, linkChild); err == nil {
+		t.Fatal("symlinked artifacts leaf accepted")
+	}
+	if _, err := os.Lstat(leafLink); err != nil {
+		t.Fatalf("leaf symlink removed by cleanup: %v", err)
+	}
+	if _, err := os.Lstat(leafTarget); err != nil {
+		t.Fatalf("leaf symlink target removed by cleanup: %v", err)
+	}
+
 	// A symlinked session dir is refused and kept (skipped where symlinks need
 	// privilege).
 	link := filepath.Join(sessions, "sess_link")

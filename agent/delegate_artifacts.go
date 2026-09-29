@@ -51,36 +51,50 @@ func ensureDelegateArtifactsDir(stateDir, childSessionID string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	// Record which entries already existed before MkdirAll so a failure never
-	// removes state this call did not create. Lstat (not Stat) and a required
-	// directory type refuse a symlink or a regular file planted at either path:
-	// MkdirAll would follow a symlinked session dir and could place artifacts
-	// outside stateDir, and a dangling symlink would otherwise be deleted as if
-	// this call had created it.
 	parent := filepath.Dir(dir)
-	parentInfo, parentErr := os.Lstat(parent)
-	parentExisted := parentErr == nil
-	if parentExisted && !parentInfo.IsDir() {
-		return "", fmt.Errorf("delegate artifacts dir: session path %s exists and is not a real directory", parent)
-	}
-	leafInfo, leafErr := os.Lstat(dir)
-	leafExisted := leafErr == nil
-	if leafExisted && !leafInfo.IsDir() {
-		return "", fmt.Errorf("delegate artifacts dir: %s exists and is not a real directory", dir)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		// Take back only what this call created: the leaf, and the session dir
-		// when it did not pre-exist (os.Remove removes a directory only if it is
-		// empty, so a pre-existing populated dir is left alone).
-		if !leafExisted {
-			_ = os.Remove(dir)
-		}
-		if !parentExisted {
-			_ = os.Remove(parent)
-		}
+	// The layout dir is shared, not per-delegate; create it if a fixture left it
+	// out. Every per-delegate path below is then created with os.Mkdir, which is
+	// atomic and does not follow a symlink for the final component, instead of
+	// MkdirAll, which would follow a symlinked session dir and could place
+	// artifacts outside stateDir.
+	if err := os.MkdirAll(filepath.Dir(parent), 0o700); err != nil {
 		return "", fmt.Errorf("delegate artifacts dir: %w", err)
 	}
+	parentCreated, err := mkdirVerifiedDir(parent)
+	if err != nil {
+		return "", err
+	}
+	if _, err := mkdirVerifiedDir(dir); err != nil {
+		// Take back only the session dir this call created (os.Remove removes it
+		// only while empty, so a pre-existing populated dir is left alone).
+		if parentCreated {
+			_ = os.Remove(parent)
+		}
+		return "", err
+	}
 	return dir, nil
+}
+
+// mkdirVerifiedDir creates path as a directory with os.Mkdir — atomic and
+// no-follow for the final component — or accepts an existing real directory. It
+// refuses a symlink or regular file planted at path, and reports whether this
+// call created the directory.
+func mkdirVerifiedDir(path string) (created bool, err error) {
+	err = os.Mkdir(path, 0o700)
+	if err == nil {
+		return true, nil
+	}
+	if !os.IsExist(err) {
+		return false, fmt.Errorf("delegate artifacts dir: create %s: %w", path, err)
+	}
+	info, lerr := os.Lstat(path)
+	if lerr != nil {
+		return false, fmt.Errorf("delegate artifacts dir: inspect %s: %w", path, lerr)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("delegate artifacts dir: %s exists and is not a real directory", path)
+	}
+	return false, nil
 }
 
 // removeDelegateArtifacts removes a delegation's artifacts directory. It is the

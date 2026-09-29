@@ -358,7 +358,9 @@ func disposeUnadoptedSubagentSession(sess *Session) {
 	// the transcript and metadata are left for the resumability evidence the
 	// teardown above preserves.
 	if sess != nil {
-		_ = removeDelegateArtifacts(sess.stateDir, sess.id)
+		if err := removeDelegateArtifacts(sess.stateDir, sess.id); err != nil {
+			sess.emit(events.EventWarning, events.WarningData{Message: "delegate artifacts directory cleanup failed: " + err.Error()})
+		}
 	}
 }
 
