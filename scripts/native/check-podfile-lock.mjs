@@ -196,8 +196,10 @@ function declaredCompanions(expoModules, communityNames) {
 		} catch (error) {
 			fail(`cannot parse ${file}: ${error.message}`);
 		}
-		return (parsed?.products ?? [])
-			.filter((product) => product.autolinkWhen)
+		const products = parsed?.products ?? [];
+		if (!Array.isArray(products)) fail(`${file}'s products is not a list: ${JSON.stringify(products)}`);
+		return products
+			.filter((product) => product?.autolinkWhen)
 			.map((product) => ({ pod: product.podName ?? product.name, packageName }));
 	});
 }
@@ -221,17 +223,19 @@ function lockedPods(lock) {
 	for (const line of lines.slice(start + 1, end < 0 ? undefined : end)) {
 		if (line === "") continue;
 		const match = /^ {2}- "?([^ "]+) \(from `([^`]+)`\)"?$/.exec(line);
-		if (!match) {
-			// This check compares only local-path entries (`../node_modules/...`).
-			// A spec-repo dependency (`  - Firebase/Core`, `  - SomePod (~> 1.0)`)
-			// and a remote Git or HTTP one (`  - Foo (from \`https://...git\`, branch
-			// \`main\`)`) are out of scope and skipped; a local-path line that still
-			// does not parse fails, since it may be a pod called missing.
-			if (/\(from `(?:\.{0,2}\/|\/)/.test(line)) fail(`${lock}'s DEPENDENCIES has a line this check cannot parse: ${JSON.stringify(line)}`);
+		// This check compares only local-path entries (`../node_modules/...`). A
+		// bare remote source (`  - Foo (from \`https://...git\`)`) has the same
+		// shape but its `from` is a URL, so it is out of scope too.
+		if (match && /^\.\.?\//.test(match[2])) {
+			const dir = path.posix.normalize(match[2]).replace(/\/$/, "");
+			locked.set(podKey(match[1], dir), dir);
 			continue;
 		}
-		const dir = path.posix.normalize(match[2]).replace(/\/$/, "");
-		locked.set(podKey(match[1], dir), dir);
+		// A spec-repo dependency (`  - Firebase/Core`) has no `from` clause at all,
+		// and a remote one's `from` is a URL; neither names a local path. A
+		// local-path line that still does not parse fails, since it may be a pod
+		// the check would otherwise call missing.
+		if (/\(from `\.\.?\//.test(line)) fail(`${lock}'s DEPENDENCIES has a line this check cannot parse: ${JSON.stringify(line)}`);
 	}
 	return locked;
 }

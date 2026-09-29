@@ -23,11 +23,12 @@ const check = (...args) => run(script, args);
 
 /** A throwaway mobile-native whose expo stub prints FAKE_RESOLVE or FAKE_CONFIG
  * as autolinking's output, chosen by the subcommand it runs. */
-function fakeScript() {
+function fakeTree() {
 	const fake = mkdtempSync(path.join(scratch, "fake-"));
-	const expoBin = path.join(fake, "mobile-native/node_modules/expo/bin");
+	const nm = path.join(fake, "mobile-native/node_modules");
+	const expoBin = path.join(nm, "expo/bin");
 	mkdirSync(expoBin, { recursive: true });
-	writeFileSync(path.join(fake, "mobile-native/node_modules/expo/package.json"), '{"name":"expo","version":"0.0.0"}');
+	writeFileSync(path.join(nm, "expo/package.json"), '{"name":"expo","version":"0.0.0"}');
 	writeFileSync(
 		path.join(expoBin, "autolinking.js"),
 		'process.stdout.write(process.argv.includes("react-native-config") ? process.env.FAKE_CONFIG : process.env.FAKE_RESOLVE);',
@@ -35,11 +36,13 @@ function fakeScript() {
 	const scriptDir = path.join(fake, "scripts/native");
 	mkdirSync(scriptDir, { recursive: true });
 	copyFileSync(script, path.join(scriptDir, "check-podfile-lock.mjs"));
-	return path.join(scriptDir, "check-podfile-lock.mjs");
+	return { scriptPath: path.join(scriptDir, "check-podfile-lock.mjs"), nm };
 }
 
-const fakeRun = (resolve, config = { reactNativePath: "/x", dependencies: {} }) =>
-	run(fakeScript(), ["--lock", realLockPath], { FAKE_RESOLVE: JSON.stringify(resolve), FAKE_CONFIG: JSON.stringify(config) });
+const fakeRun = (resolve, config = { reactNativePath: "/x", dependencies: {} }) => {
+	const { scriptPath } = fakeTree();
+	return run(scriptPath, ["--lock", realLockPath], { FAKE_RESOLVE: JSON.stringify(resolve), FAKE_CONFIG: JSON.stringify(config) });
+};
 
 /** A copy of the real lock without the DEPENDENCIES line for `pod`. */
 function lockWithout(pod) {
@@ -141,6 +144,13 @@ test("a remote Git dependency line with options is skipped", () => {
 	assert.equal(run.status, 0, run.stderr);
 });
 
+test("a bare remote Git dependency line is skipped, not called extra", () => {
+	const file = path.join(scratch, "git-dep-bare.lock");
+	writeFileSync(file, realLock.replace("\nDEPENDENCIES:\n", "\nDEPENDENCIES:\n  - SomePod (from `https://github.com/foo/bar.git`)\n"));
+	const run = check("--lock", file);
+	assert.equal(run.status, 0, run.stderr);
+});
+
 test("an unexpected autolinking shape exits 2 with one line, not a stack trace", () => {
 	// A throwaway mobile-native whose expo stub prints the wrong JSON shape, so
 	// the check reaches the autolinking parse without a real dependency tree.
@@ -175,5 +185,44 @@ test("a react-native-config without reactNativePath exits 2 with one line", () =
 	const result = fakeRun({ modules: [] }, {});
 	assert.equal(result.status, 2, result.stderr);
 	assert.match(result.stderr, /^check-podfile-lock: .*reactNativePath/);
+	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
+});
+
+test("an unresolvable expo-modules-autolinking exits 2 with one line", () => {
+	const result = fakeRun({ modules: [] });
+	assert.equal(result.status, 2, result.stderr);
+	assert.match(result.stderr, /^check-podfile-lock: cannot resolve expo-modules-autolinking/);
+	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
+});
+
+test("an unparsable spm.config.json exits 2 with one line", () => {
+	const { scriptPath, nm } = fakeTree();
+	mkdirSync(path.join(nm, "expo-modules-autolinking"), { recursive: true });
+	writeFileSync(path.join(nm, "expo-modules-autolinking/package.json"), '{"name":"expo-modules-autolinking","version":"0.0.0"}');
+	const podspecDir = path.join(nm, "expo-camera/ios");
+	mkdirSync(podspecDir, { recursive: true });
+	writeFileSync(path.join(nm, "expo-camera/spm.config.json"), "not json");
+	const result = run(scriptPath, ["--lock", realLockPath], {
+		FAKE_RESOLVE: JSON.stringify({ modules: [{ packageName: "expo-camera", pods: [{ podName: "ExpoCamera", podspecDir }] }] }),
+		FAKE_CONFIG: JSON.stringify({ reactNativePath: "/x", dependencies: {} }),
+	});
+	assert.equal(result.status, 2, result.stderr);
+	assert.match(result.stderr, /^check-podfile-lock: cannot parse .*spm\.config\.json/);
+	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
+});
+
+test("an spm.config.json whose products is not a list exits 2 with one line", () => {
+	const { scriptPath, nm } = fakeTree();
+	mkdirSync(path.join(nm, "expo-modules-autolinking"), { recursive: true });
+	writeFileSync(path.join(nm, "expo-modules-autolinking/package.json"), '{"name":"expo-modules-autolinking","version":"0.0.0"}');
+	const podspecDir = path.join(nm, "expo-camera/ios");
+	mkdirSync(podspecDir, { recursive: true });
+	writeFileSync(path.join(nm, "expo-camera/spm.config.json"), '{"products":"nope"}');
+	const result = run(scriptPath, ["--lock", realLockPath], {
+		FAKE_RESOLVE: JSON.stringify({ modules: [{ packageName: "expo-camera", pods: [{ podName: "ExpoCamera", podspecDir }] }] }),
+		FAKE_CONFIG: JSON.stringify({ reactNativePath: "/x", dependencies: {} }),
+	});
+	assert.equal(result.status, 2, result.stderr);
+	assert.match(result.stderr, /^check-podfile-lock: .*products is not a list/);
 	assert.doesNotMatch(result.stderr, /TypeError|at Object|at Module/);
 });
