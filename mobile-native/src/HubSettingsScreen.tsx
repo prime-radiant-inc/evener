@@ -1,7 +1,7 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, ScrollView, View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { type ConnectionState, createHubOverviewStore, friendlyErrorMessage } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -10,6 +10,7 @@ import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedS
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Spinner } from "./sheet/Spinner";
 
 type Props = NativeStackScreenProps<Routes, "HubSettings">;
 // A mounted screen re-keyed to another hub is a fresh screen: the
@@ -31,7 +32,7 @@ function HubSettingsScreenBody({ route }: Props) {
 		return (
 			<>
 				<SheetStatus />
-				<FirstLoad hubName={activeProfile.name} />
+				<FirstLoad hubName={activeProfile.name} label="Loading hub settings" />
 			</>
 		);
 	return (
@@ -174,7 +175,7 @@ function HubSettings({
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
 				<Copy>{hubName}</Copy>
-				{state.loading && !data && <ActivityIndicator accessibilityLabel="Loading hub information" />}
+				{state.loading && !data && <Spinner label="Loading hub information" />}
 				<ErrorMessage message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED} />
 				{state.error && (
 					<Action

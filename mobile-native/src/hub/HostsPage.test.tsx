@@ -180,6 +180,6 @@ it("waits quietly, connected, before the hub has listed its hosts (spec 14)", as
 	fleet.client.request = (() => new Promise(() => {})) as never;
 	const page = await mount(fleet);
 	expect(renderedText(page.tree)).not.toContain("Connecting");
-	expect(page.tree.root.findAllByProps({ accessibilityLabel: "Loading" })).not.toHaveLength(0);
+	expect(page.tree.root.findAllByProps({ accessibilityLabel: "Loading hosts" })).not.toHaveLength(0);
 	page.dispose();
 });

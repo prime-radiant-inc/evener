@@ -11,7 +11,8 @@ import { fonts, space } from "./design/tokens";
 import type { ProviderSignIn } from "./providerSignIn";
 import { Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
-import { Loading, SheetStatus } from "./sheet/SheetStatus";
+import { SheetStatus } from "./sheet/SheetStatus";
+import { Spinner } from "./sheet/Spinner";
 import { Action, allowFontScaling, useColors, useTextScale } from "./ui";
 
 const COPY_FAILED = "Could not copy the code. Select it to copy manually.";
@@ -124,7 +125,7 @@ export function ProviderSignInSheet({
 			onRequestClose={onClose}
 		>
 			<GroupedPage>
-				{state.phase === "idle" || state.phase === "starting" ? <Loading label="Starting sign-in" /> : null}
+				{state.phase === "idle" || state.phase === "starting" ? <Spinner label="Starting sign-in" /> : null}
 				{device && !waiting ? (
 					// A poll's error or a failed copy or open lands in a footer
 					// right under the explanation.

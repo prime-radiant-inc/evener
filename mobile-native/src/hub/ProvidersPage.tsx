@@ -39,7 +39,8 @@ import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retained
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue, TextFieldRow } from "../sheet/Grouped";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
-import { FirstLoad, Loading, SheetStatus } from "../sheet/SheetStatus";
+import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
+import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
 import { useAuthStatuses } from "./useAuthStatuses";
 
@@ -134,7 +135,7 @@ function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRout
 		return (
 			<GroupedPage>
 				<SheetStatus />
-				<FirstLoad hubName={activeProfile.name} />
+				<FirstLoad hubName={activeProfile.name} label="Loading providers" />
 			</GroupedPage>
 		);
 	const { focus, signIn: signInFocus } = route.params;
@@ -432,7 +433,7 @@ function Providers({
 		<>
 			<GroupedPage>
 				<SheetStatus />
-				{core.listingEstablished ? null : <FirstLoad hubName={hubName} />}
+				{core.listingEstablished ? null : <FirstLoad hubName={hubName} label="Loading providers" />}
 				{loadError ? <GroupFooter tone="danger">{loadError}</GroupFooter> : null}
 				{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
 				{core.listingEstablished ? (
@@ -652,7 +653,7 @@ function Providers({
 									)}
 									{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
 									{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
-									{surface.busy && <Loading label="Updating provider" />}
+									{surface.busy && <Spinner label="Updating provider" />}
 									{editingCredential ? null : (
 										<>
 											<Group label="Manage">

@@ -7,7 +7,7 @@ export function HostsNotListed({ hubName, error }: { hubName: string; error: str
 	return (
 		<GroupedPage>
 			<SheetStatus />
-			<FirstLoad hubName={hubName} />
+			<FirstLoad hubName={hubName} label="Loading hosts" />
 			{error ? <GroupFooter tone="danger">{`Couldn't list this hub's hosts: ${error}`}</GroupFooter> : null}
 		</GroupedPage>
 	);

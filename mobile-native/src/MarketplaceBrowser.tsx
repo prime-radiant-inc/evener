@@ -28,7 +28,8 @@ import {
 	useFormError,
 } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
-import { Loading, SheetStatus } from "./sheet/SheetStatus";
+import { SheetStatus } from "./sheet/SheetStatus";
+import { Spinner } from "./sheet/Spinner";
 import { allowFontScaling, useColors, useTextScale } from "./ui";
 import { destructiveButton } from "./haptics";
 
@@ -340,7 +341,7 @@ export function MarketplaceBrowser({
 					/>
 				</Group>
 			) : null}
-			{busy ? <Loading label="Updating marketplace or plugin" /> : null}
+			{busy ? <Spinner label="Updating marketplace or plugin" /> : null}
 		</>
 	);
 	return (
@@ -409,7 +410,7 @@ export function MarketplaceBrowser({
 									) : null}
 								</Group>
 							) : null}
-							{browsing ? <Loading label="Loading marketplace catalog" /> : null}
+							{browsing ? <Spinner label="Loading marketplace catalog" /> : null}
 							{!browsing && loaded && catalogPlugins.length === 0 ? (
 								<GroupFooter>{needle ? "No matching plugins." : "No plugins in this catalog."}</GroupFooter>
 							) : null}
@@ -451,7 +452,7 @@ export function MarketplaceBrowser({
 				</>
 			) : (
 				<>
-					{state.marketplacesLoading && rows.length === 0 ? <Loading label="Loading marketplaces" /> : null}
+					{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
 					{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
 						<GroupFooter>No marketplaces on this hub.</GroupFooter>
 					) : null}

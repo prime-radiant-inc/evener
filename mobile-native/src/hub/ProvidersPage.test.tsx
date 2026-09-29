@@ -1010,7 +1010,7 @@ it("holds the re-key window back from the previous hub's recorded client", async
 	// The first-load wait replaces the surface: no sign-in affordance mounts
 	// and no exchange runs against the previous hub's client — the strongest
 	// form of the round-58 contract, closed one layer up.
-	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading" })).not.toHaveLength(0);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading providers" })).not.toHaveLength(0);
 	expect(tree.root.findAll((node) => typeof node.props.onSignIn === "function")).toHaveLength(0);
 	expect(stale.calls.map((call) => call.method)).not.toContain("evener/auth/device/start");
 
@@ -1178,7 +1178,7 @@ it("waits quietly, connected, for the first listing, in place of a wall (spec 14
 	const { tree } = mountPage();
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain("Connecting");
-	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading" })).not.toHaveLength(0);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading providers" })).not.toHaveLength(0);
 	expect(hasControl(tree, "Add provider")).toBe(false);
 });
 

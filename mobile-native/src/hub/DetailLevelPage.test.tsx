@@ -140,7 +140,7 @@ beforeEach(() => {
 it("waits quietly, connected, before the hub's setting has loaded (spec 14)", () => {
 	const { tree } = mount(null);
 	expect(renderedText(tree)).not.toContain("Connecting");
-	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading" })).not.toHaveLength(0);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading the default detail level" })).not.toHaveLength(0);
 });
 
 it("lists spec 8.2's levels with their descriptions, then Custom, with the saved one checked", () => {
@@ -447,13 +447,13 @@ it.each([
 it("waits quietly while the hub hasn't said whether it keeps the setting", () => {
 	const { tree } = mount(transcript({ support: "unknown", confirmed: null }));
 	expect(renderedText(tree)).not.toContain("Connecting");
-	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading" })).not.toHaveLength(0);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading the default detail level" })).not.toHaveLength(0);
 });
 
 it("waits quietly while the hub's setting is still loading", () => {
 	const { tree } = mount(transcript({ confirmed: null, loading: true }));
 	expect(renderedText(tree)).not.toContain("Connecting");
-	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading" })).not.toHaveLength(0);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading the default detail level" })).not.toHaveLength(0);
 });
 
 it("saves nothing when the level already chosen is chosen again", async () => {

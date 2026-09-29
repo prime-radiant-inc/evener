@@ -83,7 +83,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 		return (
 			<GroupedPage>
 				<SheetStatus />
-				<FirstLoad hubName={hubName} />
+				<FirstLoad hubName={hubName} label="Loading the default detail level" />
 			</GroupedPage>
 		);
 	}

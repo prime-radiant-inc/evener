@@ -1,7 +1,7 @@
 import { useFocusEffect, usePreventRemove } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, Pressable, ScrollView, TextInput, View } from "react-native";
+import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { inactivePromptDependent, LaunchSettings } from "@evener/appwire-client";
 import type { LaunchConfigLayer, LaunchConfigLayerName, LaunchOption } from "@evener/appwire-client";
@@ -14,6 +14,7 @@ import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { destructiveButton } from "./haptics";
+import { Spinner } from "./sheet/Spinner";
 
 type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
 
@@ -137,8 +138,8 @@ function LaunchDefaults({
 						</Action>
 					) : null}
 				</View>
-				{state.loading && <ActivityIndicator accessibilityLabel="Loading launch defaults" />}
-				{state.saving && <ActivityIndicator accessibilityLabel="Saving launch defaults" />}
+				{state.loading && <Spinner label="Loading launch defaults" />}
+				{state.saving && <Spinner label="Saving launch defaults" />}
 				<ErrorMessage message={state.changedElsewhere ? CHANGED_ELSEWHERE : state.error} />
 				<ErrorMessage message={state.resolveError} />
 				{notice && <Copy>{notice}</Copy>}
