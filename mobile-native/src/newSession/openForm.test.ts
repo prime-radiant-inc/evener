@@ -75,7 +75,14 @@ it("leaves a draft with a project or a prompt as it stands", () => {
 	expect(prompted.getState()).toMatchObject({ source: "local", cwd: "", prompt: "fix the flaky test" });
 });
 
-it("opens an empty form on the newest remembered start (Same as last time)", () => {
+it("leaves a draft holding only an image as it stands", () => {
+	const { store } = setup({ images: [{ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }] });
+	openForm(store, [remembered("paradise-park", "/Users/jesse/git/evener", 1)], undefined);
+	expect(store.getState()).toMatchObject({ source: "local", cwd: "" });
+	expect(store.getState().images).toHaveLength(1);
+});
+
+it("opens an empty form on the newest remembered start", () => {
 	const { store } = setup();
 	openForm(
 		store,
