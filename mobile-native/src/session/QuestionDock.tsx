@@ -65,7 +65,7 @@ export function QuestionDock({
 	composerUp = false,
 }: QuestionDockProps) {
 	const typing = useKeyboardShown() && composerUp;
-	useOptionsReturnAnnounced(typing);
+	useOptionsReturnAnnounced(typing, folded);
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const face = useReadingFace();
@@ -247,14 +247,15 @@ export function QuestionDock({
 	);
 }
 
-/** When the options come back after you typed with the keyboard up, VoiceOver
- * says so: they return below where you were. */
-function useOptionsReturnAnnounced(typing: boolean) {
-	const wasTyping = useRef(typing);
+/** When the options come back on the open dock after you typed with the
+ * keyboard up, VoiceOver says so: they return below where you were. A folded
+ * dock shows no options, so the keyboard going down there says nothing. */
+function useOptionsReturnAnnounced(typing: boolean, folded: boolean) {
+	const wasHiddenByTyping = useRef(typing && !folded);
 	useEffect(() => {
-		if (wasTyping.current && !typing) AccessibilityInfo.announceForAccessibility("Options shown");
-		wasTyping.current = typing;
-	}, [typing]);
+		if (wasHiddenByTyping.current && !typing && !folded) AccessibilityInfo.announceForAccessibility("Options shown");
+		wasHiddenByTyping.current = typing && !folded;
+	}, [typing, folded]);
 }
 
 /** An option as the dock shows it: where the agent offered it, and its
