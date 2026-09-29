@@ -14,7 +14,7 @@ import { hostStatus, systemLabel, VERSION_DRIFT_FOOTER, versionDriftTag } from "
 import { liveSessionsText } from "../hosts/liveCounts";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
-import { HostsNotListed } from "./HostsPage";
+import { HostsNotListed } from "../hosts/HostsNotListed";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useHostsOnScreen, useLeavesWithHost } from "./useHostsOnScreen";
 
