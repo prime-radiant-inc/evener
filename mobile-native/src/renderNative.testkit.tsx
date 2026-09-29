@@ -153,7 +153,11 @@ export function nativeModuleMock() {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		ActivityIndicator: "ActivityIndicator",
+		// In front the whole test; a test that needs the app to come and go
+		// mocks its own.
+		AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
 		Animated,
+		Appearance: { setColorScheme: () => {} },
 		Alert: { alert: recordAlert },
 		FlatList,
 		KeyboardAvoidingView,
