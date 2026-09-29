@@ -1255,6 +1255,15 @@ func (s *Session) childStartBlocked(childID string) bool {
 	return sub.startBlockedLocked()
 }
 
+// finishUnlaunchedGeneration fails a generation whose input was admitted but
+// whose run never launched (launch_failed). No run finalizes its runtime, so
+// it reports that runtime quiesced itself, whether or not the finish
+// succeeded, or the delegate would stay refused as still finalizing.
+func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, runtime *Session, cause error) (delegateMutationPlans, error) {
+	plans, err := c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
+	return plans, errors.Join(err, c.ReportFinalizationQuiesced(lease, runtime))
+}
+
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) stableDelegateSendOutcome {
 	s := runtime.owner
 	failed := func(err error) stableDelegateSendOutcome {
@@ -1504,10 +1513,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		s.sendersWG.Done()
-		failurePlans, finishErr := s.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(err, "launch_failed"))
-		// No run was launched, so nothing else finalizes this runtime: report
-		// its quiescence here, whether or not the finish succeeded.
-		finishErr = errors.Join(finishErr, s.delegateController.ReportFinalizationQuiesced(started.lease, sub.sess))
+		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, sub.sess, err)
 		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr))
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)

@@ -2034,6 +2034,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if reportErr := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); reportErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
 		}
+		if hook := a.sess.cfg.testOnly.subagentAfterFinalizationQuiesced; hook != nil {
+			hook(a)
+		}
 		// The schedule is armed whether or not the quiescence report
 		// succeeded, and that is load-bearing: a failed report is
 		// stale-shaped — this generation superseded, the resident runtime

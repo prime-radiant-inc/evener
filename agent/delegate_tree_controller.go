@@ -155,6 +155,13 @@ type delegateRuntimeBinding struct {
 	evidence   *delegateGenerationEvidence
 }
 
+// delegateFinalization is a finished generation whose runtime has not yet
+// reported its finalize tail done.
+type delegateFinalization struct {
+	runtime    *Session
+	generation uint64
+}
+
 type delegateLiveState struct {
 	runtime          *Session
 	binding          *delegateRuntimeBinding
@@ -183,14 +190,14 @@ type delegateLiveState struct {
 	// ReportActivityPhase, which resets the baseline to activityAt.
 	quietNotifiedAt time.Time
 	quietClaim      *delegateQuietAttentionClaim
-	// finalizingRuntime is the runtime whose generation FinishGeneration just
-	// finished while that runtime's own finalize tail is still running: the
+	// finalizing is the generation FinishGeneration just finished, and its
+	// runtime, while that runtime's own finalize tail is still running: the
 	// aggregate already reads idle, and its parent may already hold the
 	// result, but the child is not ready for another generation until the
-	// tail reports quiescence (ReportFinalizationQuiesced). ReserveStart
-	// refuses while it is still the resident runtime, so idle means ready for
-	// a send.
-	finalizingRuntime *Session
+	// tail reports quiescence (ReportFinalizationQuiesced) for that
+	// generation. ReserveStart refuses while the runtime is still resident,
+	// so idle means ready for a send.
+	finalizing *delegateFinalization
 }
 
 type delegateSnapshot struct {
