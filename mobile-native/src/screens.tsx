@@ -118,7 +118,7 @@ import {
 	type QueueEntryRef,
 	whatCanActNow,
 } from "./session/ghosts";
-import { FloatingStack, transcriptEndRoom } from "./session/FloatingStack";
+import { FloatingStack, transcriptEndRoomAt } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
 import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou } from "./session/fleetOrder";
@@ -876,7 +876,8 @@ export function ConversationScreen({
 		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
 		[subagentRow],
 	);
-	const textScale = useTextScale();
+	// The room the transcript keeps at its end for what floats over it.
+	const transcriptEnd = transcriptEndRoomAt(useTextScale());
 	const now = Date.now();
 	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
 	// Files & artifacts (spec 10.1): what the session wrote or linked, and
@@ -2563,7 +2564,7 @@ export function ConversationScreen({
 							contentContainerStyle={{
 								padding: 16,
 								paddingTop: 16 + sessionHeaderHeight,
-								paddingBottom: transcriptEndRoom(textScale),
+								paddingBottom: transcriptEnd,
 							}}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}

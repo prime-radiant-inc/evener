@@ -27,10 +27,12 @@ export function floatingCapsule(palette: Palette) {
 }
 
 /** The room the transcript keeps at its end (spec 8.3: 60pt), grown with
- * the text size, so Next never sits on the last line. It is reserved whether
- * or not anything floats; a toast may briefly sit over the last line. */
-export function transcriptEndRoom(scale: number): number {
-	return 60 * scale;
+ * the text size and never less, so Next (54pt with its 10pt lift) never sits
+ * on the last line. It is reserved whether or not anything floats, so their
+ * coming and going never moves the list; the trade-off is that a toast (about
+ * 3s) may briefly sit over the last line. */
+export function transcriptEndRoomAt(scale: number): number {
+	return Math.max(60, Math.round(60 * scale));
 }
 
 export function FloatingStack({ toast, next, pill }: { toast: ReactNode; next: ReactNode; pill: ReactNode }) {
