@@ -247,12 +247,10 @@ func writeScratchRetention(owner ScratchOwner, manifest ScratchManifest) error {
 // directory last), so on a reported error this re-reads under the caller's held
 // manifest lock — the lock makes every scratch writer single, so the durable
 // manifest is either the caller's own commit or the pre-call state — and treats
-// a manifest that matches what this call wrote, its tombstone state at exactly
-// manifest.Revision, as this call's own commit. A write that did not commit, or
-// a re-read that does not name this writer's commit, returns the original
-// error. The release publishes a tombstone (Released true); the reset and the
-// repair clear one (Released false), and each site's expectation rides in the
-// manifest it passes.
+// a manifest with the same tombstone state at exactly manifest.Revision as this
+// call's own commit, which is the predicate each original call site keyed on.
+// A write that did not commit, or a re-read that does not name this writer's
+// commit, returns the original error.
 func commitScratchRetention(owner ScratchOwner, manifest ScratchManifest) (ScratchManifest, error) {
 	if err := writeScratchRetention(owner, manifest); err != nil {
 		committed, rereadErr := loadScratchRetention(owner)
