@@ -77,7 +77,8 @@ export function isValidTranscriptRef(value: string | undefined): value is string
   return REF_PART_PATTERN.test(source) && REF_PART_PATTERN.test(thread) && !thread.includes("..");
 }
 
-function stripSystemReminder(text: string): string {
+/** A steer's text without the <SYSTEM-REMINDER> wrapper the daemon may put around it. */
+export function stripSystemReminder(text: string): string {
   return text
     .replace(/^\s*<SYSTEM-REMINDER>\s*/i, "")
     .replace(/\s*<\/SYSTEM-REMINDER>\s*$/i, "")
@@ -204,11 +205,11 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   const attrs = parseQuotedAttrs(match[1] ?? "");
   const body = (match[2] ?? "").trim();
   const delegateId = attrs.delegate_id?.trim() || undefined;
+  const name = decodeNotificationEntities(attrs.name ?? "").trim();
   const packet = parseTerminalPacket(body);
-  if (packet) return delegatePacketNotification(block, attrs, delegateId, packet);
+  if (packet) return delegatePacketNotification(block, name, delegateId, packet);
   const quiet = parseQuietWatchdog(body);
   if (quiet) {
-    const name = decodeNotificationEntities(attrs.name ?? "").trim();
     return {
       type: "delegate",
       title: "Delegate quiet",
@@ -223,7 +224,9 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
       rawText: block,
     };
   }
-  const { excerpt } = splitNotificationExcerpt(body);
+  // A body with no "excerpt:" marker that is neither shape above (malformed
+  // JSON, an array, prose) is kept whole, so the card still says what came.
+  const excerpt = body.includes("\nexcerpt:\n") ? splitNotificationExcerpt(body).excerpt : body;
   const communicate = parseCommunicateEnvelope(decodeNotificationEntities(excerpt));
   const tone = notificationTone(attrs, communicate);
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
@@ -238,7 +241,11 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
     title: status ? `Delegate ${status}` : "Delegate notification",
     tone,
     secondary,
+    // A legacy status names a delegate outcome, or a command outcome whose
+    // failure its tone already says.
+    outcome: DELEGATE_OUTCOMES.get(status) ?? (tone === "error" ? "failed" : undefined),
     delegateId,
+    name: name || undefined,
     description: description || undefined,
     status: attrs.status?.trim() || undefined,
     reason: reason || undefined,
@@ -258,6 +265,12 @@ const DELEGATE_OUTCOMES = new Map<string, NotificationOutcome>([
   ["exhausted", "failed"],
   ["cancelled", "stopped"],
   ["stopped", "stopped"],
+]);
+
+// The outcome a packet's kind implies when its metadata names none.
+const PACKET_KIND_OUTCOMES = new Map([
+  ["reported", "completed"],
+  ["terminal_error", "failed"],
 ]);
 
 interface TerminalPacket {
@@ -286,7 +299,7 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
   const metadata = isPlainObject(parsed.metadata) ? parsed.metadata : {};
   const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
   return {
-    outcome: text(metadata.outcome) || (parsed.kind === "reported" ? "completed" : "failed"),
+    outcome: text(metadata.outcome) || (PACKET_KIND_OUTCOMES.get(parsed.kind) ?? ""),
     message: text(parsed.message),
     reason: text(metadata.reason),
     name: text(metadata.name),
@@ -296,19 +309,21 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
 
 function delegatePacketNotification(
   block: string,
-  attrs: Record<string, string>,
+  frameName: string,
   delegateId: string | undefined,
   packet: TerminalPacket,
 ): ParsedNotification {
   const tone = notificationTone({ status: packet.outcome }, null);
-  const name = decodeNotificationEntities(attrs.name ?? "").trim() || packet.name;
+  const name = frameName || packet.name;
   const label = name || packet.description || delegateId;
+  const outcome = DELEGATE_OUTCOMES.get(packet.outcome);
   return {
     type: "delegate",
-    title: `Delegate ${packet.outcome}`,
+    // In the outcome's own words; an ending this client doesn't know still reported.
+    title: `Delegate ${outcome ?? "reported"}`,
     tone,
     secondary: [label, tone === "error" || tone === "warning" ? packet.reason : ""].filter(Boolean).join(" · "),
-    outcome: DELEGATE_OUTCOMES.get(packet.outcome),
+    outcome,
     delegateId,
     name: name || undefined,
     description: packet.description || undefined,
@@ -929,6 +944,26 @@ export type SteeringFragment =
 // cannot false-positive the way a prose pattern like /completed all tasks/ can.
 // This is why the card's trigger stayed content-driven while the kind moved to
 // the wire, and why a pre-Kind transcript still renders its cards.
+const NOTIFICATION_MARKUP = /<\/?(?:job|delegate)-notification\b/;
+
+// steeringNotificationFragments is how a transcript decides a steer delivers
+// notifications: its ordered fragments when the text carries notification
+// markup, or null for any other steer. Markup that didn't parse (a truncated
+// or unclosed frame) still counts, and reaches the caller as a text fragment,
+// so a caller that must never show markup can tell it from prose.
+export function steeringNotificationFragments(text: string): SteeringFragment[] | null {
+  const fragments = parseSteeringNotifications(text);
+  const carriesMarkup = fragments.some(
+    (fragment) => fragment.kind === "notification" || NOTIFICATION_MARKUP.test(fragment.text),
+  );
+  return carriesMarkup ? fragments : null;
+}
+
+/** True when a text fragment is notification markup that didn't parse. */
+export function isNotificationRemnant(text: string): boolean {
+  return NOTIFICATION_MARKUP.test(text);
+}
+
 export function parseSteeringNotifications(text: string): SteeringFragment[] {
   const stripped = stripSystemReminder(text);
   const blockFragments = splitNotificationBlocks(stripped);

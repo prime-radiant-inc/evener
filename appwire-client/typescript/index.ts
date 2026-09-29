@@ -447,12 +447,15 @@ export { stableDelegateDisplayStatus } from "./stableDelegate";
 export {
   decodeNotificationEntities,
   escapeNotificationEntities,
+  isNotificationRemnant,
   isValidTranscriptRef,
   type NotificationOutcome,
   type NotificationTone,
   type ParsedNotification,
   parseSteeringNotifications,
   type SteeringFragment,
+  steeringNotificationFragments,
+  stripSystemReminder,
 } from "./steeringNotifications";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {

@@ -2,32 +2,33 @@
 // typed, and stepping between them, newest first. It searches what the phone
 // has loaded; the screen loads older pages as you step back past the oldest
 // match.
-import type { SteeringFragment } from "@evener/appwire-client";
+import type { EvenerDelegateInfo, SteeringFragment } from "@evener/appwire-client";
 import type { RunStep, TimelineRow } from "../timeline";
-import { notificationLine } from "./notificationLine";
+import { notificationLine, notificationText } from "./notificationLine";
 import { stepTarget } from "./transcriptRows";
 
 function stepText(step: RunStep): string {
 	return `${step.label}\n${step.detail.description ?? ""}\n${stepTarget(step.label, step.detail.arguments) ?? ""}`;
 }
 
-// A notification reads as its card, not its markup. The session's subagents
-// aren't at hand here, so a frame with no name attribute searches as
-// "Subagent", where its card shows the title the session's subagents give it.
-function fragmentText(fragment: SteeringFragment): string {
-	if (fragment.kind === "text") return fragment.text;
-	const line = notificationLine(fragment.notification, undefined);
+// A notification reads as its card, not its markup.
+function fragmentText(fragment: SteeringFragment, delegates: readonly EvenerDelegateInfo[] | undefined): string {
+	if (fragment.kind === "text") return notificationText(fragment.text);
+	const line = notificationLine(fragment.notification, delegates);
 	return [line.headline, line.detail, line.output].filter(Boolean).join("\n");
 }
 
-/** The words a row shows, or would show when opened. A time marker has none. */
-export function rowText(row: TimelineRow): string {
+/** The words a row shows, or would show when opened. A time marker has none.
+ * The session's subagents name the subagents its notifications report on. */
+export function rowText(row: TimelineRow, delegates?: readonly EvenerDelegateInfo[]): string {
 	switch (row.kind) {
 		case "user":
 		case "note":
 			return row.text;
 		case "notice":
-			return row.notifications ? row.notifications.map(fragmentText).join("\n") : row.text;
+			return row.notifications
+				? row.notifications.map((fragment) => fragmentText(fragment, delegates)).join("\n")
+				: row.text;
 		case "assistant":
 			return row.markdown;
 		case "failure":
@@ -48,12 +49,16 @@ export function rowText(row: TimelineRow): string {
 }
 
 /** The indexes of the rows holding `query`, ignoring case, oldest first. */
-export function findMatches(rows: readonly TimelineRow[], query: string): number[] {
+export function findMatches(
+	rows: readonly TimelineRow[],
+	query: string,
+	delegates?: readonly EvenerDelegateInfo[],
+): number[] {
 	const needle = query.trim().toLowerCase();
 	if (!needle) return [];
 	const matches: number[] = [];
 	rows.forEach((row, index) => {
-		if (rowText(row).toLowerCase().includes(needle)) matches.push(index);
+		if (rowText(row, delegates).toLowerCase().includes(needle)) matches.push(index);
 	});
 	return matches;
 }

@@ -23,8 +23,8 @@
 // a placeholder baked into the text server-side (apptranscript.go's
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 
-import { parseSteeringNotifications, type SteeringKind } from "@evener/appwire-client";
-import { memo } from "react";
+import { type SteeringKind, steeringNotificationFragments, stripSystemReminder } from "@evener/appwire-client";
+import { memo, useMemo } from "react";
 import { Chevron, SteeringGlyph } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -146,6 +146,8 @@ function SteeringDivider({
 }
 
 export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: ItemRenderProps) {
+  // Parsed once per text: a live turn re-renders this row on every publish.
+  const fragments = useMemo(() => steeringNotificationFragments(item.text ?? ""), [item.text]);
   // The human-note steer rides the user-sourced steering rail (it interrupts
   // via the client-mutation steer path) but carries the human-note kind, and
   // the kind selects the divider: it labels the human's whiteboard update
@@ -175,9 +177,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // markup, which cannot false-positive, so a steer projected before the kind
   // field existed still renders its cards.
   const label = labelFor(kind);
-  const fragments = parseSteeringNotifications(item.text);
-  const hasNotification = fragments.some((f) => f.kind === "notification");
-  if (hasNotification) {
+  if (fragments) {
     return (
       <>
         {fragments.map((fragment, index) => {
@@ -195,7 +195,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
             // flag was missing" internal invariant) on the next update once a
             // streamed delta rebuilds this same item with another duplicate.
             // fragments is a fresh, order-stable parse of this one item's
-            // text every render (parseSteeringNotifications above), never a
+            // text (steeringNotificationFragments above), never a
             // diffed/reordered list, so the fragment key above is a safe,
             // stable identity - same reasoning as ExcerptText's own index key
             // in NotificationCard.tsx.
@@ -225,12 +225,11 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
     );
   }
 
-  const soleFragment = fragments[0];
   return (
     <SteeringDivider
       id={item.id}
       label={label ? `${STEERED}: ${label}` : STEERED}
-      text={soleFragment?.kind === "text" ? soleFragment.text : ""}
+      text={stripSystemReminder(item.text)}
       sessionRef={sessionRef}
     />
   );

@@ -33,10 +33,15 @@ export type NotificationWireCase =
   | "delegate-failed-unnamed"
   | "delegate-stopped"
   | "delegate-stopped-by-parent"
+  | "delegate-exhausted"
   | "delegate-quiet"
   | "job-shell-completed"
   | "job-shell-failed"
-  | "job-pair";
+  | "job-shell-killed"
+  | "job-shell-cancelled"
+  | "job-shell-attention"
+  | "job-pair"
+  | "job-watch-send";
 
 /** notificationWireItem returns the steering item the daemon sends for one recorded case. */
 export function notificationWireItem(name: NotificationWireCase): ThreadItem {

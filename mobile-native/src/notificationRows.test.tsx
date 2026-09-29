@@ -2,7 +2,7 @@
 // the frames the daemon actually writes (agent/testdata/notificationwire)
 // through the same pipeline ConversationScreen runs: hydrate, project, group,
 // fold into session rows, then TimelineItem for each row.
-import { type EvenerDelegateInfo, hydrateThread, type Thread } from "@evener/appwire-client";
+import { type EvenerDelegateInfo, hydrateThread, type Thread, type ThreadItem } from "@evener/appwire-client";
 import {
 	type NotificationWireCase,
 	notificationWireItem,
@@ -93,7 +93,11 @@ function rowsAt(level: (typeof LEVELS)[number], items = notificationWireItems())
 }
 
 function show(name: NotificationWireCase, openSubagent = vi.fn()) {
-	const item = notificationWireItem(name);
+	return showItem(notificationWireItem(name), openSubagent);
+}
+
+function showItem(item: ThreadItem, openSubagent = vi.fn()) {
+	const name = item.id;
 	const { rows, delegates } = rowsAt("intent", [item]);
 	const row = rows.find((candidate) => candidate.id === item.id);
 	if (!row) throw new Error(`no row for ${name}`);
@@ -157,6 +161,17 @@ describe("delegate and job notifications", () => {
 		expect(renderedText(tree)).toContain("stopped by parent");
 	});
 
+	it.each([
+		["delegate-exhausted", "Sweep the flaky tests failed"],
+		["job-shell-killed", "Serve the docs preview failed"],
+		["job-shell-killed", "Command killed"],
+		["job-shell-cancelled", "Rebuild the fuzz corpus stopped"],
+		["job-shell-attention", "Run the settle tests finished"],
+		["job-watch-send", "Watch delivered"],
+	] as const)("reads the recorded %s frame as %j", (name, headline) => {
+		expect(renderedText(show(name).tree)).toContain(headline);
+	});
+
 	it("says how long a quiet subagent has been quiet", () => {
 		const { tree } = show("delegate-quiet");
 		expect(renderedText(tree)).toContain("Fix race in tree settle quiet · 10m");
@@ -182,5 +197,56 @@ describe("delegate and job notifications", () => {
 		expect(renderedText(tree)).toContain("Tail the hub log stopped");
 		expect(renderedText(tree)).toContain("Timer fired");
 		expect(renderedText(tree)).toContain("Note: Check whether CI finished.");
+	});
+});
+
+describe("notification steers the parser can't fully read", () => {
+	it("draws two identical frames in one steer as two cards", () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const item = notificationWireItem("job-shell-completed");
+		const { tree } = showItem({ ...item, text: `${item.text}\n${item.text}` });
+		expect(renderedText(tree).match(/Run the agent tests finished/g)).toHaveLength(2);
+		expect(error).not.toHaveBeenCalled();
+		error.mockRestore();
+	});
+
+	it("shows a truncated frame as a neutral line, never its markup", () => {
+		const item = notificationWireItem("delegate-reported");
+		const { tree } = showItem({ ...item, text: (item.text ?? "").slice(0, 60) });
+		expect(renderedText(tree)).not.toMatch(/<\/?(delegate|job)-notification/);
+		expect(renderedText(tree)).toContain("A notification couldn't be read");
+	});
+
+	it("never shows a killed command's -1 signal sentinel as an exit code", () => {
+		expect(renderedText(show("job-shell-killed").tree)).not.toContain("exit -1");
+	});
+
+	it("opens a delegate job's report rather than its raw output", () => {
+		const envelope = JSON.stringify({ message: "Settled the drain race.", data: { status: "done" } });
+		const { tree } = showItem({
+			...notificationWireItem("job-shell-completed"),
+			id: "item_delegate_job",
+			text: `<job-notification job_id="job_4" event="completed" job_type="delegate" status="completed" reason="" intent="Audit the store" output_bytes="80">
+Job job_4 completed.
+excerpt:
+${envelope.replaceAll('"', "&quot;")}
+</job-notification>`,
+		});
+		press(tree);
+		expect(renderedText(tree)).toContain("Settled the drain race.");
+		expect(renderedText(tree)).not.toContain('"data"');
+	});
+
+	it("says a subagent reported when its outcome is one the phone doesn't know", () => {
+		const packet = JSON.stringify({
+			kind: "terminal_error",
+			message: "Timed out.",
+			metadata: { outcome: "timed_out_someday" },
+		});
+		const { tree } = showItem({
+			...notificationWireItem("delegate-reported"),
+			text: `<delegate-notification delegate_id="dlg_1" name="Fix race in tree settle">${packet}</delegate-notification>`,
+		});
+		expect(renderedText(tree)).toContain("Fix race in tree settle reported");
 	});
 });

@@ -46,9 +46,9 @@ import {
 	liveAskQuestions,
 	makeTranscriptDisplayConfig,
 	parseAskUserQuestions,
-	parseSteeringNotifications,
 	pendingTextJoined,
 	projectThread,
+	steeringNotificationFragments,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
@@ -660,8 +660,8 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 }
 
 function notificationsOf(text: string): { notifications?: SteeringFragment[] } {
-	const fragments = parseSteeringNotifications(text);
-	return fragments.some((fragment) => fragment.kind === "notification") ? { notifications: fragments } : {};
+	const notifications = steeringNotificationFragments(text);
+	return notifications ? { notifications } : {};
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {

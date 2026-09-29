@@ -6,6 +6,7 @@ import {
   type ParsedNotification,
   parseSteeringNotifications,
   type SteeringFragment,
+  steeringNotificationFragments,
 } from "./steeringNotifications";
 import {
   type NotificationWireCase,
@@ -1289,6 +1290,83 @@ test("a background job's frames parse their outcome", () => {
   expect(stopped).toMatchObject({ type: "job", outcome: "stopped", intent: "Tail the hub log" });
   expect(timer).toMatchObject({ type: "watch", title: "Timer fired" });
   expect(timer?.outcome).toBeUndefined();
+});
+
+test("the daemon's other endings parse to their outcomes", () => {
+  expect(wireNotifications("delegate-exhausted")).toMatchObject([
+    { type: "delegate", outcome: "failed", name: "Sweep the flaky tests", message: "max_turns exhausted at limit 40" },
+  ]);
+  expect(wireNotifications("job-shell-killed")).toMatchObject([{ type: "job", outcome: "failed", tone: "error" }]);
+  expect(wireNotifications("job-shell-cancelled")).toMatchObject([{ type: "job", outcome: "stopped" }]);
+  expect(wireNotifications("job-shell-attention")).toMatchObject([
+    { type: "job", outcome: "completed", intent: "Run the settle tests" },
+  ]);
+  const [send] = wireNotifications("job-watch-send");
+  expect(send).toMatchObject({ type: "watch-send", title: "Watch delivered" });
+  expect(send?.outcome).toBeUndefined();
+});
+
+// The title says the same ending the outcome does, in the outcome's words.
+test("a delegate packet's title names its normalized outcome", () => {
+  expect(wireNotifications("delegate-stopped")[0]?.title).toBe("Delegate stopped");
+  expect(wireNotifications("delegate-exhausted")[0]?.title).toBe("Delegate failed");
+  const unknown = `<delegate-notification delegate_id="dlg_9">${JSON.stringify({
+    kind: "terminal_error",
+    message: "x",
+    metadata: { outcome: "timed_out_someday" },
+  })}</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(unknown))[0]?.title).toBe("Delegate reported");
+});
+
+test("a packet kind this client doesn't know implies no outcome", () => {
+  const frame = `<delegate-notification delegate_id="dlg_9">${JSON.stringify({
+    kind: "progress",
+    message: "x",
+  })}</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(frame))[0]?.outcome).toBeUndefined();
+});
+
+// Frames recorded before the packet carried status and name attributes.
+test("a legacy attribute-shaped delegate frame carries its outcome and name", () => {
+  const completed = `<delegate-notification delegate_id="dlg_42" name="Audit the store" event="completed" status="completed" reason="">
+Delegate dlg_42 completed.
+</delegate-notification>`;
+  const failed = `<delegate-notification delegate_id="dlg_42" event="command_exited_nonzero" status="command_exited_nonzero" reason="exit_nonzero">
+Delegate dlg_42 failed.
+</delegate-notification>`;
+  expect(notificationsOf(parseSteeringNotifications(completed))[0]).toMatchObject({
+    outcome: "completed",
+    name: "Audit the store",
+  });
+  expect(notificationsOf(parseSteeringNotifications(failed))[0]?.outcome).toBe("failed");
+});
+
+test("a job frame's transcript reference parses", () => {
+  expect(wireNotifications("job-shell-completed")[0]?.transcriptRef).toBe("job:job_7");
+});
+
+// A delegate body that is neither a packet nor the quiet sentence still says
+// what it carried, so the card never reads as a bare name.
+test.each([
+  ["malformed JSON", "{oops"],
+  ["a JSON array", "[1,2]"],
+  ["prose", "something the daemon wrote"],
+])("a delegate frame whose body is %s keeps the body as its excerpt", (_shape, body) => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(`<delegate-notification delegate_id="dlg_9">${body}</delegate-notification>`),
+  );
+  expect(n).toMatchObject({ type: "delegate", delegateId: "dlg_9", excerpt: body });
+});
+
+test("steeringNotificationFragments returns fragments only for a steer carrying notification markup", () => {
+  expect(steeringNotificationFragments(notificationWireItem("delegate-reported").text ?? "")).toMatchObject([
+    { kind: "notification" },
+  ]);
+  expect(steeringNotificationFragments("Remember the open task.")).toBeNull();
+  // A truncated frame never parses, but it is still notification markup: the
+  // caller must see it, not mistake it for prose.
+  const truncated = (notificationWireItem("delegate-reported").text ?? "").slice(0, 60);
+  expect(steeringNotificationFragments(truncated)).toEqual([{ kind: "text", text: truncated }]);
 });
 
 test("no recorded frame leaves markup in any fragment", () => {

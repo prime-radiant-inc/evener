@@ -8,7 +8,7 @@ import { type EvenerDelegateInfo, lineCount, type SteeringFragment } from "@even
 import { Pressable, Text, View } from "react-native";
 import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type NotificationLine, notificationLine } from "./notificationLine";
+import { type NotificationLine, notificationLine, notificationText } from "./notificationLine";
 import { EvidenceView } from "./StepEvidence";
 import { SystemEventMark } from "./SystemEvent";
 
@@ -26,20 +26,30 @@ export function NotificationCards({
 }) {
 	return (
 		<View>
-			{fragments.map((fragment, index) =>
-				fragment.kind === "notification" ? (
+			{fragments.map((fragment, index) => {
+				// Two frames in one steer can be byte-identical, so neither a
+				// frame's text nor a text span is a safe key. fragments is an
+				// order-stable parse of this one row's text, so its position is.
+				const key = `${disclosureId}:${index}`;
+				return fragment.kind === "notification" ? (
 					<NotificationCard
-						key={fragment.notification.rawText}
+						key={key}
 						line={notificationLine(fragment.notification, delegates)}
 						openSubagent={openSubagent}
-						disclosureId={JSON.stringify([disclosureId, index])}
+						disclosureId={key}
 					/>
 				) : (
-					<QuietText key={fragment.text} text={fragment.text} />
-				),
-			)}
+					<QuietText key={key} text={notificationText(fragment.text)} />
+				);
+			})}
 		</View>
 	);
+}
+
+function useQuietText() {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 }
 
 function NotificationCard({
@@ -52,9 +62,8 @@ function NotificationCard({
 	disclosureId: string;
 }) {
 	const { palette } = useColors();
-	const scale = useTextScale();
+	const quiet = useQuietText();
 	const expanded = useDisclosureOpen(disclosureId, false);
-	const quiet = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	const { subagent, output } = line;
 	const open = subagent && openSubagent ? () => openSubagent(subagent.ref, subagent.title) : undefined;
 	const onPress = open ?? (output ? () => toggleDisclosure(disclosureId, false) : undefined);
@@ -105,14 +114,9 @@ function NotificationCard({
 }
 
 function QuietText({ text }: { text: string }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
+	const quiet = useQuietText();
 	return (
-		<Text
-			allowFontScaling={allowFontScaling}
-			numberOfLines={2}
-			style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow, paddingLeft: 16 }}
-		>
+		<Text allowFontScaling={allowFontScaling} numberOfLines={2} style={{ ...quiet, paddingLeft: 16 }}>
 			{text}
 		</Text>
 	);

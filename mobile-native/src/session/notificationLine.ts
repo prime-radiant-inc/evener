@@ -6,6 +6,7 @@
 import {
 	decodeNotificationEntities,
 	type EvenerDelegateInfo,
+	isNotificationRemnant,
 	type NotificationOutcome,
 	type ParsedNotification,
 } from "@evener/appwire-client";
@@ -27,8 +28,15 @@ const VERBS: Record<NotificationOutcome, string> = {
 	stopped: "stopped",
 };
 
-function said(subject: string, outcome: NotificationOutcome | undefined): string {
-	return outcome ? `${subject} ${VERBS[outcome]}` : subject;
+function said(subject: string, outcome: NotificationOutcome | undefined, fallback?: string): string {
+	const verb = outcome ? VERBS[outcome] : fallback;
+	return verb ? `${subject} ${verb}` : subject;
+}
+
+/** What a steer's text between notifications reads as: itself, or, for
+ * notification markup that didn't parse, a neutral line in its place. */
+export function notificationText(text: string): string {
+	return isNotificationRemnant(text) ? "A notification couldn't be read" : text;
 }
 
 export function notificationLine(
@@ -43,7 +51,8 @@ export function notificationLine(
 			const ref = subagent?.transcriptRef ?? notification.transcriptRef;
 			const line: NotificationLine = notification.quiet
 				? { headline: `${subject} quiet · ${notification.quiet.window}`, failed }
-				: { headline: said(subject, notification.outcome), failed };
+				: // A report whose ending this client doesn't know still reported.
+					{ headline: said(subject, notification.outcome, "reported"), failed };
 			const detail = notification.message ?? (decodeNotificationEntities(notification.excerpt) || undefined);
 			if (detail) line.detail = detail;
 			if (ref) line.subagent = { ref, title: subject };
@@ -53,12 +62,15 @@ export function notificationLine(
 			const subject = notification.intent || notification.description || "Background job";
 			const line: NotificationLine = { headline: said(subject, notification.outcome), failed };
 			if (failed) {
+				// -1 is the daemon's signalled-not-exited sentinel, never an exit
+				// status; the title already says the command was killed.
+				const { exitCode } = notification;
 				line.detail =
-					notification.exitCode === undefined
-						? notification.title
-						: `${notification.title} · exit ${notification.exitCode}`;
+					exitCode === undefined || exitCode === -1 ? notification.title : `${notification.title} · exit ${exitCode}`;
 			}
-			const output = decodeNotificationEntities(notification.excerpt);
+			// A delegate job's excerpt is its report's envelope; the parser has
+			// already read the report out of it.
+			const output = notification.message ?? decodeNotificationEntities(notification.excerpt);
 			if (output) line.output = output;
 			return line;
 		}

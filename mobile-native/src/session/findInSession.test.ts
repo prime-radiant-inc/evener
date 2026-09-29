@@ -1,4 +1,4 @@
-import { parseSteeringNotifications } from "@evener/appwire-client";
+import { type EvenerDelegateInfo, parseSteeringNotifications } from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { describe, expect, it } from "vitest";
 import type { TimelineRow } from "../timeline";
@@ -64,6 +64,21 @@ describe("finding words in a delegate or job notification", () => {
 		text,
 		notifications: parseSteeringNotifications(text),
 	};
+
+	it("matches an unnamed subagent by the title the session's subagents give it", () => {
+		const text = notificationWireItem("delegate-failed-unnamed").text ?? "";
+		const unnamed: TimelineRow = { ...row, notifications: parseSteeringNotifications(text) };
+		const delegates = [{ delegateId: "dlg_2", description: "Split the retry loop" }] as EvenerDelegateInfo[];
+		expect(findMatches([unnamed], "split the retry loop failed", delegates)).toEqual([0]);
+		expect(findMatches([unnamed], "split the retry loop")).toEqual([]);
+	});
+
+	it("reads a truncated frame as its neutral line", () => {
+		const truncated = text.slice(0, 60);
+		const remnant: TimelineRow = { ...row, text: truncated, notifications: [{ kind: "text", text: truncated }] };
+		expect(findMatches([remnant], "delegate_id")).toEqual([]);
+		expect(findMatches([remnant], "couldn't be read")).toEqual([0]);
+	});
 
 	it("matches the words the card shows, never its markup", () => {
 		expect(findMatches([row], "settle finished")).toEqual([0]);
