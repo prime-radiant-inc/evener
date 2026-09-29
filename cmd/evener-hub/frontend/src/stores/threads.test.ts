@@ -12617,6 +12617,362 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     reader.close();
   });
 
+  // The fallback send's RPC is its only transport, so a failure on the wire
+  // must be retried rather than surfaced. The id is minted once and reused
+  // across the attempts, so a reply lost after the daemon applied the mutation
+  // is deduped on the retry instead of applied twice. The composer stays in its
+  // "Sending" state through the ladder (the submission wraps the whole enqueue).
+  test("a fallback send retries a wire failure under the same clientMutationId", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-retry";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    // The first attempt fails on the wire; the second answers.
+    let attempts = 0;
+    fake.on("turn/start", (params) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("FakeClient: socket closed");
+      return {
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+        receipt: mutationReceipt(params.clientMutationId),
+      };
+    });
+
+    // Retire the connection, then make the factory's next open never answer:
+    // storage is wedged for every call the send makes.
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "retried while storage is wedged");
+      // The capture's open never answers; the watchdog ends it and the send
+      // takes the direct-dispatch fallback, whose first RPC then fails. The
+      // client stays ready, so the retry is issued at once.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+
+      const sent = fake.calls.filter((call) => call.method === "turn/start");
+      expect(sent).toHaveLength(2);
+      const ids = sent.map((call) => (call.params as { clientMutationId?: string }).clientMutationId);
+      expect(ids[0]).toBeTruthy();
+      expect(ids[1]).toBe(ids[0]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // A settled WireError is the daemon's own answer, so it is surfaced at once:
+  // an identical retry cannot succeed. Pinned by call count - a retry would
+  // show a second turn/start.
+  test("a fallback send does not retry a settled WireError refusal", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-conflict";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      throw new WireError("turn is not active", -32013, { evenerErrorInfo: "conflict" });
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "refused while storage is wedged");
+      const rejection = expect(send).rejects.toBeInstanceOf(ConflictError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The guard is `err instanceof WireError`, i.e. EVERY settled WireError -
+  // not only a conflict. A non-conflict refusal is surfaced unchanged, not
+  // mapped to ConflictError and not retried.
+  test("a fallback send does not retry a non-conflict WireError", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-invalid-params";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      throw new WireError("bad params", -32602);
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "refused while storage is wedged");
+      const rejection = expect(send).rejects.toBeInstanceOf(WireError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The ready wait is bounded: a client stuck "reconnecting" past the bound
+  // surfaces the original transport error after the single attempt, never
+  // hanging the send.
+  test("a fallback send surfaces when the ready wait times out", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-ready-timeout";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      fake.emitStateChange("reconnecting");
+      throw new Error("AppwireClient: socket closed");
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "stuck reconnecting while storage is wedged");
+      const rejection = expect(send).rejects.toThrow("AppwireClient: socket closed");
+      // Reach the fallback; its first RPC fails with the client reconnecting.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+      // The ready wait elapses with no reconnect: the original error surfaces.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // The retry is bounded: a transport failure on both attempts is surfaced
+  // after exactly two, with nothing else left to try.
+  test("a fallback send surfaces a transport failure after both attempts", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-exhausted";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/start", () => {
+      throw new Error("FakeClient: socket closed");
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "failed twice while storage is wedged");
+      const rejection = expect(send).rejects.toThrow("FakeClient: socket closed");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // A dropped connection leaves the client "reconnecting", where a retry fired
+  // now only meets the client's own synchronous not-ready rejection. The retry
+  // must wait out the reconnect and then go out under the same id.
+  test("a fallback send waits out a reconnect before retrying", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-reconnect";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    // The first attempt drops the socket and fails; the second answers.
+    let attempts = 0;
+    fake.on("turn/start", (params) => {
+      attempts += 1;
+      if (attempts === 1) {
+        fake.emitStateChange("reconnecting");
+        throw new Error("AppwireClient: socket closed");
+      }
+      return {
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+        receipt: mutationReceipt(params.clientMutationId),
+      };
+    });
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "reconnecting while storage is wedged");
+      // Reach the fallback; its first RPC fails with the client reconnecting,
+      // so the send now waits for readiness instead of issuing a doomed retry.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+      // The reconnect lands: the retry goes out under the same id and settles.
+      fake.emitReady();
+      await send;
+      const sent = fake.calls.filter((call) => call.method === "turn/start");
+      expect(sent).toHaveLength(2);
+      const ids = sent.map((call) => (call.params as { clientMutationId?: string }).clientMutationId);
+      expect(ids[1]).toBe(ids[0]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // A manual retry (ConnectionBanner) can swap in a fresh, already-ready client
+  // while the failed one is closed. The fallback must retry against that
+  // replacement rather than surface, under the same id.
+  test("a fallback send retries against a replacement client after the failed one closes", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-rewire";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const replacement = new FakeClient("ready");
+    // The first attempt dies with the client closed and a healthy replacement
+    // wired in the same window, exactly what requireClient()'s rewire path is
+    // for.
+    fake.on("turn/start", () => {
+      fake.close();
+      connectionStore.getState().connect(replacement);
+      throw new Error("AppwireClient: socket closed");
+    });
+    replacement.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "rewired while storage is wedged");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await send;
+      const failedCalls = fake.calls.filter((call) => call.method === "turn/start");
+      const retriedCalls = replacement.calls.filter((call) => call.method === "turn/start");
+      expect(failedCalls).toHaveLength(1);
+      expect(retriedCalls).toHaveLength(1);
+      const firstId = (failedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      const retriedId = (retriedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      expect(firstId).toBeTruthy();
+      expect(retriedId).toBe(firstId);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  // A manual retry can wire a replacement that is itself still connecting. A
+  // healthy destination exists, so the fallback must wait for it to become
+  // ready rather than surface.
+  test("a fallback send waits out a wired-but-connecting replacement client", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-send-fallback-connecting";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const replacement = new FakeClient("connecting");
+    fake.on("turn/start", () => {
+      fake.close();
+      connectionStore.getState().connect(replacement);
+      throw new Error("AppwireClient: socket closed");
+    });
+    replacement.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const send = threadsStore.getState().send("ref_a", "replaced while storage is wedged");
+      // Reach the fallback; its first RPC dies with a connecting replacement
+      // wired, so the send now waits for that replacement to be ready.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+      // The replacement connects: the retry goes out under the same id.
+      replacement.emitStateChange("ready");
+      await send;
+      const failedCalls = fake.calls.filter((call) => call.method === "turn/start");
+      const retriedCalls = replacement.calls.filter((call) => call.method === "turn/start");
+      expect(retriedCalls).toHaveLength(1);
+      const firstId = (failedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      const retriedId = (retriedCalls[0]?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+      expect(firstId).toBeTruthy();
+      expect(retriedId).toBe(firstId);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
   // The fallback is not the ref's durable FIFO head. The dispatcher sends only
   // nextDispatchable (the ref's head) and re-checks its admission before every
   // attempt; the fallback must re-earn that admission and must not jump an
