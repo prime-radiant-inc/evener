@@ -7,7 +7,7 @@
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Alert } from "react-native";
+import { Alert, View } from "react-native";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
 import {
 	CONNECTION_REPLACED_ERROR,
@@ -34,10 +34,12 @@ import { signInKind, statusOf } from "../providers/providerStatus";
 import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
+import { space } from "../design/tokens";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import { Group, GroupedPage, GroupFooter, Row, RowValue, SwitchRow } from "../sheet/Grouped";
 import { guardLeave } from "../sheet/confirmDiscard";
 import { ModalFrame } from "../sheet/ModalSheet";
+import { SearchField } from "../sheet/SearchField";
 import { Sheet } from "../sheet/Sheet";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
@@ -60,6 +62,10 @@ import {
 // flow, the credential store with its last listing - belongs to the hub it
 // was built for, and a re-key remounts the body whole (the keyed wrapper's
 // own rationale: useRetainedScreenConnection's doc).
+// A provider such as OpenRouter lists hundreds of models. The detail mounts at
+// most this many switches at once and offers a search to reach the rest (issue
+// #3279); the web sheet caps at the same number.
+const MODEL_LIST_CAP = 50;
 export function ProvidersPage(props: NativeStackScreenProps<HubRoutes, "Providers">) {
 	return <ProvidersPageBody key={props.route.params.hubId} {...props} />;
 }
@@ -585,6 +591,10 @@ function Providers({
 							{instance ? (
 								<>
 									<ProviderFacts
+										// A notice or focus can swap the detail to another provider while
+										// the sheet stays mounted; keying by name remounts the facts so a
+										// search typed on one provider never filters another (issue #3279).
+										key={instance.name}
 										instance={instance}
 										auth={auth}
 										togglesHeld={writeHeld}
@@ -786,6 +796,14 @@ function ProviderFacts({
 	const status = statusOf(instance, auth);
 	const defaultTag = instance.isDefault ? ({ text: "Default", tone: "gray" } as const) : null;
 	const models = instance.models ?? [];
+	// A provider such as OpenRouter lists hundreds of models. The detail mounts
+	// at most this many switches at once and offers a search to reach the rest;
+	// the web sheet makes the same decision (InstanceSheet's MODEL_LIST_CAP), so
+	// one long list is handled the same way on both clients (issue #3279).
+	const [modelSearch, setModelSearch] = useState("");
+	const modelQuery = modelSearch.trim().toLowerCase();
+	const matchingModels = modelQuery ? models.filter((model) => model.id.toLowerCase().includes(modelQuery)) : models;
+	const shownModels = matchingModels.slice(0, MODEL_LIST_CAP);
 	return (
 		<>
 			<Group>
@@ -822,8 +840,13 @@ function ProviderFacts({
 					{message}
 				</GroupFooter>
 			))}
+			{models.length > MODEL_LIST_CAP || modelSearch !== "" ? (
+				<View style={{ marginHorizontal: space.margin, marginTop: space.groupGap }}>
+					<SearchField label="Search models" value={modelSearch} onChangeText={setModelSearch} />
+				</View>
+			) : null}
 			<Group label="Models">
-				{models.map((model) => (
+				{shownModels.map((model) => (
 					// A model name is a name, not machine text: SF Pro (spec 16.2).
 					<SwitchRow
 						key={model.id}
@@ -843,6 +866,10 @@ function ProviderFacts({
 				/>
 			</Group>
 			{models.length === 0 ? <GroupFooter>No models listed.</GroupFooter> : null}
+			{modelQuery !== "" && matchingModels.length === 0 ? <GroupFooter>No matching models.</GroupFooter> : null}
+			{shownModels.length < matchingModels.length ? (
+				<GroupFooter>{`Showing ${shownModels.length} of ${matchingModels.length} models — search to narrow.`}</GroupFooter>
+			) : null}
 			{checkFailed ? <GroupFooter tone="danger">{MODELS_NOT_CHECKED}</GroupFooter> : null}
 		</>
 	);

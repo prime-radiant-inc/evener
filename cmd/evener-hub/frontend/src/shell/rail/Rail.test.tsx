@@ -3079,15 +3079,10 @@ describe("archived rows come from evener/archived/list", () => {
     restoreScroll();
   });
 
-  test("a reveal of an archived session in a counted project fetches its list once", async () => {
-    const restoreScroll = stubScrollIntoView();
-    const client = new FakeClient("ready");
-    const seen: unknown[] = [];
-    client.on("evener/archived/list", (params) => {
-      seen.push(params);
-      return { sessions: [archivedRow(0)], total: 1 };
-    });
-    connectionStore.getState().connect(client);
+  // A counted project whose archived session is the reveal target. Folds start
+  // open, so the reveal reaches the list on the count effect's own commit
+  // rather than a re-run after it.
+  function installRevealIntoCountedProject() {
     installState([
       archivedCatalog(1),
       projectResource("p", [summary({ ref: "local:now", title: "Now" })]),
@@ -3105,16 +3100,63 @@ describe("archived rows come from evener/archived/list", () => {
         },
       ),
     ]);
-    // Folds already open, so the reveal reaches the list on the count effect's
-    // own commit rather than a re-run after it.
     localStorage.setItem(
       EXPANSION_STORAGE_KEY,
       JSON.stringify({ "projectnode:p": true, "section:archived": true, "archivedgroup:p": true }),
     );
+  }
+
+  test("a reveal of an archived session in a counted project fetches its list once", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    const seen: unknown[] = [];
+    client.on("evener/archived/list", (params) => {
+      seen.push(params);
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installRevealIntoCountedProject();
     render(<Rail revealTarget="local:old-0" />, client);
     await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
     await act(async () => undefined);
     expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]);
+    restoreScroll();
+  });
+
+  test("a reveal retries a failed first archived-list fetch and renders the row", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    let requests = 0;
+    client.on("evener/archived/list", () => {
+      requests += 1;
+      if (requests === 1) throw new Error("hub busy");
+      return { sessions: [archivedRow(0)], total: 1 };
+    });
+    connectionStore.getState().connect(client);
+    installRevealIntoCountedProject();
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(requests).toBe(2);
+    restoreScroll();
+  });
+
+  test("a hub that keeps failing the archived list is asked once more per reveal", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const client = new FakeClient("ready");
+    let requests = 0;
+    client.on("evener/archived/list", () => {
+      requests += 1;
+      throw new Error("hub down");
+    });
+    connectionStore.getState().connect(client);
+    installRevealIntoCountedProject();
+    render(<Rail revealTarget="local:old-0" />, client);
+    await waitFor(() => expect(requests).toBe(2));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(requests).toBe(2);
+    expect(archivedListStore.getState().lists[archivedListKey("projects", "p")]?.error).toBe("hub down");
     restoreScroll();
   });
 
