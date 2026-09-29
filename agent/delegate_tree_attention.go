@@ -347,6 +347,12 @@ func (c *delegateTreeController) giveUpAttentionPlan(delegateID string) (delegat
 	if aggregate == nil || len(ids) == 0 {
 		return delegateFencedAttentionEscalation{}, false
 	}
+	return c.escalationPlanLocked(delegateID, aggregate, ids), true
+}
+
+// escalationPlanLocked is the transfer of delegateID's owed attention ids to
+// the root, in id order.
+func (c *delegateTreeController) escalationPlanLocked(delegateID string, aggregate *delegatestore.Aggregate, ids map[string]struct{}) delegateFencedAttentionEscalation {
 	attentionIDs := make([]string, 0, len(ids))
 	for attentionID := range ids {
 		attentionIDs = append(attentionIDs, attentionID)
@@ -361,10 +367,14 @@ func (c *delegateTreeController) giveUpAttentionPlan(delegateID string) (delegat
 		transcriptRef: aggregate.Descriptor.TranscriptRef,
 		attentionIDs:  attentionIDs,
 		runtime:       runtime,
-	}, true
+	}
 }
 
 func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID string, attentionIDs []string) {
+	// A replacement is the transcript fold's word on what is owed: it starts
+	// the delegate's attempts over, as new attention does.
+	delete(c.attentionParked, delegateID)
+	delete(c.attentionRestoreFailures, delegateID)
 	if delegateID == "" || len(attentionIDs) == 0 {
 		delete(c.attentionWakeIDs, delegateID)
 		return
@@ -553,21 +563,7 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 		if !blocked || closedAncestorID == "" {
 			continue
 		}
-		attentionIDs := make([]string, 0, len(ids))
-		for attentionID := range ids {
-			attentionIDs = append(attentionIDs, attentionID)
-		}
-		sort.Strings(attentionIDs)
-		var runtime *Session
-		if live := c.live[delegateID]; live != nil {
-			runtime = live.runtime
-		}
-		plans = append(plans, delegateFencedAttentionEscalation{
-			delegateID:    delegateID,
-			transcriptRef: aggregate.Descriptor.TranscriptRef,
-			attentionIDs:  attentionIDs,
-			runtime:       runtime,
-		})
+		plans = append(plans, c.escalationPlanLocked(delegateID, aggregate, ids))
 	}
 	sort.Slice(plans, func(i, j int) bool { return plans[i].delegateID < plans[j].delegateID })
 	return plans

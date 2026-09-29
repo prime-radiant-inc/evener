@@ -7,7 +7,7 @@ import "errors"
 // reservation, a stop or a reclamation), or retirement had closed admission.
 // Those are retried as they stand. Any other failure is permanent for the
 // purposes of giving up: the attention drive counts it toward handing the
-// attention to the root, and the owed-start path fails the start.
+// attention to the root.
 func isTransientStartFailure(err error) bool {
 	return errors.Is(err, errDelegateTargetBusy) || errors.Is(err, ErrRetirementUnavailable)
 }

@@ -1180,8 +1180,23 @@ func (s *Session) forgetSettledDelegateAttentionWarnings() {
 
 // maxDelegateAttentionRestoreFailures is how many consecutive restores of a
 // delegate's cold runtime may fail, for a reason that is not transient,
-// before the drive stops retrying: about five minutes at the retry's 5s cap.
+// before the drive stops retrying. It counts attempts, not time: at the
+// retry's 5s cap it is about five minutes, but every pass counts, and a
+// busy root (deliveries, job events) drives passes sooner, so it can come
+// earlier.
 const maxDelegateAttentionRestoreFailures = 64
+
+// countDelegateAttentionRestoreFailure records a failed restore of
+// delegateID's cold runtime and gives up on it at the limit. A transient
+// failure (isTransientStartFailure) clears on its own and is not counted.
+func (s *Session) countDelegateAttentionRestoreFailure(delegateID string, err error) {
+	if isTransientStartFailure(err) {
+		return
+	}
+	if s.delegateController.countDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
+		s.giveUpDelegateAttention(delegateID, err)
+	}
+}
 
 func (s *Session) delegateAttentionGiveUpAfter() int {
 	if n := s.cfg.testOnly.delegateAttentionGiveUpAfter; n > 0 {
@@ -1210,8 +1225,7 @@ func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	}
 	s.delegateController.parkDelegateAttention(delegateID)
 	slog.Warn("delegate attention undeliverable", "session", s.ID(), "delegate", delegateID, "restore_error", restoreErr.Error(), "handover_error", escalateErr.Error())
-	cause, _, _ := strings.Cut(escalateErr.Error(), "\n")
-	data := warningDataFromError("Evener stopped trying to deliver a subagent's message: it could not be restored or handed to this session ("+runetrim.Cut(cause, maxDelegateAttentionCauseBytes)+"). It will try again when the subagent has something new, or after a restart.", escalateErr)
+	data := warningDataFromError("Evener stopped trying to deliver a subagent's message until the subagent has something new or Evener restarts: it could not be restored or handed to this session", escalateErr)
 	data.Code = events.WarningCodeDelegateAttentionUndeliverable
 	s.emit(events.EventWarning, data)
 }
@@ -1235,9 +1249,7 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
 		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
-		if !isTransientStartFailure(err) && s.delegateController.countDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
-			s.giveUpDelegateAttention(delegateID, err)
-		}
+		s.countDelegateAttentionRestoreFailure(delegateID, err)
 		s.scheduleStableDelegateAttentionRetry()
 		return true
 	}

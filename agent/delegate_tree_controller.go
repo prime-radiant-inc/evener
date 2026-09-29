@@ -89,7 +89,7 @@ type delegateTreeController struct {
 	// whose attention could be neither delivered nor handed to the root: the
 	// drive leaves them alone until new attention arrives or the daemon
 	// restarts. Both are process-local and cleared when the delegate stops
-	// owing attention.
+	// owing attention or its attention is replaced from a transcript fold.
 	attentionRestoreFailures map[string]int
 	attentionParked          map[string]struct{}
 	idleReleaseTimers        map[string]idleReleaseTimerHandle

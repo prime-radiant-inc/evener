@@ -131,3 +131,70 @@ func TestUndeliverableDelegateAttentionParksUntilNewAttention(t *testing.T) {
 		t.Fatalf("undeliverable warnings = %+v, want exactly one", parked)
 	}
 }
+
+// A transient failure (the target was busy, retirement closed admission)
+// clears on its own and never counts toward giving up.
+func TestTransientRestoreFailuresDoNotCountTowardGivingUp(t *testing.T) {
+	fenced := newFencedGrandchildAttention(t)
+	root := fenced.root
+	root.cfg.testOnly.delegateAttentionGiveUpAfter = 2
+	for range 5 {
+		root.countDelegateAttentionRestoreFailure(fenced.grandchildDelegateID, errDelegateTargetBusy)
+		root.countDelegateAttentionRestoreFailure(fenced.grandchildDelegateID, ErrRetirementUnavailable)
+	}
+	c := root.delegateController
+	c.mu.Lock()
+	count := c.attentionRestoreFailures[fenced.grandchildDelegateID]
+	_, parked := c.attentionParked[fenced.grandchildDelegateID]
+	c.mu.Unlock()
+	if count != 0 || parked {
+		t.Fatalf("after ten transient failures: count=%d parked=%t, want nothing counted", count, parked)
+	}
+}
+
+// A successful restore ends the run of counted failures.
+func TestASuccessfulRestoreResetsTheFailureCount(t *testing.T) {
+	fenced := newFencedGrandchildAttention(t)
+	root := fenced.root
+	c := root.delegateController
+	c.countDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
+	c.countDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
+
+	root.drivePendingStableDelegateAttention()
+
+	c.mu.Lock()
+	count, counted := c.attentionRestoreFailures[fenced.grandchildDelegateID]
+	c.mu.Unlock()
+	if counted {
+		t.Fatalf("after a successful restore the failure count is still %d, want it cleared", count)
+	}
+}
+
+// A delegate that stops owing attention, whether its attention is forgotten
+// or replaced wholesale from a transcript fold, leaves no parked state or
+// failure count behind to shadow attention owed later.
+func TestLeavingThePendingSetClearsParkedAndCountedState(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	for _, id := range []string{"dlg_forgotten", "dlg_replaced"} {
+		seedDelegateControllerIdle(t, c, id, "")
+		if !c.noteDelegateAttention(id, "delegate:"+id) {
+			t.Fatalf("note %s attention", id)
+		}
+		c.countDelegateAttentionRestoreFailure(id)
+		c.parkDelegateAttention(id)
+		c.countDelegateAttentionRestoreFailure(id)
+	}
+	c.forgetDelegateAttention("dlg_forgotten", "delegate:dlg_forgotten")
+	c.mu.Lock()
+	c.replaceDelegateAttentionLocked("dlg_replaced", []string{"delegate:dlg_replaced-again"})
+	for _, id := range []string{"dlg_forgotten", "dlg_replaced"} {
+		if _, parked := c.attentionParked[id]; parked {
+			t.Errorf("%s still parked after leaving the pending set", id)
+		}
+		if count := c.attentionRestoreFailures[id]; count != 0 {
+			t.Errorf("%s still counts %d failures after leaving the pending set", id, count)
+		}
+	}
+	c.mu.Unlock()
+}
