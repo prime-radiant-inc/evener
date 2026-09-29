@@ -188,6 +188,8 @@ import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
+/** The most of its room the Session's bottom bar may take (spec 8.1). */
+const BAR_MAX_SHARE = 0.8;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
 
 /** Find in session while it's open: what you typed, the current match's
@@ -911,6 +913,11 @@ export function ConversationScreen({
 	// How tall the bottom bar stands over the transcript's end, null until it
 	// lays out: the transcript runs under its glass (design/underBar).
 	const bottomBar = useBarHeight();
+	// The room the bottom bar sits over (useBarHeight measures any view's
+	// height). The bar is capped at BAR_MAX_SHARE of it in points, so the cap
+	// follows every re-layout of the room: a percentage cap could keep a height
+	// from before a push's header inset landed (#3248).
+	const bottomBarRoom = useBarHeight();
 	const keyboardShown = useKeyboardShown();
 	const barHeight = bottomBar.height ?? 0;
 	const listUnderBar = underBar(barHeight);
@@ -2639,7 +2646,7 @@ export function ConversationScreen({
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
 				keyboardVerticalOffset={headerHeight}
 			>
-				<View style={styles.fill}>
+				<View testID="session-bottom-bar-room" style={styles.fill} onLayout={bottomBarRoom.onLayout}>
 					<View style={{ flex: 1 }}>
 						<FlatList
 							ref={timeline}
@@ -2894,10 +2901,20 @@ export function ConversationScreen({
 					</View>
 					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,
 					    over the transcript's end so the transcript runs under its glass,
-					    and never taller than four fifths of the screen. */}
+					    and never taller than four fifths of its room. */}
 					<BarFrame
 						testID="session-bottom-bar"
-						style={{ position: "absolute", left: 0, right: 0, bottom: 0, maxHeight: "80%", paddingTop: 8 }}
+						style={{
+							position: "absolute",
+							left: 0,
+							right: 0,
+							bottom: 0,
+							maxHeight:
+								bottomBarRoom.height === null
+									? (`${BAR_MAX_SHARE * 100}%` as const)
+									: bottomBarRoom.height * BAR_MAX_SHARE,
+							paddingTop: 8,
+						}}
 						onLayout={bottomBar.onLayout}
 					>
 						<ScrollView
