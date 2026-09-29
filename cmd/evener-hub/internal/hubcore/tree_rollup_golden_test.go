@@ -147,3 +147,29 @@ func TestProjectRollupGolden(t *testing.T) {
 		})
 	}
 }
+
+// A live child its parent lists as running, whose meta the past index has not
+// caught up with, still keeps its root's project working: the builder
+// synthesizes a meta for it, but the parent's running list marks it a
+// subagent, so it has no row and attributes its activity to the reporter.
+func TestProjectRollupCountsUnindexedRunningChild(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	metas := []schema.SessionMeta{{ID: "root", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: dir}}}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "root", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}},
+		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusActive},
+	}
+	live[0].WorkingDir, live[1].WorkingDir = dir, dir
+
+	tree := BuildTreeAt(metas, live, nil, now)
+
+	if len(tree.Projects) != 1 || tree.Projects[0].RollupState != "active" || tree.Projects[0].RollupLive != 1 {
+		t.Fatalf("projects = %+v, want one working project", tree.Projects)
+	}
+	for _, row := range tree.Live {
+		if row.ID == "child" {
+			t.Fatal("the unindexed child has a Live row")
+		}
+	}
+}

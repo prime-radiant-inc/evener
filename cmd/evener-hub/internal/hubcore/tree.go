@@ -970,6 +970,9 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	liveMap := make(map[string]LiveEntry, len(live))
 	liveRefMap := make(map[string]string, len(live))
 	runningSubagentIDs := make(map[string]bool)
+	// reportedBy names the live session that lists each running child, the
+	// only parent link a child has before its meta reaches the past index.
+	reportedBy := make(map[string]string)
 	runningSubagentStates := make(map[string]string)
 	for _, le := range live {
 		if le.SessionID != "" {
@@ -989,6 +992,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		for _, childID := range le.RunningSubagentIDs {
 			if childID != "" {
 				runningSubagentIDs[childID] = true
+				reportedBy[childID] = le.SessionID
 				if state := le.RunningSubagentStates[childID]; state != "" {
 					runningSubagentStates[childID] = state
 				}
@@ -1361,38 +1365,48 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	// nothing. A subagent whose ancestry does not reach a row, or cycles, is an
 	// orphan and affects nothing.
 	workingRoots := make(map[string]bool)
+	// parentOf is a subagent's parent: its meta's link, else the live session
+	// that lists it as running.
+	parentOf := func(id string) string {
+		if m := metaMap[id]; m.IsSubagent && m.ParentSessionID != "" {
+			return m.ParentSessionID
+		}
+		return reportedBy[id]
+	}
+	candidates := make(map[string]bool, len(runningSubagentIDs))
+	for id := range runningSubagentIDs {
+		candidates[id] = true
+	}
 	for _, m := range metas {
-		if !m.IsSubagent || m.ParentSessionID == "" {
-			continue
+		if _, live := liveMap[m.ID]; live && m.IsSubagent {
+			candidates[m.ID] = true
 		}
-		_, hasOwnEntry := liveMap[m.ID]
-		if !hasOwnEntry && !runningSubagentIDs[m.ID] {
-			continue
+	}
+	for id := range candidates {
+		// chain runs from id up to the first non-subagent ancestor.
+		chain := []string{id}
+		seen := map[string]bool{id: true}
+		ancestorID := parentOf(id)
+		for ancestorID != "" && isSubagent(ancestorID) && !seen[ancestorID] {
+			seen[ancestorID] = true
+			chain = append(chain, ancestorID)
+			ancestorID = parentOf(ancestorID)
 		}
-		// chain runs from m up to the first non-subagent ancestor.
-		chain := []schema.SessionMeta{m}
-		seen := map[string]bool{m.ID: true}
-		ancestor, ok := metaMap[m.ParentSessionID]
-		for ok && ancestor.IsSubagent && ancestor.ParentSessionID != "" && !seen[ancestor.ID] {
-			seen[ancestor.ID] = true
-			chain = append(chain, ancestor)
-			ancestor, ok = metaMap[ancestor.ParentSessionID]
-		}
-		if !ok || ancestor.IsSubagent {
+		if _, ok := metaMap[ancestorID]; !ok || isSubagent(ancestorID) {
 			continue
 		}
 		// Ended is sticky down the chain: a subagent under an ended parent
 		// counts as ended whatever its own entry reports.
-		state := stateFor(m.ID)
-		if stateFor(ancestor.ID) == "ended" || slices.ContainsFunc(chain[1:], func(c schema.SessionMeta) bool { return stateFor(c.ID) == "ended" }) {
+		state := stateFor(id)
+		if stateFor(ancestorID) == "ended" || slices.ContainsFunc(chain[1:], func(c string) bool { return stateFor(c) == "ended" }) {
 			state = "ended"
 		}
-		if state != "active" && len(liveMap[m.ID].RunningJobs) == 0 {
+		if state != "active" && len(liveMap[id].RunningJobs) == 0 {
 			continue
 		}
 		// A fork original renders under its continuation, so its subagents
 		// raise the continuation's task tree.
-		top := ancestor.ID
+		top := ancestorID
 		for seenForks := map[string]bool{}; roots.IsNested(top) && !seenForks[top]; {
 			seenForks[top] = true
 			top = forkChildren[top]
