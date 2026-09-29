@@ -286,9 +286,10 @@ func applyRunFinished(state State, event Event) error {
 		}
 		outcome := payload.Outcome
 		outcome.Status = OutcomeStopped
-		outcome.Reason = "stopped_by_parent"
+		outcome.Reason = ReasonStoppedByParent
 		if !ownerCoveredByStop(state, aggregate) {
 			if payload.Packet == nil || payload.Packet.Kind != PacketTerminalError {
+				// Bare, with no stopped outcome: changing it changes what old events fold to (#3114).
 				packet = &TerminalPacket{Kind: PacketTerminalError, Message: json.RawMessage(`"stopped by parent"`)}
 			}
 			if err := validateTerminalPacket(*packet); err != nil {

@@ -17,11 +17,13 @@ import {
   errorText,
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
+  HostMutationOutcomeError,
   hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
   isTranscriptHistoryFailedError,
   isUpgradeRequiredError,
+  refusedBeforeRunning,
   sessionActionError,
   sessionActionHeadline,
   WireError,
@@ -242,6 +244,18 @@ test("friendlyErrorMessage falls back to a generic sentence for a WireError with
   expect(friendlyErrorMessage(new WireError("", -32013))).toBe("Something went wrong.");
 });
 
+// committedMutationRow (hostMutations.ts) throws a HostMutationOutcomeError for
+// a non-commit arm of the host mutation-result union. Its message is written
+// for a person - it names what happened and, for a teardown failure, the
+// remnantId to repair - so friendlyErrorMessage shows it rather than the
+// generic sentence it would give an arbitrary JS exception.
+test("friendlyErrorMessage keeps a HostMutationOutcomeError's own message", () => {
+  const message =
+    "evener/host/remove: the mutation committed but its rebind teardown failed; " +
+    "the entry is committed and its repair handle is remnantId r1";
+  expect(friendlyErrorMessage(new HostMutationOutcomeError(message, "committed-with-teardown-failure"))).toBe(message);
+});
+
 test("friendlyErrorMessage maps ConnectionClosedError to a plain sentence naming the hub, not the class", () => {
   expect(friendlyErrorMessage(new ConnectionClosedError("AppwireClient: closed"))).toBe(
     "Can't reach the hub right now.",
@@ -420,4 +434,22 @@ test("friendlyLaunchErrorMessage keeps every other WireError's own message untou
 
 test("friendlyLaunchErrorMessage gives an unknown rejection the same generic sentence friendlyErrorMessage would", () => {
   expect(friendlyLaunchErrorMessage(new Error("switch boom"))).toBe("Something went wrong.");
+});
+
+describe("a refusal before running is bound to appwire/errors.go's codes", () => {
+  // The codes are Go ints, which goConstantValue (strings only) doesn't read.
+  const code = (name: string) => {
+    const value = appwireErrorsGo.match(new RegExp(`\\n\\s*${name}\\s*=\\s*(-?\\d+)`))?.[1];
+    if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
+    return Number(value);
+  };
+  test("a validation refusal or a malformed request ran nothing", () => {
+    expect(refusedBeforeRunning(new WireError("cwd is required", code("CodeInvalidParams")))).toBe(true);
+    expect(refusedBeforeRunning(new WireError("bad request", code("CodeInvalidRequest")))).toBe(true);
+  });
+  test("any other failure may have run", () => {
+    expect(refusedBeforeRunning(new WireError("internal", code("CodeInternalError")))).toBe(false);
+    expect(refusedBeforeRunning(new WireError("unavailable", code("CodeUnavailable")))).toBe(false);
+    expect(refusedBeforeRunning(new Error("socket closed"))).toBe(false);
+  });
 });

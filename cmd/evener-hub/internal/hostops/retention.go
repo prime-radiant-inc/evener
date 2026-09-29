@@ -107,26 +107,20 @@ func (p RetentionPolicy) withDefaults() RetentionPolicy {
 // value §8's `cursor-invalidated` refusal names — and is this store's own
 // bookkeeping, never replayed to the wire.
 type Tombstone struct {
-	ID                string `json:"id"`
-	ClientOperationID string `json:"clientOperationId"`
-	Host              string `json:"host"`
-	Kind              Kind   `json:"kind"`
-	Generation        uint64 `json:"generation"`
-	IncarnationID     string `json:"incarnationId"`
-	State             State  `json:"state"`
-	// OrphanResolved and OrphanAttestation are §5's resolved-record marker and the
-	// operator attestation persisted beside it. They ride the tombstone so a
-	// post-compaction replay still answers as the resolved record it stands for
-	// ("the marker is retained for the record's replay horizon").
-	OrphanResolved    bool                      `json:"orphanResolved,omitempty"`
-	OrphanAttestation *OrphanResolveAttestation `json:"attestation,omitempty"`
-	Progress          []ProgressEntry           `json:"progress,omitempty"`
-	Result            *Result                   `json:"result,omitempty"`
-	CreatedAt         time.Time                 `json:"createdAt"`
-	UpdatedAt         time.Time                 `json:"updatedAt"`
-	HostRemoved       bool                      `json:"hostRemoved"`
-	CompactedAt       time.Time                 `json:"compactedAt"`
-	CompactedSeq      uint64                    `json:"compactedSeq"`
+	ID                string          `json:"id"`
+	ClientOperationID string          `json:"clientOperationId"`
+	Host              string          `json:"host"`
+	Kind              Kind            `json:"kind"`
+	Generation        uint64          `json:"generation"`
+	IncarnationID     string          `json:"incarnationId"`
+	State             State           `json:"state"`
+	Progress          []ProgressEntry `json:"progress,omitempty"`
+	Result            *Result         `json:"result,omitempty"`
+	CreatedAt         time.Time       `json:"createdAt"`
+	UpdatedAt         time.Time       `json:"updatedAt"`
+	HostRemoved       bool            `json:"hostRemoved"`
+	CompactedAt       time.Time       `json:"compactedAt"`
+	CompactedSeq      uint64          `json:"compactedSeq"`
 }
 
 // tombstoneOf snapshots a compacted record into its tombstone. compactedSeq is
@@ -141,8 +135,6 @@ func tombstoneOf(record Record, compactedAt time.Time, compactedSeq uint64) Tomb
 		Generation:        record.Generation,
 		IncarnationID:     record.IncarnationID,
 		State:             record.State,
-		OrphanResolved:    record.OrphanResolved,
-		OrphanAttestation: cloneOrphanAttestation(record.OrphanAttestation),
 		Progress:          slices.Clone(record.Progress),
 		Result:            cloneResult(record.Result),
 		CreatedAt:         record.CreatedAt,
@@ -166,8 +158,6 @@ func (t Tombstone) record() Record {
 		State:             t.State,
 		Generation:        t.Generation,
 		IncarnationID:     t.IncarnationID,
-		OrphanResolved:    t.OrphanResolved,
-		OrphanAttestation: cloneOrphanAttestation(t.OrphanAttestation),
 		Progress:          slices.Clone(t.Progress),
 		Result:            cloneResult(t.Result),
 		CreatedAt:         t.CreatedAt,
@@ -175,16 +165,6 @@ func (t Tombstone) record() Record {
 		HostRemoved:       t.HostRemoved,
 		Compacted:         true,
 	}
-}
-
-// cloneOrphanAttestation copies the persisted resolve attestation so a
-// tombstone's value never aliases a caller's.
-func cloneOrphanAttestation(attestation *OrphanResolveAttestation) *OrphanResolveAttestation {
-	if attestation == nil {
-		return nil
-	}
-	copied := *attestation
-	return &copied
 }
 
 // cloneResult copies a terminal result so a tombstone's value never aliases a
@@ -249,21 +229,6 @@ func validateTombstone(tombstone Tombstone, compactSeq uint64) error {
 	if tombstone.CompactedSeq == 0 || tombstone.CompactedSeq > compactSeq {
 		return fmt.Errorf("%w: tombstone %q carries compactedSeq %d outside the store's %d",
 			ErrInvalidRecord, tombstone.ID, tombstone.CompactedSeq, compactSeq)
-	}
-	// §5's resolve marker rides the tombstone so a resolved record's replay
-	// horizon survives compaction. The pairing rule is the record schema's: the
-	// marker only on an interrupted record, the attestation only beside the
-	// marker, and the attestation always naming this record.
-	switch {
-	case tombstone.OrphanResolved && tombstone.State != StateInterrupted:
-		return fmt.Errorf("%w: tombstone %q carries the orphanResolved marker in state %q", ErrInvalidRecord, tombstone.ID, tombstone.State)
-	case tombstone.OrphanAttestation != nil && !tombstone.OrphanResolved:
-		return fmt.Errorf("%w: tombstone %q carries an orphan-resolve attestation without the resolved marker", ErrInvalidRecord, tombstone.ID)
-	}
-	if tombstone.OrphanAttestation != nil {
-		if err := validateOrphanResolveAttestation(*tombstone.OrphanAttestation, tombstone.ID); err != nil {
-			return fmt.Errorf("%w: tombstone %q: %w", ErrInvalidRecord, tombstone.ID, err)
-		}
 	}
 	for _, entry := range tombstone.Progress {
 		if entry.TS.IsZero() || entry.Message == "" || !utf8.ValidString(entry.Message) {
@@ -429,7 +394,6 @@ func cloneTombstone(tombstone Tombstone) Tombstone {
 	out := tombstone
 	out.Progress = slices.Clone(tombstone.Progress)
 	out.Result = cloneResult(tombstone.Result)
-	out.OrphanAttestation = cloneOrphanAttestation(tombstone.OrphanAttestation)
 	return out
 }
 
@@ -623,15 +587,6 @@ func (s *Store) compactLocked(next *snapshot) {
 		if !record.State.Terminal() {
 			continue
 		}
-		// §3: an open pending-spawn intent is the only thing that can name a
-		// live orphan, so a terminal record still carrying one is not
-		// compactable — compacting it would drop the intent and leave the orphan
-		// invisible, exactly what the intent exists to prevent. The intent drops
-		// at the next boot's local reap or at orphan-resolve, after which the
-		// record compacts normally.
-		if len(record.PendingSpawns) > 0 {
-			continue
-		}
 		candidates = append(candidates, compactionCandidate{
 			id:           record.ID,
 			removedFirst: pastHorizon[record.Host],
@@ -800,9 +755,6 @@ func normalizeSnapshotCollections(state *snapshot) {
 	}
 	if state.RemovedHosts == nil {
 		state.RemovedHosts = map[string]RemovedHost{}
-	}
-	if state.FencingQuarantines == nil {
-		state.FencingQuarantines = map[string]FencingQuarantine{}
 	}
 }
 

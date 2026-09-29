@@ -856,7 +856,7 @@ func TestLocalDaemonSourceListUsesProbedCapabilities(t *testing.T) {
 	if !unprobed.SkillInput || !unprobed.Queue || !unprobed.ChangeVisionModel {
 		t.Fatalf("unprobed row lost the fallback advertisement: %+v", unprobed)
 	}
-	if restart := capsBySession["sess_probed_restart"]; restart != (appwire.ThreadCapabilities{SharedNotes: true}) {
+	if restart := capsBySession["sess_probed_restart"]; restart != (appwire.ThreadCapabilities{SharedNotes: true, PageBefore: true}) {
 		t.Fatalf("restart-required row must replace even a probed set with the read-only one: %+v", restart)
 	}
 	if alias := capsBySession["sess_probed_alias"]; alias != (appwire.ThreadCapabilities{}) {
@@ -1401,7 +1401,7 @@ func TestLocalDaemonListPreservesRestartRequiredStatus(t *testing.T) {
 	if thread.Status.Type != appwire.ThreadStatusRestartRequired {
 		t.Fatalf("status=%s", thread.Status.Type)
 	}
-	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true}) {
+	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true, PageBefore: true}) {
 		t.Fatalf("capabilities=%+v", thread.Evener.Capabilities)
 	}
 	if _, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: "local:owner"}); err == nil {
@@ -1433,7 +1433,7 @@ func TestLocalDaemonListsSessionOnlyRestartRequiredEntry(t *testing.T) {
 			if thread.ID != "owner" || thread.Evener.Ref != "local:owner" || thread.Status.Type != appwire.ThreadStatusRestartRequired {
 				t.Fatalf("thread=%+v", thread)
 			}
-			if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true}) {
+			if thread.Evener.Capabilities != (appwire.ThreadCapabilities{SharedNotes: true, PageBefore: true}) {
 				t.Fatalf("capabilities=%+v", thread.Evener.Capabilities)
 			}
 		})

@@ -12,7 +12,8 @@ import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { SendButton } from "../session/SendButton";
 import { SessionLink, stopRequestKind, submitSessionMessage } from "../session/sessionMessage";
-import { Sheet, useSheet } from "../sheet/Sheet";
+import { Sheet } from "../sheet/Sheet";
+import { useSheet } from "../sheet/useSheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { stopRequests } from "./nativeStopRequests";
 import { flattenSubagents, type SubagentRow } from "./subagentModel";
@@ -30,7 +31,15 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	const online = state === "ready" && client !== null && activeProfile?.id === hubId;
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const { snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);
+	// The coordinator's state, read without taking the connection's
+	// subscription, which the transcript under this sheet follows. A read
+	// names its connection's instance, so each connection reads again.
+	const coordinatorRead = useCoordinatorState(online ? client : null, coordinator.ref);
+	const coordinatorState = coordinatorRead === "unreadable" ? null : coordinatorRead;
+	// The tree is the coordinator's as it reads now: a coordinator that
+	// restarted since the sheet opened runs under a new thread, and
+	// ActivityList refuses a tree whose root isn't the thread asked for.
+	const { snapshot } = useSubagentTree(hubId, coordinator.ref, coordinatorState?.threadId ?? coordinator.threadId);
 	const row = useMemo(
 		() =>
 			snapshot.tree ? (flattenSubagents(snapshot.tree).find((candidate) => candidate.ref === ref) ?? null) : undefined,
@@ -58,11 +67,6 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 		if (row === null && !snapshot.partial && !edited) sheet.finish();
 	}, [row, snapshot.partial, edited, sheet]);
 
-	// The coordinator's state, read without taking the connection's
-	// subscription, which the transcript under this sheet follows. A read
-	// names its connection's instance, so each connection reads again.
-	const coordinatorRead = useCoordinatorState(online ? client : null, coordinator.ref);
-	const coordinatorState = coordinatorRead === "unreadable" ? null : coordinatorRead;
 	// With S6 the subagent bar offers "Stop subagent", with a confirmation
 	// and no message, stopping only that subagent; it opens this sheet only
 	// for a coordinator that doesn't advertise stopSubagent.

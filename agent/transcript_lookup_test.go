@@ -24,7 +24,7 @@ const (
 // Returns the stateHome path.
 func newStateHome(t *testing.T) string {
 	t.Helper()
-	return t.TempDir()
+	return realTempDirForTest(t)
 }
 
 // newBucketUnder creates a new project state dir under the given stateHome.

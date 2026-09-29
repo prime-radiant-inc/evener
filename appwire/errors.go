@@ -3,6 +3,7 @@ package appwire
 import (
 	"errors"
 	"fmt"
+	"reflect"
 )
 
 const (
@@ -142,9 +143,8 @@ const (
 	// open/wait, never a bare retry.
 	ErrorHostBusyOperation ErrorInfo = "host-busy-operation"
 	// ErrorHostBusyTransient marks the same busy class with no operation
-	// reference: `plan`'s validation-plus-mint window (and, where fencing ships,
-	// an open `orphan-unverified` fence's non-teardown refusals — crash-fencing
-	// spec §8). The UI retries with backoff and shows no open/wait affordance.
+	// reference: `plan`'s validation-plus-mint window. The UI retries with
+	// backoff and shows no open/wait affordance.
 	ErrorHostBusyTransient ErrorInfo = "host-busy-transient"
 	// ErrorTokenMissing marks a deploy presenting a token the store holds no
 	// row for: nothing was minted, or the row is gone (consumed, superseded,
@@ -203,29 +203,6 @@ const (
 	// class, with the unknown id in the data. A cleared remnant whose resolved
 	// record still survives is NOT this arm: it returns `already-cleared`.
 	ErrorTeardownUnknownKey ErrorInfo = "teardown-unknown-key"
-	// ErrorFencingFailure marks crash-fencing spec 08c §8's quarantine refusal:
-	// a host with an open fencing-quarantine marker admits no new lifecycle or
-	// mutation call past admission until the operator resolves the
-	// `orphan-unverified` record through `evener/host/orphan-resolve`. Conflict
-	// class, with the quarantined host in the data. It is also the class a
-	// fencing kill/wait timeout's outcome reports.
-	ErrorFencingFailure ErrorInfo = "fencing-failure"
-	// ErrorFencingHelperAbsent marks §8's helper gate: the pinned fencing helper
-	// is absent, the remote cannot run it, or the bootstrap-guard claim was lost
-	// or unverifiable. Conflict class, with the host and the helper version the
-	// operator must install out-of-band in the data. Never `probe-failed`, so a
-	// client never mistakes the gate for a retryable probe failure.
-	ErrorFencingHelperAbsent ErrorInfo = "fencing-helper-absent"
-	// ErrorFencingHelperUntrusted marks §8's helper gate for an older,
-	// incompatible, or explicitly untrusted helper: the same data shape as the
-	// absent arm, naming the distrusted version in place of the absent one.
-	ErrorFencingHelperUntrusted ErrorInfo = "fencing-helper-untrusted"
-	// ErrorOrphanFencedBusy marks §8's distinct discriminator on
-	// `teardown-retry`/`teardown-recover` while an `orphan-unverified` record is
-	// open for the host: the refusal names the blocking record id plus the
-	// `orphan-resolve` next step, never `host-busy-transient`, because a bare
-	// retry of the repair call is silently refused by the fence. Conflict class.
-	ErrorOrphanFencedBusy ErrorInfo = "orphan-fenced-busy"
 	// ErrorConcurrentEdit marks a hub.toml commit whose final fingerprint check
 	// found the file moved between the validation read and the check, after
 	// bounded retries (registry spec 08 §6/§11): no window's edit is erased and
@@ -724,6 +701,78 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 			RetryDisposition: RetryDispositionNone,
 		},
 	}
+}
+
+// NotAccepted marks the refusal as a request that wasn't carried out and isn't
+// to be retried as it is, since it would be refused the same way.
+// clientMutationID names the refused mutation, or is empty when the request
+// carried none. The code and message stay, and so does the data: the standard
+// ErrorData, or a struct that embeds it (HostFieldErrorData,
+// LifecycleErrorData and the like), is marked where it stands, keeping its
+// evenerErrorInfo and every field of its own. Data of any other shape, or
+// none, gives way to a bare ErrorData, so the outcome is always readable.
+func (e WireError) NotAccepted(clientMutationID string) WireError {
+	e.Data = markedNotAccepted(e.Data, clientMutationID)
+	return e
+}
+
+var errorDataType = reflect.TypeFor[ErrorData]()
+
+// ErrorDataOf is the standard data an error's Data is, or a struct of it embeds
+// (HostFieldErrorData and the like), and whether it has one.
+func ErrorDataOf(data any) (ErrorData, bool) {
+	if plain, ok := data.(ErrorData); ok {
+		return plain, true
+	}
+	value := reflect.ValueOf(data)
+	if value.Kind() != reflect.Struct {
+		return ErrorData{}, false
+	}
+	field, ok := embeddedErrorData(value)
+	if !ok {
+		return ErrorData{}, false
+	}
+	return field.Interface().(ErrorData), true
+}
+
+// markedNotAccepted is a copy of data with its ErrorData marked: data itself
+// when it is one, or the ErrorData a struct embeds. The error data types embed
+// ErrorData by value, and Data holds them by value, so reaching the embedded
+// one means copying the struct into something settable; reflection does that
+// for every such type without each one opting in, so a new wrapper can't be
+// missed. Data of any other shape gives way to a fresh ErrorData.
+func markedNotAccepted(data any, clientMutationID string) any {
+	mark := func(data *ErrorData) {
+		data.ClientMutationID = clientMutationID
+		data.MutationOutcome = MutationOutcomeNotAccepted
+		data.RetryDisposition = RetryDispositionNone
+	}
+	if plain, ok := data.(ErrorData); ok {
+		mark(&plain)
+		return plain
+	}
+	if value := reflect.ValueOf(data); value.Kind() == reflect.Struct {
+		copied := reflect.New(value.Type()).Elem()
+		copied.Set(value)
+		if field, ok := embeddedErrorData(copied); ok {
+			mark(field.Addr().Interface().(*ErrorData))
+			return copied.Interface()
+		}
+	}
+	var fresh ErrorData
+	mark(&fresh)
+	return fresh
+}
+
+// embeddedErrorData is the ErrorData field a struct value embeds itself,
+// settable when the struct is. FieldByName also finds one promoted from a
+// deeper embed (a longer Index), which isn't this data's, so that doesn't count.
+func embeddedErrorData(value reflect.Value) (reflect.Value, bool) {
+	field, ok := value.Type().FieldByName("ErrorData")
+	if !ok || !field.Anonymous || field.Type != errorDataType || len(field.Index) != 1 {
+		return reflect.Value{}, false
+	}
+	return value.Field(field.Index[0]), true
 }
 
 func MutationUnknown(clientMutationID, message string) WireError {

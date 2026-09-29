@@ -27,7 +27,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { AddMarketplace } from "../MarketplaceBrowser";
 import { createPluginMutationGate } from "../pluginMutationGate";
 import { PluginsPage } from "./PluginsPage";
-import { alertRequests, nativeModuleMock, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -225,7 +225,7 @@ it("re-fences a name a stale presence read cleared after a browser remount", asy
 	await browseMarketplace(tree);
 	await confirmMarketplaceRemoval(tree);
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Leave the Marketplaces segment and come back: the guard lives at the screen, so
 	// it survives the browser's death, but the remount's own read answers
@@ -252,7 +252,7 @@ it("re-fences a name a stale presence read cleared after a browser remount", asy
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	const fenced = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(fenced.props.disabled).toBe(true);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
@@ -320,7 +320,7 @@ it("fences the name when a re-registration lands while the confirm dialog is ope
 	// fence acme - Remove stays disabled on the already-removed row - and the
 	// cleanup warning still raises.
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	expect(hub.methods.filter((method) => method === "evener/marketplace/list")).toHaveLength(3);
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(true);
@@ -456,7 +456,7 @@ it("keeps the fence when a pre-removal read lands inside the outcome's window", 
 	});
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(true);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
@@ -807,7 +807,7 @@ it("shows the failed read's error alone when the retained list is not empty", as
 	// vouch for hide behind the error and Retry, but the retained list is not
 	// empty, so the empty-state copy must not claim the hub has no
 	// marketplaces beside the error that says the load failed.
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	expect(renderedText(tree)).not.toContain("No marketplaces on this hub.");
 });
 
@@ -953,10 +953,7 @@ it("retires an earlier fence on the read a later outcome's fence outran", async 
 	const acmeRead = new Promise<void>((resolve) => {
 		releaseAcmeRead = () => resolve();
 	});
-	let releaseLaterReads!: () => void;
-	const laterReads = new Promise<void>((resolve) => {
-		releaseLaterReads = () => resolve();
-	});
+	const laterReads = new Promise<void>(() => {});
 	let releaseAcmeRemoval!: () => void;
 	const acmeRemoval = new Promise<never>((_resolve, reject) => {
 		releaseAcmeRemoval = () => reject(cloneLitterError(null, false));
@@ -1225,7 +1222,7 @@ it("records a pending removal settling after a remount whose list read failed", 
 	// read, and its failure keeps the error copy up until a fresh read
 	// reconciles.
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 	expect(hub.methods.filter((method) => method === "evener/marketplace/list")).toHaveLength(3);
 
 	await act(async () => {
@@ -1311,9 +1308,7 @@ it("leaves a re-added marketplace removable after an applied removal reconciles 
 			.findByProps({ accessibilityLabel: "Marketplace source" })
 			.props.onChangeText("https://example.test/plugins.git");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -1357,7 +1352,7 @@ it("clears the fence when a blank-name re-add lands in the wire-indistinguishabl
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Re-add acme with a BLANK name and the source the stale row still shows,
 	// landing within the same whole second as the original registration: the
@@ -1371,14 +1366,12 @@ it("clears the fence when a blank-name re-add lands in the wire-indistinguishabl
 		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
 	});
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "GitHub repository" }).props.onPress();
+		tree.root.findByProps({ accessibilityLabel: "GitHub" }).props.onPress();
 	});
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -1434,7 +1427,7 @@ it("clears the fence for a blank-name re-add that resolves after the browser unm
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Start a BLANK-name add from a different source, then leave the Marketplaces
 	// segment before it resolves: the store the screen owns outlives the browser,
@@ -1448,14 +1441,12 @@ it("clears the fence for a blank-name re-add that resolves after the browser unm
 		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
 	});
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "GitHub repository" }).props.onPress();
+		tree.root.findByProps({ accessibilityLabel: "GitHub" }).props.onPress();
 	});
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/other");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -1537,7 +1528,7 @@ it("clears the fence for a wire-indistinguishable re-add made beside another cha
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Re-add acme with a BLANK name and its original source, within the same
 	// whole second, while another client registers gamma: the add's answer
@@ -1550,14 +1541,12 @@ it("clears the fence for a wire-indistinguishable re-add made beside another cha
 		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
 	});
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "GitHub repository" }).props.onPress();
+		tree.root.findByProps({ accessibilityLabel: "GitHub" }).props.onPress();
 	});
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -1622,7 +1611,7 @@ it("clears the fence for a blank-name re-add held behind a newer list read", asy
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Start a BLANK-name add from a different source, then the hub says the list
 	// changed before it resolves: the pending read outranks the add, so the store
@@ -1634,14 +1623,12 @@ it("clears the fence for a blank-name re-add held behind a newer list read", asy
 		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
 	});
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "GitHub repository" }).props.onPress();
+		tree.root.findByProps({ accessibilityLabel: "GitHub" }).props.onPress();
 	});
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/other");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -1716,7 +1703,7 @@ it("keeps the fence for a fenced row a blank add's answer carries unchanged", as
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Submit a BLANK-name add of the fenced marketplace's own source: only a
 	// row the answer newly carries - one the pre-add list did not have, in the
@@ -1729,14 +1716,12 @@ it("keeps the fence for a fenced row a blank add's answer carries unchanged", as
 		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
 	});
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "GitHub repository" }).props.onPress();
+		tree.root.findByProps({ accessibilityLabel: "GitHub" }).props.onPress();
 	});
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -1787,7 +1772,7 @@ it("clears the fence for a wire-indistinguishable blank re-add when no list read
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Re-add acme with a BLANK name and its original source, within the same
 	// whole second as the removed registration, on a hub whose list reads
@@ -1800,14 +1785,12 @@ it("clears the fence for a wire-indistinguishable blank re-add when no list read
 		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
 	});
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "GitHub repository" }).props.onPress();
+		tree.root.findByProps({ accessibilityLabel: "GitHub" }).props.onPress();
 	});
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -1868,7 +1851,7 @@ it("retires the fence when the read holding a wire-indistinguishable blank re-ad
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// Re-add acme with a BLANK name and its original source - landing within
 	// the same whole second, so the add's own answer is a list the wire cannot
@@ -1882,14 +1865,12 @@ it("retires the fence when the read holding a wire-indistinguishable blank re-ad
 		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
 	});
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "GitHub repository" }).props.onPress();
+		tree.root.findByProps({ accessibilityLabel: "GitHub" }).props.onPress();
 	});
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -2141,9 +2122,7 @@ it("clears the fence when a same-name re-add registers while reconciliation read
 			.findByProps({ accessibilityLabel: "Marketplace source" })
 			.props.onChangeText("https://example.test/plugins.git");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -2240,7 +2219,7 @@ it("clears the fence when another client re-adds the name from a different sourc
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// The re-add's stamp matches the removed registration's whole second, but
 	// its source is its own: the fence the stale read kept has to recognize a
@@ -2285,7 +2264,7 @@ it("re-enables Remove for a same-source same-second re-registration", async () =
 	await confirmMarketplaceRemoval(tree);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-	expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+	expect(renderedText(tree)).toContain("Could not load marketplaces.");
 
 	// The reconciliation read failed, so the retry read is the first
 	// authoritative read after the outcome - and it carries a row the wire
@@ -2361,9 +2340,7 @@ it("retires the fence on the trusted read when an add resolving after unmount re
 			.findByProps({ accessibilityLabel: "Marketplace source" })
 			.props.onChangeText("https://example.test/gamma.git");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => submit.props.onPress());
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
@@ -2522,9 +2499,7 @@ it("clears the fence for a re-added marketplace whose registration carries the s
 	await act(async () => {
 		tree.root.findByProps({ accessibilityLabel: "Marketplace name" }).props.onChangeText("acme");
 	});
-	const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
-	const submit = adds.at(-1);
-	if (!submit) throw new Error("Add marketplace submit was not rendered");
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
 	await act(async () => {
 		submit.props.onPress();
 		await Promise.resolve();
@@ -2666,6 +2641,105 @@ it("keeps the marketplace draft through a flap, with no Reconnect anywhere", asy
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
+it("adds a marketplace from a grouped form: a segmented kind, field rows, Add up top", async () => {
+	const onAdd = vi.fn(async () => {});
+	const onClose = vi.fn();
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			gate={createPluginMutationGate()}
+			ready
+			canUseConnection={() => true}
+			onClose={onClose}
+			onAdd={onAdd}
+		/>,
+	);
+	const kinds = tree.root.findByProps({ accessibilityRole: "radiogroup", accessibilityLabel: "Kind" });
+	const kindLabels = kinds
+		.findAllByProps({ accessibilityRole: "radio" })
+		.map((radio) => radio.props.accessibilityLabel);
+	expect(kindLabels).toEqual(["Git URL", "GitHub", "Hub directory"]);
+	const add = () => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
+	expect(add().props.disabled).toBe(true);
+	act(() => kinds.findByProps({ accessibilityLabel: "GitHub" }).props.onPress());
+	const source = tree.root.find(
+		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Marketplace source",
+	);
+	expect(source.props.placeholder).toBe("owner/repo");
+	expect(source.props.style.fontFamily).toBe("Menlo");
+	act(() => source.props.onChangeText("acme/plugins"));
+	// The source's section label names what the kind asks for.
+	expect(renderedText(tree)).toContain("Repository");
+	expect(source.props.returnKeyType).toBe("next");
+	expect(tree.root.findByProps({ accessibilityLabel: "Marketplace name" }).props.returnKeyType).toBe("done");
+	await act(async () => {
+		add().props.onPress();
+	});
+	expect(onAdd).toHaveBeenCalledWith({ name: "", source: { kind: "github", repo: "acme/plugins" } });
+	expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("holds Add marketplace open, and says Adding, while the add is in flight", async () => {
+	let finish = () => {};
+	const onAdd = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+	const onClose = vi.fn();
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			gate={createPluginMutationGate()}
+			ready
+			canUseConnection={() => true}
+			onClose={onClose}
+			onAdd={onAdd}
+		/>,
+	);
+	const source = tree.root.findByProps({ accessibilityLabel: "Marketplace source" });
+	act(() => source.props.onChangeText("https://example.test/plugins.git"));
+	await act(async () => {
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" }).props.onPress();
+	});
+	const adding = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Adding…" });
+	expect(adding.props.accessibilityState).toEqual({ disabled: true, busy: true });
+	const cancel = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" });
+	expect(cancel.props.disabled).toBe(true);
+	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	expect(onClose).not.toHaveBeenCalled();
+	await act(async () => finish());
+	expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("heads Add marketplace with the shared sheet header: its title and Cancel, and no second title in the body", () => {
+	const onClose = vi.fn();
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			gate={createPluginMutationGate()}
+			ready
+			canUseConnection={() => true}
+			onClose={onClose}
+			onAdd={async () => {}}
+		/>,
+	);
+	// The sheet's title comes first; the form's section labels are headers too.
+	const title = tree.root.findAllByProps({ accessibilityRole: "header" })[0];
+	expect(title?.props.children).toBe("Add marketplace");
+	// The hub it adds to rides under the title.
+	expect(renderedText(tree)).toContain("Work hub");
+	act(() => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.onPress());
+	expect(onClose).toHaveBeenCalledOnce();
+	// Only the header says it.
+	const repeats = tree.root.findAll(
+		(node) => String(node.type) === "Text" && node !== title && node.props.children === "Add marketplace",
+	);
+	expect(repeats).toHaveLength(0);
+});
+
 it("keeps Add marketplace open when readiness is lost during submit", async () => {
 	const hub = pluginsClient([]);
 	const onAdd = vi.fn(async () => {});
@@ -2690,7 +2764,7 @@ it("keeps Add marketplace open when readiness is lost during submit", async () =
 	// predicate once more, after readiness was lost between the two. Nothing
 	// ran, so the modal keeps the draft rather than closing as if it had.
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" }).props.onPress();
 	});
 
 	expect(onAdd).not.toHaveBeenCalled();
@@ -3000,6 +3074,18 @@ it("holds the detail's switches, Upgrade and Remove, and says a broken plugin is
 	expect(alertRequests.at(-1)?.message).toBe("cracked from core on Work hub");
 	await act(async () => {
 		detail.findByProps({ accessibilityLabel: "Done" }).props.onPress();
+	});
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+});
+
+it("heads a plugin's detail with the shared sheet header: its name, and Done on the right", async () => {
+	const { tree } = await mountPage(pageHub([entry("cracked")]));
+	const detail = await openDetail(tree, "cracked");
+	// The sheet's title comes first; the page's section labels are headers too.
+	expect(detail.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("cracked");
+	expect(detail.findAllByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" })).toHaveLength(0);
+	await act(async () => {
+		detail.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
 	});
 	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
 });

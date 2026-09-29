@@ -1190,10 +1190,10 @@ func TestNavigationProjectionValidatesIdentitiesAndTruncatesWorkingDir(t *testin
 func TestNavigationProjectionCapsChildrenAndPreservesRowFields(t *testing.T) {
 	children := make([]hubcore.TreeNode, maxNavigationChildren+1)
 	for index := range children {
-		children[index] = hubcore.TreeNode{ID: fmt.Sprintf("session-child-%03d", index), Title: "child", Kind: "subagent", State: "ended"}
+		children[index] = hubcore.TreeNode{ID: fmt.Sprintf("session-child-%03d", index), Title: "child", Kind: "fork", State: "ended"}
 	}
 	updated := time.Unix(123, 0).UTC()
-	root := hubcore.TreeNode{ID: "session-root", Title: "title", Project: "project", Branch: "branch", State: "awaiting", Kind: "session", ClusterCount: 2, AskPending: true, ApprovalPending: true, Dormant: true, UpdatedAt: updated, MoreSubagents: 3, Children: children}
+	root := hubcore.TreeNode{ID: "session-root", Title: "title", Project: "project", Branch: "branch", State: "awaiting", Kind: "session", ClusterCount: 2, AskPending: true, ApprovalPending: true, Dormant: true, UpdatedAt: updated, Children: children}
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{root}}, Live: map[string]bool{"session-root": true}, Renameable: map[string]bool{"session-root": true}, SessionFavorite: map[string]bool{"session-root": true}})
 	if err != nil {
 		t.Fatal(err)
@@ -1202,7 +1202,7 @@ func TestNavigationProjectionCapsChildrenAndPreservesRowFields(t *testing.T) {
 	if len(row.Children) != maxNavigationChildren || row.OmittedDescendants != 1 {
 		t.Fatalf("children=%d omitted=%d", len(row.Children), row.OmittedDescendants)
 	}
-	if row.Ref != "local:session-root" || row.HostID != "local" || row.SessionID != "session-root" || row.Title != root.Title || row.Project != root.Project || row.State != root.State || row.Kind != root.Kind || row.Branch != root.Branch || row.ClusterCount != root.ClusterCount || !row.Favorite || !row.Rename || !row.Live || !row.AskPending || !row.ApprovalPending || !row.Dormant || row.UpdatedAt == nil || !row.UpdatedAt.Equal(updated) || row.MoreSubagents != root.MoreSubagents {
+	if row.Ref != "local:session-root" || row.HostID != "local" || row.SessionID != "session-root" || row.Title != root.Title || row.Project != root.Project || row.State != root.State || row.Kind != root.Kind || row.Branch != root.Branch || row.ClusterCount != root.ClusterCount || !row.Favorite || !row.Rename || !row.Live || !row.AskPending || !row.ApprovalPending || !row.Dormant || row.UpdatedAt == nil || !row.UpdatedAt.Equal(updated) {
 		t.Fatalf("row fields diverged: %#v", row)
 	}
 }

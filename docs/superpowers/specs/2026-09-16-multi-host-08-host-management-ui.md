@@ -24,16 +24,18 @@ machinery), `…-06-fleet-view.md` (picker, rail badges, online flags),
 `…-07-remote-admin.md` (admin proxy). Components 01–07 are landed on main; this
 component adds the user-facing management surface they deliberately left out.
 
-This document is one of three. It owns the registry surface: the host
+This document is one of two. It owns the registry surface: the host
 mutations, the machine-managed `hub.toml` store and its
 receipts/remnants/tombstones, the `hub.toml` reconcile, the list/status reads,
 and the Hosts UI. The
 deploy pipeline (plan/deploy/restart, tokens, gates, the operation store)
-is defined in `2026-09-16-multi-host-08b-deploy-pipeline.md`. Crash
-orphans, fencing, and orphan-resolve are defined in
-`2026-09-16-multi-host-08c-crash-fencing.md`. A rule named here is not
-restated there, and vice versa: cross-document references are section
-pointers, never copies.
+is defined in `2026-09-16-multi-host-08b-deploy-pipeline.md`. The
+crash-fencing companion spec (08c) and the machinery it defined — orphans,
+fencing epochs and guards, leases, local reap, takeover/kill, the fencing
+helper, and `orphan-resolve` — were withdrawn and removed by Jesse's
+2026-09-29 ruling (comp08 passes 1–2), so no third document remains. A rule
+named here is not restated in the pipeline spec, and vice versa: cross-document
+references are section pointers, never copies.
 
 Purpose: three user stories, all impossible today. A user adds a remote server
 from the UI (today hosts are `[[hosts]]` entries in the controller's
@@ -48,7 +50,7 @@ without a terminal.
 ## 1. Glossary
 
 Every later section uses these terms with exactly these meanings. The
-sixteen shared terms below are identical in all three documents.
+shared terms below are identical in both documents.
 
 **MutationId.** The client-supplied idempotency key on `add`/`update`/`remove`: opaque, non-empty, at most 128 bytes, no required structure. A replay is a call repeating a previously used key.
 
@@ -76,9 +78,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 
-**Boundary.** A persisted ownership description a verifier checks before signaling a possibly-live process: `local-linux`, `local-darwin`, `local-markerless`, or `remote-fencing` (defined in the crash-fencing spec §9), plus the `boundary-unavailable` custody sentinel a corrupt-store custody import carries when corruption destroyed the boundary (crash-fencing spec §9).
-
-**Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
+**Probe epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) persisted before its first `evener/host/running` probe and presented on that probe; the serving hub validates a presented epoch against the guard epoch it last admitted and refuses a stale same-boot epoch without probing (a different boot id has no defined cross-restart order and is admitted — deploy-pipeline spec §10). The persisted process-boundary description and the fencing takeover/guard-file execution the epoch model once anticipated were removed with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2, master design doc §2).
 
 **Presence epoch.** The per-host monotonic removal/presence counter the file advances on every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live host (the per-host machine record, `[host_records."<name>"]`, §6) and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§7 defines the record schema; deploy-pipeline spec §4 cites it); cursor validation reads the mirrored value (§8 there).
 
@@ -124,34 +124,36 @@ spec §4), which owns the mirrored-generation rule: on a store-newer/`hub.toml`-
 
 ## 2. PR sequence
 
-This table is the only place the three-document split is defined.
+This table is the only place the document split is defined. It recorded a
+three-document split until the crash-fencing document (08c) and its machinery
+were withdrawn by Jesse's 2026-09-29 ruling (comp08 passes 1–2); the fencing
+column, the `evener/host/orphan-resolve` row, and the fencing-tests row are
+removed with it, and what remains below is the two-document split.
 
-| Method / artifact | Registry (this doc) | Pipeline (08b) | Fencing (08c) |
-|---|---|---|---|
-| `evener/host/list` handler + catalog + regenerated client | ships (handler + catalog + client) | consumes | — |
-| `evener/host/add` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
-| `evener/host/update` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
-| `evener/host/remove` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
-| `evener/host/teardown-retry` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — (fenced: crash-fencing spec §8) |
-| `evener/host/teardown-recover` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — (fenced: crash-fencing spec §8) |
-| `evener/host/status` handler + catalog + regenerated client | ships (handler + catalog + client) | consumes | consumes (refusal snapshots) |
-| `evener/host/plan` + token mint | — | ships (handler + catalog + client) | consumes |
-| `evener/host/deploy` | — | ships (handler + catalog + client) | consumes |
-| `evener/host/restart` | — | ships (handler + catalog + client) | consumes |
-| `evener/host/operations` + pagination | — | ships (handler + catalog + client) | consumes (polling) |
-| `evener/host/running` probe | — | ships (handler + catalog + client) | — |
-| `evener/host/orphan-resolve` | — | — | ships (handler + catalog + client) |
-| `attachUnderGate` primitive + live host-set surface (registry/manager) | ships | uses (restart reattach) | — |
-| `hub.toml` in-place rewrite, staged commit, receipts, remnants, tombstones, generations | ships | mirrors generations in store | — |
-| Operation-store skeleton `remove` depends on (`host-removed` mark path, outstanding-token-row purge path, atomic writes, no pipeline behavior behind them) | ships as store-owned helpers | full store (records, dedup, tokens, reconciliation) | — |
-| Union-registration generator work (`internal/appwirets/emit.go`) | — | ships | — |
-| Origin guard pre-admission hook at request ingress | ships (hook + registry-surface orderings: `list`/`status` here; union-surface orderings in the pipeline PR where those handlers ship) | guard-before-admission ordered on the pipeline surface; dedup/token orderings asserted where they ship | — |
-| Catalog registration + regenerated TypeScript client for union-shaped methods | — (this doc registers no handler and ships no catalog entry and no regenerated client for a union-shaped response) | ships | — |
-| Non-union registry helpers | register immediately | — | — |
-| Hosts settings section, dialogs, stores, polling, deploy confirmation | shipped (the add/edit/connect/remove section, dialogs, and `stores/hosts.ts` — #1784 and the edit slice #2111) | ships (the Deploy/Restart actions, plan confirmation, and `operations` polling added to that section, with the regenerated client) | consumes (resolve affordance) |
-| Registry tests (§16) | ships (list/status handler-level tests ship here with the registered handlers; union-handler ingress/origin-rejection/wiring tests plus union catalog/protocol-shape tests ship in the pipeline PR where those handlers register) | — | — |
-| Pipeline tests (§12 of the pipeline spec) | — | ships | — |
-| Fencing tests (§10 of the fencing spec) | — | — | ships |
+| Method / artifact | Registry (this doc) | Pipeline (08b) |
+|---|---|---|
+| `evener/host/list` handler + catalog + regenerated client | ships (handler + catalog + client) | consumes |
+| `evener/host/add` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client |
+| `evener/host/update` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client |
+| `evener/host/remove` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client |
+| `evener/host/teardown-retry` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client |
+| `evener/host/teardown-recover` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client |
+| `evener/host/status` handler + catalog + regenerated client | ships (handler + catalog + client) | consumes (refusal snapshots) |
+| `evener/host/plan` + token mint | — | ships (handler + catalog + client) |
+| `evener/host/deploy` | — | ships (handler + catalog + client) |
+| `evener/host/restart` | — | ships (handler + catalog + client) |
+| `evener/host/operations` + pagination | — | ships (handler + catalog + client) |
+| `evener/host/running` probe | — | ships (handler + catalog + client) |
+| `attachUnderGate` primitive + live host-set surface (registry/manager) | ships | uses (restart reattach) |
+| `hub.toml` in-place rewrite, staged commit, receipts, remnants, tombstones, generations | ships | mirrors generations in store |
+| Operation-store skeleton `remove` depends on (`host-removed` mark path, outstanding-token-row purge path, atomic writes, no pipeline behavior behind them) | ships as store-owned helpers | full store (records, dedup, tokens, reconciliation) |
+| Union-registration generator work (`internal/appwirets/emit.go`) | — | ships |
+| Origin guard pre-admission hook at request ingress | ships (hook + registry-surface orderings: `list`/`status` here; union-surface orderings in the pipeline PR where those handlers ship) | guard-before-admission ordered on the pipeline surface; dedup/token orderings asserted where they ship |
+| Catalog registration + regenerated TypeScript client for union-shaped methods | — (this doc registers no handler and ships no catalog entry and no regenerated client for a union-shaped response) | ships |
+| Non-union registry helpers | register immediately | — |
+| Hosts settings section, dialogs, stores, polling, deploy confirmation | shipped (the add/edit/connect/remove section, dialogs, and `stores/hosts.ts` — #1784 and the edit slice #2111) | ships (the Deploy/Restart actions, plan confirmation, and `operations` polling added to that section, with the regenerated client) |
+| Registry tests (§16) | ships (list/status handler-level tests ship here with the registered handlers; union-handler ingress/origin-rejection/wiring tests plus union catalog/protocol-shape tests ship in the pipeline PR where those handlers register) | — |
+| Pipeline tests (§12 of the pipeline spec) | — | ships |
 
 Note on the `add`/`update`/`remove` rows: slices 1–2 already registered those
 handlers (the host-edit slice records the deviation), so the pipeline PR
@@ -159,7 +161,8 @@ handlers (the host-edit slice records the deviation), so the pipeline PR
 catalog + regenerated client; `teardown-retry`/`teardown-recover` are the two
 registered there for the first time.
 
-The pipeline stacks on the registry; fencing stacks on the pipeline.
+The pipeline stacks on the registry. (The crash-fencing layer that once
+stacked on the pipeline was withdrawn 2026-09-29 with 08c.)
 The router-vs-catalog test pins registration both ways
 (`cmd/evener-hub/appwire_catalog_test.go` — routed-but-uncataloged fails
 exactly like cataloged-but-unrouted), so a union-returning handler cannot
@@ -184,8 +187,9 @@ per the §2 table. `evener/host/plan`, `deploy`, `restart`, `operations`,
 the local `evener/host/running` probe handler, and the controller-side
 operation store are defined in the deploy-pipeline spec. The
 `evener/host/orphan-resolve` crash-recovery mutation, fencing, and boot
-reaping are defined in the crash-fencing spec. `evener/host/attach` ships
-with #1603 and is relied on, not re-specified.
+reaping the crash-fencing spec once defined were withdrawn with it (Jesse,
+2026-09-29; comp08 passes 1–2) and are not part of this surface.
+`evener/host/attach` ships with #1603 and is relied on, not re-specified.
 
 Cross-component effects (each owned by the cited section, none introduced
 elsewhere): component-03 validation rules enforced on mutations, boot load,
@@ -223,7 +227,7 @@ invoking controller-local or SSH-affecting methods by omitting the marker — is
 contained by token secrecy (0600 token file, loopback-only bridge dial,
 no-proxy handshake), not by the guard.
 
-Every `evener/host/*` request (all fourteen methods, `attach` included) passes
+Every `evener/host/*` request (all thirteen methods, `attach` included) passes
 through the shared origin guard: landed by #1603 at the dial seam
 (`guardRemoteHostDial`) and the remote-client dispatch seam
 (`guardRemoteDispatch`), and extended by the registry PR to the common
@@ -232,16 +236,19 @@ remote-originated, peer-forwarded requests are refused before admission —
 before dedup and before token validation on the phases where those stages
 exist — and before any handler runs. The mutating handlers (`attach`, `plan`,
 `deploy`, `restart`, `add`, `update`, `remove`, `teardown-retry`,
-`teardown-recover`, `orphan-resolve`, `running`) are unreachable to honestly-marked peer-forwarded requests; a
+`teardown-recover`, `running`) are unreachable to honestly-marked peer-forwarded requests; a
 markerless request is local-originated by construction and takes the full
 admission path. The reads (`list`/`status`/`operations`) are guarded
 equally because they disclose the controller's topology and operation state.
 (`attach`'s guard routing ships and is test-pinned with #1603; this document
 pins the guard orderings for its two registered handlers (`list`/`status`) and
 states the behavior for the five union handlers (`add`/`update`/`remove`/`teardown-retry`/`teardown-recover`) whose orderings pin in the
-pipeline PR where they register (with `teardown-retry`/`teardown-recover` origin-rejection tests in that PR), the pipeline document its five, the fencing document
-its one (with `orphan-resolve` orderings in the fencing spec where that handler
-registers) — thirteen new methods plus `attach` is fourteen.) The one direction-scoped exception is the
+pipeline PR where they register (with `teardown-retry`/`teardown-recover`
+origin-rejection tests in that PR); the pipeline document pins its own
+methods' orderings where they register. Twelve new methods plus `attach` is
+thirteen. The `evener/host/orphan-resolve` handler and its guard orderings are
+gone with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2).
+The one direction-scoped exception is the
 `evener/host/running` peer probe: a controller-originated request issued only
 through `sshManager.ChannelIfAttached(name)` over a live channel peered by the
 #1603 handshake, admitted on the remote only over that same attached session
@@ -803,10 +810,17 @@ migrated at all: boot logs the refusal loudly and leaves both files untouched
 SSH identity file the shipped Add/Edit dialog collects and `sshconn` dials
 with), so a UI host with a key path round-trips through a rewrite; component
 03's schema carries the field. `hub.toml` also carries the per-host records the
-sibling specs define there: the crash-fencing spec's bootstrap-attempt fence and
-`helperInstalled` flag, the tombstone/generation records of §15, this section's
-receipts, remnants, and markers, and the `legacy_sidecar_migrated` marker a
-completed migration records.
+sibling specs define there: the tombstone/generation records of §15, this
+section's receipts, remnants, and markers, and the `legacy_sidecar_migrated`
+marker a completed migration records. The crash-fencing bootstrap-attempt fence
+and `helper_installed`/`helper_version` flags an earlier revision of this spec
+placed here were withdrawn with the crash-fencing program (Jesse, 2026-09-29;
+comp08 pass 1): a prior file still decodes those keys (the load strips them),
+and every rewrite drops them — the load-and-drop is pinned by
+`TestHubTOMLLegacyBootstrapRecordLoadsAndIsDroppedOnRewrite` in
+`cmd/evener-hub/app_host_toml_store_test.go` (the operation store's retired keys
+have their own round-trip coverage in
+`cmd/evener-hub/internal/hostops/retired_keys_test.go`).
 
 Machine-managed record layout: every machine-managed record lives under a
 reserved top-level key beside `[[hosts]]` — never inside a host entry, and
@@ -831,12 +845,11 @@ newline and two distinct keys can never collide), `[pruned_receipts."<scoped-key
 marker: `pruned_at`; the same encoded scoped key), `[teardown_remnants."<remnant-id>"]` (the §9 teardown
 remnants), `[pending_store_sync]` (the deploy-pipeline spec §9 cross-file
 revocation intent), and `[host_records."<name>"]` (the per-host records the
-sibling specs define there — the crash-fencing spec's bootstrap-attempt fence
-and `helper_installed` flag, and the presence epoch — records that must survive
+sibling specs define there — the presence epoch — records that must survive
 a host edit, which is why they are not fields of the `[[hosts]]` entry). Field
 spellings are the stored fields' snake_case spelling; the prose's camelCase or
 hyphenated record names are the same records (`mutationReceipts` →
-`mutation_receipts`, `helperInstalled` → `helper_installed`,
+`mutation_receipts`, `teardownRemnants` → `teardown_remnants`,
 `reconcile-applied` → `reconcile_applied`), and where a sibling spec defines a
 record's fields, that spec's field set holds — this layout fixes where each
 record lives, not what it holds. A rewrite re-emits every reserved key the
@@ -1031,9 +1044,10 @@ both what was dropped and which fingerprint won. `remnantId` is present
 exactly when the commit staged a remnant, `remnantResolvedAt` exactly after
 `teardown-retry` or `teardown-recover` resolves it, `recoveryAttestation?`
 exactly on receipts resolved through `teardown-recover` (the `{operator,
-statement, observedAt}` attestation the recovery call validated — the audited
-recovery contract's durable record, pinned field-for-field by the
-protocol-shape test), `bootRecovered` (as `true`) exactly when boot
+statement, observedAt}` attestation the recovery call accepted and recorded — the
+recovery contract's durable record, recorded as given and never verified where
+the transport names no principal (§6's amended posture), pinned field-for-field
+by the protocol-shape test), `bootRecovered` (as `true`) exactly when boot
 finalized a crash-window staged-receipt marker (§5). `prunedReceipts` maps the
 full pruned scope key (mutationId, host name, mutation kind, pruned post-commit
 generation, pruned incarnation id) to `{prunedAt}` — the bounded markers the
@@ -1170,20 +1184,21 @@ differs from the remnant's is refused, never executed, even when its
 generation tag equals the remnant's. Post-crash rehydration: boot rehydrates
 the remnant's actionable handle by loading the persisted `cleanupHandle` —
 rehydration is record load, never live-handle resurrection (no in-process
-handle survives restart — §7): for remote seams the handle is the remote
-guard-file identity plus the orphan epoch's lease-entry ownership tokens, so
-the retry kills and verifies through the lease wrapper without the dead
-worker's handles; for local seams it is the durable local ownership-boundary
-identity plus nonce (the same boundary-plus-nonce rule as orphan reaping —
-crash-fencing spec §3), so boot reaps or the retry signals through the persisted boundary. The
+handle survives restart — §7): the handle this build writes and acts through is the durable
+local cleanup handle (the pinned generation/incarnation identity,
+`HostCleanupHandle`), resolved against the store's mirrored ownership boundary
+by incarnation-id equality, and the retry then runs the pinned teardown
+directly through the manager's own teardown paths. The
 retry re-resolves live bindings by (generation, incarnation-id) equality only
 while the committer is still alive; after a crash it acts through the
-`cleanupHandle` alone. A retry executing a boot-recovered remnant additionally
-runs as a fenced remote operation (crash-fencing spec §4): it persists a fresh fencing epoch in the
-remnant record, kill/waits the superseded epoch's lease-tracked entries,
-compare-and-advances the guard, and only then runs the pinned teardown through
-the wrapper — so post-crash teardown repair can never mutate past a
-still-running crashed-epoch orphan.
+`cleanupHandle` alone. A retry executing a boot-recovered remnant runs the
+pinned teardown directly. The remote handle arm an earlier
+revision described here — a remote guard-file identity plus the orphan epoch's
+lease-entry ownership tokens, resolved and killed through the `evener-fence`
+lease wrapper — was withdrawn with the crash-fencing program (Jesse,
+2026-09-29; comp08 passes 1–2); no remote handle kind is written, a prior
+file's remote-handle fields are inert (a non-local handle refuses the typed
+`teardown-unknown-key`), and no kill/wait or guard advance runs.
 
 Staged commit (order matters): add/update/remove never mutate live state
 incrementally. Holding the process-wide mutation lock only across the
@@ -1312,12 +1327,11 @@ transitions — never across the teardown itself (the same claim pattern as the
 foreign-marker rule: claim under the lock with an attempt token, release
 across the teardown, re-acquire to finalize). It runs the remnant's pinned
 teardown to completion with no mutation lock held — through the persisted
-`cleanupHandle` after a crash, under a fresh fencing epoch (including its
-bounded kill/wait contexts; the retry's own teardown run carries a bounded
-execution deadline of the same owner-set family. The retry persists each attempt as a durable attempt record (server-generated attempt id, fencing epoch, start time, `open` state) in the same atomic `hub.toml` write that claims the remnant, and holds the host gate only while its attempt is live: on timeout the retry releases the host gate in the same atomic `hub.toml` write that marks its attempt record timed-out-but-open, then reports
+`cleanupHandle` after a crash, under a bounded execution deadline of the
+owner-set family. The retry persists each attempt as a durable attempt record (server-generated attempt id, fencing epoch, start time, `open` state) in the same atomic `hub.toml` write that claims the remnant, and holds the host gate only while its attempt is live: on timeout the retry releases the host gate in the same atomic `hub.toml` write that marks its attempt record timed-out-but-open, then reports
 the terminal `committed-with-teardown-failure` outcome with the remnant still
-open plus its attempt record open for fencing — a stuck remote process therefore surfaces a terminal
-outcome with a live retry handle, never an indefinitely held gate. The open attempt record is an attempt fence: while one stands, every lifecycle path on the name refuses except a later `teardown-retry` naming the same remnant (a live attempt still holding the gate refuses even that retry with the typed busy error — the gate holder owns the attempt). A later retry try-acquires the freed gate, then fences the timed-out attempt first: it takes over the prior attempt's fencing epoch (kill/wait plus guard advance per the crash-fencing spec §4), marks the prior attempt record fenced-closed in the same atomic `hub.toml` write that claims the remnant under a fresh attempt record, and only then runs the pinned teardown again, so two retries never execute the same cleanup concurrently and a wedged gate never blocks repair. The gate is therefore never held past a returned response: live attempt → gate held, later retries busy-fail; timed-out attempt → gate free, later retry adopts and fences the open attempt record). The retry
+open plus its attempt record open — a stuck remote process therefore surfaces a terminal
+outcome with a live retry handle, never an indefinitely held gate. The open attempt record is an attempt fence: while one stands, every lifecycle path on the name refuses except a later `teardown-retry` naming the same remnant (a live attempt still holding the gate refuses even that retry with the typed busy error — the gate holder owns the attempt). A later retry try-acquires the freed gate, then adopts the timed-out attempt first: it marks the prior attempt record fenced-closed in the same atomic `hub.toml` write that claims the remnant under a fresh attempt record, and only then runs the pinned teardown again, so a wedged gate never blocks repair. The fenced-closed mark is a durable claim marker, not a stop signal: the epoch takeover the earlier revision required here — kill/wait plus guard advance per the crash-fencing spec §4 — was withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2), so the timed-out run's remote cleanup can still be executing when the later retry starts. No kill/wait, lease takeover, or guard-file advance exists to fence it off — this build does not promise that two runs never execute the same cleanup concurrently, and that overlap is the accepted residual of the simplification ruling. The gate is therefore never held past a returned response: live attempt → gate held, later retries busy-fail; timed-out attempt → gate free, later retry adopts and marks the open attempt record). The retry
 validates against the remnant's OWN pinned identity, never against the
 registry's current values: it re-resolves the pinned teardown target by the
 remnant's recorded `(generation, incarnationId)` plus its persisted
@@ -1325,19 +1339,17 @@ remnant's recorded `(generation, incarnationId)` plus its persisted
 newer incarnation (post-update) without blocking the retry — and refuses only
 when the remnant's own pinned target fails to resolve through its own handle
 (typed `teardown-unknown-key`), never because the registry moved on. An open remnant whose `cleanupHandle` cannot be resolved (backend reports the
-pinned target unresolvable) is recoverable only through the authenticated
-auditable `evener/host/teardown-recover` recovery mutation — a mutation
+pinned target unresolvable) is recoverable only through the operator-attested
+`evener/host/teardown-recover` recovery mutation — a mutation
 admitted like every other `evener/host/*` request (origin-guarded per §3,
-never in `remoteHostAdminMethods` per §3, fenced by the orphan and quarantine
-fences per the crash-fencing spec §8 (never the remnant fence —
-`teardown-recover` is the path that clears an unresolvable remnant): an open orphan fence on the name
-refuses it with `orphan-fenced-busy`, never a clearance past an unverified
-orphan) — (params
+never in `remoteHostAdminMethods` per §3; the orphan and quarantine admission
+fences the crash-fencing spec §8 once defined here were withdrawn with that
+program, Jesse, 2026-09-29; comp08 passes 1–2) — (params
 `{remnantId, attestation: {operator: string, statement: "teardown-verified-absent", observedAt: string (RFC3339)}}`;
 response the outcome union in §11 with `outcome: "recovered-cleared"` plus the
 cleared `remnantId`): the call try-acquires the host's per-host gate first — the
 same gate a live `teardown-retry` attempt holds — failing fast with the typed busy error when a
-retry attempt is live, and holds it through the clearance. When a timed-out-but-open attempt record stands (gate free, attempt fence open), the recover fences it first — takeover of its fencing epoch (kill/wait plus guard advance per the crash-fencing spec §4) and a fenced-closed mark in the same atomic `hub.toml` write as the remnant claim — before the safety checks below, so the clearance never lands past possibly-live cleanup. Under the gate it claims
+retry attempt is live, and holds it through the clearance. When a timed-out-but-open attempt record stands (gate free, attempt fence open), the recover adopts it first — a fenced-closed mark in the same atomic `hub.toml` write as the remnant claim (the epoch takeover, kill/wait and guard advance the crash-fencing spec §4 once required here were withdrawn, Jesse, 2026-09-29; comp08 passes 1–2) — before the safety checks below. The mark alone cannot stop a timed-out run: the safety checks read live controller-side handles and bindings, not a remote process, so a clearance can land while the abandoned remote cleanup still executes — the same accepted residual as the retry's. Under the gate it claims
 the remnant atomically (claim under the mutation lock with an attempt token, so a
 concurrent retry racing the claim loses exactly one of the two), then verifies
 the operator attestation is present and well-formed, re-runs the safety checks
@@ -1347,9 +1359,16 @@ re-checks the safety conditions immediately before the clearing write, and only
 then clears the remnant in one atomic `hub.toml` write — recording the attestation
 (operator, statement, observedAt) on the original mutation receipt beside
 `remnantResolvedAt` (outcome becomes `committed` with `remnantResolvedAt`) — so
-the forced clearance is an explicit audited operator decision, never a silent
+the forced clearance is an explicit operator decision recorded on the receipt — attributed to a session identity only where the transport carries one (§6's amended posture) — never a silent
 drop, and a concurrent retry can neither start inside the check nor have its
-in-progress cleanup marker cleared. The claimed attestation `operator` must equal the session's authenticated identity (crash-fencing spec §5); a mismatch refuses validation before any clearance. An attestation that fails validation or a
+in-progress cleanup marker cleared. The claimed attestation `operator` is
+matched against the caller's session identity only where the transport carries
+one (the crash-fencing spec §5 pinned that binding before its 2026-09-29 withdrawal); this build's
+transport names no principal, so the attestation is recorded as given and never
+as verified. **Amended 2026-09-29 (unattributed posture).** The
+session-identity transport (real user credentials) is the named future item;
+when it lands, a mismatched `operator` refuses validation before any clearance.
+An attestation that fails validation or a
 safety check that still finds live state refuses without clearing, naming the
 blocking check, and releases the claim plus the gate. A replay of the original
 mutationId after resolution returns the
@@ -1383,12 +1402,15 @@ This document cites that pipeline for token bindings, dedup-first order,
 consume-and-create atomicity, and the `attachUnderGate` consumption
 contract (§4 ships the primitive).
 
-## 9. Crash orphans, fencing, and orphan-resolve
+## 9. Crash orphans, fencing, and orphan-resolve — withdrawn
 
-Defined in the crash-fencing spec §§3–8: local reap, fencing epochs and
-leases, quarantine, `orphan-resolve`, the remote helper, and boot reaping.
-This document cites that spec for the orphan fence, the fencing quarantine,
-and what a fenced mutation requires.
+The crash-fencing spec (08c) defined this section: local reap, fencing epochs
+and leases, the fencing quarantine, `orphan-resolve`, the remote helper, and
+boot reaping. It and its machinery were withdrawn by Jesse's 2026-09-29 ruling
+and removed in comp08 passes 1–2 (master design doc §2), so this section
+records the withdrawal and cites no surviving rule. The kept neighbors are the
+remnant fence and teardown-retry/recover repair (§6), the per-host boundary
+record the store mirrors (§7), and the probe epoch (the pipeline spec §10).
 
 ## 10. Last-known store
 
@@ -1494,8 +1516,8 @@ force optional-ified `host`/`token`/`reason` fields the absent-when-unknown
 rule cannot distinguish.
 
 
-Registry surface shapes (pipeline and fencing shapes live in their own
-documents and are cited, never restated):
+Registry surface shapes (pipeline shapes live in the deploy-pipeline spec and are
+cited, never restated):
 
 - `evener/host/list`: params `{}`; response `{hosts: HostRow[]}`. `HostRow` is
   the full effective `HostConfig` fields (`name`, `ssh`, `user`, `evenerPath`,
@@ -1695,9 +1717,12 @@ owner-knob family as the cleared-marker TTL (every `hub.toml` mutation and every
 boot compacts markers past either bound in the same atomic write; defaults ship
 in the implementing PR) — so a live host's recovered clearances stay bounded
 exactly like its retry markers. A `recovered-cleared` replay past the bound
-reads as `teardown-unknown-key`, never a second clearance. The attestation is validated before admission completes and the
-  safety checks in §6 run before the clearing write; any failure refuses
-  without clearing, naming the blocking check. The catalog pins the mutation
+reads as `teardown-unknown-key`, never a second clearance. The attestation is present and well-formed, its operator checked against the
+  session identity where one exists and recorded as given otherwise (this
+  build's transport names no principal — §6's amended posture), before
+  admission completes; the safety checks in §6
+  run before the clearing write; any failure refuses without clearing, naming
+  the blocking check. The catalog pins the mutation
   classification plus the request/response shapes field-for-field.
 - Mutation `concurrent-edit` refusal: conflict class, discriminator
   `concurrent-edit`, data `{stagedFingerprint: string, observedFingerprint:
@@ -1729,16 +1754,18 @@ reads as `teardown-unknown-key`, never a second clearance. The attestation is va
   classification and never restates it.
 
 Pipeline shapes (`plan`, `deploy`, `restart`, `operations`, `running`) are
-defined in the deploy-pipeline spec §10. `orphan-resolve` and the
-`BoundaryEntry` union are defined in the crash-fencing spec §9.
+defined in the deploy-pipeline spec §10. `orphan-resolve` and its
+`BoundaryEntry` union were withdrawn with the crash-fencing program (Jesse,
+2026-09-29; comp08 passes 1–2) and no longer exist on the wire.
 
 ## 12. Error handling
 
 Attach failures: typed `SessionUnavailable` via the #1603 classifier; the
 caller-context error stays raw; the UI renders the classification, not the raw
 chain. Deploy, restart, and plan error paths are defined alongside their
-handlers in the deploy-pipeline spec §11; fencing and orphan error paths in
-the crash-fencing spec §8. Host busy: a held per-host gate
+handlers in the deploy-pipeline spec §11; the fencing and orphan error paths
+the crash-fencing spec §8 once defined were withdrawn with that program
+(Jesse, 2026-09-29; comp08 passes 1–2). Host busy: a held per-host gate
 fails `update` and `remove` fast with a typed busy error (deploy-pipeline
 spec §5 for the holder classes). A refused mutation
 leaves the running operation untouched — it finishes and records its normal
@@ -1765,14 +1792,14 @@ teardown-retry affordance and, past the escalation bound (§6, §15), a
 teardown-recover escalation affordance naming the attestation it requires.
 Live rows whose committed outcome left an open remnant carry the same
 teardown-retry affordance (escalating to teardown-recover past the bound)
-beside the rendered row. While an orphan fence is open on the name the repair
-affordance degrades to an orphan-must-resolve-first affordance naming the
-`orphan-resolve` next step (crash-fencing spec §8): the fence refuses the
-repair call, so the UI never directs the operator into a silently refused
-repair. The section's UI tests pin a removed row showing the re-add
+beside the rendered row. The orphan-fence resolve-first affordance an earlier
+revision placed here was withdrawn with the crash-fencing program (Jesse,
+2026-09-29; comp08 passes 1–2) — the fence, the `orphan-resolve` it named, and
+the `orphan-fenced-busy` refusal no longer exist, so the repair affordance
+never degrades. The section's UI tests pin a removed row showing the re-add
 affordance with every live-host action disabled, a remnant-gated live row
-showing the retry affordance, an escalated row showing the recover
-affordance, and an orphan-fenced row showing the resolve-first affordance.
+showing the retry affordance, and an escalated row showing the recover
+affordance.
 
 Add / Edit dialog: fields exactly the `HostConfig` schema — `name`, `ssh`,
 `user`, `evener_path`, `config_path`, `addr`, `roots` (multi-line;
@@ -1804,8 +1831,7 @@ No-token responses from `plan` branch on the `reason` field: `unattached`
 directs the UI to Connect first; `refresh-failed` on an attached host surfaces
 the refresh failure with retryable diagnostics and a refresh-retry affordance
 (never Connect); `probe-failed` on an attached host surfaces the probe failure
-with retry (never a Connect loop — and never the helper-gate step, which rides
-`fencing-helper-absent`/`fencing-helper-untrusted` instead); `handler-absent`
+with retry (never a Connect loop); `handler-absent`
 on an attached host surfaces the one-time migration step (never
 Connect-first); `remnant-open` surfaces the blocking `remnantId` with a
 teardown-retry affordance (never Connect, never re-plan — a re-plan mints
@@ -2018,7 +2044,7 @@ remnant-escalation bound (a multiple of the cleared-marker TTL, default ships
 in the implementing PR) surfaces an operator-escalation signal on the remnant
 (`teardown-retry` responses and `list` rows — live or tombstone — carry the
 escalation age), and the operator resolves it out-of-band (manual teardown of the pinned
-target, then a forced clearance through the authenticated `evener/host/teardown-recover` recovery mutation (§6); the
+target, then a forced clearance through the operator-attested `evener/host/teardown-recover` recovery mutation (§6); the
 gate still never auto-purges an open remnant — the bound escalates, never
 silently drops, so storage cannot pin forever without a visible operator
 action.
@@ -2307,7 +2333,7 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   — the live entry may be absent or newer without blocking it — and never acts
 against the live entry; a bounded-run timeout against a fake teardown
 dependency returns the `committed-with-teardown-failure` arm with `seam`
-naming the failed seam and the remnant still open for a later retry — the timed-out retry releases the gate while its open attempt record fences the name (a concurrent live attempt still busy-fails), and the later retry try-acquires the freed gate, fences the timed-out attempt (takeover, kill/wait, guard advance, fenced-closed mark) before re-running the teardown, so the same cleanup never runs concurrently and repair never wedges on a held gate;
+naming the failed seam and the remnant still open for a later retry — the timed-out retry releases the gate while its open attempt record fences the name (a concurrent live attempt still busy-fails), and the later retry try-acquires the freed gate, marks the timed-out attempt fenced-closed before re-running the teardown, and never wedges on a held gate — the abandoned run may still be executing (no kill/wait exists; the accepted residual, §6);
 protocol-shape tests pin the `changed-entry` refusal arm, the `concurrent-edit`,
 `tombstone-capacity` catalog entries with their envelope
 code-plus-discriminator pairs here; the `teardown-unknown-key` entry, the four-arm mutation-result union (including the
@@ -2315,7 +2341,7 @@ code-plus-discriminator pairs here; the `teardown-unknown-key` entry, the four-a
 `teardown-retry`/`teardown-recover` request/response shapes pin field-for-field in the pipeline PR where those handlers register (§2);
 an unresolvable-`cleanupHandle` remnant refuses `teardown-unknown-key` on the
 retry path and clears only through `teardown-recover` — attestation
-validation, safety-check refusals naming the blocking check, the audited
+validation, safety-check refusals naming the blocking check, the recorded
 `recovered-cleared` receipt (the protocol-shape test pins the
 `recoveryAttestation` receipt fields field-for-field), and replay-after-recovery returning the same
 `recovered-cleared` response (`remnantId`, `clearedName`, `clearedAt`) from
@@ -2347,10 +2373,10 @@ lost). Remnant-gate tests:
   is open for a name, `deploy`, `restart`, `Ensure`-triggered work, `plan`
   (no-token `remnant-open` arm with `remnantId`, never a minted token), and
   attach all refuse with `remnant-open` naming the blocking `remnantId` — the
-  fence is host-wide, never mutation-only; the `deploy`/`restart`/`plan`
+  remnant gate is host-wide, never mutation-only; the `deploy`/`restart`/`plan`
   handler-integration halves of this bullet ship in the pipeline PR where those
   handlers register, and the registry PR keeps only the registry-level
-  store/fence halves (re-add/update/remove refusal, retention-expiry skip,
+  store/gate halves (re-add/update/remove refusal, retention-expiry skip,
   attach refusal) against fake publishers. Status-after-refusal tests: `status`
   renders the pair-scoped refusal after each of the nine no-token refusal
   reasons (`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
@@ -2396,8 +2422,9 @@ readability refusal).
 
 1. A user with zero hosts configured adds one from the UI, sees it connect,
    and the spawn picker appears with the host selectable — no file editing, no
-   controller restart (helper-gated hosts take the fencing spec's migration
-   path first — crash-fencing spec §6).
+   controller restart. (The fencing spec's helper-gated migration path an
+   earlier revision required here was withdrawn with the crash-fencing program,
+   Jesse, 2026-09-29; comp08 passes 1–2.)
 2. An offline configured host has a working Connect action in the Hosts
    section (the picker's trigger shipped with #1603); success flips its online
    state everywhere (rail, picker, manifest) through the existing paths.
@@ -2442,7 +2469,8 @@ readability refusal).
 - Pipeline: ~700–1000 (handlers + token + operation store + reconciliation) +
   tests (deploy-pipeline spec), plus the Hosts settings section, dialogs,
   stores, and polling (moved from §13 per the §2 table).
-- Fencing: crash-fencing spec + tests.
+- (The crash-fencing PR an earlier revision listed here was withdrawn 2026-09-29
+  with the program; no third PR ships.)
 
 ## 19. Open questions
 
@@ -2469,8 +2497,13 @@ readability refusal).
   place as a machine-managed store carrying a banner that comments and
   formatting are not preserved; the sidecar is retired, its durable properties re-homed to
   `hub.toml` (§6), and its entries migrate into the file once at boot.
-- 2026-09-17: three-way split of the 08 host-management spec. This document
+- 2026-09-17: split of the 08 host-management spec. This document
   keeps the registry surface; the deploy pipeline moves to
-  `2026-09-16-multi-host-08b-deploy-pipeline.md`; crash orphans and fencing
-  move to `2026-09-16-multi-host-08c-crash-fencing.md`.
+  `2026-09-16-multi-host-08b-deploy-pipeline.md`.
+- 2026-09-29: the crash-fencing companion split out on 2026-09-17 was withdrawn
+  by Jesse ("two deploys at once is on them") and removed across comp08
+  passes 1–2 (`acd81e2517`, #3116, #3131); this pass deletes its spec file and
+  this document records the withdrawal. The machinery it defined — orphans,
+  fencing epochs and guards, leases, local reap, takeover/kill, the fencing
+  helper, and `orphan-resolve` — no longer exists on main.
 

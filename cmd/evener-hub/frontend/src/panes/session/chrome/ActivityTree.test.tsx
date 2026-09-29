@@ -516,7 +516,7 @@ describe("ActivityTree", () => {
 
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
     expect(within(delegateRow).getByText("⌘")).toBeTruthy();
-    expect(delegateRow.textContent).toContain("↑41k ↓6k · 12s");
+    expect(delegateRow.textContent).toContain("↑41K ↓6K · 12s");
 
     // One row per live entry plus the fold row: sessions never become rows.
     expect(screen.getAllByRole("treeitem")).toHaveLength(3);

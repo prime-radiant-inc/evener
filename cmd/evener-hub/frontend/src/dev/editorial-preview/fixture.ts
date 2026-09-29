@@ -305,5 +305,8 @@ export function createEditorialClient(): EditorialClient {
   }));
   client.on("evener/plugin/preview", () => ({ plugins: [] }));
   client.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
+  // The hub-wide command catalog (stores/commandCatalog.ts): a ready
+  // connection reads it without waiting for a palette open.
+  client.on("evener/command/list", () => ({ commands: [] }));
   return client;
 }

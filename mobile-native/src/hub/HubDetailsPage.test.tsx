@@ -91,8 +91,113 @@ it("edits the name and token in today's hub editor", async () => {
 			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Hub name")
 			.props.onChangeText("Paradise");
 	});
-	await press(tree, "Save changes");
+	await press(tree, "Save");
 	expect(connection.updateHub).toHaveBeenCalledWith("hub-2", { name: "Paradise" });
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
+});
+
+it("edits the hub in a grouped form: its name, its address, and a token only when asked to replace it", async () => {
+	connection.updateHub.mockResolvedValue(undefined);
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	const sections = tree.root
+		.findAllByProps({ accessibilityRole: "header" })
+		.map((header) => header.props.children)
+		.slice(1);
+	expect(sections).toEqual(["Name", "Address", "Token"]);
+	const modal = tree.root.findByType("Modal" as never);
+	const address = modal.findByProps({ accessibilityLabel: "Address, http://100.113.28.18:9180" });
+	expect(address.props.accessibilityRole).toBeUndefined();
+	expect(renderedText(tree)).toContain("The saved token will be kept.");
+	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "New bearer token")).toHaveLength(0);
+	act(() => {
+		tree.root.findByProps({ accessibilityLabel: "Replace saved token" }).props.onValueChange(true);
+	});
+	const token = tree.root.find(
+		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "New bearer token",
+	);
+	expect(token.props.secureTextEntry).toBe(true);
+	act(() => token.props.onChangeText("s3cret"));
+	expect(renderedText(tree)).toContain("Leave empty to remove the saved token.");
+	await press(tree, "Save");
+	expect(connection.updateHub).toHaveBeenCalledWith("hub-2", { name: "paradise-park", token: "s3cret" });
+});
+
+it("says Saving, busy, while the hub saves, and puts a failed save's reason at the top", async () => {
+	let fail = (_error: Error) => {};
+	connection.updateHub.mockReturnValue(new Promise<void>((_resolve, reject) => (fail = reject)));
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	await press(tree, "Save");
+	expect(button(tree, "Saving…").props.accessibilityState).toEqual({ disabled: true, busy: true });
+	await act(async () => fail(new Error("keychain")));
+	const modal = tree.root.findByType("Modal" as never);
+	const first = modal.findByType("ScrollView" as never).findAll((node) => String(node.type) === "Text")[0];
+	expect(first?.props.children).toBe("Could not save this hub. Check the name and token, then retry.");
+	expect(first?.props.accessibilityLiveRegion).toBe("polite");
+});
+
+it("leads from the name to a new token, and saves from the last field", async () => {
+	connection.updateHub.mockResolvedValue(undefined);
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	const field = (label: string) =>
+		tree.root.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === label);
+	expect(field("Hub name").props.returnKeyType).toBe("done");
+	act(() => tree.root.findByProps({ accessibilityLabel: "Replace saved token" }).props.onValueChange(true));
+	expect(field("Hub name").props.returnKeyType).toBe("next");
+	expect(field("New bearer token").props.returnKeyType).toBe("done");
+	await act(async () => field("New bearer token").props.onSubmitEditing());
+	expect(connection.updateHub).toHaveBeenCalledWith("hub-2", { name: "paradise-park", token: "" });
+});
+
+it("won't save a hub with no name", async () => {
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	act(() => {
+		tree.root
+			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Hub name")
+			.props.onChangeText("  ");
+	});
+	expect(button(tree, "Save").props.disabled).toBe(true);
+	await act(async () => {
+		tree.root
+			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Hub name")
+			.props.onSubmitEditing();
+	});
+	expect(connection.updateHub).not.toHaveBeenCalled();
+});
+
+it("heads the hub editor with the shared header: Edit hub and Cancel, titled once", async () => {
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	// The sheet's title comes first; the form's section labels are headers too.
+	expect(tree.root.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Edit hub");
+	const titles = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "Edit hub");
+	expect(titles).toHaveLength(1);
+	expect(tree.root.findAllByProps({ accessibilityRole: "button", accessibilityLabel: "Done" })).toHaveLength(0);
+	await press(tree, "Cancel");
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
+});
+
+it("keeps the hub editor open on Cancel while a save is in flight", async () => {
+	let finish = () => {};
+	connection.updateHub.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+	const { tree } = mount("hub-2");
+	await press(tree, "Name, paradise-park");
+	await press(tree, "Save");
+	const cancel = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" });
+	expect(cancel.props.disabled).toBe(true);
+	await act(async () => {
+		cancel.props.onPress();
+	});
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(1);
+	// A swipe down or Android's back waits it out too.
+	await act(async () => {
+		tree.root.findByType("Modal" as never).props.onRequestClose();
+	});
+	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(1);
+	await act(async () => finish());
 	expect(tree.root.findAll((node) => String(node.type) === "Modal")).toHaveLength(0);
 });
 

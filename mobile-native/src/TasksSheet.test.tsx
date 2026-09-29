@@ -10,7 +10,7 @@ import { expect, it, vi } from "vitest";
 import type { InstanceListResponse } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { TaskList, TasksSheet } from "./TasksSheet";
-import { nativeModuleMock, render, renderedText, screenConnection, scriptedClient } from "./renderNative.testkit";
+import { render, renderedText, screenConnection, scriptedClient } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => {
 	const goBack = vi.fn();

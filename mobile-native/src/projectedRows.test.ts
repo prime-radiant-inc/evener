@@ -10,6 +10,7 @@ import type {
 	ThreadCapabilities,
 	ThreadItem,
 	ThreadModel,
+	ThreadReadResponse,
 	TurnModel,
 	Turn,
 } from "@evener/appwire-client";
@@ -25,6 +26,9 @@ import {
 	truncateText,
 } from "./projectedRows";
 import type { MobileTimelineItem } from "./projectedRows";
+import { readerKey } from "./readerPosition";
+import { sessionRows } from "./session/transcriptRows";
+import { groupTimeline } from "./timeline";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
 // native MobileTimelineItem union. D24-6 re-homed the row vocabulary and the
@@ -269,23 +273,41 @@ describe("projectedRow — item entries", () => {
 		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
 	});
 
-	it("maps a daemon steering item to an informational notice", () => {
-		const row = projectedRow(itemEntry(item({ type: "steering", text: "steer", steeringKind: "note" })));
+	it("maps a daemon steering item to an informational notice labelled by its kind", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({ type: "steering", text: "<SYSTEM-REMINDER>steer</SYSTEM-REMINDER>", steeringKind: "hook-context" }),
+			),
+		);
 		expect(row).toEqual<MobileTimelineItem>({
 			kind: "notice",
 			id: "i1",
 			origin: "steering",
-			steeringKind: "note",
+			steeringKind: "hook-context",
 			family: "informational",
 			tone: "info",
 			text: "steer",
+			label: "System steered: Hook context",
 			turnId: "t1",
 		});
 	});
 
-	it("maps a warning steering kind to a warning-tone notice", () => {
-		const row = projectedRow(itemEntry(item({ type: "steering", text: "loop", steeringKind: "loop-detected" })));
-		expect(row).toMatchObject({ kind: "notice", origin: "steering", family: "warning", tone: "warning" });
+	it("labels a steer of a kind it has no label for as System steered, never its raw text", () => {
+		const row = projectedRow(itemEntry(item({ type: "steering", text: "steer", steeringKind: "note" })));
+		expect(row).toMatchObject({ kind: "notice", label: "System steered", text: "steer" });
+	});
+
+	it("reads a loop-detected or provider-failure steer as a quiet notice: the turn's error is the failure", () => {
+		for (const steeringKind of ["loop-detected", "provider-failure"]) {
+			const row = projectedRow(itemEntry(item({ type: "steering", text: "loop", steeringKind })));
+			expect(row).toMatchObject({ kind: "notice", origin: "steering", family: "informational", tone: "info" });
+		}
+	});
+
+	it("leaves out the current task and the task list", () => {
+		for (const steeringKind of ["current-task", "task-list"]) {
+			expect(projectedRow(itemEntry(item({ type: "steering", text: "task", steeringKind })))).toBeNull();
+		}
 	});
 
 	it("maps a system message to a notice carrying its event kind, family and exit code", () => {
@@ -496,7 +518,7 @@ describe("projectedRow — intent entries", () => {
 	// layer renders the line without an expansion affordance. It keeps its
 	// two clock times as metadata, which nothing shows on the row itself, so
 	// the run it folds into can say how long it took (Jesse, 2026-09-27).
-	it("carries only its summary line and its clock times, dropping the rest of the source item's detail", () => {
+	it("carries only its summary line, clock times and call id, dropping the rest of the source item's detail", () => {
 		const row = projectedRow(
 			intentEntry(
 				item({
@@ -523,6 +545,7 @@ describe("projectedRow — intent entries", () => {
 				description: "Run ls",
 				startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
 				endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
+				callId: "call-1",
 			},
 			turnId: "t1",
 		});
@@ -1183,6 +1206,8 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		family: "lifecycle",
 		tone: "system",
 		text: "context compacted",
+		label: "Context summary",
+		rendersMarkdown: true,
 		eventKind: "compaction",
 		turnId: "t1",
 	},
@@ -1424,10 +1449,11 @@ describe("the timeline projection delegates to the shared projector", () => {
 				expect(c1.detail.arguments).toBeUndefined();
 				expect(c1.detail.output).toBeUndefined();
 				expect(c1.detail.durationMs).toBeUndefined();
-				// The clock times stay, as metadata for the run's duration.
+				// The clock times stay, as metadata for the run's duration, and
+				// the call id, which a subagent row finds its subagent by.
 				expect(c1.detail.startedAtMs).toBe(1000);
 				expect(c1.detail.endedAtMs).toBe(1500);
-				expect(c1.detail.callId).toBeUndefined();
+				expect(c1.detail.callId).toBe("call-1");
 			} else {
 				expect(c1.summaryOnly).toBeUndefined();
 				expect(c1.detail).toEqual({
@@ -1569,5 +1595,121 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 		const bounded = boundQuestion(cut, bound);
 		expect(bounded).not.toBe(cut);
 		expect(bounded.header.length).toBeLessThan(cut.header.length);
+	});
+});
+
+describe("a streamed reply's key once history records its round", () => {
+	const ask = wireItem({ id: "u1", turnId: "t1", type: "userMessage", text: "go" });
+	const recorded = (id: string, type: string, item: number, over: Partial<ThreadItem> = {}) =>
+		wireItem({
+			id,
+			turnId: "t1",
+			type,
+			roundId: "r1",
+			transcriptKey: `t1:1:${item}`,
+			position: { entry: 1, item },
+			status: "completed",
+			...over,
+		});
+	// The list's keys, the way the Session screen derives them.
+	const keys = (model: ThreadModel) =>
+		sessionRows(groupTimeline(projectConversation(model).items), model.turns).map(readerKey);
+	// A read of the session mid-round: the reply is still an overlay stream,
+	// after any other overlay items the round has.
+	function streaming(before: unknown[] = []): ThreadModel {
+		const key = "stream:r1/0:agentMessage";
+		return hydrateThread(
+			{
+				thread: wireThread([wireTurn("t1", [ask], { status: "inProgress" })]),
+				bootGeneration: "boot-1",
+				epoch: 1,
+				snapshot: { incarnation: "inc-1", length: 1 },
+				overlay: [
+					...before,
+					{
+						key,
+						kind: "stream",
+						turnId: "t1",
+						roundId: "r1",
+						streamId: "r1/0",
+						item: { id: key, type: "agentMessage", turnId: "t1", roundId: "r1", text: "Looking", status: "inProgress" },
+					},
+				],
+			} as unknown as ThreadReadResponse,
+			"ref-1",
+			0,
+		);
+	}
+
+	it("keeps the streamed reply's key when the round is recorded", () => {
+		const live = keys(streaming());
+		const after = keys(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("t1", [ask, recorded("item_assistant_1_0", "agentMessage", 0, { text: "Looking" })]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		expect(live).toHaveLength(after.length);
+		expect(after.at(-1)).toBe(live.at(-1));
+	});
+
+	it("leaves the round's key to its stream when a communicate preview comes first", () => {
+		// A communicate message is recorded with no round id, so its preview
+		// has nothing to share a key with.
+		const preview = {
+			key: "preview:call-9",
+			kind: "preview",
+			turnId: "t1",
+			roundId: "r1",
+			streamId: "r1/0",
+			callId: "call-9",
+			item: {
+				id: "preview:call-9",
+				type: "agentMessage",
+				turnId: "t1",
+				roundId: "r1",
+				callId: "call-9",
+				text: "Heads up",
+				status: "inProgress",
+			},
+		};
+		const live = keys(streaming([preview]));
+		expect(live).toContain("preview:call-9");
+		expect(live.at(-1)).toBe(keys(streaming()).at(-1));
+	});
+
+	it("keeps every key unique when a round records two replies around a delegate_send", () => {
+		// The round's first reply takes the stream's key; the second keeps its
+		// own, and the delegate_send between them starts a run of its own.
+		const streamed = keys(streaming()).at(-1);
+		const after = keys(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("t1", [
+							ask,
+							recorded("item_assistant_1_0", "agentMessage", 0, { text: "Sending" }),
+							recorded("item_tool_1_1", "commandExecution", 1, {
+								toolName: "delegate_send",
+								callId: "call-1",
+								argumentsJson: JSON.stringify({ delegate_id: "d1", message: "go on" }),
+							}),
+							recorded("item_assistant_1_2", "agentMessage", 2, { text: "Sent" }),
+						]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		expect(new Set(after).size).toBe(after.length);
+		expect(after).toContain(streamed);
+		expect(after.indexOf(streamed ?? "")).toBeLessThan(after.indexOf("t1:1:1"));
+		expect(after).toContain("t1:1:2");
 	});
 });

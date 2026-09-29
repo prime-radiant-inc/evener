@@ -24,7 +24,15 @@
 // item.
 
 import type { ItemModel, TranscriptMetadataVisibility, TurnModel } from "@evener/appwire-client";
-import { firstLine, formatCharCount, formatDurationMs, scopedDisclosureId } from "@evener/appwire-client";
+import {
+  echoesTurnError,
+  firstLine,
+  formatCharCount,
+  formatDurationMs,
+  isErrorEvent,
+  scopedDisclosureId,
+  systemEventWords,
+} from "@evener/appwire-client";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
@@ -37,7 +45,7 @@ import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { roundTimingsSummary } from "./roundTimingsView";
-import { isTurnFailureItem, type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
+import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
 
 const CLASS = {
@@ -78,8 +86,12 @@ function isScaffoldItem(item: ItemModel): boolean {
 // provide.
 const FALLBACK_LABEL = "System event";
 
+// What a quiet line says: the package's systemEventWords, which the phone
+// reads too. A plugin load carries its summary in the description and no
+// text, and a compaction pass's text is the engine's "Layer / Turns /
+// Estimated tokens" report, so both read their structured raw there.
 function noticeText(item: ItemModel): string {
-  return item.text || FALLBACK_LABEL;
+  return systemEventWords(item).text || FALLBACK_LABEL;
 }
 
 // scaffoldLabel names the disclosure's collapsed summary: the system
@@ -91,12 +103,13 @@ function noticeText(item: ItemModel): string {
 // own summary.
 function scaffoldLabel(item: ItemModel): string {
   if (item.eventKind === "system_prompt" || item.id === SYSTEM_PROMPT_ITEM_ID) return "System prompt";
-  return firstLine(noticeText(item), 60) || FALLBACK_LABEL;
+  // A compaction's summary or checkpoint folds under the label the phone uses.
+  return systemEventWords(item).label ?? (firstLine(noticeText(item), 60) || FALLBACK_LABEL);
 }
 
 // ScaffoldDisclosure is the collapsed-by-default treatment for the system
 // prompt and any other long system-injected text (webui-ux-transcript C1):
-// collapsed to one quiet line ("System prompt · 8.2k chars") by default;
+// collapsed to one quiet line ("System prompt · 8.2K chars") by default;
 // expanding renders the FULL text through the same Markdown pipeline every
 // other message body uses, since the wire's own text is markdown (## headers
 // etc.) that would otherwise show as literal, unformatted characters.
@@ -205,15 +218,17 @@ const FAILURE_FALLBACK_LABEL = "Turn failed";
 
 // What the failure row says. The end cap that closes a failed turn (TurnBlock
 // renders it on exactly this condition) already states the message with its
-// taxonomy chip, hint and recovery action, so with a cap the row names the
-// event and lets the cap carry the detail - saying the same sentence twice, ten
-// pixels apart, is what a reloaded failure did before. With no cap (an item
-// that reached a client without a turn-level error) the row leads with the
-// message, since nothing else will carry it: a failure is never left unstated.
+// taxonomy chip, hint and recovery action, so the row that echoes that error
+// (echoesTurnError, the check the phone uses to drop it) names the event and
+// lets the cap carry the detail - saying the same sentence twice, ten pixels
+// apart, is what a reloaded failure did before. Any other error row leads with
+// its own message, since the cap speaks only for the turn's failure: with no
+// cap at all, or an earlier, distinct error in the same turn, nothing else
+// carries it, and a failure is never left unstated.
 function failureText(item: ItemModel, turn: TurnModel): string {
   const named = item.description?.trim();
   const message = item.text.trim();
-  const preferred = asTurnError(turn.error) ? [named, message] : [message, named];
+  const preferred = echoesTurnError(item, asTurnError(turn.error)) ? [named, message] : [message, named];
   return preferred.find((candidate) => candidate) ?? FAILURE_FALLBACK_LABEL;
 }
 
@@ -252,7 +267,7 @@ function SystemLine({
   sessionRef?: string;
   metadata: TranscriptMetadataVisibility;
 }) {
-  if (isTurnFailureItem(item)) return <FailureLine item={item} turn={turn} />;
+  if (isErrorEvent(item)) return <FailureLine item={item} turn={turn} />;
   if (isCompactHookFailure(item, metadata.hookExits)) return <FailureLine item={item} turn={turn} />;
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;

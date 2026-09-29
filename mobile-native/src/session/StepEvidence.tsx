@@ -113,7 +113,7 @@ function Diff({ text, added, removed }: { text: string; added: number; removed: 
 	);
 }
 
-function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }) {
+export function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	switch (evidence.kind) {

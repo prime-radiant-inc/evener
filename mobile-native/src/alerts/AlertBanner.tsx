@@ -6,13 +6,30 @@
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useRef } from "react";
 import { AccessibilityInfo, Animated, PanResponder, Pressable, Text, View } from "react-native";
-import type { WhyLine } from "../board/attention";
+import type { BoardState, WhyLine } from "../board/attention";
 import { StateMark } from "../board/StateMark";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import type { Alert, Banner } from "./alertCenter";
+import { type Alert, type Banner, quiet } from "./alertCenter";
 import { swipeDismisses } from "./bannerGesture";
 
 const COALESCED_LINE = "Tap to see them on the Board.";
+const STARTED_LINE = "Session started. Tap to open it.";
+const START_FAILED_HINT = "Tap to open New session.";
+const MAY_HAVE_STARTED_LINE = "It may have started.";
+const DRAFT_KEPT_LINE = "Your draft is kept.";
+
+/** Each session alert's mark: its Board state, a session you started as
+ * working, and a start that failed as failed. */
+const MARK_STATE: Record<Exclude<Alert["kind"], "notice">, BoardState> = {
+	failed: "failed",
+	question: "question",
+	approval: "approval",
+	warning: "warning",
+	restartNeeded: "restartNeeded",
+	finished: "finished",
+	started: "working",
+	startFailed: "failed",
+};
 
 /** What the banner's two lines say: the title, and the why line for one
  * session, the prototype's hint for several, or nothing for a notice or a
@@ -24,6 +41,15 @@ function words(banner: Banner): { title: string; why: WhyLine | null; hint: stri
 	// joins held sessions only), never a notice or a finished result.
 	if (banner.alerts.length > 1 || only === undefined)
 		return { title: `${banner.alerts.length} sessions need you`, why: null, hint: COALESCED_LINE };
+	if (only.kind === "started") return { title: only.title, why: null, hint: STARTED_LINE };
+	// The form in New session keeps the store's full reason; the banner says
+	// only what happened, on which hub, in one short line.
+	if (only.kind === "startFailed")
+		return {
+			title: only.uncertain ? "Couldn't confirm the new session started" : "Couldn't start the new session",
+			why: null,
+			hint: `On ${only.hubName}. ${only.uncertain ? MAY_HAVE_STARTED_LINE : DRAFT_KEPT_LINE} ${START_FAILED_HINT}`,
+		};
 	return { title: only.title, why: only.kind === "notice" ? null : only.why, hint: null };
 }
 
@@ -59,7 +85,7 @@ function Mark({ banner }: { banner: Banner }) {
 		);
 	if (only.kind === "notice")
 		return <SymbolView name="exclamationmark.triangle.fill" size={17 * scale} tintColor={palette.attention} />;
-	return <StateMark state={only.kind} />;
+	return <StateMark state={MARK_STATE[only.kind]} />;
 }
 
 export function AlertBanner({
@@ -77,7 +103,8 @@ export function AlertBanner({
 	const scale = useTextScale();
 	const { title, why, hint } = words(banner);
 	const label = bannerLabel(banner);
-	const finished = banner.alerts.every((alert: Alert) => alert.kind === "finished");
+	// News rather than a request: a finished result or a session you started.
+	const news = banner.alerts.every(quiet);
 
 	// The drop: this component mounts once per banner (the host keys it by
 	// id), so it drops in on mount and never again. Reduce Motion is read at
@@ -164,7 +191,7 @@ export function AlertBanner({
 						borderRadius: 18,
 						borderCurve: "continuous",
 						borderWidth: 1,
-						borderColor: finished ? palette.accentEdge : palette.attentionEdge,
+						borderColor: news ? palette.accentEdge : palette.attentionEdge,
 						backgroundColor: palette.surface,
 						// A floating element's shadow (spec 16.3), as the toast's.
 						shadowColor: "#000000",

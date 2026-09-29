@@ -195,7 +195,16 @@ export const ReaderBlock = memo(function ReaderBlock({
 	const body = (
 		<BlockBody block={block} selecting={selecting} onSelection={onSelection} accessibility={accessibility} />
 	);
-	if (menu.length === 0) return <View style={style}>{body}</View>;
+	// A rule carries no menu of its own, but a tap on it still ends a
+	// selection, as a tap on any other block does.
+	if (menu.length === 0)
+		return onTap ? (
+			<Pressable testID={`block-${block.index}`} accessible={false} onPress={onTap} style={style}>
+				{body}
+			</Pressable>
+		) : (
+			<View style={style}>{body}</View>
+		);
 	return (
 		// The words stay VoiceOver's element, with the menu as its actions;
 		// the pressable only adds touch and hold.

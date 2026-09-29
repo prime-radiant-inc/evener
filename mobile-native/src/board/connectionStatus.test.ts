@@ -188,6 +188,29 @@ describe("useConnectionStatusText: the status on the provider's clock", () => {
 		hook.unmount();
 	});
 
+	it("reads the provider's clock when a line already on screen hears of a drop that began earlier", () => {
+		connection.value = { state: "ready", fatal: false, downSince: null, lastLiveAt: NOW };
+		const hook = renderHook(() => useConnectionStatusText());
+		expect(hook.result.current).toBeNull();
+		act(() => {
+			vi.advanceTimersByTime(60_000);
+		});
+		// The provider reports a drop that began 2 seconds ago, as it does when a
+		// ready connection's close reaches the screens a moment late.
+		connection.value = {
+			state: "reconnecting",
+			fatal: false,
+			downSince: Date.now() - 2_000,
+			lastLiveAt: Date.now() - 2_000,
+		};
+		hook.rerender();
+		act(() => {
+			vi.advanceTimersByTime(0);
+		});
+		expect(hook.result.current).toBe("Reconnecting…");
+		hook.unmount();
+	});
+
 	it("says Offline with no age when the hub was never reached this launch", () => {
 		connection.value = { state: "connecting", fatal: false, downSince: NOW, lastLiveAt: null };
 		const hook = renderHook(() => useConnectionStatusText());

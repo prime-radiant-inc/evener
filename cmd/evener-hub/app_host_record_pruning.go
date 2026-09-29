@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -35,7 +34,6 @@ func (s *hostStore) recordsSnapshot() hostTOMLRecords {
 		stagedReceipts: s.stagedSnapshot(),
 		attempts:       s.attemptsSnapshot(),
 		storeSync:      s.storeSyncSnapshot(),
-		provisioning:   s.provisioningSnapshot(),
 	}
 }
 
@@ -67,9 +65,6 @@ func nonNilRecords(records hostTOMLRecords) hostTOMLRecords {
 	}
 	if records.raisedHighWater == nil {
 		records.raisedHighWater = map[string]struct{}{}
-	}
-	if records.provisioning == nil {
-		records.provisioning = map[string]hostfence.Provisioning{}
 	}
 	if records.prunedReceipts == nil {
 		records.prunedReceipts = map[string]PrunedReceiptMarker{}
@@ -266,7 +261,6 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		stagedReceipts: m.cfg.store.stagedSnapshot(),
 		attempts:       m.cfg.store.attemptsSnapshot(),
 		storeSync:      m.cfg.store.storeSyncSnapshot(),
-		provisioning:   m.cfg.store.provisioningSnapshot(),
 	}
 	if records.highWater == nil {
 		records.highWater = map[string]HostGeneration{}
@@ -315,9 +309,6 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	}
 	if records.droppedAttempts == nil {
 		records.droppedAttempts = map[string]struct{}{}
-	}
-	if records.provisioning == nil {
-		records.provisioning = map[string]hostfence.Provisioning{}
 	}
 	for key, receipt := range change.carryReceipts {
 		if _, carried := records.receipts[key]; !carried {
@@ -369,33 +360,6 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	}
 	if change.attempt != nil {
 		records.attempts[change.attempt.AttemptID] = change.attempt.Attempt
-	}
-	if change.provisioning != nil {
-		// The bootstrap record this write updates (crash-fencing §6:133/:137): the
-		// attempt fence and the converged helperInstalled flag land in their own
-		// hub.toml writes, staged here and installed only by a successful write.
-		records.provisioning[change.provisioning.Name] = change.provisioning.Provisioning
-	}
-	// Provisioning belongs only to live hosts. A removed name's record is gone
-	// from the file, so carrying its flags in the store would let an in-process
-	// re-add inherit a stale attempt fence or a converged helperInstalled flag:
-	// the fresh host would read as provisioned forever, with the outcome
-	// depending on process lifetime rather than persisted state. The derivation
-	// is authoritative — every name this write does not carry live is dropped,
-	// and installRecords installs the pruned set wholesale.
-	liveNames := hostNameSet(entries)
-	for name := range records.provisioning {
-		if _, ok := liveNames[name]; !ok {
-			delete(records.provisioning, name)
-		}
-	}
-	// The compensation's carry lands after the prune: it restores the flags of a
-	// name the removal's staged write pruned, but only for a name this write
-	// carries live (a record's flags exist only for a live host).
-	for name, provisioning := range change.carryProvisioning {
-		if _, live := liveNames[name]; live {
-			records.provisioning[name] = provisioning
-		}
 	}
 	if change.tombstone != nil {
 		tombstone := change.tombstone.Tombstone

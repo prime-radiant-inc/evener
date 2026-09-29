@@ -4,7 +4,7 @@
 // loads none of that.
 import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from "react";
 import type { Notice } from "../board/notices";
-import type { AlertCenter, AlertSnapshot, HoldKind } from "./alertCenter";
+import type { Alert, AlertCenter, AlertSnapshot, HoldKind } from "./alertCenter";
 
 /** A route of the root stack, as the app reports it (App.tsx). */
 export type ReportedRoute = { name: string; params?: object };
@@ -38,6 +38,21 @@ export function useAlertSnapshot(): AlertSnapshot {
 export function useHoldAlerts(active: boolean, kind: HoldKind): void {
 	const center = useContext(AlertsContext)?.center;
 	useEffect(() => (active && center ? center.hold(kind) : undefined), [active, kind, center]);
+}
+
+/** Offers an alert to the banner: nothing outside an AlertsProvider (a screen
+ * rendered on its own). */
+export function useOfferAlert(): (alert: Alert) => void {
+	const center = useContext(AlertsContext)?.center;
+	return useCallback((alert: Alert) => center?.offer(alert), [center]);
+}
+
+/** Tells alerts this hub's New session is open, so an alert that its start
+ * failed, which the form now shows itself, goes: nothing outside an
+ * AlertsProvider. */
+export function useStartFailureSeen(hubId: string): () => void {
+	const center = useContext(AlertsContext)?.center;
+	return useCallback(() => center?.startFailureSeen(hubId), [center, hubId]);
 }
 
 const noSubscription = () => () => {};

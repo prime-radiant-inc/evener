@@ -11,6 +11,8 @@ colors:
   light-accent-fill: "#0070E0"
   light-error: "#C51D23"
   light-raised: "#FCFBF8"
+  light-canvas: "#F1F0EB"
+  light-attention-ink: "#AD5209"
   dark-background: "#191918"
   dark-surface: "#20201E"
   dark-text: "#F2F1EB"
@@ -20,6 +22,8 @@ colors:
   dark-accent-fill: "#0070E0"
   dark-error: "#F17478"
   dark-raised: "#232320"
+  dark-canvas: "#1D1D1B"
+  dark-attention-ink: "#F68F3C"
 typography:
   your-message:
     fontFamily: "Source Serif 4, Georgia, serif"
@@ -50,10 +54,27 @@ typography:
     fontFamily: "Source Serif 4, Georgia, serif"
     fontSize: "17px"
     lineHeight: "26px"
+  group-label:
+    fontFamily: "SF system, system-ui, sans-serif"
+    fontSize: "12px"
+    fontWeight: 600
+    lineHeight: "16px"
+    letterSpacing: "0.72px"
+  sheet-row:
+    fontFamily: "SF system, system-ui, sans-serif"
+    fontSize: "17px"
+    lineHeight: "22px"
+  sheet-footer:
+    fontFamily: "SF system, system-ui, sans-serif"
+    fontSize: "13px"
+    lineHeight: "18px"
 rounded:
   input: "9px"
   action: "24px"
   chip: "16px"
+  group: "12px"
+  segmented: "22px"
+  search: "10px"
 spacing:
   content-inset: "16px"
   mark-column: "28px"
@@ -62,6 +83,9 @@ spacing:
   signal-row-min-height: "64px"
   quiet-row-min-height: "48px"
   action-target: "44px"
+  group-inset: "16px"
+  footer-inset: "32px"
+  sheet-row-min-height: "44px"
 components:
   board-row:
     textColor: "{colors.light-text}"
@@ -87,6 +111,23 @@ components:
     backgroundColor: "{colors.light-raised}"
     textColor: "{colors.light-text}"
     rounded: "12px"
+  sheet-group:
+    backgroundColor: "{colors.light-raised}"
+    textColor: "{colors.light-text}"
+    typography: "{typography.sheet-row}"
+    rounded: "{rounded.group}"
+    height: "{spacing.sheet-row-min-height}"
+  group-label:
+    textColor: "{colors.light-secondary}"
+    typography: "{typography.group-label}"
+  segmented:
+    backgroundColor: "{colors.light-surface}"
+    textColor: "{colors.light-text}"
+    rounded: "{rounded.segmented}"
+    height: "44px"
+  sheet-status:
+    textColor: "{colors.light-secondary}"
+    typography: "{typography.sheet-footer}"
 ---
 
 # Design System: Evener Native
@@ -99,7 +140,7 @@ This records the shipped Board, the native iPhone app's home. It replaces the pr
 
 The Board is one native scrolling list: Live's bands, then pinned categories, Projects and Archived as plain section rows that open their own screens until a later PR brings them inline.
 
-A row opens the Session, one conversation with its agent, recorded in "The Session" below. The colors, type and shapes that follow serve both.
+A row opens the Session, one conversation with its agent, recorded in "The Session" below. The Board's hub button opens the Hub, and its New session button opens New session: two sheets recorded in "The Sheets: New session and the Hub" at the end. The colors, type and shapes that follow serve all three.
 
 **Key Characteristics:**
 - Every live session in one list, ordered by who needs you, then finished, then working, then idle.
@@ -116,11 +157,13 @@ The implementation switches between light and dark palettes through the native c
 ### Neutral
 - **Paper background** (`#FAF9F6` light, `#191918` dark): Main reading and browsing canvas.
 - **Soft surface** (`#F4F3EE` light, `#20201E` dark): Inputs and raised native-looking controls.
-- **Raised** (`#FCFBF8` light, `#232320` dark): The Session's composer and ask dock.
+- **Raised** (`#FCFBF8` light, `#232320` dark): The Session's composer and ask dock, and the grouped rows of the two sheets.
+- **Sheet canvas** (`#F1F0EB` light, `#1D1D1B` dark): Behind the two sheets' grouped rows, and their headers.
 - **Primary text** (`#252521` light, `#F2F1EB` dark): Project and session content.
 - **Secondary text** (`#5F5F57` light, `#B0AFA6` dark): Counts, metadata, and quiet state explanations.
 - **Quiet border** (`#DDDCD4` light, `#34342F` dark): Sparse row and input boundaries.
 - **Semantic error** (`#C51D23` light, `#F17478` dark): Read and action failures.
+- **Attention ink** (`#AD5209` light, `#F68F3C` dark): Only where a human is needed: a state word that needs you, an offline host, "Sign-in expired", a blocked Start's host.
 
 ### Named Rules
 **The Quiet Idle Rule.** Omit idle status noise from session rows; reserve state text for working, questions, warnings, and failures.
@@ -160,7 +203,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 
 ### The hub button
 - **Shape:** One glass capsule in the header's leading slot: the hub's name at 17px in ink-hi and a `chevron.down` glyph. It's a custom header view, because a native bar item given both a title and an image draws only the image.
-- **Behavior:** Opens an action sheet titled with the hub's name: Hub settings (disabled while the hub is out of reach) and Switch hub. Phase 5's Hub sheet replaces it.
+- **Behavior:** Opens the Hub sheet (below).
 
 ### Section chips
 - **Shape:** A horizontal row, sticky under the header; fully rounded capsules with a hairline border. The row fades at its trailing edge, so a cut-off chip reads as "there's more."
@@ -197,7 +240,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 
 ### The bottom toolbar and its connection status
 - **Shape:** A 50-unit bar on the page color with a top hairline.
-- **Behavior:** The center shows the connection status only when it is not live: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" once it has been down 30 seconds, or "Update needed" at once, and never "Reconnecting…", when the hub speaks an incompatible protocol version. A live connection shows nothing there. Trailing is New session, a 44-unit `square.and.pencil` glyph in accent-ink, disabled (not hidden) while disconnected.
+- **Behavior:** The center shows the connection status only when it is not live: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" once it has been down 30 seconds, or "Update needed" at once, and never "Reconnecting…", when the hub speaks an incompatible protocol version. A live connection shows nothing there. Trailing is New session, a 44-unit `square.and.pencil` glyph in accent-ink that opens the New session sheet (below), disabled (not hidden) while disconnected.
 
 ### The notice row
 - **Shape:** Sits on the page like a row: a mark, one sentence, a bottom hairline.
@@ -312,3 +355,83 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **Don't** move what the reader is reading: new content is announced by "↓ 3 new", and the chips slide away with a transform, never by changing the list's layout.
 - **Don't** show the live step or the live thought in the transcript; the tray says what's happening now.
 - **Don't** offer a redirect on an approval, or the composer while one waits.
+
+## The Sheets: New session and the Hub
+
+This records the two shipped sheets: New session, where a session is set up and started, and the Hub, where the hub and this phone are looked after. The full design is `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`, sections 11, 12 and 14; this phase's plan is `docs/superpowers/plans/2026-09-26-iphone-redesign-phase5-new-session-hub.md`. Both use the Board's palette and type; what follows is what they add.
+
+**Key Characteristics:**
+- Each is a full-height page sheet (a `presentation: "modal"` route) holding its own native stack, so pickers and detail pages push inside it with a Back to where you were. Swiping the sheet down closes it.
+- Both are built from one grouped list (`src/sheet/Grouped.tsx`), so a row means the same thing everywhere.
+- Calm: a page keeps its last data while the connection is away, says so on one line, and disables what needs the hub rather than hiding it. Nothing asks you to reconnect or refresh.
+
+### The grouped list
+- **Page:** The sheet canvas behind, rows on the raised surface in groups with a 12-unit radius, inset 16 units from each side. Hairlines sit between rows, inset 16 from the left, never around a group. No shadows.
+- **Section label:** SF Pro semibold 12/16, uppercase, +0.72pt tracking, ink-mid, inset 32 units ("WHERE", "FLEET"). A machine label (a marketplace, a folder being browsed) stays as typed, in Menlo, never uppercased.
+- **Row:** At least 44 units, 16 units of horizontal padding. A bare SF Symbol in ink-mid at 17pt leads it, in a 22-unit column; it is never a colored tile. The label is SF Pro 17/22 in ink-hi, with an optional second line at 13/18 in ink-low (Menlo for a path or an id, or danger ink when it reports a problem, such as "1 need attention"). The value trails in ink-mid 17pt with tabular figures, then a 13pt `chevron.right` in ink-low when the row opens a page. An action row takes accent ink ("Connect", "Browse folders on paradise-park…"); a destructive one takes danger ink ("Remove"). A picker row draws a `checkmark` in accent ink in its glyph column, and an unchecked row keeps the space so the labels line up. A row that can't act dims to 40%.
+- **Switch row:** The label and second line, then a switch in the accent color, never the working green. The switch is the one element VoiceOver reads.
+- **Segmented control:** On the inset surface with a 22-unit radius; the chosen segment is accent-bg with accent ink, semibold, never an ink fill. Tapping the chosen segment does nothing.
+- **Tag:** A small capsule beside a value, 11pt semibold: amber for something a human must see ("Offline", "1 offline", "2 to sign in"), gray for version drift ("Hub runs 0.9.412", "1 on another version").
+- **Footer:** 13/18 under a group, inset 32 units, in ink-low; in attention ink when it names something that needs a human, danger ink for a failure, and Menlo for text the hub wrote (a host's last error).
+- **Search field:** A rounded inset field (10-unit radius, at least 36 units tall) that filters the list beneath it, as typed, with the iOS clear button.
+- **Header buttons:** Accent ink at 17pt in a 44-unit target: "Cancel", "Done", "Save", "Start". The one that finishes the page is semibold; one that can't act reads in ink-low and does nothing.
+
+### The calm connection line
+- One centered line at the top of a sheet page, 13/18 in ink-mid, with the Board's words: "Reconnecting…" after 2 seconds down, "Offline · updated 3m ago" after 30, and "Update needed" at once for an incompatible hub. A live connection shows nothing.
+- The page underneath keeps its last data. A page that has never loaded says "Connecting to magic-kingdom…" in its place, or the incompatible-versions sentence when no retry can help.
+- Controls that need the hub stay on screen, disabled; the line already says why. There is no Reconnect, Refresh or pull-to-refresh anywhere in either sheet.
+
+### New session
+- **Header:** "Cancel", the title "New session", and "Start" (semibold). Start reads in ink-low and does nothing while something holds it.
+- **Opening:** Like a session when "New session like this" opened it; else the saved draft, when it has a project, a prompt or an image; else the newest start remembered on this hub (host, project, model, effort, plugins, access and the options); else the hub's most recent project once the hub lists them.
+- **The prompt:** First, focused on open: SF Pro 17 with the placeholder "What should the agent do?", growing to six lines and then scrolling, with its image thumbnails and a "+" that attaches images.
+- **Why Start waits:** A danger footer under the prompt says it in a sentence: "paradise-park is offline. Connect it or choose another host.", "paradise-park is no longer a host on this hub. Choose another host.", a chosen model the host's list couldn't confirm ("Choose Hub default to start."), or each chosen plugin with a blocking problem. The row to blame turns danger ink. A missing project blames Project quietly. When the hub refuses a start, its reason shows the same way and the sheet stays.
+- **WHERE:**
+  - Host (`server.rack`): the host's name, the hub's own machine named after the hub, with an amber "Offline" tag when it is. When the host changes and the project isn't there, the group's footer says so: "evener isn't on paradise-park, so the project changed to docs."
+  - Project (`folder`): the folder's name, or "Choose a project".
+  - Branch (`arrow.triangle.branch`): the project's current branch, for information only, with no chevron. It is left out outside a repository or while unknown.
+- **AGENT:**
+  - Model (`cpu`): the model's display name with "via <provider>" beneath, or "Hub default".
+  - Effort: only when the model lists levels. "How long it thinks before acting", then a segmented control of those levels (Low, Med, High, XHigh, Max), none lit until one is chosen.
+  - Plugins (`puzzlepiece.extension`): "10 of 14", "…" while the host's plugins are read, "Listed once a project is chosen" with no project, "Couldn't list this host's plugins" in danger ink when that failed, and "1 need attention" in danger ink when a chosen plugin has a blocking problem.
+  - Access (`lock.shield`): the access level, with what it allows beneath. It stays blank until the hub says its default, so it never guesses the least safe level.
+  - More options: "Context strategy, subagent depth, turn limit", valued "Custom" once one is set.
+- **Footer:** "Host, plugins and access are fixed once the session starts. Model and effort can change later."
+- **Start and Cancel:** Start replaces the sheet with the new session and remembers its setup. Cancel closes at once with nothing to lose; with a prompt or an image it asks "Delete this draft?" with "Keep draft" and "Delete draft" (destructive). Swiping the sheet down keeps the draft for next time.
+- **The pickers**, each pushed inside the sheet:
+  - Host: the hub's own machine first, then each host, the chosen one checked. A connected host shows its system and live sessions ("macOS · arm64 · 1 live"); an offline one shows its state, can't be chosen, and carries an accent "Connect" of its own (reading "Connecting…" while it works) when the hub isn't already reaching for it. A refused Connect is said under the list.
+  - Project: a search field ("Projects on paradise-park"), "RECENT ON PARADISE-PARK" with each project's name over its path in Menlo, and "Browse folders on paradise-park…" in accent ink.
+  - Browse folders: one page whose folder changes in place, headed by the folder in Menlo (or "Home"), with "Up one folder", each folder with a chevron, then "Use this folder" (hidden at home, which the phone can't name) and "New folder", which asks for a name (iOS only) and moves into the folder it made.
+  - Model: a search field, "Hub default" first, up to five recent models, then one group per provider as typed. Each row shows the display name, its context and price per million tokens, the registry's notes in attention ink, and `eye` ("Sees images") and `wrench.and.screwdriver` ("Uses tools") glyphs in ink-mid. There is no effort control here; effort lives on the form.
+  - Plugins: a search field, "All" and "None" in accent ink, then the host's plugins grouped by marketplace (Menlo, as typed) or "Other plugins". Each row carries its name, description, what it brings in ink-low ("38 skills · 3 agents"), its warnings in attention ink, any blocking problem in danger ink, and a switch. The preview's other diagnostics show on the page in attention ink; a chosen plugin the host no longer has is named with "Remove <name>". The footer: "10 of 14 on. Plugins can't be changed after the session starts."
+  - Access: the four levels (Full access, Workspace write, Read-only, Restricted) as checked rows with what each allows, and a Network switch ("Lets the session's commands reach the internet") only inside a sandbox. Choosing what the hub already defaults to follows the hub again. The footer: "Access is fixed once the session starts."
+  - More options: Context strategy, Max subagent depth and Max turns, each a segmented control that starts on Default, with the hub's default beneath ("The hub's default is compact."). A value the control doesn't offer lights no segment, and the footer names it ("This session uses 4. The hub's default is 2."). The page ends: "Everything else uses the hub's launch defaults. Edit them from the Hub, under Launch defaults."
+
+### The Hub
+- **Header:** The hub's name as the title, "Done" (semibold) to close, and one line beneath in ink-mid: the connection ("Connected", "Connecting…" before the hub is ready, or the calm line's words), the hub's version and whether it is current ("Connected · evener 0.9.412 · up to date", or "Update available").
+- **Home:** Grouped rows, each pushing its page:
+  - FLEET: Hosts (`server.rack`), counting every machine with the hub's own, tagged amber "1 offline", or gray "1 on another version".
+  - SETUP: Providers (`key`), tagged amber "2 to sign in"; Plugins (`puzzlepiece.extension`), the installed count.
+  - THIS PHONE: Display (`textformat.size`, valued System, Light or Dark), In-app alerts (`bubble.left`) and Hubs (`point.3.connected.trianglepath.dotted`, the saved count).
+  - MORE: Keyboard shortcuts, Launch defaults and Hub settings. These leave the sheet for today's administration screens, which keep their own look and controls until a later phase (#2539).
+  - ABOUT: "Evener for iPhone" with the app's version and build, and "Update hub" in accent ink only when an update is waiting. It confirms, installs and restarts the hub, and the app reconnects on its own; a footer says it is restarting into the new release meanwhile.
+- **Hosts:** The hub's own machine first, named after the hub ("Connected · 2 live" and the hub's version), then each host with its state in words ("Connected", "Connecting…", "Offline · reconnecting", "Offline"), system and live sessions ("3 live", or "3 live, out of reach" while offline), and its version with a gray "Hub runs 0.9.412" tag when it differs. The page polls every 2 seconds while it is in front. A host's detail lists Status, Version, System, Sessions, Project roots and Defined in, then its last error in danger Menlo while offline, then Connect, Edit and Remove. Edit is its own page with Cancel and Save.
+- **Providers:** Each provider with its sign-in state in words: "Signed in", "Key set", "Not signed in", "No key", "No sign-in needed", or "Sign-in expired", the only one in amber. A provider's detail opens as a sheet over the list, with sign-in in the in-app browser. MANAGE keeps adding, editing, making default, clearing and removing on the phone.
+- **Plugins:** The hub's installed plugins grouped by marketplace, each with its "On by default" switch and a detail sheet; the marketplaces; and Browse, to install from their catalogs.
+- **Display:** Appearance (System, Light, Dark) and Reading font (Serif, Sans; "For what agents write: messages, plans and documents.") for this phone, and the hub's Default detail level, a page of its own that saves a choice at once. "Each session can override this from its menu."
+- **In-app alerts:** Which banners show, whether they wait while you read or type, and Haptics, kept on this phone.
+- **Hubs:** The saved hubs, the selected one checked, then "Scan pairing code", "Paste pairing link" and a quieter "Enter the address", with "In Evener on your computer, open Settings, then Mobile app, to show a pairing code." A hub's details show its Name and Address and "Remove this hub".
+
+### Sheet Do's and Don'ts
+
+#### Do:
+- **Do** push pickers and details inside the sheet, so Back returns to the form or the Hub's home.
+- **Do** keep amber for what needs a human (an offline host, a sign-in that expired, a Start held by its host) and gray for version drift.
+- **Do** name the hub's own machine after the hub, and say "Hub default" rather than guessing a value the hub hasn't given.
+- **Do** keep a sheet's last data and its controls in place while the connection is away, disabled where they need the hub.
+
+#### Don't:
+- **Don't** offer Reconnect, Refresh or pull-to-refresh; the calm line says what the app is doing.
+- **Don't** color a row's glyph or draw it on a tile; glyphs are bare and ink-mid.
+- **Don't** let one host's answers land in another host's form, or show a place's plugins after the form has left it.
+- **Don't** discard a draft without asking; only Cancel discards, and swiping the sheet down keeps it.

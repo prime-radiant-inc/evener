@@ -212,3 +212,49 @@ export const typeRoles = {
 	document: { fontFamily: fonts.serif, fontSize: 18, lineHeight: 28 },
 	machine: { fontFamily: fonts.mono, fontSize: 13, lineHeight: 18 },
 } as const;
+
+/** Interface roles from spec 16.2 that the grouped lists use, in points
+ * before Dynamic Type; scaledType applies the text scale. A grouped row's
+ * label is 17/22 regular, the prototype's `.gl`. */
+export const uiType = {
+	listRow: { fontSize: 17, lineHeight: 22 },
+	/** The why line, and the Hub's header line: Subheadline. */
+	subheadline: { fontSize: 15, lineHeight: 20 },
+	/** Meta and captions: a row's second line, a group's footer. */
+	footnote: { fontSize: 13, lineHeight: 18 },
+	/** One or two words, uppercase, +0.06em (12 × 0.06 = 0.72). */
+	sectionLabel: {
+		fontSize: 12,
+		lineHeight: 16,
+		fontWeight: "600",
+		letterSpacing: 0.72,
+		textTransform: "uppercase",
+	},
+} as const;
+
+/** A type role sized for the text scale: a React Native Text with font scaling
+ * off multiplies fontSize, lineHeight and letterSpacing by the iOS font scale. */
+export function scaledType<Role extends { fontSize: number; lineHeight: number; letterSpacing?: number }>(
+	role: Role,
+	scale: number,
+): Role {
+	const scaled = { ...role, fontSize: role.fontSize * scale, lineHeight: role.lineHeight * scale };
+	// Tracking is in points but specified in ems (+0.06em), so it grows with the size.
+	return role.letterSpacing === undefined ? scaled : { ...scaled, letterSpacing: role.letterSpacing * scale };
+}
+
+/** Spacing from spec 16.3 (a 4pt base) and the prototype's grouped list. */
+export const space = {
+	/** The side margin of a group, a segmented control or a field. */
+	margin: 16,
+	/** Between two groups (the prototype's `.group + .group`). */
+	groupGap: 16,
+	/** A section label's and a footer's text: the margin plus a row's inset. */
+	labelInset: 32,
+	/** A row's padding from the group's edge. */
+	rowInset: 16,
+	/** A row's vertical padding (spec 16.3): with a 22pt line, a 46pt row. */
+	rowPadding: 12,
+	/** Between a row's glyph, text, value and chevron. */
+	rowGap: 12,
+} as const;

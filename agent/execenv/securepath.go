@@ -25,7 +25,6 @@ import (
 var (
 	canonicalPathForFd = canonicalPathOfFd
 	secureRandRead     = rand.Read
-	secureEntryInfo    = func(entry os.DirEntry) (os.FileInfo, error) { return entry.Info() }
 	securePathRel      = filepath.Rel
 )
 

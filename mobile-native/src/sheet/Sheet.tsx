@@ -1,84 +1,28 @@
 // The chrome every redesign sheet shares (spec 6 and 16.2): a header with the
-// title, Cancel and Done over the sheet's body. The native stack presents it
-// as a formSheet route with the size in sheetRoutes.ts.
+// title, Cancel and Done over the sheet's body. A sheet route (a formSheet in
+// the native stack, sized in sheetRoutes.ts) renders it as its root, and
+// ModalSheet frames it inside a React Native modal; closing a route sheet as
+// a person would is useSheet's job (useSheet.ts).
 //
-// Layout: react-native-screens sizes a sheet's scroll view to each detent only
-// when the scroll view is the screen's first or second direct child, after a
-// header view that isn't flattened away (RNSScreenContentWrapper.mm,
-// coerceChildScrollViewComponentSizeToSize). So a sheet route renders <Sheet>
-// as its root, and <Sheet> renders exactly two children: the header, and the
-// body, which is one ScrollView, FlatList or SectionList. Anything pinned, such
-// as a search field, a segmented control or a toast, goes in `accessory`,
-// inside the header.
-import { useNavigation, usePreventRemove } from "@react-navigation/native";
-import { type ReactElement, type ReactNode, useEffect, useMemo, useRef } from "react";
-import { Alert, Platform, Text, useWindowDimensions, View } from "react-native";
+// Layout for a sheet route: react-native-screens sizes a sheet's scroll view
+// to each detent only when the scroll view is the screen's first or second
+// direct child, after a header view that isn't flattened away
+// (RNSScreenContentWrapper.mm, coerceChildScrollViewComponentSizeToSize). So
+// <Sheet> renders exactly two children: the header, and the body, which is one
+// ScrollView, FlatList or SectionList. Anything pinned, such as a search
+// field, a segmented control or a toast, goes in `accessory`, inside the
+// header. A modal has no detents, but keeps the same shape.
+import type { ReactElement, ReactNode } from "react";
+import { Platform, Text, useWindowDimensions, View } from "react-native";
 import { allowFontScaling, useColors } from "../ui";
 import { HeaderButton } from "./HeaderButton";
-import { DISCARD_TITLE, discardAlert, sheetLeave } from "./sheetLeave";
-
-export interface SheetController {
-	/** Close as a person would: a sheet with unsaved input asks first. */
-	close(): void;
-	/** Leave on purpose, without asking: its Send or Add went through, or it
-	 * leads somewhere else. Without `then`, the sheet goes back. With `then`,
-	 * `then` removes the sheet itself: `navigation.goBack()` before a
-	 * `navigate`, or `returnToSession`'s pop. A screen pushed while a sheet is
-	 * still up lands under the sheet (react-native-screens pushes cards on the
-	 * main stack and presents sheets over it), so the sheet always goes first. */
-	finish(then?: () => void): void;
-}
-
-export interface SheetOptions {
-	/** Unsaved input: closing asks "Keep editing" or "Discard". */
-	dirty?: boolean;
-	/** The question that alert asks, such as "Discard this comment?". */
-	discardTitle?: string;
-	/** Runs once when the sheet goes away, however it closed. */
-	onClosed?: () => void;
-}
-
-export function useSheet({
-	dirty = false,
-	discardTitle = DISCARD_TITLE,
-	onClosed,
-}: SheetOptions = {}): SheetController {
-	const navigation = useNavigation();
-	const finishing = useRef(false);
-	// A refused swipe down (native-stack's onNativeDismissCancelled), Cancel and
-	// Android's back all arrive here while `dirty` holds the route.
-	usePreventRemove(dirty, ({ data }) => {
-		const leave = () => navigation.dispatch(data.action);
-		if (sheetLeave(dirty, finishing.current) === "leave") {
-			// Consumed: a bypass is good for the one removal it was set for, not
-			// every later dismissal of this same mounted sheet.
-			finishing.current = false;
-			leave();
-			return;
-		}
-		const alert = discardAlert(discardTitle, leave);
-		Alert.alert(alert.title, undefined, alert.buttons);
-	});
-	const closed = useRef(onClosed);
-	closed.current = onClosed;
-	useEffect(() => () => closed.current?.(), []);
-	return useMemo(
-		() => ({
-			close: () => navigation.goBack(),
-			finish: (then?: () => void) => {
-				finishing.current = true;
-				if (then) then();
-				else navigation.goBack();
-			},
-		}),
-		[navigation],
-	);
-}
 
 export interface SheetButton {
 	/** "Done" unless the sheet names its own verb, such as "Add" or "Send". */
 	label?: string;
 	disabled?: boolean;
+	/** Its action is running: VoiceOver hears it's busy. */
+	busy?: boolean;
 	onPress(): void;
 }
 
@@ -86,6 +30,8 @@ export interface SheetProps {
 	title?: string;
 	/** A leading "Cancel". */
 	onCancel?: () => void;
+	/** Cancel can't run just now, such as while a save is in flight. */
+	cancelDisabled?: boolean;
 	/** The trailing button. */
 	done?: SheetButton;
 	/** Pinned under the title: a search field, a segmented control, a toast. */
@@ -94,7 +40,7 @@ export interface SheetProps {
 	children: ReactElement;
 }
 
-export function Sheet({ title, onCancel, done, accessory, children }: SheetProps) {
+export function Sheet({ title, onCancel, cancelDisabled = false, done, accessory, children }: SheetProps) {
 	const { palette } = useColors();
 	const { fontScale } = useWindowDimensions();
 	const scale = Platform.OS === "ios" ? fontScale : 1;
@@ -103,7 +49,7 @@ export function Sheet({ title, onCancel, done, accessory, children }: SheetProps
 			<View collapsable={false} style={{ backgroundColor: palette.canvas }}>
 				<View style={{ minHeight: 56, flexDirection: "row", alignItems: "center", paddingHorizontal: 8 }}>
 					<View style={{ flex: 1, alignItems: "flex-start" }}>
-						{onCancel ? <HeaderButton label="Cancel" onPress={onCancel} /> : null}
+						{onCancel ? <HeaderButton label="Cancel" disabled={cancelDisabled} onPress={onCancel} /> : null}
 					</View>
 					{title ? (
 						<Text
@@ -112,6 +58,9 @@ export function Sheet({ title, onCancel, done, accessory, children }: SheetProps
 							numberOfLines={1}
 							style={{
 								flexShrink: 1,
+								// The prototype's 220 of 390pt: the side slots keep room
+								// for Cancel and Done, and a long title truncates.
+								maxWidth: "56%",
 								textAlign: "center",
 								color: palette.inkHi,
 								fontSize: 17 * scale,
@@ -124,7 +73,13 @@ export function Sheet({ title, onCancel, done, accessory, children }: SheetProps
 					) : null}
 					<View style={{ flex: 1, alignItems: "flex-end" }}>
 						{done ? (
-							<HeaderButton label={done.label ?? "Done"} strong disabled={done.disabled} onPress={done.onPress} />
+							<HeaderButton
+								label={done.label ?? "Done"}
+								strong
+								disabled={done.disabled}
+								busy={done.busy}
+								onPress={done.onPress}
+							/>
 						) : null}
 					</View>
 				</View>

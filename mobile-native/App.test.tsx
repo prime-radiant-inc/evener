@@ -27,7 +27,9 @@ vi.mock("react-native-safe-area-context", () => ({
 // vitest throws if anything reads another export.
 vi.mock("react-native-enriched-markdown", () => ({}));
 vi.mock("@react-navigation/elements", () => ({}));
-vi.mock("@react-navigation/native", () => ({ createNavigationContainerRef: () => ({ getRootState: () => undefined }) }));
+vi.mock("@react-navigation/native", () => ({
+	createNavigationContainerRef: () => ({ getRootState: () => undefined }),
+}));
 vi.mock("@react-navigation/native-stack", () => ({ createNativeStackNavigator: () => ({}) }));
 vi.mock("expo-status-bar", () => ({}));
 vi.mock("expo-camera", () => ({}));
@@ -46,7 +48,8 @@ vi.mock("expo-web-browser", () => ({}));
 const connection = vi.hoisted(() => ({ value: { loading: true } as Record<string, unknown> }));
 vi.mock("./src/ConnectionProvider", () => ({
 	ConnectionProvider: (props: { children?: ReactNode }) => props.children ?? null,
-	useConnection: () => connection.value,
+	// The phone's saved hubs, which the alerts read to retire a removed hub's.
+	useConnection: () => ({ profiles: [], ...connection.value }),
 }));
 const outbox = vi.hoisted(() => ({ bind: vi.fn() }));
 vi.mock("./src/outbox/nativeOutboxFlush", () => ({ outboxFlush: outbox }));

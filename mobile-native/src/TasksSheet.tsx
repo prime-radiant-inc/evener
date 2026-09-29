@@ -8,7 +8,8 @@ import { isReady } from "./connectionDisplay";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { useRetainedScreenConnection } from "./retainedScreen";
 import type { Routes } from "./screens";
-import { Sheet, useSheet } from "./sheet/Sheet";
+import { Sheet } from "./sheet/Sheet";
+import { useSheet } from "./sheet/useSheet";
 import { tasksReadThroughCurrentClient } from "./tasksRead";
 import { Action, Copy, ErrorMessage, useColors } from "./ui";
 

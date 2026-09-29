@@ -5,8 +5,8 @@
 //   (ruling 10);
 // - a question still waiting is left to the ask dock, which is the question
 //   while it is open;
-// - a time marker introduces the first turn, a turn that starts after ten
-//   quiet minutes, and a new day.
+// - a time marker introduces the first turn (once no older history is left
+//   to load), a turn that starts after ten quiet minutes, and a new day.
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
@@ -29,9 +29,9 @@ type TurnTimes = Pick<TurnModel, "id" | "startedAt" | "completedAt">;
 export const TIME_GAP_MS = 10 * 60_000;
 
 // A subagent and a question are items of their own (spec 8.2), never steps.
-const OWN_ROW_TOOLS = new Set(["delegate", "delegate_send", "ask_user"]);
+const OWN_ROW_TOOLS = new Set(["delegate", "ask_user"]);
 
-function isStep(row: TimelineRow): row is Extract<TimelineRow, { kind: "activity" }> {
+export function isStep(row: TimelineRow): row is Extract<TimelineRow, { kind: "activity" }> {
 	return row.kind === "activity" && row.family !== "reasoning" && !OWN_ROW_TOOLS.has(row.label);
 }
 
@@ -40,10 +40,21 @@ function inTray(row: TimelineRow): boolean {
 	return row.kind === "activity" && row.state === "running" && !OWN_ROW_TOOLS.has(row.label);
 }
 
+export interface SessionRowsOptions {
+	/** The zone that decides where a new day starts; the device's own when unset. */
+	timeZone?: string;
+	/** Older history is still to load above these rows. The first loaded turn
+	 * then gets no time marker: it would sit at index 0, and the page above
+	 * can remove it (its turn ended under ten minutes before), taking the
+	 * list's first key with it, which the list's position keeping needs to
+	 * find again. The marker appears once the history is whole. */
+	olderToLoad?: boolean;
+}
+
 export function sessionRows(
 	rows: readonly TimelineRow[],
 	turns: readonly TurnTimes[],
-	timeZone?: string,
+	{ timeZone, olderToLoad = false }: SessionRowsOptions = {},
 ): TimelineRow[] {
 	const byId = new Map(turns.map((turn) => [turn.id, turn]));
 	const out: TimelineRow[] = [];
@@ -62,7 +73,8 @@ export function sessionRows(
 			// would appear. A turn is marked at most once.
 			if (!marked.has(turnId)) {
 				marked.add(turnId);
-				const marker = timeMarker(byId, turnId, lastTurn, timeZone);
+				const firstLoadedTurn = lastTurn === undefined;
+				const marker = olderToLoad && firstLoadedTurn ? null : timeMarker(byId, turnId, lastTurn, timeZone);
 				if (marker) out.push(marker);
 			}
 			// A run never spans a turn change, marked or not: an idle gap too
@@ -145,8 +157,8 @@ export function answerTo(model: Pick<ThreadModel, "turns"> | null, itemId: strin
 	return undefined;
 }
 
-/** The run that is still growing: the last run of the turn in progress. A
- * live run never folds (spec 8.2). */
+/** The run that is still growing: the last run of the turn in progress
+ * (spec 8.2). */
 export function liveRunId(rows: readonly TimelineRow[], activeTurnId: string | undefined): string | undefined {
 	if (activeTurnId === undefined) return undefined;
 	for (let index = rows.length - 1; index >= 0; index -= 1) {
@@ -296,9 +308,14 @@ const FAMILIES: Record<string, Family> = {
 };
 
 /** What a step acted on: the command for a shell step, else the file or path
- * it named. */
-export function stepTarget(label: string, argumentsJSON: string | undefined): string | undefined {
-	const args = parseArgs(argumentsJSON);
+ * it named. `parsed` is the arguments already decoded, for a caller that read
+ * them itself. */
+export function stepTarget(
+	label: string,
+	argumentsJSON: string | undefined,
+	parsed?: Record<string, unknown>,
+): string | undefined {
+	const args = parsed ?? parseArgs(argumentsJSON);
 	return FAMILIES[label] === "shell" ? str(args, "command") : (str(args, "file_path") ?? str(args, "path"));
 }
 

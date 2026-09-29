@@ -29,6 +29,14 @@ const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
 // A setext heading's underline ("===" or "---" under its words). Only a
 // heading has one: a line of "=" on its own is a paragraph's words.
 const SETEXT_UNDERLINE = /\n[ \t]*(?:=+|-+)[ \t]*$/;
+// An inline code span or an inline HTML tag. It runs over a whole block before
+// the block is split into lines, so a code span may cross lines; the span keeps
+// its contents (group 2), so stripping a tag can't take the angle brackets it
+// holds: `Vec<String>` survives, `<b>` doesn't. A tag stays on one line and its
+// name needs a space, `/` or `>` boundary, so a bare autolink like `<https://x>`
+// isn't mistaken for one, and a quoted attribute may hold a `>`.
+const INLINE_CODE_OR_TAG =
+	/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|<\/?[a-z][a-z0-9-]*(?:[ \t]+(?:[^>"'\n]|"[^"\n]*"|'[^'\n]*')*)?\/?>/gi;
 
 /** cyrb53: a small, stable 53-bit string hash. Collisions don't matter at a
  * document's scale; stability across launches does. */
@@ -66,10 +74,12 @@ function isTableRule(line: string): boolean {
 }
 
 /** A block's words without markdown syntax: heading marks, quote marks, list
- * markers and task boxes, link and image syntax, and emphasis. Underscores
- * inside words (snake_case) stay. */
-export function plainText(markdown: string): string {
-	return markdown
+ * markers and task boxes, link and image syntax, and emphasis. Inline HTML tags
+ * go too, unless `stripInlineTags` is false (the html block's own words keep
+ * theirs). Underscores inside words (snake_case) stay. */
+export function plainText(markdown: string, stripInlineTags = true): string {
+	const stripped = stripInlineTags ? markdown.replace(INLINE_CODE_OR_TAG, "$2") : markdown;
+	return stripped
 		.split("\n")
 		.map((line) =>
 			line
@@ -92,14 +102,17 @@ export function documentBlocks(markdown: string): DocumentBlock[] {
 	const push = (kind: BlockKind, raw: string, extra: Pick<DocumentBlock, "depth" | "code"> = {}) => {
 		const source = trimBlock(raw);
 		if (source === "") return;
+		let text = extra.code?.text;
+		if (text === undefined) {
+			const heading = kind === "heading" ? source.replace(SETEXT_UNDERLINE, "") : source;
+			text = plainText(heading, kind !== "html");
+		}
 		blocks.push({
 			index: blocks.length,
 			kind,
 			markdown: source,
 			hash: identity(kind, source),
-			text: extra.code
-				? extra.code.text
-				: plainText(kind === "heading" ? source.replace(SETEXT_UNDERLINE, "") : source),
+			text,
 			...extra,
 		});
 	};

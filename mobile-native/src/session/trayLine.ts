@@ -6,15 +6,16 @@
 import {
 	type ItemModel,
 	isActiveItem,
+	formatTokenCount,
 	type ModelRetryState,
 	parseArgs,
 	pendingTextJoined,
 	str,
 	type ThreadModel,
 } from "@evener/appwire-client";
-import { projectDelegateEntry } from "../../../mobile/src/services/activity";
+import { subagentState } from "../subagents/subagentModel";
 import { PULSE_BARS } from "../board/pulse";
-import { compactCount, compactDuration } from "./format";
+import { compactDuration } from "./format";
 
 /** No frame for this long reads "Quiet": the web's threshold
  * (cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts). */
@@ -40,6 +41,10 @@ interface Step {
 	waitsOnSubagents: boolean;
 }
 
+// The steps that wait on subagents while they run: delegating, sending to a
+// subagent (delegate_send can wait for its reply, max_wait_ms), and watching
+// or reading jobs. delegate_send is an ordinary step in the transcript's runs,
+// but while it is open the tray still says what it waits on.
 const WAITING_TOOLS = new Set(["delegate", "delegate_send", "job_watch", "job_status", "job_list"]);
 
 export function trayLine(session: TraySource, now: number): TrayLine | null {
@@ -106,7 +111,10 @@ function currentStep(session: TraySource): Step | null {
 function stepFor(item: ItemModel): Step | null {
 	if (item.type === "reasoning") {
 		const tokens = thinkingTokens(item);
-		return { text: tokens > 0 ? `Thinking… · ${compactCount(tokens)} tokens` : "Thinking…", waitsOnSubagents: false };
+		return {
+			text: tokens > 0 ? `Thinking… · ${formatTokenCount(tokens)} tokens` : "Thinking…",
+			waitsOnSubagents: false,
+		};
 	}
 	if (item.type === "agentMessage") return { text: "Writing…", waitsOnSubagents: false };
 	if (item.type !== "commandExecution") return null;
@@ -130,7 +138,7 @@ function thinkingTokens(item: ItemModel): number {
 }
 
 function runningSubagents(session: TraySource): number {
-	return (session.delegates ?? []).filter((delegate) => projectDelegateEntry(delegate).tone === "running").length;
+	return (session.delegates ?? []).filter((delegate) => subagentState(delegate) === "running").length;
 }
 
 function timeOf(value: string | undefined): number | undefined {

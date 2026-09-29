@@ -9,10 +9,13 @@ package hostops
 // deleted silently at boot when it is the only thing a crash left behind.
 //
 // The serving hub's guard-epoch row is the other half: §10 requires the
-// serving hub to persist the presented epoch per calling host before the write
-// half runs and to refuse stale epochs without probing. What a fencing slice
-// retrofits on top of both — takeover, bounded kill/wait, guard advance, the
-// remote guard file's total order — is deliberately absent here.
+// serving hub to validate a presented epoch against the guard epoch it last
+// admitted and refuse a stale same-boot epoch without persisting it or probing,
+// persisting only an admitted epoch before the probe's write half. What the
+// withdrawn fencing program once planned on top of both — takeover, bounded
+// kill/wait, guard advance, the remote guard file's total order — was removed
+// with it (Jesse, 2026-09-29; comp08), so those capabilities are absent by
+// decision, not pending here.
 
 import (
 	"encoding/json"
@@ -242,11 +245,12 @@ func probeEpochRows(t *testing.T, path string) []map[string]any {
 }
 
 // TestGuardEpochAdmitsAndRefusesStaleEpochs pins §10's serving-side semantics
-// as far as the shipped machinery honestly allows: the presented epoch is
-// persisted before the write half; an epoch older than the host's current one
-// for the same boot is refused without probing; a newer one is admitted; and
-// epochs from different boots are not comparable (the crash-fencing guard file
-// is what defines that total order — a fencing slice retrofits it).
+// as far as the shipped machinery honestly allows: a presented epoch is
+// validated and an admitted one persisted before the probe's write half; an
+// epoch older than the host's current one for the same boot is refused without
+// probing or writing; a newer one is admitted; and epochs from different boots
+// are not comparable (the guard file that once defined that total order was
+// withdrawn with the crash-fencing program, Jesse, 2026-09-29; comp08).
 func TestGuardEpochAdmitsAndRefusesStaleEpochs(t *testing.T) {
 	store, path := openTestStore(t)
 	if _, ok := store.GuardEpoch(); ok {
@@ -280,8 +284,9 @@ func TestGuardEpochAdmitsAndRefusesStaleEpochs(t *testing.T) {
 		t.Fatalf("reloaded guard epoch = %+v/%v, want boot-1/6", current, ok)
 	}
 	// A different boot id has no defined order against the stored one, so it is
-	// admitted; the fencing slice's guard file is where cross-boot ordering is
-	// defined.
+	// admitted; the guard file that once would have defined cross-boot ordering
+	// was withdrawn with the crash-fencing program (comp08), so that ordering is
+	// absent by decision.
 	if err := reopened.AdmitGuardEpoch(GuardEpoch{BootID: "boot-2", OpSeq: 1}); err != nil {
 		t.Fatalf("epoch from a fresh boot refused: %v", err)
 	}

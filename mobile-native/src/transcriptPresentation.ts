@@ -7,6 +7,7 @@ import {
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { ActivityMember, MobileConversation, MobileTimelineItem } from "./projectedRows";
+import { isStep } from "./session/transcriptRows";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
@@ -69,6 +70,10 @@ export interface NativeTranscriptPresentation {
 	items: MobileTimelineItem[];
 	activityPresentation: ReadonlyMap<string, ActivityPresentation>;
 	expandByDefault: boolean;
+	/** The live run shows its steps: at the levels that show tool calls. At
+	 * Chat and Intent the tray shows the live step, so the run keeps to its
+	 * line (S7). */
+	liveRunsOpen: boolean;
 	usage: SessionAccounting | null;
 	showDuration: boolean;
 }
@@ -178,25 +183,41 @@ function accountingFor(
 	return { derived, cumulative, cost };
 }
 
+// Chat is just the conversation and its subagents (spec 8.2; the transcript
+// rows rulings, 2026-09-29). A settled step goes, and so does a running one,
+// which the tray already shows. A failed step stays, with its images, since a
+// failure is something the reader should see at every level. A subagent and a
+// question are rows of their own, never steps, so they stay. No dropped step
+// leaves images behind: a settled step at Intent is summary-only, which drops
+// them, and the hub attaches a step's images only when it settles.
+function conversationOnly(items: MobileTimelineItem[]): MobileTimelineItem[] {
+	return items.filter((item) => !isStep(item) || item.state === "failed");
+}
+
 export function projectNativeTranscript(
 	conversation: MobileConversation | null,
 	config: TranscriptDisplayConfigV1 | null | undefined,
+	{ justTheConversation = false }: { justTheConversation?: boolean } = {},
 ): NativeTranscriptPresentation {
 	const source = conversation?.items ?? [];
-	const { items, activityPresentation } = projectTimeline(source, config);
+	const projected = projectTimeline(source, config);
+	const { activityPresentation } = projected;
+	const items = justTheConversation ? conversationOnly(projected.items) : projected.items;
 	if (!config)
 		return {
 			items,
 			activityPresentation,
 			expandByDefault: false,
+			liveRunsOpen: false,
 			usage: null,
 			showDuration: true,
 		};
+	const content = config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
 	return {
 		items,
 		activityPresentation,
-		expandByDefault: (config.content.kind === "preset" ? presetContent(config.content.level) : config.content)
-			.expandByDefault,
+		expandByDefault: content.expandByDefault,
+		liveRunsOpen: content.toolCalls,
 		usage: accountingFor(conversation, config),
 		showDuration: config.advanced.roundTimings,
 	};

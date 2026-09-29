@@ -11,7 +11,7 @@ export default function ContextCardGallerySection() {
           <ContextCard
             source="docs/superpowers/specs/2026-08-13-webui-beautiful-ui-retheme-design.md"
             snippet="Neutral grays replace Fjord (cool blue) and Ledger (warm paper). Dark stays the default. The token-contract enforcement machinery is retained; the visual language is replaced."
-            meta="1.2k chars"
+            meta="1.2K chars"
             href="https://example.internal/docs/retheme-design"
           />
           <ContextCard

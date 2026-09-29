@@ -66,10 +66,17 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 			"Notes & links",
 			"Session info",
 			"Ask aside…",
+			"New session like this",
 			"Pin to category…",
 			"Archive",
 			"Shut down",
 		]);
+	});
+
+	it("starts a new session like this one (ruling 24)", () => {
+		const { items, chosen } = menu();
+		action(only(items).menu.items, "New session like this").onPress();
+		expect(chosen).toEqual([{ kind: "like" }]);
 	});
 
 	it("leaves Delete to the Session sheet", () => {
@@ -127,7 +134,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	] as const)("shows nothing for %s when it is false", (condition, label) => {
 		const entries = only(menu({ [condition]: false }).items).menu.items;
 		expect(labels(entries)).not.toContain(label);
-		expect(entries).toHaveLength(10);
+		expect(entries).toHaveLength(11);
 	});
 
 	it("opens Files & artifacts", () => {

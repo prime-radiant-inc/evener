@@ -65,6 +65,17 @@ func TestDelegateStoppedTerminalPacket(t *testing.T) {
 	if msg != "stopped by parent" {
 		t.Fatalf("expected 'stopped by parent', got %q", msg)
 	}
+	// The packet says how the run ended, the way its RunFinished event does
+	// (stoppedGenerationFinishEvent), so a client reading the owner's
+	// delegate-notification frame says "stopped" rather than falling back to
+	// the terminal_error kind's "failed".
+	var metadata delegateTerminalPacketMetadata
+	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+		t.Fatalf("metadata: %v (%s)", err, packet.Metadata)
+	}
+	if metadata.Outcome != delegatestore.OutcomeStopped || metadata.Reason != "stopped_by_parent" {
+		t.Fatalf("metadata = %+v, want outcome stopped, reason stopped_by_parent", metadata)
+	}
 }
 
 // ---------------------------------------------------------------------------

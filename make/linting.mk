@@ -110,19 +110,30 @@ lint-internal: build-dev
 # overrides are per-package and those files share package `server` with 119
 # snake_case tags, so the split cannot live in one config; .golangci-appwire.yml
 # holds the other half and explains itself.
+#
+# The module-lint sweep runs a second time with GOOS=darwin whenever the host
+# is not darwin. golangci-lint compiles only the files its GOOS selects, so a
+# Linux CI host's pass compiles no _darwin.go file and a darwin-only finding
+# reaches main unlinted, first failing the gate for whoever next runs it on a
+# Mac (agent/execenv/process_boundary_darwin.go arrived with five findings this
+# way, #2847). The appwire pass is one module and needs no such repeat.
 ## golangci-lint across every workspace module, plus the second
-## appwire-specific camelCase pass over server/appwire_*.go. See "The
-## server/appwire_*.go camelCase regime" in docs/developing-evener/linting.md.
+## appwire-specific camelCase pass over server/appwire_*.go. The module sweep
+## repeats with GOOS=darwin off darwin so _darwin.go files are linted in CI.
+## See "The server/appwire_*.go camelCase regime" in
+## docs/developing-evener/linting.md.
 ## proves: golangci-lint's full ruleset (struct-tag casing, formatting,
 ##   exported-doc comments, and the rest) passes across every FUZZ_GO_MODULES
-##   workspace module, and the appwire camelCase regime holds for
-##   server/appwire_*.go.
+##   workspace module for the host GOOS and, off darwin, for GOOS=darwin, so a
+##   darwin-only source is linted on a Linux host (#2928); and the appwire
+##   camelCase regime holds for server/appwire_*.go.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so
 ##   the fuzz module's ordinary Go is covered too.
-## fails-when: Either golangci-lint run fails for any module.
+## fails-when: golangci-lint fails for any module, under the host GOOS or, off
+##   darwin, under GOOS=darwin.
 lint-golangci: build-dev
-	$(call run_quiet_lint,MODULES="$(FUZZ_GO_MODULES)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" ./evener-dev dev module-lint && GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
+	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; MODULES="$(FUZZ_GO_MODULES)" ./evener-dev dev module-lint; if [ "$$host_goos" != darwin ]; then MODULES="$(FUZZ_GO_MODULES)" GOOS=darwin ./evener-dev dev module-lint; fi; golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
 
 ## Remove the current worktree's golangci-lint cache without touching sibling
 ## worktrees or the user's global golangci-lint cache.

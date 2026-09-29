@@ -172,6 +172,12 @@ func build() docData {
 	// never a method's own Params/Result, so it needs the same explicit
 	// registration for a field table of its own (RoboRev review of PR 22).
 	register(appwire.HubNotice{})
+	// OperationRecord is the element type of HostOperationsResponse.Operations —
+	// the deploy pipeline's operations read (08b §§8, 10) — never a method's own
+	// Params/Result, so it needs the same explicit registration: without it the
+	// reference would name the record but document none of its fields (state,
+	// result, and the progress entries a reader inspects).
+	register(appwire.OperationRecord{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{

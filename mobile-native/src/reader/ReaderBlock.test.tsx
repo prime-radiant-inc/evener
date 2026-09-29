@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { act } from "react-test-renderer";
 import { DisplayProvider } from "../display/displayContext";
 import { DisplayPreferences, type ReadingFont } from "../display/displayPreferences";
 import { render } from "../renderNative.testkit";
@@ -12,7 +13,7 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
 
-function styleIn(font: ReadingFont) {
+function preferences(font: ReadingFont) {
 	const values = new Map<string, string>();
 	const prefs = new DisplayPreferences({
 		getItemSync: (key) => values.get(key) ?? null,
@@ -21,10 +22,14 @@ function styleIn(font: ReadingFont) {
 		},
 	});
 	prefs.set({ readingFont: font });
+	return prefs;
+}
+
+function styleIn(font: ReadingFont) {
 	const [block] = documentBlocks("A plan's opening paragraph.");
 	if (!block) throw new Error("no block");
 	const tree = render(
-		<DisplayProvider value={prefs}>
+		<DisplayProvider value={preferences(font)}>
 			<ReaderBlock block={block} changed={false} />
 		</DisplayProvider>,
 	);
@@ -41,4 +46,17 @@ it("reads a document in the serif by default, and in the system face under Sans 
 	expect(sans.h1.fontFamily).toBeUndefined();
 	expect(sans.h1).toMatchObject({ fontSize: 24, fontWeight: "600" });
 	expect(sans.codeBlock).toMatchObject({ fontFamily: "Menlo" });
+});
+
+it("ends a selection when you tap a rule, which has no menu of its own", () => {
+	const [rule] = documentBlocks("A plan.\n\n---\n\n").filter((block) => block.kind === "rule");
+	if (!rule) throw new Error("no rule block");
+	const onTap = vi.fn();
+	const tree = render(
+		<DisplayProvider value={preferences("serif")}>
+			<ReaderBlock block={rule} changed={false} onTap={onTap} />
+		</DisplayProvider>,
+	);
+	act(() => tree.root.findByType("Pressable" as never).props.onPress());
+	expect(onTap).toHaveBeenCalledTimes(1);
 });

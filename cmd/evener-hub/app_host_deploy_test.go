@@ -1701,21 +1701,15 @@ func TestEnsureTriggeredDeployIsADurableOperationNamingItsRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
-	scope, finish, err := m.EnsureDeploy(live)
+	finish, err := m.EnsureDeploy(live)
 	if err != nil {
 		t.Fatalf("EnsureDeploy: %v", err)
-	}
-	if scope == nil {
-		t.Fatal("EnsureDeploy returned no spawn scope for the record's deploy step")
 	}
 	records := store.Records()
 	if len(records) != 1 {
 		t.Fatalf("records = %d, want the one Ensure operation", len(records))
 	}
 	record := records[0]
-	if scope.RecordID != record.ID {
-		t.Fatalf("spawn scope record = %q, want the Ensure operation %s", scope.RecordID, record.ID)
-	}
 	if record.State != hostops.StatePending || record.Kind != hostops.KindDeploy {
 		t.Fatalf("Ensure record = %+v, want a pending deploy", record)
 	}
@@ -1754,8 +1748,8 @@ func TestEnsureTriggeredDeployIsADurableOperationNamingItsRecord(t *testing.T) {
 // TestEnsureRestartIsADurableOperationNamingItsRecord is the restart-only twin
 // of the Ensure-deploy record test: the hook persists a restart record with its
 // fencing epoch under the held gate before the leg's first remote command,
-// publishes it as the gate holder, and hands back the scope the leg is armed
-// with plus the finish that records the outcome.
+// publishes it as the gate holder, and hands back the finish that records the
+// outcome.
 func TestEnsureRestartIsADurableOperationNamingItsRecord(t *testing.T) {
 	entry := deployTestHost()
 	configPath := deployTestConfigPath(t, entry)
@@ -1770,12 +1764,9 @@ func TestEnsureRestartIsADurableOperationNamingItsRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
-	scope, finish, err := m.EnsureRestart(live)
+	finish, err := m.EnsureRestart(live)
 	if err != nil {
 		t.Fatalf("EnsureRestart: %v", err)
-	}
-	if scope == nil {
-		t.Fatal("EnsureRestart returned no spawn scope for the leg")
 	}
 	records := store.Records()
 	if len(records) != 1 {
@@ -1784,9 +1775,6 @@ func TestEnsureRestartIsADurableOperationNamingItsRecord(t *testing.T) {
 	record := records[0]
 	if record.State != hostops.StatePending || record.Kind != hostops.KindRestart {
 		t.Fatalf("Ensure restart record = %+v, want a pending restart", record)
-	}
-	if scope.RecordID != record.ID {
-		t.Fatalf("spawn scope record = %q, want the Ensure restart %s", scope.RecordID, record.ID)
 	}
 	if !strings.HasPrefix(record.ClientOperationID, "ensure-") {
 		t.Fatalf("client operation id = %q, want the server-minted ensure- form", record.ClientOperationID)
@@ -1820,7 +1808,7 @@ func TestEnsureRestartRefusesWithoutAStore(t *testing.T) {
 	entry.Generation = 1
 	entry.IncarnationID = "inc-1"
 	m := &hubHostManager{cfg: &hostManagerConfig{logf: func(string, ...any) {}}}
-	if _, _, err := m.EnsureRestart(entry); err == nil {
+	if _, err := m.EnsureRestart(entry); err == nil {
 		t.Fatal("EnsureRestart without an operation store succeeded")
 	}
 }
@@ -1833,7 +1821,7 @@ func TestEnsureTriggeredDeployRefusesWithoutAStore(t *testing.T) {
 	entry.Generation = 1
 	entry.IncarnationID = "inc-1"
 	m := &hubHostManager{cfg: &hostManagerConfig{logf: func(string, ...any) {}}}
-	if _, _, err := m.EnsureDeploy(entry); err == nil {
+	if _, err := m.EnsureDeploy(entry); err == nil {
 		t.Fatal("EnsureDeploy without an operation store succeeded")
 	}
 }
@@ -2011,7 +1999,7 @@ func TestEnsureTriggeredDeployRunsAfterATerminalRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
-	_, finish, err := m.EnsureDeploy(live)
+	finish, err := m.EnsureDeploy(live)
 	if err != nil {
 		t.Fatalf("EnsureDeploy after a terminal record: %v", err)
 	}
@@ -2107,238 +2095,4 @@ func TestHostOperationWorkerFailsWithoutASeam(t *testing.T) {
 	if record.Result == nil || !strings.Contains(record.Result.Message, "no deploy step wired") {
 		t.Fatalf("failure = %+v, want the missing-seam refusal", record.Result)
 	}
-}
-
-// TestDeployWorkerScopesItsMutatingStepsAndNotTheReadOnlyRefresh pins the
-// production spawn wiring on the RPC deploy worker (crash-fencing §3): the
-// deploy step and the restart leg it plans both run under a context carrying
-// the record's spawn scope, so each ssh subprocess they spawn is created, armed
-// with its pre-spawn intent, matched and dropped through that record. The
-// post-operation read-only refresh runs under a context with no scope: §6's
-// exempt one-shots stay unarmed.
-func TestDeployWorkerScopesItsMutatingStepsAndNotTheReadOnlyRefresh(t *testing.T) {
-	entry := deployTestHost()
-	configPath := deployTestConfigPath(t, entry)
-	var mu sync.Mutex
-	var deployScope, restartScope, refreshScope *sshconn.SpawnScope
-	seams := deploySeams{
-		probe: deployProbeScript(t),
-		deploy: func(ctx context.Context, host hostreg.Host, f sshconn.Preflight) (string, sshconn.Preflight, error) {
-			mu.Lock()
-			deployScope, _ = sshconn.SpawnScopeFrom(ctx)
-			mu.Unlock()
-			return deployTestTarget(t, host), f, nil
-		},
-		restart: func(ctx context.Context, _ hostreg.Host, _ sshconn.Preflight) error {
-			mu.Lock()
-			restartScope, _ = sshconn.SpawnScopeFrom(ctx)
-			mu.Unlock()
-			return nil
-		},
-		facts: func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
-			mu.Lock()
-			refreshScope, _ = sshconn.SpawnScopeFrom(ctx)
-			mu.Unlock()
-			return planTestFacts(host), nil
-		},
-	}
-	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, seams)
-	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
-
-	response, err := m.Deploy(context.Background(), appwire.HostDeployParams{
-		Name: entry.Name, Token: token.Value, OperationID: "op-1",
-	})
-	if err != nil {
-		t.Fatalf("Deploy: %v", err)
-	}
-	waitOperationState(t, store, response.ID, hostops.StateComplete)
-
-	mu.Lock()
-	deploy, restart, refresh := deployScope, restartScope, refreshScope
-	mu.Unlock()
-	if deploy == nil {
-		t.Fatal("the deploy step ran with no spawn scope, so its ssh subprocesses would be unowned")
-	}
-	if deploy.RecordID != response.ID {
-		t.Fatalf("deploy step scope record = %q, want %s", deploy.RecordID, response.ID)
-	}
-	if restart == nil {
-		t.Fatal("the planned restart leg ran with no spawn scope")
-	}
-	if restart.RecordID != response.ID {
-		t.Fatalf("restart leg scope record = %q, want %s", restart.RecordID, response.ID)
-	}
-	if refresh != nil {
-		t.Fatalf("the post-operation read-only refresh ran armed under record %q, want no scope", refresh.RecordID)
-	}
-}
-
-// TestRestartWorkerScopesItsRestartStepAndNotTheReadOnlyRefresh is the restart
-// operation's half: the standalone restart step runs under the record's spawn
-// scope, and the read-only refresh stays unarmed.
-func TestRestartWorkerScopesItsRestartStepAndNotTheReadOnlyRefresh(t *testing.T) {
-	entry := deployTestHost()
-	entry.Generation = 2
-	entry.IncarnationID = "inc-new"
-	configPath := deployTestConfigPath(t, entry)
-	var mu sync.Mutex
-	var restartScope, refreshScope *sshconn.SpawnScope
-	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
-	after := before.Add(time.Minute)
-	seams := deploySeams{
-		probe: restartProbeScript(t, "v1.2.3", "v1.2.3", before, after),
-		restart: func(ctx context.Context, _ hostreg.Host, _ sshconn.Preflight) error {
-			mu.Lock()
-			restartScope, _ = sshconn.SpawnScopeFrom(ctx)
-			mu.Unlock()
-			return nil
-		},
-		facts: func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
-			mu.Lock()
-			refreshScope, _ = sshconn.SpawnScopeFrom(ctx)
-			mu.Unlock()
-			return planTestFacts(host), nil
-		},
-	}
-	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, seams)
-
-	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
-		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
-	})
-	if err != nil {
-		t.Fatalf("Restart: %v", err)
-	}
-	waitOperationState(t, store, response.ID, hostops.StateComplete)
-
-	mu.Lock()
-	restart, refresh := restartScope, refreshScope
-	mu.Unlock()
-	if restart == nil {
-		t.Fatal("the restart step ran with no spawn scope, so its ssh subprocesses would be unowned")
-	}
-	if restart.RecordID != response.ID {
-		t.Fatalf("restart step scope record = %q, want %s", restart.RecordID, response.ID)
-	}
-	if refresh != nil {
-		t.Fatalf("the post-operation read-only refresh ran armed under record %q, want no scope", refresh.RecordID)
-	}
-}
-
-// TestOperationWorkerClearsAnInheritedSpawnScope pins the worker's scope
-// hygiene discriminately: the hub's controller-lifetime context is injected
-// carrying an OUTER operation's scope, and no read-only path the worker runs
-// may inherit it. Every mutating call carries the operation's own record's
-// scope; the read-only refresh and the attach dialing carry none — never the
-// outer one.
-func TestOperationWorkerClearsAnInheritedSpawnScope(t *testing.T) {
-	t.Run("a deploy worker", func(t *testing.T) {
-		entry := deployTestHost()
-		configPath := deployTestConfigPath(t, entry)
-		var mu sync.Mutex
-		var deployScope, refreshScope *sshconn.SpawnScope
-		seams := deploySeams{
-			probe: deployProbeScript(t),
-			deploy: func(ctx context.Context, host hostreg.Host, f sshconn.Preflight) (string, sshconn.Preflight, error) {
-				mu.Lock()
-				deployScope, _ = sshconn.SpawnScopeFrom(ctx)
-				mu.Unlock()
-				return deployTestTarget(t, host), f, nil
-			},
-			facts: func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
-				mu.Lock()
-				refreshScope, _ = sshconn.SpawnScopeFrom(ctx)
-				mu.Unlock()
-				return planTestFacts(host), nil
-			},
-		}
-		m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, seams)
-		outer := sshconn.NewSpawnScope("op-outer", store)
-		m.cfg.opsCtx = sshconn.WithSpawnScope(context.Background(), outer)
-		token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
-
-		response, err := m.Deploy(context.Background(), appwire.HostDeployParams{
-			Name: entry.Name, Token: token.Value, OperationID: "op-1",
-		})
-		if err != nil {
-			t.Fatalf("Deploy: %v", err)
-		}
-		waitOperationState(t, store, response.ID, hostops.StateComplete)
-
-		mu.Lock()
-		deploy, refresh := deployScope, refreshScope
-		mu.Unlock()
-		if deploy == nil || deploy.RecordID != response.ID {
-			t.Fatalf("deploy step scope = %+v, want the operation's own record %s", deploy, response.ID)
-		}
-		if refresh == outer {
-			t.Fatal("the read-only refresh inherited the outer operation's scope")
-		}
-		if refresh != nil {
-			t.Fatalf("the read-only refresh ran armed under record %q, want no scope", refresh.RecordID)
-		}
-	})
-
-	t.Run("a restart worker", func(t *testing.T) {
-		entry := deployTestHost()
-		entry.Generation = 2
-		entry.IncarnationID = "inc-new"
-		configPath := deployTestConfigPath(t, entry)
-		var mu sync.Mutex
-		var restartScope, refreshScope, attachScope *sshconn.SpawnScope
-		var attachRan bool
-		before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
-		after := before.Add(time.Minute)
-		seams := deploySeams{
-			probe: restartProbeScript(t, "v1.2.3", "v1.2.3", before, after),
-			restart: func(ctx context.Context, _ hostreg.Host, _ sshconn.Preflight) error {
-				mu.Lock()
-				restartScope, _ = sshconn.SpawnScopeFrom(ctx)
-				mu.Unlock()
-				return nil
-			},
-			facts: func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
-				mu.Lock()
-				refreshScope, _ = sshconn.SpawnScopeFrom(ctx)
-				mu.Unlock()
-				return planTestFacts(host), nil
-			},
-			attachUnderGate: func(ctx context.Context, _ hostreg.Host, _ hostops.Holder, _ bool) (func() bool, error) {
-				mu.Lock()
-				attachScope, _ = sshconn.SpawnScopeFrom(ctx)
-				attachRan = true
-				mu.Unlock()
-				return func() bool { return true }, nil
-			},
-		}
-		m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, seams)
-		outer := sshconn.NewSpawnScope("op-outer", store)
-		m.cfg.opsCtx = sshconn.WithSpawnScope(context.Background(), outer)
-
-		response, err := m.Restart(context.Background(), appwire.HostRestartParams{
-			Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
-		})
-		if err != nil {
-			t.Fatalf("Restart: %v", err)
-		}
-		waitOperationState(t, store, response.ID, hostops.StateComplete)
-
-		mu.Lock()
-		restart, refresh, attach, ran := restartScope, refreshScope, attachScope, attachRan
-		mu.Unlock()
-		if restart == nil || restart.RecordID != response.ID {
-			t.Fatalf("restart step scope = %+v, want the operation's own record %s", restart, response.ID)
-		}
-		if !ran {
-			t.Fatal("the reattach seam never ran; the attach coverage would be vacuous")
-		}
-		if refresh == outer || attach == outer {
-			t.Fatal("a read-only path inherited the outer operation's scope")
-		}
-		if refresh != nil {
-			t.Fatalf("the read-only refresh ran armed under record %q, want no scope", refresh.RecordID)
-		}
-		if attach != nil {
-			t.Fatalf("the attach dialing ran armed under record %q, want no scope", attach.RecordID)
-		}
-	})
 }

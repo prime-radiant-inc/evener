@@ -2858,6 +2858,79 @@ func TestScratchRetentionRepairTreatsACommittedWriteAsSuccess(t *testing.T) {
 	}
 }
 
+// TestCommitScratchRetentionDiscriminatesTheCommit covers the extracted
+// post-rename commit discriminator at each predicate its callers key on: the
+// release publishes a tombstone (Released true), while the reset and the repair
+// clear one (Released false). A write that commits despite reporting the
+// post-rename failure class must return the committed manifest; a write that did
+// not commit must return its error.
+func TestCommitScratchRetentionDiscriminatesTheCommit(t *testing.T) {
+	probeErr := errors.New("probe: directory fsync failed")
+
+	t.Run("released tombstone", func(t *testing.T) {
+		owner := retentionOwner(t)
+		manifest, err := loadScratchRetention(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest.Released = true
+		manifest.Revision++
+		restore := SetScratchManifestWriteProbeForTesting(func() error { return probeErr })
+		defer restore()
+
+		committed, err := commitScratchRetention(owner, manifest)
+		if err != nil {
+			t.Fatalf("a committed tombstone write was reported as a failure: %v", err)
+		}
+		if !committed.Released || committed.Revision != manifest.Revision {
+			t.Fatalf("committed manifest = %+v, want Released true at revision %d", committed, manifest.Revision)
+		}
+	})
+
+	t.Run("unreleased manifest", func(t *testing.T) {
+		owner := retentionOwner(t)
+		manifest, err := loadScratchRetention(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest.Revision++
+		restore := SetScratchManifestWriteProbeForTesting(func() error { return probeErr })
+		defer restore()
+
+		committed, err := commitScratchRetention(owner, manifest)
+		if err != nil {
+			t.Fatalf("a committed reset/repair write was reported as a failure: %v", err)
+		}
+		if committed.Released || committed.Revision != manifest.Revision {
+			t.Fatalf("committed manifest = %+v, want Released false at revision %d", committed, manifest.Revision)
+		}
+	})
+
+	t.Run("non-committing failure", func(t *testing.T) {
+		owner := retentionOwner(t)
+		manifest, err := loadScratchRetention(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest.Revision++
+		// The write reports a failure and leaves the durable manifest at its
+		// pre-call state, so the re-read cannot name this write's commit.
+		restore := SetScratchManifestWriteProbeForTesting(func() error {
+			_ = os.Remove(scratchManifestPath(owner))
+			return probeErr
+		})
+		defer restore()
+
+		committed, err := commitScratchRetention(owner, manifest)
+		if !errors.Is(err, probeErr) {
+			t.Fatalf("commitScratchRetention error = %v, want the write failure", err)
+		}
+		if committed.Revision != 0 || committed.Released {
+			t.Fatalf("an uncommitted write returned a manifest: %+v", committed)
+		}
+	})
+}
+
 // TestScratchRetentionRepairAdoptsOrphanOwningBinding proves the repair adopts a
 // lease-owning binding that no consumer role names — the state a publication
 // leaves when it claims a binding before its consumer row lands and then stops,

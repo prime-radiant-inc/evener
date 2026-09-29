@@ -233,7 +233,7 @@ it("does not open the picker before the saved draft can be loaded", async () => 
 				return [];
 			},
 			capture: async () => [],
-			encode: async () => "",
+			encode: async () => ({ data: "", mediaType: "image/jpeg" }),
 			id: () => "new",
 		});
 		await picker.choose();
@@ -242,7 +242,7 @@ it("does not open the picker before the saved draft can be loaded", async () => 
 		db.close();
 	}
 });
-it("preserves earlier uncertainty when a later checkpoint fails", async () => {
+it("changes nothing, in the form or saved, when a start's checkpoint fails", async () => {
 	const { db, repository } = fixture();
 	try {
 		const repo = repository();
@@ -265,9 +265,13 @@ it("preserves earlier uncertainty when a later checkpoint fails", async () => {
 			"CREATE TRIGGER no_checkpoint BEFORE UPDATE ON creation_drafts WHEN json_extract(NEW.draft, '$.unconfirmed') = 1 BEGIN SELECT RAISE(ABORT, 'full'); END",
 		);
 		form.getState().setPrompt("another attempt");
+		// Edited, it is a new draft: saved without the earlier start's
+		// uncertainty, which the form itself still remembers (#3104).
+		expect(repo.read("a")).toMatchObject({ prompt: "another attempt", unconfirmed: false });
 		expect(await form.getState().submit()).toEqual({ status: "blocked" });
+		// The failed checkpoint changed nothing: not the form, not what was saved.
 		expect(form.getState().unconfirmedCreation).toBe(true);
-		expect(repo.read("a")?.unconfirmed).toBe(true);
+		expect(repo.read("a")).toMatchObject({ prompt: "another attempt", unconfirmed: false });
 	} finally {
 		db.close();
 	}

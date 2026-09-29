@@ -2,6 +2,7 @@ import type { QueueState, ThreadCapabilities } from "@evener/appwire-client";
 import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 import { describe, expect, it } from "vitest";
 import {
+	foldQueue,
 	type GhostSource,
 	ghostActionTarget,
 	ghosts,
@@ -173,7 +174,9 @@ describe("messages that didn't make it (spec 14)", () => {
 				text: "look at [image 1]",
 				buttons: [],
 				menu: [],
-				origin: { kind: "draft" },
+				// The ghost stands in for outbox row "a": its origin carries the id
+				// so Discard can clear both.
+				origin: { kind: "draft", clientMutationId: "a" },
 			}),
 		]);
 		// The outbox lost track of it: the draft's actions are yours again.
@@ -183,7 +186,7 @@ describe("messages that didn't make it (spec 14)", () => {
 				text: "look at [image 1]",
 				buttons: ["check", "discard"],
 				menu: ["edit"],
-				origin: { kind: "draft" },
+				origin: { kind: "draft", clientMutationId: "a" },
 			}),
 		]);
 		// The outbox row is gone and the draft still doesn't know.
@@ -304,6 +307,39 @@ it("shows at most three queued messages and counts the rest, never hiding the ot
 	const { shown, moreQueued } = shownGhosts(all);
 	expect(shown.map((ghost) => ghost.text)).toEqual(["1", "2", "3", "draft"]);
 	expect(moreQueued).toBe(2);
+});
+
+// While you type, the queue folds to one line (spec 8.5): its count, and
+// with one message, what you can do to it now.
+describe("the queue folded while you type", () => {
+	it("offers the one queued message's Steer now", () => {
+		const all = ghosts(session("active", ["first"]), [], unsent("draft"), [], true);
+		const { fold, rest } = foldQueue(all);
+		expect(fold).toEqual({ label: "1 queued", act: { ghost: all[0], action: "steerNow" } });
+		expect(rest.map((ghost) => ghost.text)).toEqual(["draft"]);
+	});
+
+	it("counts several, the whole queue, with nothing to act on until they show", () => {
+		const all = ghosts(session("active", ["1", "2", "3", "4", "5"]), [], null, [], true);
+		expect(foldQueue(all)).toEqual({ fold: { label: "5 queued", act: null }, rest: [] });
+	});
+
+	it("says a held queue is held, and offers the one message's Send now", () => {
+		const all = ghosts(session("idle", ["first"]), [], null, [], true);
+		expect(foldQueue(all).fold).toEqual({ label: "1 held", act: { ghost: all[0], action: "sendNow" } });
+		const two = ghosts(session("idle", ["first", "second"]), [], null, [], true);
+		expect(foldQueue(two).fold).toEqual({ label: "2 held", act: null });
+	});
+
+	it("offers nothing a harness can't do", () => {
+		const all = ghosts(session("active", ["first"], { capabilities: caps({ steer: false }) }), [], null, [], true);
+		expect(foldQueue(all).fold).toEqual({ label: "1 queued", act: null });
+	});
+
+	it("folds nothing when nothing is queued", () => {
+		const all = ghosts(session("active"), [], unsent("draft"), [], true);
+		expect(foldQueue(all)).toEqual({ fold: null, rest: all });
+	});
 });
 
 describe("what can act right now", () => {

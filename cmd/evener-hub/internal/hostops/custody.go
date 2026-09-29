@@ -22,18 +22,18 @@ import (
 // replacement store opens with. That check is the slice's safety core: custody
 // is written only when the corrupt file parses whole and its record set is
 // accounted for with no gap or residue, so no fence the file carried can be
-// lost. Any shortfall — an unparseable record, a boundary that fails the §9
-// schema, ownership missing for a fenced name, an id below the file's own
-// allocator high-water mark with no retained evidence — refuses startup rather
-// than serving past a fence nobody can prove.
+// lost. Any shortfall — an unparseable record, a per-host boundary record that
+// fails its schema, ownership missing for a fenced name, an id below the file's
+// own allocator high-water mark with no retained evidence — refuses startup
+// rather than serving past a fence nobody can prove.
 //
-// The BoundaryEntry schema itself is defined field-for-field by the crash-fencing
-// spec §9 and only validated here, never restated: the later slices own the
-// verifier, the kill/wait, and `orphan-resolve`. The imported records this file
-// produces are that seam: every fence entry becomes an `orphan-unverified`
-// record carrying the custodial boundary under its original id, and every
-// ownership-only entry becomes one carrying the single `boundary-unavailable`
-// sentinel, so a resolver can address every closed name by record id.
+// The retired BoundaryEntry vocabulary and the later slices that once owned the
+// verifier, the kill/wait, and `orphan-resolve` were withdrawn with the
+// crash-fencing program (comp08). The imported records this file produces are
+// the retained seam: every fence entry becomes an `orphan-unverified` record
+// under its original id, and every ownership-only entry becomes one of the
+// carried kind under its stable `quarantineRecordId`, so the `operations` detail
+// filter can address every closed name by record id (no resolver runs).
 
 // ErrQuarantineIncomplete reports a corrupt store file whose custody snapshot
 // cannot be shown complete. Spec §4: "When the corrupt file cannot yield a
@@ -77,14 +77,18 @@ type custodyRecordID struct {
 // custodyFence is one open fence's full record identity plus its persisted
 // boundary, so a fence import builds its record from the entry itself.
 type custodyFence struct {
-	RecordID          string          `json:"recordId"`
-	Host              string          `json:"host"`
-	Kind              Kind            `json:"kind"`
-	ClientOperationID string          `json:"clientOperationId"`
-	Generation        uint64          `json:"generation"`
-	IncarnationID     string          `json:"incarnationId"`
-	Quarantine        bool            `json:"quarantine"`
-	Boundary          json.RawMessage `json:"boundary"`
+	RecordID          string `json:"recordId"`
+	Host              string `json:"host"`
+	Kind              Kind   `json:"kind"`
+	ClientOperationID string `json:"clientOperationId"`
+	Generation        uint64 `json:"generation"`
+	IncarnationID     string `json:"incarnationId"`
+	// Quarantine and Boundary are retired (comp08 2b): prior custody files carry
+	// the per-host fencing-quarantine flag and the persisted boundary payload.
+	// They stay decodable so a prior file loads, and are never written
+	// (omitempty) — the import keeps the record's identity alone.
+	Quarantine bool            `json:"quarantine,omitempty"`
+	Boundary   json.RawMessage `json:"boundary,omitempty"`
 }
 
 // custodyOwnership is one name's ownership: the identity a replacement
@@ -100,12 +104,12 @@ type custodyOwnership struct {
 }
 
 // custodyImports returns the replacement store's record set: each fence entry
-// imported as an `orphan-unverified` record under its original id carrying the
-// custodial boundary, and each ownership-only entry imported as one carrying
-// the single `boundary-unavailable` entry. The result is sorted ascending by id,
-// which is the store file's own order, and every record is validated before it
-// is returned.
-func custodyImports(custody custodyFile, custodyPath string) ([]Record, error) {
+// imported as an `orphan-unverified` record under its original id, and each
+// ownership-only entry imported as the same closed-name record above the
+// pre-quarantine high-water mark. The result is sorted ascending by id, which is
+// the store file's own order, and every record is validated before it is
+// returned.
+func custodyImports(custody custodyFile) ([]Record, error) {
 	fenced := map[string]bool{}
 	for _, fence := range custody.Fences {
 		fenced[fence.Host] = true
@@ -121,12 +125,10 @@ func custodyImports(custody custodyFile, custodyPath string) ([]Record, error) {
 			State:             StateOrphanUnverified,
 			Generation:        fence.Generation,
 			IncarnationID:     fence.IncarnationID,
-			OrphanBoundary:    append(json.RawMessage(nil), fence.Boundary...),
 			CreatedAt:         at,
 			UpdatedAt:         at,
 		})
 	}
-	unavailable := boundaryUnavailableEntry(custodyPath)
 	for _, ownership := range custody.Ownership {
 		if fenced[ownership.Host] {
 			// The name is closed by its fence import; the ownership entry is the
@@ -141,7 +143,6 @@ func custodyImports(custody custodyFile, custodyPath string) ([]Record, error) {
 			State:             StateOrphanUnverified,
 			Generation:        ownership.Generation,
 			IncarnationID:     ownership.IncarnationID,
-			OrphanBoundary:    append(json.RawMessage(nil), unavailable...),
 			CreatedAt:         at,
 			UpdatedAt:         at,
 		})
@@ -153,25 +154,6 @@ func custodyImports(custody custodyFile, custodyPath string) ([]Record, error) {
 		}
 	}
 	return records, nil
-}
-
-// boundaryUnavailableEntry is the crash-fencing spec §9 sentinel a corrupt-store
-// custody import carries when the corruption destroyed the boundary: an
-// explicit "nothing is proven" value, never an empty array (which means
-// verified empty). It names the custody file it came from, which is the
-// `boundaryRef` an attestation must match.
-func boundaryUnavailableEntry(custodyPath string) json.RawMessage {
-	// The JSON encoder builds the sentinel, never fmt's %q: Go's quoted-string
-	// escaping is not JSON's (it emits \xNN, \a and \v), so a custody path
-	// carrying a control byte would otherwise produce a document no decoder
-	// reads — and the entry must stay decodable, because it is the operator's
-	// reference to the custody file the attestation matches.
-	entry, _ := json.Marshal([]struct {
-		Kind       string `json:"kind"`
-		Reason     string `json:"reason"`
-		CustodyRef string `json:"custodyRef"`
-	}{{Kind: "boundary-unavailable", Reason: "corrupt-store-custody", CustodyRef: custodyPath}})
-	return entry
 }
 
 // quarantineClientOperationID is the server-minted `quarantine-<name>` client
@@ -258,19 +240,10 @@ func assembleCustody(custody custodyFile) (custodyFile, error) {
 			return custodyFile{}, fmt.Errorf("%w: fence %q names host %q with no ownership entry",
 				ErrQuarantineIncomplete, fence.RecordID, fence.Host)
 		}
-		if err := validateBoundaryEntries(fence.Boundary); err != nil {
-			return custodyFile{}, fmt.Errorf("%w: fence %q: %w", ErrQuarantineIncomplete, fence.RecordID, err)
-		}
-		if fence.Quarantine != boundaryHasRemoteFencing(fence.Boundary) {
-			// The flag is the per-host fencing-quarantine marker; a boundary that
-			// contradicts it would hand a resolver the wrong open state.
-			return custodyFile{}, fmt.Errorf("%w: fence %q carries quarantine %v, which does not match its boundary",
-				ErrQuarantineIncomplete, fence.RecordID, fence.Quarantine)
-		}
 	}
 	// Every entry must be resolvable: the import set is built and validated here
 	// so a custody file the operator reads is one the replacement store can hold.
-	records, err := custodyImports(custody, custody.QuarantinedFile)
+	records, err := custodyImports(custody)
 	if err != nil {
 		return custodyFile{}, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
 	}
@@ -351,11 +324,10 @@ type custodyDocument struct {
 	GuardEpoch             json.RawMessage            `json:"guardEpoch"`
 	WallClockHighWaterMark json.RawMessage            `json:"wallClockHighWaterMark"`
 	PendingCompensation    json.RawMessage            `json:"pendingCompensation"`
-	// FencingQuarantines is the per-host fencing-quarantine marker set, consumed
-	// as a raw region: the replacement store re-materializes a marker for every
-	// imported fence whose boundary is the remote-fencing variant, so the
-	// markers a corrupt file carried are re-derived from the boundaries custody
-	// already preserves, not read from here.
+	// FencingQuarantines is retired (comp08 2b): a prior-build corrupt store
+	// carries the per-host fencing-quarantine marker set. It is consumed as a
+	// raw region — a prior file loads, and the replacement store never carries a
+	// marker again.
 	FencingQuarantines json.RawMessage `json:"fencingQuarantines"`
 }
 
@@ -477,7 +449,6 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 //     the tombstones that were its removal evidence refuses too: it can no
 //     longer show its record set whole, and §4 fails startup over that rather
 //     than serving past a fence it cannot prove;
-//   - every open fence's boundary parses under the crash-fencing spec §9;
 //   - every name the file yielded has an ownership entry whose pair and
 //     generation high-water mark are valid.
 //
@@ -625,9 +596,6 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 		if record.State != StateOrphanUnverified {
 			continue
 		}
-		if err := validateBoundaryEntries(record.OrphanBoundary); err != nil {
-			return custodyFile{}, fmt.Errorf("%w: fence %q: %w", ErrQuarantineIncomplete, record.ID, err)
-		}
 		fences = append(fences, custodyFence{
 			RecordID:          record.ID,
 			Host:              record.Host,
@@ -635,8 +603,6 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 			ClientOperationID: record.ClientOperationID,
 			Generation:        record.Generation,
 			IncarnationID:     record.IncarnationID,
-			Quarantine:        boundaryHasRemoteFencing(record.OrphanBoundary),
-			Boundary:          append(json.RawMessage(nil), record.OrphanBoundary...),
 		})
 	}
 	for _, fence := range fences {
@@ -825,188 +791,6 @@ func custodyHostName(name string) error {
 	return nil
 }
 
-// validateBoundaryEntries checks one record's persisted `BoundaryEntry[]`
-// against the crash-fencing spec §9 union. The store's own record validation
-// checks only the outer form (an array, present on an `orphan-unverified`
-// record); custody is the one path that must be able to hand the boundary to a
-// resolver, so it is the one that refuses an entry no variant can describe.
-func validateBoundaryEntries(raw json.RawMessage) error {
-	if !jsonFieldIsArray(raw) {
-		return errors.New("the boundary is not an array")
-	}
-	var members []json.RawMessage
-	if err := json.Unmarshal(raw, &members); err != nil {
-		return errors.New("the boundary is not an array")
-	}
-	for i, member := range members {
-		if err := validateBoundaryEntry(member); err != nil {
-			return fmt.Errorf("boundary entry %d: %w", i, err)
-		}
-	}
-	return nil
-}
-
-// validateBoundaryEntry checks one §9 boundary member. Each variant's fields are
-// required exactly as the spec's union pins them; an unknown key is refused
-// because the entry would otherwise carry data no verifier reads.
-func validateBoundaryEntry(raw json.RawMessage) error {
-	var discriminator struct {
-		Kind string `json:"kind"`
-	}
-	if err := json.Unmarshal(raw, &discriminator); err != nil {
-		return errors.New("not a boundary entry object")
-	}
-	decode := func(variant any) error {
-		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(variant); err != nil {
-			return fmt.Errorf("%s entry does not match the schema: %w", discriminator.Kind, err)
-		}
-		return nil
-	}
-	switch discriminator.Kind {
-	case "local-linux":
-		var entry struct {
-			Kind      string `json:"kind"`
-			CgroupID  string `json:"cgroupId"`
-			Nonce     string `json:"nonce"`
-			PID       *int64 `json:"pid"`
-			StartTime string `json:"startTime"`
-		}
-		if err := decode(&entry); err != nil {
-			return err
-		}
-		if entry.CgroupID == "" || entry.Nonce == "" || entry.PID == nil || entry.StartTime == "" {
-			return errors.New("local-linux entry is missing required ownership fields")
-		}
-	case "local-darwin":
-		var entry struct {
-			Kind      string `json:"kind"`
-			PGID      *int64 `json:"pgid"`
-			SessionID *int64 `json:"sessionId"`
-			PID       *int64 `json:"pid"`
-			StartTime string `json:"startTime"`
-			Nonce     string `json:"nonce"`
-		}
-		if err := decode(&entry); err != nil {
-			return err
-		}
-		if entry.PGID == nil || entry.SessionID == nil || entry.PID == nil || entry.StartTime == "" || entry.Nonce == "" {
-			return errors.New("local-darwin entry is missing required ownership fields")
-		}
-	case "local-markerless":
-		var entry struct {
-			Kind     string `json:"kind"`
-			Platform string `json:"platform"`
-			CgroupID string `json:"cgroupId"`
-			PGID     *int64 `json:"pgid"`
-			Session  *int64 `json:"sessionId"`
-			Nonce    string `json:"nonce"`
-		}
-		if err := decode(&entry); err != nil {
-			return err
-		}
-		if entry.Platform != "linux" && entry.Platform != "darwin" {
-			return fmt.Errorf("local-markerless entry carries platform %q", entry.Platform)
-		}
-		if entry.Nonce == "" {
-			return errors.New("local-markerless entry carries no nonce")
-		}
-	case "remote-fencing":
-		var entry struct {
-			Kind         string `json:"kind"`
-			FencingEpoch *struct {
-				BootID string `json:"bootId"`
-				OpSeq  *int64 `json:"opSeq"`
-			} `json:"fencingEpoch"`
-			GuardEpoch   *int64 `json:"guardEpoch"`
-			LeaseEntries []struct {
-				Command      string `json:"command"`
-				RegisteredAt string `json:"registeredAt"`
-				Ownership    *struct {
-					PID          *int64 `json:"pid"`
-					PIDStartTime string `json:"pidStartTime"`
-					Nonce        string `json:"nonce"`
-					CgroupID     string `json:"cgroupId"`
-				} `json:"ownership"`
-			} `json:"leaseEntries"`
-		}
-		if err := decode(&entry); err != nil {
-			return err
-		}
-		if entry.FencingEpoch == nil || entry.FencingEpoch.BootID == "" || entry.FencingEpoch.OpSeq == nil {
-			return errors.New("remote-fencing entry carries no fencing epoch")
-		}
-		if entry.GuardEpoch == nil {
-			return errors.New("remote-fencing entry carries no guard epoch")
-		}
-		for i, lease := range entry.LeaseEntries {
-			if lease.Command == "" || lease.RegisteredAt == "" {
-				return fmt.Errorf("remote-fencing lease entry %d carries no command or registration time", i)
-			}
-			if lease.Ownership == nil {
-				return fmt.Errorf("remote-fencing lease entry %d carries no ownership identity", i)
-			}
-			carried := 0
-			if lease.Ownership.PID != nil {
-				carried++
-			}
-			if lease.Ownership.Nonce != "" {
-				carried++
-			}
-			if lease.Ownership.CgroupID != "" {
-				carried++
-			}
-			if carried != 1 {
-				return fmt.Errorf("remote-fencing lease entry %d carries %d ownership identities, want exactly one", i, carried)
-			}
-			if lease.Ownership.PID != nil && lease.Ownership.PIDStartTime == "" {
-				return fmt.Errorf("remote-fencing lease entry %d carries a pid with no start time", i)
-			}
-		}
-	case "boundary-unavailable":
-		var entry struct {
-			Kind       string `json:"kind"`
-			Reason     string `json:"reason"`
-			CustodyRef string `json:"custodyRef"`
-		}
-		if err := decode(&entry); err != nil {
-			return err
-		}
-		if entry.Reason != "corrupt-store-custody" {
-			return fmt.Errorf("boundary-unavailable entry carries reason %q", entry.Reason)
-		}
-		if entry.CustodyRef == "" {
-			return errors.New("boundary-unavailable entry names no custody file")
-		}
-	default:
-		return fmt.Errorf("boundary entry carries unknown kind %q", discriminator.Kind)
-	}
-	return nil
-}
-
-// boundaryHasRemoteFencing reports whether a persisted boundary carries a
-// `remote-fencing` member: the per-host fencing-quarantine marker §4's custody
-// snapshot records. The fencing slices persist that marker as the timed-out
-// epoch's boundary on the `orphan-unverified`-class record (crash-fencing spec
-// §4), so a boundary that carries one is a dedicated fencing quarantine rather
-// than a local-reap record; when a marker field of its own lands, it becomes
-// this discriminator's source.
-func boundaryHasRemoteFencing(raw json.RawMessage) bool {
-	var members []struct {
-		Kind string `json:"kind"`
-	}
-	if err := json.Unmarshal(raw, &members); err != nil {
-		return false
-	}
-	for _, member := range members {
-		if member.Kind == "remote-fencing" {
-			return true
-		}
-	}
-	return false
-}
-
 // readCustodyFile reads and validates one custody file at path for the store at
 // storePath. It is the recovery reader: a boot that depends on a custody file —
 // a pending intent, or an aside file with no replacement — refuses when the file
@@ -1070,8 +854,8 @@ func readCustodyFile(fs afero.Fs, path, storePath string) (custodyFile, error) {
 // imported record's id. floor carries the highest id any earlier custody file
 // for this store handed out, so an id is never reused across quarantine epochs
 // either.
-func replacementState(custody custodyFile, custodyPath string, floor uint64) (snapshot, error) {
-	records, err := custodyImports(custody, custodyPath)
+func replacementState(custody custodyFile, floor uint64) (snapshot, error) {
+	records, err := custodyImports(custody)
 	if err != nil {
 		return snapshot{}, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
 	}
@@ -1090,31 +874,12 @@ func replacementState(custody custodyFile, custodyPath string, floor uint64) (sn
 		AllocatorHighWaterMark: allocated,
 		Records:                records,
 		Boundaries:             map[string]Boundary{},
-		FencingQuarantines:     map[string]FencingQuarantine{},
 		Tombstones:             []Tombstone{},
 		CompactionMarks:        []CompactionMark{},
 		RemovedHosts:           map[string]RemovedHost{},
 		Tokens:                 []Token{},
 		ProbeEpochs:            []ProbeEpoch{},
 		ProbeEpochSeq:          map[string]uint64{},
-	}
-	// The replacement closes every imported name; a name whose fence boundary is
-	// the remote-fencing variant is a fencing quarantine, and its marker is
-	// re-materialized here. One marker names one record, so a host carrying two
-	// unresolved remote-fencing records cannot be represented exactly — and
-	// silently dropping one record's quarantine precedence would hand a
-	// resolver the wrong open state. This writer never produces two (a second
-	// fencing-timeout write refuses a host whose marker is open), so the
-	// custody import fails closed instead of guessing.
-	for _, record := range records {
-		if !boundaryHasRemoteFencing(record.OrphanBoundary) {
-			continue
-		}
-		if _, taken := state.FencingQuarantines[record.Host]; taken {
-			return snapshot{}, fmt.Errorf("%w: host %q carries more than one unresolved remote-fencing record",
-				ErrQuarantineIncomplete, record.Host)
-		}
-		state.FencingQuarantines[record.Host] = FencingQuarantine{RecordID: record.ID, QuarantinedAt: custody.CustodiedAt}
 	}
 	if err := validateSnapshot(state); err != nil {
 		return snapshot{}, fmt.Errorf("%w: the replacement store does not validate: %w", ErrQuarantineIncomplete, err)

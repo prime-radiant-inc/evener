@@ -2,13 +2,16 @@ import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { onBoardJump } from "../board/boardJump";
 import type { Notice } from "../board/notices";
-import { render } from "../renderNative.testkit";
+import { alertRequests, render } from "../renderNative.testkit";
 import { AlertCenter, type Alert } from "./alertCenter";
 
 const harness = vi.hoisted(() => ({
 	center: null as AlertCenter | null,
 	notices: new Map<string, unknown>(),
 	opened: [] as unknown[][],
+	selected: [] as string[],
+	// The selected hub, or none (disconnected, or the selected one removed).
+	active: { id: "hub-1", name: "magic-kingdom" } as { id: string; name: string } | null,
 }));
 vi.mock("react-native", async () => {
 	const mock = (await import("../renderNative.testkit")).nativeModuleMock();
@@ -42,7 +45,16 @@ vi.mock("@react-navigation/elements", () => ({
 vi.mock("@react-navigation/native", async () => ({
 	StackActions: (await import("@react-navigation/routers")).StackActions,
 }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ activeProfile: { id: "hub-1" } }) }));
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => ({
+		selectHub: (id: string) => harness.selected.push(id),
+		activeProfile: harness.active,
+		profiles: [
+			{ id: "hub-1", name: "magic-kingdom" },
+			{ id: "hub-2", name: "paradise-park" },
+		],
+	}),
+}));
 vi.mock("./alertsContext", async () => {
 	const { useSyncExternalStore } = await import("react");
 	return {
@@ -83,6 +95,8 @@ beforeEach(() => {
 	harness.center = new AlertCenter(timer);
 	harness.notices.clear();
 	harness.opened.length = 0;
+	harness.selected.length = 0;
+	harness.active = { id: "hub-1", name: "magic-kingdom" };
 });
 
 it("sits just below the nav bar, and shows nothing without a banner", () => {
@@ -132,4 +146,68 @@ it("opens a notice where the Board's notice row does, and nothing once it has re
 	act(() => harness.center?.offer({ kind: "notice", key: hostDown.key, title: hostDown.text }));
 	act(() => card().props.onPress());
 	expect(harness.opened).toHaveLength(1);
+});
+
+it("opens the New session of the hub whose start failed, with its draft, whichever hub is selected (#3104)", () => {
+	const { card, dispatched } = mount();
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: false }));
+	act(() => card().props.onPress());
+	// That hub is selected first, so its sheet opens on its own connection.
+	expect(harness.selected).toEqual(["hub-2"]);
+	expect(dispatched).toEqual([
+		expect.objectContaining({
+			type: "PUSH",
+			payload: expect.objectContaining({
+				name: "NewSession",
+				params: { hubId: "hub-2", hubName: "paradise-park" },
+			}),
+		}),
+	]);
+});
+
+it("says why a failed start's banner opens nothing once its hub has been removed, and takes it down (#3104)", () => {
+	const { card, dispatched } = mount();
+	alertRequests.length = 0;
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-gone", hubName: "attic", uncertain: false }));
+	act(() => card().props.onPress());
+	expect(dispatched).toEqual([]);
+	expect(harness.center?.getSnapshot().banner).toBeNull();
+	expect(alertRequests).toEqual([
+		expect.objectContaining({
+			title: "attic was removed",
+			message: "Its New session draft was removed with it, so there's nothing to open.",
+		}),
+	]);
+});
+
+it("opens the selected hub's New session without selecting it again (#3104)", () => {
+	const { card, dispatched } = mount();
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false }));
+	act(() => card().props.onPress());
+	expect(harness.selected).toEqual([]);
+	expect(dispatched).toHaveLength(1);
+});
+
+it("opens a failed start's New session with no hub selected, selecting its hub (#3104)", () => {
+	harness.active = null;
+	const { card, dispatched } = mount();
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: true }));
+	act(() => card().props.onPress());
+	expect(harness.selected).toEqual(["hub-2"]);
+	expect(dispatched).toEqual([
+		expect.objectContaining({
+			type: "PUSH",
+			payload: expect.objectContaining({ name: "NewSession", params: { hubId: "hub-2", hubName: "paradise-park" } }),
+		}),
+	]);
+});
+
+it("says a removed hub's failed start opens nothing even with no hub selected (#3104)", () => {
+	harness.active = null;
+	const { card, dispatched } = mount();
+	alertRequests.length = 0;
+	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-gone", hubName: "attic", uncertain: false }));
+	act(() => card().props.onPress());
+	expect(dispatched).toEqual([]);
+	expect(alertRequests).toEqual([expect.objectContaining({ title: "attic was removed" })]);
 });

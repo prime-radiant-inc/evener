@@ -11,6 +11,7 @@
 // The local codec is a pinned localStorage contract: values a browser already
 // stores must keep decoding, so its encoding does not change.
 
+import { isPlainObject } from "./plainObject";
 import type {
   TranscriptDisplayAdvanced as WireAdvanced,
   TranscriptDisplayConfig as WireConfig,
@@ -106,10 +107,6 @@ function cloneConfig(config: TranscriptDisplayConfigV1): TranscriptDisplayConfig
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value);
   return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -129,7 +126,7 @@ function isBoolean(value: unknown): value is boolean {
 
 function isContentVector(value: unknown): value is ContentVector {
   return (
-    isRecord(value) &&
+    isPlainObject(value) &&
     hasExactKeys(value, ["toolIntent", "toolCalls", "reasoning", "expandByDefault"]) &&
     isBoolean(value.toolIntent) &&
     isBoolean(value.toolCalls) &&
@@ -140,7 +137,7 @@ function isContentVector(value: unknown): value is ContentVector {
 
 function isCustomSelection(value: unknown): value is { readonly kind: "custom" } & ContentVector {
   return (
-    isRecord(value) &&
+    isPlainObject(value) &&
     hasExactKeys(value, ["kind", "toolIntent", "toolCalls", "reasoning", "expandByDefault"]) &&
     value.kind === "custom" &&
     isBoolean(value.toolIntent) &&
@@ -181,7 +178,7 @@ export function normalizeContent(content: ContentSelection): ContentSelection {
 export function normalizeConfig(config: TranscriptDisplayConfigV1): TranscriptDisplayConfigV1 {
   if (config.version !== 1) throw new Error("unsupported transcript display config version");
   const content = normalizeContent(config.content);
-  if (!isRecord(config.advanced)) throw new Error("invalid transcript display advanced settings");
+  if (!isPlainObject(config.advanced)) throw new Error("invalid transcript display advanced settings");
   if (
     !isBoolean(config.advanced.roundTimings) ||
     !isBoolean(config.advanced.tokenCounts) ||
@@ -245,7 +242,7 @@ type ShippedCandidate = TranscriptDisplayConfigV1 | TranscriptViewportClass | nu
 
 function candidateConfig(value: ConfigCandidate | HubCandidate): TranscriptDisplayConfigV1 | undefined {
   if (value === null || value === undefined) return undefined;
-  if (isRecord(value) && "config" in value && isRecord(value.config))
+  if (isPlainObject(value) && "config" in value && isPlainObject(value.config))
     return value.config as unknown as TranscriptDisplayConfigV1;
   return value as TranscriptDisplayConfigV1;
 }
@@ -265,7 +262,7 @@ export function resolveEffectiveConfig(
   let hubValue: HubCandidate;
   let shippedValue: ShippedCandidate;
   if (
-    isRecord(localOrSources) &&
+    isPlainObject(localOrSources) &&
     (Object.hasOwn(localOrSources, "local") ||
       Object.hasOwn(localOrSources, "hub") ||
       Object.hasOwn(localOrSources, "shipped") ||
@@ -321,7 +318,7 @@ export function toWireConfig(config: TranscriptDisplayConfigV1): WireConfig {
 }
 
 function readWireContent(value: unknown): ContentSelection | undefined {
-  if (!isRecord(value) || typeof value.kind !== "string") return undefined;
+  if (!isPlainObject(value) || typeof value.kind !== "string") return undefined;
   if (value.kind === "preset") {
     if (!hasExactKeys(value, ["kind", "level"]) || !isContentLevel(value.level)) return undefined;
     return { kind: "preset", level: value.level };
@@ -335,7 +332,7 @@ function readWireContent(value: unknown): ContentSelection | undefined {
 
 function readWireAdvanced(value: unknown): TranscriptDisplayAdvancedV1 | undefined {
   if (
-    !isRecord(value) ||
+    !isPlainObject(value) ||
     !hasExactKeys(value, [
       "roundTimings",
       "tokenCounts",
@@ -364,7 +361,7 @@ function readWireAdvanced(value: unknown): TranscriptDisplayAdvancedV1 | undefin
 }
 
 export function fromWireConfig(value: unknown): TranscriptDisplayConfigV1 | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, ["version", "content", "advanced"]) || value.version !== 1)
+  if (!isPlainObject(value) || !hasExactKeys(value, ["version", "content", "advanced"]) || value.version !== 1)
     return undefined;
   const content = readWireContent(value.content);
   const advanced = readWireAdvanced(value.advanced);
@@ -381,7 +378,7 @@ export function toWireDefault(value: HubTranscriptDisplayDefault): WireDefault {
 /** Validates revision and config while ignoring unknown wrapper fields,
  * so additional hub metadata does not invalidate a usable default. */
 export function fromWireDefault(value: unknown): HubTranscriptDisplayDefault | undefined {
-  if (!isRecord(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) {
+  if (!isPlainObject(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) {
     return undefined;
   }
   const config = fromWireConfig(value.config);
@@ -399,7 +396,7 @@ export function toWireDefaults(
 export function fromWireDefaults(
   value: unknown,
 ): Readonly<Record<TranscriptViewportClass, HubTranscriptDisplayDefault>> | undefined {
-  if (!isRecord(value)) return undefined;
+  if (!isPlainObject(value)) return undefined;
   const desktop = fromWireDefault(value.desktop);
   const mobile = fromWireDefault(value.mobile);
   return desktop === undefined || mobile === undefined ? undefined : { desktop, mobile };

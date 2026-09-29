@@ -1,12 +1,13 @@
-import type {
-	ArchiveParams,
-	FavoriteSetParams,
-	NavigationMutation,
-	PinSectionDeleteParams,
-	PinSectionRenameParams,
-	SessionDeleteParams,
-	SessionPinAssignParams,
-	SessionPinUnpinParams,
+import {
+	type ArchiveParams,
+	type FavoriteSetParams,
+	isPlainObject,
+	type NavigationMutation,
+	type PinSectionDeleteParams,
+	type PinSectionRenameParams,
+	type SessionDeleteParams,
+	type SessionPinAssignParams,
+	type SessionPinUnpinParams,
 } from "@evener/appwire-client";
 import { decodeSessionDeletionResult, localSessionId, type SessionDeletionResult } from "./sessionDeletionResult";
 
@@ -44,8 +45,8 @@ function valid(condition: unknown): asserts condition {
 	if (!condition) throw Error("Invalid navigation recovery record.");
 }
 function record(value: unknown): Record<string, unknown> {
-	valid(value !== null && typeof value === "object" && !Array.isArray(value));
-	return value as Record<string, unknown>;
+	valid(isPlainObject(value));
+	return value;
 }
 function keys(value: Record<string, unknown>, required: string[], optional: string[] = []) {
 	valid(

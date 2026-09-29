@@ -63,7 +63,11 @@ func (c *Codex) Apply(ctx context.Context, req *http.Request, res registry.Resol
 	creds, err := c.credentials(ctx, res.Instance)
 	if err != nil {
 		if errors.Is(err, authopenai.ErrLoginRequired) {
-			return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: %v (run `evener openai login --instance %s`)", res.Instance, err, res.Instance), Cause: err}
+			return &llm.ConfigurationError{
+				Message:          fmt.Sprintf("instance %q: %v (run `evener openai login --instance %s`)", res.Instance, err, res.Instance),
+				Cause:            errors.Join(llm.ErrSignInRequired, err),
+				ProviderInstance: res.Instance,
+			}
 		}
 		return fmt.Errorf("instance %q: codex credentials: %w", res.Instance, err)
 	}
@@ -131,7 +135,11 @@ func recordScope(record authopenai.AuthRecord) (accountID, workspaceID string) {
 // whether because the registry's own gate failed or because c.credentials
 // resolved something else (spec §9.5's flag day: never OPENAI_API_KEY).
 func notSignedIn(instance string) error {
-	return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q is not signed in (run `evener openai login --instance %s`)", instance, instance)}
+	return &llm.ConfigurationError{
+		Message:          fmt.Sprintf("instance %q is not signed in (run `evener openai login --instance %s`)", instance, instance),
+		Cause:            llm.ErrSignInRequired,
+		ProviderInstance: instance,
+	}
 }
 
 // PrepareRequest implements llm.RequestPreparer: the lite routing header

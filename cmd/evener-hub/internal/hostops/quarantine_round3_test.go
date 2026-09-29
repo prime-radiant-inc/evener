@@ -327,8 +327,7 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 }
 
 // TestQuarantineRefusesIncoherentCustodyMetadata is the round-three M4 test:
-// ownership high-water marks must cover their generation, and a fence's
-// quarantine flag must match its boundary's fencing marker.
+// ownership high-water marks must cover their generation.
 func TestQuarantineRefusesIncoherentCustodyMetadata(t *testing.T) {
 	mutate := func(t *testing.T, custody []byte, change func(map[string]json.RawMessage)) []byte {
 		t.Helper()
@@ -349,7 +348,7 @@ func TestQuarantineRefusesIncoherentCustodyMetadata(t *testing.T) {
 	if _, err := Open(path); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	custodyPath, custodyBytes := quarantineArtifact(t, filepath.Dir(path), ".custody-")
+	_, custodyBytes := quarantineArtifact(t, filepath.Dir(path), ".custody-")
 
 	t.Run("ownership highWaterMark below its generation", func(t *testing.T) {
 		body := mutate(t, custodyBytes, func(top map[string]json.RawMessage) {
@@ -368,43 +367,6 @@ func TestQuarantineRefusesIncoherentCustodyMetadata(t *testing.T) {
 			t.Fatalf("assembleCustody = %v, want ErrQuarantineIncomplete for highWaterMark below generation", err)
 		}
 	})
-	t.Run("a fence flag that contradicts its boundary", func(t *testing.T) {
-		for _, tc := range []struct {
-			name string
-			flag string
-			host string
-		}{
-			{"a markerless boundary marked as quarantined", "true", "h1"},
-			{"a remote-fencing boundary marked as not quarantined", "false", "h3"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				body := mutate(t, custodyBytes, func(top map[string]json.RawMessage) {
-					var fences []map[string]json.RawMessage
-					if err := json.Unmarshal(top["fences"], &fences); err != nil {
-						t.Fatalf("fences: %v", err)
-					}
-					for i := range fences {
-						var host string
-						if err := json.Unmarshal(fences[i]["host"], &host); err != nil {
-							t.Fatalf("host: %v", err)
-						}
-						if host == tc.host {
-							fences[i]["quarantine"] = json.RawMessage(tc.flag)
-						}
-					}
-					raw, err := json.Marshal(fences)
-					if err != nil {
-						t.Fatalf("Marshal: %v", err)
-					}
-					top["fences"] = raw
-				})
-				if _, err := assembleCustodyFromBytes(t, body); !errors.Is(err, ErrQuarantineIncomplete) {
-					t.Fatalf("assembleCustody = %v, want ErrQuarantineIncomplete for a mismatched fence flag", err)
-				}
-			})
-		}
-	})
-	_ = custodyPath
 }
 
 // TestQuarantineRefusesFenceIDsThatAliasAnEarlierCustody is the round-three M5

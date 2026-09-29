@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -340,6 +341,33 @@ func TestWriteReviewPackMasksAPathInsideADelegateBrief(t *testing.T) {
 	}
 	if !strings.Contains(text, "MARKER-58f2a1") {
 		t.Errorf("packet lost the delegate brief:\n%s", text)
+	}
+}
+
+// TestRenderPacketLabelsHarnessSteering: a steering turn is only the person's
+// own words when its source is SteeringSourceUser. The harness's own reminder
+// (such as the bare-text nudge) is recorded as steering the person never saw,
+// so the blind reader must not read it as the user speaking.
+func TestRenderPacketLabelsHarnessSteering(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	harness := schema.NewTurn(schema.TurnSteering, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{textPart("Send your report with the communicate tool.")}})
+	harness.SteeringKind = events.SteeringKindNoToolCalls
+	user := schema.NewTurn(schema.TurnSteering, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{textPart("focus on the tests")}})
+	user.SteeringKind = events.SteeringKindHumanNote
+	user.SteeringSource = events.SteeringSourceUser
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{harness, user})
+	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := renderPacket(tr)
+	if !strings.Contains(packet, "## Evener (not shown to the user)\n\nSend your report with the communicate tool.") {
+		t.Errorf("packet did not label harness steering as Evener's:\n%s", packet)
+	}
+	if !strings.Contains(packet, "## User\n\nfocus on the tests") {
+		t.Errorf("packet did not render user steering as the user's:\n%s", packet)
 	}
 }
 

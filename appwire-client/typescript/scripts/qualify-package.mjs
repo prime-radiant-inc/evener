@@ -119,6 +119,7 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.parseSteeringNotifications('<delegate-notification delegate_id="dlg_1">{"kind":"reported","message":"Done."}</delegate-notification>')[0].notification.message, "Done.");
 assert.equal(client.delegateTiming({ terminal: true, runStartedAt: "2026-09-07T00:00:00Z", runEndedAt: "2026-09-07T00:00:05Z" }, Number.NaN).durationMs, 5000);
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
@@ -138,9 +139,9 @@ assert.deepEqual(
   client.sessionControls("idle", { steer: true, interrupt: true, queue: false, send: true }, 1),
   { stop: false, steer: false, drain: true, drainQueue: true, queue: false, send: true, reason: { stop: "no active turn", steer: "no active turn", queue: "Queue is not available for this session" } },
 );
-assert.equal(client.formatTokenCount(41200), "41k");
+assert.equal(client.formatTokenCount(41200), "41.2K");
 assert.equal(client.formatDurationMs(1500), "1.5s");
-assert.equal(client.formatCharCount(2500), "2.5k chars");
+assert.equal(client.formatCharCount(2500), "2.5K chars");
 assert.equal(client.formatClockTime(undefined), undefined);
 assert.equal(client.formatClockTimeSeconds("not a timestamp"), undefined);
 assert.equal(client.formatElapsed(65000), "1m05s");
@@ -205,8 +206,8 @@ assert.equal(client.filterCatalog(catalogOptions, "anthropic").length, 0);
 assert.equal(client.withGroupHeads(catalogOptions)[0].groupHead, "openai");
 assert.deepEqual(client.capabilityLabels(catalogEntry), ["tools"]);
 assert.equal(client.formatCost(catalogEntry), null);
-assert.equal(client.contextWindowLabel(catalogEntry), "200k");
-assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200k");
+assert.equal(client.contextWindowLabel(catalogEntry), "200K");
+assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200K");
 assert.equal(client.unavailableLine({ provider: "anthropic", message: "no credentials" }), "anthropic \u2014 no credentials");
 const pickerRows = client.buildPickerRows({ models: [catalogEntry], recent: [] }, "");
 assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);

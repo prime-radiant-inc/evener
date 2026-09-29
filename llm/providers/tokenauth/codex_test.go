@@ -130,12 +130,18 @@ func TestCodexApplyRequiresLogin(t *testing.T) {
 	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "evener openai login --instance openai-codex") {
 		t.Fatalf("err = %v", err)
 	}
+	if !errors.Is(err, llm.ErrSignInRequired) || cfg.Provider() != "openai-codex" {
+		t.Fatalf("missing oauth credential must classify as sign-in required for openai-codex: %v", err)
+	}
 	c.Credentials = func(context.Context, string, string) (authopenai.RuntimeCredentials, error) {
 		return authopenai.RuntimeCredentials{}, authopenai.ErrLoginRequired
 	}
 	err = c.Apply(context.Background(), req, codexRes("openai-codex"))
 	if !errors.As(err, &cfg) || !errors.Is(err, authopenai.ErrLoginRequired) {
 		t.Fatalf("expired login must be a configuration error wrapping ErrLoginRequired: %v", err)
+	}
+	if !errors.Is(err, llm.ErrSignInRequired) || cfg.Provider() != "openai-codex" {
+		t.Fatalf("refused login must classify as sign-in required for openai-codex: %v", err)
 	}
 
 	// The registry's own gate (res.Credential.Source == "oauth") is a
@@ -149,6 +155,9 @@ func TestCodexApplyRequiresLogin(t *testing.T) {
 	err = c.Apply(context.Background(), req3, codexRes("openai-codex"))
 	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "evener openai login --instance openai-codex") {
 		t.Fatalf("env-sourced credential must be rejected: %v", err)
+	}
+	if !errors.Is(err, llm.ErrSignInRequired) || cfg.Provider() != "openai-codex" {
+		t.Fatalf("env-sourced credential must classify as sign-in required for openai-codex: %v", err)
 	}
 	if req3.Header.Get("Authorization") != "" {
 		t.Fatal("no Authorization header when the resolved credential is not oauth-sourced")

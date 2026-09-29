@@ -1,21 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import {
-	ActivityIndicator,
-	Alert,
-	KeyboardAvoidingView,
-	Platform,
-	ScrollView,
-	Text,
-	TextInput,
-	View,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ActivityIndicator, Alert, Text, TextInput, View } from "react-native";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type { ConnectionState, MarketplaceAddParams, MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
 import { type MarketplacesStore, type PluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
+import { scaledType, space, uiType } from "./design/tokens";
 import { PLUGIN_MUTATION_BUSY, runGatedMutation, type PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
 import {
@@ -24,16 +14,29 @@ import {
 	catalogToBrowse,
 	refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
-import { Group, GroupFooter, GroupGap, GroupLabel, Row } from "./sheet/Grouped";
+import {
+	FormError,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	GroupGap,
+	GroupLabel,
+	Row,
+	Segmented,
+	TextFieldRow,
+	useErrorInView,
+	useFormError,
+} from "./sheet/Grouped";
+import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
-import { Action, allowFontScaling, Choice, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { allowFontScaling, useColors, useTextScale } from "./ui";
 import { destructiveButton } from "./haptics";
 
 // The stores keep each failed request's own text; this screen shows the same
 // copy for every failure, as the web's section translates its at render.
-const MARKETPLACES_FAILED = "Could not load marketplaces. Try again when connected.";
-const CATALOG_FAILED = "Could not load this catalog. Try again when connected.";
-export const INSTALLED_PLUGINS_FAILED = "Could not load installed plugins. Try again when connected.";
+const MARKETPLACES_FAILED = "Could not load marketplaces.";
+const CATALOG_FAILED = "Could not load this catalog.";
+export const INSTALLED_PLUGINS_FAILED = "Could not load installed plugins.";
 const WRITE_FAILED = "Could not confirm the change. Check its status before trying again.";
 
 export function MarketplaceBrowser({
@@ -342,15 +345,13 @@ export function MarketplaceBrowser({
 	);
 	return (
 		<>
-			<GroupGap />
 			{problems}
 			{selected ? (
 				<>
 					<Group>
 						<Row label="All marketplaces" tone="accent" onPress={() => select(null)} />
 					</Group>
-					<GroupLabel machine>{selected}</GroupLabel>
-					<Group>
+					<Group label={selected} machineLabel>
 						{marketplace ? <Row label="Source" sub={marketplaceSourceLabel(marketplace.source)} machineSub /> : null}
 						{/* It pulls the marketplace's source again; no readable text says "refresh" (calmCopy.test.ts). */}
 						<Row label="Update source" tone="accent" disabled={busy || !ready} onPress={refresh} />
@@ -365,8 +366,7 @@ export function MarketplaceBrowser({
 					{segment === "browse" ? (
 						<>
 							{loaded?.description ? <GroupFooter>{loaded.description}</GroupFooter> : null}
-							<GroupLabel>Catalog</GroupLabel>
-							<Group>
+							<Group label="Catalog">
 								<TextInput
 									accessibilityLabel="Filter marketplace plugins"
 									placeholder="Filter this catalog"
@@ -376,7 +376,12 @@ export function MarketplaceBrowser({
 									autoCapitalize="none"
 									autoCorrect={false}
 									allowFontScaling={allowFontScaling}
-									style={{ minHeight: 44, paddingHorizontal: 16, fontSize: 17 * scale, color: palette.inkHi }}
+									style={{
+										minHeight: 44,
+										paddingHorizontal: space.rowInset,
+										fontSize: uiType.listRow.fontSize * scale,
+										color: palette.inkHi,
+									}}
 								/>
 							</Group>
 							{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}
@@ -410,7 +415,6 @@ export function MarketplaceBrowser({
 							) : null}
 							{catalogPlugins.length > 0 ? (
 								<>
-									<GroupGap />
 									<Group>
 										{catalogPlugins.map((item) => {
 											const target = { plugin: item.name, marketplace: selected };
@@ -479,7 +483,6 @@ export function MarketplaceBrowser({
 					) : null}
 					{segment === "marketplaces" ? (
 						<>
-							<GroupGap />
 							<Group>
 								<Row
 									label="Add marketplace…"
@@ -541,6 +544,21 @@ export function MarketplaceBrowser({
 	);
 }
 
+type MarketplaceKind = "url" | "github" | "directory";
+
+/** Each kind's segment, and what its source row asks for. A hub directory is
+ * picked with the hub path browser instead of a typed row. */
+const MARKETPLACE_KINDS: readonly {
+	value: MarketplaceKind;
+	label: string;
+	sourceLabel?: string;
+	placeholder?: string;
+}[] = [
+	{ value: "url", label: "Git URL", sourceLabel: "Git URL", placeholder: "https://example.com/plugins.git" },
+	{ value: "github", label: "GitHub", sourceLabel: "Repository", placeholder: "owner/repo" },
+	{ value: "directory", label: "Hub directory" },
+];
+
 export function AddMarketplace({
 	connectionState,
 	client,
@@ -563,11 +581,14 @@ export function AddMarketplace({
 	client: ConversationClientLike;
 }) {
 	const colors = useColors();
-	const [kind, setKind] = useState<"url" | "github" | "directory">("url");
+	const scale = useTextScale();
+	const [kind, setKind] = useState<MarketplaceKind>("url");
 	const [source, setSource] = useState("");
 	const [name, setName] = useState("");
 	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
+	const nameInput = useRef<TextInput>(null);
+	const page = useErrorInView(error);
 	// Everything below gates on this, not on `busy` alone: `busy` is only true
 	// while a submission is actually in flight, and disables nothing while
 	// disconnected on its own.
@@ -612,40 +633,62 @@ export function AddMarketplace({
 			setError("Could not confirm the marketplace was added. Check the list and source before trying again.");
 		else onClose();
 	}
+	const add = whenReady(canUseConnection, () => {
+		void submit();
+	});
+	const typed = MARKETPLACE_KINDS.find((option) => option.value === kind);
 	return (
-		<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
-				<View style={[styles.row, { paddingHorizontal: 16 }]}>
-					<View style={styles.fill}>
-						<Copy muted>{hubName}</Copy>
-					</View>
-					<Action onPress={onClose}>Cancel</Action>
-				</View>
-				{connectionState === "ready" ? null : <SheetStatus />}
-				<KeyboardAvoidingView style={styles.fill} enabled={Platform.OS === "android"} behavior="height">
-					<ScrollView
-						automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-						keyboardShouldPersistTaps="handled"
-						contentContainerStyle={{ padding: 20, gap: 12 }}
+		<ModalSheet
+			title="Add marketplace"
+			onCancel={onClose}
+			cancelDisabled={busy}
+			done={{
+				label: busy ? "Adding…" : "Add",
+				disabled: disabled || !source.trim(),
+				busy,
+				onPress: add,
+			}}
+			onRequestClose={() => {
+				// A swipe down waits out an add in flight, as Cancel does.
+				if (!busy) onClose();
+			}}
+			accessory={
+				<>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{
+							textAlign: "center",
+							color: colors.palette.inkMid,
+							...scaledType(uiType.footnote, scale),
+							paddingBottom: 6,
+						}}
 					>
-						<Copy>Add marketplace</Copy>
-						<View style={[styles.row, { flexWrap: "wrap" }]}>
-							{(["url", "github", "directory"] as const).map((value) => (
-								<Choice
-									key={value}
-									label={value === "url" ? "Git URL" : value === "github" ? "GitHub repository" : "Hub directory"}
-									selected={kind === value}
-									disabled={busy}
-									onPress={() => {
-										if (value === kind) return;
-										setKind(value);
-										setSource("");
-									}}
-								/>
-							))}
-						</View>
-						<Copy>{kind === "url" ? "Git URL" : kind === "github" ? "owner/repo" : `Directory on ${hubName}`}</Copy>
-						{kind === "directory" ? (
+						{hubName}
+					</Text>
+					{connectionState === "ready" ? null : <SheetStatus />}
+				</>
+			}
+		>
+			<GroupedPage scrollRef={page}>
+				<FormError error={error} />
+				<GroupGap />
+				<Segmented<MarketplaceKind>
+					label="Kind"
+					options={MARKETPLACE_KINDS}
+					value={kind}
+					disabled={busy}
+					onChange={(value) => {
+						// Segmented skips a tap on the chosen kind already; this keeps the
+						// source safe even so.
+						if (value === kind) return;
+						setKind(value);
+						setSource("");
+					}}
+				/>
+				{kind === "directory" ? (
+					<>
+						<GroupLabel>{`Directory on ${hubName}`}</GroupLabel>
+						<View style={{ marginHorizontal: space.margin }}>
 							<HubPathField
 								kind="dir"
 								client={client}
@@ -654,41 +697,35 @@ export function AddMarketplace({
 								onChange={setSource}
 								disabled={disabled}
 							/>
-						) : (
-							<TextInput
-								accessibilityLabel="Marketplace source"
-								value={source}
-								onChangeText={setSource}
-								editable={!busy}
-								autoCapitalize="none"
-								autoCorrect={false}
-								style={[styles.input, { color: colors.text, borderColor: colors.border }]}
-							/>
-						)}
-						{kind === "directory" && <Copy muted>This path is on the hub, not this phone.</Copy>}
-						<Copy>Name (optional)</Copy>
-						<TextInput
-							accessibilityLabel="Marketplace name"
-							value={name}
-							onChangeText={setName}
-							editable={!busy}
-							autoCapitalize="none"
-							autoCorrect={false}
-							style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+						</View>
+						<GroupFooter>This path is on the hub, not this phone.</GroupFooter>
+					</>
+				) : (
+					<Group label={typed?.sourceLabel ?? ""}>
+						<TextFieldRow
+							label="Marketplace source"
+							placeholder={typed?.placeholder}
+							value={source}
+							onChangeText={setSource}
+							disabled={busy}
+							returnKeyType="next"
+							onSubmitEditing={() => nameInput.current?.focus()}
 						/>
-						<ErrorMessage message={error} />
-						{busy && <ActivityIndicator accessibilityLabel="Adding marketplace" />}
-						<Action
-							disabled={disabled || !source.trim()}
-							onPress={whenReady(canUseConnection, () => {
-								void submit();
-							})}
-						>
-							Add marketplace
-						</Action>
-					</ScrollView>
-				</KeyboardAvoidingView>
-			</SafeAreaView>
-		</HoldingModal>
+					</Group>
+				)}
+				<Group label="Name">
+					<TextFieldRow
+						label="Marketplace name"
+						value={name}
+						onChangeText={setName}
+						disabled={busy}
+						returnKeyType="done"
+						onSubmitEditing={add}
+						ref={nameInput}
+					/>
+				</Group>
+				<GroupFooter>Optional.</GroupFooter>
+			</GroupedPage>
+		</ModalSheet>
 	);
 }

@@ -8,6 +8,9 @@
 //   for real and a suite can assert on what a press played.
 // - expo-sqlite/kv-store: the device's key-value store, which the Haptics
 //   switch (Hub > In-app alerts) is read from. In memory, per test file.
+// - expo-glass-effect: the system Liquid Glass the bottom bars wear
+//   (design/BarFrame). GlassView is an inert host element, and whether the
+//   API is there reads the testkit's systemGlass (off unless a test says).
 // - expo-symbols: the SF Symbols every grouped row draws its glyph with
 //   (sheet/Grouped.tsx), which MarketplaceBrowser renders. An inert host
 //   element, as the suites that mock it themselves draw it.
@@ -33,6 +36,17 @@ vi.mock("expo-haptics", async () => {
 });
 
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+
+vi.mock("expo-glass-effect", async () => {
+	const { systemGlass } = await import("./renderNative.testkit");
+	return {
+		GlassView: "GlassView",
+		isGlassEffectAPIAvailable: () => {
+			if (systemGlass.available === "throws") throw new Error("Cannot find native module 'ExpoGlassEffect'");
+			return systemGlass.available;
+		},
+	};
+});
 
 vi.mock("expo-sqlite/kv-store", () => {
 	const values = new Map<string, string>();

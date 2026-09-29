@@ -35,9 +35,14 @@ const (
 
 // DeletionTarget is the stable identity of one session governed by a project
 // deletion. No target-directory path is retained as deletion authority.
+// StateProjectID names the project whose state directory holds the session
+// when that differs from the deleted project (a subagent that ran from another
+// directory); it is a validated identifier, never a path, and empty means the
+// deleted project's own directory.
 type DeletionTarget struct {
-	Ref      string `json:"ref"`
-	ThreadID string `json:"thread_id"`
+	Ref            string `json:"ref"`
+	ThreadID       string `json:"thread_id"`
+	StateProjectID string `json:"state_project_id,omitempty"`
 }
 
 // DeletionRecord is one irrevocable project deletion generation.
@@ -223,7 +228,12 @@ func normalizeDeletionTargets(targets []DeletionTarget) ([]DeletionTarget, error
 		if err != nil || parsed.SourceID != "local" || parsed.ThreadID != threadID {
 			return nil, fmt.Errorf("invalid local deletion ref %q", ref)
 		}
-		unique[ref] = DeletionTarget{Ref: ref, ThreadID: threadID}
+		if target.StateProjectID != "" {
+			if err := identifier.ValidateProjectID(target.StateProjectID); err != nil {
+				return nil, fmt.Errorf("invalid deletion state project ID: %w", err)
+			}
+		}
+		unique[ref] = DeletionTarget{Ref: ref, ThreadID: threadID, StateProjectID: target.StateProjectID}
 	}
 	out := make([]DeletionTarget, 0, len(unique))
 	for _, target := range unique {

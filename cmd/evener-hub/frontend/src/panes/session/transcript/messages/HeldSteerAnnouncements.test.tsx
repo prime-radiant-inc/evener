@@ -142,8 +142,8 @@ test("delivery is announced once when the transcript reflects the id", async () 
   await act(async () => {
     await threadsStore.getState().refreshThread("ref_a");
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message delivered."),
   );
@@ -208,8 +208,8 @@ test("a same-batch delivery plus a new arrival announces the delivery", async ()
   await act(async () => {
     await threadsStore.getState().refreshThread("ref_a");
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message delivered."),
   );
@@ -257,8 +257,8 @@ test("mixed departures announce every distinct outcome in departure order", asyn
   await act(async () => {
     await threadsStore.getState().refreshThread("ref_a");
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
 
   expect(screen.getByTestId("held-steer-announcements").textContent).toBe(
     "Steering message delivered. Steering message failed to deliver.",
@@ -294,8 +294,8 @@ test.each([
     }
     storage.close();
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await waitFor(() => expect(screen.getByTestId("held-steer-announcements").textContent).toBe(expected));
   // Announced once, not re-announced on a re-render.
   const before = screen.getByTestId("held-steer-announcements").textContent;
@@ -322,8 +322,8 @@ test("a failed-delivery vanish (record gone, nothing holds the id) is announced 
   await act(async () => {
     resetThreadsStoreForTests();
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message failed to deliver."),
   );

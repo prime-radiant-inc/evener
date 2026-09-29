@@ -94,7 +94,7 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 			matches = thread.Evener.Ref == params.Ref || localAppRef(thread.ID) == params.Ref
 		}
 		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
-			thread = applyHubForkCapability(cfg, thread)
+			thread = applyHubCapabilities(cfg, thread)
 			return appwire.ThreadReadResponse{Thread: thread}, true, nil
 		}
 	}
@@ -125,7 +125,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 	if !ok {
 		return appwire.ThreadTurnsListResponse{}, false, nil
 	}
-	page, err := pastEntryPageItems(ctx, entry, params.Cursor, itemLimit)
+	page, err := pastEntryPageItems(ctx, entry, params, itemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, true, err
 	}
@@ -273,11 +273,12 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 	return page, err
 }
 
-// pastEntryPageItems reads the page before cursor, or the latest window when
-// there is no cursor. A cursor from another incarnation is stale: the client
-// re-reads the latest window.
-func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, cursor string, limit int) (pastItemPage, error) {
-	if cursor == "" {
+// pastEntryPageItems reads the page before the request's cursor, or before
+// its Before boundary with no cursor (appitempaging.Boundary), or the latest
+// window when it names neither. A cursor from another incarnation is stale:
+// the client re-reads the latest window.
+func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params appwire.ThreadTurnsListParams, limit int) (pastItemPage, error) {
+	if params.Cursor == "" && params.Before == nil {
 		return pastEntryLatestItems(ctx, entry, limit, nil)
 	}
 	var page pastItemPage
@@ -286,7 +287,7 @@ func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, cursor str
 		if err != nil {
 			return err
 		}
-		before, err := appitempaging.DecodeCursor(cursor, pastCursorIdentity(entry, incarnation))
+		before, err := appitempaging.Boundary(params, pastCursorIdentity(entry, incarnation))
 		if err != nil {
 			return err
 		}
@@ -646,6 +647,27 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 	return state.ResumeRequired || state.Stopping > 0
 }
 
+// applyHubCapabilities stamps the capability bits the hub owns, not the
+// daemon, on a thread it serves: fork (applyHubForkCapability) and pageBefore
+// (hubPagesBefore). Every path that serves a thread applies it, so a session
+// reads the same from thread/list and thread/read (#1840).
+func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
+	thread = applyHubForkCapability(cfg, thread)
+	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
+	return thread
+}
+
+// hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether
+// thread/turns/list pages a thread from a before position, with or without a
+// cursor. This hub mints such pages for its local and saved threads. A thread
+// on another host refuses them until the controller can join one to its
+// remote paging window (#3176), and a live delegate is a read-only alias its
+// parent daemon owns (the same signal fork is fenced on).
+func hubPagesBefore(cfg hubcore.WebConfig, ref string) bool {
+	parsed, err := appwire.ParseRef(ref)
+	return err == nil && parsed.SourceID == "local" && !hubForkLiveDelegateFenced(cfg, parsed.ThreadID)
+}
+
 // applyHubForkCapability projects the hub's fork authority after the common
 // recovery fence has been applied. A daemon's capability set is not an
 // authority grant for persisted local forks, and a session needing recovery
@@ -817,6 +839,9 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		// prepareRelay recheck, and thread/start's spawn-read gate), so a daemon
 		// that genuinely lacks the support still refuses each selection.
 		SkillInput: true,
+		// The hub pages a saved transcript from a before position itself
+		// (pastEntryPageItems), so the answer is its own (hubPagesBefore).
+		PageBefore: true,
 	}
 	caps.ChangeVisionModel = caps.ChangeModel
 	return caps
@@ -824,11 +849,11 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 
 // readablePastCapabilities advertises what a session whose daemon is not
 // answering can still do: nothing mutating, but its saved shared notes stay
-// readable. The web derives editability from the store's write gate and the
-// daemon fences writes by admission, so advertising the read capability cannot
-// enable an edit.
+// readable, and its saved transcript pages from a before position. The web
+// derives editability from the store's write gate and the daemon fences writes
+// by admission, so advertising the read capabilities cannot enable an edit.
 func readablePastCapabilities() appwire.ThreadCapabilities {
-	return appwire.ThreadCapabilities{SharedNotes: true}
+	return appwire.ThreadCapabilities{SharedNotes: true, PageBefore: true}
 }
 
 func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry) (appwire.Thread, error) {
@@ -944,7 +969,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
 		thread.Evener.Capabilities = readablePastCapabilities()
 	} else {
-		thread = applyHubForkCapability(cfg, thread)
+		thread = applyHubCapabilities(cfg, thread)
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	thread.Evener.Access = appwire.SessionAccess(entry.Meta.Config.Sandbox, entry.Meta.Config.SandboxNet)

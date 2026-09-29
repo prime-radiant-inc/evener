@@ -116,6 +116,14 @@ describe("the connection bar (spec 8.1, 14)", () => {
 			textNode(render(header({ status: "Reconnecting…" })), "Reconnecting…").props.accessibilityHint,
 		).toBeUndefined();
 	});
+
+	it("leaves the connection status unannounced: it is ambient and changes often (#2903)", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		const tree = render(header({ status: "Reconnecting…", chips: [goal] }));
+		act(() => tree.update(header({ status: "Offline · updated 3m ago", chips: [goal] })));
+		expect(announce).not.toHaveBeenCalled();
+	});
 });
 
 describe("the chips row (spec 8.1)", () => {
@@ -256,6 +264,37 @@ describe("hiding on scroll (spec 8.1)", () => {
 		act(() => tree.update(header({ status: "Reconnecting…", chips: [goal] })));
 		expect(timing).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ toValue: 0, duration: 200 }));
 		expect(translateY(chipsRow(tree))).toBe(0);
+	});
+
+	// Slid away behind the nav bar, the row is out of VoiceOver's reach too,
+	// or it would read chips no one can see.
+	it("hides the slid-away row from VoiceOver, and gives it back when it returns", async () => {
+		const tree = render(header({ chips: [goal] }));
+		await flushReduceMotion();
+		measured(tree);
+		expect(chipsRow(tree).props).toMatchObject({
+			accessibilityElementsHidden: false,
+			importantForAccessibility: "auto",
+		});
+		act(() => tree.update(header({ chips: [goal], hidden: true })));
+		expect(chipsRow(tree).props).toMatchObject({
+			accessibilityElementsHidden: true,
+			importantForAccessibility: "no-hide-descendants",
+		});
+		act(() => tree.update(header({ chips: [goal] })));
+		expect(chipsRow(tree).props).toMatchObject({
+			accessibilityElementsHidden: false,
+			importantForAccessibility: "auto",
+		});
+	});
+
+	it("keeps the find bar in VoiceOver's reach while hidden, since it never slides away", async () => {
+		const tree = render(header({ chips: [goal], find: <FindStandIn />, hidden: true }));
+		await flushReduceMotion();
+		expect(chipsRow(tree).props).toMatchObject({
+			accessibilityElementsHidden: false,
+			importantForAccessibility: "auto",
+		});
 	});
 
 	it("jumps with no animation under Reduce Motion", async () => {

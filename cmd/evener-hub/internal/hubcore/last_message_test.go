@@ -67,7 +67,4 @@ func fuzzScenarioBuildTree_RowsCarryTheirOwnSessionsLastMessage(t *testing.T) {
 	if _, _, ended, found := liveAndProjectRowsFor(tree, "01ENDED"); !found || ended.LastMessage != "The ended session's last words." {
 		t.Fatalf("ended row = %q (found %v), want its meta's message", ended.LastMessage, found)
 	}
-	if len(liveRow.Children) != 1 || liveRow.Children[0].LastMessage != "" {
-		t.Fatalf("children = %+v, want the one subagent row with no message", liveRow.Children)
-	}
 }

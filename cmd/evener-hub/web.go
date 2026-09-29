@@ -197,7 +197,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	if web.cfg.LaunchModels == nil {
 		web.cfg.LaunchModels = web.fetchLaunchModels
 	}
-	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}, SubagentParent: web.navigationSubagentParent})
+	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}, SubagentParent: web.navigationSubagentParent, Logf: navigationStatsLogfFor(web.cfg)})
 	server, hostAdmin, hostManage, notices := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
 	web.hostAdmin = hostAdmin

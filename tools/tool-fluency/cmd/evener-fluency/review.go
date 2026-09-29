@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 )
@@ -103,6 +104,13 @@ var packetSections = map[string]string{
 	string(schema.TurnToolResults): "Tool results",
 }
 
+// harnessSteeringSection labels steering the person never saw, such as the
+// bare-text nudge the harness injects after a turn without a message to the
+// user. Rendering it under "User" would tell the blind reader the person said
+// it; a steering turn is the person's own words only when its source is
+// SteeringSourceUser.
+const harnessSteeringSection = "Evener (not shown to the user)"
+
 // packetToolResultMax caps each tool result in a packet. The reader judges
 // the agent's work and writing, and a whole file or test log adds little.
 const packetToolResultMax = 1500
@@ -128,6 +136,9 @@ func renderPacket(tr doctor.TranscriptResult) string {
 		section, ok := packetSections[turn.Kind]
 		if !ok {
 			continue
+		}
+		if turn.Kind == string(schema.TurnSteering) && turn.SteeringSource != events.SteeringSourceUser {
+			section = harnessSteeringSection
 		}
 		fmt.Fprintf(&b, "## %s\n\n", section)
 		if turn.Text != "" {

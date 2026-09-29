@@ -84,6 +84,17 @@ func providerCauseFromError(err error, model string) *events.ErrorCause {
 	if err == nil {
 		return nil
 	}
+	// A ConfigurationError is a local configuration problem, not an HTTP
+	// provider failure, so it never yields a "provider" cause. The one
+	// attributed form is a sign-in failure: name the instance the user must
+	// sign in to, so a failed turn can say "<instance> sign-in expired"
+	// instead of recording no cause (#2705).
+	if ce, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		if provider := ce.Provider(); errors.Is(ce, llm.ErrSignInRequired) && provider != "" {
+			return &events.ErrorCause{Kind: signInRequiredCause, Provider: provider}
+		}
+		return nil
+	}
 	var le llm.Error
 	if !errors.As(err, &le) {
 		return nil
@@ -99,3 +110,6 @@ func providerCauseFromError(err error, model string) *events.ErrorCause {
 		Status:   le.StatusCode(),
 	}
 }
+
+// signInRequiredCause is the Cause.Kind for a sign-in failure.
+const signInRequiredCause = "signInRequired"

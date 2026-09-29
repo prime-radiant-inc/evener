@@ -1002,17 +1002,9 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
   // (§2.3, search.js:994-1013).
   return (
     <>
-      {/* SearchResult has no `kind`, so every hit is passed as a "session":
-          displayState's turn-ended-subagent rule, which presents such a
-          subagent as idle in the rail, never applies to a search hit. */}
       <StatusDot
         state={cadenceStateFor(
-          displayState({
-            kind: "session",
-            state: item.result.state,
-            ask_pending: item.result.askPending,
-            approval_pending: item.result.approvalPending,
-          }),
+          displayState({ state: item.result.state, approval_pending: item.result.approvalPending }),
         )}
       />
       <span className={CLASS.title}>

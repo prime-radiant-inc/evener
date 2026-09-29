@@ -190,7 +190,7 @@ it("does not echo a probe transport error and does not retry it", async () => {
 });
 
 it("treats a probe refused for a replaced connection's rows as a changed connection", async () => {
-	const { io, store, requests } = boundary();
+	const { store, requests } = boundary();
 	await store.getState().fetch();
 	store.connectionChanged(failingConnection(requests), "ready");
 	await vi.waitFor(() => expect(store.getState().loading).toBe(false));
@@ -266,7 +266,7 @@ it("refuses configuration writes while the listing refuses them", async () => {
 });
 
 it("refuses configuration writes on a replaced connection's rows", async () => {
-	const { io, store, requests } = boundary();
+	const { store, requests } = boundary();
 	await store.getState().fetch();
 	store.connectionChanged(failingConnection(requests), "ready");
 	await vi.waitFor(() => expect(store.getState().loading).toBe(false));
@@ -280,7 +280,7 @@ it("refuses configuration writes on a replaced connection's rows", async () => {
 });
 
 it("stops writing after the screen unmounts", async () => {
-	const { io, store, requests } = boundary();
+	const { store, requests } = boundary();
 	await store.getState().fetch();
 	const { result, unmount } = renderHook(() => useProviderSurface(store));
 	unmount();
@@ -289,7 +289,7 @@ it("stops writing after the screen unmounts", async () => {
 });
 
 it("asserts the endpoint fingerprint on credential writes, removal, and the probe", async () => {
-	const { io, store, requests } = boundary();
+	const { store, requests } = boundary();
 	await store.getState().fetch();
 	const { result } = renderHook(() => useProviderSurface(store));
 	await act(async () => {

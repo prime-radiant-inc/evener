@@ -1,7 +1,24 @@
+import { AccessibilityInfo, Platform, type TextInput, View } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
-import { Group, GroupFooter, GroupLabel, Row, RowValue, Segmented, SwitchRow, Tag, TextFieldRow } from "./Grouped";
+import { createRef } from "react";
+import { act } from "react-test-renderer";
+import {
+	FormError,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	GroupLabel,
+	Row,
+	RowValue,
+	Segmented,
+	SwitchRow,
+	Tag,
+	TextFieldRow,
+	useErrorInView,
+	useFormError,
+} from "./Grouped";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -13,6 +30,9 @@ const symbols = (tree: ReturnType<typeof render>) =>
 	tree.root.findAll((node) => node.type === ("SymbolView" as never)).map((node) => node.props.name);
 const texts = (tree: ReturnType<typeof render>) => tree.root.findAllByType("Text" as never);
 const merged = (style: unknown) => Object.assign({}, ...[style].flat());
+const isSurface = (node: { type: unknown; props: { style?: unknown } }) =>
+	node.type === "View" && merged(node.props.style).backgroundColor === light.surface;
+const surfaces = (tree: ReturnType<typeof render>) => tree.root.findAll(isSurface);
 
 describe("a row", () => {
 	it("reads as its label, detail and value, and opens on a tap", () => {
@@ -25,6 +45,11 @@ describe("a row", () => {
 		button.props.onPress();
 		expect(onPress).toHaveBeenCalledTimes(1);
 		expect(symbols(tree)).toEqual(["server.rack", "chevron.right"]);
+	});
+
+	it("pads its text 12pt above and below (spec 16.3)", () => {
+		const tree = render(<Row label="Version" value="0.9.412" />);
+		expect(merged(tree.root.findAllByType("View" as never)[0]?.props.style).paddingVertical).toBe(12);
 	});
 
 	it("is one quiet element when it has no action", () => {
@@ -61,6 +86,11 @@ describe("a row", () => {
 		expect(merged(texts(path)[1]?.props.style).fontFamily).toBe("Menlo");
 	});
 
+	it("sets its second line in ink-mid", () => {
+		const tree = render(<Row label="paradise-park" sub="Connected · macOS · arm64" />);
+		expect(merged(texts(tree)[1]?.props.style).color).toBe(light.inkMid);
+	});
+
 	it("sets a machine label, such as a model id, in Menlo", () => {
 		const model = render(<Row label="gpt-5.6" machineLabel />);
 		expect(merged(texts(model)[0]?.props.style).fontFamily).toBe("Menlo");
@@ -79,6 +109,72 @@ describe("a group", () => {
 		);
 		expect(tree.root.findAllByProps({ testID: "hairline" })).toHaveLength(2);
 	});
+
+	it("keeps 16pt from whatever comes before it when it has no label", () => {
+		const tree = render(
+			<Group>
+				<Row label="One" />
+			</Group>,
+		);
+		expect(merged(surfaces(tree)[0]?.props.style).marginTop).toBe(16);
+	});
+
+	it("hangs its label right over it, with no gap between them", () => {
+		const tree = render(
+			<Group label="Fleet">
+				<Row label="Hosts" />
+			</Group>,
+		);
+		const header = tree.root.findByProps({ accessibilityRole: "header" });
+		expect(header.props.children).toBe("Fleet");
+		expect(merged(header.props.style)).toMatchObject({ textTransform: "uppercase" });
+		expect(merged(surfaces(tree)[0]?.props.style).marginTop).toBe(0);
+	});
+
+	it("sets a machine label, such as a marketplace, in Menlo as typed", () => {
+		const tree = render(
+			<Group label="superpowers-marketplace" machineLabel>
+				<Row label="superpowers" />
+			</Group>,
+		);
+		const style = merged(tree.root.findByProps({ accessibilityRole: "header" }).props.style);
+		expect(style.fontFamily).toBe("Menlo");
+		expect(style.textTransform).toBeUndefined();
+	});
+
+	it("never touches the group before it, and a labelled group follows its label", () => {
+		const tree = render(
+			<View>
+				<Group>
+					<Row label="Status" />
+				</Group>
+				<Group>
+					<Row label="Edit" />
+				</Group>
+				<Group label="Models">
+					<Row label="gpt-5.6" />
+				</Group>
+			</View>,
+		);
+		// findAll walks the tree in order, so this is the page from top to bottom.
+		const blocks = tree.root
+			.findAll((node) => node.props.accessibilityRole === "header" || surfaces(tree).includes(node))
+			.map((node) => (node.type === ("Text" as never) ? "label" : "group"));
+		expect(blocks).toEqual(["group", "group", "label", "group"]);
+		expect(surfaces(tree).map((group) => merged(group.props.style).marginTop)).toEqual([16, 16, 0]);
+	});
+
+	it("starts a hairline under the text when both rows beside it carry a symbol", () => {
+		const tree = render(
+			<Group>
+				<Row icon="server.rack" label="Hosts" />
+				<Row icon="cpu" label="Providers" />
+				<Row label="Version" />
+			</Group>,
+		);
+		const insets = tree.root.findAllByProps({ testID: "hairline" }).map((line) => line.props.style.marginLeft);
+		expect(insets).toEqual([50, 16]);
+	});
 });
 
 describe("a switch row", () => {
@@ -92,6 +188,21 @@ describe("a switch row", () => {
 		expect(toggle.props.trackColor.true).toBe(light.accent);
 		toggle.props.onValueChange(false);
 		expect(onChange).toHaveBeenCalledWith(false);
+	});
+
+	it("sets its second line in ink-mid", () => {
+		const tree = render(<SwitchRow label="Haptics" sub="A tap when a banner arrives" value onChange={() => {}} />);
+		expect(merged(texts(tree)[1]?.props.style).color).toBe(light.inkMid);
+	});
+
+	it("draws its label and second line with the shared RowText, as a plain row does", () => {
+		const drawn = (tree: ReturnType<typeof render>) => ({
+			label: tree.root.findByProps({ testID: "row-label" }).props.children,
+			sub: tree.root.findByProps({ testID: "row-sub" }).props.children,
+		});
+		const row = render(<Row label="Haptics" sub="A tap when a banner arrives" />);
+		const sw = render(<SwitchRow label="Haptics" sub="A tap when a banner arrives" value onChange={() => {}} />);
+		expect(drawn(sw)).toEqual(drawn(row));
 	});
 
 	it("dims while disabled, and gives iOS the off track's color", () => {
@@ -158,6 +269,71 @@ describe("a segmented control", () => {
 	});
 });
 
+describe("a form's error", () => {
+	it("shows in danger ink, and VoiceOver hears each new one", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		const tree = render(<FormError error={{ message: "Name is required." }} />);
+		const text = texts(tree)[0];
+		expect(merged(text?.props.style).color).toBe(light.dangerInk);
+		expect(text?.props.accessibilityLiveRegion).toBe("polite");
+		expect(announce).toHaveBeenLastCalledWith("Name is required.");
+		act(() => tree.update(<FormError error={{ message: "Select an available base provider." }} />));
+		expect(announce).toHaveBeenLastCalledWith("Select an available base provider.");
+		act(() => tree.update(<FormError error={null} />));
+		expect(texts(tree)).toHaveLength(0);
+		expect(announce).toHaveBeenCalledTimes(2);
+	});
+
+	it("leaves Android to its live region, so a new error is read once", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		const os = Platform.OS;
+		Object.assign(Platform, { OS: "android" });
+		try {
+			const tree = render(<FormError error={{ message: "Name is required." }} />);
+			expect(texts(tree)[0]?.props.accessibilityLiveRegion).toBe("polite");
+			expect(announce).not.toHaveBeenCalled();
+		} finally {
+			Object.assign(Platform, { OS: os });
+		}
+	});
+
+	it("brings the form to its top and speaks again on each refusal, even one that repeats the last", () => {
+		const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announce.mockClear();
+		const scrolls: unknown[] = [];
+		let refuse = (_message: string | null) => {};
+		function Form() {
+			const [error, setError] = useFormError();
+			refuse = (message) => {
+				// A save clears the last error and fails again in one handler.
+				setError(null);
+				setError(message);
+			};
+			const page = useErrorInView(error);
+			return (
+				<GroupedPage scrollRef={page}>
+					<FormError error={error} />
+				</GroupedPage>
+			);
+		}
+		const options = {
+			createNodeMock: (element: { type: unknown }) =>
+				element.type === "ScrollView" ? { scrollTo: (to: unknown) => scrolls.push(to) } : null,
+		};
+		render(<Form />, options);
+		expect(scrolls).toEqual([]);
+		act(() => refuse("Name is required."));
+		act(() => refuse("Name is required."));
+		expect(scrolls).toEqual([
+			{ y: 0, animated: true },
+			{ y: 0, animated: true },
+		]);
+		expect(announce).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe("labels, footers and tags", () => {
 	it("uppercases a section label and keeps a machine label as typed in Menlo", () => {
 		const section = merged(texts(render(<GroupLabel>Where</GroupLabel>))[0]?.props.style);
@@ -168,6 +344,8 @@ describe("labels, footers and tags", () => {
 	});
 
 	it("colors a footer by what it reports", () => {
+		const plain = texts(render(<GroupFooter>Add hosts from the web app.</GroupFooter>))[0]?.props.style;
+		expect(merged(plain).color).toBe(light.inkMid);
 		const style = texts(render(<GroupFooter tone="danger">paradise-park is offline.</GroupFooter>))[0]?.props.style;
 		expect(merged(style).color).toBe(light.dangerInk);
 		expect(merged(style).fontFamily).toBeUndefined();
@@ -189,6 +367,65 @@ describe("labels, footers and tags", () => {
 			color: light.inkMid,
 			backgroundColor: light.inset,
 		});
+	});
+});
+
+describe("a row whose label and value can't share a line", () => {
+	// The test renderer has no layout engine, so these pin the flex rules
+	// Row's comment describes.
+	const hostRow = (
+		<Row
+			icon="server.rack"
+			label="paradise-park"
+			sub="Connected · macOS · arm64 · 3 live"
+			value={<RowValue text="0.9.409" tag={{ text: "Hub runs 0.9.412", tone: "gray" }} />}
+			chevron
+			onPress={() => {}}
+		/>
+	);
+
+	it("wraps the value onto its own line rather than shrinking the label to fit", () => {
+		const tree = render(hostRow);
+		const line = merged(tree.root.findByProps({ testID: "row-line" }).props.style);
+		expect(line).toMatchObject({ flexDirection: "row", flexWrap: "wrap", alignItems: "center" });
+		const label = merged(tree.root.findByProps({ testID: "row-label" }).props.style);
+		expect(label).toMatchObject({ flexGrow: 1, flexShrink: 1 });
+		// flex: 1 would zero the label's basis, handing the line to the value.
+		expect(label.flex).toBeUndefined();
+		expect(label.flexBasis).toBeUndefined();
+	});
+
+	it("lets a value too wide for a line of its own wrap its text", () => {
+		const tree = render(hostRow);
+		expect(merged(tree.root.findByProps({ testID: "row-value" }).props.style).flexShrink).toBe(1);
+		const version = texts(tree).find((node) => node.props.children === "0.9.409");
+		expect(merged(version?.props.style).flexShrink).toBe(1);
+	});
+
+	it("keeps the second line out of the wrapping line, so a long one never pushes the value down", () => {
+		const tree = render(hostRow);
+		const line = tree.root.findByProps({ testID: "row-line" });
+		const lineText = line.findAll((node) => node.type === ("Text" as never)).map((node) => node.props.children);
+		expect(lineText).not.toContain("Connected · macOS · arm64 · 3 live");
+		expect(lineText).toContain("paradise-park");
+		expect(lineText).toContain("0.9.409");
+		expect(texts(tree).map((node) => node.props.children)).toContain("Connected · macOS · arm64 · 3 live");
+	});
+
+	it("shows a plain text or number value, and leaves no slot for one that renders nothing", () => {
+		expect(renderedText(render(<Row label="Hubs" value={1} />))).toContain("1");
+		expect(renderedText(render(<Row label="Display" value="System" />))).toContain("System");
+		for (const empty of [undefined, null, false, ""]) {
+			const tree = render(<Row label="In-app alerts" value={empty} />);
+			expect(tree.root.findAllByProps({ testID: "row-value" })).toHaveLength(0);
+		}
+	});
+
+	it("keeps the glyph and chevron outside the wrapping line", () => {
+		const tree = render(hostRow);
+		const line = tree.root.findByProps({ testID: "row-line" });
+		expect(line.findAll((node) => node.type === ("SymbolView" as never))).toHaveLength(0);
+		expect(symbols(tree)).toEqual(["server.rack", "chevron.right"]);
 	});
 });
 
@@ -227,6 +464,55 @@ describe("a text field row", () => {
 		expect(merged(input.props.style)).toMatchObject({ fontFamily: fonts.mono, color: light.inkHi });
 		input.props.onChangeText("attic.local");
 		expect(changes).toEqual(["attic.local"]);
+	});
+
+	it("edits words someone typed, such as a hub's name, in SF Pro at the row size, and can hide a secret", () => {
+		const name = render(<TextFieldRow label="Hub name" value="attic" onChangeText={() => {}} machine={false} />);
+		const nameInput = name.root.findByType("TextInput" as never);
+		expect(merged(nameInput.props.style).fontFamily).toBeUndefined();
+		expect(merged(nameInput.props.style).fontSize).toBe(17);
+		expect(nameInput.props.secureTextEntry).toBe(false);
+		const token = render(
+			<TextFieldRow label="New token" value="" onChangeText={() => {}} placeholder="New token" secure />,
+		).root.findByType("TextInput" as never);
+		expect(token.props.secureTextEntry).toBe(true);
+		expect(token.props.placeholder).toBe("New token");
+		expect(token.props.placeholderTextColor).toBe(light.inkLow);
+	});
+
+	it("lets words someone chose be capitalized and corrected, and keeps a machine value as typed", () => {
+		const name = render(<TextFieldRow label="Hub name" value="" onChangeText={() => {}} machine={false} />);
+		const nameInput = name.root.findByType("TextInput" as never);
+		expect(nameInput.props).toMatchObject({ autoCapitalize: "sentences", autoCorrect: true, spellCheck: true });
+		const address = render(<TextFieldRow label="SSH address" value="" onChangeText={() => {}} />);
+		const addressInput = address.root.findByType("TextInput" as never);
+		expect(addressInput.props).toMatchObject({ autoCapitalize: "none", autoCorrect: false, spellCheck: false });
+	});
+
+	it("never offers to fill or save a secret it hides", () => {
+		const token = render(<TextFieldRow label="New token" value="" onChangeText={() => {}} secure />);
+		const input = token.root.findByType("TextInput" as never);
+		expect(input.props).toMatchObject({ secureTextEntry: true, textContentType: "none", autoComplete: "off" });
+	});
+
+	it("hands its return key to the form, and its input to a ref, so one field can lead to the next", () => {
+		const onSubmit = vi.fn();
+		const ref = createRef<TextInput>();
+		const tree = render(
+			<TextFieldRow
+				label="Instance name"
+				value=""
+				onChangeText={() => {}}
+				returnKeyType="next"
+				onSubmitEditing={onSubmit}
+				ref={ref}
+			/>,
+		);
+		const input = tree.root.findByType("TextInput" as never);
+		expect(input.props.returnKeyType).toBe("next");
+		input.props.onSubmitEditing();
+		expect(onSubmit).toHaveBeenCalledOnce();
+		expect(input.props.ref).toBe(ref);
 	});
 
 	it("takes several lines when asked, and holds while disabled", () => {

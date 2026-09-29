@@ -455,6 +455,74 @@ describe("mutations", () => {
     expect(load.hosts).toEqual([row("alpha")]);
   });
 
+  test("an add's non-commit arm rejects but still re-reads, so the row the hub reports appears", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [] }));
+    fake.on("evener/host/add", () => ({ outcome: "ambiguous", observedRow: row("beta") }));
+    // The re-read after the ambiguous arm shows the row the hub says already
+    // exists, even though the add rejects.
+    fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+
+    await expect(hostsStore.getState().add({ name: "beta", address: "b.example" })).rejects.toThrowError(
+      /cannot tell whether it committed/,
+    );
+
+    const load = hostsStore.getState().load;
+    expect(load.phase).toBe("ready");
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts).toEqual([row("beta")]);
+  });
+
+  test("an update's teardown-failure arm rejects but still re-reads, so the committed row appears", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+
+    fake.on("evener/host/update", () => ({
+      outcome: "committed-with-teardown-failure",
+      seam: "rebind",
+      remnantId: "r1",
+      host: { ...row("alpha"), address: "a2.example" },
+    }));
+    fake.on("evener/host/list", () => ({
+      hosts: [{ ...row("alpha"), address: "a2.example", openRemnantId: "r1" }],
+    }));
+
+    await expect(
+      hostsStore.getState().update({
+        name: "alpha",
+        entry: { address: "a2.example" },
+        expected: { generation: 1, incarnationId: "inc-1" },
+      }),
+    ).rejects.toThrowError(/remnantId r1/);
+
+    const load = hostsStore.getState().load;
+    expect(load.phase).toBe("ready");
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts).toEqual([{ ...row("alpha"), address: "a2.example", openRemnantId: "r1" }]);
+  });
+
+  test("a remove's teardown-failure arm rejects but still re-reads, so the committed removal appears", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+
+    fake.on("evener/host/remove", () => ({
+      outcome: "committed-with-teardown-failure",
+      seam: "rebind",
+      remnantId: "r1",
+      host: { ...row("alpha"), removed: true },
+    }));
+    fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), removed: true, openRemnantId: "r1" }] }));
+
+    await expect(hostsStore.getState().remove("alpha")).rejects.toThrowError(/remnantId r1/);
+
+    const load = hostsStore.getState().load;
+    expect(load.phase).toBe("ready");
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts).toEqual([{ ...row("alpha"), removed: true, openRemnantId: "r1" }]);
+  });
+
   test("add sends a minted mutationId so a retried add cannot double-add", async () => {
     const fake = connectFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [] }));

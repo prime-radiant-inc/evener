@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -312,4 +313,138 @@ func TestHubReconnectDelayBacksOffAndCaps(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("delays=%v, want %v", got, want)
 	}
+}
+
+// A quit must end the reconnect work with the model, not after it: a retry
+// parked in backoff would otherwise wake up, dial, and (with autostart on)
+// launch a hub while no TUI exists to use it. Run owns the lifecycle context;
+// canceling it has to abandon the backoff, cancel an in-flight dial, and stop
+// the loop from re-arming.
+func TestHubReconnectStopsOnLifecycleCancel(t *testing.T) {
+	t.Run("a canceled backoff never dials", func(t *testing.T) {
+		dialed := make(chan struct{}, 1)
+		m := hubModel{dialHub: func(context.Context) (*appwire.Client, *hubFrameFeed, error) {
+			dialed <- struct{}{}
+			return nil, nil, errors.New("dialed after cancel")
+		}}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.lifecycleCtx = ctx
+
+		// A long pending backoff stands in for the delay a real retry waits
+		// through; canceling before it elapses must end the cmd promptly. The
+		// retry runs under the model's own lifetime context, as Run wires it.
+		cmd := reconnectHub(m.reconnectContext(), m.dialHub, 2, time.Hour)
+		done := make(chan tea.Msg, 1)
+		go func() { done <- cmd() }()
+		cancel()
+
+		select {
+		case msg := <-done:
+			result, ok := msg.(hubReconnectMsg)
+			if !ok {
+				t.Fatalf("cmd returned %T, want a hubReconnectMsg", msg)
+			}
+			if !errors.Is(result.err, context.Canceled) {
+				t.Fatalf("canceled backoff error = %v, want context.Canceled", result.err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a canceled backoff kept sleeping; the retry would dial and autostart a hub after quit")
+		}
+		select {
+		case <-dialed:
+			t.Fatal("a canceled backoff still dialed; dialing with autostart launches a hub after the TUI is gone")
+		default:
+		}
+	})
+
+	t.Run("a blocked dial observes cancellation", func(t *testing.T) {
+		dialEntered := make(chan error, 1)
+		m := hubModel{dialHub: func(ctx context.Context) (*appwire.Client, *hubFrameFeed, error) {
+			dialEntered <- ctx.Err()
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.lifecycleCtx = ctx
+
+		// The first retry has no backoff, so the dial itself is the work in
+		// flight when the TUI exits.
+		cmd := reconnectHub(m.reconnectContext(), m.dialHub, 1, 0)
+		done := make(chan tea.Msg, 1)
+		go func() { done <- cmd() }()
+		// Wait until the dial has actually started, then quit: canceling first
+		// would (correctly) be caught before the dial, and the wait on ctx.Done
+		// inside it is what this subtest exercises.
+		select {
+		case err := <-dialEntered:
+			if err != nil {
+				t.Fatalf("dial entered with ctx already canceled: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the dial never started")
+		}
+		cancel()
+
+		select {
+		case msg := <-done:
+			result, ok := msg.(hubReconnectMsg)
+			if !ok || !errors.Is(result.err, context.Canceled) {
+				t.Fatalf("blocked dial result = %#v, want context.Canceled", msg)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the blocked dial did not observe cancellation; the dial goroutine outlives the model")
+		}
+	})
+
+	t.Run("no retry is re-armed once the lifecycle ends", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		m := hubModel{
+			dialHub:      staticHubDialer(nil, nil),
+			lifecycleCtx: ctx,
+		}
+		if cmd := m.applyHubReconnect(hubReconnectMsg{attempt: 1, err: errors.New("dial failed")}); cmd != nil {
+			t.Fatal("a canceled lifecycle still re-armed a retry; the loop outlives the TUI")
+		}
+	})
+
+	t.Run("an already-canceled context never dials", func(t *testing.T) {
+		dialed := make(chan struct{}, 1)
+		m := hubModel{dialHub: func(context.Context) (*appwire.Client, *hubFrameFeed, error) {
+			dialed <- struct{}{}
+			return nil, nil, nil
+		}}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		m.lifecycleCtx = ctx
+
+		// The delay-free first attempt skips the sleep's own ctx check, so an
+		// already-canceled lifetime must be caught before the dial.
+		msg := reconnectHub(m.reconnectContext(), m.dialHub, 1, 0)()
+		result, ok := msg.(hubReconnectMsg)
+		if !ok || !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("reconnect result = %#v, want context.Canceled", msg)
+		}
+		select {
+		case <-dialed:
+			t.Fatal("an already-canceled lifetime still dialed; the delay-free attempt would be checked too late")
+		default:
+		}
+	})
+
+	t.Run("a connection that succeeds at exit is closed, not installed", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		transport := appwiretest.NewScriptedTransport()
+		m := hubModel{lifecycleCtx: ctx}
+
+		cmd := m.applyHubReconnect(hubReconnectMsg{client: appwire.NewClient(transport), attempt: 1})
+		if cmd != nil {
+			t.Fatal("a canceled lifecycle still produced a follow-up command")
+		}
+		if m.client != nil || m.frames != nil {
+			t.Fatal("a canceled lifecycle still installed the connection that succeeded at exit")
+		}
+		assertTransportClosed(t, transport, "connection dialed at exit")
+	})
 }

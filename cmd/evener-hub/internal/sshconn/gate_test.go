@@ -280,10 +280,10 @@ func TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite(t *testing.T) {
 			return os.WriteFile(out, []byte("binary"), 0o755)
 		},
 	})
-	m.SetEnsureDeployHook(func(h hostreg.Host) (*SpawnScope, func(error), error) {
+	m.SetEnsureDeployHook(func(h hostreg.Host) (func(error), error) {
 		_, err := m.TryAcquire(h.Name, hostops.Holder{Kind: hostops.HolderPlan})
 		gateHeld <- err != nil
-		return nil, nil, errors.New("the operation store is not configured")
+		return nil, errors.New("the operation store is not configured")
 	})
 
 	_, err := m.Ensure(context.Background(), "alpha")
@@ -295,94 +295,10 @@ func TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite(t *testing.T) {
 	}
 }
 
-// TestEnsureDeployScopesItsSpawnCommandsAndNotThePreflight pins the production
-// spawn wiring on the Ensure path (crash-fencing §3): every ssh subprocess the
-// deploy step spawns runs under the context carrying the record's spawn scope,
-// so each is created, armed, matched and dropped through that record — while
-// the read-only preflight (§6's exemption) runs under a context with no scope
-// and arms nothing.
-func TestEnsureDeployScopesItsSpawnCommandsAndNotThePreflight(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
-	fr := deployRunner(t,
-		func(call int) ([]byte, error) {
-			// The on-disk build is this controller's predecessor, so the ladder
-			// decides to deploy; the re-read after the deploy sees the new build.
-			if call == 0 {
-				return []byte(`{"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
-			}
-			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
-		},
-		func(int) ([]byte, error) {
-			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
-		},
-	)
-
-	scope := NewSpawnScope("op-ensure-1", &fenceFakeStore{log: &fenceTestLog{}})
-	type seenRun struct {
-		command string
-		scope   *SpawnScope
-		scoped  bool
-		after   bool
-	}
-	var seen []seenRun
-	hookRan := false
-	innerRun := fr.runFn
-	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-		sc, scoped := SpawnScopeFrom(ctx)
-		seen = append(seen, seenRun{command: strings.Join(argv, " "), scope: sc, scoped: scoped, after: hookRan})
-		return innerRun(ctx, argv, stdin)
-	}
-
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		controllerVersionOverride: "newsha",
-		BuildBinary:               writeStageBinary,
-	})
-	m.SetEnsureDeployHook(func(hostreg.Host) (*SpawnScope, func(error), error) {
-		hookRan = true
-		return scope, func(error) {}, nil
-	})
-
-	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
-		t.Fatalf("Ensure: %v", err)
-	}
-	var scopedRuns, preflightScoped, pushScoped int
-	for _, run := range seen {
-		if !run.scoped {
-			continue
-		}
-		scopedRuns++
-		if run.scope != scope {
-			t.Fatalf("command %q ran under scope %p, want the hook's scope %p", run.command, run.scope, scope)
-		}
-		if !run.after {
-			preflightScoped++
-		}
-		if strings.Contains(run.command, "cat >") {
-			pushScoped++
-		}
-	}
-	if preflightScoped != 0 {
-		t.Fatalf("%d preflight command(s) ran armed, want none: §6 exempts the read-only preflight", preflightScoped)
-	}
-	if scopedRuns == 0 {
-		t.Fatal("no deploy command carried the record's spawn scope")
-	}
-	if pushScoped == 0 {
-		t.Fatal("the deploy push ran without a spawn scope")
-	}
-	for _, run := range seen {
-		if strings.Contains(run.command, "launch-check") && run.scoped {
-			t.Fatalf("the launch-check preflight ran armed: %s", run.command)
-		}
-	}
-}
-
-// ensureCommandSighting is one command the Ensure ladder ran, with the spawn
-// scope it ran under and whether the Ensure record was still non-terminal at
-// that moment.
+// ensureCommandSighting is one command the Ensure ladder ran, with whether the
+// Ensure record was still non-terminal at that moment.
 type ensureCommandSighting struct {
 	command    string
-	scope      *SpawnScope
 	recordOpen bool
 }
 
@@ -412,14 +328,13 @@ func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		command := strings.Join(argv, " ")
-		scope, _ := SpawnScopeFrom(ctx)
 		open := false
 		if recordID != "" {
 			if record, ok := store.Record(recordID); ok {
 				open = !record.State.Terminal()
 			}
 		}
-		seen = append(seen, ensureCommandSighting{command: command, scope: scope, recordOpen: open})
+		seen = append(seen, ensureCommandSighting{command: command, recordOpen: open})
 		if strings.Contains(command, "systemctl restart") && restartErr != nil {
 			return nil, restartErr
 		}
@@ -429,7 +344,7 @@ func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops
 		controllerVersionOverride: "newsha",
 		BuildBinary:               writeStageBinary,
 	})
-	m.SetEnsureDeployHook(func(host hostreg.Host) (*SpawnScope, func(error), error) {
+	m.SetEnsureDeployHook(func(host hostreg.Host) (func(error), error) {
 		record, err := store.Create(hostops.NewRecord{
 			ClientOperationID: "ensure-1",
 			Host:              host.Name,
@@ -438,10 +353,10 @@ func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops
 			IncarnationID:     host.IncarnationID,
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		recordID = record.ID
-		return NewSpawnScope(record.ID, store), func(err error) {
+		return func(err error) {
 			if err == nil {
 				_, _ = store.TransitionToState(record.ID, hostops.StateComplete,
 					&hostops.Result{OK: true, Message: "Ensure-triggered deploy complete"}, "complete")
@@ -476,12 +391,10 @@ func restartSightings(seen []ensureCommandSighting) []ensureCommandSighting {
 	return out
 }
 
-// TestEnsureDeployKeepsTheRecordOpenThroughTheArmedRestartLeg pins M1: an
-// Ensure that deploys and then restarts keeps the deploy record non-terminal
-// through the restart leg and arms the leg's ssh subprocesses with the record's
-// spawn scope (so `systemctl restart` cannot be an unowned crash orphan), and
-// the record completes only after the leg.
-func TestEnsureDeployKeepsTheRecordOpenThroughTheArmedRestartLeg(t *testing.T) {
+// TestEnsureDeployKeepsTheRecordOpenThroughTheRestartLeg pins M1: an Ensure
+// that deploys and then restarts keeps the deploy record non-terminal through
+// the restart leg, and the record completes only after the leg.
+func TestEnsureDeployKeepsTheRecordOpenThroughTheRestartLeg(t *testing.T) {
 	m, store, recordID, seen := ensureDeployTestHarness(t, nil)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
@@ -492,14 +405,8 @@ func TestEnsureDeployKeepsTheRecordOpenThroughTheArmedRestartLeg(t *testing.T) {
 		t.Fatal("the scenario never reached the restart leg; the pin would be vacuous")
 	}
 	for _, run := range restarts {
-		if run.scope == nil {
-			t.Fatalf("the restart leg ran unarmed: %s", run.command)
-		}
-		if run.scope.RecordID != *recordID {
-			t.Fatalf("the restart leg's scope names record %q, want %s", run.scope.RecordID, *recordID)
-		}
 		if !run.recordOpen {
-			t.Fatal("the deploy record was already terminal when the restart leg ran: ArmSpawnIntent refuses a terminal record, so the leg cannot be armed")
+			t.Fatal("the deploy record was already terminal when the restart leg ran")
 		}
 	}
 	record, ok := store.Record(*recordID)
@@ -526,9 +433,6 @@ func TestEnsureRestartLegFailureFailsTheStillOpenRecord(t *testing.T) {
 		t.Fatal("the scenario never reached the restart leg; the pin would be vacuous")
 	}
 	for _, run := range restarts {
-		if run.scope == nil {
-			t.Fatalf("the failing restart leg ran unarmed: %s", run.command)
-		}
 		if !run.recordOpen {
 			t.Fatal("the record was already terminal when the failing restart leg ran")
 		}
@@ -572,21 +476,20 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		command := strings.Join(argv, " ")
-		scope, _ := SpawnScopeFrom(ctx)
 		open := false
 		if recordID != "" {
 			if record, ok := store.Record(recordID); ok {
 				open = !record.State.Terminal()
 			}
 		}
-		seen = append(seen, ensureCommandSighting{command: command, scope: scope, recordOpen: open})
+		seen = append(seen, ensureCommandSighting{command: command, recordOpen: open})
 		if strings.Contains(command, "systemctl restart") && restartErr != nil {
 			return nil, restartErr
 		}
 		return innerRun(ctx, argv, stdin)
 	}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
-	m.SetEnsureRestartHook(func(host hostreg.Host) (*SpawnScope, func(error), error) {
+	m.SetEnsureRestartHook(func(host hostreg.Host) (func(error), error) {
 		record, err := store.Create(hostops.NewRecord{
 			ClientOperationID: "ensure-restart-1",
 			Host:              host.Name,
@@ -595,10 +498,10 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 			IncarnationID:     host.IncarnationID,
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		recordID = record.ID
-		return NewSpawnScope(record.ID, store), func(err error) {
+		return func(err error) {
 			if err == nil {
 				_, _ = store.TransitionToState(record.ID, hostops.StateComplete,
 					&hostops.Result{OK: true, Message: "Ensure-triggered restart complete"}, "complete")
@@ -611,15 +514,15 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 	return m, store, &recordID, &seen
 }
 
-// TestEnsureRestartOnlyMintsRecordAndArmsTheLeg pins the restart-only Ensure
+// TestEnsureRestartOnlyMintsRecordAndKeepsItOpen pins the restart-only Ensure
 // path's record: a decision with no deploy still mints a durable restart record
-// through the hook, arms the leg's ssh subprocesses with its scope, keeps the
-// record non-terminal while the leg runs, and completes it after.
-func TestEnsureRestartOnlyMintsRecordAndArmsTheLeg(t *testing.T) {
+// through the hook, keeps the record non-terminal while the leg runs, and
+// completes it after.
+func TestEnsureRestartOnlyMintsRecordAndKeepsItOpen(t *testing.T) {
 	m, store, recordID, seen := ensureRestartTestHarness(t, nil)
-	m.SetEnsureDeployHook(func(hostreg.Host) (*SpawnScope, func(error), error) {
+	m.SetEnsureDeployHook(func(hostreg.Host) (func(error), error) {
 		t.Error("the deploy hook ran for a restart-only decision")
-		return nil, nil, errors.New("no deploy expected")
+		return nil, errors.New("no deploy expected")
 	})
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
@@ -630,14 +533,8 @@ func TestEnsureRestartOnlyMintsRecordAndArmsTheLeg(t *testing.T) {
 		t.Fatalf("the scenario never reached the restart leg; sightings: %+v", *seen)
 	}
 	for _, run := range restarts {
-		if run.scope == nil {
-			t.Fatalf("the restart-only leg ran unarmed: %s", run.command)
-		}
-		if run.scope.RecordID != *recordID {
-			t.Fatalf("the leg's scope names record %q, want %s", run.scope.RecordID, *recordID)
-		}
 		if !run.recordOpen {
-			t.Fatal("the record was already terminal when the leg ran, so ArmSpawnIntent would refuse it")
+			t.Fatal("the record was already terminal when the leg ran")
 		}
 	}
 	record, ok := store.Record(*recordID)
@@ -666,11 +563,6 @@ func TestEnsureRestartOnlyLegFailureRecordsFailed(t *testing.T) {
 	if len(restarts) == 0 {
 		t.Fatal("the scenario never reached the restart leg; the pin would be vacuous")
 	}
-	for _, run := range restarts {
-		if run.scope == nil {
-			t.Fatalf("the failing restart-only leg ran unarmed: %s", run.command)
-		}
-	}
 	record, ok := store.Record(*recordID)
 	if !ok {
 		t.Fatal("the restart record disappeared")
@@ -680,49 +572,6 @@ func TestEnsureRestartOnlyLegFailureRecordsFailed(t *testing.T) {
 	}
 	if record.Result == nil || !strings.Contains(record.Result.Message, "systemctl restart failed") {
 		t.Fatalf("record result = %+v, want the leg's failure verbatim", record.Result)
-	}
-}
-
-// TestEnsureNeverInheritsAnOuterSpawnScope pins the ladder's scope hygiene: an
-// operation worker's scoped context reaches ensureOnce through AttachUnderGate
-// (and Ensure), and a nested Ensure must not arm its read-only steps — the
-// preflight, the probes, the post-phase re-reads — against the outer
-// operation's record. Only the attempt's own mutating legs carry a scope, and
-// it is the record the attempt's hook just minted.
-func TestEnsureNeverInheritsAnOuterSpawnScope(t *testing.T) {
-	m, store, recordID, seen := ensureRestartTestHarness(t, nil)
-	outer := NewSpawnScope("op-outer", &fenceFakeStore{log: &fenceTestLog{}})
-
-	if _, err := m.Ensure(WithSpawnScope(context.Background(), outer), "alpha"); err != nil {
-		t.Fatalf("Ensure: %v", err)
-	}
-	if len(*seen) == 0 {
-		t.Fatal("the ladder ran no commands")
-	}
-	var legArmed int
-	for _, run := range *seen {
-		if run.scope == outer {
-			t.Fatalf("a command ran armed under the outer operation's record: %s", run.command)
-		}
-		if run.scope == nil {
-			continue
-		}
-		if run.scope.RecordID != *recordID {
-			t.Fatalf("a command carried record %q, want only the attempt's own %s", run.scope.RecordID, *recordID)
-		}
-		legArmed++
-	}
-	if legArmed == 0 {
-		t.Fatal("the attempt's mutating leg carried no scope at all")
-	}
-	for _, run := range *seen {
-		if strings.Contains(run.command, "launch-check") && run.scope != nil {
-			t.Fatalf("a read-only launch-check ran armed: %s", run.command)
-		}
-	}
-	record, ok := store.Record(*recordID)
-	if !ok || record.State != hostops.StateComplete {
-		t.Fatalf("record = %+v, want complete", record)
 	}
 }
 

@@ -53,6 +53,50 @@ const BOOT = {
   bootLabel: "the transcriptscrollguard entry global window.waitForTranscriptSettled",
 };
 
+// The open-with-history contract every transcript surface holds when a read
+// answers with a page plus an olderCursor: the paging row mounted, the page
+// actually overflowing its port (a collapsed pane would otherwise settle
+// trivially at a 0px bottom gap and read as a pass), no older page auto-fetched
+// on open, no jump pill at open, and the landing held at the true bottom across
+// the settle. `paneFooter` is the surface's own DOM marker - the live Session
+// renders its pane-footer/SessionChrome slot, the read-only pane renders none -
+// so a pass that meant to exercise one surface while the other rendered is
+// caught here instead of passing tautologically.
+function assertPagedOpenContract(failures, label, m, { paneFooter = true } = {}) {
+  if (m.errors.length > 0) failures.push(`page errors on ${label} paged open: ${m.errors.join("; ")}`);
+  if (m.clientHeight <= 0) {
+    failures.push(
+      `${label} opened with no scroll-port height (clientHeight ${m.clientHeight}) - the pane did not render`,
+    );
+  } else if (m.scrollHeight <= m.overflowRequired) {
+    failures.push(
+      `${label} opened without overflowing its port (scrollHeight ${m.scrollHeight}, clientHeight ${m.clientHeight}, ` +
+        `needs more than ${m.overflowRequired}) - the open contract was not exercised`,
+    );
+  }
+  if (!m.pagingRow) failures.push(`${label} opened without the paging row mounted (no olderCursor?)`);
+  if (m.listCalls !== 0) {
+    failures.push(
+      `opening ${label} with older history auto-loaded ${m.listCalls} older page(s); the automatic paging trigger ` +
+        "must wait until the reader approaches the top of history",
+    );
+  }
+  if (m.pill) failures.push(`${label} shows the jump pill right after opening a session with older history`);
+  if (m.paneFooter !== paneFooter) {
+    failures.push(
+      `${label} rendered the wrong transcript surface (pane footer present: ${m.paneFooter}, expected ${paneFooter}) ` +
+        "- the pass is not exercising the pane it names",
+    );
+  }
+  if (Math.abs(m.bottomGap) > BOTTOM_TOLERANCE_PX) {
+    failures.push(
+      `${label} opened ${m.bottomGap}px off the true bottom after opening a session with older history ` +
+        `(scrollTop ${m.scrollTop}, scrollHeight ${m.scrollHeight}, clientHeight ${m.clientHeight}) - the landing did ` +
+        "not hold across the settle",
+    );
+  }
+}
+
 async function main() {
   let guard;
   try {
@@ -232,7 +276,6 @@ async function main() {
             );
           }
         }
-
       }
 
       // The open-with-history shape: a page plus an olderCursor, so the paging
@@ -245,22 +288,7 @@ async function main() {
       const opened = JSON.parse(
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
-      if (opened.errors.length > 0) failures.push(`page errors on the paged open: ${opened.errors.join("; ")}`);
-      if (!opened.pagingRow) failures.push("the paged pass opened without the paging row mounted (no olderCursor?)");
-      if (opened.listCalls !== 0) {
-        failures.push(
-          `opening a session with older history auto-loaded ${opened.listCalls} older page(s); the automatic ` +
-            "paging trigger must wait until the reader approaches the top of history",
-        );
-      }
-      if (opened.pill) failures.push("pill is visible right after opening a session with older history");
-      if (Math.abs(opened.bottomGap) > BOTTOM_TOLERANCE_PX) {
-        failures.push(
-          `opened ${opened.bottomGap}px off the true bottom after opening a session with older history ` +
-            `(scrollTop ${opened.scrollTop}, scrollHeight ${opened.scrollHeight}, clientHeight ${opened.clientHeight}) ` +
-            "- the landing did not hold across the settle",
-        );
-      }
+      assertPagedOpenContract(failures, "the live session", opened);
       // Paging must still work: a real scroll to the top drives the near-top
       // trigger and fetches a page. Runs whatever the open assertions found, so
       // a failure there cannot hide this coverage. (One request per tick is
@@ -271,6 +299,20 @@ async function main() {
       );
       if (scrolled.errors.length > 0) failures.push(`page errors while paging: ${scrolled.errors.join("; ")}`);
       if (scrolled.listCalls < 1) failures.push("scrolling to the top of a paged session fetched no older page");
+
+      // The READ-ONLY transcript pane runs the SAME scroll coordinator (#2963:
+      // it lands on the latest row on open, follows a prepend without stranding
+      // the reader, and never auto-loads an older page just because it opened),
+      // but the guard only ever rendered the live Session. This pass renders
+      // the read-only Transcript and holds it to the same open contract: the
+      // paging row mounted, no older page fetched on open, and the landing
+      // held at the true bottom across the settle.
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?paged=1&readonly=1`, BOOT);
+      await waitForFonts(send);
+      const readOnlyOpened = JSON.parse(
+        await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
+      );
+      assertPagedOpenContract(failures, "the read-only transcript pane", readOnlyOpened, { paneFooter: false });
     } finally {
       await clearViewportOverride(send);
       page.close();
@@ -282,7 +324,8 @@ async function main() {
           `(${initial.turns} turns); pill appeared on a native scroll away; jump settled at the true bottom ` +
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
           `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
-          `a session opened with older history stayed at the bottom without auto-loading a page`,
+          `a session opened with older history stayed at the bottom without auto-loading a page; ` +
+          `the read-only transcript pane did the same`,
       );
     } else {
       for (const failure of failures) console.error(`transcriptscrollguard FAIL: ${failure}`);

@@ -169,8 +169,13 @@ function emptyActivityTree(ref: string) {
   };
 }
 
-function connectFakeClient(): FakeClient {
+// prepare scripts handlers BEFORE the connect: a connected ready client
+// starts serving requests synchronously (the command catalog's
+// connection-driven load fires inside connect's own publish), so a handler
+// scripted after the wiring would miss the request it existed to answer.
+function connectFakeClient(prepare?: (fake: FakeClient) => void): FakeClient {
   const fake = new FakeClient("ready");
+  prepare?.(fake);
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -292,10 +297,13 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
 async function mountComposerWithHandle(
   ref: string,
   overrides: Partial<Thread> = {},
-  options: { focused?: boolean; prepare?: (fake: FakeClient) => void } = {},
+  options: {
+    focused?: boolean;
+    prepare?: (fake: FakeClient) => void;
+    holdMountProjection?: boolean;
+  } = {},
 ) {
-  const fake = connectFakeClient();
-  options.prepare?.(fake);
+  const fake = connectFakeClient(options.prepare);
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   const view = render(
@@ -305,13 +313,17 @@ async function mountComposerWithHandle(
     </ClientProvider>,
   );
   await settleActivityDiscovery(ref);
+  // The mount starts its own pending-turns refresh; leaving it in flight lets
+  // its state update land during a later bare await, outside act. A test that
+  // holds or observes that work open asks to keep it in flight.
+  if (!options.holdMountProjection) await flushPendingTurnsProjectionForTests();
   return { fake, ...view };
 }
 
 async function mountComposer(
   ref: string,
   overrides: Partial<Thread> = {},
-  options: { focused?: boolean } = {},
+  options: { focused?: boolean; holdMountProjection?: boolean } = {},
 ): Promise<FakeClient> {
   return (await mountComposerWithHandle(ref, overrides, options)).fake;
 }
@@ -913,9 +925,7 @@ test("a focused pane focuses its composer on mount (desktop)", async () => {
 
 test("an unfocused pane never focuses its composer on mount", async () => {
   await mountComposer("ref_a", {}, { focused: false });
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   expect(document.activeElement).not.toBe(textarea());
 });
 
@@ -923,9 +933,7 @@ test("a focused pane never focuses its composer on mount on mobile", async () =>
   const restoreViewport = installMobileViewport();
   try {
     await mountComposer("ref_a", {}, { focused: true });
-    await act(async () => {
-      await flushPendingTurnsProjectionForTests();
-    });
+    await flushPendingTurnsProjectionForTests();
     expect(document.activeElement).not.toBe(textarea());
   } finally {
     restoreViewport();
@@ -1072,9 +1080,7 @@ test("a quote-insert request for a DIFFERENT ref never reaches this composer", a
   act(() => {
     requestQuoteInsert("ref_other", "> quoted line\n\n");
   });
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().textContent).toBe("");
 });
 
@@ -1144,9 +1150,7 @@ test("a composer-focus request for a DIFFERENT ref never focuses this composer",
   act(() => {
     requestComposerFocus("ref_other");
   });
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   expect(document.activeElement).not.toBe(textarea());
 });
 
@@ -2453,8 +2457,8 @@ test("an uncertain own send still routes the next message to queue", async () =>
     });
     await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await user.type(textarea(), "second");
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
@@ -2506,8 +2510,8 @@ test("a canceled own send no longer routes the next message to queue", async () 
     });
     await storage.cancelUnattempted("ref_a");
     await refreshPendingTurnsProjection("ref_a");
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   await user.type(textarea(), "second");
   await user.click(submitButton());
   // The route shows in what was sent: once the daemon's receipt reflects the
@@ -2945,13 +2949,24 @@ test("a slow recovery read still activates before the mount's projection work is
   const storage = new SlowRecoveryStorage();
   setMutationStorageForTests(storage);
   await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
-  await mountComposer("ref_a", { status: { type: "idle" } });
+  await mountComposer("ref_a", { status: { type: "idle" } }, { holdMountProjection: true });
   const editor = textarea();
   expect(editor.textContent).toBe("");
 
   await flushPendingTurnsProjectionForTests();
 
   expect(editor.textContent).toBe("slow to arrive");
+});
+
+test("the mount helper returns only after the mount's projection refresh has settled", async () => {
+  // Default mount: the helper settles the mount's own projection refresh, so
+  // this slow read is already applied. Its opt-out sibling shows the other side.
+  const storage = new SlowRecoveryStorage();
+  setMutationStorageForTests(storage);
+  await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
+  await mountComposer("ref_a", { status: { type: "idle" } });
+
+  expect(textarea().textContent).toBe("slow to arrive");
 });
 
 test("a slow recovery write is durable before the edit's projection work is awaited out", async () => {
@@ -3169,7 +3184,7 @@ test("a remounted Composer does not activate a stale recovery projection", async
   storage.pauseRecoveryReads();
 
   try {
-    await mountComposer("ref_a", { status: { type: "idle" } });
+    await mountComposer("ref_a", { status: { type: "idle" } }, { holdMountProjection: true });
     expect(textarea().textContent).toBe("");
   } finally {
     storage.resume();
@@ -3571,8 +3586,8 @@ test("a merely-resumable local session with uncertain messages keeps Send disabl
     });
     await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
     await refreshPendingTurnsProjection(ref);
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "omt");
@@ -4948,6 +4963,32 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
   ]);
 });
 
+// The reported bug: a fresh browser never saw a user-global command like /par
+// in this menu, because nothing loaded the catalog until the palette had been
+// opened once on a session page. No useCommandCatalog.setState seeds the
+// catalog here - the connection-driven load must carry it from the hub.
+test("a user command from the hub catalog autocompletes without a palette open", async () => {
+  const user = userEvent.setup();
+  await mountComposerWithHandle(
+    "ref_slash_par",
+    {},
+    {
+      prepare: (fake) =>
+        fake.on("evener/command/list", () => ({
+          commands: [{ name: "par", description: "adversarial review", source: "user" }],
+        })),
+    },
+  );
+
+  await user.type(textarea(), "/pa");
+
+  // /compact fuzzy-matches "pa" too; the claim is /par's presence, not the
+  // whole list.
+  await vi.waitFor(() => {
+    expect(slashOptions().map((el) => el.textContent)).toContainEqual(expect.stringContaining("/par"));
+  });
+});
+
 test("slash completion hides excluded plugin commands but keeps loaded plugin commands", async () => {
   useCommandCatalog.setState({
     commands: [
@@ -5231,9 +5272,7 @@ test.each(["before render", "before subscription"] as const)(
         <ObserveFirstCommit />
       </>,
     );
-    await act(async () => {
-      await flushPendingTurnsProjectionForTests();
-    });
+    await flushPendingTurnsProjectionForTests();
     expect(textarea().textContent).toBe("");
     expect(within(textarea()).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
     // First-commit state covers the lazy initializer independently of the

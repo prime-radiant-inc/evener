@@ -38,9 +38,12 @@ import {
 	ACTION_SUMMARY_UNAVAILABLE,
 	type AskQuestionRef,
 	configFingerprint,
+	ERROR_EVENT_KIND,
+	echoesTurnError,
 	hasItemFailure,
 	hasWarningText,
 	isActiveItem,
+	isSuppressedSteeringKind,
 	joinedReasoningParagraphs,
 	joinWarningParts,
 	liveAskQuestions,
@@ -48,11 +51,16 @@ import {
 	parseAskUserQuestions,
 	pendingTextJoined,
 	projectThread,
+	steeringLabel,
+	steeringNotificationFragments,
+	stripSystemReminder,
+	systemEventWords,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
 	ItemModel,
 	ProjectedEntry,
+	SteeringFragment,
 	ThreadModel,
 	TranscriptDisplayConfigV1,
 	Turn,
@@ -127,9 +135,11 @@ export interface ActivityMember {
 	turnId?: string;
 }
 
-// Tone of a steering/lifecycle notice row. "info" for ordinary steering/system
-// notices, "warning" for loop detection / turn limit / provider failure, and
-// "system" for environment / prelude scaffold that is purely informational.
+// Tone of a steering/lifecycle notice row. "info" for every daemon steer
+// (a loop-detected or provider-failure steer included: the failure it answers
+// shows as the turn's own error), "warning" for the loop_detection, turn_limit
+// and error system events (WARNING_EVENT_KINDS), and "system" for every other
+// system event.
 export type NoticeTone = "info" | "warning" | "system";
 
 export type NoticeOrigin = "steering" | "system";
@@ -154,7 +164,9 @@ export type MobileTimelineItem =
 		// A shared-notes update, steered in by the app itself (spec 8.8). Kept
 		// apart from "user" rows so it never renders as a message bubble.
 		| { kind: "note"; id: string; text: string }
-		| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
+		// roundKey: the key a reply keeps from its first streamed frame through
+		// its recording (see withRoundKey), where it has one.
+		| { kind: "assistant"; id: string; markdown: string; streaming: boolean; roundKey?: string }
 		| {
 				kind: "activity";
 				id: string;
@@ -184,6 +196,15 @@ export type MobileTimelineItem =
 				family: NoticeFamily;
 				tone: NoticeTone;
 				text: string;
+				// Shown in place of the text, with a chevron, until opened: a
+				// daemon steer's kind, or a compaction's summary.
+				label?: string;
+				// The text is markdown, and opens rendered as markdown.
+				rendersMarkdown?: boolean;
+				// A steer that delivers <delegate-notification> or
+				// <job-notification> blocks, parsed: the transcript reads it as
+				// the notifications it carries (spec 8.2, 9), never as the markup.
+				notifications?: SteeringFragment[];
 		  }
 		// The pending ask_user questions of one call, each carrying that call's id
 		// (AskQuestionRef.callId); the composer renders them as interactive cards
@@ -254,22 +275,27 @@ function unhandledEntryKind(_entry: never): null {
 // The operator's summary-only ruling: at compact levels (the projector's
 // intent entries) a SETTLED tool action carries ONLY its summary line. The
 // projector hands its trimmed rationale; the source item's full detail
-// (arguments, output, exit code, duration, call id) is dropped — it returns at
+// (arguments, output, exit code, duration) is dropped — it returns at
 // tools/activity/full, where the same call is an "item" entry. The
 // "unavailable" placeholder means the source carried no description, so the
-// ruling still drops the output, exit code, duration and call id — but the
-// ARGUMENTS survive, because they are what the presentation layer's own
-// summary fallback parses to render the line a descriptionless write_file
-// call shows (RoboRev panel: with them dropped, "Write /tmp/x" degraded to
-// the literal placeholder). Either way the row keeps its two clock times as
-// metadata that nothing shows on it, so the run it folds into can say how
-// long it took (spec 8.2's run line; Jesse, 2026-09-27).
+// ruling still drops the output, exit code and duration — but the ARGUMENTS
+// survive, because they are what the presentation layer's own summary
+// fallback parses to render the line a descriptionless write_file call shows
+// (RoboRev panel: with them dropped, "Write /tmp/x" degraded to the literal
+// placeholder). Either way the row keeps metadata that nothing shows on it:
+// its two clock times, so the run it folds into can say how long it took
+// (spec 8.2's run line; Jesse, 2026-09-27), and its call id, which is how a
+// subagent row finds the subagent its `delegate` call launched (the call
+// settles at launch, so the row's state has to come from the subagent).
 //
 // The native attention rule outranks the summarization (D24-4's disclosed
 // contract: a failed or running activity renders critical, with its full
-// detail, at every level): a failed or still-running call the projector routed
-// through its intent entry keeps everything, so the reader can always see why
-// a call failed — the ruling covers the settled row.
+// detail): a failed or still-running call the projector routed through its
+// intent entry keeps everything, so the reader can always see why a call
+// failed — the ruling covers the settled row. A failed call shows at every
+// level, Chat included; a running one shows at every level but Chat, whose
+// screen drops it because the status tray already shows the live step
+// (transcriptPresentation.ts, conversationOnly).
 function intentRow(
 	entry: Extract<ProjectedEntry, { kind: "intent" }>,
 	context: ProjectedRowContext,
@@ -279,12 +305,15 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
-	const { startedAtMs, endedAtMs } = row.detail;
-	const clock = startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {};
+	const { startedAtMs, endedAtMs, callId } = row.detail;
+	const metadata = {
+		...(startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {}),
+		...(callId !== undefined ? { callId } : {}),
+	};
 	const detail =
 		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
-			? { arguments: row.detail.arguments, ...clock }
-			: { description: entry.rationale, ...clock };
+			? { arguments: row.detail.arguments, ...metadata }
+			: { description: entry.rationale, ...metadata };
 	return {
 		...row,
 		state: entry.failed ? "failed" : row.state,
@@ -360,7 +389,10 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 		};
 	}
 
-	if (it.type === "steering") return { ...steeringNotice(it), ...identity };
+	if (it.type === "steering") {
+		const notice = steeringNotice(it);
+		return notice === null ? null : { ...notice, ...identity };
+	}
 	if (it.type === "systemMessage") return { ...systemNotice(it), ...identity };
 
 	if (it.type === "warning") {
@@ -606,9 +638,7 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 
 // --- notice rows ------------------------------------------------------------------
 
-const WARNING_STEERING_KINDS = new Set(["loop-detected", "turn-limit", "provider-failure"]);
-
-const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "error"]);
+const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
 const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
@@ -639,17 +669,27 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	return "unknown-system";
 }
 
-function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
-	const tone: NoticeTone = it.steeringKind && WARNING_STEERING_KINDS.has(it.steeringKind) ? "warning" : "info";
-	return {
-		kind: "notice",
+// A daemon steer is instructions to the agent, never the conversation: it
+// folds to what it did, and opens to what it said (spec 8.2 "System event"),
+// with the label the web shows for it (steeringLabel: "System steered:
+// <what it did>"). One the daemon sends as notification markup reads as its
+// cards instead. A
+// loop-detected or provider-failure steer is quiet too: the failure it answers
+// shows as the turn's own error. The current task and the task list are left
+// out, as the web leaves them: the tasks surfaces own them.
+function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> | null {
+	if (isSuppressedSteeringKind(it.steeringKind)) return null;
+	const notifications = steeringNotificationFragments(it.text);
+	const common = {
+		kind: "notice" as const,
 		id: it.id,
-		origin: "steering",
+		origin: "steering" as const,
 		steeringKind: it.steeringKind,
-		family: tone === "warning" ? "warning" : "informational",
-		tone,
-		text: it.text,
+		family: "informational" as const,
+		tone: "info" as const,
 	};
+	if (notifications) return { ...common, text: it.text, notifications };
+	return { ...common, text: stripSystemReminder(it.text), label: steeringLabel(it.steeringKind) };
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
@@ -663,7 +703,8 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		origin: "system",
 		family,
 		tone,
-		text: it.text,
+		// What it says: the package's systemEventWords, which the web reads too.
+		...systemEventWords(it),
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
 	};
@@ -843,13 +884,22 @@ function rowsForProjectedTurn(
 	if (projected === undefined) return [];
 	const entries: Ordered[] = [];
 	const askState: Array<[string, boolean]> = [];
+	const keyedRounds = new Set<string>();
+	const turnError = turn.error ? (turn.error as NonNullable<Turn["error"]>) : undefined;
 	for (const entry of projected.entries) {
+		// A failed turn's error shows once, as the failure row at its end, which
+		// carries the one action (spec 8.2 "Error"). A reload also carries the
+		// failure as an error systemMessage (apptranscript's TurnFailure item),
+		// which would say it a second time. Only that echo goes: another error
+		// in the same turn is news of its own.
+		if (echoesTurnError(entry.item, turnError)) continue;
 		if (isAskUser(entry.item)) {
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
 		}
-		const row = projectedRow(entry, { turnStatus: turn.status, asks });
-		if (row === null) continue;
+		const plain = projectedRow(entry, { turnStatus: turn.status, asks });
+		if (plain === null) continue;
+		const row = withRoundKey(plain, entry.item, keyedRounds);
 		// Only an activity row joins a cluster run; everything else is final.
 		if (row.kind === "activity") {
 			entries.push({
@@ -867,10 +917,10 @@ function rowsForProjectedTurn(
 		}
 	}
 	// A turn error produces a failure item at the end of that turn's rows.
-	if (turn.error) {
+	if (turnError) {
 		entries.push({
 			type: "final",
-			item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
+			item: failureItem(turnError, turn.id),
 		});
 	}
 	let slots = turnRowCache.get(turn);
@@ -884,6 +934,25 @@ function rowsForProjectedTurn(
 		if (oldest !== undefined) slots.delete(oldest);
 	}
 	return entries;
+}
+
+// A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+// until its round is recorded, when it becomes a history item with a new id and
+// a transcript key. Both carry the round's id, so the reply keys by its round
+// and keeps one key through the change: the list doesn't remount it, and a
+// reading position or a "new below" count taken on it still finds it. Only the
+// round's first reply takes the round's key, since a round can record two
+// replies (text before and after a tool call); the later one keeps its own. A
+// communicate preview carries the round too, but its message is recorded with
+// no round id, so it has nothing to share a key with and takes none. The key
+// is for display and reading positions only: timelineIdentity, which the
+// store's merges use, stays transcriptKey-first.
+function withRoundKey(row: MobileTimelineItem, item: ItemModel, keyedRounds: Set<string>): MobileTimelineItem {
+	if (row.kind !== "assistant" || !item.roundId || item.callId) return row;
+	const key = `round:${item.roundId}:agentMessage`;
+	if (keyedRounds.has(key)) return row;
+	keyedRounds.add(key);
+	return { ...row, roundKey: key };
 }
 
 // An attachments row's fields, before it takes its place in the timeline.

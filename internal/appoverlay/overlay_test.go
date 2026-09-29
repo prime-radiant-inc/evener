@@ -3,6 +3,7 @@ package appoverlay
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -136,6 +137,63 @@ func TestStreamDeltasUpsertTheAttemptThenAppend(t *testing.T) {
 	snapshot := o.Snapshot()
 	if len(snapshot) != 2 || snapshot[0].Item.Text != "hello" || snapshot[1].Item.Text != "think" {
 		t.Fatalf("snapshot = %+v, want the text stream holding hello then the reasoning stream", snapshot)
+	}
+}
+
+// TestStreamTextAccumulationStaysLinear pins the overlay's streamed-text append
+// to amortized-linear allocation. Holding the text in a Go string and doing
+// `Text += delta` recopies the whole prefix on every delta, so a fixed chunk
+// streamed over N deltas moves O(N^2) bytes; the append-efficient buffer keeps
+// it amortized O(N). The check is a scaling ratio rather than an absolute byte
+// bound: doubling the delta count doubles a linear cost but quadruples a
+// quadratic one, and constant background allocation only pulls the ratio toward
+// one, so no absolute global-counter bound is relied on.
+func TestStreamTextAccumulationStaysLinear(t *testing.T) {
+	const (
+		chunk = "abcdefgh" // 8 bytes
+		base  = 4096
+	)
+	allocatedFor := func(deltas int) uint64 {
+		o := newOverlay()
+		o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range deltas {
+			o.Event(events.New(events.AssistantTextDeltaData{Delta: chunk}))
+		}
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+
+	small := allocatedFor(base)
+	large := allocatedFor(base * 2)
+	ratio := float64(large) / float64(small)
+	t.Logf("%d deltas allocated %d bytes, %d deltas allocated %d bytes (ratio %.2f)", base, small, base*2, large, ratio)
+	if ratio > 3 {
+		t.Fatalf("doubling the delta count grew allocation %.2fx (%d -> %d bytes); the append is superlinear", ratio, small, large)
+	}
+
+	// The append must still produce the exact text, not merely fewer bytes.
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	for range base {
+		o.Event(events.New(events.AssistantTextDeltaData{Delta: chunk}))
+	}
+	items := o.Snapshot()
+	want := strings.Repeat(chunk, base)
+	if len(items) != 1 || items[0].Item.Text != want {
+		t.Fatalf("snapshot = %d items; want one stream whose text is %d bytes", len(items), len(want))
+	}
+
+	// A preview shares the same buffer, so two deltas must round-trip its exact
+	// concatenation through Snapshot too.
+	o.Event(events.New(events.CommunicatePreviewStartData{CallID: "c_1"}))
+	o.Event(events.New(events.CommunicatePreviewDeltaData{CallID: "c_1", Delta: "pre"}))
+	o.Event(events.New(events.CommunicatePreviewDeltaData{CallID: "c_1", Delta: "view"}))
+	items = o.Snapshot()
+	if len(items) != 2 || items[0].Item.Text != want || items[1].Item.Text != "preview" {
+		t.Fatalf("snapshot = %d items; want the stream plus a preview reading %q", len(items), "preview")
 	}
 }
 

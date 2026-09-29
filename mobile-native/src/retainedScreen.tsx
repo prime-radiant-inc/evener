@@ -1,8 +1,6 @@
-import { View } from "react-native";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 import type { HubProfile } from "./connection";
 import { useConnection } from "./ConnectionProvider";
-import { ConnectionStatus } from "./ConnectionStatus";
 import {
 	type ConnectionDisplay,
 	type LiveReadiness,
@@ -10,7 +8,6 @@ import {
 	useLiveReadiness,
 	useRenderClient,
 } from "./connectionDisplay";
-import { Copy, ErrorMessage } from "./ui";
 
 /** What a retained ready-only screen says when the route names a hub the
  * active profile has moved off: the data behind the screen belongs to a hub
@@ -91,42 +88,4 @@ export function useRetainedScreenConnection(routeHubId: string): RetainedScreenC
 		canUseConnection,
 		renderClient,
 	};
-}
-
-/** The full-screen replacement a retained ready-only screen shows instead of
- * its content: the display is a wall - nothing has ever been shown, or a
- * close no retry can clear has taken the connection. `purpose` is the
- * screen's own phrase for what it shows once connected ("manage plugins",
- * "view hub settings"). It offers no Reconnect: the app reconnects on its own
- * (spec principle 2). The connection's own error copy renders beside it: on a
- * fatal close (a protocol mismatch) that copy is the compatibility message,
- * the one thing that says why the screen's content is gone. */
-export function ConnectionWall({
-	hubName,
-	purpose,
-	error,
-}: {
-	hubName: string;
-	/** What the screen offers once connected, phrased to follow "Connect to
-	 * <hub> to ". */
-	purpose: string;
-	/** The connection's own failure copy (useConnection's error): rendered
-	 * here so a fatal wall says why the screen's content is gone. */
-	error?: string | null;
-}) {
-	return (
-		<View style={{ padding: 20 }}>
-			<Copy>{`Connect to ${hubName} to ${purpose}.`}</Copy>
-			<ErrorMessage message={error ?? null} />
-		</View>
-	);
-}
-
-/** The connection status a screen's open modal shows in place of the banner
- * it covers: a native modal hides the screen behind it, so while one is open
- * the status has to live inside it, or the user would have to dismiss the
- * modal to see it. Renders nothing while the
- * connection is ready, exactly as the banner behind the modal would. */
-export function ModalConnectionStatus({ connectionState }: { connectionState: ConnectionState }) {
-	return connectionState !== "ready" ? <ConnectionStatus /> : null;
 }

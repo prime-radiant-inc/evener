@@ -20,7 +20,7 @@ import { useEffect, useRef, useState } from "react";
 import { HUB_UNCONFIRMED_MESSAGE } from "../nativePreferences";
 import { useNativePreferences } from "../NativePreferencesProvider";
 import { DETAIL_LEVELS } from "../session/detailLevels";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, SwitchRow } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, SwitchRow } from "../sheet/Grouped";
 import { Connecting, SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 import { useHubSheet } from "./hubSheetContext";
@@ -186,8 +186,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 			) : null}
 			{config && state.support === "supported" ? (
 				<>
-					<GroupLabel>Default detail level</GroupLabel>
-					<Group>
+					<Group label="Default detail level">
 						{DETAIL_LEVELS.map(({ level, label, description }) => (
 							<Row
 								key={level}
@@ -232,8 +231,7 @@ function CustomChoices({
 	if (content.kind !== "custom") return null;
 	return (
 		<>
-			<GroupLabel>Shows</GroupLabel>
-			<Group>
+			<Group label="Shows">
 				{SHOWS.map(({ key, label }) => (
 					<SwitchRow
 						key={key}
@@ -244,8 +242,7 @@ function CustomChoices({
 					/>
 				))}
 			</Group>
-			<GroupLabel>More detail</GroupLabel>
-			<Group>
+			<Group label="More detail">
 				{MORE_DETAIL.map(([key, label]) => (
 					<SwitchRow
 						key={key}
@@ -256,8 +253,7 @@ function CustomChoices({
 					/>
 				))}
 			</Group>
-			<GroupLabel>Hook events</GroupLabel>
-			<Group>
+			<Group label="Hook events">
 				{HOOK_EXIT_DETAILS.map((detail) => (
 					<Row
 						key={detail}

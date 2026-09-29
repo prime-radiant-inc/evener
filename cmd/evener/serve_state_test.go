@@ -858,9 +858,9 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 	args := []string{
 		"--model", "openai/gpt-test",
 		"--addr", "127.0.0.1:0",
-		"--dir", t.TempDir(),
-		"--state-dir", t.TempDir(),
-		"--run-dir", t.TempDir(),
+		"--dir", resolvedTempDir(t),
+		"--state-dir", resolvedTempDir(t),
+		"--run-dir", resolvedTempDir(t),
 	}
 	return deps, state, args
 }

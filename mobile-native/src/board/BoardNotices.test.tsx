@@ -31,9 +31,9 @@ const list: Notice[] = [
 	},
 ];
 
-function mount(notices: Notice[]) {
+function mount(notices: Notice[], connected = true) {
 	const navigation = { navigate: vi.fn() };
-	const tree = render(<BoardNotices hubId="hub-1" notices={notices} navigation={navigation} />);
+	const tree = render(<BoardNotices hubId="hub-1" notices={notices} navigation={navigation} connected={connected} />);
 	return { tree, navigation };
 }
 type Style = Record<string, unknown>;
@@ -107,4 +107,13 @@ it("draws a notice row without an action when it has none", () => {
 	const tree = render(<NoticeRow text="Update needed" />);
 	expect(tree.root.findAll((node) => node.type === ("Pressable" as never))).toHaveLength(0);
 	expect(textWith(tree, "Update needed")).toBeTruthy();
+});
+
+it("hides each notice's action while the hub is out of reach, keeping the sentence", () => {
+	const { tree } = mount(list, false);
+	const rows = tree.root.findAll((node) => node.props.testID === "notice");
+	expect(rows).toHaveLength(3);
+	// Ruling 21: the action needs the hub, so it hides while it's unreachable.
+	expect(rows.flatMap((row) => row.findAll((node) => node.type === ("Pressable" as never)))).toHaveLength(0);
+	expect(textWith(tree, "superpowers is broken")).toBeTruthy();
 });

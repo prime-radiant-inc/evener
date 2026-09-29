@@ -2,7 +2,7 @@
 // the latest start it opens on, and a host change all speak in this shape,
 // and every rule applied to it is a pure function here.
 import { basename, type LaunchConfigLayer } from "@evener/appwire-client";
-import { effortName } from "../session/sessionFacts";
+import { effortName, hostIdOf } from "../session/sessionFacts";
 
 /** The launch overrides the sheet owns: Plugins, Access and More options.
  * Everything else stays at the hub's defaults on the phone (spec 11). */
@@ -46,6 +46,21 @@ export interface SessionSeed {
 	/** The session's model as it reports it: "provider/model", or a bare model. */
 	model?: string;
 	effort?: string;
+}
+
+/** A session read as New session like this's seed (ruling 24): its host,
+ * folder, and its own model and effort when it has them. The session's
+ * plugins and access aren't on the wire, so the sheet keeps its own. */
+export function seedFromSession(
+	ref: string,
+	session: { cwd: string; modelProvider: string; reasoningEffort?: string },
+): SessionSeed {
+	return {
+		host: hostIdOf(ref),
+		cwd: session.cwd,
+		...(session.modelProvider ? { model: session.modelProvider } : {}),
+		...(session.reasoningEffort ? { effort: session.reasoningEffort } : {}),
+	};
 }
 
 export function ownedOverrides(layer: LaunchConfigLayer): OwnedOverrides {
@@ -95,7 +110,26 @@ export function moveToHost(
 	if (projectExists) return { cwd, note: null };
 	const name = projectName(cwd);
 	if (!recent) return { cwd: "", note: `${name} isn't on ${hostLabel}. Choose a project.` };
-	return { cwd: recent, note: `${name} isn't on ${hostLabel}, so the project changed to ${projectName(recent)}.` };
+	// Two folders with one name (a repository cloned on both hosts) would read
+	// "evener isn't on paradise-park, so the project changed to evener": the
+	// shortest ends of their paths that differ tell them apart.
+	const [from, to] = name === projectName(recent) ? distinctTails(cwd, recent) : [name, projectName(recent)];
+	return { cwd: recent, note: `${from} isn't on ${hostLabel}, so the project changed to ${to}.` };
+}
+
+/** The shortest ends of two paths that differ ("work/evener" and
+ * "oss/evener"); a path that runs out first is given whole. */
+function distinctTails(a: string, b: string): [string, string] {
+	const left = a.split("/").filter(Boolean);
+	const right = b.split("/").filter(Boolean);
+	// Compared by folder, so a path given whole never differs by its slash alone.
+	const tail = (segments: string[], whole: string, count: number) =>
+		count >= segments.length ? whole : segments.slice(-count).join("/");
+	for (let count = 1; count <= Math.max(left.length, right.length); count++) {
+		if (left.slice(-count).join("/") !== right.slice(-count).join("/"))
+			return [tail(left, a, count), tail(right, b, count)];
+	}
+	return [a, b];
 }
 
 /** A project's name: its folder (spec 11's "Project evener"). */

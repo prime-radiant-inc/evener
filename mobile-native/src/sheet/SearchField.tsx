@@ -1,7 +1,7 @@
 // A sheet's search field: a rounded inset field that filters the list below
 // it, as typed (no capitals or corrections), with iOS's clear button.
 import { TextInput } from "react-native";
-import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { allowFontScaling, searchFieldStyle, useColors, useTextScale } from "../ui";
 
 export function SearchField({
 	label,
@@ -26,14 +26,7 @@ export function SearchField({
 			autoCorrect={false}
 			clearButtonMode="while-editing"
 			allowFontScaling={allowFontScaling}
-			style={{
-				minHeight: 36,
-				paddingHorizontal: 12,
-				borderRadius: 10,
-				backgroundColor: palette.inset,
-				color: palette.inkHi,
-				fontSize: 17 * scale,
-			}}
+			style={searchFieldStyle(palette, scale)}
 		/>
 	);
 }

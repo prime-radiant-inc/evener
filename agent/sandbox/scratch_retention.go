@@ -241,6 +241,27 @@ func writeScratchRetention(owner ScratchOwner, manifest ScratchManifest) error {
 	return nil
 }
 
+// commitScratchRetention writes manifest and returns the manifest to publish
+// against. writeScratchRetention can report the post-rename failure class after
+// its rename already committed (atomicWritePrivateFile fsyncs the containing
+// directory last), so on a reported error this re-reads under the caller's held
+// manifest lock — the lock makes every scratch writer single, so the durable
+// manifest is either the caller's own commit or the pre-call state — and treats
+// a manifest with the same tombstone state at exactly manifest.Revision as this
+// call's own commit, which is the predicate each original call site keyed on.
+// A write that did not commit, or a re-read that does not name this writer's
+// commit, returns the original error.
+func commitScratchRetention(owner ScratchOwner, manifest ScratchManifest) (ScratchManifest, error) {
+	if err := writeScratchRetention(owner, manifest); err != nil {
+		committed, rereadErr := loadScratchRetention(owner)
+		if rereadErr != nil || committed.Released != manifest.Released || committed.Revision != manifest.Revision {
+			return ScratchManifest{}, err
+		}
+		return committed, nil
+	}
+	return manifest, nil
+}
+
 func acquireScratchRetentionLock(owner ScratchOwner) (scratchLease, error) {
 	if err := os.MkdirAll(scratchRetentionDir(owner), 0o700); err != nil {
 		return nil, fmt.Errorf("sandbox: create scratch retention dir: %w", err)
@@ -1189,20 +1210,14 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 	}
 	manifest.Released = true
 	manifest.Revision++
-	if err := writeScratchRetention(owner, manifest); err != nil {
-		// A write can commit its rename before reporting the post-rename
-		// failure class, so re-read under this held lock: it makes every
-		// writer single, so a manifest that reads Released at exactly the
-		// revision this call attempted can only be this release's own
-		// commit (the reset's argument, round 45, applied at the release).
-		// Returning without that check would skip the pin cleanup below
-		// over a durable tombstone, pinning otherwise-reclaimable
-		// directories under the committed release (round 77).
-		fresh, rereadErr := loadScratchRetention(owner)
-		if rereadErr != nil || !fresh.Released || fresh.Revision != manifest.Revision {
-			return err
-		}
-		manifest = fresh
+	// A write can commit its rename before reporting the post-rename failure
+	// class; commitScratchRetention re-reads under this held lock and treats the
+	// tombstone this release publishes as its own commit, so an error over a
+	// durable tombstone does not skip the pin cleanup below and pin
+	// otherwise-reclaimable directories under the committed release (round 77).
+	manifest, err = commitScratchRetention(owner, manifest)
+	if err != nil {
+		return err
 	}
 	// The tombstone is durable before any pin is removed, so an interruption
 	// between the two can only leave an extra pin, never a pinless directory
@@ -1554,27 +1569,17 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 		if err := validateResetScratchGraph(fresh); err != nil {
 			return fmt.Errorf("sandbox: the reset would commit an invalid retention graph: %w", err)
 		}
-		if err := writeScratchRetention(owner, fresh); err != nil {
-			// A write whose rename already committed can still report the
-			// post-rename failure class (writeScratchRetention's probe fires
-			// after atomicWritePrivateFile): the reset then committed —
-			// Released false with the carried rows at the advanced revision —
-			// and reporting reset=false aborts the install over a manifest
-			// the reset already repaired, leaving carried references pinned
-			// with no restored consumer to re-probe them. This closure holds
-			// the single-writer retention lock, so an unreleased manifest at
-			// exactly fresh's revision is this reset's commit; anything else
-			// keeps the error (round 45; the rounds 39/43 commit
-			// discriminators applied to the reset).
-			if current, rerr := loadScratchRetention(owner); rerr == nil &&
-				!current.Released && current.Revision == fresh.Revision {
-				out = current
-				reset = true
-				return nil
-			}
-			return err
+		// A write whose rename already committed can still report the
+		// post-rename failure class: commitScratchRetention re-reads under this
+		// held lock and treats the unreleased manifest it published, at exactly
+		// fresh's revision, as this reset's own commit, so an error over a
+		// manifest the reset already repaired does not abort the install over
+		// carried references left pinned with no restored consumer (round 45).
+		current, werr := commitScratchRetention(owner, fresh)
+		if werr != nil {
+			return werr
 		}
-		out = fresh
+		out = current
 		reset = true
 		return nil
 	})
@@ -1990,15 +1995,12 @@ func repairScratchRetentionLocked(owner ScratchOwner) (ScratchManifest, bool, er
 	}
 	current.References = survivors
 	current.Revision++
-	if err := writeScratchRetention(owner, current); err != nil {
-		// writeScratchRetention can report the post-rename failure class after
-		// its rename committed. Re-read under the held lock — the reset/release
-		// commit discriminator — so a prune that is already durable is not
-		// reported as a failure that would fail the restore.
-		if reread, rerr := loadScratchRetention(owner); rerr == nil &&
-			!reread.Released && reread.Revision == current.Revision {
-			return reread, true, nil
-		}
+	// commitScratchRetention re-reads under the held lock and treats the
+	// unreleased manifest it published, at exactly current's revision, as this
+	// prune's own commit, so a prune that is already durable is not reported as
+	// a failure that would fail the restore.
+	current, err = commitScratchRetention(owner, current)
+	if err != nil {
 		return ScratchManifest{}, false, err
 	}
 	return current, true, nil

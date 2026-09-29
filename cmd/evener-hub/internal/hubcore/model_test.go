@@ -75,9 +75,6 @@ func fuzzScenarioBuildTree_RowsNameTheirOwnSessionsModel(t *testing.T) {
 	if _, _, ended, found := liveAndProjectRowsFor(tree, "01ENDED"); !found || ended.Model != "claude-opus-4-7" {
 		t.Fatalf("ended row = %q (found %v), want its meta's model", ended.Model, found)
 	}
-	if len(liveRow.Children) != 1 || liveRow.Children[0].Model != "" {
-		t.Fatalf("children = %+v, want the one subagent row with no model", liveRow.Children)
-	}
 }
 
 // A spawned session's first publication names its model too, so its row names
@@ -95,5 +92,21 @@ func TestRosterReadSpawnedThreadPublishesTheCurrentModel(t *testing.T) {
 	live, ok := r.Find("01SPAWNED")
 	if !ok || live.CurrentModel != "gpt-5.6" {
 		t.Fatalf("published entry = %+v, want the model the read carried", live)
+	}
+}
+
+// A live entry that carries neither the model it runs now nor the one it
+// started on (a daemon that predates S17, or a probe that has not answered)
+// still names the model its meta holds, rather than naming none (#2962).
+func TestBuildTree_LiveRowWithoutAModelFallsBackToTheMeta(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01LIVE", Model: "gpt-5.5", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{{PID: 1, SessionID: "01LIVE", Status: appwire.ThreadStatusIdle}}
+	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	row, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01LIVE")
+	if !inLive || !inProject || row.Model != "gpt-5.5" || projectRow.Model != "gpt-5.5" {
+		t.Fatalf("Live row %q (%v), project row %q (%v): a live entry with neither model must name its meta's", row.Model, inLive, projectRow.Model, inProject)
 	}
 }

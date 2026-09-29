@@ -11,7 +11,10 @@ import type { WhyLine } from "../board/attention";
 export type NeedsYouKind = "failed" | "question" | "approval" | "warning" | "restartNeeded";
 
 export interface SessionAlert {
-	kind: NeedsYouKind | "finished";
+	/** "started": a session you started opened while you were somewhere else
+	 * (New session's start landing after you left the sheet), so it could be
+	 * started twice without it. */
+	kind: NeedsYouKind | "finished" | "started";
 	ref: string;
 	title: string;
 	why: WhyLine | null;
@@ -24,7 +27,19 @@ export interface NoticeAlert {
 	title: string;
 }
 
-export type Alert = SessionAlert | NoticeAlert;
+/** A start New session sent failed, or couldn't be confirmed, after its sheet
+ * closed (#3104): nothing else would say so, and the draft waits in New
+ * session. */
+export interface StartFailedAlert {
+	kind: "startFailed";
+	/** The hub it was started on, whichever hub is selected when it lands. */
+	hubId: string;
+	hubName: string;
+	/** The start reached the hub, so the session may exist. */
+	uncertain: boolean;
+}
+
+export type Alert = SessionAlert | NoticeAlert | StartFailedAlert;
 
 /** Hub > In-app alerts (spec 12). Read-only, since the defaults and each
  * snapshot are shared by reference: the store, the center and the page all
@@ -69,7 +84,8 @@ export type AlertScreen = { kind: "board" } | { kind: "session"; ref: string } |
 export type BannerTarget =
 	| { kind: "session"; ref: string; title: string }
 	| { kind: "needsYou" }
-	| { kind: "notice"; key: string };
+	| { kind: "notice"; key: string }
+	| { kind: "newSession"; hubId: string; hubName: string };
 
 export type Haptic = "warning" | "light";
 
@@ -94,12 +110,47 @@ export const COALESCE_MS = 5_000;
 export const RELEASE_MS = 200;
 const RECENT_LIMIT = 20;
 
+/** Which kinds are sessions that need you, every kind named so a new one
+ * has to be decided here. */
+const NEEDS_YOU: Record<Alert["kind"], boolean> = {
+	failed: true,
+	question: true,
+	approval: true,
+	warning: true,
+	restartNeeded: true,
+	finished: false,
+	started: false,
+	notice: false,
+	startFailed: false,
+};
+
 export function needsYou(alert: Alert): alert is SessionAlert & { kind: NeedsYouKind } {
-	return alert.kind !== "notice" && alert.kind !== "finished";
+	return NEEDS_YOU[alert.kind];
+}
+
+/** The session an alert is about, or null for a notice or a failed start. */
+export function sessionRef(alert: Alert): string | null {
+	return alert.kind === "notice" || alert.kind === "startFailed" ? null : alert.ref;
+}
+
+/** An alert about what you did yourself in New session: it never joins or
+ * replaces a banner that is up, and it is never lost. It follows that banner,
+ * or waits out a hold, since you may otherwise start it again. */
+function followsInTurn(alert: Alert): boolean {
+	return alert.kind === "started" || alert.kind === "startFailed";
+}
+
+/** An alert that brings news rather than asks for you: no haptic, and it
+ * never joins, replaces or waits behind another banner. */
+export function quiet(alert: Alert): boolean {
+	return alert.kind === "finished" || alert.kind === "started";
 }
 
 function subject(alert: Alert): string {
-	return alert.kind === "notice" ? `notice:${alert.key}` : `session:${alert.ref}`;
+	if (alert.kind === "notice") return `notice:${alert.key}`;
+	// One failed start per hub: the newest on a hub says it.
+	if (alert.kind === "startFailed") return `startFailed:${alert.hubId}`;
+	return `session:${alert.ref}`;
 }
 
 export class AlertCenter {
@@ -109,6 +160,13 @@ export class AlertCenter {
 	private releasing: unknown = null;
 	private touching = false;
 	private held: Alert[] = [];
+	/** Sessions you started that waited out a hold behind sessions needing
+	 * you, oldest first, and a held notice that came with them: each shows in
+	 * turn once the banner ahead of it goes, so none is lost. */
+	private afterBanner: Alert[] = [];
+	/** Alerts that have buzzed once: one shown again (a failed start a hub
+	 * switch keeps) doesn't buzz again. */
+	private buzzed = new WeakSet<Alert>();
 	private recent: string[] = [];
 	private holds = new Map<symbol, HoldKind>();
 	private screen: AlertScreen = { kind: "other" };
@@ -138,6 +196,15 @@ export class AlertCenter {
 		// banner that is up, a notice's included, and never waits (spec 13.3;
 		// the prototype's EV.alert drops it behind any banner).
 		if (alert.kind === "finished" && (this.banner !== null || this.holding())) return;
+		// A session you started, or a start that failed, never joins or replaces
+		// a banner that is up either, but it is never lost: it follows that
+		// banner, or waits out a hold. It lands while you're elsewhere, often
+		// reading or typing, and without it you may start it again.
+		if (followsInTurn(alert) && this.banner !== null && !this.holding()) {
+			this.queueAfterBanner([alert]);
+			this.publish();
+			return;
+		}
 		if (this.holding()) {
 			this.held = [...this.held.filter((waiting) => subject(waiting) !== subject(alert)), alert];
 			this.publish();
@@ -153,7 +220,7 @@ export class AlertCenter {
 		this.screen = screen;
 		if (screen.kind === "other") return;
 		const about = (alert: Alert) =>
-			screen.kind === "board" ? alert.kind === "notice" : alert.kind !== "notice" && alert.ref === screen.ref;
+			screen.kind === "board" ? alert.kind === "notice" : sessionRef(alert) === screen.ref;
 		const recent = screen.kind === "session" ? this.recent.filter((ref) => ref !== screen.ref) : this.recent;
 		const dropped = this.dropAlerts(about);
 		if (!dropped && recent.length === this.recent.length) return;
@@ -165,7 +232,14 @@ export class AlertCenter {
 	 * alert about it that waits or still shows would be stale news, so it
 	 * goes. The recent order stays; Next reads who needs you now. */
 	retract(ref: string): void {
-		if (this.dropAlerts((alert) => alert.kind !== "notice" && alert.ref === ref)) this.publish();
+		if (this.dropAlerts((alert) => sessionRef(alert) === ref)) this.publish();
+	}
+
+	/** A hub's failed start needs no alert any more: its New session is open
+	 * and shows why itself, or the hub was removed with its draft. Another
+	 * hub's stays. */
+	startFailureSeen(hubId: string): void {
+		if (this.dropAlerts((alert) => alert.kind === "startFailed" && alert.hubId === hubId)) this.publish();
 	}
 
 	setPreferences(preferences: AlertPreferences): void {
@@ -196,7 +270,7 @@ export class AlertCenter {
 	dismiss(): void {
 		if (this.banner === null) return;
 		this.stopBanner();
-		this.publish();
+		this.showAfterBanner();
 	}
 
 	/** Tapped: the banner goes, and the caller opens where it points. */
@@ -204,32 +278,41 @@ export class AlertCenter {
 		const banner = this.banner;
 		if (banner === null) return null;
 		this.stopBanner();
-		this.publish();
+		this.showAfterBanner();
 		const [only] = banner.alerts;
 		if (only === undefined || banner.alerts.length > 1) return { kind: "needsYou" };
-		return only.kind === "notice"
-			? { kind: "notice", key: only.key }
-			: { kind: "session", ref: only.ref, title: only.title };
+		if (only.kind === "notice") return { kind: "notice", key: only.key };
+		if (only.kind === "startFailed") return { kind: "newSession", hubId: only.hubId, hubName: only.hubName };
+		return { kind: "session", ref: only.ref, title: only.title };
 	}
 
 	/** Next took you on: it serves the held sessions itself now, so they
 	 * don't drop in later (the prototype's goNext). */
 	nextUsed(): void {
-		if (this.held.length === 0) return;
-		this.held = [];
+		// Next serves sessions that need you; a session you started, or a start
+		// that failed, isn't one, so it keeps waiting.
+		const kept = this.held.filter(followsInTurn);
+		if (kept.length === this.held.length) return;
+		this.held = kept;
 		this.publish();
 	}
 
 	/** Another hub, or none: nothing carries over, not even what is on screen,
-	 * whose ref named the old hub's session. The provider reports the screen
-	 * again after a reset. */
+	 * whose ref named the old hub's session, except a failed start, which
+	 * names its own hub and would otherwise be lost (#3104). The provider
+	 * reports the screen again after a reset. */
 	reset(): void {
+		const failedStarts = [...(this.banner?.alerts ?? []), ...this.afterBanner, ...this.held].filter(
+			(alert) => alert.kind === "startFailed",
+		);
 		this.stopBanner();
 		this.cancelRelease();
 		this.held = [];
+		this.afterBanner = [];
 		this.recent = [];
 		this.screen = { kind: "other" };
-		this.publish();
+		this.queueAfterBanner(failedStarts);
+		this.showAfterBanner();
 	}
 
 	/** Takes the alerts `about` matches out of the held ones and the banner,
@@ -239,16 +322,29 @@ export class AlertCenter {
 		const held = this.held.filter((alert) => !about(alert));
 		const shown = this.banner?.alerts ?? [];
 		const kept = shown.filter((alert) => !about(alert));
-		if (held.length === this.held.length && kept.length === shown.length) return false;
+		const afterBanner = this.afterBanner.filter((alert) => !about(alert));
+		if (
+			held.length === this.held.length &&
+			kept.length === shown.length &&
+			afterBanner.length === this.afterBanner.length
+		)
+			return false;
 		this.held = held;
+		this.afterBanner = afterBanner;
 		if (this.banner !== null) {
-			if (kept.length === 0) this.stopBanner();
-			else this.banner = { id: this.banner.id, alerts: kept };
+			if (kept.length > 0) this.banner = { id: this.banner.id, alerts: kept };
+			else {
+				// The banner was answered: what waited behind it is next.
+				this.stopBanner();
+				this.showAfterBanner();
+			}
 		}
 		return true;
 	}
 
 	private wanted(alert: Alert): boolean {
+		// A start that failed is about what you just did, whatever the settings.
+		if (alert.kind === "startFailed") return true;
 		const { failures, questions, finished } = this.preferences;
 		if (alert.kind === "failed" && !failures) return false;
 		if ((alert.kind === "question" || alert.kind === "approval") && !questions) return false;
@@ -282,9 +378,11 @@ export class AlertCenter {
 					: [...current.alerts, alert],
 			};
 		} else {
-			this.stopBanner();
-			this.banner = { id: this.nextId++, alerts: [alert] };
-			if (alert.kind !== "finished") this.buzz(alert.kind === "failed" ? "warning" : "light");
+			this.replaceBanner([alert]);
+			if (!quiet(alert) && !this.buzzed.has(alert)) {
+				this.buzzed.add(alert);
+				this.buzz(alert.kind === "failed" || alert.kind === "startFailed" ? "warning" : "light");
+			}
 		}
 		this.shownAt = now;
 		this.armExpiry();
@@ -300,15 +398,32 @@ export class AlertCenter {
 		const current = this.banner;
 		const showing = current?.alerts.every(needsYou) ? current.alerts : [];
 		const sessions = waiting.filter(needsYou);
+		// Sessions you started, and failed starts, always follow in turn, never
+		// dropped.
+		this.queueAfterBanner(waiting.filter(followsInTurn));
 		if (sessions.length === 0) {
-			// A held notice shows only when no session waits, a banner still up
-			// included, and then only the latest; the Board lists every notice
-			// either way (the prototype's releaseHeld).
+			// With no session waiting and no banner up, the oldest session you
+			// started shows first; else a held notice shows, only the latest. The
+			// Board lists both either way (the prototype's releaseHeld).
+			if (showing.length > 0) {
+				this.publish();
+				return;
+			}
 			const notice = [...waiting].reverse().find((alert) => alert.kind === "notice");
-			if (notice === undefined || showing.length > 0) this.publish();
+			if (this.afterBanner.length > 0) {
+				// Sessions you started go first; a held notice follows them rather
+				// than being lost. They wait for any banner that is up to end.
+				if (notice !== undefined) this.queueAfterBanner([notice]);
+				if (current !== null) this.publish();
+				else this.showAfterBanner();
+				return;
+			}
+			if (notice === undefined) this.publish();
 			else this.show(notice);
 			return;
 		}
+		// Sessions that need you come first; the sessions you started follow
+		// their banner.
 		// Held banners show when you leave, combined (spec 13.3). A banner about
 		// sessions that need you that is still up takes them in, as a burst
 		// does, so nothing on it drops out.
@@ -323,8 +438,7 @@ export class AlertCenter {
 			this.show(only);
 			return;
 		} else {
-			this.stopBanner();
-			this.banner = { id: this.nextId++, alerts };
+			this.replaceBanner(alerts);
 			this.buzz(alerts.some((alert) => alert.kind === "failed") ? "warning" : "light");
 		}
 		this.shownAt = this.timer.now();
@@ -355,7 +469,50 @@ export class AlertCenter {
 			return;
 		}
 		this.banner = null;
-		this.publish();
+		this.showAfterBanner();
+	}
+
+	/** Puts up a new banner in place of any that is up. A session you started
+	 * leaves only when its own banner ends or you look at it, so one the new
+	 * banner replaces goes back to the front of the queue, to show again when
+	 * this banner ends. */
+	private replaceBanner(alerts: readonly Alert[]): void {
+		const interrupted = (this.banner?.alerts ?? []).filter(
+			(other) => followsInTurn(other) && !alerts.some((alert) => subject(alert) === subject(other)),
+		);
+		if (interrupted.length > 0)
+			this.afterBanner = [
+				...interrupted,
+				...this.afterBanner.filter((waiting) => !interrupted.some((other) => subject(other) === subject(waiting))),
+			];
+		this.stopBanner();
+		this.banner = { id: this.nextId++, alerts };
+	}
+
+	private queueAfterBanner(alerts: readonly Alert[]): void {
+		for (const alert of alerts)
+			this.afterBanner = [...this.afterBanner.filter((waiting) => subject(waiting) !== subject(alert)), alert];
+	}
+
+	/** A banner went: the oldest session you started that waited behind it
+	 * shows now, unless a hold began meanwhile (it then waits out that hold,
+	 * with the rest). */
+	private showAfterBanner(): void {
+		this.afterBanner = this.afterBanner.filter((alert) => this.wanted(alert));
+		const [next] = this.afterBanner;
+		if (next === undefined) {
+			this.publish();
+			return;
+		}
+		if (this.holding()) {
+			const waiting = this.afterBanner;
+			this.afterBanner = [];
+			this.held = [...this.held.filter((alert) => !waiting.some((w) => subject(w) === subject(alert))), ...waiting];
+			this.publish();
+			return;
+		}
+		this.afterBanner = this.afterBanner.slice(1);
+		this.show(next);
 	}
 
 	private stopBanner(): void {

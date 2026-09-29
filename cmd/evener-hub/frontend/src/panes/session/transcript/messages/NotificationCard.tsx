@@ -1,5 +1,5 @@
 // In-transcript job-notification card (contracts §17). Renders one parsed
-// <job-notification> / observer-callback block (steeringClassify.ts) as a card
+// <job-notification> / observer-callback block (steeringNotifications.ts) as a card
 // that RECEDES when nothing went wrong (color-is-attention: a completed job is
 // the expected state, so success/neutral get no tint - warning earns an
 // attention Chip, and error announces itself with the red FailureGlyph cross
@@ -16,7 +16,13 @@
 // the message (markdown) and concerns carry the signal; the plumbing facts stay
 // in the raw disclosure. The watch/observer glyph vocabulary (◌/↩) is replaced
 // by the uniform tone treatment.
-import { scopedDisclosureId } from "@evener/appwire-client";
+import {
+  decodeNotificationEntities,
+  isValidTranscriptRef,
+  type NotificationTone,
+  type ParsedNotification,
+  scopedDisclosureId,
+} from "@evener/appwire-client";
 import { Fragment, type ReactNode } from "react";
 import {
   disclosureScopeForSession,
@@ -33,12 +39,6 @@ import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
 import { splitTrailingWord } from "../tailWord";
 import styles from "./notificationcard.module.css";
-import {
-  decodeNotificationEntities,
-  isValidTranscriptRef,
-  type NotificationTone,
-  type ParsedNotification,
-} from "./steeringClassify";
 
 const CLASS = {
   disclosure: requireClass(styles.disclosure, "notificationcard.module.css", "disclosure"),

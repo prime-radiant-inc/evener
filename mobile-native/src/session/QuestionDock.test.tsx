@@ -5,10 +5,11 @@
 import type { AskQuestionRef } from "@evener/appwire-client";
 import { useState } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftDestination } from "../draftRepository";
 import type { QuestionSelections } from "../questionAnswers";
-import { pressable, render, renderedText, renderHook } from "../renderNative.testkit";
+import { AccessibilityInfo } from "react-native";
+import { dockBody, keyboard, pressable, render, renderedText, renderHook, textOf } from "../renderNative.testkit";
 import { QuestionDock } from "./QuestionDock";
 import { useQuestionDraft } from "./useQuestionDraft";
 
@@ -73,7 +74,12 @@ const two = [question("q1", "Flags", ["Keep them", "Drop them"]), question("q2",
 
 function mount(
 	questions: AskQuestionRef[],
-	{ ready = true, folded = false, error = null }: { ready?: boolean; folded?: boolean; error?: string | null } = {},
+	{
+		ready = true,
+		folded = false,
+		error = null,
+		composerUp = false,
+	}: { ready?: boolean; folded?: boolean; error?: string | null; composerUp?: boolean } = {},
 ) {
 	const onSend = vi.fn<(selections: QuestionSelections) => void>();
 	const onFold = vi.fn<(folded: boolean) => void>();
@@ -95,6 +101,7 @@ function mount(
 				onOtherAnswer={onOtherAnswer}
 				onSend={onSend}
 				error={error}
+				composerUp={composerUp}
 			/>
 		);
 	}
@@ -223,6 +230,117 @@ describe("the question dock (spec 8.4)", () => {
 		expect(pressable(tree, "Drop them, Recommended")?.props.accessibilityState).toMatchObject({ disabled: true });
 		act(() => send?.props.onPress());
 		expect(onSend).not.toHaveBeenCalled();
+	});
+});
+
+describe("a question taller than the room the screen gives the dock", () => {
+	it("scrolls the question and its options, while the header and the answer controls stay put", () => {
+		const { tree } = mount(two);
+		const body = dockBody(tree, "question-dock");
+		const scrolled = textOf(body.scroller);
+		expect(scrolled).toContain("Flags?");
+		expect(scrolled).toContain("Why flags");
+		expect(scrolled).toContain("About drop them");
+		expect(scrolled).not.toContain("Question 1 of 2");
+		expect(body.holds("Keep them")).toBe(true);
+		for (const label of ["Fold", "Other answer…", "Next question"]) expect(body.holds(label)).toBe(false);
+	});
+
+	it("starts the next question at its top, wherever the last one was scrolled to", () => {
+		const { tree } = mount(two);
+		const scroller = () => tree.root.findAll((node) => String(node.type) === "ScrollView")[0];
+		const first = scroller();
+		press(tree, "Next question");
+		expect(renderedText(tree)).toContain("Tests?");
+		// A new scroller, so no offset carries over from the question before.
+		expect(scroller()).not.toBe(first);
+	});
+});
+
+describe("while you type your own answer (spec 8.4, Other answer…)", () => {
+	// The composer is back under the dock and the keyboard is up for it.
+	function typing() {
+		const mounted = mount(two, { composerUp: true });
+		act(() => keyboard.show());
+		return mounted;
+	}
+	afterEach(() => keyboard.reset());
+
+	it("shows only the header and the scrolling question, with no options or answer controls", () => {
+		const { tree } = typing();
+		const body = dockBody(tree, "question-dock");
+		expect(textOf(body.scroller)).toContain("Flags?");
+		expect(textOf(body.scroller)).toContain("Why flags");
+		expect(renderedText(tree)).toContain("Question 1 of 2");
+		expect(pressable(tree, "Fold")).toBeDefined();
+		expect(optionLabels(tree)).toEqual([]);
+		for (const label of ["Other answer…", "Next question", "Send answers"])
+			expect(pressable(tree, label)).toBeUndefined();
+	});
+
+	it("offers Show options, which lowers the keyboard, brings the options back and says so", () => {
+		const { tree } = typing();
+		expect(pressable(tree, "Show options")?.props.accessibilityHint).toBe("Hides the keyboard");
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
+		press(tree, "Show options");
+		expect(optionLabels(tree)).toEqual(["Keep them", "Drop them"]);
+		expect(pressable(tree, "Show options")).toBeUndefined();
+		expect(announced).toHaveBeenCalledWith("Options shown");
+	});
+
+	it("says nothing about options when you fold the dock while typing", () => {
+		const { tree } = typing();
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
+		press(tree, "Fold");
+		expect(announced).not.toHaveBeenCalledWith("Options shown");
+	});
+
+	it("says nothing about options when the keyboard goes down on a folded dock", () => {
+		const { tree } = typing();
+		press(tree, "Fold");
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
+		act(() => keyboard.hide());
+		expect(renderedText(tree)).toContain("Answer 2 questions");
+		expect(announced).not.toHaveBeenCalledWith("Options shown");
+	});
+
+	it("says Options shown once when the keyboard goes down on a dock unfolded while typing", () => {
+		const { tree } = typing();
+		press(tree, "Fold");
+		press(tree, "Answer 2 questions");
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
+		act(() => keyboard.hide());
+		expect(announced.mock.calls.filter(([words]) => words === "Options shown")).toHaveLength(1);
+	});
+
+	it("says nothing about options when you unfold with the keyboard down", () => {
+		const { tree } = mount(two, { composerUp: true, folded: true });
+		const announced = vi.mocked(AccessibilityInfo.announceForAccessibility);
+		announced.mockClear();
+		press(tree, "Answer 2 questions");
+		expect(optionLabels(tree)).toEqual(["Keep them", "Drop them"]);
+		expect(announced).not.toHaveBeenCalledWith("Options shown");
+	});
+
+	it("keeps the options while the keyboard is up for something else, or down under the composer", () => {
+		const other = mount(two);
+		act(() => keyboard.show());
+		expect(optionLabels(other.tree)).toEqual(["Keep them", "Drop them"]);
+		act(() => keyboard.hide());
+		expect(optionLabels(mount(two, { composerUp: true }).tree)).toEqual(["Keep them", "Drop them"]);
+	});
+
+	it("opens already typing when the keyboard was up before the dock mounted", () => {
+		act(() => keyboard.show());
+		expect(optionLabels(mount(two, { composerUp: true }).tree)).toEqual([]);
+	});
+
+	it("has no Show options while the options are showing", () => {
+		expect(pressable(mount(two).tree, "Show options")).toBeUndefined();
 	});
 });
 

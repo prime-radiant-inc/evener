@@ -603,15 +603,17 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(finalizationRelease) }) })
 	var finalizationOnce sync.Once
-	fixture.child.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(got *subagent) {
-		finalizationOnce.Do(func() {
-			if got != fixture.child {
-				t.Errorf("finalization hook child = %p, want %p", got, fixture.child)
-			}
-			close(finalizationEntered)
-			<-finalizationRelease
-		})
-	}
+	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(got *subagent) {
+			finalizationOnce.Do(func() {
+				if got != fixture.child {
+					t.Errorf("finalization hook child = %p, want %p", got, fixture.child)
+				}
+				close(finalizationEntered)
+				<-finalizationRelease
+			})
+		}
+	})
 	var armOnce sync.Once
 	fixture.drainClock.onDrainStop = func() {
 		armOnce.Do(func() {
@@ -658,7 +660,9 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("delegate did not finish after callback restoration")
 	}
-	fixture.child.sess.cfg.testOnly.subagentAfterFinalStatePublish = nil
+	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = nil
+	})
 	resumed := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume after finalization", 0).result
 	if resumed.Err != nil || resumed.Action != "started" {
 		t.Fatalf("explicit resume after finalization = %+v, want started", resumed)

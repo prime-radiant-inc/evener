@@ -1,5 +1,11 @@
 import type { AppwireClientLike, HostEntry, HostMutationPair, HostRow } from "@evener/appwire-client";
-import { committedMutationRow, createHostMutations, errorText, HOST_GATE_TIMEOUT_MS } from "@evener/appwire-client";
+import {
+  committedMutationRow,
+  createHostMutations,
+  errorText,
+  HOST_GATE_TIMEOUT_MS,
+  HostMutationOutcomeError,
+} from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";
 import { createSecureUUID } from "./secureUUID";
@@ -521,6 +527,25 @@ async function reReadAfterMutation(): Promise<void> {
   await quietReRead();
 }
 
+// reReadOnOutcomeError runs a guarded mutation's commit and then the quiet
+// re-read: on success as before, and on the one rejection that is a
+// non-commit ARM of the mutation-result union (HostMutationOutcomeError,
+// hostMutations.ts), which may still have committed, so its row has to appear.
+// Any other rejection - a hub refusal (WireError) - passes through with no
+// re-read, exactly as before.
+async function reReadOnOutcomeError<T>(commit: () => Promise<T> | T): Promise<T> {
+  let result: T;
+  try {
+    result = await commit();
+  } catch (error) {
+    if (!(error instanceof HostMutationOutcomeError)) throw error;
+    await reReadAfterMutation();
+    throw error;
+  }
+  await reReadAfterMutation();
+  return result;
+}
+
 export const hostsStore = create<HostsStoreState>((set) => ({
   load: { phase: "loading" },
   revision: 0,
@@ -583,12 +608,11 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     const result = await requireClient().request("evener/host/add", { entry, mutationId: createSecureUUID() });
     // The result is the mutation-result union (registry spec 08 §11), so the
     // store narrows it explicitly: only the committed arm is a success, and the
-    // teardown-failure, collision-dropped, and ambiguous arms throw.
-    const row = committedMutationRow(result, "evener/host/add");
-    // Re-read quietly rather than appending: the server owns ordering and
-    // the row's attached state, and the list read is cheap and never dials.
-    await reReadAfterMutation();
-    return row;
+    // teardown-failure, collision-dropped, and ambiguous arms throw. The
+    // re-read (rather than appending: the server owns ordering and the row's
+    // attached state, and the list read is cheap and never dials) runs for
+    // every arm.
+    return reReadOnOutcomeError(() => committedMutationRow(result, "evener/host/add"));
   },
 
   update: async (params) => {
@@ -597,9 +621,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     // The guarded pair travels with it as params.expected, the pair of the row
     // the edit dialog opened on; a stale-entry refusal rejects unretried, so
     // an edit someone else made meanwhile is never overwritten.
-    const row = await hostMutations.update(params);
-    await reReadAfterMutation();
-    return row;
+    return reReadOnOutcomeError(() => hostMutations.update(params));
   },
 
   connect: async (name) => {
@@ -611,8 +633,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   },
 
   remove: async (name) => {
-    await hostMutations.remove(name);
-    await reReadAfterMutation();
+    await reReadOnOutcomeError(() => hostMutations.remove(name));
   },
 
   resetForTests: () => {

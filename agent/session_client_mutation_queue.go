@@ -516,10 +516,9 @@ func rejectClientMutation(record *clientMutationRecord, err error) {
 	if !errors.As(err, &wireErr) {
 		wireErr = appwire.Conflict(err.Error())
 	}
-	data, _ := wireErr.Data.(appwire.ErrorData)
-	data.ClientMutationID = record.ClientMutationID
-	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
-	data.RetryDisposition = appwire.RetryDispositionNone
+	wireErr = wireErr.NotAccepted(record.ClientMutationID)
+	// The record keeps the standard data, the part of a wrapped one it embeds.
+	data, _ := appwire.ErrorDataOf(wireErr.Data)
 	record.OperationState = clientMutationOperationRejected
 	record.ExecutionState = "rejected"
 	record.ProjectionState = appwire.MutationProjectionRemoved

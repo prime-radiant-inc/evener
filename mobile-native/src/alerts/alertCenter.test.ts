@@ -8,6 +8,7 @@ import {
 	type Haptic,
 	RELEASE_MS,
 	type SessionAlert,
+	sessionRef,
 } from "./alertCenter";
 
 const timer = {
@@ -30,7 +31,9 @@ function center() {
 	return { alerts: new AlertCenter(timer, (kind) => haptics.push(kind)), haptics };
 }
 function shown(alerts: AlertCenter): string[] | undefined {
-	return alerts.getSnapshot().banner?.alerts.map((alert) => (alert.kind === "notice" ? alert.key : alert.ref));
+	return alerts
+		.getSnapshot()
+		.banner?.alerts.map((alert) => sessionRef(alert) ?? (alert.kind === "notice" ? alert.key : alert.kind));
 }
 
 beforeEach(() => {
@@ -153,6 +156,152 @@ describe("what alerts at all", () => {
 		alerts.offer(session("a", "finished"));
 		expect(shown(alerts)).toEqual(["a"]);
 		expect(haptics).toEqual([]);
+	});
+
+	it("tells you a session you started opened elsewhere, whatever the finished setting, and opens it on a tap", () => {
+		const { alerts, haptics } = center();
+		alerts.offer({ kind: "started", ref: "a", title: "Fix the flaky test", why: null });
+		expect(shown(alerts)).toEqual(["a"]);
+		expect(haptics).toEqual([]);
+		expect(alerts.tap()).toEqual({ kind: "session", ref: "a", title: "Fix the flaky test" });
+	});
+
+	it("keeps a started session waiting while you read or type, and shows it when you're done", () => {
+		const { alerts } = center();
+		const release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "a", title: "Fix the flaky test", why: null });
+		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 1 });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["a"]);
+	});
+
+	it.each(["expires", "is swiped away"] as const)(
+		"shows a started session that waited with a session needing you once that banner %s",
+		(end) => {
+			const { alerts } = center();
+			const release = alerts.hold("quiet");
+			alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+			alerts.offer(session("q"));
+			release();
+			vi.advanceTimersByTime(RELEASE_MS);
+			expect(shown(alerts)).toEqual(["q"]);
+			if (end === "expires") vi.advanceTimersByTime(BANNER_MS);
+			else alerts.dismiss();
+			expect(shown(alerts)).toEqual(["s"]);
+		},
+	);
+
+	it("shows a started session that waited once the banner ahead of it is answered by looking at it", () => {
+		const { alerts } = center();
+		const release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		alerts.offer(session("q"));
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["q"]);
+		// Opening q answers its banner; the started session is next.
+		alerts.setScreen({ kind: "session", ref: "q" });
+		expect(shown(alerts)).toEqual(["s"]);
+	});
+
+	it("brings a started session back after a banner that replaced it", () => {
+		const { alerts } = center();
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		expect(shown(alerts)).toEqual(["s"]);
+		alerts.offer(session("q"));
+		expect(shown(alerts)).toEqual(["q"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s"]);
+		alerts.offer(hostOffline);
+		expect(shown(alerts)).toEqual(["host:paradise-park"]);
+		vi.advanceTimersByTime(BANNER_MS);
+		expect(shown(alerts)).toEqual(["s"]);
+	});
+
+	it("brings a started session back after sessions that waited replace it together", () => {
+		const { alerts } = center();
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		const release = alerts.hold("quiet");
+		alerts.offer(session("q1"));
+		alerts.offer(session("q2"));
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["q1", "q2"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s"]);
+	});
+
+	it("lets a banner that isn't about sessions needing you finish before a started session that waited", () => {
+		const { alerts } = center();
+		alerts.offer(hostOffline);
+		const release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["host:paradise-park"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s"]);
+	});
+
+	it("keeps every started session that waits, and shows them in turn", () => {
+		const { alerts } = center();
+		let release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s1", title: "One", why: null });
+		alerts.offer(session("q"));
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s2", title: "Two", why: null });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["q"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s1"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["s2"]);
+	});
+
+	it("drops a started session that waited once you look at it", () => {
+		const { alerts } = center();
+		const release = alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		alerts.offer(session("q"));
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		alerts.setScreen({ kind: "session", ref: "s" });
+		vi.advanceTimersByTime(BANNER_MS);
+		expect(alerts.getSnapshot().banner).toBeNull();
+	});
+
+	it("shows a waiting started session before a waiting notice, and the notice after it", () => {
+		const { alerts } = center();
+		const release = alerts.hold("covered");
+		alerts.offer({ kind: "started", ref: "a", title: "Fix the flaky test", why: null });
+		alerts.offer(hostOffline);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["a"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["host:paradise-park"]);
+	});
+
+	it("keeps a started session that waited when Next takes you on", () => {
+		const { alerts } = center();
+		alerts.hold("quiet");
+		alerts.offer({ kind: "started", ref: "s", title: "Fix the flaky test", why: null });
+		alerts.offer(session("q"));
+		alerts.nextUsed();
+		expect(alerts.getSnapshot().held).toBe(1);
+	});
+
+	it("never lets a started session join or replace a banner that is up, and shows it after", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer({ kind: "started", ref: "b", title: "Session b", why: null });
+		expect(shown(alerts)).toEqual(["a"]);
+		vi.advanceTimersByTime(BANNER_MS);
+		expect(shown(alerts)).toEqual(["b"]);
 	});
 
 	it("says nothing about the session on screen, or about a notice while the Board lists it", () => {
@@ -459,4 +608,114 @@ it("tells subscribers when something changes", () => {
 	stop();
 	alerts.dismiss();
 	expect(calls).toBe(1);
+});
+
+describe("a New session start that failed after its sheet closed (#3104)", () => {
+	const failed: Alert = { kind: "startFailed", hubId: "hub-a", hubName: "magic-kingdom", uncertain: false };
+
+	it("shows, buzzes as a failure, and opens New session on a tap", () => {
+		const { alerts, haptics } = center();
+		alerts.offer(failed);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+		expect(haptics).toEqual(["warning"]);
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+	});
+
+	it("shows whatever the failures setting, since it's about what you just did", () => {
+		const { alerts } = center();
+		alerts.setPreferences({ ...DEFAULT_ALERT_PREFERENCES, failures: false });
+		alerts.offer(failed);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
+	it("is never lost: it waits behind a banner that is up, and out a hold, and keeps waiting when Next is used", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(failed);
+		expect(shown(alerts)).toEqual(["a"]);
+		alerts.dismiss();
+		expect(shown(alerts)).toEqual(["startFailed"]);
+		alerts.dismiss();
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.offer(session("q"));
+		alerts.nextUsed();
+		expect(alerts.getSnapshot().held).toBe(1);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
+	it("keeps a failed start on each hub, one after the other", () => {
+		const { alerts } = center();
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.offer({ kind: "startFailed", hubId: "hub-b", hubName: "paradise-park", uncertain: true });
+		expect(alerts.getSnapshot().held).toBe(2);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-b", hubName: "paradise-park" });
+	});
+
+	it("survives switching hubs, shown or waiting, since it names its own hub", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(failed);
+		alerts.reset();
+		expect(shown(alerts)).toEqual(["startFailed"]);
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.offer(session("q"));
+		alerts.reset();
+		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 1 });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["startFailed"]);
+	});
+
+	it("tells its listeners about a hub switch, with the failed start still on the banner", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(failed);
+		const snapshots: (string[] | undefined)[] = [];
+		alerts.subscribe(() => snapshots.push(shown(alerts)));
+		alerts.reset();
+		expect(snapshots.length).toBeGreaterThan(0);
+		expect(snapshots.at(-1)).toEqual(["startFailed"]);
+	});
+
+	it("goes only for the hub whose New session is opened", () => {
+		const { alerts } = center();
+		alerts.offer(failed);
+		alerts.offer({ kind: "startFailed", hubId: "hub-b", hubName: "paradise-park", uncertain: false });
+		alerts.startFailureSeen("hub-b");
+		expect(alerts.tap()).toEqual({ kind: "newSession", hubId: "hub-a", hubName: "magic-kingdom" });
+		expect(alerts.getSnapshot().banner).toBeNull();
+	});
+
+	it("goes once New session is opened, which shows the same reason", () => {
+		const { alerts } = center();
+		alerts.offer(failed);
+		alerts.startFailureSeen("hub-a");
+		expect(alerts.getSnapshot().banner).toBeNull();
+		const release = alerts.hold("covered");
+		alerts.offer(failed);
+		alerts.startFailureSeen("hub-a");
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
+	});
+});
+
+it("buzzes a failed start once, not again when a hub switch shows it again (#3104)", () => {
+	const { alerts, haptics } = center();
+	alerts.offer({ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false });
+	expect(haptics).toEqual(["warning"]);
+	alerts.reset();
+	expect(alerts.getSnapshot().banner?.alerts).toEqual([
+		{ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false },
+	]);
+	expect(haptics).toEqual(["warning"]);
 });

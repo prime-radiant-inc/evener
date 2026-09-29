@@ -86,7 +86,7 @@ func (hx *historyHarness) readKeys(t *testing.T) map[string]bool {
 		if cursor == "" {
 			return keys
 		}
-		turns, cursor, _, err = hx.history.before("local:th_history", cursor, 40)
+		turns, cursor, _, err = hx.history.before("local:th_history", appwire.ThreadTurnsListParams{Cursor: cursor, ItemLimit: 40})
 	}
 }
 

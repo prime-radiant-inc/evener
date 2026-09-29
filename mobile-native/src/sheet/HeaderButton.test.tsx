@@ -28,6 +28,13 @@ it("holds, and says so, while its action can't run", () => {
 	expect(button.props.accessibilityState).toEqual({ disabled: true });
 });
 
+it("says it's busy while its action runs", () => {
+	const button = render(<HeaderButton label="Saving…" disabled busy onPress={() => {}} />).root.findByProps({
+		accessibilityRole: "button",
+	});
+	expect(button.props.accessibilityState).toEqual({ disabled: true, busy: true });
+});
+
 it("reads in ink-low while its action can't run, as iOS draws an unavailable bar button", () => {
 	const tree = render(<HeaderButton label="Start" strong disabled onPress={() => {}} />);
 	expect(tree.root.findByType("Text" as never).props.style).toMatchObject({

@@ -89,17 +89,10 @@ export interface SessionRailNode extends WidgetTreeNode {
   // hasChildrenOf), so there's no reason to carry two representations of
   // the same "nothing to expand" case.
   //
-  // Its current subagents, running jobs, and own live watches, followed by
-  // independent inactive-subagent and completed-job folds when either has
-  // rows (see splitChildren).
-  children: (
-    | SessionRailNode
-    | JobRailNode
-    | WatchRailNode
-    | InactiveFoldRailNode
-    | CompletedJobsFoldRailNode
-    | OverflowRailNode
-  )[];
+  // Its fork originals (or a cluster's members), running jobs, and own live
+  // watches, followed by a completed-job fold when it has rows (see
+  // splitChildren).
+  children: (SessionRailNode | JobRailNode | WatchRailNode | CompletedJobsFoldRailNode | OverflowRailNode)[];
   // Set only on the ROOT rows of a flat cross-project tier - the ones
   // sessionNodes builds (Live, Needs-you, Pinned): those rows name their
   // project and suppress the pin star, wherever host grouping nests them.
@@ -173,16 +166,6 @@ export interface HostRailNode extends WidgetTreeNode {
   // the spawn picker shows too) and its display-view online flag.
   host: { id: string; label: string; online: boolean };
   children: RailNode[];
-}
-
-/** The "Inactive subagents (N)" disclosure one parent gets for its own
- * finished children (parity-m3-sidebar-tree.md §3). A synthetic branch: it
- * has no session of its own, only the count it hides and the rows behind
- * it. */
-export interface InactiveFoldRailNode extends WidgetTreeNode {
-  kind: "inactiveFold";
-  count: number;
-  children: (SessionRailNode | OverflowRailNode)[];
 }
 
 export interface CompletedJobsFoldRailNode extends WidgetTreeNode {
@@ -259,7 +242,6 @@ export type RailNode =
   | ProjectRailNode
   | HostRailNode
   | LoadingRailNode
-  | InactiveFoldRailNode
   | CompletedJobsFoldRailNode
   | OverflowRailNode;
 
@@ -339,37 +321,6 @@ export type IsExpanded = (id: string, defaultExpanded: boolean) => boolean;
  * instead of two copies drifting apart. */
 export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpanded {
   return (id, defaultExpanded) => overrides.get(id) ?? defaultExpanded;
-}
-
-// The states that make a subagent CURRENT - something you might still be
-// supervising. Everything else (idle, ended, closed, errored, and any future
-// terminal state) is settled and folds away. Written as the positive list
-// because that is the side worth being conservative about: an unrecognized
-// state folding is a row one click away, while an unrecognized state
-// rendering inline forever is the clutter this exists to remove.
-//
-// "errored" folds with the rest, deliberately, even though the rail treats
-// `failed` as a signal state elsewhere: terminal is terminal, matching the
-// htmx UI this replaced (parity-m3-sidebar-tree.md §3).
-//
-// "idle" folds too: since sessions stopped closing on provider failure
-// (ff859dbbe), a finished child rests open at idle indefinitely, so an idle
-// child is settled work - it would otherwise sit in the current list forever.
-// A child that picks work back up (a drive turn, job_send) reports active and
-// surfaces again.
-const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set([
-  "active",
-  "awaiting",
-  "warning",
-  "restartRequired",
-  "notLoaded",
-]);
-
-// Namespaced the same way projectNodeExpansionKey is, and off the PARENT's row_id, so
-// every parent's fold is its own key at every nesting depth - expanding one
-// never opens another's.
-function inactiveFoldId(parentRowID: string): string {
-  return `inactive:${parentRowID}`;
 }
 
 function completedJobsFoldId(parentRowID: string): string {
@@ -461,39 +412,16 @@ export function watchCountLabel(armed: number, retained: number, omitted: number
   return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
 }
 
-function subagentIsCurrent(child: RailSession): boolean {
-  const activity = activeWorkSummary(child);
-  return CURRENT_SUBAGENT_STATES.has(child.state) || activity.workingSubagents > 0 || activity.runningJobs > 0;
-}
-
-// Splits one parent's children into the rows that render inline and the
-// single fold node carrying the rest. Both sides keep their incoming order,
-// and the fold always lands last, so a parent's live work stays at the top of
-// its own subtree.
-//
-// A CLUSTER row is exempt. hubcore's repeated-title clustering (tree.go's
-// clusterable) only ever folds idle/ended sessions, so every member of a
-// cluster is terminal by construction - splitting on state here would put
-// every cluster's entire membership behind a second fold inside it, labelled
-// "Inactive subagents" for rows that are neither inactive-in-that-sense nor
-// subagents. A cluster is already a disclosure; its members are ordinary
-// top-level sessions (parity-m3-sidebar-tree.md §3).
+// Builds one parent's children: its nested rows (fork originals, or a
+// cluster's members) inline in their incoming order, then its running jobs
+// and watches, with completed jobs folded last so live work stays at the top
+// of its own subtree. Subagents have no rows; the root's tally chip counts
+// them.
 function splitChildren(parent: RailSession, isExpanded: IsExpanded): SessionRailNode["children"] {
   const cached = sessionChildrenCache.get(parent as object)?.get(isExpanded);
   if (cached) return cached;
-  const current: SessionRailNode[] = [];
-  const inactive: SessionRailNode[] = [];
-  if (parent.kind === "cluster") {
-    const children = parent.children.map((c) => toSessionNode(c, isExpanded));
-    cacheSessionChildren(parent, isExpanded, children);
-    return children;
-  }
-  for (const child of parent.children) {
-    (subagentIsCurrent(child) ? current : inactive).push(toSessionNode(child, isExpanded));
-  }
-  const inactiveCount = inactive.length + (parent.more_subagents ?? 0);
   const children: SessionRailNode["children"] = [
-    ...current,
+    ...parent.children.map((child) => toSessionNode(child, isExpanded)),
     ...(parent.running_jobs ?? []).map((job) => activeJobNode(parent, job)),
   ];
   // The session's own live watches, after running work: an armed watch is
@@ -514,17 +442,6 @@ function splitChildren(parent: RailSession, isExpanded: IsExpanded): SessionRail
       // either. The row is an honest count, not a control.
       ...overflowNode(watchOverflowId(parent.row_id), hiddenWatches, [], "more watches", true),
     );
-  }
-  if (inactiveCount > 0) {
-    const id = inactiveFoldId(parent.row_id);
-    const omitted = overflowNode(id, parent.more_subagents ?? 0);
-    children.push({
-      id,
-      kind: "inactiveFold",
-      count: inactiveCount,
-      expanded: isExpanded(id, false),
-      children: [...inactive, ...omitted],
-    });
   }
   const completedJobs = parent.completed_jobs ?? [];
   if (completedJobs.length > 0) {
@@ -600,24 +517,15 @@ function stateNeedsYou(state: string): boolean {
   return state === "awaiting" || state === "warning" || state === "restartRequired";
 }
 
-// The state a row PRESENTS, which is not always the wire state. "awaiting"
-// means "the turn ended; the next input comes from this session's owner" -
-// and a subagent's owner is its PARENT session, not the user (the user never
-// steers a subagent directly). So a turn-ended subagent is, on this triage
-// surface, simply idle: glossing it "your move" made every finished delegate
-// read as attention it does not need. Only a genuine ask_user (ask_pending)
-// keeps a subagent needs-you, because that question does reach the user.
-// A row waiting on an approval presents as needs-you the same way, from any
-// state but a failure: the escalation blocks its turn mid-tool, so the wire
-// state stays "active" (approvalWaiting). Every per-node attention judgment
+// The state a row PRESENTS, which is not always the wire state. A row waiting
+// on an approval presents as needs-you from any state but a failure: the
+// escalation blocks its turn mid-tool, so the wire state stays "active"
+// (approvalWaiting). Every per-node attention judgment
 // (the row's dot and gloss in RailRow, the badge count, the working count and
 // the sort below, the palette's needs-you dots) reads this one helper, so
 // they can never disagree about the same row.
-export function displayState(
-  node: Pick<NavigationSessionSummary, "kind" | "state" | "ask_pending" | "approval_pending">,
-): string {
+export function displayState(node: Pick<NavigationSessionSummary, "state" | "approval_pending">): string {
   if (approvalWaiting(node.state, node.approval_pending === true)) return "awaiting";
-  if (node.kind === "subagent" && node.state === "awaiting" && node.ask_pending !== true) return "idle";
   return node.state;
 }
 
@@ -634,27 +542,19 @@ export function needsYouDescendantCount(node: RailSession): number {
 }
 
 export interface ActiveWorkSummary {
-  workingSubagents: number;
   runningJobs: number;
 }
 
 export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
-  let workingSubagents = 0;
   let runningJobs = (node.running_jobs ?? []).length;
   for (const child of node.children) {
-    const childActivity = activeWorkSummary(child);
-    workingSubagents += (displayState(child) === "active" ? 1 : 0) + childActivity.workingSubagents;
-    runningJobs += childActivity.runningJobs;
+    runningJobs += activeWorkSummary(child).runningJobs;
   }
-  return { workingSubagents, runningJobs };
+  return { runningJobs };
 }
 
 export function runningJobCount(node: RailSession): number {
   return activeWorkSummary(node).runningJobs;
-}
-
-export function workingDescendantCount(node: RailSession): number {
-  return activeWorkSummary(node).workingSubagents;
 }
 
 // A session "wants you" either directly (its own state) or transitively (a
@@ -1155,23 +1055,14 @@ function topLevelCarrier(nodes: readonly RailSession[], ref: string): RailSessio
   return null;
 }
 
-/** The session rows and folds between a nested target and its top-level
- * carrier: each ancestor session's row id, plus the inactive-subagents fold
- * in front of a settled one (splitChildren folds settled children behind
- * it). A CLUSTER carrier needs only its own row - splitChildren renders its
- * members inline - and a top-level target has no ancestors at all, so the
- * chain for one is empty. */
+/** The session rows between a nested target and its top-level carrier: each
+ * ancestor session's row id. A top-level target has no ancestors at all, so
+ * the chain for one is empty. */
 function revealAncestorIds(session: RailSession, ref: string): string[] {
   for (const child of session.children) {
-    if (child.ref === ref) {
-      if (session.kind === "cluster") return [session.row_id];
-      return subagentIsCurrent(child) ? [session.row_id] : [session.row_id, inactiveFoldId(session.row_id)];
-    }
+    if (child.ref === ref) return [session.row_id];
     const deeper = child.children.length > 0 ? revealAncestorIds(child, ref) : [];
-    if (deeper.length > 0) {
-      const fold = session.kind !== "cluster" && !subagentIsCurrent(child) ? [inactiveFoldId(session.row_id)] : [];
-      return [session.row_id, ...fold, ...deeper];
-    }
+    if (deeper.length > 0) return [session.row_id, ...deeper];
   }
   return [];
 }
@@ -1181,9 +1072,8 @@ function revealAncestorIds(session: RailSession, ref: string): string[] {
  * owning host group then the project's copy in "Host, then project", the
  * project then its per-host branch in "Project, then host", and a Live host
  * subheader for a live row whenever Live groups. A nested target then names
- * every session row between it and its top-level carrier, plus the inactive
- * fold in front of each settled one - the carrier's own row is a fold too,
- * and a chain that skips it never renders the target. An archived-tier row
+ * every session row between it and its top-level carrier - the carrier's own
+ * row is a fold too, and a chain that skips it never renders the target. An archived-tier row
  * routes to its project's archived-group fold instead - the one tier no
  * grouping mode rewrites - unless `options.rowsUnderProjectNode` says these
  * projects render every row under the project's own node (whole-archived

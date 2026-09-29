@@ -226,6 +226,20 @@ describe("what the sheet shows (spec 8.6)", () => {
 		});
 	});
 
+	it("draws its groups as the shared grouped list, inset with hairlines between rows", () => {
+		provide(conversation());
+		const tree = sheet();
+		// Grouped.tsx's Group is an inset surface card with a hairline between
+		// rows; the private Section this sheet used to carry drew a borderTop
+		// on each following row instead, so this pins the sheet to the shared one.
+		expect(tree.root.findAllByProps({ testID: "hairline" }).length).toBeGreaterThan(0);
+		const surface = tree.root.findAll(
+			(node) => String(node.type) === "View" && styleOf(node).backgroundColor === palette.surface,
+		);
+		expect(surface.length).toBeGreaterThan(0);
+		expect(styleOf(surface[0])).toMatchObject({ marginHorizontal: 16, borderRadius: 12 });
+	});
+
 	it("names the model, and opens the model sheet over this one", () => {
 		provide(conversation({ capabilities: { ...NONE, changeModel: true } }));
 		const tree = sheet();
@@ -376,6 +390,19 @@ describe("what the sheet shows (spec 8.6)", () => {
 			}) as unknown as SessionControls,
 		});
 		expect(renderedText(sheet())).toContain("Could not confirm the action: refused");
+	});
+
+	it("announces a failed action to VoiceOver, not just shows it", () => {
+		const { host } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
+		replaceHost({
+			...host,
+			controls: fakeControls({
+				lastAction: "compact",
+				error: "Could not confirm the action: refused",
+			}) as unknown as SessionControls,
+		});
+		const tree = sheet();
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
 	});
 
 	it("stays open while the hub is away, showing what it knows with its actions held", () => {

@@ -4,7 +4,7 @@
 // ConversationScreen.recovery.test.tsx.
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
-import { act, type ReactTestRenderer } from "react-test-renderer";
+import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AnyNotification, type Thread, WireError } from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
@@ -12,7 +12,9 @@ import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutat
 import {
 	flatListCalls,
 	flatListScrollFailures,
+	keyboard,
 	alertRequests,
+	dockBody,
 	dropped as droppedConnection,
 	type PanGestureMock,
 	playedHaptics,
@@ -24,6 +26,8 @@ import {
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure";
+import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
@@ -33,7 +37,8 @@ import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
 import { compactDuration } from "./session/format";
 import { SubagentPanel } from "./subagents/SubagentPanel";
-import { AccessibilityInfo, ActionSheetIOS } from "react-native";
+import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -44,6 +49,7 @@ import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetT
 import { FloatingStack } from "./session/FloatingStack";
 import { Toast } from "./Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
+import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { SubagentScreen } from "./subagents/SubagentScreen";
 import { flattenSubagents } from "./subagents/subagentModel";
 
@@ -77,7 +83,6 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
@@ -310,11 +315,21 @@ const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) =
 		stop: () => ({ outcome: "stopping" }),
 		readFails: null,
 	};
+// Whether thread/read answers with a history identity, as a v6 hub does:
+// only then does the store take live pushes (overlay streams among them).
+const readHistory = { live: false };
+const READ_HISTORY_IDENTITY = {
+	bootGeneration: "1",
+	epoch: 1,
+	snapshot: { incarnation: "inc-1", length: 0 },
+} as const;
 // Whether model/list refuses, as a hub mid-restart does.
 const catalogHub = { fails: false };
 afterEach(() => {
 	catalogHub.fails = false;
+	readHistory.live = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
+	keyboard.reset();
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
@@ -360,7 +375,11 @@ function hubClient(
 				if (params.ref === coordinatorHub.readFails) throw new Error("read failed");
 				// A second session this client can also read, by its ref.
 				const thread = otherThreads.get(String(params.ref)) ?? served;
-				return { thread, ...(olderCursor ? { olderCursor } : {}) };
+				return {
+					thread,
+					...(olderCursor ? { olderCursor } : {}),
+					...(readHistory.live ? READ_HISTORY_IDENTITY : {}),
+				};
 			}
 			// The page before the first read: older turns, and the start of history.
 			if (method === "thread/turns/list") return { data: olderTurns };
@@ -420,6 +439,10 @@ async function mount(
 		olderCursor = undefined as string | undefined,
 		olderTurns = [] as unknown[],
 		openedBy = undefined as "next" | undefined,
+		// The bottom bar lays out as it would on a device (0pt here, so it
+		// leaves the transcript's geometry as it was); a test of what waits
+		// for that layout says false.
+		barLaysOut = true,
 	} = {},
 ) {
 	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns);
@@ -438,6 +461,12 @@ async function mount(
 	navigationState.state = { index: 0, routes: [route] };
 	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
 	mountedScreens.push(tree);
+	if (barLaysOut) {
+		const bar = tree.root.findAll(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
+		)[0];
+		if (bar) act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0 } } }));
+	}
 	if (settled) await settle();
 	return { tree, hub, route };
 }
@@ -517,6 +546,63 @@ function composerSend(tree: ReactTestRenderer, label: string) {
 		.find((node) => node.findAll((child) => child.props.name === "paperplane.fill").length > 0);
 }
 
+// A node's style flattened, as React Native flattens a style array.
+const flatStyle = (node: ReactTestInstance): Record<string, unknown> =>
+	Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
+
+// The views between `node` and the screen's capped bottom area (the view
+// with a maxHeight), each with its flattened style.
+function viewsUpToBottomArea(node: ReactTestInstance) {
+	const views: Record<string, unknown>[] = [];
+	for (let at = node.parent; at; at = at.parent) {
+		if (String(at.type) !== "View") continue;
+		const style = flatStyle(at);
+		if (style.maxHeight !== undefined) return views;
+		views.push(style);
+	}
+	throw new Error("no capped bottom area above this node");
+}
+
+// Style wiring only (the geometry is checked on a simulator): the dock's own
+// slot gives up height inside the capped bottom area, so a dock taller than
+// the room left scrolls its body there, and nothing else in that area
+// shrinks, so the tray and the composer keep their height.
+function expectOnlyTheDockSlotShrinks(tree: ReactTestRenderer, testID: string) {
+	const slot = viewsUpToBottomArea(tree.root.findByProps({ testID }));
+	expect(slot).toEqual([expect.objectContaining({ flexShrink: 1 })]);
+	const input = tree.root.findAll((node) => node.props.accessibilityLabel === "Message" && node.props.multiline)[0];
+	if (input) for (const style of viewsUpToBottomArea(input)) expect(style.flexShrink ?? 0).toBe(0);
+}
+
+// A question taller than any phone's bottom area: a long question, a long
+// why, and five options with long details.
+const LONG_QUESTION = "Fourteen tool descriptions mention options their tools don't accept. ".repeat(4).trim();
+const LONG_WHY = "Models try them and fail, which costs a retry each time and sometimes derails a whole turn. "
+	.repeat(6)
+	.trim();
+const LONG_QUESTION_TURN = {
+	...QUESTION_TURN,
+	items: [
+		{
+			...QUESTION_TURN.items[0],
+			argumentsJson: JSON.stringify({
+				questions: [
+					{
+						header: "Choice",
+						question: LONG_QUESTION,
+						why: LONG_WHY,
+						options: ["Drop them", "Keep them", "Only three", "Ask per tool", "Leave them"].map((label) => ({
+							label,
+							detail: `${label}, and everything that follows from it across the web and the TUI help text.`,
+						})),
+						multi_select: false,
+					},
+				],
+			}),
+		},
+	],
+};
+
 describe("a question waiting for an answer (spec 8.4)", () => {
 	// "Other answer…" focuses the composer on the next frame; these tests run
 	// that frame at once.
@@ -537,6 +623,89 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(field(tree)).toBeUndefined();
 		for (const label of ["Send", "Queue message"]) expect(composerSend(tree, label)).toBeUndefined();
 		expect(composerSend(tree, "Send answer")).toBeUndefined();
+	});
+
+	it("puts a long question's text and options in the dock's scroller, and its answer controls outside it", async () => {
+		const served = thread("ref-question-long", "awaiting", true);
+		(served as unknown as { turns: unknown[] }).turns = [LONG_QUESTION_TURN];
+		const { tree } = await mount(served);
+		const body = dockBody(tree, "question-dock");
+		const scrolled = textOf(body.scroller);
+		expect(scrolled).toContain(LONG_QUESTION);
+		expect(scrolled).toContain(LONG_WHY);
+		expect(body.holds("Leave them")).toBe(true);
+		for (const label of ["Other answer…", "Send answer", "Fold"]) expect(body.holds(label)).toBe(false);
+	});
+
+	it("wires only the dock's slot to shrink, with the dock alone and with the composer back", async () => {
+		const { tree } = await mount(thread("ref-question-room", "awaiting", true));
+		expectOnlyTheDockSlotShrinks(tree, "question-dock");
+		await press(tree, "Other answer…");
+		expect(field(tree)).toBeDefined();
+		expectOnlyTheDockSlotShrinks(tree, "question-dock");
+	});
+
+	it("shows only the question while the keyboard is up for your own answer, and the options once it goes down", async () => {
+		const { tree } = await mount(thread("ref-question-typing", "awaiting", true));
+		const options = () =>
+			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
+		await press(tree, "Other answer…");
+		expect(options()).not.toHaveLength(0);
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
+		expect(options()).toHaveLength(0);
+		expect(pressable(tree, "Send answer")).toBeUndefined();
+		expect(pressable(tree, "Other answer…")).toBeUndefined();
+		expect(field(tree)).toBeDefined();
+		act(() => keyboard.hide());
+		expect(options()).not.toHaveLength(0);
+		expect(pressable(tree, "Send answer")).toBeDefined();
+	});
+
+	it("brings the options back from Show options, which lowers the keyboard", async () => {
+		const { tree } = await mount(thread("ref-question-show-options", "awaiting", true));
+		await press(tree, "Other answer…");
+		act(() => keyboard.show());
+		act(() => pressable(tree, "Show options")?.props.onPress());
+		expect(pressable(tree, "Send answer")).toBeDefined();
+		expect(pressable(tree, "Show options")).toBeUndefined();
+	});
+
+	it("sends what you typed as the answer while the keyboard is up", async () => {
+		const { tree, hub } = await mount(thread("ref-question-typed-send", "awaiting", true));
+		await press(tree, "Other answer…");
+		act(() => keyboard.show());
+		await type(tree, "Drop them");
+		const send = composerSend(tree, "Send your answer");
+		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
+		act(() => send?.props.onPress());
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "turn/start").map((request) => request.params.input),
+		).toEqual([[{ type: "text", text: '[answers]\n1. [Choice] \u2192 free text: "Drop them"' }]]);
+		act(() => keyboard.hide());
+	});
+
+	it("lets a drag lower the keyboard", async () => {
+		const { tree } = await mount(thread("ref-question-drag", "awaiting", true));
+		const [list] = tree.root.findAll(
+			(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
+		);
+		expect(list?.props.keyboardDismissMode).toBe("interactive");
+	});
+
+	it("lets a drag lower the keyboard on Android, which has no interactive dismissal", async () => {
+		const platform = Platform as { OS: string };
+		platform.OS = "android";
+		try {
+			const { tree } = await mount(thread("ref-question-drag-android", "awaiting", true));
+			const [list] = tree.root.findAll(
+				(node) => node.props.keyExtractor !== undefined && node.props.renderItem !== undefined,
+			);
+			expect(list?.props.keyboardDismissMode).toBe("on-drag");
+		} finally {
+			platform.OS = "ios";
+		}
 	});
 
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
@@ -867,6 +1036,84 @@ it("opens at the start of a reply that finished since you last read to the end",
 	expect(indexes).not.toContain(0);
 });
 
+it("restores a reading position once, however its row's measured y moves after", async () => {
+	// A virtualized list re-estimating rows it unmounted (older pages provoke
+	// it) moves the anchor row's measured y back and forth; the restore used
+	// to chase every move, and the list ping-ponged.
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-restore-once": {
+				hubId: "hub-1",
+				sessionRef: "ref-restore-once",
+				itemKey: "a-turn_2",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree } = await mount(twoTurns("ref-restore-once"));
+	const list = transcriptList(tree);
+	act(() => list.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	act(() => list.props.onContentSizeChange(390, 20_000));
+	const items = () => transcriptList(tree).findAll((node) => String(node.type) === "Item");
+	// The rows are ask/reply for turn_1, then turn_2: its reply is row 3.
+	const reply = () => {
+		const cell = items()[3]?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+		if (!cell) throw new Error("no reply cell");
+		return cell;
+	};
+	const layOut = (y: number) =>
+		act(() => reply().props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height: 150 } } }));
+	flatListCalls.length = 0;
+	layOut(9_523);
+	await settle();
+	layOut(9_684);
+	await settle();
+	layOut(9_523);
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+		{ method: "scrollToOffset", args: { offset: 9_523, animated: false } },
+	]);
+});
+
+it("waits for the bottom bar to lay out before restoring a reading position", async () => {
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-restore-waits": {
+				hubId: "hub-1",
+				sessionRef: "ref-restore-waits",
+				itemKey: "a-turn_2",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree } = await mount(twoTurns("ref-restore-waits"), { barLaysOut: false });
+	const list = transcriptList(tree);
+	act(() => list.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	act(() => list.props.onContentSizeChange(390, 20_000));
+	const cell = transcriptList(tree)
+		.findAll((node) => String(node.type) === "Item")[3]
+		?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+	if (!cell) throw new Error("no reply cell");
+	flatListCalls.length = 0;
+	// 19,500 is past what the list reaches without the bar's inset (19,400).
+	act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y: 19_500, width: 390, height: 150 } } }));
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
+	// The bar lays out: its inset lets the list reach the row.
+	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+		{ method: "scrollToOffset", args: { offset: 19_500, animated: false } },
+	]);
+});
+
 it("reads the session again on its own after a read fails", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-retry"), { failedReads: 1 });
 	expect(hub.requests.filter((request) => request.method === "thread/read")).toHaveLength(2);
@@ -946,22 +1193,394 @@ function scrollTo(tree: ReactTestRenderer, y: number) {
 	);
 }
 
+describe("following the live end (spec 8.2)", () => {
+	// scrollTo's list is 4,000pt tall in a 600pt viewport: 3,400 is its end.
+	const END = 3_400;
+	const at = (y: number, content = 4_000) => ({
+		nativeEvent: { contentOffset: { y }, contentSize: { height: content }, layoutMeasurement: { height: 600 } },
+	});
+	const list = (tree: ReactTestRenderer) => transcriptList(tree);
+	// A drag the way a finger makes one: it begins, the list scrolls through
+	// each offset, and it ends at the last.
+	function drag(tree: ReactTestRenderer, ...offsets: number[]) {
+		act(() => list(tree).props.onScrollBeginDrag(at(offsets[0] ?? 0)));
+		for (const y of offsets) scrollTo(tree, y);
+		act(() => list(tree).props.onScrollEndDrag(at(offsets.at(-1) ?? 0)));
+	}
+	// A reply streaming into the session: a new row below whatever you read.
+	function stream(hub: { notify(notification: AnyNotification): void }, served: Thread, id: string) {
+		const key = `stream:${id}:agentMessage`;
+		act(() =>
+			hub.notify({
+				method: "overlay/upserted",
+				params: {
+					threadId: served.id,
+					ref: served.evener.ref,
+					item: {
+						key,
+						kind: "stream",
+						turnId: "turn_2",
+						roundId: id,
+						streamId: id,
+						item: { id: key, type: "agentMessage", roundId: id, text: `streamed ${id}`, status: "inProgress" },
+					},
+				},
+			} as unknown as AnyNotification),
+		);
+	}
+	// The list growing, as it does when a row lands. Whether the screen
+	// answered by scrolling to the end says whether it follows.
+	function contentGrows(tree: ReactTestRenderer, height: number) {
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onContentSizeChange(390, height));
+		return flatListCalls.some((call) => call.method === "scrollToEnd");
+	}
+	beforeEach(() => {
+		readHistory.live = true;
+	});
+	// Two turns, the second still running, so replies can stream into it.
+	function working(ref: string): Thread {
+		const served = thread(ref, "active");
+		(served as unknown as { turns: unknown[] }).turns = [
+			askReplyTurn("turn_1"),
+			{ ...askReplyTurn("turn_2"), status: "inProgress" },
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnId = "turn_2";
+		return served;
+	}
+	const pill = (tree: ReactTestRenderer) =>
+		tree.root.findAll((node) =>
+			String(node.props.accessibilityLabel ?? "").endsWith("new below, scroll to the end"),
+		)[0];
+
+	it("keeps a streamed reply's row, and doesn't count it as new, once history records it", async () => {
+		// Recorded items carry their transcript positions, as a hub's do, so
+		// the recorded reply lands after them.
+		const served = working("ref-follow-recorded");
+		const at = (turnId: string, entry: number) => ({
+			turnId,
+			status: "completed",
+			transcriptKey: `${turnId}:${entry}:0`,
+			position: { entry, item: 0 },
+		});
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "turn_1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{ id: "u-turn_1", type: "userMessage", text: "ask turn_1", ...at("turn_1", 0) },
+					{ id: "a-turn_1", type: "agentMessage", text: "reply turn_1", ...at("turn_1", 1) },
+				],
+			},
+			{
+				id: "turn_2",
+				status: "inProgress",
+				itemsView: "default",
+				items: [{ id: "u-turn_2", type: "userMessage", text: "ask turn_2", ...at("turn_2", 2) }],
+			},
+		];
+		const { tree, hub } = await mount(served);
+		stream(hub, served, "s1");
+		const keyOf = (row: unknown) => list(tree).props.keyExtractor(row) as string;
+		const streamed = keyOf((list(tree).props.data as unknown[]).at(-1));
+		drag(tree, 100);
+		act(() =>
+			hub.notify({
+				method: "history/updated",
+				params: {
+					threadId: served.id,
+					ref: served.evener.ref,
+					...READ_HISTORY_IDENTITY,
+					items: [
+						{
+							id: "item_assistant_3_0",
+							turnId: "turn_2",
+							type: "agentMessage",
+							roundId: "s1",
+							transcriptKey: "turn_2:3:0",
+							position: { entry: 3, item: 0 },
+							status: "completed",
+							text: "streamed s1",
+						},
+					],
+				},
+			} as unknown as AnyNotification),
+		);
+		const rows = list(tree).props.data as { id: string }[];
+		expect(rows.map((row) => row.id)).toContain("item_assistant_3_0");
+		expect(rows.map((row) => row.id)).not.toContain("stream:s1:agentMessage");
+		expect(keyOf(rows.at(-1))).toBe(streamed);
+		expect(pill(tree)).toBeUndefined();
+	});
+
+	it("stops following when you drag up, and says what landed below", async () => {
+		const served = working("ref-follow-away");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		stream(hub, served, "s1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("follows again once a drag ends at the end, and not while the finger is still down", async () => {
+		const served = working("ref-follow-again");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		act(() => list(tree).props.onScrollBeginDrag(at(100)));
+		scrollTo(tree, END);
+		stream(hub, served, "s2");
+		// A row landing mid-drag doesn't pull the list from under the finger.
+		expect(contentGrows(tree, 4_200)).toBe(false);
+		act(() => list(tree).props.onScrollEndDrag(at(END)));
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "s2b");
+		expect(contentGrows(tree, 4_400)).toBe(true);
+	});
+
+	it("doesn't follow after a drag that reached the end and came back up", async () => {
+		const served = working("ref-follow-back-up");
+		const { tree } = await mount(served);
+		drag(tree, 100, END, 1_000);
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("follows again when a flick's momentum carries you to the end", async () => {
+		const served = working("ref-follow-flick");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		drag(tree, 1_000);
+		act(() => list(tree).props.onMomentumScrollBegin());
+		scrollTo(tree, END);
+		act(() => list(tree).props.onMomentumScrollEnd(at(END)));
+		stream(hub, served, "s3");
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	it("doesn't scroll to the end while a flick released at the end coasts away", async () => {
+		const served = working("ref-follow-coast");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100, END);
+		act(() => list(tree).props.onMomentumScrollBegin());
+		scrollTo(tree, 2_000);
+		stream(hub, served, "m1");
+		expect(contentGrows(tree, 4_200)).toBe(false);
+		act(() => list(tree).props.onMomentumScrollEnd(at(2_000)));
+		expect(contentGrows(tree, 4_400)).toBe(false);
+	});
+
+	it("follows a transcript shorter than the screen once you let go", async () => {
+		const served = working("ref-follow-short");
+		const { tree } = await mount(served);
+		act(() => list(tree).props.onScrollBeginDrag(at(0, 300)));
+		act(() => list(tree).props.onScrollEndDrag(at(0, 300)));
+		expect(contentGrows(tree, 320)).toBe(true);
+	});
+
+	it("stays unfollowed when the app itself scrolls to the end", async () => {
+		const served = working("ref-follow-app-scroll");
+		const { tree } = await mount(served);
+		drag(tree, 100);
+		// No finger: a restore or the list settling lands at the end.
+		scrollTo(tree, END);
+		expect(contentGrows(tree, 4_200)).toBe(false);
+	});
+
+	it("counts what landed since you last left the end", async () => {
+		const served = working("ref-follow-counts");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		stream(hub, served, "c1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		drag(tree, END);
+		expect(pill(tree)).toBeUndefined();
+		drag(tree, 100);
+		stream(hub, served, "c2");
+		stream(hub, served, "c3");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("2 new below, scroll to the end");
+	});
+
+	it("follows again from the pill, which then goes", async () => {
+		const served = working("ref-follow-pill");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		stream(hub, served, "p1");
+		flatListCalls.length = 0;
+		act(() => pill(tree)?.props.onPress());
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "p2");
+		expect(contentGrows(tree, 4_200)).toBe(true);
+	});
+
+	it("keeps the end in view when the viewport changes while following, as the keyboard does", async () => {
+		const served = working("ref-follow-viewport");
+		const { tree } = await mount(served);
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } }));
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(true);
+		drag(tree, 100);
+		flatListCalls.length = 0;
+		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
+	});
+});
+
 it("shows nothing for a loaded conversation with no rows: the composer invites", async () => {
 	const { tree } = await mount(thread("ref-empty", "idle"));
 	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation")).toEqual([]);
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
 });
 
-it("loads older history as you scroll near the top", async () => {
+// Rows' open state lives in one app-wide store, scoped by session. Leaving a
+// session drops its scope, so the store stays bounded.
+it("forgets a session's open rows when you leave it", async () => {
+	const { tree } = await mount(twoTurns("ref-disclosure-scope"));
+	const run = { kind: "run" as const, id: "run:x", turnId: "turn_1", steps: [] };
+	act(() => setDisclosureOpenAll(rowDisclosureIds("hub-1", "ref-disclosure-scope", run), true));
+	const inScope = () =>
+		[...nativeDisclosureStore.getState().open.keys()].filter((id) =>
+			id.startsWith(`${sessionDisclosureScope("hub-1", "ref-disclosure-scope")}\0`),
+		);
+	expect(inScope()).toHaveLength(1);
+	act(() => tree.unmount());
+	expect(inScope()).toEqual([]);
+});
+
+// A short transcript rests just above the composer (spec 8.5), not at the top
+// with the page's empty middle between it and the bar.
+it("rests a short transcript's end just above the composer", async () => {
+	const { tree } = await mount(twoTurns("ref-short-rests"), { barLaysOut: false });
+	const opacity = () => transcriptList(tree).props.style?.opacity;
+	// It shows once the viewport and the bar have both laid out.
+	expect(opacity()).toBe(0);
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	await settle();
+	expect(opacity()).toBe(0);
+	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
+	await settle();
+	expect(opacity()).toBe(1);
+	expect(transcriptList(tree).props.contentContainerStyle).toMatchObject({
+		minHeight: 450,
+		justifyContent: "flex-end",
+	});
+});
+
+it("loads older history as you drag near the top", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-older"), { olderCursor: "cursor-1" });
-	scrollTo(tree, 2_000);
+	const drag = (y: number) => {
+		const at = {
+			nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		};
+		act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+		scrollTo(tree, y);
+		act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	};
+	drag(2_000);
 	await settle();
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
-	scrollTo(tree, 100);
+	drag(100);
 	await settle();
 	expect(
 		hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
 	).toEqual(["cursor-1"]);
+});
+
+it("doesn't page older history at the live end of a short first page, or until you scroll", async () => {
+	// Opening at the live end of a page shorter than the screen puts the list
+	// near its top; paging there chained every older page in on open, each
+	// prepend landing the list near the top again.
+	const { tree, hub } = await mount(twoTurns("ref-older-live"), { olderCursor: "cursor-1" });
+	scrollTo(tree, 100);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+});
+
+it("pages older history on a short first page you drag, whose end is its top", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-short"), { olderCursor: "cursor-1" });
+	const short = {
+		nativeEvent: { contentOffset: { y: 0 }, contentSize: { height: 300 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(short));
+	act(() => transcriptList(tree).props.onScrollEndDrag(short));
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+});
+
+it("pages older history on a flick near the top that reports no scroll mid-drag", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-flick"), { olderCursor: "cursor-1" });
+	const at = (y: number) => ({
+		nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+	});
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at(900)));
+	act(() => transcriptList(tree).props.onScrollEndDrag(at(700)));
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+});
+
+it("pages older history when the list moves near the top with no drag, as a VoiceOver scroll moves it", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-assistive"), { olderCursor: "cursor-1" });
+	// Away from the live end with no finger: the app scrolls only to follow
+	// the end or to restore (which suppresses capture), so this is the reader.
+	act(() => transcriptList(tree).props.onScrollBeginDrag());
+	act(() =>
+		transcriptList(tree).props.onScrollEndDrag({
+			nativeEvent: { contentOffset: { y: 2_000 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		}),
+	);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+	scrollTo(tree, 1_400);
+	scrollTo(tree, 100);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+});
+
+it("doesn't page older history for a reading position restored near the top before you scroll", async () => {
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-older-restored": {
+				hubId: "hub-1",
+				sessionRef: "ref-older-restored",
+				itemKey: "u-turn_1",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree, hub } = await mount(twoTurns("ref-older-restored"), { olderCursor: "cursor-1" });
+	scrollTo(tree, 40);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+});
+
+it("keeps the transcript's first row when an older page lands above it", async () => {
+	// Timed turns, the older one ending five minutes before the next starts,
+	// so a whole history marks only the first.
+	const minute = 60_000;
+	const start = Date.parse("2026-09-28T12:00:00Z");
+	const timed = (id: string, from: number) => ({ ...askReplyTurn(id), startedAt: from, completedAt: from + minute });
+	const served = thread("ref-older-first-key", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		timed("turn_1", start + 6 * minute),
+		timed("turn_2", start + 8 * minute),
+	];
+	const { tree } = await mount(served, { olderCursor: "cursor-1", olderTurns: [timed("turn_0", start)] });
+	const ids = () => (transcriptList(tree).props.data as { id: string }[]).map((row) => row.id);
+	const first = ids()[0];
+	// No time marker leads while older history is still to load.
+	expect(first).toBe("u-turn_1");
+	const at = {
+		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+	act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	await settle();
+	expect(ids()).toContain("u-turn_0");
+	expect(ids()).toContain(first);
 });
 
 it("doesn't page older history while the hub is away", async () => {
@@ -1462,6 +2081,56 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(renderedText(tree)).not.toContain("Couldn't steer");
 	});
 
+	// While you type in the composer the queue folds to one line: with one
+	// message, its action; with several, their count, which opens them.
+	it("folds one queued message while you type, steers from there, and shows it again when the keyboard lowers", async () => {
+		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));
+		act(() => keyboard.show());
+		expect(renderedText(tree)).not.toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeDefined();
+		await press(tree, "Steer now, check the logs");
+		expect(hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer")).toHaveLength(1);
+		act(() => keyboard.hide());
+		expect(renderedText(tree)).toContain("check the logs");
+	});
+
+	it("folds several queued messages to their count while you type", async () => {
+		const { tree } = await mount(thread("ref-typing-several", "active", false, ["check the logs", "then deploy"]));
+		act(() => keyboard.show());
+		expect(pressable(tree, "2 queued")).toBeDefined();
+		expect(pressable(tree, "Steer now, check the logs")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	it("folds a held message to its count and Send now while you type", async () => {
+		const { tree } = await mount(thread("ref-typing-held", "idle", false, ["check the logs"]));
+		act(() => keyboard.show());
+		expect(pressable(tree, "1 held")).toBeDefined();
+		expect(pressable(tree, "Send now, check the logs")).toBeDefined();
+		act(() => keyboard.hide());
+	});
+
+	// The keyboard is up for the find bar's field, not the composer.
+	it("keeps the queue open while you type in the find bar", async () => {
+		const { tree } = await mount(thread("ref-typing-find", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	// With the dock in the composer's place, a keyboard up isn't the
+	// composer's, so the queue stays as it is.
+	it("keeps the queue open when the keyboard is up while the dock takes the composer's place", async () => {
+		const { tree } = await mount(thread("ref-typing-dock", "awaiting", true, ["check the logs"]));
+		expect(field(tree)).toBeUndefined();
+		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
 	it("sends nothing when the message left the queue before the press (Review Focus 2)", async () => {
 		const served = thread("ref-steer-stale", "active", false, ["check the logs"]);
 		const { tree, hub } = await mount(served);
@@ -1558,6 +2227,121 @@ describe("queued messages above the composer (spec 8.5)", () => {
 	});
 });
 
+describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
+	// The bar's own host view, not the BarFrame element that carries its props.
+	const bar = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	const homeIndicator = () => useSafeAreaInsets().bottom;
+
+	it("runs to the screen's bottom edge under a hairline, and keeps the composer above the home indicator", async () => {
+		const { tree } = await mount(thread("ref-bar", "active"));
+		// The screen leaves the bottom safe area to the bar, which paints it.
+		const [screen] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
+		expect(screen?.props.edges).not.toContain("bottom");
+		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: homeIndicator() });
+		// The tray and the composer ride in it, so the bar's padding lifts them
+		// clear of the home indicator.
+		expect(
+			bar(tree).findAll((node) => node.props.accessibilityLabel === "Message" && node.props.multiline),
+		).toHaveLength(1);
+		expect(bar(tree).findAll((node) => node.props.accessibilityLabel === "Stop")).not.toHaveLength(0);
+	});
+
+	it("drops the home indicator's room while the keyboard is up, so the composer sits on the keyboard", async () => {
+		const { tree } = await mount(thread("ref-bar-keyboard", "active"));
+		act(() => keyboard.show());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(0);
+		act(() => keyboard.hide());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(homeIndicator());
+	});
+
+	it("lays the bar over the transcript's end, so the transcript runs under it", async () => {
+		const { tree } = await mount(thread("ref-bar-over", "active"));
+		expect(flatStyle(bar(tree))).toMatchObject({ position: "absolute", left: 0, right: 0, bottom: 0 });
+	});
+
+	const barLaysOut = (tree: ReactTestRenderer, height: number) =>
+		act(() => bar(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height } } }));
+	const transcript = (tree: ReactTestRenderer) =>
+		tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
+	const moves = () => flatListCalls.filter((call) => call.method !== "scrollToIndex");
+
+	it("keeps the transcript's end clear of the bar as an inset, so its content size ignores the bar", async () => {
+		const { tree } = await mount(thread("ref-bar-end", "active"));
+		barLaysOut(tree, 180);
+		// iOS: the bar is a content inset past the 60pt end room, which stays
+		// the content's own padding.
+		expect(transcript(tree).props.contentInset).toEqual({ bottom: 180 });
+		expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(60);
+		expect(transcript(tree).props.scrollIndicatorInsets).toEqual({ bottom: 180 });
+		// Next, a toast and "↓ new" float 10pt above the bar.
+		expect(
+			flatStyle(tree.root.findByType(FloatingStack).findAll((node) => String(node.type) === "View")[0]),
+		).toMatchObject({ bottom: 180 + 10 });
+	});
+
+	it("keeps a follower at the end as the bar grows and shrinks, the keyboard's drop included", async () => {
+		const { tree } = await mount(thread("ref-bar-follow", "active"));
+		barLaysOut(tree, 180);
+		flatListCalls.length = 0;
+		barLaysOut(tree, 260);
+		expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		flatListCalls.length = 0;
+		// Keyboard up: the bar drops the home indicator's room.
+		act(() => keyboard.show());
+		barLaysOut(tree, 226);
+		expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		act(() => keyboard.hide());
+	});
+
+	it("pads the transcript's end by the bar on Android, and keeps a follower at the end as the bar changes", async () => {
+		const platform = Platform as { OS: string };
+		platform.OS = "android";
+		try {
+			const { tree } = await mount(thread("ref-bar-follow-android", "active"));
+			barLaysOut(tree, 180);
+			expect(transcript(tree).props.contentInset).toBeUndefined();
+			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(180 + 60);
+			flatListCalls.length = 0;
+			barLaysOut(tree, 260);
+			expect(transcript(tree).props.contentContainerStyle.paddingBottom).toBe(260 + 60);
+			expect(moves().map((call) => call.method)).toEqual(["scrollToEnd"]);
+		} finally {
+			platform.OS = "ios";
+		}
+	});
+
+	it("never moves a reader mid-list, or one resting at the end without following, as the bar changes", async () => {
+		const { tree } = await mount(thread("ref-bar-reader", "active"));
+		barLaysOut(tree, 180);
+		const at = (y: number) => ({
+			nativeEvent: {
+				contentOffset: { y },
+				contentSize: { height: 4_000 },
+				layoutMeasurement: { height: 600 },
+				contentInset: { bottom: 180 },
+			},
+		});
+		act(() => transcriptList(tree).props.onScrollBeginDrag(at(1_000)));
+		act(() => transcriptList(tree).props.onScroll(at(1_000)));
+		act(() => transcriptList(tree).props.onScrollEndDrag(at(1_000)));
+		flatListCalls.length = 0;
+		barLaysOut(tree, 260);
+		barLaysOut(tree, 120);
+		expect(moves()).toEqual([]);
+		// The app lands the list at the end (a restore), with no finger: not following.
+		act(() => transcriptList(tree).props.onScroll(at(4_000 - 600 + 180)));
+		flatListCalls.length = 0;
+		barLaysOut(tree, 260);
+		expect(moves()).toEqual([]);
+	});
+
+	it("holds a question dock too", async () => {
+		const { tree } = await mount(thread("ref-bar-question", "awaiting", true));
+		expect(bar(tree).findAll((node) => node.props.testID === "question-dock")).toHaveLength(1);
+	});
+});
+
 describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 	function withApproval(ref: string): Thread {
 		const served = thread(ref, "active");
@@ -1589,6 +2373,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		const { tree, hub } = await mount(served);
 		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
 		expect(renderedText(tree)).toContain("1 more waiting");
+		const firstBody = dockBody(tree, "approval-dock").scroller;
 		await press(tree, "Allow this file only");
 		act(() =>
 			hub.notify({
@@ -1602,6 +2387,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
 		expect(text).not.toContain("more waiting");
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
+		// The next approval gets a fresh dock (keyed by escalationId), so its
+		// body opens at its top, whatever the last one was scrolled to.
+		expect(dockBody(tree, "approval-dock").scroller).not.toBe(firstBody);
 	});
 
 	it("shows the dock in the tray's place, and never the composer", async () => {
@@ -1610,6 +2398,34 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(pressable(tree, "Stop")).toBeUndefined();
 		expect(field(tree)).toBeUndefined();
 		expect(renderedText(tree)).not.toContain("approval needed");
+	});
+
+	it("puts a long approval's target in the dock's scroller, and Allow and Deny outside it", async () => {
+		const served = withApproval("ref-approval-long");
+		const deniedPath = `/home/jesse/sites/${"docs/reference/wire/".repeat(6)}index.html`;
+		const [escalation] = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener
+			.pendingEscalations;
+		if (!escalation) throw new Error("no escalation");
+		escalation.deniedPath = deniedPath;
+		escalation.partiallyRan = true;
+		const { tree } = await mount(served);
+		const body = dockBody(tree, "approval-dock");
+		expect(textOf(body.scroller).replaceAll("\u200b", "")).toContain(deniedPath);
+		for (const label of ["Allow this file only", "Deny"]) expect(body.holds(label)).toBe(false);
+	});
+
+	it("keeps Allow and Deny while the keyboard is up", async () => {
+		const { tree } = await mount(withApproval("ref-approval-keyboard"));
+		act(() => keyboard.show());
+		expect(pressable(tree, "Allow this file only")).toBeDefined();
+		expect(pressable(tree, "Deny")).toBeDefined();
+		expect(pressable(tree, "Show options")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	it("wires only the approval dock's slot to shrink", async () => {
+		const { tree } = await mount(withApproval("ref-approval-room"));
+		expectOnlyTheDockSlotShrinks(tree, "approval-dock");
 	});
 
 	it("keeps showing what waits while the hub is away, without Allow or Deny", async () => {
@@ -2056,8 +2872,7 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			hubId: "hub-1",
 			sessionRef: "ref-chips",
 			path: PLAN_PATH,
-			reviewRef: "ref-chips",
-			reviewTitle: "Session",
+			sessionTitle: "Session",
 			updatedAt: WROTE_AT,
 		});
 	});
@@ -2224,24 +3039,66 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 	});
 
-	it("keeps the transcript's end clear of what floats over it, as tall as that stands", async () => {
-		// Ruling on the device pass: the pills must never hide the newest
-		// message, so the list's end grows by the stack's height.
-		const { tree } = await mount(thread("ref-inset", "active"));
+	it("keeps a fixed 60pt of room at the transcript's end, whatever floats over it", async () => {
+		const served = thread("ref-inset", "active");
+		const { tree, hub } = await mount(served);
 		const list = () =>
 			tree.root.find((node) => node.props.maintainVisibleContentPosition && node.props.contentContainerStyle);
 		const bottom = () => list().props.contentContainerStyle.paddingBottom;
-		const stack = tree.root.findByType(FloatingStack);
-		act(() => stack.props.onHeight(104));
-		expect(bottom()).toBe(16 + 104 + 10);
-		act(() => stack.props.onHeight(0));
-		expect(bottom()).toBe(16);
+		// Who needs you changes, as fleet polling finds: Next goes, then comes.
+		let sequence = 0;
+		async function needsYou(sessions: typeof fleet.needsYou) {
+			fleet.needsYou = sessions;
+			fleet.live = sessions;
+			sequence += 1;
+			fleet.revision = sequence + 1;
+			act(() =>
+				hub.notify({
+					method: "evener/navigation/invalidated",
+					params: {
+						generationId: "generation-test",
+						sequence,
+						targets: [
+							{ kind: "section", section: "needs_you", revision: sequence + 1 },
+							{ kind: "section", section: "live", revision: sequence + 1 },
+						],
+					},
+				} as AnyNotification),
+			);
+			await settle();
+		}
+		await needsYou([]);
+		expect(capsule(tree)).toBeUndefined();
+		expect(bottom()).toBe(60);
+		await needsYou([failing]);
+		expect(capsule(tree)).toBeDefined();
+		expect(bottom()).toBe(60);
+		// A toast joins it.
+		await press(tree, "Stop");
+		expect(renderedText(tree)).toContain("Stopped");
+		expect(bottom()).toBe(60);
+		// Away from the end, with rows the list didn't hold then, the pill joins too.
+		act(() =>
+			list().props.onScroll({
+				nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+			}),
+		);
+		expect(bottom()).toBe(60);
 	});
 
 	it("shows no Next while this session asks you something", async () => {
 		const { tree } = await mount(thread("ref-asks", "awaiting", true));
 		expect(capsule(tree)).toBeUndefined();
 		expect(back().props.accessibilityLabel).toBe("Back, 2 others need you");
+	});
+
+	it("steps Next aside while you type, and brings it back when the keyboard lowers", async () => {
+		const { tree } = await mount(thread("ref-next-typing", "idle"));
+		expect(capsule(tree)).toBeDefined();
+		act(() => keyboard.show());
+		expect(capsule(tree)).toBeUndefined();
+		act(() => keyboard.hide());
+		expect(capsule(tree)).toBeDefined();
 	});
 
 	it("shows no Next while the find bar is open", async () => {
@@ -2440,9 +3297,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 	}
 
-	/** The coordinator's thread, as the phone reads it without following it. */
-	function coordinator(stopSubagent: boolean) {
+	/** The coordinator's thread, as the phone reads it without following it.
+	 * `id` models a coordinator that restarted under a new thread. */
+	function coordinator(stopSubagent: boolean, id = COORDINATOR.threadId) {
 		const served = thread(COORDINATOR.ref, "active");
+		(served as unknown as { id: string }).id = id;
 		(served as unknown as { evener: { capabilities: Record<string, boolean> } }).evener.capabilities = {
 			...CAPABILITIES,
 			...(stopSubagent ? { stopSubagent: true } : {}),
@@ -2462,9 +3321,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		return served;
 	}
 
-	async function mountSubagent(served: Thread, { stopSubagent = false, jobs = subagentTree() } = {}) {
+	async function mountSubagent(
+		served: Thread,
+		{ stopSubagent = false, jobs = subagentTree(), coordinatorId = COORDINATOR.threadId } = {},
+	) {
 		coordinatorHub.tree = jobs;
-		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent));
+		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent, coordinatorId));
 		const hub = hubClient(served);
 		harness.connection = {
 			...screenConnection(hub.client, "ready"),
@@ -2624,6 +3486,16 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
+	});
+
+	it("reads the tree under the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+		// The screen opened with the route's thread, but the coordinator has
+		// since restarted under a new one: its tree comes back under that new
+		// thread, so the panel must ask for it by the thread it reads now.
+		forgetSubagentTrees("hub-1");
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		const { tree } = await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
 	});
 
 	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
@@ -2813,8 +3685,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hubId: "hub-1",
 			sessionRef: "local:fix",
 			path: "docs/superpowers/plans/settle-race.md",
-			reviewRef: "local:fix",
-			reviewTitle: "Fix race in tree settle",
+			sessionTitle: "Fix race in tree settle",
 		});
 	});
 
@@ -3010,4 +3881,33 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		expect(hub.mutations()).toEqual(["turn/queue"]);
 		expect(pressable(tree, "Discard")).toBeDefined();
 	});
+});
+
+it("clears the lost send's outbox row with one Discard on the draft ghost", async () => {
+	const ref = "ref-draft-lost";
+	const key = nativeMutationTargetKey("hub-1", ref);
+	const runtime = getNativeMutationRuntime();
+	// The draft kept a send the outbox also holds, and the outbox couldn't
+	// confirm its outcome: ghosts() shows one ghost, the draft's, standing in for
+	// the blockedUnknown row. Seed that exact pair before mounting.
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
+	const { clientMutationId } = await runtime.storage.enqueueIntent({
+		targetRef: key,
+		method: "turn/start",
+		payload: { ref, input: [{ type: "text", text: "lost send" }] },
+		attachments: [],
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "lost send" }] },
+	});
+	await runtime.storage.markAttempted(clientMutationId);
+	await runtime.storage.markUnknown(clientMutationId, "blockedUnknown", { onlyAttempted: true });
+
+	const { tree } = await mount(thread(ref, "idle"));
+	await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't confirm this was sent"));
+	await press(tree, "Discard");
+
+	// One Discard clears both: the draft's uncertainty and the row it stood in
+	// for, which otherwise returns as its own ghost.
+	await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toEqual([]));
+	await settle();
+	expect(renderedText(tree)).not.toContain("Couldn't confirm this was sent");
 });

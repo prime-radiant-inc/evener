@@ -4,7 +4,7 @@ Status: not started. This spec is the hand-off for the implementing session.
 
 Depends on: the registry spec (registry, `hub.toml`, receipts, remnants, tombstones, generations, the
 `attachUnderGate` primitive, and the operation-store skeleton helpers). The pipeline stacks on
-the registry; fencing stacks on the pipeline. Hand-written Go request/response structs for pipeline-owned methods land in the same PR as
+the registry; the crash-fencing layer that once stacked on the pipeline was withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2). Hand-written Go request/response structs for pipeline-owned methods land in the same PR as
 their handlers (union-shaped private types authored in the registry PR stay unregistered until this PR registers them — registry spec §2). Public catalog registration plus the regenerated client for union-shaped
 responses arrive with the pipeline PR, as do the union catalog/protocol-shape tests.
 
@@ -25,8 +25,8 @@ Every later section uses these terms with exactly these meanings.
 - **Origin guard.** The shared pre-admission hook refusing honestly-marked remote-originated, peer-forwarded requests before admission. An honest-peer recursion terminator, not a security boundary.
 - **Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, the host's own `hub.toml` entry fingerprint (§3), facts, and running state it was minted from.
 - **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
-- **Boundary.** A persisted ownership description a verifier checks before signaling a possibly-live process: `local-linux`, `local-darwin`, `local-markerless`, or `remote-fencing` (defined in the crash-fencing spec §9), plus the `boundary-unavailable` custody sentinel a corrupt-store custody import carries when corruption destroyed the boundary (crash-fencing spec §9).
-- **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
+- **Boundary record.** The per-host mirrored triple the store keeps beside the registry's live entry — (generation, incarnation id, presence epoch) — which mutation and cursor validation read (registry spec §7 defines the record; §4 here cites it). The process-ownership “boundary” vocabulary an earlier revision defined here (`local-linux`, `local-darwin`, `local-markerless`, `remote-fencing`, and the `boundary-unavailable` custody sentinel) was withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2): no boundary payload is written or verified, and a prior file's boundary fields stay decodable and are dropped.
+- **Probe epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) persisted before its first `evener/host/running` probe and presented on that probe (its shape is defined in §10); the serving hub validates a presented epoch against the guard epoch it last admitted — a same-boot epoch with a lower op sequence is refused as stale, without probing and without being written — and persists only an admitted epoch. A different boot id has no defined order against the stored one (§10), so it is admitted and replaces the guard: the stale-epoch guarantee holds within one controller boot only. The remote fencing protocol the epoch once carried (takeover, bounded kill/wait, guard-file advance) was withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2).
 - **Presence epoch.** The per-host monotonic removal/presence counter the file advances on every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live host (the per-host machine record, `[host_records."<name>"]`, registry spec §6) and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§4); cursor validation reads the mirrored value (§8).
 - **Facts revision (`factsRevision`).** The canonical digest of every preflight field planning or deploy decides on: OS/arch, home directory, resolved roots, UID, installed version, protocol version, and launch flags. `plan` computes it over the refreshed facts at mint (§3) and `HostPlan.factsRevision` carries it as the mint-time reference; deploy checks the token's facts freshness rather than recomputing the digest (§6 step 3).
 
@@ -68,9 +68,9 @@ generations in the store. It consumes
 This spec does not own mutations, mutation receipts, `hub.toml` commits, remnants,
 tombstones, or generations. Those are defined in the registry spec (§4 mutations, §5
 receipts, §6 remnant records, §15 tombstones-generations). The last-known store schema
-is defined in the registry spec §10; this spec defines only the publish side. Fencing,
-orphan reaping, quarantine, and `orphan-resolve` are defined in the crash-fencing spec;
-this spec cites them and never restates them.
+is defined in the registry spec §10; this spec defines only the publish side. The crash-fencing surfaces an earlier revision cited here — the fencing protocol, orphan
+reaping, the per-host fencing quarantine, and `orphan-resolve` — were withdrawn with
+the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2).
 
 ## 3. Confirmation tokens
 
@@ -163,10 +163,20 @@ store is the controller-side durable record of those operations.
 Record schema: controller-assigned id, client operation ID, host, kind
 (`deploy`/`restart`), state (`pending`/`running`/`complete`/`failed`/`interrupted`/
 `orphan-unverified`), progress entries (timestamped, bounded), terminal result,
-timestamps, the pinned host generation plus the pinned incarnation id, the worker's fencing epoch (persisted before the first `running` probe per §6; its shape is defined in the crash-fencing spec and never restated here), and a
-`host-removed` mark. The `orphan-unverified` variant carries the per-member
-`BoundaryEntry[]` array; its shape and verification are defined in the crash-fencing
-spec §9 and never restated here. The wire shape is pinned field-for-field in §10.
+timestamps, the pinned host generation plus the pinned incarnation id, the worker's probe epoch (persisted before its first `running` probe per §6; its shape is defined in §10 and never restated here), and a
+`host-removed` mark. An `orphan-unverified` record is prior-build historical
+data (custody imports included): this build creates none in an ordinary
+pipeline path, and the only transition such a record may take is to
+`interrupted`. Retained disposition: nothing consults it (the orphan admission
+fences were withdrawn with the crash-fencing program), it has no fencing
+effect, retention keeps every non-terminal record regardless of count, and
+boot leaves it in place — so a loaded or custody-imported row stays a
+listable historical record (`operations` renders `state: "orphan-unverified"`;
+`list`/`status` do not consult it) until a later store rewrite replaces it.
+(The tolerant decoder and its round-trip coverage — a prior-shape store loads
+and the next rewrite drops every retired key — live in
+`cmd/evener-hub/internal/hostops/retired_keys_test.go`.) The wire shape is
+pinned field-for-field in §10.
 `createdAt`/`updatedAt` are display-only. They never decide a race.
 
 Dedup scope is (host, kind, client operation ID, pinned generation, pinned incarnation
@@ -204,43 +214,46 @@ custody write and the rename, or between the rename and the replacement-store
 open, still boots covered: an intent with no matching aside file re-runs the
 rename; an aside file with no complete custody fails startup, never serves. Before the
 replacement store serves, that custody file snapshots the safety-critical fences the
-quarantined file can no longer prove — per-host fencing quarantines, open
-`orphan-unverified` records with their persisted boundaries, per-record ids plus
+quarantined file can no longer prove — every open `orphan-unverified` record's
+identity, per-record ids plus
 the allocator high-water mark, and per-name
-ownership (generation high-water marks plus incarnation ids). The custody file
+ownership (generation high-water marks plus incarnation ids). (The per-host
+fencing-quarantine flag and the persisted boundary payload an earlier revision
+snapshotted here were withdrawn with the crash-fencing program, Jesse,
+2026-09-29; comp08 passes 1–2 — a prior file's fields stay decodable and are
+dropped, never rewritten.) The custody file
 schema is `{quarantineEpoch: number, quarantinedFile: string,
 custodiedAt: string (RFC3339), recordIds: {recordId: string, host: string}[],
 allocatorHighWaterMark: number,
-fences: {recordId: string, host: string, kind: "deploy" | "restart", clientOperationId: string, generation: number, incarnationId: string, quarantine: bool,
-boundary: BoundaryEntry[]}[], ownership: {quarantineRecordId: string, host: string, kind: "deploy" | "restart", clientOperationId: string, generation: number, highWaterMark: number,
+fences: {recordId: string, host: string, kind: "deploy" | "restart", clientOperationId: string, generation: number, incarnationId: string}[], ownership: {quarantineRecordId: string, host: string, kind: "deploy" | "restart", clientOperationId: string, generation: number, highWaterMark: number,
 incarnationId: string}[]}` — `recordIds` carries every imported record's original
 controller-assigned id verbatim so the replacement store imports by id, and
 `allocatorHighWaterMark` carries the pre-quarantine maximum so the replacement
-allocator starts above it; one fence entry per fenced host carrying the
-quarantined record's persisted boundary verbatim (element type in the
-crash-fencing spec §9) plus the full record identity that entry imports under —
+allocator starts above it; one fence entry per open `orphan-unverified` record carrying the full
+record identity that entry imports under —
 `recordId`, host, kind, client operation ID, and the pinned (generation,
 incarnation id) pair — so a fence import builds its `OperationRecord` from the
-entry itself and never joins an ambiguous per-host `recordIds` row; one
-ownership entry per name the corrupt file
-yielded. Each ownership entry carries a stable `quarantineRecordId` (server-generated, unique in the custody file) plus the full record identity a replacement `OperationRecord` requires: host, kind (`restart`; custody never invents a `deploy` plan the corrupt file did not hold), client operation ID (server-minted `quarantine-<name>` when the corrupt file yields none), and the pinned (generation, incarnation id) pair with the generation high-water mark. Every custody entry is resolvable: boot imports each fence entry as
-an `orphan-unverified` record carrying the custodial boundary under its original
+entry itself and never joins an ambiguous per-host `recordIds` row. (A prior
+file's retired `quarantine: bool` and `boundary: BoundaryEntry[]` fields stay
+decodable and are dropped, never rewritten.)
+One ownership entry per name the corrupt file
+yielded. Each ownership entry carries a stable `quarantineRecordId` (server-generated, unique in the custody file) plus the full record identity a replacement `OperationRecord` requires: host, kind (`restart`; custody never invents a `deploy` plan the corrupt file did not hold), client operation ID (server-minted `quarantine-<name>` when the corrupt file yields none), and the pinned (generation, incarnation id) pair with the generation high-water mark. Every custody entry is addressable: boot imports each fence entry as
+an `orphan-unverified` record under its original
 record id, and each
-ownership-only entry as an `orphan-unverified` record of the carried kind under its stable `quarantineRecordId`, carrying the single
-`boundary-unavailable` entry (boundary lost to the corruption, never verified
-empty — the operator attests the name idle out-of-band before resolving, per the
-crash-fencing spec §5 attestation rule), in the replacement
-store under the same id scope as §4 records — so `orphan-resolve`
-(crash-fencing spec §§4–5) and the `operations` detail filter address every
-closed name by record id like any other unverified record, and no name stays
-permanently blocked for want of an id. When the corrupt file cannot
+ownership-only entry as an `orphan-unverified` record of the carried kind under its stable `quarantineRecordId`, in the replacement
+store under the same id scope as §4 records — so the `operations` detail filter
+addresses every closed name by record id like any other unverified record, and
+no name stays hidden for want of an id. (`orphan-resolve` and the
+attestation-backed clearance that once resolved these imports were withdrawn
+with the crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2 — the
+imports remain historical rows.) When the corrupt file cannot
 yield a complete custody snapshot, boot fails startup rather than serving hosts
 past an unprovable fence. Completeness is all-or-nothing, never best-effort: the
 snapshot is complete only when the corrupt file parses whole — every record it
 carries parses and validates, no region of the file is left unparsed or
 discarded, and the parsed record ids, against the file's own allocator
 high-water mark, account for the file's whole record set with no gap or residue.
-Unparseable fences, a boundary that fails schema validation, and ownership
+Unparseable fences and ownership
 missing for a fenced name are each incomplete — and so is any other shortfall,
 including a truncation that merely omits a fenced name's record (a gap below the
 high-water mark, not a parse error). The
@@ -248,17 +261,17 @@ replacement
 store opens at epoch + 1 with its row-ID allocator starting above the custodial
 `allocatorHighWaterMark` (so no fresh operation reuses an imported record's id) and
 `compactSeq` from zero, and
-every name the custody file names stays closed — no new lifecycle or mutation
-call past admission — until the operator resolves its quarantined state
-explicitly through `orphan-resolve`, which verifies
-the custodial boundary before clearing. The store starts otherwise empty with
-zero outstanding tokens plus an operator-visible health signal naming the
-quarantined file. The quarantine advances the durable `quarantineEpoch` by exactly one,
+every name the custody file names keeps its imported record — the corrupt
+file's history is never silently dropped — and the store starts otherwise empty
+with zero outstanding tokens plus an operator-visible health signal naming the
+quarantined file. (The orphan gate that once held those names closed until an
+operator resolved them through `orphan-resolve` was withdrawn with the
+crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2.) The quarantine advances the durable `quarantineEpoch` by exactly one,
 persisted outside the quarantined file. Cursor validation compares the cursor's pinned
 store epoch against the live epoch first: a pre-quarantine cursor is a typed
 `stale-entry` re-list refusal, never an admission against the replacement store. History
-is loss-tolerable; bricking all hosts over bit-rot is not — but no host
-reopens past a fence the quarantine can no longer prove.
+is loss-tolerable; bricking all hosts over bit-rot is not — but boot still fails
+rather than serve past evidence the quarantine cannot show complete.
 
 State-transition sequence: every atomic store write that moves a record into a terminal
 state (`complete`/`failed`/`interrupted`, or the `orphan-unverified`→`interrupted`
@@ -307,15 +320,17 @@ mutation lock (for example `remove`'s token-row purge) may acquire the store mut
 path holding the store mutex ever acquires the mutation lock. Gate holders'
 post-acquisition re-reads are lock-free registry reads.
 
-Probe epochs are ephemeral non-listed rows: they carry no token, no worker, and no `deploy`/`restart` kind, never appear in `operations` reads, and boot reaps them silently (deleted, never transitioned to `interrupted`). Persisted-before-launch: no controller-authorized remote mutation precedes the durable controller-side record carrying its fencing epoch. A probe epoch is itself that durable record: it is written in its own atomic store write before the probe's remote write half, and it authorizes only that bounded probe mutation (the `running` read plus the crash-fencing takeover, bounded kill/wait, and guard advance). A consumed `deploy`/`restart` additionally persists its ownership record, the `pending` operation record, in the same atomic write that consumes the token, and `Ensure`/`restart` persist their record before launching. A crash between the probe epoch's persist and the probe's remote write leaves an epoch-only row that boot deletes silently: the remote was never touched and nothing was owned. A crash after the probe's remote write but before the consume deletes the row the same way: the remote guard names the probe epoch, no worker was ever launched for it, and the next operation's guard advance fences the abandoned epoch forward (its kill/wait finds an empty lease, so nothing is signaled). Only a consumed operation has an owner, so only a `pending`/`running` operation record transitions to `interrupted`; an epoch-only probe row never does. Crash recovery of records: at startup, before the store serves any request, every record
+Probe epochs are ephemeral non-listed rows: they carry no token, no worker, and no `deploy`/`restart` kind, never appear in `operations` reads, and boot reaps them silently (deleted, never transitioned to `interrupted`). Persisted-before-launch: no controller-authorized remote mutation precedes the durable controller-side record carrying its probe epoch. A probe epoch is itself that durable record: it is written in its own atomic store write before the probe's remote write half, and it authorizes only that bounded probe mutation (the `running` read, checked against the serving hub's guard epoch — §10: a same-boot lower sequence is refused as stale, while a different boot id is admitted, the accepted cross-restart limitation). A consumed `deploy`/`restart` additionally persists its ownership record, the `pending` operation record, in the same atomic write that consumes the token, and `Ensure`/`restart` persist their record before launching. A crash between the probe epoch's persist and the probe's remote write leaves an epoch-only row that boot deletes silently: the remote was never touched and nothing was owned. A crash after the probe's remote write but before the consume deletes the row the same way: no worker was ever launched for it, so nothing is left running to signal and no orphan exists. Only a consumed operation has an owner, so only a `pending`/`running` operation record transitions to `interrupted`; an epoch-only probe row never does. Crash recovery of records: at startup, before the store serves any request, every record
 still in `pending`/`running` transitions to `interrupted` (a terminal unknown outcome)
-with a note naming the crash. `orphan-unverified` is the one exception: a durable
-per-record state resolved only through the fencing paths. A retry with the same
+with a note naming the crash. `orphan-unverified` is the one exception: prior-build
+historical data (custody imports included) this build neither creates nor
+resolves, and the only transition it may take is to `interrupted`. A retry with the same
 operation ID gets the `interrupted` record back. A new operation ID starts a fresh
-operation, but only after local reaping completes and under a fresh fencing epoch with
-the guard advanced past kill/wait of the superseded epoch. Boot performs no SSH. An
-unreachable host cannot block startup. Remote fencing lands lazily at the next
-operation's guard advance, after the store already serves `interrupted` records.
+operation, but only after boot reaping completes (expired tokens and epoch-only
+probe rows — §4, §7) and under a fresh probe epoch. Boot performs no SSH. An
+unreachable host cannot block startup. No remote fencing lands at all — the
+remote fencing program was withdrawn (Jesse, 2026-09-29; comp08 passes 1–2),
+so boot leaves remote processes untouched.
 
 Host-removed pass: after `hub.toml` loads (the one-time legacy-sidecar migration
 included) and after the interrupted transition, boot
@@ -409,11 +424,11 @@ minted from fresh facts.
 
 Second, `plan` try-acquires the host gate once (gate first per §5 — `plan` holds no mutation
 lock, so no order inversion is possible), failing fast with the typed busy error
-if held. Holding the gate but no durable epoch yet, `plan` persists a durable probe epoch first: a fencing-epoch-shaped (boot id, per-host op sequence) probe record in the operation-store file in its own atomic store write, bound to the host's current (generation, incarnation id) pair and superseded by the eventual token mint. The probe epoch exists before the first `running` call, so the remote write half is recoverable under crash-fencing's persisted-before-launch rule. The probe's remote write half then runs the complete fencing protocol for the fresh epoch — takeover, bounded kill/wait of the superseded epoch, guard advance — per the crash-fencing spec §4 before the write lands. A probe-epoch write failure refuses `probe-failed` with nothing launched; a crash after the epoch persists but before the mint leaves an epoch-only record that boot deletes silently (§4, §7) with no token and no worker (probe epochs never launch workers and never outlive their `plan` call — the mint supersedes them or the call's failure path deletes them). `plan` holds the gate through the running-state probe, validation, the durable
+if held. Holding the gate but no durable epoch yet, `plan` persists a durable probe epoch first: a probe-epoch-shaped (boot id, per-host op sequence) probe record in the operation-store file in its own atomic store write, bound to the host's current (generation, incarnation id) pair and superseded by the eventual token mint. The probe epoch exists before the first `running` call, so the probe's remote write never precedes its durable controller-side record (persisted-before-launch, §4/§6). The probe's remote write half is the `evener/host/running` call itself, classified under the gate and checked against the serving hub's guard epoch (§10); no takeover, kill/wait, or guard-file advance runs (withdrawn with the crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2). A probe-epoch write failure refuses `probe-failed` with nothing launched; a crash after the epoch persists but before the mint leaves an epoch-only record that boot deletes silently (§4, §7) with no token and no worker (probe epochs never launch workers and never outlive their `plan` call — the mint supersedes them or the call's failure path deletes them). `plan` holds the gate through the running-state probe, validation, the durable
 mint, publication, and return. Then the running-state probe: `evener/host/running` through
 `sshManager.ChannelIfAttached(name)` over the live channel (never a dial, never
 preflight), deadline-bounded with an explicit owner-adjustable probe timeout, presenting the persisted probe epoch (never a default, never absent — §10). The
-probe's remote write half runs classified under the fencing epoch and gate (§10):
+probe's remote write half runs classified under the probe epoch and gate (§10):
 the probe call runs through the gate-aware probe primitive, which inherits the
 already-held gate and presents the worker epoch instead of try-acquiring the
 non-reentrant gate a second time. On
@@ -476,7 +491,7 @@ here. A fenced name never reaches the gate: an open teardown remnant refuses wit
 `remnant-open` (naming the `remnantId`) before any probe or acquisition, past the
 step-(1) dedup check. Remnant semantics are defined in the registry spec §6.
 
-(3) Persist the probe epoch, then probe under the gate, then revalidate under the same gate. On a fresh (non-dedup-hit) operation the worker persists a durable probe epoch first — a fencing-epoch-shaped (boot id, per-host op sequence) probe record in the same atomic store write posture as step (4), bound to the host's current (generation, incarnation id) pair and superseded by the step-(4) consume — before the first `running` probe, so no remote write probe precedes its durable controller-side epoch. The first probe's remote write half runs the complete fencing protocol — takeover, bounded kill/wait, guard advance per the crash-fencing spec §4 — before the write, so a crashed epoch's orphan is fenced before the probe mutates. A crash between the probe-epoch write and the consume leaves an epoch-only record that boot deletes silently (§4, §7), never an unrecoverable probe. Probe the running build and health
+(3) Persist the probe epoch, then probe under the gate, then revalidate under the same gate. On a fresh (non-dedup-hit) operation the worker persists a durable probe epoch first — a probe-epoch-shaped (boot id, per-host op sequence) probe record in the same atomic store write posture as step (4), bound to the host's current (generation, incarnation id) pair and superseded by the step-(4) consume — before the first `running` probe, so no remote write probe precedes its durable controller-side epoch. The first probe's remote write half is the `running` call itself, classified under the gate and checked against the serving hub's guard epoch (§10); no takeover, kill/wait, or guard-file advance runs (withdrawn with the crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2). A crash between the probe-epoch write and the consume leaves an epoch-only record that boot deletes silently (§4, §7), never an unrecoverable probe. Probe the running build and health
 over the attached channel holding the try-acquired host gate for the probe window (same explicit probe timeout as `plan`'s
 probe, presenting the persisted probe epoch — never a default, never absent; a held gate fails fast with the typed busy error before any probe write). Still holding
 that gate, the worker
@@ -509,7 +524,7 @@ token row and compare-and-consume its nonce against the presented token, and re-
 is a `token-expired` refusal with no consumption and no record, even when the nonce
 still matches. A changed nonce is a `token-superseded` refusal with no consumption and
 no record. On a match the same write deletes the token row and promotes the probe-epoch record to the pending
-operation record carrying the worker's fencing epoch. Consume is delete in that same write, never a mark. Return its id.
+operation record carrying the worker's probe epoch. Consume is delete in that same write, never a mark. Return its id.
 The operation holds its host's gate from record creation to terminal state. The worker
 re-hashes the on-disk host entry fingerprint (§3) immediately before each irreversible step
 (before the push, and again before the planned restart when the token-bound plan says
@@ -574,18 +589,18 @@ non-reentrant. A restart issued while the host has no attached channel runs the 
 operation-owned attach first under the already-held gate and names the attach-first
 path in the record. Every attach entry point checks the remnant fence before dialing.
 
-`Ensure`-triggered operations are durable fenced operations. The Ensure path mints a
-server-side client operation ID, persists the operation-store record with its fencing
+`Ensure`-triggered operations are durable gated operations. The Ensure path mints a
+server-side client operation ID, persists the operation-store record with its probe
 epoch (controller boot id plus per-host monotonic op sequence) under the gate before
-launching the worker, and the worker runs the same register/fence/perform guard
-advance. A crash mid-Ensure reaps and fences exactly like a user deploy. No Ensure
+launching the worker, and the worker runs the same register/probe/perform sequence. A crash mid-Ensure recovers exactly like a user deploy. No Ensure
 remote mutation precedes its persisted epoch and ownership record (§4,
 persisted-before-launch). The Ensure path
 checks the remnant fence before minting: an open remnant refuses the Ensure-triggered
 operation with typed `remnant-open`. An Ensure-held gate returns `host-busy-operation`
-with the Ensure record's id — open/wait-able. Epoch, lease, and guard semantics are
-defined in the crash-fencing spec; this spec defines only the record, the gate, and
-the fence check.
+with the Ensure record's id — open/wait-able. The lease and remote-fence semantics
+an earlier revision cited here were withdrawn with the crash-fencing program
+(Jesse, 2026-09-29; comp08 passes 1–2); this spec defines the record, the gate,
+and the remnant-fence check.
 
 Worker lifetime: the push and `waitHealthy` work run on an async worker under a
 controller-lifetime context, never the RPC context. The RPC context serves only
@@ -623,22 +638,25 @@ only. The UI renders progress through terminal state. Never a synchronous RPC.
 ## 7. Boot recovery of pipeline state
 
 The boot pass runs in this order, before the store serves any request: operation-store
-load plus the safety-critical local reap of its local orphan boundary first (defined in the
-crash-fencing spec §3), then `hub.toml` load (defined in the registry spec §6, the one-time legacy-sidecar
+load first (including the silent deletion of epoch-only probe rows — §4/§6; the
+local orphan-boundary reap an earlier revision ran here was withdrawn with the
+crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2), then `hub.toml` load (defined in the registry spec §6, the one-time legacy-sidecar
 migration included), then the
 interrupted transition, then the tombstone-derived
 `host-removed` pass, then bidirectional generation-mirror reconciliation, then the
 cross-file intent reconciliation (§9). A corrupt `hub.toml` is still a hard startup error,
-but only after the operation store's local reap has run: a valid operation store is
+but only after the operation store has loaded and reaped: a valid operation store is
 never left unreaped because an unrelated `hub.toml` failed validation. Boot performs no SSH. An unreachable host cannot
-block startup. Remote fencing lands lazily at the next operation's guard advance, after
-the store already serves `interrupted` records.
+block startup. No remote fencing lands at all (withdrawn with the crash-fencing
+program, Jesse, 2026-09-29; comp08 passes 1–2), so boot serves `interrupted`
+records with remote processes untouched.
 
 Interrupted transition: every record still in `pending`/`running` transitions to
-`interrupted` with a note naming the crash. `orphan-unverified` is the one exception. An epoch-only probe record (persisted probe epoch with no token consumed and no worker launched — §6) is an ephemeral non-listed row: boot deletes it silently, never transitions it to `interrupted`, and never revives a token or a worker; a lost-response `plan` retry after the crash re-plans fresh under a new probe epoch.
+`interrupted` with a note naming the crash. `orphan-unverified` is the one exception (prior-build historical data; boot
+leaves it in place — §4). An epoch-only probe record (persisted probe epoch with no token consumed and no worker launched — §6) is an ephemeral non-listed row: boot deletes it silently, never transitions it to `interrupted`, and never revives a token or a worker; a lost-response `plan` retry after the crash re-plans fresh under a new probe epoch.
 A retry with the same operation ID gets the `interrupted` record back. A new operation
-ID starts fresh, but only after local reaping completes and under a fresh fencing epoch
-with the guard advanced past kill/wait of the superseded epoch.
+ID starts fresh, but only after boot reaping completes and under a fresh probe
+epoch.
 
 Token reaping: any token past its TTL at boot is dropped, never revived. Any token
 whose host resolves at boot to removed (tombstoned) is dropped with it. The tombstone
@@ -827,9 +845,9 @@ as its own interface with the method's `MethodTypes` result entry typed as the u
 over the arm names. The pipeline protocol-shapes test pins every arm field-for-field,
 including each arm's discriminator.
 
-`orphan-resolve` and `BoundaryEntry` belong to the fencing spec. This section never
-restates them. The `orphanBoundary` field below cites the fencing spec §9 for its
-element type.
+`orphan-resolve`, `BoundaryEntry`, and the `orphanBoundary` wire field were
+withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2);
+this section carries no fencing or orphan-resolve shapes.
 
 - `evener/host/plan`: params `{name: string}`; response is either `{plan: HostPlan,
   token: string, outcome: "planned"}` or `{outcome: "no-token", staleFacts: {message:
@@ -861,8 +879,11 @@ element type.
   are absent — never null — on the no-token response.
 - `evener/host/running` (controller-side mutation — catalog entry plus TypeScript client
   with the handler): params `{fencingEpoch: {bootId: string, opSeq:
-  number}}` (required on the wire; the `plan`/`deploy` probe path always
-  presents the caller's fencing epoch — the persisted epoch the calling worker
+  number}}` (required on the wire; the field keeps its `fencingEpoch` name as a retained
+  historical wire name (a `probeEpoch` rename is a wire-compat follow-up, not
+  this pass), but
+  the value is the caller's probe epoch; the `plan`/`deploy` probe path always
+  presents it — the persisted epoch the calling worker
   minted before launch — and the generated client carries the field, so no
   well-formed client call omits it); response `{buildRevision: string, healthy: bool,
   processStartTime?: string (RFC3339)}` — `processStartTime` present exactly when the
@@ -881,23 +902,30 @@ element type.
   owner-set minimum-free-space knob (default ships in the implementing PR); only above
   that threshold does it run the state-root write probe — a real atomic temp-plus-rename
   probe inside the state dir with a uniquely named temp per probe, rename to a distinct
-  probe target in the same dir, fsync the dir, then remove. The probe is a fully
-  fenced mutating step running the complete fencing protocol (takeover, bounded kill/wait, guard advance per the crash-fencing spec §4) before its write half, never a read and never a gateless bypass: the calling
+  probe target in the same dir, fsync the dir, then remove. The probe is a gate-held
+  mutating step, never a read and never a gateless bypass: the calling
   side issues it only while holding the host gate through the gate-aware probe
   primitive in §6 (which inherits the already-held gate instead of re-acquiring
-  it), presenting the worker's persisted fencing epoch; the serving hub persists
-  the presented epoch per calling host before the write half runs, validates it
-  against the host's current fencing epoch, and refuses stale epochs without
-  probing. It never runs gateless and its epoch never defaults. A call with the
+  it), presenting the worker's persisted probe epoch; the serving hub validates the
+  presented epoch against the guard epoch it last admitted for the host before
+  anything is written or probed: a same-boot epoch with a lower op sequence is
+  refused as stale (typed `probe-failed`, nothing persisted, no probe), and only
+  an admitted epoch is persisted before the write half runs. A presented epoch
+  carrying a different boot id has no defined order against the stored one, so it
+  is admitted and replaces the guard — the cross-restart limitation accepted
+  with the withdrawn program (the remote guard-file compare-and-advance that
+  once supplied that order is gone; comp08 passes 1–2). (The takeover, bounded
+  kill/wait, and guard-file advance an earlier revision ran before the write
+  half were withdrawn with the crash-fencing program, Jesse, 2026-09-29.) It never runs gateless and its epoch never defaults. A call with the
   epoch absent is refused with typed `probe-failed` (no epoch presented), never
-  served as an unfenced write; a
+  served without its epoch; a
   probe temp orphaned by a crash carries the probe-name prefix and
   boot prunes prefix-matching strays before serving. No probe temp survives the probe
-  window past its remove except a crash orphan the boot prune owns. The orphan
-  fence gates it like every other mutating call: it never bypasses an open
-  `orphan-unverified` record or quarantine — only the read-only calls
-  (`list`, `status`, `operations`) plus the `orphan-resolve` way out bypass the
-  fence (crash-fencing spec §8). Anything else — session counts,
+  window past its remove except a crash orphan the boot prune owns. (The orphan
+  fence that once refused this call past an open `orphan-unverified` record or
+  quarantine, and the `orphan-resolve` way out, were withdrawn with the
+  crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2 — nothing but
+  the host gate and epoch classification gates this mutation.) Anything else — session counts,
   load, peer reachability, external dependency status — never feeds `healthy`.
   `healthy: false` is data, never a probe failure: each forced-false case returns
   `healthy: false` while the probe itself still succeeds. Admitted only over an
@@ -931,23 +959,14 @@ element type.
   instead (one boundary per every host in the query at cursor creation; `"absent"` encodes only hosts with no records in the query — hosts whose records land on later pages carry their current (generation, incarnationId, presenceEpoch) triple, never by omission).
   `OperationRecord` is `{id, clientOperationId, host, generation: number,
   incarnationId: string, kind: "deploy" | "restart", state: "pending" | "running" |
-  "complete" | "failed" | "interrupted" | "orphan-unverified", orphanBoundary?:
-  BoundaryEntry[], progress: ProgressEntry[], result?: {ok: bool, message: string},
-  createdAt: string, updatedAt: string, hostRemoved: bool, compacted?: true,
-  orphanResolved?: true,
-  attestation?: {operator: string, statement: "orphan-verified-absent",
-  recordId: string, boundaryRef: string, observedAt: string}}` —
-  `incarnationId` is the pinned incarnation the record ran against; `orphanBoundary`
-  is present exactly on records whose `state` is `orphan-unverified` (absent on every
-  other state per the absent-when-unknown rule) — its element type is defined in the
-  fencing spec §9; `orphanResolved?: true` is present exactly on records resolved
-  through `orphan-resolve` (absent on every other record including ordinary
-  boot-transitioned `interrupted` records, per the absent-when-unknown rule — the
-  marker is defined in the fencing spec §5 and cited here, never restated);
-  `attestation` is present exactly on a record resolved through `orphan-resolve`
-  with an attestation, carrying the persisted `{operator, statement, recordId,
-  boundaryRef, observedAt}` (fencing spec §§5, 9), and absent on every other
-  record;
+  "complete" | "failed" | "interrupted" | "orphan-unverified", progress: ProgressEntry[], result?: {ok: bool, message: string},
+  createdAt: string, updatedAt: string, hostRemoved: bool, compacted?: true}` —
+  `incarnationId` is the pinned incarnation the record ran against;
+  `orphan-unverified` is prior-build historical data (custody imports included)
+  and renders with no boundary or attestation payload; the `orphanBoundary`,
+  `orphanResolved`, and `attestation` fields an earlier revision carried were
+  withdrawn with the crash-fencing program (Jesse, 2026-09-29; comp08 passes
+  1–2);
   `compacted` is present as `true` exactly on tombstone replays
   (absent on live records). `ProgressEntry` is `{ts: string (RFC3339), message:
   string}`, bounded per record. `limit` defaults to 50 and caps at 200; responses
@@ -985,9 +1004,10 @@ This spec's paths emit:
 - `host-busy-operation` (busy class; data names the operation id) when a
   deploy/restart record — including an Ensure-triggered deploy — holds the gate.
 - `host-busy-transient` (busy class; no operation reference) for `plan`'s
-  validation-plus-mint window, which holds no operation-store record, and for an
-  open `orphan-unverified` fence's non-teardown refusals (crash-fencing spec §8;
-  `teardown-retry`/`teardown-recover` carry `orphan-fenced-busy` instead).
+  validation-plus-mint window, which holds no operation-store record. (The open
+  `orphan-unverified` fence's refusals and the `orphan-fenced-busy`
+  discriminator an earlier revision defined here were withdrawn with the
+  crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2.)
 - `host-detached` (unavailable class). Deploy's channel-gone refusal. Token
   unconsumed, no record. The UI Connects and re-plans.
 - `probe-failed` (unavailable class). Deploy step (3)'s running re-probe read failed,
@@ -1003,8 +1023,9 @@ This spec's paths emit:
 
 Not emitted here, cited only: `concurrent-edit` belongs to the `hub.toml` final check
 (defined in the registry spec §6). `fencing-failure`, `fencing-helper-absent`,
-`fencing-helper-untrusted`, and `orphan-fenced-busy` belong to the fencing spec. The
-`orphanBoundary` element shapes belong to the fencing spec §9.
+`fencing-helper-untrusted`, and `orphan-fenced-busy` belonged to the fencing
+spec and were withdrawn with the crash-fencing program (Jesse, 2026-09-29;
+comp08 passes 1–2), as were the `orphanBoundary` element shapes.
 
 `remnant-open` (conflict class): emitted by `deploy`/`restart`/`Ensure`
 (§6 step 2) past the dedup check and before any probe or acquisition. The
@@ -1021,10 +1042,11 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
 
 - Handler tests per method: validation, admission, classification including
   `plan`-as-mutation, and remote-origin rejection for `plan`/`deploy`/
-  `restart`/`operations`/`running` (the fencing mutation's
-  guard-before-admission ordering is asserted in the fencing spec where
-  `orphan-resolve` registers — guard-before-admission outranks dedup-first; the
-  before-dedup and before-token-validation orderings are asserted where they ship).
+  `restart`/`operations`/`running` (guard-before-admission outranks dedup-first;
+  the before-dedup and before-token-validation orderings are asserted where they
+  ship — the fencing-mutation assertion that once lived in the fencing spec was
+  withdrawn with the crash-fencing program, Jesse, 2026-09-29; comp08 passes
+  1–2).
 - The token matrix: missing, mismatched, expired, superseded, consumed-then-replayed
   with a new operation ID (pins to `token-missing`: consume deletes the row — §6 step
   4), expiry-across-the-wait (a token valid at the step-(2) provisional pass but past
@@ -1071,7 +1093,7 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   page one. An over-cap first page refuses the distinct `cursor-too-large`
   discriminator with `{capBytes: 8192}`. Both shapes pinned.
 - Durable probe epoch: no `running` probe precedes its durable controller-side epoch — `plan` persists its probe epoch before the first probe call and binds it to the eventual token's (generation, incarnation id) pair; `deploy` persists its probe epoch before probing and promotes it at the step-(4) consume. Probe-epoch write failure is `probe-failed` with nothing launched; a crash between epoch and mint/consume boots to silent deletion of the epoch-only row with no token and no worker (probe epochs are ephemeral non-listed rows, never `operations`-visible); the mint supersedes a `plan` probe epoch and step (4) promotes a `deploy` one.
-- Fenced probe ordering: the first mutating probe after a crashed epoch runs takeover, bounded kill/wait, and guard advance before its write half (crash-fencing spec §4); the ordering test observes the write landing only after the guard advanced past the superseded epoch.
+- Probe presentation ordering: a `running` probe never precedes its durable controller-side epoch — the ordering test observes the probe write landing only after the persisted probe epoch exists, and the serving hub refuses a stale epoch without probing (the takeover/kill/wait ordering an earlier revision tested was withdrawn with the crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2).
 - `factsRevision` freshness: a token whose preflight facts are older than the token-bound bound at deploy time refuses `stale-entry`; deploy runs no fresh preflight, so the check is on the stored `factsRevision`/`factsCapturedAt`, not a re-read, and the mint-time digest remains the pinned reference for the facts the token was minted from.
 - `restart` incarnation pair: a lost-response retry repeating the old pair replays the retained record; the same operation ID naming the new pair after remove/re-add opens fresh; a pair older than current refuses `stale-entry`.
 - Torn-write recovery: a store-newer/`hub.toml`-older split with no commit marker transitions affected records to `interrupted` and serves; startup is never refused for this split.
@@ -1080,8 +1102,9 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   `{fencingEpoch: {bootId, opSeq}}` params (the generated client carries the
   field — an epoch-absent call refuses `probe-failed`, never served); attached-session admission only; unauthenticated probe
   refusal; browser and forwarded requests refused; never forwarded onward (no A→B→A
-  chain); orphan-fenced like every other mutating call (no read bypass — an open
-  `orphan-unverified` record or quarantine refuses it past admission); the serving
+  chain); gated like every other mutating call (no read bypass — the orphan
+  fence that once refused it past admission was withdrawn with the
+  crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2); the serving
   hub persists the presented epoch before the write half and refuses stale epochs
   without probing; the gated `plan` probe call with its explicit deadline (timeout yields
   the no-token `probe-failed` refusal with nothing left held past the probe window); `HostPlan`
@@ -1132,9 +1155,11 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   custody-intent persisted before the rename plus the custody-file schema pinned
   field-for-field (original record ids, allocator high-water mark, fences,
   ownership); every custody fence imported as an
-  `orphan-unverified` record under its original id resolvable through `orphan-resolve`;
-  ownership-only entries imported with the `boundary-unavailable` entry and
-  attested resolve only; a crash between custody write and rename, or an aside
+  `orphan-unverified` record under its original id, addressable through the
+  `operations` detail filter (the `orphan-resolve` clearance and the
+  `boundary-unavailable` entry an earlier revision required here were withdrawn
+  with the crash-fencing program, Jesse, 2026-09-29; comp08 passes 1–2);
+  a crash between custody write and rename, or an aside
   file with incomplete custody, fails closed; truncated and
   corrupt stores covered end-to-end — including the fail-startup posture when
   custody is incomplete).
@@ -1149,7 +1174,7 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   as data while the probe itself succeeds — evaluated by the serving hub's local
   predicate, never the `restartRequiredDaemon` probe path; the free-space floor is the
   owner-set minimum-free-space knob, and the write-probe half runs classified under the
-  host gate and fencing epoch (§10), never as a gateless bypass.
+  host gate and probe epoch (§10), never as a gateless bypass.
 - Pinned pagination: stable `id`-ascending order for both sort and resume across
   concurrent terminal writes (`createdAt` display-only); a mid-pagination
   generation or presence advance rejects the continuation (`stale-entry`
@@ -1176,10 +1201,12 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   restart → spawn-remote cycle against a disposable host before declaring the
   component done. That requires a host Jesse designates.
 
-Orphan fencing, fencing-quarantine, helper-gate, and `orphan-resolve` tests belong to
-the fencing spec. This spec's tests pin only their seams: the `remnant-open` fence
-before any probe or acquisition, the `orphanBoundary` wire presence rule (§10), and
-the `orphan-unverified` state surviving the interrupted transition.
+The orphan-fencing, fencing-quarantine, helper-gate, and `orphan-resolve` tests
+an earlier revision assigned to the fencing spec were withdrawn with the
+crash-fencing program (Jesse, 2026-09-29; comp08 passes 1–2). This spec's tests
+pin the kept seams: the `remnant-open` gate before any probe or acquisition and
+the `orphan-unverified` state surviving the interrupted transition as
+prior-build historical data.
 
 ## 13. UI (Hosts settings section) and acceptance criteria
 

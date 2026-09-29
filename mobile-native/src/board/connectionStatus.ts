@@ -76,10 +76,19 @@ export function nextStatusChange(
 export function useConnectionStatusText(): string | null {
 	const { state, fatal, downSince, lastLiveAt } = useConnection();
 	const [now, setNow] = useState(Date.now);
-	// `now` is a dependency though the body doesn't read it: each tick re-runs
-	// this effect, which schedules the next one.
+	// Each tick moves `now`, re-running this effect, which schedules the next.
 	useEffect(() => {
 		const current = Date.now();
+		// The provider's facts can change between ticks (a drop reported a moment
+		// after it began), leaving this render's clock behind: catch up first,
+		// or the next tick would be scheduled past the words due now.
+		if (
+			connectionStatus(state, fatal, downSince, lastLiveAt, current) !==
+			connectionStatus(state, fatal, downSince, lastLiveAt, now)
+		) {
+			setNow(current);
+			return;
+		}
 		const next = nextStatusChange(state, fatal, downSince, lastLiveAt, current);
 		if (next === null) return;
 		const timer = setTimeout(() => setNow(Date.now()), Math.max(0, next - current));

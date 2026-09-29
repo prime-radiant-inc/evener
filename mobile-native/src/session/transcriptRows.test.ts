@@ -138,7 +138,7 @@ describe("time markers", () => {
 		const rows = sessionRows(
 			[user("u1", "turn_1"), user("u2", "turn_2"), user("u3", "turn_3"), user("u4", "turn_4")],
 			turns,
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
 			"time:turn_1",
@@ -151,13 +151,45 @@ describe("time markers", () => {
 		]);
 	});
 
-	it("splits a run at a marked turn boundary (the first loaded turn is always marked)", () => {
+	it("splits a run at a marked turn boundary (the first turn of a whole history is marked)", () => {
 		const rows = sessionRows(
 			[step("a", "read_file", { turnId: "turn_2" }), step("b", "grep", { turnId: "turn_3" })],
 			turns,
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "time", "run"]);
+	});
+
+	it("leaves the first loaded turn unmarked while older history is still to load", () => {
+		const rows = sessionRows([user("u2", "turn_2"), user("u3", "turn_3")], turns, {
+			timeZone: "UTC",
+			olderToLoad: true,
+		});
+		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
+			"u2",
+			"time:turn_3",
+			"u3",
+		]);
+	});
+
+	it("keeps the first row's key across an older page, with steps and a delegate_send among them", () => {
+		// Before: the latest page, with more above. After: the page above
+		// prepended. The first key before must still be in the list after, so
+		// the list can find where its window moved to.
+		const latest = [
+			user("u2", "turn_2"),
+			step("s2", "delegate_send", { turnId: "turn_2" }),
+			step("s3", "shell", { turnId: "turn_2" }),
+			user("u3", "turn_3"),
+		];
+		const before = sessionRows(latest, turns, { timeZone: "UTC", olderToLoad: true });
+		const after = sessionRows([user("u1", "turn_1"), ...latest], turns, { timeZone: "UTC", olderToLoad: true });
+		const first = before[0]?.id;
+		expect(first).toBeDefined();
+		expect(after.map((row) => row.id)).toContain(first);
+		// Once nothing older is left, the first turn gets its marker back.
+		const whole = sessionRows([user("u1", "turn_1"), ...latest], turns, { timeZone: "UTC" });
+		expect(whole[0]).toMatchObject({ kind: "time", turnId: "turn_1" });
 	});
 
 	// The reducer can seat a notice in the display turn that holds its recorded
@@ -179,7 +211,7 @@ describe("time markers", () => {
 		const rows = sessionRows(
 			[user("u", "turn_1"), notice, reply("r", "turn_1")],
 			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2")],
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
 			"time:turn_1",
@@ -197,7 +229,7 @@ describe("time markers", () => {
 		const rows = sessionRows(
 			[step("a", "read_file", { turnId: "turn_1" }), step("b", "grep", { turnId: "turn_2" })],
 			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2", at(12, 8))],
-			"UTC",
+			{ timeZone: "UTC" },
 		);
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "run"]);
 		expect(rows[1]?.kind === "run" && rows[1].steps.map((s) => s.id)).toEqual(["a"]);

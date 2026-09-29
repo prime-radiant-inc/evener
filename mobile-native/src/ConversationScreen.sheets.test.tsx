@@ -16,7 +16,7 @@ import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Thread } from "@evener/appwire-client";
-import { alertRequests, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { SessionHeader } from "./session/SessionHeader";
@@ -61,16 +61,16 @@ vi.mock("react-native", async () => {
 			addEventListener: () => ({ remove: () => {} }),
 		},
 		Image: "Image",
-		Keyboard: { dismiss: vi.fn() },
 		Linking: { openURL: vi.fn() },
 		RefreshControl: "RefreshControl",
 		StatusBar: "StatusBar",
-		// The real Modal renders its children only while visible; the inert host
-		// string would render them always, so the panel would look mounted even
-		// with the modal closed. This stub keeps the screen's open/closed state
-		// observable in the tree: no visible modal, no panel.
+		// The real Modal renders its children while visible, its own default
+		// being visible; the inert host string would render them always, so the
+		// panel would look mounted even with the modal closed. This stub keeps
+		// the screen's open/closed state observable in the tree: a modal told to
+		// hide renders no panel, and one that says nothing holds, as it does.
 		Modal: (props: { visible?: boolean; children?: ReactNode }) =>
-			props.visible ? createElement("Modal", null, props.children) : null,
+			props.visible !== false ? createElement("Modal", null, props.children) : null,
 	};
 });
 vi.mock("react-native-safe-area-context", () => ({
@@ -326,14 +326,7 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 	const { tree } = mount();
 	await flush();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const tasks = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Tasks");
-	if (!tasks) throw new Error("no Tasks item in the header menu");
-	act(() => tasks.onPress());
+	act(() => menuAction("Tasks").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 		hubId: "hub-1",
@@ -348,14 +341,7 @@ it("opens Notes & links from the header menu as the NotesSheet route, without fo
 	const { tree } = mount(withCapabilities({ sharedNotes: true }));
 	await flush();
 
-	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
-		unstable_headerRightItems: () => {
-			menu: { items: { label: string; onPress(): void }[] };
-		}[];
-	};
-	const notes = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Notes & links");
-	if (!notes) throw new Error("no Notes & links item in the header menu");
-	act(() => notes.onPress());
+	act(() => menuAction("Notes & links").onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", {
 		hubId: "hub-1",
@@ -404,6 +390,19 @@ it("titles the header with the session's state, and opens its info on a press", 
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
 	// The sheet reads the session through the host the screen provides.
 	expect(sessionInfoHosts.get(sheetKey("hub-1", ref))?.session).toMatchObject({ ref, threadId: "thread-1" });
+	tree.unmount();
+});
+
+it("opens New session like this one: its host, folder, model and effort", async () => {
+	const { tree } = mount({ ...thread, evener: { ...thread.evener, reasoningEffort: "high" } });
+	await flush();
+
+	act(() => menuAction("New session like this").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("NewSession", {
+		hubId: "hub-1",
+		hubName: expect.any(String),
+		like: { host: "local", cwd: "/tmp", model: "scripted", effort: "high" },
+	});
 	tree.unmount();
 });
 
@@ -507,6 +506,33 @@ it("shows the chosen detail level and confirms it", async () => {
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
 	expect(renderedText(tree)).toContain("Full: everything, including the agent's reasoning");
+	tree.unmount();
+});
+
+/** The ⋯ button in the header, as the screen last set it. */
+function menuButton(): ReactElement<{ onPress(): void }> {
+	const button = header().headerRight?.({ canGoBack: true });
+	if (!button) throw new Error("the header set no ⋯ button");
+	return button as ReactElement<{ onPress(): void }>;
+}
+
+it("opens Find in session from the Android ⋯ menu", async () => {
+	const { tree } = mount();
+	await flush();
+
+	act(() => menuButton().props.onPress());
+	const find = tree.root.findAll(
+		(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Find in session",
+	)[0];
+	if (!find) throw new Error("no Find in session in the ⋯ menu");
+	act(() => find.props.onPress());
+	await flush();
+
+	expect(
+		tree.root.findAll(
+			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+		),
+	).toHaveLength(1);
 	tree.unmount();
 });
 
@@ -685,6 +711,45 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	tree.unmount();
 });
 
+it("opens the live run where tool calls show, and leaves it to its line at Intent", async () => {
+	const running = {
+		...thread,
+		status: { type: "active" },
+		evener: { ...thread.evener, activeTurnId: "t1" },
+		turns: [
+			{
+				id: "t1",
+				status: "inProgress",
+				items: [
+					{ id: "u", turnId: "t1", type: "userMessage", text: "look", status: "completed" },
+					{
+						id: "c",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "shell",
+						argumentsJson: '{"command":"ls"}',
+						output: "a.txt",
+						status: "completed",
+					},
+				],
+			},
+		],
+	} as unknown as Thread;
+	const { tree } = mount(running);
+	await flush();
+	// A run's fold control names it collapsed or expanded; a run held open
+	// while live has none.
+	const folds = () =>
+		tree.root.findAll((node) => /^1 step\b.*, (collapsed|expanded)$/.test(String(node.props.accessibilityLabel ?? "")));
+	act(() => detailLevels("hub-1").set(ref, "intent"));
+	await flush();
+	expect(folds()[0]?.props.accessibilityLabel).toMatch(/, collapsed$/);
+	act(() => detailLevels("hub-1").set(ref, "tools"));
+	await flush();
+	expect(folds()).toEqual([]);
+	tree.unmount();
+});
+
 /** A session with a subagent, tasks, a blocked goal and two queued
  * messages: every context chip. */
 const busy = {
@@ -732,14 +797,14 @@ function sessionList(tree: ReturnType<typeof render>) {
 					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
 				}),
 			),
+		// As React Native does, the drag's end carries where it let go.
 		drag: (y: number) => {
-			act(() => list().props.onScrollBeginDrag());
-			act(() =>
-				list().props.onScroll({
-					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
-				}),
-			);
-			act(() => list().props.onScrollEndDrag());
+			const event = {
+				nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+			};
+			act(() => list().props.onScrollBeginDrag(event));
+			act(() => list().props.onScroll(event));
+			act(() => list().props.onScrollEndDrag(event));
 		},
 	};
 }
@@ -752,6 +817,9 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	// A live connection says nothing, and the old Reconnect row is gone.
 	expect(session.block().props.status).toBeNull();
 	expect(renderedText(tree)).not.toMatch(/Connected|Reconnect/);
+	// The goal is a context chip (spec 8.1) and nothing else: the bottom bar
+	// doesn't repeat it as a row, which would cost the transcript a line.
+	expect(renderedText(tree)).not.toContain("Goal · blocked");
 	const chip = (label: string) => {
 		const found = session
 			.block()
@@ -863,6 +931,57 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 	tree.unmount();
 });
 
+// While you type in the composer, the chips and the note row step aside so
+// the transcript keeps its room; the nav bar stays (spec 8.1).
+it("steps the chips and note aside while you type, and brings them back when the keyboard lowers", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	expect(session.block().props.hidden).toBe(false);
+	act(() => keyboard.show());
+	expect(session.block().props.hidden).toBe(true);
+	act(() => keyboard.hide());
+	expect(session.block().props.hidden).toBe(false);
+	tree.unmount();
+});
+
+it("keeps the nav bar while you type", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	navigation.setOptions.mockClear();
+	act(() => keyboard.show());
+	const calls = navigation.setOptions.mock.calls as [NativeStackNavigationOptions][];
+	expect(calls.some(([options]) => options.headerShown === false)).toBe(false);
+	act(() => keyboard.hide());
+	tree.unmount();
+});
+
+it("keeps the find bar in place while you type in it", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	act(() => menuAction("Find in session").onPress());
+	act(() => keyboard.show());
+	expect(session.block().props.hidden).toBe(false);
+	expect(session.block().props.find).toBeDefined();
+	act(() => keyboard.hide());
+	tree.unmount();
+});
+
+it("stays hidden after the keyboard lowers when a downward scroll hid the chips", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	act(() => session.list().props.onScrollBeginDrag());
+	session.scroll(40);
+	expect(session.block().props.hidden).toBe(true);
+	act(() => keyboard.show());
+	expect(session.block().props.hidden).toBe(true);
+	act(() => keyboard.hide());
+	expect(session.block().props.hidden).toBe(true);
+	tree.unmount();
+});
+
 it("hides the chips only for the person's own drag, never for the app moving the list", async () => {
 	const { tree } = mount(busy);
 	await flush();
@@ -880,7 +999,11 @@ it("hides the chips only for the person's own drag, never for the app moving the
 	// A coast after the drag counts as the person's too.
 	act(() => session.list().props.onMomentumScrollBegin());
 	session.scroll(4010);
-	act(() => session.list().props.onMomentumScrollEnd());
+	act(() =>
+		session.list().props.onMomentumScrollEnd({
+			nativeEvent: { contentOffset: { y: 4010 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		}),
+	);
 	expect(session.block().props.hidden).toBe(false);
 	tree.unmount();
 });
