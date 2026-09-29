@@ -20,6 +20,7 @@ import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, Copy, useColors, useTextScale } from "../ui";
 import { wrapAfterSlashes } from "./format";
 import { canWriteHumanNote, type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
+import { haptic } from "../haptics";
 
 export interface NotesHost {
 	session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "status" | "resumeRequired" | "capabilities">;
@@ -309,7 +310,11 @@ function LinkRow({
 					// Remove link, when offered, is the last item before Cancel.
 					...(writable ? { destructiveButtonIndex: items.length - 1 } : {}),
 				},
-				(index) => items[index]?.run(),
+				(index) => {
+					// Spec 16.6: Remove link is its own confirmation.
+					if (writable && index === items.length - 1) haptic("rigid");
+					items[index]?.run();
+				},
 			);
 			return;
 		}

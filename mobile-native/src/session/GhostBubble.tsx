@@ -9,6 +9,7 @@ import { SwipeRow } from "../board/SwipeRow";
 import { typeRoles } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Ghost, GhostAction } from "./ghosts";
+import { haptic } from "../haptics";
 
 const BUTTON_LABELS: Record<GhostAction, string> = {
 	steerNow: "Steer now",
@@ -65,6 +66,8 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 				},
 				(index) => {
 					const action = menu[index];
+					// Spec 16.6: the destructive choice is its own confirmation.
+					if (index === destructive) haptic("rigid");
 					if (action) onAction(action);
 				},
 			);
