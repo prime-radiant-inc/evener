@@ -1347,12 +1347,14 @@ func TestHubRPCRealLocalReadCarriesTheDaemonHistoryIdentity(t *testing.T) {
 // A client that dropped rows from the top of its window pages them back by
 // naming the oldest row it kept: before rebases the cursor it holds onto that
 // boundary, keeping the cursor's identity fence.
-func TestHubRPCTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
-	const sessionID = "turns-list-before"
-	const ref = "local:" + sessionID
+// beforePagingHub serves a session of n items (item-00, item-01, ...) from a
+// real daemon behind a hub, and returns a client initialized against the hub.
+func beforePagingHub(t *testing.T, sessionID string, n int) (*appwire.Client, string) {
+	t.Helper()
+	ref := "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
 	var inputs []string
-	for i := range 45 {
+	for i := range n {
 		inputs = append(inputs, fmt.Sprintf("item-%02d", i))
 	}
 	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), inputs)
@@ -1373,6 +1375,61 @@ func TestHubRPCTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+	return client, ref
+}
+
+// The whole session fits one page, so the phone's first read held it all and
+// it has no cursor: the hub serves a cursorless before from its snapshot.
+func TestHubRPCTurnsListBeforeWithinAWholeSessionSnapshot(t *testing.T) {
+	client, ref := beforePagingHub(t, "turns-list-before-whole", 6)
+	read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemLimit: 10})
+	if err != nil {
+		t.Fatalf("whole-session read: %v", err)
+	}
+	if read.OlderCursor != "" {
+		t.Fatalf("whole-session read cursor = %q, want none", read.OlderCursor)
+	}
+	var boundary *appwire.ThreadItemPosition
+	for _, item := range flattenTestItems(read.Thread.Turns) {
+		if item.Text == "item-04" {
+			boundary = item.Position
+		}
+	}
+	if boundary == nil {
+		t.Fatal("whole-session read has no positioned item-04")
+	}
+	page, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: 10, Before: boundary})
+	if err != nil {
+		t.Fatalf("cursorless turns list before item-04: %v", err)
+	}
+	var texts []string
+	for _, item := range flattenTestItems(page.Data) {
+		texts = append(texts, item.Text)
+	}
+	if !slicesEqual(texts, []string{"item-00", "item-01", "item-02", "item-03"}) {
+		t.Fatalf("cursorless turns list before item-04 = %v, want item-00..03", texts)
+	}
+	_, err = client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, ItemLimit: 10, Before: &appwire.ThreadItemPosition{Entry: boundary.Entry + 10_000},
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("cursorless future before: error = %T %v, want typed stale cursor", err, err)
+	}
+	stale := false
+	switch data := wireErr.Data.(type) {
+	case appwire.ErrorData:
+		stale = data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+	case map[string]any:
+		stale = data["evenerErrorInfo"] == string(appwire.ErrorTranscriptItemCursorStale)
+	}
+	if !stale {
+		t.Fatalf("cursorless future before: error = %v data %#v, want stale cursor", err, wireErr.Data)
+	}
+}
+
+func TestHubRPCTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
+	client, ref := beforePagingHub(t, "turns-list-before", 45)
 
 	// A wide read to learn where item-30 sits, and a narrow one whose cursor
 	// points before item-40: the rows between are the ones a trim dropped.

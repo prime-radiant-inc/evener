@@ -74,8 +74,15 @@ func TestThreadTurnsListItemModeRequiresCursor(t *testing.T) {
 	}
 	// A before boundary stands in for a missing cursor: the source mints one
 	// from the thread's current identity.
-	if err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4, Before: &ThreadItemPosition{Entry: 3}}); err != nil {
+	before := &ThreadItemPosition{Entry: 3}
+	if err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4, Before: before}); err != nil {
 		t.Fatalf("cursorless before validation: %v", err)
+	}
+	// before doesn't excuse a cursor that is present but isn't one.
+	for name, cursor := range map[string]string{"whitespace": " ", "legacy numeric": "42"} {
+		if err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4, Cursor: cursor, Before: before}); err == nil {
+			t.Errorf("%s cursor with before accepted", name)
+		}
 	}
 }
 

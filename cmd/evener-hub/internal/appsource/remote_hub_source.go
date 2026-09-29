@@ -793,6 +793,9 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	remote.Ref = ref.String()
 	remote.ThreadID = ref.ThreadID
 	remote.ItemLimit = itemLimit
+	// The remote pages with the controller's own boundaries; a before never
+	// travels, since an older remote rejects the field outright.
+	remote.Before = nil
 
 	// Each remote page mints its own controller identity, so there is none to
 	// mint a cursor under for a Before with no cursor. Refuse it plainly

@@ -2005,4 +2005,13 @@ func TestPastThreadTurnsListBeforeWithoutACursor(t *testing.T) {
 	if got, want := ids(cursorless), ids(withCursor); len(want) == 0 || !slicesEqual(got, want) {
 		t.Fatalf("cursorless saved page = %v, want the cursor's page %v", got, want)
 	}
+	future := &appwire.ThreadItemPosition{Entry: items[0].Position.Entry + 10_000}
+	_, _, err = pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Before: future})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("saved page before a future position: error = %T %v, want a stale cursor", err, err)
+	}
+	if data, ok := wireErr.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("saved page before a future position: error data = %#v, want stale cursor", wireErr.Data)
+	}
 }
