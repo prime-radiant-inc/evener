@@ -180,6 +180,40 @@ func TestCreateDelegate_CreationResultNamesArtifactsDir(t *testing.T) {
 	}
 }
 
+// TestRemoveDelegateArtifacts_SymlinkedSessionDirRemovesLinkNotTarget pins that
+// a symlink planted at the session dir is removed as a link, never followed
+// into a target directory's artifacts tree.
+func TestRemoveDelegateArtifacts_SymlinkedSessionDirRemovesLinkNotTarget(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessions := filepath.Join(stateDir, sessionsSubdir)
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	target := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(target, delegateArtifactsSubdir), 0o700); err != nil {
+		t.Fatalf("mkdir target artifacts: %v", err)
+	}
+	keep := filepath.Join(target, delegateArtifactsSubdir, "keep.md")
+	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write target artifact: %v", err)
+	}
+	link := filepath.Join(sessions, "sess_link_rm")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := removeDelegateArtifacts(stateDir, "sess_link_rm"); err != nil {
+		t.Fatalf("removeDelegateArtifacts: %v", err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("session symlink not removed: err=%v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("target artifacts deleted through the symlink: %v", err)
+	}
+}
+
 // TestDisposeUnadoptedSubagentSession_RemovesArtifactsDir pins that a delegate
 // disposed before adoption takes its artifacts with it, via the existing
 // unadopted-child disposal path.

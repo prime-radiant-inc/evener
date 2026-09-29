@@ -52,13 +52,16 @@ func ensureDelegateArtifactsDir(stateDir, childSessionID string) (string, error)
 		return "", err
 	}
 	parent := filepath.Dir(dir)
-	// The layout dir is shared, not per-delegate; create it if a fixture left it
-	// out. Every per-delegate path below is then created with os.Mkdir, which is
-	// atomic and does not follow a symlink for the final component, instead of
-	// MkdirAll, which would follow a symlinked session dir and could place
-	// artifacts outside stateDir.
-	if err := os.MkdirAll(filepath.Dir(parent), 0o700); err != nil {
+	// stateDir is trusted layout; the shared sessions dir and every per-delegate
+	// path below are created with mkdirVerifiedDir (os.Mkdir is atomic and
+	// no-follow for the final component) after verifying any existing entry is a
+	// real directory, so a symlink planted at sessions/ or at the session dir is
+	// refused instead of followed.
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return "", fmt.Errorf("delegate artifacts dir: %w", err)
+	}
+	if _, err := mkdirVerifiedDir(filepath.Dir(parent)); err != nil {
+		return "", err
 	}
 	parentCreated, err := mkdirVerifiedDir(parent)
 	if err != nil {
@@ -111,12 +114,26 @@ func removeDelegateArtifacts(stateDir, childSessionID string) error {
 	if err != nil {
 		return err
 	}
+	// Verify the session dir is a real directory before recursing: a symlink
+	// planted there would make os.RemoveAll(dir) delete <target>/artifacts. When
+	// it is not a real directory, remove the entry itself (the link or file) and
+	// leave any target untouched.
+	parent := filepath.Dir(dir)
+	info, err := os.Lstat(parent)
+	switch {
+	case err != nil:
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("delegate artifacts dir: inspect %s: %w", parent, err)
+	case !info.IsDir():
+		_ = os.Remove(parent)
+		return nil
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
-	if sessionDir, err := delegateSessionDir(stateDir, childSessionID); err == nil {
-		_ = os.Remove(sessionDir)
-	}
+	_ = os.Remove(parent)
 	return nil
 }
 
