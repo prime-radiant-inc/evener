@@ -32,7 +32,7 @@ it("does not call an empty-journal reconciliation complete after another model s
 	expect(actions.getSnapshot()).toMatchObject({
 		uncertain: true,
 		recovery: other,
-		error: "Could not confirm current navigation for the previous change. Refresh before trying again.",
+		error: "Could not confirm current navigation for the previous change. Check it before trying again.",
 	});
 });
 it.each(["acknowledge", "finish"] as const)("keeps recovery when %s fails after acknowledgement", async (method) => {
@@ -543,7 +543,7 @@ describe("navigation organization actions", () => {
 			pending: false,
 			uncertain: true,
 			recovery: null,
-			error: "Could not load the current navigation. Refresh before trying again.",
+			error: "Could not load the current navigation. Check it before trying again.",
 		});
 	});
 
@@ -645,7 +645,7 @@ describe("navigation organization actions", () => {
 			pending: false,
 			uncertain: true,
 			recovery: null,
-			error: "Could not load the current navigation. Refresh before trying again.",
+			error: "Could not load the current navigation. Check it before trying again.",
 		});
 	});
 
@@ -668,7 +668,7 @@ describe("navigation organization actions", () => {
 		expect(actions.getSnapshot()).toMatchObject({
 			pending: false,
 			uncertain: true,
-			error: "Could not confirm current navigation for the previous change. Refresh before trying again.",
+			error: "Could not confirm current navigation for the previous change. Check it before trying again.",
 		});
 	});
 
@@ -694,7 +694,7 @@ describe("navigation organization actions", () => {
 			pending: false,
 			uncertain: true,
 			recovery: journal.load(),
-			error: "Could not confirm current navigation for the previous change. Refresh before trying again.",
+			error: "Could not confirm current navigation for the previous change. Check it before trying again.",
 		});
 	});
 });

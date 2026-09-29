@@ -124,6 +124,12 @@ type LocalDaemonEntry struct {
 	// so a controller hub shows a remote session's task line. nil means the
 	// daemon cannot read its task state; a read-only alias has none.
 	Tasks *appwire.TaskAggregate
+	// CurrentModel mirrors hubcore.LiveEntry.CurrentModel: the model the root
+	// runs now (S17). threadFromEntry puts it in appwire.Thread.ModelProvider
+	// ahead of the embedded Entry's Model, the one the root started on, so a
+	// controller hub names a remote session's model after a switch. A
+	// read-only alias has none.
+	CurrentModel string
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -1178,7 +1184,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		ID:            threadID,
 		SessionID:     entry.SessionID,
 		Preview:       entry.SessionID,
-		ModelProvider: firstLocalNonEmpty(entry.Model, entry.Provider),
+		ModelProvider: firstLocalNonEmpty(item.CurrentModel, entry.Model, entry.Provider),
 		CreatedAt:     startedAt,
 		UpdatedAt:     startedAt,
 		CWD:           entry.WorkingDir,

@@ -230,6 +230,15 @@ const (
 	// before the clearing write, and the attestation recorded on the original
 	// receipt beside `remnantResolvedAt`. See HostTeardownRecoverParams.
 	MethodEvenerHostTeardownRecover = "evener/host/teardown-recover"
+	// MethodEvenerHostOrphanResolve clears one `orphan-unverified` record
+	// (crash-fencing spec 08c §5/§9): the authenticated operator's resolve of a
+	// local-reap or fencing-quarantine record, on a clean persisted boundary —
+	// or, for a `boundary-unavailable` custody record, on the operator
+	// attestation. It transitions the record to `interrupted` with the
+	// `orphanResolved` marker and clears the quarantine marker in the same
+	// atomic store write, and it is the orphan admission fence's way out. See
+	// HostOrphanResolveParams.
+	MethodEvenerHostOrphanResolve = "evener/host/orphan-resolve"
 	// MethodEvenerHostRunning serves one hub's own running build and health to
 	// the controller probing it (deploy pipeline 08b §6 step 2, §10). It is
 	// served locally by every hub and admitted only over an attached controller
@@ -5037,23 +5046,30 @@ type OperationResult struct {
 // `compacted: true` is present exactly on a replay the operation store
 // answered from a dedup tombstone — the terminal record itself was compacted
 // (§4) — and absent on every retained record.
-// The fencing-epoch and orphan-boundary details a later slice's wire carries
-// (the crash-fencing spec's shapes) stay off this shape until that slice
-// registers its filters.
+// `orphanBoundary` is the crash-fencing spec's §9 per-member `BoundaryEntry[]`
+// union, present exactly on a record whose state is `orphan-unverified`
+// (including an explicit `[]` — verified empty — which is never omitted) and
+// absent on every other state; `orphanResolved` is §5's resolution marker,
+// present exactly on a record resolved through `evener/host/orphan-resolve`;
+// and `attestation` is the operator attestation that resolve persisted, beside
+// the marker.
 type OperationRecord struct {
-	ID                string                   `json:"id"`
-	ClientOperationID string                   `json:"clientOperationId"`
-	Host              string                   `json:"host"`
-	Generation        uint64                   `json:"generation"`
-	IncarnationID     string                   `json:"incarnationId"`
-	Kind              string                   `json:"kind"`
-	State             OperationState           `json:"state"`
-	Progress          []OperationProgressEntry `json:"progress,omitempty"`
-	Result            *OperationResult         `json:"result,omitempty"`
-	CreatedAt         string                   `json:"createdAt"`
-	UpdatedAt         string                   `json:"updatedAt"`
-	HostRemoved       bool                     `json:"hostRemoved"`
-	Compacted         bool                     `json:"compacted,omitempty"`
+	ID                string                        `json:"id"`
+	ClientOperationID string                        `json:"clientOperationId"`
+	Host              string                        `json:"host"`
+	Generation        uint64                        `json:"generation"`
+	IncarnationID     string                        `json:"incarnationId"`
+	Kind              string                        `json:"kind"`
+	State             OperationState                `json:"state"`
+	OrphanBoundary    *[]BoundaryEntry              `json:"orphanBoundary,omitempty"`
+	OrphanResolved    bool                          `json:"orphanResolved,omitempty"`
+	Attestation       *HostOrphanResolveAttestation `json:"attestation,omitempty"`
+	Progress          []OperationProgressEntry      `json:"progress,omitempty"`
+	Result            *OperationResult              `json:"result,omitempty"`
+	CreatedAt         string                        `json:"createdAt"`
+	UpdatedAt         string                        `json:"updatedAt"`
+	HostRemoved       bool                          `json:"hostRemoved"`
+	Compacted         bool                          `json:"compacted,omitempty"`
 }
 
 // HostRunningParams is the evener/host/running payload (deploy pipeline 08b

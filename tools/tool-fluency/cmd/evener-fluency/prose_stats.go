@@ -251,16 +251,21 @@ func summarizeProse(dirs []labeledDir) ([]proseStats, error) {
 				taskFailed[k] = map[string]bool{}
 			}
 			row.Runs++
+			// A run whose status is not passed or failed (skipped_unavailable,
+			// blocked_harness, blocked_infra) says nothing about the prompt and
+			// may have no state dir worth reading at all; mirror
+			// writeReviewPack's own skip: count it as Blocked and read nothing
+			// from it, so its prose (if its state dir happens to hold any) never
+			// reaches messages, words, medians, per-1k rates, or PROSE ERRORS.
+			if res.Status != "passed" && res.Status != "failed" {
+				row.Blocked++
+				continue
+			}
 			passed := res.Status == "passed"
-			decided := passed || res.Status == "failed"
 			if passed {
 				row.Passed++
-			} else if !decided {
-				row.Blocked++
 			}
-			if decided {
-				taskFailed[k][res.Probe] = taskFailed[k][res.Probe] || !passed
-			}
+			taskFailed[k][res.Probe] = taskFailed[k][res.Probe] || !passed
 			p, err := extractRunProse(res.StateDir)
 			if err != nil {
 				row.ProseErrors++
@@ -322,9 +327,12 @@ func renderProseTable(w io.Writer, stats []proseStats, channel string) error {
 		if channel == "all" {
 			c = s.All
 		}
+		// A blocked run produced no message at all and says nothing about
+		// the prompt, so it must not dilute this rate: divide by decided
+		// runs (Runs - Blocked), not every attempt.
 		msgsPerRun := 0.0
-		if s.Runs > 0 {
-			msgsPerRun = float64(s.Messages) / float64(s.Runs)
+		if decided := s.Runs - s.Blocked; decided > 0 {
+			msgsPerRun = float64(s.Messages) / float64(decided)
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%d/%d\t%.1f\t%d\t%d\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%d\n",
 			s.Label, s.Model, s.Runs, s.Passed, s.Blocked, s.TasksAllPassed, s.Tasks, msgsPerRun, s.MedianMessageWords, c.Words,

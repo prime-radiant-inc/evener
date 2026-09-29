@@ -212,6 +212,29 @@ const (
 	// class, with the unknown id in the data. A cleared remnant whose resolved
 	// record still survives is NOT this arm: it returns `already-cleared`.
 	ErrorTeardownUnknownKey ErrorInfo = "teardown-unknown-key"
+	// ErrorFencingFailure marks crash-fencing spec 08c §8's quarantine refusal:
+	// a host with an open fencing-quarantine marker admits no new lifecycle or
+	// mutation call past admission until the operator resolves the
+	// `orphan-unverified` record through `evener/host/orphan-resolve`. Conflict
+	// class, with the quarantined host in the data. It is also the class a
+	// fencing kill/wait timeout's outcome reports.
+	ErrorFencingFailure ErrorInfo = "fencing-failure"
+	// ErrorFencingHelperAbsent marks §8's helper gate: the pinned fencing helper
+	// is absent, the remote cannot run it, or the bootstrap-guard claim was lost
+	// or unverifiable. Conflict class, with the host and the helper version the
+	// operator must install out-of-band in the data. Never `probe-failed`, so a
+	// client never mistakes the gate for a retryable probe failure.
+	ErrorFencingHelperAbsent ErrorInfo = "fencing-helper-absent"
+	// ErrorFencingHelperUntrusted marks §8's helper gate for an older,
+	// incompatible, or explicitly untrusted helper: the same data shape as the
+	// absent arm, naming the distrusted version in place of the absent one.
+	ErrorFencingHelperUntrusted ErrorInfo = "fencing-helper-untrusted"
+	// ErrorOrphanFencedBusy marks §8's distinct discriminator on
+	// `teardown-retry`/`teardown-recover` while an `orphan-unverified` record is
+	// open for the host: the refusal names the blocking record id plus the
+	// `orphan-resolve` next step, never `host-busy-transient`, because a bare
+	// retry of the repair call is silently refused by the fence. Conflict class.
+	ErrorOrphanFencedBusy ErrorInfo = "orphan-fenced-busy"
 	// ErrorConcurrentEdit marks a hub.toml commit whose final fingerprint check
 	// found the file moved between the validation read and the check, after
 	// bounded retries (registry spec 08 §6/§11): no window's edit is erased and

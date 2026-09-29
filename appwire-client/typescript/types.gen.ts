@@ -323,6 +323,58 @@ export interface AuthTestResponse {
   message: string;
 }
 
+export interface BoundaryEntryLocalDarwin {
+  kind: string;
+  pgid: number;
+  sessionId: number;
+  pid: number;
+  startTime: string;
+  nonce: string;
+}
+
+export interface BoundaryEntryLocalLinux {
+  kind: string;
+  cgroupId: string;
+  nonce: string;
+  pid: number;
+  startTime: string;
+}
+
+export interface BoundaryEntryLocalMarkerless {
+  kind: string;
+  platform: string;
+  cgroupId?: string;
+  pgid?: number;
+  sessionId?: number;
+  nonce: string;
+}
+
+export interface BoundaryEntryRemoteFencing {
+  kind: string;
+  fencingEpoch: FencingEpoch;
+  guardEpoch: number;
+  leaseEntries: BoundaryLeaseEntry[];
+}
+
+export interface BoundaryEntryUnavailable {
+  kind: string;
+  reason: string;
+  custodyRef: string;
+}
+
+export interface BoundaryLeaseEntry {
+  command: string;
+  registeredAt: string;
+  ownership: BoundaryLeaseOwnership;
+}
+
+export interface BoundaryLeaseOwnership {
+  pid?: number;
+  pidStartTime?: string;
+  nonce?: string;
+  cgroupId?: string;
+}
+
 export interface Capabilities {
   experimentalApi: boolean;
   optOutNotificationMethods?: string[];
@@ -1195,6 +1247,19 @@ export interface HostOperationsResponse {
   incarnationId?: string;
   hostBoundaries?: Record<string, unknown>;
   nextCursor?: string;
+}
+
+export interface HostOrphanResolveAttestation {
+  operator: string;
+  statement: string;
+  recordId: string;
+  boundaryRef?: string;
+  observedAt: string;
+}
+
+export interface HostOrphanResolveParams {
+  id: string;
+  attestation?: HostOrphanResolveAttestation;
 }
 
 export interface HostPlan {
@@ -2428,6 +2493,14 @@ export interface NavigationSessionSummary {
    * none.
    */
   last_message?: string;
+  /**
+   * ModelName is the display name of the model the session runs (S17), for
+   * the row's last line when a client shows models on rows: the name the
+   * hub's model/list gives the same model, so a row and the model picker
+   * agree. A live session's is its current model, which follows a switch;
+   * an ended one's is its meta's; subagent rows carry none.
+   */
+  model_name?: string;
   dormant?: boolean;
   /**
    * Offline marks a row folded into the merged list from a source that is
@@ -2608,6 +2681,9 @@ export interface OperationRecord {
   incarnationId: string;
   kind: string;
   state: string;
+  orphanBoundary?: (BoundaryEntryLocalLinux | BoundaryEntryLocalDarwin | BoundaryEntryLocalMarkerless | BoundaryEntryRemoteFencing | BoundaryEntryUnavailable)[];
+  orphanResolved?: boolean;
+  attestation?: HostOrphanResolveAttestation;
   progress?: OperationProgressEntry[];
   result?: OperationResult;
   createdAt: string;
@@ -4388,6 +4464,7 @@ export const METHOD_NAMES = [
   "evener/host/update",
   "evener/host/teardown-retry",
   "evener/host/teardown-recover",
+  "evener/host/orphan-resolve",
   "evener/host/plan",
   "evener/host/deploy",
   "evener/host/restart",
@@ -4612,6 +4689,7 @@ export interface MethodTypes {
   "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
   "evener/host/teardown-retry": { params: HostTeardownRetryParams; result: HostTeardownRetryCompleteLive | HostTeardownRetryCompleteRemoved | HostTeardownRetryClearedLive | HostTeardownRetryClearedRemoved | HostTeardownRetryFailedLive | HostTeardownRetryFailedRemoved };
   "evener/host/teardown-recover": { params: HostTeardownRecoverParams; result: HostTeardownRecoverResult };
+  "evener/host/orphan-resolve": { params: HostOrphanResolveParams; result: OperationRecord };
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
   "evener/host/deploy": { params: HostDeployParams; result: HostDeployResponse };
   "evener/host/restart": { params: HostRestartParams; result: HostRestartResponse };

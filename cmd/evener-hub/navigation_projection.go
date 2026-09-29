@@ -1808,6 +1808,18 @@ func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hub
 	return summary, true
 }
 
+// navigationModelName is the name a row shows for a session's model (S17):
+// the name model/list gives a model the registry leaves unnamed
+// (withDisplayNames), so a row and the model picker agree. An unknown model
+// names nothing.
+func navigationModelName(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	return truncateNavigationRunes(prettifyModelDisplayName(model), maxNavigationLabelRunes)
+}
+
 func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.NavigationSessionSummary {
 	ref, _ := navigationNodeRef(node)
 	pinned := p.projection.pinSectionIDFor(ref) != ""
@@ -1838,6 +1850,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Question:            navigationQuestion(node.Question),
 		Failure:             navigationFailure(node.Failure),
 		LastMessage:         appwire.Excerpt(node.LastMessage, appwire.MaxMessageExcerptRunes),
+		ModelName:           navigationModelName(node.Model),
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           optionalTime(node.UpdatedAt),

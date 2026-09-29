@@ -254,6 +254,14 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 		return record, nil
 	}
 
+	// §8's admission fence, after the dedup replay and before any token decision
+	// or gate: a quarantined host refuses with the fencing-failure form, and a
+	// host holding an open orphan-unverified record refuses transient busy —
+	// neither admits new lifecycle or mutation work past admission.
+	if err := m.orphanAdmissionRefusal(entry.Name); err != nil {
+		return hostops.Record{}, err
+	}
+
 	// (2) The provisional token check (deploy) is a fail-fast readability check
 	// only: nothing is decided here, and a concurrent plan can supersede the
 	// value before the gate is acquired. Then the remnant fence: a fenced name
@@ -1289,6 +1297,11 @@ func (m *hubHostManager) recordProgress(id, message string) {
 // fencing §3). A nil hook (no operation store wired) refuses, never running the
 // deploy unrecorded.
 func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
+	// §8's fence, before the record is minted: an Ensure-triggered deploy for a
+	// quarantined or orphan-unverified name must never reach a remote step.
+	if err := m.orphanAdmissionRefusal(host.Name); err != nil {
+		return nil, nil, err
+	}
 	ops := m.cfg.ops
 	if ops == nil {
 		return nil, nil, errors.New("the host operation store is not configured, so an Ensure-triggered deploy cannot be recorded; nothing was launched")
@@ -1333,6 +1346,10 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, f
 // operation store wired) leaves the attempt unrecorded and unarmed, which
 // production never does.
 func (m *hubHostManager) EnsureRestart(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
+	// §8's fence, the EnsureDeploy twin: no restart attempt for a fenced name.
+	if err := m.orphanAdmissionRefusal(host.Name); err != nil {
+		return nil, nil, err
+	}
 	ops := m.cfg.ops
 	if ops == nil {
 		return nil, nil, errors.New("the host operation store is not configured, so a restart-only Ensure attempt cannot be recorded; nothing was launched")

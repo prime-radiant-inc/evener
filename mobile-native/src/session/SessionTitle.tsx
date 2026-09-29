@@ -3,10 +3,10 @@
 // moves to the next or previous session in Live order (spec 6).
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useRef } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { markFor } from "../board/StateMark";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { SessionStateLine } from "./sessionState";
 import { titleSwipeDirection } from "./titleSwipe";
 
@@ -77,7 +77,7 @@ export function SessionTitle({
 				})}
 			>
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					numberOfLines={1}
 					ellipsizeMode="tail"
 					style={{ color: palette.inkHi, fontSize: 15 * scale, fontWeight: "600" }}
@@ -91,7 +91,7 @@ export function SessionTitle({
 						<SymbolView name={mark.name} tintColor={palette[mark.tint]} size={12 * scale} />
 					) : null}
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						numberOfLines={1}
 						style={{
 							color: palette.inkMid,

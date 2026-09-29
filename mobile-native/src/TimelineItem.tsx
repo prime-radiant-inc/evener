@@ -1,6 +1,6 @@
 import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
-import { Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { copyText } from "./clipboard";
 import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longPressMenu";
@@ -20,7 +20,7 @@ import { askRowQuestions, timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, steeringNoticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
-import { Action, Copy, styles, useColors, useTextScale } from "./ui";
+import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
 
 export function TimelineItem({
 	item,
@@ -137,7 +137,7 @@ export function TimelineItem({
 			if (quietThought) {
 				content = (
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={{ fontSize: 14 * textScale, lineHeight: 19 * textScale, color: colors.palette.inkLow }}
 					>
 						{item.title}
@@ -293,7 +293,7 @@ function YourMessage({
 			</Pressable>
 			{item.origin === "steered" ? (
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					style={{ fontSize: 12 * scale, lineHeight: 16 * scale, color: palette.inkLow }}
 				>
 					Steered in mid-turn
@@ -314,7 +314,7 @@ function NoteRow({ text }: { text: string }) {
 			style={{ borderLeftWidth: 2, borderLeftColor: palette.edgeStrong, paddingLeft: 12, paddingVertical: 4, gap: 4 }}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
 			>
 				{text ? "You updated your note" : "You cleared your note"}
@@ -384,7 +384,7 @@ function TimeMarker({ at }: { at: number }) {
 	const now = useMinuteClock();
 	return (
 		<Text
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			style={{
 				paddingTop: 16,
 				fontSize: 12 * scale,

@@ -1130,12 +1130,26 @@ export type BoundText = (text: string) => string;
 // (mobile-native/src/transcriptPresentation.ts's actionSummary), so it is read
 // as much as the output is.
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
+	const description = detail.description ? bound(detail.description) : detail.description;
+	const args = detail.arguments ? bound(detail.arguments) : detail.arguments;
+	const output = detail.output ? bound(detail.output) : detail.output;
+	const error = detail.error ? bound(detail.error) : detail.error;
+	// Nothing was cut: hand back the source detail so a settled row keeps its
+	// identity across publishes (see truncateItem).
+	if (
+		description === detail.description &&
+		args === detail.arguments &&
+		output === detail.output &&
+		error === detail.error
+	) {
+		return detail;
+	}
 	return {
 		...detail,
-		description: detail.description ? bound(detail.description) : detail.description,
-		arguments: detail.arguments ? bound(detail.arguments) : detail.arguments,
-		output: detail.output ? bound(detail.output) : detail.output,
-		error: detail.error ? bound(detail.error) : detail.error,
+		description,
+		arguments: args,
+		output,
+		error,
 	};
 }
 
@@ -1150,17 +1164,33 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 // agent offered, never a cut remnant, and two options sharing a prefix
 // longer than the bound stay distinguishable to the answer composer.
 export function boundQuestion(question: AskQuestionRef, bound: BoundText): AskQuestionRef {
+	const header = bound(question.header);
+	const text = bound(question.question);
+	const why = question.why === undefined ? undefined : bound(question.why);
+	const ifUnanswered = question.ifUnanswered === undefined ? undefined : bound(question.ifUnanswered);
+	const options = question.options.map((option) => {
+		const label = bound(option.label);
+		const detail = bound(option.detail);
+		return label === option.label && detail === option.detail ? option : { ...option, label, detail };
+	});
+	// Nothing was cut: hand back the source question so a settled row keeps its
+	// identity across publishes (see truncateItem).
+	if (
+		header === question.header &&
+		text === question.question &&
+		why === question.why &&
+		ifUnanswered === question.ifUnanswered &&
+		options.every((option, index) => option === question.options[index])
+	) {
+		return question;
+	}
 	return {
 		...question,
-		header: bound(question.header),
-		question: bound(question.question),
-		...(question.why === undefined ? {} : { why: bound(question.why) }),
-		...(question.ifUnanswered === undefined ? {} : { ifUnanswered: bound(question.ifUnanswered) }),
-		options: question.options.map((option) => ({
-			...option,
-			label: bound(option.label),
-			detail: bound(option.detail),
-		})),
+		header,
+		question: text,
+		...(why === undefined ? {} : { why }),
+		...(ifUnanswered === undefined ? {} : { ifUnanswered }),
+		options,
 	};
 }
 
@@ -1169,52 +1199,72 @@ export function boundQuestion(question: AskQuestionRef, bound: BoundText): AskQu
 // own detail is bounded too — not just the cluster's top-level detail (the first
 // member's). A pasted user message, a daemon notice and a tool failure's stack
 // are as large as anything that streams, so each kind that carries prose is here.
+// When the bound cuts nothing (the common case: every settled row is already
+// under the limit, and the store's caching bound returns its input unchanged),
+// the row is returned by reference. capAndTruncate runs on every publish, so
+// cloning here would discard the row identity the per-turn cache
+// (rowsForProjectedTurn) hands an untouched turn's rows, allocating a fresh
+// row per retained row per frame while streaming.
 export function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelineItem {
 	switch (item.kind) {
 		case "user":
 		case "note":
-			return { ...item, text: bound(item.text) };
-		case "assistant":
-			return { ...item, markdown: bound(item.markdown) };
-		case "notice":
-			return { ...item, text: bound(item.text) };
-		case "failure":
-			return { ...item, title: bound(item.title), detail: bound(item.detail) };
-		case "question":
-			return {
-				...item,
-				questions: item.questions.map((question) => boundQuestion(question, bound)),
-			};
-		case "activity":
+		case "notice": {
+			const text = bound(item.text);
+			return text === item.text ? item : { ...item, text };
+		}
+		case "assistant": {
+			const markdown = bound(item.markdown);
+			return markdown === item.markdown ? item : { ...item, markdown };
+		}
+		case "failure": {
+			const title = bound(item.title);
+			const detail = bound(item.detail);
+			return title === item.title && detail === item.detail ? item : { ...item, title, detail };
+		}
+		case "question": {
+			const questions = item.questions.map((question) => boundQuestion(question, bound));
+			return questions.every((question, index) => question === item.questions[index]) ? item : { ...item, questions };
+		}
+		case "activity": {
 			// The label is rendered twice on the phone — the disclosure line and its
 			// accessibility label (mobile-native/src/TimelineItem.tsx) — so it is
 			// bounded like the detail it heads, for the row and for every member.
+			const label = bound(item.label);
+			const detail = truncateActivityDetail(item.detail, bound);
+			const sourceMembers = item.members;
+			const members = sourceMembers?.map((member) => {
+				const memberLabel = bound(member.label);
+				const memberDetail = truncateActivityDetail(member.detail, bound);
+				return memberLabel === member.label && memberDetail === member.detail
+					? member
+					: { ...member, label: memberLabel, detail: memberDetail };
+			});
+			if (
+				label === item.label &&
+				detail === item.detail &&
+				(members === undefined || members.every((member, index) => member === sourceMembers?.[index]))
+			) {
+				return item;
+			}
 			return {
 				...item,
-				label: bound(item.label),
-				detail: truncateActivityDetail(item.detail, bound),
-				...(item.members
-					? {
-							members: item.members.map((member) => ({
-								...member,
-								label: bound(member.label),
-								detail: truncateActivityDetail(member.detail, bound),
-							})),
-						}
-					: {}),
+				label,
+				detail,
+				...(members ? { members } : {}),
 			};
-		case "attachments":
+		}
+		case "attachments": {
 			// Only the display name is bounded — it is plain display text the
 			// renderer inserts into accessibility labels and modal copy. src is a
 			// data URI or a resolved fetch URL, and cutting it yields something the
 			// renderer cannot decode, so it passes through verbatim.
-			return {
-				...item,
-				items: item.items.map((attachment) => ({
-					...attachment,
-					name: attachment.name ? bound(attachment.name) : attachment.name,
-				})),
-			};
+			const items = item.items.map((attachment) => {
+				const name = attachment.name ? bound(attachment.name) : attachment.name;
+				return name === attachment.name ? attachment : { ...attachment, name };
+			});
+			return items.every((attachment, index) => attachment === item.items[index]) ? item : { ...item, items };
+		}
 		default:
 			// A forward-compatible row kind: nothing here knows its fields, so it
 			// passes through untouched rather than guessed at.

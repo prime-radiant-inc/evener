@@ -914,7 +914,10 @@ do_advance() {
 pid_start_time() { # <pid>
 	pid=$1
 	if [ -r "/proc/$pid/stat" ]; then
-		start=$(awk '{ sub(/^[^)]*\) /, ""); print $20 }' "/proc/$pid/stat" 2>/dev/null || true)
+		# comm is written raw inside the parentheses and may itself contain ')'
+		# and spaces (prctl(PR_SET_NAME)), so strip through the LAST ')', which
+		# is comm's closing paren: a first-')' strip would misread the fields.
+		start=$(awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$pid/stat" 2>/dev/null || true)
 		case $start in
 		'' | *[!0-9]*) ;;
 		*)
@@ -971,6 +974,14 @@ process_uid() { # <pid>
 # (the kernel shows "(sd-pam)" as "((sd-pam))").
 process_state() { # <pid>
 	awk '{ sub(/.*\) /, ""); print $1 }' "/proc/$1/stat" 2>/dev/null || true
+}
+
+# pid_state_and_token prints pid's state letter and its kernel start token from
+# ONE /proc/<pid>/stat read, so a pid reused between two reads can never pair
+# one process's state with another's token. Prints nothing when the line cannot
+# be read.
+pid_state_and_token() { # <pid>
+	awk '{ sub(/.*\) /, ""); print $1, $20 }' "/proc/$1/stat" 2>/dev/null || true
 }
 
 # registered_epoch converts the entry's RFC3339 registration time to epoch
@@ -1300,6 +1311,19 @@ do_recheck() { # <id>
 			descendant_pid=${descendant%%:*}
 			descendant_start=${descendant#*:}
 			process_present "$descendant_pid" || continue
+			# A recorded descendant that is the recorded instance and a proven
+			# zombie -- the recorded start token still names the pid and the
+			# state is Z, both fields from ONE /proc read -- can run nothing, so
+			# it is not surviving work: skip it rather than let an unreadable
+			# zombie environment keep the entry live.
+			if [ "$descendant_start" != unknown ]; then
+				parsed=$(pid_state_and_token "$descendant_pid")
+				zstate=${parsed%% *}
+				ztoken=${parsed#* }
+				if [ "$zstate" = Z ] && [ -n "$ztoken" ] && [ "$ztoken" = "$descendant_start" ]; then
+					continue
+				fi
+			fi
 			if [ "$descendant_start" = unknown ]; then
 				# No start token was recorded: the identity cannot be disproven.
 				live=true

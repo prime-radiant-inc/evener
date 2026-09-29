@@ -26,6 +26,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import {
 	alertRequests,
+	playedHaptics,
 	render,
 	renderedText,
 	screenConnection,
@@ -577,7 +578,10 @@ function pressLabel(tree: ReactTestRenderer, label: string) {
 }
 function pressChip(tree: ReactTestRenderer, label: string) {
 	const chip = tree.root.find((node) => node.props.testID === "chip" && node.props.accessibilityLabel === label);
+	playedHaptics.length = 0;
 	act(() => chip.props.onPress());
+	// Spec 16.6: a selection tick on a chip.
+	expect(playedHaptics).toEqual(["selection"]);
 }
 const chipLabels = (tree: ReactTestRenderer) =>
 	tree.root
@@ -608,7 +612,10 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 			node.type === ("Pressable" as never) &&
 			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "2 idle").length > 0,
 	);
+	playedHaptics.length = 0;
 	act(() => idleCount.props.onPress());
+	// Spec 16.6: a selection tick on a summary count.
+	expect(playedHaptics).toEqual(["selection"]);
 	// The unfold applies when the scroll to Idle ends, as any change does.
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	listEvent(tree, "onMomentumScrollEnd");
@@ -3615,7 +3622,10 @@ it("asks before shutting a session down from the menu, then says it shut down", 
 		["Cancel", "cancel"],
 		["Shut down", "destructive"],
 	]);
+	playedHaptics.length = 0;
 	act(() => ask?.buttons?.[1]?.onPress?.());
+	// Spec 16.6: rigid on a destructive confirmation.
+	expect(playedHaptics).toEqual(["impact:rigid"]);
 	await settle();
 	expect(fake.mutations).toEqual([{ method: "thread/shutdown", params: { ref: `local:${SESSION_ID}` } }]);
 	expect(texts(tree)).toContain("Session shut down");
@@ -4372,4 +4382,85 @@ it("keeps only Mark as read in the select bar while offline", async () => {
 		true,
 		false,
 	]);
+});
+
+// The Board's Continue reading row (spec 7.1, ruling 20).
+/** A document left partway through, the trail DocumentMemory keeps for
+ * the Board, written straight to its kv-store key with the time it was left. */
+function leaveDocument(id: string, leftMinutesAgo: number) {
+	harness.kv.set(
+		`evener.native.continue-reading.${id}`,
+		JSON.stringify({
+			sessionRef: "local:fix",
+			path: "docs/superpowers/plans/settle-race.md",
+			title: "Fix the settle/drain race",
+			reviewRef: "local:fix",
+			reviewTitle: "Fix race",
+			progress: 0.62,
+			leftAt: Date.now() - leftMinutesAgo * 60_000,
+		}),
+	);
+}
+
+it("offers to continue a document you left in the last two hours, under the notices", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	leaveDocument(id, 90);
+	// A notice above the Board (Update needed) shows where the row sits.
+	connect(id, hub(fleet).client, "ready", { fatal: true });
+	const nav = { ...navigation(), push: vi.fn() };
+	const tree = await mount(nav);
+	const row = tree.root.findAll(
+		(node) => node.props.accessibilityLabel === "Continue reading, 62 percent, Fix the settle/drain race",
+	)[0];
+	if (!row) throw new Error("no Continue reading row");
+	const notice = tree.root.findAll((node) => node.props.testID === "notice")[0];
+	const live = tree.root.find((node) => node.props.testID === "live-block");
+	if (!notice) throw new Error("no notice");
+	expect(tree.root.findAll((node) => node === notice || node === row || node === live)).toEqual([notice, row, live]);
+	act(() => row.props.onPress());
+	expect(nav.push.mock.calls).toEqual([
+		["Conversation", { hubId: id, ref: "local:fix", title: "Fix race" }],
+		[
+			"Reader",
+			{
+				hubId: id,
+				sessionRef: "local:fix",
+				path: "docs/superpowers/plans/settle-race.md",
+				reviewRef: "local:fix",
+				reviewTitle: "Fix race",
+			},
+		],
+	]);
+});
+
+it("offers nothing for a document left two hours ago, or with none left", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	leaveDocument(id, 120);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(renderedText(tree)).not.toContain("Continue reading");
+	const other = hubId();
+	adoptedAnHourAgo(other);
+	connect(other, hub(fleet).client, "ready");
+	expect(renderedText(await mount(navigation()))).not.toContain("Continue reading");
+});
+
+it("drops the Continue reading row when its two hours run out, even on an idle Board", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+	try {
+		const id = hubId();
+		adoptedAnHourAgo(id);
+		leaveDocument(id, 119);
+		connect(id, hub(fleet).client, "ready");
+		const tree = await mount(navigation());
+		expect(renderedText(tree)).toContain("Continue reading");
+		await act(async () => {
+			vi.advanceTimersByTime(61_000);
+		});
+		expect(renderedText(tree)).not.toContain("Continue reading");
+	} finally {
+		vi.useRealTimers();
+	}
 });
