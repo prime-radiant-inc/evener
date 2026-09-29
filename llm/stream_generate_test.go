@@ -993,7 +993,12 @@ func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamGenerate: %v", err)
 	}
-	t.Cleanup(func() { _ = res.Close() })
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = res.Close()
+		}
+	})
 
 	ch := res.TextStream() // the consumer abandons it: it never reads.
 
@@ -1015,6 +1020,7 @@ func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
 	if cerr := res.Close(); cerr != nil {
 		t.Fatalf("Close: %v", cerr)
 	}
+	closed = true
 
 	drained := make(chan int, 1)
 	go func() {
@@ -1044,25 +1050,29 @@ func TestStreamResult_TextStream_ClosePriority(t *testing.T) {
 	// many independent instances: with the check every one forwards nothing,
 	// without it at least one reliably forwards a delta.
 	for i := range 200 {
-		stream := NewChanStream(nil)
-		res := &StreamResult{stream: stream, done: make(chan struct{})}
+		// White-box setup: close the stream's shutdown signal directly so that
+		// Events() stays open (the forwarder has work) while the TextStream
+		// buffer is empty (a plain send would succeed). CloseSend releases the
+		// constructed stream's channels when the iteration ends.
+		func() {
+			stream := NewChanStream(nil)
+			defer stream.CloseSend()
+			res := &StreamResult{stream: stream, done: make(chan struct{})}
 
-		// Queue text deltas with the stream open, then close its shutdown
-		// signal directly: Events() stays open (the forwarder has work) while
-		// the TextStream buffer is empty (a plain send would succeed).
-		stream.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "x"})
-		stream.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "y"})
-		close(stream.closing)
+			stream.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "x"})
+			stream.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "y"})
+			close(stream.closing)
 
-		ch := res.TextStream()
-		select {
-		case delta, ok := <-ch:
-			if ok {
-				t.Fatalf("iteration %d: forwarded %q after the stream was closed, want none", i, delta)
+			ch := res.TextStream()
+			select {
+			case delta, ok := <-ch:
+				if ok {
+					t.Fatalf("iteration %d: forwarded %q after the stream was closed, want none", i, delta)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("iteration %d: TextStream did not close after the stream was closed", i)
 			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("iteration %d: TextStream did not close after the stream was closed", i)
-		}
+		}()
 	}
 }
 

@@ -38,14 +38,20 @@ func (r *StreamResult) Close() error { return r.stream.Close() }
 // consumer that abandons the channel (stops reading) does not leave the forwarder
 // parked on its downstream send once the 16-entry buffer fills. Consumers must
 // therefore drain the channel or call Close.
+//
+// Shutdown is prompt but not atomic with the send: the forwarder stops at the
+// first delta it processes after Close, so at most the single delta already in
+// flight when Close lands can still be delivered. Serializing the send with Close
+// would deadlock when the buffer is full and the consumer has abandoned it.
 func (r *StreamResult) TextStream() <-chan string {
 	ch := make(chan string, 16)
 	go func() {
 		defer close(ch)
 		for ev := range r.stream.Events() {
 			if ev.Type == StreamEventTextDelta {
-				// A closed stream must never forward another delta, even when
-				// the buffer has room: prefer shutdown over the pending send.
+				// If the stream was already closed before this delta was
+				// processed, stop now instead of forwarding it. (A Close racing
+				// with the send below may still let this one delta through.)
 				select {
 				case <-r.stream.closing:
 					return
