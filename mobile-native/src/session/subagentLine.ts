@@ -94,3 +94,14 @@ export function subagentLine(
 	}
 	return line;
 }
+
+/** Whether a transcript shows a finished subagent's row: what the screen holds
+ * the coordinator's tree for (useTranscriptSubagentTree). */
+export function hasFinishedSubagentRow(
+	rows: readonly TimelineRow[],
+	delegates: readonly EvenerDelegateInfo[] | undefined,
+): boolean {
+	return rows.some(
+		(row) => row.kind === "activity" && row.label === "delegate" && subagentLine(row, delegates, 0).state === "done",
+	);
+}

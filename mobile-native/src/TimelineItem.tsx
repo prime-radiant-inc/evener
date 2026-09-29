@@ -1,5 +1,4 @@
-import type { EvenerDelegateInfo } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { ActivityTree, EvenerDelegateInfo } from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -18,11 +17,10 @@ import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
 import { SubagentRow } from "./session/SubagentRow";
 import { SystemEvent } from "./session/SystemEvent";
-import { type SubagentLine, subagentLine } from "./session/subagentLine";
+import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
 import { askRowQuestions, stepWords, timeMarkerText } from "./session/transcriptRows";
 import { subagentOutcome } from "./subagents/subagentModel";
-import { useHeldSubagentTree } from "./subagents/useHeldSubagentTree";
 import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
@@ -64,10 +62,9 @@ export function TimelineItem({
 	liveRunsOpen?: boolean;
 	/** The session's subagents, for a subagent row's state and activity. */
 	delegates?: readonly EvenerDelegateInfo[];
-	/** The subagent tree a finished subagent's row reads its outcome from:
-	 * this session's, or on a subagent's screen, its coordinator's, with the
-	 * client to read it through (null while this hub isn't connected). */
-	subagentTree?: SubagentTreeSource | null;
+	/** The coordinator's subagent tree, which a finished subagent's row
+	 * reads its outcome from; the screen holds it (useTranscriptSubagentTree). */
+	subagentTree?: ActivityTree | null;
 	/** Opens a subagent's own transcript. */
 	openSubagent?: (ref: string, title: string) => void;
 	/** Your answer to the question an ask_user row asked, when you gave one. */
@@ -208,7 +205,7 @@ export function TimelineItem({
 			}
 			if (item.label === "delegate") {
 				content = (
-					<Subagent row={item} hubId={hubId} delegates={delegates} source={subagentTree} openSubagent={openSubagent} />
+					<Subagent row={item} delegates={delegates} tree={subagentTree} openSubagent={openSubagent} />
 				);
 				break;
 			}
@@ -406,66 +403,26 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 	);
 }
 
-/** Whose subagent tree a transcript reads, and the client to read it through. */
-export interface SubagentTreeSource {
-	ref: string;
-	threadId: string;
-	client: ConversationClientLike | null;
-}
-
 function Subagent({
 	row,
-	hubId,
 	delegates,
-	source,
+	tree,
 	openSubagent,
 }: {
 	row: Extract<TimelineRow, { kind: "activity" }>;
-	hubId: string;
 	delegates: readonly EvenerDelegateInfo[] | undefined;
-	source: SubagentTreeSource | null | undefined;
+	tree: ActivityTree | null | undefined;
 	openSubagent: ((ref: string, title: string) => void) | undefined;
 }) {
 	// The state's time ("failed · 6m") moves on with the minute clock.
 	const now = useMinuteClock();
 	const line = subagentLine(row, delegates, now);
-	if (source && line.delegateId && line.state === "done")
-		return (
-			<FinishedSubagent
-				line={line}
-				delegateId={line.delegateId}
-				hubId={hubId}
-				source={source}
-				now={now}
-				openSubagent={openSubagent}
-			/>
-		);
-	return <SubagentRow line={line} onOpen={openSubagent} />;
-}
-
-/** A finished subagent's row, with its outcome as the Subagents list gives it
- * (spec 8.2). It holds the coordinator's shared tree, so only a transcript
- * with a finished subagent reads evener/jobs/list, and the list reads the
- * same one. Until the tree shows it done, the row says what the roster knows. */
-function FinishedSubagent({
-	line,
-	delegateId,
-	hubId,
-	source,
-	now,
-	openSubagent,
-}: {
-	line: SubagentLine;
-	delegateId: string;
-	hubId: string;
-	source: SubagentTreeSource;
-	now: number;
-	openSubagent: ((ref: string, title: string) => void) | undefined;
-}) {
-	const { snapshot } = useHeldSubagentTree(hubId, source.ref, source.threadId, source.client);
+	// A finished subagent's outcome, as the Subagents list gives it, once the
+	// tree shows it done; until then the line says what the roster knows.
+	const finished = line.state === "done" ? line.delegateId : undefined;
 	const outcome = useMemo(
-		() => (snapshot.tree ? subagentOutcome(snapshot.tree, delegateId, now) : undefined),
-		[snapshot.tree, delegateId, now],
+		() => (tree && finished ? subagentOutcome(tree, finished, now) : undefined),
+		[tree, finished, now],
 	);
 	return <SubagentRow line={outcome ? { ...line, activity: outcome } : line} onOpen={openSubagent} />;
 }

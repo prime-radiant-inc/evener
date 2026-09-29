@@ -1,4 +1,5 @@
 import { useConnection } from "../ConnectionProvider";
+import { liveClientFor } from "../liveClient";
 import type { SubagentTree, SubagentTreeSnapshot } from "./subagentTree";
 import { useHeldSubagentTree } from "./useHeldSubagentTree";
 
@@ -9,7 +10,5 @@ export function useSubagentTree(
 	ref: string,
 	threadId: string,
 ): { tree: SubagentTree; snapshot: SubagentTreeSnapshot } {
-	const { client, state, activeProfile } = useConnection();
-	const connected = state === "ready" && activeProfile?.id === hubId;
-	return useHeldSubagentTree(hubId, ref, threadId, connected ? client : null);
+	return useHeldSubagentTree(hubId, { ref, threadId }, liveClientFor(useConnection(), hubId));
 }

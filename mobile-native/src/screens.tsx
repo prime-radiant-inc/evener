@@ -172,13 +172,16 @@ import { useSessionRestart } from "./session/sessionRestart";
 import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
 import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
+import { hasFinishedSubagentRow } from "./session/subagentLine";
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
+import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
+import { useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -1245,11 +1248,18 @@ export function ConversationScreen({
 		() => subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null),
 		[subagentOf, threadId, route.params.ref, route.params.title],
 	);
-	// A finished subagent's row reads its outcome from the coordinator's tree.
-	const treeClient = connected ? client : null;
-	const subagentTree = useMemo(
-		() => (coordinator ? { ref: coordinator.ref, threadId: coordinator.threadId, client: treeClient } : null),
-		[coordinator, treeClient],
+	// A finished subagent's row reads its outcome from the coordinator's tree,
+	// which the screen holds while the transcript shows one.
+	const showsFinishedSubagent = hasFinishedSubagentRow(timelineRows, conversation?.delegates);
+	const subagentTreeTarget = useMemo(
+		() => (showsFinishedSubagent && coordinator ? { ref: coordinator.ref, threadId: coordinator.threadId } : null),
+		[showsFinishedSubagent, coordinator],
+	);
+	const subagentTree = useTranscriptSubagentTree(
+		route.params.hubId,
+		subagentTreeTarget,
+		liveClientFor({ client, state: connectionState, activeProfile }, route.params.hubId),
+		{ inFront: focused, receivesUpdates: !subagentOf },
 	);
 	// A subagent row opens the subagent's own session, under its coordinator.
 	const openSubagent = useCallback(

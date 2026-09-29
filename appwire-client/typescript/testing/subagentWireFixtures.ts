@@ -21,7 +21,9 @@ export function subagentCallItems(): ThreadItem[] {
 
 /** evener/jobs/list's recorded answer for a coordinator (ref "local:root",
  * thread "root") with three finished subagents: dlg_reported, dlg_stopped and
- * dlg_failed. */
+ * dlg_failed. Their child sessions aren't on disk, so each delegate carries a
+ * branch.error and the tree reads as partial; each outcome is on the
+ * delegate itself. */
 export function subagentOutcomesResponse(): JobsListResponse {
   return (JSON.parse(subagentOutcomes) as { response: JobsListResponse }).response;
 }
