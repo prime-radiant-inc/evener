@@ -374,8 +374,8 @@ function decisionFor(
   // check by type also makes warnings and steering independent of their prose.
   // One exception: an informational warning (a coded "no action needed"
   // notice - budget arithmetic, not a failure) is quiet detail, so it shows
-  // only where informationalNoticesVisible says so: the full preset, and a
-  // custom vector that shows reasoning.
+  // only where informationalNoticesVisible says so: the full preset, or a
+  // custom vector that matches full on every field.
   if (item.type === "warning") {
     if (isInformationalWarning(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
     return "critical";

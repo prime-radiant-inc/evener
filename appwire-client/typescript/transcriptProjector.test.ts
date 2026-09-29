@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./transcriptDisplayConfig";
 import { entryDisplayKey, projectThread } from "./transcriptProjector";
-import { WarningCodeContextBudget } from "./warnings";
+import { WarningCodeContextBudget, WarningCodeDelegateAttentionRestore } from "./warnings";
 
 const BASE_THREAD = {
   ref: "ref:test",
@@ -272,6 +272,23 @@ describe("transcript projector", () => {
     // systemMessage whose eventKind is "warning", its code on
     // raw.warning.code (internal/appoverlay/notices.go warningAnnouncement).
     // A coded one is the same informational notice as a warning item.
+    // The daemon retries a failed delegate-attention restore on its own and
+    // warns once per failure: detail for Full, never a Chat-level alarm.
+    test("a delegate-attention restore notice is hidden at every level but full", () => {
+      const model = threadWith(
+        item("restore", "systemMessage", {
+          eventKind: "warning",
+          description: "Evener error",
+          text: "restore delegate attention: delegate runtime is busy",
+          raw: { warning: { source: "evener", title: "Evener error", code: WarningCodeDelegateAttentionRestore } },
+        }),
+      );
+      for (const level of ["chat", "intent", "tools", "activity"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([]);
+      }
+      expect(entriesFor(model, preset("full"))).toEqual([expect.objectContaining({ kind: "critical", id: "restore" })]);
+    });
+
     test("a coded warning notice is hidden at every level but full, and an uncoded one shows at every level", () => {
       const notice = (id: string, code?: string) =>
         item(id, "systemMessage", {
