@@ -34,6 +34,11 @@ vi.mock("expo-web-browser", () => ({
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+// Shown once, as a page that stays in front.
+vi.mock("@react-navigation/native", async () => {
+	const { useEffect } = await import("react");
+	return { useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]) };
+});
 
 afterEach(() => {
 	vi.useRealTimers();

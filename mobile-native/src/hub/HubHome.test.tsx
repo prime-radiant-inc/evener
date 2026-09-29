@@ -197,6 +197,12 @@ it("counts providers with no tag when none needs signing in", async () => {
 	expect(find("Providers, 2")).not.toBeNull();
 });
 
+it("reads a count of none to VoiceOver as it shows it", async () => {
+	const providers = providersHub([], []);
+	const { find } = await mount({ providers });
+	expect(find("Providers, 0")).not.toBeNull();
+});
+
 it("tags hosts on another version when none is offline", async () => {
 	const fleet = scriptedFleet([
 		hostRow("paradise-park", { hubVersion: "0.9.409" }),

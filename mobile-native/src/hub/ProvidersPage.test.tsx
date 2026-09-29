@@ -53,6 +53,25 @@ vi.mock("expo-web-browser", () => ({
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+// The page's focus: each registered effect runs once, as on first showing,
+// and refocus() runs them again, as coming back to the page does.
+const focus = vi.hoisted(() => ({ effects: new Set<() => void>() }));
+vi.mock("@react-navigation/native", async () => {
+	const { useEffect } = await import("react");
+	return {
+		useFocusEffect: (effect: () => undefined | (() => void)) =>
+			useEffect(() => {
+				focus.effects.add(effect);
+				effect();
+				return () => {
+					focus.effects.delete(effect);
+				};
+			}, [effect]),
+	};
+});
+function refocus() {
+	for (const effect of [...focus.effects]) effect();
+}
 
 const rows: InstanceListResponse = {
 	instances: [
@@ -1002,6 +1021,29 @@ function mountPage(params: { focus?: string; signIn?: boolean } = {}) {
 const instance = (over: Partial<InstanceListResponse["instances"][number]>) => ({
 	...rows.instances[0]!,
 	...over,
+});
+
+it("reads the listing again on coming back to the page after a read failed, with nothing to press", async () => {
+	const fake = new FakeClient("ready");
+	let reads = 0;
+	fake.on("evener/instance/list", () => {
+		reads += 1;
+		if (reads === 1) throw new Error("hub busy");
+		return { instances: [instance({ authModes: ["apiKey"] })], availableProviders: [] };
+	});
+	fake.on("evener/auth/list", () => ({ providers: [] }));
+	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
+	const { tree } = mountPage();
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Could not load providers");
+	expect(renderedText(tree)).not.toMatch(/\bRetry\b|\bReconnect\b/);
+	await act(async () => {
+		refocus();
+	});
+	await act(async () => {});
+	expect(reads).toBe(2);
+	expect(renderedText(tree)).not.toContain("Could not load providers");
 });
 
 it("says each provider's sign-in state, with only an expired sign-in in amber", async () => {

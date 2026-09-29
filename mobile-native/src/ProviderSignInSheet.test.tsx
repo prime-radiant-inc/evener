@@ -263,7 +263,8 @@ it("refuses a sign-in page that isn't plain http(s)", async () => {
 	});
 	act(() => tree.update(<ProviderSignInSheet flow={flow} name={PROVIDER} connected onClose={() => {}} />));
 	await press(tree, "Open sign-in page");
-	expect(edges.events).toEqual([`copy ${device.userCode}`]);
+	// Nothing is copied for a page the sheet won't open.
+	expect(edges.events).toEqual([]);
 	expect(renderedText(tree)).toContain("Could not open the sign-in page.");
 });
 

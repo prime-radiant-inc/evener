@@ -4,8 +4,9 @@
 // management the phone keeps (add, edit, make default, clear, remove). The
 // detail opens as a sheet over the list, not a pushed page, because the
 // mutation gates, fences and sign-in flow below live with the list (ruling 9).
+import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Alert, Modal, Pressable, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
@@ -240,6 +241,20 @@ function Providers({
 	const [actionWarning, setActionWarning] = useState<string | null>(null);
 	const instance = core.instances.find((item) => item.name === selected);
 	const loadError = core.error === null ? null : sessionActionError("Could not load providers", core.error);
+	// A failed listing reads again when the page comes back to the front, as
+	// the store's notifications and a reconnect already do; nothing asks you
+	// to (no pull-to-refresh, ruling 21).
+	// Refs keep the effect's identity fixed, so it runs on focus alone and
+	// not again the moment a read fails.
+	const failed = useRef(false);
+	failed.current = core.error !== null;
+	const refreshSurface = useRef(surface.refresh);
+	refreshSurface.current = surface.refresh;
+	useFocusEffect(
+		useCallback(() => {
+			if (failed.current) refreshSurface.current();
+		}, []),
+	);
 	useEffect(() => {
 		if (editingCredential && !instance?.authModes?.includes(editingCredential)) {
 			setEditingCredential(null);
