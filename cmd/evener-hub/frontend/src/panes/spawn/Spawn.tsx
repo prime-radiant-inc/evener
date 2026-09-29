@@ -587,7 +587,7 @@ function SpawnForm({
       cwdCancelledRef.current ||
       cwdIssuanceRef.current !== issuance ||
       cwdHostRef.current?.host !== issuedFor ||
-      cwdHostRef.current.draft !== draft;
+      cwdHostRef.current?.draft !== draft;
     const seedOwnDefault = () => {
       if (isLocalHost(issuedFor)) {
         reseedSpawnDirectory(draft, controllerDefaultDirectory());
@@ -596,7 +596,12 @@ function SpawnForm({
       hostRequest(client, issuedFor, "evener/path/validate", { path: "~", kind: "dir" }).then(
         (result) => {
           if (superseded()) return;
-          reseedSpawnDirectory(draft, result.valid && result.path !== "" ? result.path : "");
+          // `path` is typed non-optional, but evener/host/request hands a remote
+          // host's answer back through a cast - an answer missing it (an older
+          // host, a malformed one) must seed no directory, never a non-string key
+          // in the string-keyed drafts map.
+          const home = typeof result.path === "string" && result.path !== "" ? result.path : "";
+          reseedSpawnDirectory(draft, home);
         },
         () => {
           if (superseded()) return;

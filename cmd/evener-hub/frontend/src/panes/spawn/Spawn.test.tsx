@@ -7048,6 +7048,79 @@ test("a host that cannot answer keeps the working directory", async () => {
   expectWorkingDir("/tmp/away-a");
 });
 
+// The last resort of the re-seed: the host refused the directory, and its own
+// home cannot be resolved either - refused, or a request that throws. The form
+// must not keep a path that belongs to another machine, so it seeds NO
+// directory: the picker already opens at the selected host's home there, and
+// no launch carries a foreign path.
+test.each([
+  ["refuses it", () => ({ path: "", valid: false, error: "no such file or directory" })],
+  [
+    "cannot answer for it",
+    () => {
+      throw new Error("host went away");
+    },
+  ],
+])("an unresolvable host default seeds no directory (%s)", async (_case, answerHome) => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "~") return answerHome() as HostForwardedResult;
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/foreign-a");
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/tmp/foreign-a");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // Nothing of the previous host's path is kept, and the form says so.
+  expect(workingDir().textContent).not.toContain("/tmp/foreign-a");
+  expect(workingDir().textContent).toContain("Choose a folder");
+  expect(spawnDraftsStore.getState().current?.cwd).toBe("");
+});
+
+// `path` is typed non-optional, but evener/host/request hands a remote host's
+// answer back through a cast, so an answer that is valid and names no directory
+// (an older host, a malformed one) reaches this code as undefined. It must seed
+// no directory - never a non-string key in the string-keyed drafts map.
+test("a host answering valid with no path seeds no directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "~") return { valid: true } as HostForwardedResult; // no path at all
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/nopath-a");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // Every draft key stays a directory string...
+  expect([...spawnDraftsStore.getState().drafts.keys()].every((key) => typeof key === "string")).toBe(true);
+  // ...and the form seeds no directory rather than a nameless one.
+  expect(spawnDraftsStore.getState().current?.cwd).toBe("");
+  expect(workingDir().textContent).toContain("Choose a folder");
+});
+
 test("a local host choice omits source from the thread/start request", async () => {
   const user = setupUser();
   seedSources([
