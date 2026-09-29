@@ -170,6 +170,8 @@ export function nativeModuleMock() {
 		item: unknown;
 		index: number;
 		renderItem?: (info: ListRowInfo) => ReactNode;
+		/** Unread here: it's a prop only so a new value re-renders the cell,
+		 * as the real list's extraData does. */
 		extraData?: unknown;
 		Cell?: ComponentType<{ item: unknown; index: number; children?: ReactNode }>;
 	}) {

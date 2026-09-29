@@ -348,6 +348,7 @@ function hubClient(
 	olderCursor?: string,
 	olderTurns: unknown[] = [],
 	olderPage: Promise<void> = Promise.resolve(),
+	compacting: Promise<void> = Promise.resolve(),
 ) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
@@ -383,6 +384,7 @@ function hubClient(
 				};
 			}
 			// The page before the first read: older turns, and the start of history.
+			if (method === "thread/compact/start") await compacting;
 			if (method === "thread/turns/list") {
 				await olderPage;
 				return { data: olderTurns };
@@ -445,6 +447,9 @@ async function mount(
 		// Holds the older page until the promise settles, for what happens
 		// while one is on its way.
 		olderPage = Promise.resolve(),
+		// Holds a compact until the promise settles, so a session control stays
+		// pending.
+		compacting = Promise.resolve(),
 		openedBy = undefined as "next" | undefined,
 		// The bottom bar lays out as it would on a device (0pt here, so it
 		// leaves the transcript's geometry as it was); a test of what waits
@@ -452,7 +457,7 @@ async function mount(
 		barLaysOut = true,
 	} = {},
 ) {
-	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage);
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage, compacting);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
 		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
@@ -1739,6 +1744,35 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 	const start = hub.requests.find((request) => request.method === "turn/start");
 	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
 	expect(field(tree)?.props.value).toBe("keep this");
+});
+
+// Retry shows only while a press would send, which a session control going
+// pending (a compact) changes without changing the rows: the row still
+// follows it.
+it("hides Retry while a session control is pending, and brings it back once it settles", async () => {
+	const served = thread("ref-retry-pending", "idle");
+	served.evener = { ...served.evener, capabilities: { ...served.evener.capabilities, compact: true } };
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+		},
+	];
+	let settleCompact = () => {};
+	const compacting = new Promise<void>((resolve) => {
+		settleCompact = resolve;
+	});
+	const { tree } = await mount(served, { compacting });
+	expect(pressable(tree, "Retry")).toBeDefined();
+	await type(tree, "/compact");
+	await press(tree, "Compact transcript");
+	expect(pressable(tree, "Retry")).toBeUndefined();
+	await act(async () => settleCompact());
+	await settle();
+	expect(pressable(tree, "Retry")).toBeDefined();
 });
 
 it("opens a session switched to in place at its own newer reply, never the last session's rows", async () => {
