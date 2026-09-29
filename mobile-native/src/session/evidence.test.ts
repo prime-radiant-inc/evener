@@ -262,18 +262,19 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
-	// An image's URL may hold balanced parentheses, and may carry a title;
-	// either way it reads as exactly its alt text (#3289).
+	// An image's URL may hold balanced parentheses (one level deep or nested),
+	// and may carry a title; each reads as exactly its alt text (#3289).
 	it("strips an image whose URL has parentheses or a title", () => {
 		const loaded = `<skill-context>\n${JSON.stringify({
 			name: "diagrams",
-			instructions: '# Diagrams\n\n![a](https://x.test/a_(b).png) and ![b](https://x.test/c_(d).png "t")',
+			instructions:
+				'# Diagrams\n\n![a](https://x.test/a_(b).png) and ![b](https://x.test/c_(d).png "t") and ![c](https://x.test/n_(o_(p)).png)',
 		})}\n</skill-context>`;
 		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
 			{
 				kind: "markdown",
 				title: "diagrams",
-				markdown: "# Diagrams\n\na and b",
+				markdown: "# Diagrams\n\na and b and c",
 			},
 		]);
 	});

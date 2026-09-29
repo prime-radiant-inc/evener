@@ -66,15 +66,58 @@ function rawOutput(text: string): Evidence[] {
 	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
 }
 
+// The index of the ")" that closes the "(" at start, counting nested balanced
+// pairs; undefined when the "(" never closes.
+function balancedClose(markdown: string, start: number): number | undefined {
+	let depth = 0;
+	for (let i = start; i < markdown.length; i++) {
+		if (markdown[i] === "(") depth++;
+		else if (markdown[i] === ")" && --depth === 0) return i;
+	}
+	return undefined;
+}
+
 // A skill's markdown is its author's, and the phone's markdown view loads
 // images from their URLs, so each image, inline (![alt](url)), by reference
 // (![alt][ref]) or shortcut (![alt]), reads as its alt text instead.
 function withoutImages(markdown: string): string {
-	// An inline URL may hold balanced parentheses (and a title after it), so the
-	// first form spans non-parenthesis characters or one balanced pair at a time.
-	// A URL whose parentheses are unbalanced still reads up to its first close,
-	// as the pattern always did, so nothing is left behind either way.
-	return markdown.replace(/!\[([^\]]*)\](?:\((?:[^()]|\([^()]*\))*\)|\([^)]*\)|\[[^\]]*\])?/g, "$1");
+	let out = "";
+	for (let i = 0; i < markdown.length; i++) {
+		if (markdown[i] !== "!" || markdown[i + 1] !== "[") {
+			out += markdown[i];
+			continue;
+		}
+		const altEnd = markdown.indexOf("]", i + 2);
+		if (altEnd === -1) {
+			out += markdown[i];
+			continue;
+		}
+		const alt = markdown.slice(i + 2, altEnd);
+		const dest = altEnd + 1;
+		if (markdown[dest] === "[") {
+			// By reference: ![alt][ref], the reference defined elsewhere.
+			const refEnd = markdown.indexOf("]", dest + 1);
+			if (refEnd !== -1) {
+				out += alt;
+				i = refEnd;
+				continue;
+			}
+		} else if (markdown[dest] === "(") {
+			// An inline URL may hold nested balanced parentheses and a title, so
+			// scan to the matching close; an unbalanced one reads to its first
+			// close, as the pattern always did, leaving nothing behind either way.
+			const end = balancedClose(markdown, dest) ?? markdown.indexOf(")", dest);
+			if (end !== -1) {
+				out += alt;
+				i = end;
+				continue;
+			}
+		}
+		// A shortcut image ![alt], or a reference/destination that never closes.
+		out += alt;
+		i = altEnd;
+	}
+	return out;
 }
 
 // What the shell tool's footer says besides the exit.
