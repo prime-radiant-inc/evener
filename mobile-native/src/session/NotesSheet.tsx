@@ -122,8 +122,23 @@ function NotesBody({
 	const { session } = host;
 	const writable = canWriteHumanNote(session);
 	const human = session.humanNote.trim();
-	if (!writable && !human && !session.agentNote.trim() && session.sessionUrls.length === 0)
-		return <Copy muted>No shared notes</Copy>;
+	// Removing a link succeeds on the hub before the session's own re-read lands
+	// (and counts as removed when the hub says it is already gone), so the row
+	// drops from this list locally rather than lingering until the next read
+	// (RoboRev #2769).
+	const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
+	const links = session.sessionUrls.filter((link) => !removed.has(link.id));
+	// A re-read that drops the row, or re-adds one under an id we hid, must not
+	// be masked by a stale id: keep only ids the session still lists.
+	useEffect(() => {
+		setRemoved((previous) => {
+			if (previous.size === 0) return previous;
+			const listed = new Set(session.sessionUrls.map((link) => link.id));
+			const next = new Set([...previous].filter((id) => listed.has(id)));
+			return next.size === previous.size ? previous : next;
+		});
+	}, [session.sessionUrls]);
+	if (!writable && !human && !session.agentNote.trim() && links.length === 0) return <Copy muted>No shared notes</Copy>;
 	return (
 		<>
 			{writable ? (
@@ -143,8 +158,8 @@ function NotesBody({
 				)}
 			</Group>
 			<Group title="Links">
-				{session.sessionUrls.length === 0 ? <Quiet>No links yet</Quiet> : null}
-				{session.sessionUrls.map((link) => (
+				{links.length === 0 ? <Quiet>No links yet</Quiet> : null}
+				{links.map((link) => (
 					<LinkRow
 						key={link.id}
 						link={link}
@@ -153,9 +168,10 @@ function NotesBody({
 						toast={toast}
 						cwd={host.cwd}
 						openDocument={openDocument}
+						onRemoved={() => setRemoved((previous) => new Set(previous).add(link.id))}
 					/>
 				))}
-				{writable && session.sessionUrls.length > 0 ? (
+				{writable && links.length > 0 ? (
 					<Quiet small>The agent adds links as it works. Swipe left on one to remove it.</Quiet>
 				) : null}
 			</Group>
@@ -290,6 +306,7 @@ function LinkRow({
 	toast,
 	cwd,
 	openDocument,
+	onRemoved,
 }: {
 	link: ThreadModel["sessionUrls"][number];
 	writable: boolean;
@@ -297,6 +314,7 @@ function LinkRow({
 	toast: ToastController;
 	cwd: string;
 	openDocument(path: string): void;
+	onRemoved(): void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -314,11 +332,14 @@ function LinkRow({
 		}).catch(() => toast.show({ text: "Couldn't open that link." }));
 	const press = kind === "web" ? open : document !== undefined ? () => openDocument(document) : undefined;
 	const remove = () =>
-		void notes
-			.removeLink(link.id)
-			.then((removed) =>
-				toast.show({ text: removed ? "Link removed. Only the agent can add links." : "Couldn't remove that link." }),
-			);
+		void notes.removeLink(link.id).then((removed) => {
+			if (removed) {
+				onRemoved();
+				toast.show({ text: "Link removed. Only the agent can add links." });
+			} else {
+				toast.show({ text: "Couldn't remove that link." });
+			}
+		});
 	// VoiceOver names the swipe's remove in full; the panel has room for one word.
 	const removeAction = { key: "remove", label: "Remove link", run: remove };
 	const menu = () => {
