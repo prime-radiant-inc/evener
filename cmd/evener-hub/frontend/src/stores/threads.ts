@@ -751,6 +751,13 @@ const dispatchableMutationRefs = new Set<string>();
 // already read (refreshMutationPins / refreshMutationPinAfterRemoval) and on a
 // commit whose row is not born-canceled.
 const undeliveredMutationRefs = new Set<string>();
+// Per-ref generation bumped by every durable outbox commit. A refresh records
+// it before its outbox read and discards its result if it moved under the read,
+// so a read that began before a commit cannot land after it and clear the
+// commit's own markers (undeliveredMutationRefs / the dispatch arm) from an
+// empty snapshot - which would let a later storage-timeout fallback send
+// directly while the committed row is still queued.
+const mutationCommitGenerations = new Map<string, number>();
 // Per-ref count of durable enqueues whose write is still in flight (from the
 // click until enqueueDurableMutation settles). dispatchableMutationRefs cannot
 // serve this: a background pin refresh clears a ref's arm when the outbox reads
@@ -919,11 +926,15 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
   if (!isCurrentMutationRuntime(runtime)) return;
   for (const targetRef of targetRefs) {
     if (!isCurrentMutationRuntime(runtime)) return;
+    const generation = mutationCommitGenerations.get(targetRef) ?? 0;
     const [outbox, optimistic] = await Promise.all([
       runtime.storage.listOutbox(targetRef),
       runtime.storage.listOptimistic(targetRef),
     ]);
     if (!isCurrentMutationRuntime(runtime)) return;
+    // A durable commit for this ref since the read began means this snapshot
+    // predates it: discard rather than clobber the commit's own markers.
+    if ((mutationCommitGenerations.get(targetRef) ?? 0) !== generation) continue;
     const hasUndeliveredWork = outbox.some((record) => record.state !== "canceled");
     if (outbox.length > 0) {
       pinnedMutationRefs.add(targetRef);
@@ -957,11 +968,14 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
 // turn on the next discovery; a dispatch killed here costs the user's save.
 async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRef: string): Promise<void> {
   if (!isCurrentMutationRuntime(runtime)) return;
+  const generation = mutationCommitGenerations.get(targetRef) ?? 0;
   const [outbox, optimistic] = await Promise.all([
     runtime.storage.listOutbox(targetRef),
     runtime.storage.listOptimistic(targetRef),
   ]);
   if (!isCurrentMutationRuntime(runtime)) return;
+  // As in refreshMutationPins: a commit since the read began outranks it.
+  if ((mutationCommitGenerations.get(targetRef) ?? 0) !== generation) return;
   if (outbox.some((record) => record.state !== "canceled")) undeliveredMutationRefs.add(targetRef);
   else undeliveredMutationRefs.delete(targetRef);
   if (outbox.length > 0 || optimistic.length > 0) {
@@ -2276,7 +2290,10 @@ async function trackOutboxWrite<T>(
   inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
   try {
     const result = await write();
-    if (committedUndelivered(result)) undeliveredMutationRefs.add(ref);
+    if (committedUndelivered(result)) {
+      undeliveredMutationRefs.add(ref);
+      noteMutationCommit(ref);
+    }
     return result;
   } finally {
     releaseInflightDurableEnqueue(ref);
@@ -2297,6 +2314,25 @@ function disarmQuiescedMutationArm(ref: string): void {
   if (!undeliveredMutationRefs.has(ref) && (inflightDurableEnqueues.get(ref) ?? 0) === 0) {
     dispatchableMutationRefs.delete(ref);
   }
+}
+
+// Note a durable outbox commit for the ref: refreshes that began their read
+// before it discard their (now-stale) snapshot - see mutationCommitGenerations.
+function noteMutationCommit(ref: string): void {
+  mutationCommitGenerations.set(ref, (mutationCommitGenerations.get(ref) ?? 0) + 1);
+}
+
+// The hydrated-replay gate: a matching pending hydration for the ref keeps
+// dispatch closed while its replay is in flight. Read at the moment it is
+// consulted, never from a value captured earlier - the click's arming and the
+// commit's re-arm both ask NOW, so a hydration that starts or finishes across
+// the write is seen either way. (A captured snapshot would re-arm during a
+// replay that started mid-write, or skip the re-arm for a hydration that
+// finished mid-write, leaving the committed row unarmed until the next
+// discovery.)
+function dispatchReplayGateOpen(ref: string): boolean {
+  const pending = pendingThreadHydrations.get(ref);
+  return pending?.client !== wiredClient || pending.epoch !== readyEpoch;
 }
 
 async function enqueueMutationIntent(
@@ -2351,12 +2387,11 @@ async function enqueueMutationIntent(
   await runtime.start;
   // Enqueue schedules discovery before returning; preserve the hydrated replay
   // gate now, but only a durable commit may pin this ref after its pane closes.
-  const pending = pendingThreadHydrations.get(ref);
   // The click arms the ref for dispatch; a matching pending hydration keeps the
   // replay gate closed instead. Whether this click added the value or found it
   // already set no longer matters - the disarm is quiescence-based, not
   // ownership-based (see disarmQuiescedMutationArm).
-  if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
+  if (dispatchReplayGateOpen(ref)) {
     dispatchableMutationRefs.add(ref);
   }
   // Register this click's durable write as in flight for the ordering guard
@@ -2454,6 +2489,10 @@ async function enqueueMutationIntent(
   // double-release bug), and this release is unreachable from an error path
   // because the only other exit from the try is the catch above.
   releaseInflightDurableEnqueue(ref);
+  // Every commit bumps the generation refreshes check against: a born-canceled
+  // row's pin must survive a stale refresh just as an undelivered row's markers
+  // must.
+  noteMutationCommit(ref);
   pinnedMutationRefs.add(ref);
   // A committed row is undelivered work unless the stop barrier committed it
   // born-canceled.
@@ -2465,7 +2504,7 @@ async function enqueueMutationIntent(
   // re-arm in publishAndReconcileThreadHydration. Gated by the same replay-gate
   // predicate as the click's own arming: a pending hydration still keeps the
   // gate closed.
-  if (committedUndelivered && (pending?.client !== wiredClient || pending.epoch !== readyEpoch)) {
+  if (committedUndelivered && dispatchReplayGateOpen(ref)) {
     dispatchableMutationRefs.add(ref);
   }
   notifyMutationPersistence([ref], { record });
@@ -4783,6 +4822,7 @@ export function resetThreadsStoreForTests(): void {
   pinnedMutationRefs.clear();
   inflightDurableEnqueues.clear();
   undeliveredMutationRefs.clear();
+  mutationCommitGenerations.clear();
   dispatchableMutationRefs.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;

@@ -12754,10 +12754,13 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
-  // Round-11 Medium: a background pin refresh can clear the ref's arm while the
-  // write is in flight (it reads the outbox empty before the commit), so the
-  // commit must re-arm rather than wait for the next hydration's re-arm.
-  test("a successful commit re-arms dispatch cleared by a refresh during the write", async () => {
+  // Round-12 Medium: the commit-time re-arm must read the hydrated-replay gate
+  // FRESH, not from a value captured before the write. A hydration pending at
+  // the commit keeps the gate closed, so the commit must NOT re-arm - re-arming
+  // there would dispatch during the replay. (A successful commit still re-arms
+  // when the gate is open - the code path is shared; this pins the closed case,
+  // whose pre-write capture is the stale one.)
+  test("a hydration pending at the commit keeps the dispatch gate closed", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = "evener-mutation-outbox-commit-rearm";
     const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
@@ -12791,7 +12794,7 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 
     const send = threadsStore.getState().send("ref_a", "hello");
     // Probe the arm at the commit's OWN persistence notify, which runs before
-    // its discovery could re-arm via a hydration. A listener that consults the
+    // its discovery could re-arm via a hydration. A listener consulting the
     // store's scheduler here sees the arm only if the commit re-armed it.
     const dispatchTargets = vi.spyOn(MutationDispatcher.prototype, "dispatchTargets");
     let armedAtCommit: boolean | undefined;
@@ -12803,9 +12806,9 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     });
     try {
       await reached;
-      // A refresh during the in-flight write reads the outbox empty and clears
-      // the arm (refreshMutationPins deletes dispatchableMutationRefs when the
-      // outbox is empty).
+      // A refresh during the in-flight write leaves a hydration in flight across
+      // the commit (its own resync is still reconciling), so the replay gate is
+      // closed at the commit.
       await threadsStore.getState().refreshThread("ref_a");
       await nextMacrotask();
       releaseWrite();
@@ -12814,7 +12817,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       unsubscribe();
       dispatchTargets.mockRestore();
     }
-    expect(armedAtCommit).toBe(true);
+    // The gate was closed, so the commit did NOT re-arm.
+    expect(armedAtCommit).toBe(false);
   });
 
   // Round-8 Medium/Low: the arm is shared state, so ownership cannot clean it
@@ -12930,6 +12934,105 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       await rejection;
       // The fenced ref must not reach the daemon.
       expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+  });
+
+  // Round-12 Low: the fallback set has four send verbs; behavior was pinned for
+  // turn/start and turn/steer, so pin the rest. Queue and Drain go out as plain
+  // RPCs with no durable row; Promote stays fail-closed.
+  test("a Queue whose storage never answers still reaches the daemon and leaves no durable row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-queue-fallback";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const queue = threadsStore.getState().queue("ref_a", "queued while wedged");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await queue;
+      const sent = fake.calls.find((call) => call.method === "turn/queue");
+      expect(sent, "the wedged queue never reached the daemon").toBeDefined();
+      expect((sent?.params as { clientMutationId?: string } | undefined)?.clientMutationId).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  test("a Drain whose storage never answers still reaches the daemon and leaves no durable row", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-drain-fallback";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const drain = threadsStore.getState().drainAsSteer("ref_a", "drain while wedged");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await drain;
+      const sent = fake.calls.find((call) => call.method === "turn/drainAsSteer");
+      expect(sent, "the wedged drain never reached the daemon").toBeDefined();
+      expect((sent?.params as { clientMutationId?: string } | undefined)?.clientMutationId).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+      openSpy.mockRestore();
+    }
+    const reader = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reader.listOutbox("ref_a")).toEqual([]);
+    reader.close();
+  });
+
+  test("a Promote whose storage never answers stays fail-closed with no wire call", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = "evener-mutation-outbox-promote-fenced";
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+
+    storage.close();
+    const open = indexedDB.open.bind(indexedDB);
+    const openSpy = vi
+      .spyOn(indexedDB, "open")
+      .mockImplementation((name: string, version?: number) =>
+        name === databaseName ? neverSettlingRequest() : open(name, version),
+      );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const promote = threadsStore
+        .getState()
+        .promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "promote while wedged" });
+      const rejection = expect(promote).rejects.toBeInstanceOf(MutationStorageTimeoutError);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(fake.calls.filter((call) => call.method === "turn/promoteQueuedAsSteer")).toEqual([]);
     } finally {
       vi.useRealTimers();
       openSpy.mockRestore();
