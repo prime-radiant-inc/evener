@@ -115,7 +115,7 @@ func readRunnerObservation(t *testing.T, observeDir, moduleName string) map[stri
 		t.Fatalf("read %s observation (did the module run?): %v", moduleName, err)
 	}
 	record := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		key, value, _ := strings.Cut(line, "=")
 		record[key] = value
 	}
@@ -163,7 +163,7 @@ func runModuleRunner(t *testing.T, workDir string, env ...string) moduleRunnerRe
 // prints, so a case can assert what was kept.
 func runnerRetainedLogDir(t *testing.T, output string) string {
 	t.Helper()
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "full logs: "); ok {
 			return rest
 		}
