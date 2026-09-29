@@ -653,9 +653,11 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		(served as unknown as { turns: unknown[] }).turns = [LONG_QUESTION_TURN];
 		const { tree } = await mount(served);
 		const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
-		let room = bar.parent;
-		while (room && String(room.type) !== "View") room = room.parent;
-		if (!room) throw new Error("no view holds the bottom bar");
+		const room = tree.root.find(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar-room",
+		);
+		// Before the room is measured, the cap is the same share as a percentage.
+		expect(flatStyle(bar).maxHeight).toBe("80%");
 		const layout = (height: number) => ({ nativeEvent: { layout: { x: 0, y: 0, width: 375, height } } });
 		act(() => room.props.onLayout(layout(667)));
 		expect(flatStyle(bar).maxHeight).toBeCloseTo(533.6);
