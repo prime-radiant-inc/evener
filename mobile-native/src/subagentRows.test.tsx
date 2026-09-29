@@ -29,7 +29,10 @@ vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 const T0 = Date.parse("2026-09-28T20:00:00Z");
 
 // The delegate call's id, as the recorded corpus carries it.
-const DELEGATE_CALL_ID = subagentCallItems().find((item) => item.toolName === "delegate")?.callId;
+// The recorded calls, parsed once: the inline tests pick items out of this list
+// by identity, which a fresh parse would never match.
+const CALLS = subagentCallItems();
+const DELEGATE_CALL_ID = CALLS.find((item) => item.toolName === "delegate")?.callId;
 const LEVELS = ["chat", "intent", "tools", "full"] as const;
 type Level = (typeof LEVELS)[number];
 
@@ -77,7 +80,7 @@ interface Extra {
 function thread(delegate: EvenerDelegateInfo, extra: Extra = {}): Thread {
 	const items: ThreadItem[] = [
 		{ id: "u1", turnId: "turn_1", type: "userMessage", text: "Fix the flaky test" } as ThreadItem,
-		...(extra.calls ?? subagentCallItems()),
+		...(extra.calls ?? CALLS),
 		{ id: "a1", turnId: "turn_1", type: "agentMessage", text: "Waiting on the subagent." } as ThreadItem,
 		...(extra.items ?? []),
 	];
@@ -119,16 +122,17 @@ function subagentRow(level: Level, delegate = subagent(), extra: Extra = {}) {
 	const found = rows.filter(isSubagent);
 	expect(found).toHaveLength(1);
 	const openSubagent = vi.fn();
+	const row = found[0] as Extract<TimelineRow, { kind: "activity" }>;
 	const tree = render(
 		<TimelineItem
-			item={found[0] as TimelineRow}
+			item={row}
 			hubId="hub"
 			sessionRef={`subagent-${level}`}
 			delegates={delegates}
 			openSubagent={openSubagent}
 		/>,
 	);
-	return { tree, openSubagent };
+	return { tree, openSubagent, row };
 }
 
 describe("a subagent row", () => {
@@ -178,19 +182,29 @@ describe("a stopped subagent", () => {
 // In inline mode the delegate call stays open while its subagent runs, and
 // settles when the subagent ends; the row still reads the subagent.
 describe("an inline subagent", () => {
-	const [call, ...rest] = subagentCallItems();
-	const result = rest.find((item) => item.callId === call?.callId);
+	// The delegate call's result, which settles it.
+	const result = CALLS.find((item) => item.callId === DELEGATE_CALL_ID && item.id.startsWith("item_tool_result_"));
 
-	it.each(LEVELS)("reads as running while its call is still open, at %s", (level) => {
-		const calls = subagentCallItems().filter((item) => item !== result);
-		const { tree } = subagentRow(level, subagent(), { calls });
+	it("has a recorded result to leave out or fail", () => {
+		expect(result).toMatchObject({ toolName: "delegate", status: "completed" });
+	});
+
+	it.each(LEVELS)("reads as running, with its time, while its call is still open, at %s", (level) => {
+		const calls = CALLS.filter((item) => item !== result);
+		const { tree, row } = subagentRow(level, subagent(), { calls });
+		// The scenario: the call has no result yet, so it is still running.
+		expect(row.state).toBe("running");
+		// Only the subagent can say how long it has run: a row that read the
+		// call would say a bare "running".
 		expect(renderedText(tree)).toMatch(/running · \d+/);
 	});
 
 	it.each(LEVELS)("reads as stopped when its call settled as a tool error, at %s", (level) => {
 		const failed = { ...result, status: "failed", error: "stopped by parent", output: undefined } as ThreadItem;
-		const calls = subagentCallItems().map((item) => (item === result ? failed : item));
-		const { tree } = subagentRow(level, stoppedBy("stopped"), { calls });
+		const calls = CALLS.map((item) => (item === result ? failed : item));
+		const { tree, row } = subagentRow(level, stoppedBy("stopped"), { calls });
+		// The scenario: the call itself failed.
+		expect(row.state).toBe("failed");
 		expect(renderedText(tree)).toMatch(/stopped · \d+/);
 	});
 });
