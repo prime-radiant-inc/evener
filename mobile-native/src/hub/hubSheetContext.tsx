@@ -26,6 +26,12 @@ export type HubRoutes = {
 	Hubs: undefined;
 	AddHub: { how: How };
 	HubDetails: { id: string };
+	/** Today's settings screens, pushed inside the sheet until their grouped
+	 * pages land (#2539); the root stack keeps them too, for restoring a saved
+	 * location. Their params match the root stack's. */
+	KeybindingPreferences: { hubId: string; editor?: { actionId: string; chord: string } };
+	LaunchSettings: { hubId: string; projectCwd?: string };
+	HubSettings: { hubId: string };
 };
 
 export interface HubSheetContextValue {

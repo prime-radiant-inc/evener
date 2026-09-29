@@ -8,6 +8,9 @@ import { useCallback, useMemo } from "react";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
+import { HubSettingsScreen } from "../HubSettingsScreen";
+import { KeybindingPreferencesScreen } from "../KeybindingPreferencesScreen";
+import { LaunchSettingsScreen } from "../LaunchSettingsScreen";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { sheetStackOptions } from "../sheet/sheetStack";
@@ -96,6 +99,13 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					options={({ route }) => ({ title: ADD_HUB_TITLES[route.params.how] })}
 				/>
 				<HubStack.Screen name="HubDetails" component={HubDetailsPage} />
+				<HubStack.Screen
+					name="KeybindingPreferences"
+					component={KeybindingPreferencesScreen}
+					options={{ title: "Keyboard shortcuts" }}
+				/>
+				<HubStack.Screen name="LaunchSettings" component={LaunchSettingsScreen} options={{ title: "Launch defaults" }} />
+				<HubStack.Screen name="HubSettings" component={HubSettingsScreen} options={{ title: "Hub settings" }} />
 			</HubStack.Navigator>
 		</HubSheetProvider>
 	);
