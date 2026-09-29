@@ -302,7 +302,7 @@ expect:
     - name: REVIEW.md exists
       run: test -f REVIEW.md
     - name: table header names the Section column
-      run: grep -qi '^|.*section' REVIEW.md
+      run: grep -m1 '^|' REVIEW.md | grep -qi section
     - name: each vendor is a table row
       run: |
         for v in "Arbor Storage" "Beacon Mail" "Cinder Analytics" "Delta Payments" "Ember Search"; do

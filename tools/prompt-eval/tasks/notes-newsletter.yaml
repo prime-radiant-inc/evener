@@ -55,7 +55,7 @@ expect:
           END { if (insec && !hasbody) { print "empty section: " sec; exit 1 } }
         ' NEWSLETTER.md
     - name: cold start section notes it was superseded
-      run: tr 'A-Z' 'a-z' < NEWSLETTER.md | awk '/^## cold start/{flag=1; next} /^## /{flag=0} flag' | grep -q 'supersed'
+      run: tr 'A-Z' 'a-z' < NEWSLETTER.md | awk '/^## / && /cold start/{flag=1; next} /^## /{flag=0} flag' | grep -q 'supersed'
     - name: notes left unchanged
       run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- docs/notes
 reference: |

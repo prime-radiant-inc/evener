@@ -345,6 +345,26 @@ func TestVendorReviewShapeChecksCatchProseAnswers(t *testing.T) {
 	if ok, _ := runCheck(work, rowCheck, checkTimeout); ok {
 		t.Error("the table-row check passed a prose answer with no markdown table")
 	}
+
+	// A table whose header never names a Section column, but whose data
+	// cells happen to say "Section 5", must still fail the header check: a
+	// header check that matches any line starting with '|' would wrongly
+	// accept a data row's cell text instead of checking the header itself.
+	noSectionHeader := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(noSectionHeader, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	wrongHeader := "| Vendor | Termination notice | Auto-renews | Data retention |\n" +
+		"| --- | --- | --- | --- |\n" +
+		"| Arbor Storage | 60 days (Section 5) | Yes | 45 days |\n" +
+		"| Beacon Mail | 45 days (Section 9) | Yes | 60 days |\n" +
+		"| Cinder Analytics | 30 days (Section 6, amended) | Yes | 30 days |\n" +
+		"| Delta Payments | 30 days (Section 5) | No | 30 days |\n" +
+		"| Ember Search | 15 days (Section 9) | Yes | 14 days |\n"
+	mustWrite(t, filepath.Join(noSectionHeader, "REVIEW.md"), wrongHeader)
+	if ok, _ := runCheck(noSectionHeader, headerCheck, checkTimeout); ok {
+		t.Error("the header check passed a table whose header has no Section column, only a data cell saying \"Section 5\"")
+	}
 }
 
 // TestNotesNewsletterSectionChecksCatchWeakAnswers: sections can be empty,
@@ -390,6 +410,36 @@ func TestNotesNewsletterSectionChecksCatchWeakAnswers(t *testing.T) {
 	mustWrite(t, filepath.Join(noMentionWork, "NEWSLETTER.md"), noMention)
 	if ok, _ := runCheck(noMentionWork, coldStartCheck, checkTimeout); ok {
 		t.Error("check passed a Cold start section that never says it was superseded")
+	}
+
+	// The check must find the section the same tolerant way the "sections
+	// in index order" check does: a heading line starting with "## " that
+	// contains "cold start" anywhere, not only a heading anchored exactly
+	// at "## cold start".
+	looseHeadingSuperseded := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(looseHeadingSuperseded, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(looseHeadingSuperseded, "NEWSLETTER.md"), "# Design notes\n\n"+
+		"## Retry budget\n\nClients now get a retry budget.\n\n"+
+		"## Shard map\n\nThe shard layout moves into a replicated store.\n\n"+
+		"## Note 3: Cold start\n\nSuperseded by the shard map, so we are not building it.\n\n"+
+		"## Audit trail\n\nEvery admin action is logged.\n")
+	if ok, detail := runCheck(looseHeadingSuperseded, coldStartCheck, checkTimeout); !ok {
+		t.Errorf("check failed a Cold start section under a loosely worded heading that does say it was superseded: %s", detail)
+	}
+
+	looseHeadingNoMention := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(looseHeadingNoMention, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(looseHeadingNoMention, "NEWSLETTER.md"), "# Design notes\n\n"+
+		"## Retry budget\n\nClients now get a retry budget.\n\n"+
+		"## Shard map\n\nThe shard layout moves into a replicated store.\n\n"+
+		"## Note 3: Cold start\n\nNew instances took about four minutes to reach full speed.\n\n"+
+		"## Audit trail\n\nEvery admin action is logged.\n")
+	if ok, _ := runCheck(looseHeadingNoMention, coldStartCheck, checkTimeout); ok {
+		t.Error("check passed a loosely headed Cold start section that never says it was superseded")
 	}
 }
 
