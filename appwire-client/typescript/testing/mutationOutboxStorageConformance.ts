@@ -75,17 +75,20 @@ function conformanceNoteIntent(note: string, targetRef = CONFORMANCE_TARGET): Mu
 // The fixture the note-supersede contracts share: the ref's earlier refused and
 // orphaned note recovery rows (a later save supersedes both), a settling note,
 // a newer note, a recovery row of another method on the same ref, and a note
-// recovery row on another ref.
+// recovery row on another ref. The other-method row is seeded BEFORE the
+// settling note, so its lower sequence means its survival proves the method
+// filter rather than recency; the other-target row proves the target filter the
+// same way.
 async function seedSupersededNoteScenario(storage: MutationOutboxStorage) {
   const refusedOlder = await storage.enqueueIntent(conformanceNoteIntent("refused older"));
   await storage.transferToRecovery(refusedOlder.clientMutationId, "rejected", "note refused");
   const orphanedOlder = await storage.enqueueIntent(conformanceNoteIntent("orphaned older"));
   await storage.transferToRecovery(orphanedOlder.clientMutationId, "orphaned");
+  const otherMethod = await storage.enqueueIntent(conformanceTextIntent("a turn", CONFORMANCE_TARGET));
+  await storage.transferToRecovery(otherMethod.clientMutationId, "rejected", "turn refused");
   const settling = await storage.enqueueIntent(conformanceNoteIntent("settling now"));
   const newer = await storage.enqueueIntent(conformanceNoteIntent("newer still"));
   await storage.transferToRecovery(newer.clientMutationId, "rejected", "note refused");
-  const otherMethod = await storage.enqueueIntent(conformanceTextIntent("a turn", CONFORMANCE_TARGET));
-  await storage.transferToRecovery(otherMethod.clientMutationId, "rejected", "turn refused");
   const otherTarget = await storage.enqueueIntent(conformanceNoteIntent("elsewhere", CONFORMANCE_OTHER_TARGET));
   await storage.transferToRecovery(otherTarget.clientMutationId, "orphaned");
   return { refusedOlder, orphanedOlder, settling, newer, otherMethod, otherTarget };
