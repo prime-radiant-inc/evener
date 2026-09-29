@@ -111,9 +111,16 @@ type PastIndex struct {
 	// onChange, when set via SetOnChange, is fired by Rebuild only when the
 	// indexed content's fingerprint actually changes.
 	onChange func()
+	// onRootChange is fired, under the same generation gating as onChange, only
+	// when a root's shown fields change or the set of subagents changes (see
+	// rootFingerprint).
+	onRootChange func()
 	// fingerprint is the content hash from the most recent Rebuild (see
 	// contentFingerprint), used to gate onChange against no-op rebuilds.
 	fingerprint uint64
+	// rootFingerprint is the rootFingerprint hash from the most recent publish,
+	// gating onRootChange the way fingerprint gates onChange.
+	rootFingerprint uint64
 	// afterFindProbe, when non-nil, runs in Find after a miss's probe and before
 	// foldOne folds the row. Instance-scoped test seam for interleaving a
 	// concurrent writer that indexes a newer row first; nil in production.
@@ -189,6 +196,14 @@ func (i *PastIndex) StateGlob() string {
 // initial fingerprint — so wiring the hook first fires a spurious "change"
 // on nothing (runMain always seeds via the startup Rebuild before wiring).
 func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
+
+// SetOnRootChange registers a callback fired only when what a navigation row
+// shows can have changed: a root's shown fields moved, or a subagent appeared
+// or disappeared. A running subagent's autosave or rename does not fire it, so
+// consumers that read a roots-only projection stay quiet through delegate
+// writes. It shares SetOnChange's ordering hazard: call it after the initial
+// Rebuild.
+func (i *PastIndex) SetOnRootChange(fn func()) { i.onRootChange = fn }
 
 // contentFingerprint hashes the consumer-visible fields of the sorted entries so
 // a publish can detect a genuine content delta without a deep compare. It
@@ -509,7 +524,7 @@ func insertSorted(entries []PastEntry, pe PastEntry) []PastEntry {
 // the lock (publishFTS and contentFingerprint run unlocked), and gen the
 // generation that snapshot belongs to (see PastIndex.gen). The bool is
 // Rebuild/UpdateMeta's contract: whether content changed AND a registered
-// onChange fired for it.
+// hook (onChange or onRootChange) fired for it.
 //
 // A newer mutation (a fold or update landing after this snapshot was taken)
 // bumps i.gen. This publisher then abandons its tail entirely: the newer
@@ -522,18 +537,24 @@ func (i *PastIndex) publishAndSignal(all []PastEntry, gen uint64) bool {
 		i.publishFTS(all, gen)
 	}
 	fp := contentFingerprint(all)
+	rootFP := rootFingerprint(all)
 	i.mu.Lock()
 	if i.gen != gen {
 		i.mu.Unlock()
 		return false
 	}
 	changed := fp != i.fingerprint
+	rootChanged := rootFP != i.rootFingerprint
 	i.fingerprint = fp
+	i.rootFingerprint = rootFP
 	i.mu.Unlock()
 	if changed && i.onChange != nil {
 		i.onChange()
 	}
-	return changed && i.onChange != nil
+	if rootChanged && i.onRootChange != nil {
+		i.onRootChange()
+	}
+	return changed && i.onChange != nil || rootChanged && i.onRootChange != nil
 }
 
 // RefreshOne re-reads one already-indexed session's on-disk meta and folds it

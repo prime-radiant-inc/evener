@@ -767,7 +767,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// changing liveness, or a session appearing/ending/changing in the past
 	// index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
 	// which never route through PastIndex at all, so they invalidate directly.
-	past.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	wirePastNavigation(past, bump, web.navigation)
 	roster.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
@@ -1340,4 +1340,13 @@ func resolveEvenerBinaryPath(explicit, currentExecutable string, lookPath func(s
 		return ""
 	}
 	return path
+}
+
+// wirePastNavigation connects the past index to navigation invalidation and the
+// shared inputs counter. Navigation lists roots only, so the root signal is
+// the one that bumps and invalidates: a running subagent's autosave or title
+// change moves neither, while a root's shown fields changing, or a subagent
+// being added or removed, moves both.
+func wirePastNavigation(past *hubcore.PastIndex, bump func(), navigation *NavigationService) {
+	past.SetOnRootChange(func() { bump(); navigation.Invalidate(navigationChangeHint{}) })
 }
