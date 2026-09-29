@@ -76,9 +76,8 @@ var (
 	// process.
 	hubProcessStart = time.Now()
 	// hubBootID identifies this controller process incarnation for the durable
-	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2;
-	// crash-fencing spec §4: "a worker's durable (controller boot id, per-host
-	// monotonic op sequence)"). It is drawn once per process, so a restart
+	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2: "a
+	// worker's durable (controller boot id, per-host monotonic op sequence)"). It is drawn once per process, so a restart
 	// always presents a fresh boot id and never continues an old boot's
 	// sequence.
 	hubBootID = newHubBootID()
@@ -961,7 +960,7 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 	}
 	if signal := store.Quarantine(); signal != nil {
 		_, _ = fmt.Fprintf(stderr,
-			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified imports only, and every name that custody closed stays closed\n",
+			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified imports as historical rows (no name is held closed)\n",
 			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
 	}
 	if reaped, err := store.ReapExpiredTokens(); err != nil {

@@ -1281,9 +1281,10 @@ func TestHostTeardownRetryRefusalIsNotRecordedAsATimeout(t *testing.T) {
 		t.Fatalf("stage remnant: %v", err)
 	}
 	// A handle this build cannot resolve through: the remote-lease arm carries no
-	// implementation here (the crash-fencing slices own it), so resolving it is
-	// the typed `teardown-unknown-key` refusal — the canonical non-deadline
-	// failure a retry must surface without recording a timeout.
+	// implementation here (it was withdrawn with the crash-fencing program,
+	// comp08), so resolving it is the typed `teardown-unknown-key` refusal — the
+	// canonical non-deadline failure a retry must surface without recording a
+	// timeout.
 	remnant.CleanupHandle.Kind = "remote-lease"
 	remnant.CleanupHandle.RemoteGuardFile = "guard.json"
 	if err := m.persistHosts(entries, entries, hostPersistChange{remnant: &pendingHostRemnant{RemnantID: remnantID, Remnant: remnant}}); err != nil {

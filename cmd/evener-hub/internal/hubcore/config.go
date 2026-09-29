@@ -233,9 +233,9 @@ type WebConfig struct {
 	// answers "no remnant".
 	HostRemnantFence func(name string) (string, bool)
 	// HubBootID identifies this controller process incarnation for the durable
-	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2,
-	// crash-fencing spec §4). Empty disables probe-epoch persistence, and a plan
-	// refuses `probe-failed` rather than probing without a fencible epoch.
+	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2).
+	// Empty disables probe-epoch persistence, and a plan refuses `probe-failed`
+	// rather than probing without a durable epoch.
 	HubBootID string
 	// HubProcessStart is when this hub process started, reported as
 	// evener/host/running's processStartTime when non-zero (deploy pipeline 08b
