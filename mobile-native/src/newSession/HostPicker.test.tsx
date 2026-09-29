@@ -9,8 +9,8 @@ import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
 import { pressable, render, textOf } from "../renderNative.testkit";
 import { HostPicker } from "./HostPicker";
-import { LaunchMemory } from "./launchMemory";
-import { type NewSessionContextValue, NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
+import { NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
+import { sheetContext } from "./newSessionTestUtils";
 
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
@@ -54,17 +54,7 @@ async function mount(hosts: HostRow[], source = "local") {
 	store.setState({ source, cwd: "/home/jesse/git/evener" });
 	const hostsController = new HostsController(client as never);
 	const live = new LiveSessionsReader(client as never);
-	const context: NewSessionContextValue = {
-		store,
-		hubId: "hub-1",
-		hubName: "magic-kingdom",
-		client: client as never,
-		ready: true,
-		hosts: hostsController,
-		live,
-		memory: new LaunchMemory({ getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} }, "hub-1"),
-		hostLabel: (host) => (host === "local" ? "magic-kingdom" : host),
-	};
+	const context = sheetContext(store, { client: client as never, hosts: hostsController, live });
 	const navigation = { goBack: vi.fn() };
 	const tree = render(
 		<NewSessionProvider value={context}>

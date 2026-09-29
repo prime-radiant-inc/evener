@@ -6,11 +6,11 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { CreationDraft } from "../creationDraftRepository";
 import { render } from "../renderNative.testkit";
 import type { Routes } from "../screens";
-import type { SyncStringStorage } from "../syncStringStorage";
 import { LaunchMemory } from "./launchMemory";
 import type { SessionSeed } from "./launchSetup";
 import type { NewSessionContextValue } from "./newSessionContext";
 import { NewSessionSheet } from "./NewSessionSheet";
+import { memoryStorage } from "./newSessionTestUtils";
 
 const harness = vi.hoisted(() => ({
 	connection: { state: "ready", ready: true },
@@ -72,15 +72,6 @@ const settle = () =>
 	act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
-
-function memoryStorage(): SyncStringStorage {
-	const items = new Map<string, string>();
-	return {
-		getItemSync: (key) => items.get(key) ?? null,
-		setItemSync: (key, value) => void items.set(key, value),
-		removeItemSync: (key) => void items.delete(key),
-	};
-}
 
 async function mount(like?: SessionSeed) {
 	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom", like } };

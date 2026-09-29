@@ -10,10 +10,10 @@ import { hostRow, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
 import { alertRequests, playedHaptics, render, renderedText } from "../renderNative.testkit";
-import type { SyncStringStorage } from "../syncStringStorage";
 import { LaunchMemory } from "./launchMemory";
 import { NewSessionForm } from "./NewSessionForm";
-import { type NewSessionContextValue, NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
+import { NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
+import { memoryStorage, sheetContext } from "./newSessionTestUtils";
 
 const status = vi.hoisted(() => ({ line: null as string | null }));
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
@@ -53,15 +53,6 @@ const glm: ModelDescriptor = {
 	displayName: "GLM 5.3 Vision",
 	reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"],
 };
-
-function memoryStorage(): SyncStringStorage {
-	const items = new Map<string, string>();
-	return {
-		getItemSync: (key) => items.get(key) ?? null,
-		setItemSync: (key, value) => void items.set(key, value),
-		removeItemSync: (key) => void items.delete(key),
-	};
-}
 
 interface Options {
 	hosts?: HostRow[];
@@ -116,17 +107,7 @@ async function mount(options: Options = {}) {
 	const hosts = new HostsController(client as never);
 	const live = new LiveSessionsReader(client as never);
 	const memory = new LaunchMemory(memoryStorage(), "hub-1");
-	let context: NewSessionContextValue = {
-		store,
-		hubId: "hub-1",
-		hubName: "magic-kingdom",
-		client: client as never,
-		ready: true,
-		hosts,
-		live,
-		memory,
-		hostLabel: (host) => (host === "local" ? "magic-kingdom" : host),
-	};
+	let context = sheetContext(store, { client: client as never, hosts, live, memory });
 	let headerOptions: NativeStackNavigationOptions = {};
 	const parent = { goBack: vi.fn(), dispatch: vi.fn() };
 	const navigation = {
