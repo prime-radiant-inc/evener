@@ -43,7 +43,7 @@ func newRootSignalHub(t *testing.T) *rootSignalHub {
 		stateDir: filepath.Join(root, "projects", project.ID),
 		rootID:   projectDeleteCanonicalSessionIDs[0],
 		subID:    projectDeleteCanonicalSessionIDs[1],
-		base:     time.Now().UTC().Add(-time.Hour).Truncate(time.Second),
+		base:     time.Unix(1_700_000_000, 0).UTC(),
 		inputs:   &hubcore.InputsVersion{},
 	}
 	h.save(h.rootID, "root", h.base, "")

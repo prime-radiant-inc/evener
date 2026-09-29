@@ -127,9 +127,9 @@ func writeHashValue(h hash.Hash64, v reflect.Value) {
 		if v.Bool() {
 			b[0] = 1
 		}
-	case reflect.Int, reflect.Int64:
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		binary.LittleEndian.PutUint64(b[:], uint64(v.Int()))
-	case reflect.Uint64:
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		binary.LittleEndian.PutUint64(b[:], v.Uint())
 	case reflect.Slice:
 		for n := range v.Len() {
