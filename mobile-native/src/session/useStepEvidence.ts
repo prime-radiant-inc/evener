@@ -9,10 +9,14 @@ import { type Evidence, type EvidenceSource, stepEvidence } from "./evidence";
 
 export function useStepEvidence(step: EvidenceSource): Evidence[] {
 	const { label, summaryOnly } = step;
-	const { arguments: args, output, error, exitCode, tasks } = step.detail;
+	const { arguments: args, output, error, exitCode, tasks, watchEvidence } = step.detail;
 	const tasksJSON = tasks === undefined ? undefined : JSON.stringify(tasks);
 	return useMemo(() => {
 		const parsed = tasksJSON === undefined ? undefined : (JSON.parse(tasksJSON) as readonly DetailTask[]);
-		return stepEvidence({ label, summaryOnly, detail: { arguments: args, output, error, exitCode, tasks: parsed } });
-	}, [label, summaryOnly, args, output, error, exitCode, tasksJSON]);
+		return stepEvidence({
+			label,
+			summaryOnly,
+			detail: { arguments: args, output, error, exitCode, tasks: parsed, watchEvidence },
+		});
+	}, [label, summaryOnly, args, output, error, exitCode, tasksJSON, watchEvidence]);
 }

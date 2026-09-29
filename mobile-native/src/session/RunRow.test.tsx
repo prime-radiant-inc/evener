@@ -343,6 +343,35 @@ describe("a step's evidence", () => {
 		]);
 	});
 
+	// A watch step's evidence is its words (the projection's watchEvidence),
+	// which the row must hand on, not the footer the tool printed.
+	it("opens a job_watch step to its evidence in words, not the tool's footer", () => {
+		const run: Run = {
+			kind: "run",
+			id: "run:w",
+			turnId: "t1",
+			steps: [
+				step(
+					"w",
+					"job_watch",
+					{ operation: "create" },
+					{
+						detail: {
+							arguments: '{"operation":"create"}',
+							output: "[watching self · watch_id watch_x · after 300s note: Check the deploy finished.]",
+							watchEvidence: "Check the deploy finished.",
+						},
+					},
+				),
+			],
+		};
+		const tree = render(<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-w" />);
+		act(() => line(tree.root, "job_watch: create, done").props.onPress());
+		expect(shown(tree.root).map((node) => node.props.evidence)).toEqual([
+			[{ kind: "output", text: "Check the deploy finished.", lines: 1 }],
+		]);
+	});
+
 	// Each projection parses the task list again: a new array, the same tasks.
 	it("works out a task_list step's evidence once while its tasks stay the same", () => {
 		const props = { live: false, expanded: true, onToggle: () => {}, hubId: "hub-1", sessionRef: "ref-t-memo" };
