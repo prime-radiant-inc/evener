@@ -2,6 +2,7 @@ package hub
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
@@ -69,8 +70,10 @@ func (s navigationBuildStats) fields() string {
 }
 
 // navigationBuildStatsLog decides which builds get a log line and writes it.
-// Its methods are called only from the single in-flight build.
+// A finalized flight's tail can overlap the next flight's build, so the
+// last-logged time is guarded.
 type navigationBuildStatsLog struct {
+	mu         sync.Mutex // guards lastLogged
 	logf       func(format string, args ...any)
 	slow       time.Duration // zero means navigationBuildStatsSlow
 	lastLogged time.Time
@@ -80,6 +83,8 @@ func (l *navigationBuildStatsLog) completed(stats navigationBuildStats, now time
 	if l.logf == nil {
 		return
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	slow := l.slow
 	if slow == 0 {
 		slow = navigationBuildStatsSlow

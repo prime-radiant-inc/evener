@@ -221,3 +221,21 @@ func TestNavigationBuildTimeoutNamesProjectionPhase(t *testing.T) {
 		t.Fatalf("build lines = %q, want one timeout line naming projection", lines)
 	}
 }
+
+// A finalized flight's tail can log while the next flight's build finishes, so
+// the log's last-logged time must tolerate concurrent callers (run with -race).
+func TestNavigationBuildStatsLogToleratesConcurrentBuilds(t *testing.T) {
+	logs := &navigationStatsLog{}
+	statsLog := navigationBuildStatsLog{logf: logs.Logf}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			statsLog.completed(navigationBuildStats{}, time.Unix(1_700_000_000, 0))
+			statsLog.timedOut(navigationBuildStats{phase: "capture"})
+		})
+	}
+	wg.Wait()
+	if lines := logs.buildLines(); len(lines) != 9 {
+		t.Errorf("build lines = %d, want 1 completed plus 8 timeouts", len(lines))
+	}
+}
