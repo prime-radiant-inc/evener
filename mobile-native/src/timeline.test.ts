@@ -1,6 +1,13 @@
 import { expect, it } from "vitest";
 import type { MobileTimelineItem } from "./projectedRows";
-import { groupTimeline, isCriticalNotice, isInterruptedNotice, noticeLabel, timelineGap, type TimelineRow } from "./timeline";
+import {
+	groupTimeline,
+	isCriticalNotice,
+	isInterruptedNotice,
+	noticeLabel,
+	timelineGap,
+	type TimelineRow,
+} from "./timeline";
 
 const setup: MobileTimelineItem = {
 	kind: "notice",
@@ -141,14 +148,13 @@ it("never reads a tool repair as critical", () => {
 	expect(isCriticalNotice({ ...setup, origin: "system" as const, eventKind: "tool_repair" })).toBe(false);
 });
 
-it.each([
-	{ eventKind: "error" },
-	{ eventKind: "hook_completed", exitCode: 3 },
-	{ family: "warning" as const },
-])("keeps typed critical notices outside collapsed diagnostic groups: %j", (metadata) => {
-	const critical = { ...diagnostic, ...metadata };
-	expect(groupTimeline([setup, critical])).toEqual([
-		{ kind: "details", id: "details:setup", entries: [setup] },
-		critical,
-	]);
-});
+it.each([{ eventKind: "error" }, { eventKind: "hook_completed", exitCode: 3 }, { family: "warning" as const }])(
+	"keeps typed critical notices outside collapsed diagnostic groups: %j",
+	(metadata) => {
+		const critical = { ...diagnostic, ...metadata };
+		expect(groupTimeline([setup, critical])).toEqual([
+			{ kind: "details", id: "details:setup", entries: [setup] },
+			critical,
+		]);
+	},
+);

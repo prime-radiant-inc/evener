@@ -99,11 +99,13 @@ function press(tree: ReactTestRenderer) {
 }
 
 function inked(tree: ReactTestRenderer, color: string): boolean {
-	return tree.root.findAll(
-		(node) =>
-			(node.props.style?.color === color || node.props.style?.borderLeftColor === color) &&
-			typeof node.type === "string",
-	).length > 0;
+	return (
+		tree.root.findAll(
+			(node) =>
+				(node.props.style?.color === color || node.props.style?.borderLeftColor === color) &&
+				typeof node.type === "string",
+		).length > 0
+	);
 }
 
 describe("a failed turn (G5)", () => {
@@ -122,7 +124,9 @@ describe("a failed turn (G5)", () => {
 
 	it("still shows a failure row with system events on", () => {
 		const { rows } = rowsAt("full", [systemEventWireFailedTurn()], true);
-		expect(rows.filter((row) => row.kind === "failure" || (row.kind === "notice" && row.eventKind === "error"))).toHaveLength(1);
+		expect(
+			rows.filter((row) => row.kind === "failure" || (row.kind === "notice" && row.eventKind === "error")),
+		).toHaveLength(1);
 	});
 });
 

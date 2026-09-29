@@ -275,7 +275,9 @@ describe("projectedRow — item entries", () => {
 
 	it("maps a daemon steering item to an informational notice labelled by its kind", () => {
 		const row = projectedRow(
-			itemEntry(item({ type: "steering", text: "<SYSTEM-REMINDER>steer</SYSTEM-REMINDER>", steeringKind: "hook-context" })),
+			itemEntry(
+				item({ type: "steering", text: "<SYSTEM-REMINDER>steer</SYSTEM-REMINDER>", steeringKind: "hook-context" }),
+			),
 		);
 		expect(row).toEqual<MobileTimelineItem>({
 			kind: "notice",
