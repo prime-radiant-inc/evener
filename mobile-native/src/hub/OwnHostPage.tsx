@@ -21,7 +21,8 @@ export function OwnHostPage(_props: NativeStackScreenProps<HubRoutes, "OwnHost">
 			<Group>
 				<Row label="Status" value={hubConnectionWord(ready, connectionLine)} />
 				<Row label="Version" value={hubVersion ?? "Unknown"} />
-				<Row label="Sessions" value={liveSessionsText(liveCount(LOCAL_HOST), false)} />
+				{/* Out of reach while the phone can't reach the hub, as a host's are. */}
+				<Row label="Sessions" value={liveSessionsText(liveCount(LOCAL_HOST), !ready)} />
 			</Group>
 		</GroupedPage>
 	);

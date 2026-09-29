@@ -26,7 +26,7 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
 
-async function mount(fleet: ScriptedFleet, options: { ready?: boolean } = {}) {
+async function mount(fleet: ScriptedFleet) {
 	const updates = createHubUpdateController({
 		client: () => ({
 			request: (async () => ({
@@ -43,8 +43,8 @@ async function mount(fleet: ScriptedFleet, options: { ready?: boolean } = {}) {
 	await updates.runCheck();
 	const hosts = new HostsController(fleet.client);
 	const live = new LiveSessionsReader(fleet.client);
-	const ready = options.ready ?? true;
-	const context: HubSheetContextValue = {
+	const ready = true;
+	let context: HubSheetContextValue = {
 		hubId: "hub-1",
 		hubName: "magic-kingdom",
 		client: null,
@@ -55,20 +55,26 @@ async function mount(fleet: ScriptedFleet, options: { ready?: boolean } = {}) {
 		live,
 	};
 	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
-	const tree = render(
+	const page = () => (
 		<HubSheetProvider value={context}>
 			<OwnHostPage
 				navigation={navigation as unknown as NativeStackScreenProps<HubRoutes, "OwnHost">["navigation"]}
 				route={{ key: "OwnHost", name: "OwnHost", params: { hubId: "hub-1" } }}
 			/>
-		</HubSheetProvider>,
+		</HubSheetProvider>
 	);
+	const tree = render(page());
 	await settle();
+	const setReady = async (next: boolean) => {
+		context = { ...context, ready: next, canUseConnection: () => next };
+		await act(async () => tree.update(page()));
+		await settle();
+	};
 	const labelled = (label: string) =>
 		tree.root.findAll(
 			(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith(label),
 		)[0]?.props.accessibilityLabel ?? null;
-	return { tree, labelled, dispose: () => (hosts.dispose(), live.dispose()) };
+	return { tree, labelled, setReady, dispose: () => (hosts.dispose(), live.dispose()) };
 }
 
 beforeEach(() => {
@@ -86,9 +92,11 @@ it("shows the hub's own machine: its state, its version and its live sessions (a
 	page.dispose();
 });
 
-it("says the hub's own machine is reconnecting in the Hub header's words", async () => {
+it("says the hub's own machine is reconnecting in the Hub header's words, its sessions out of reach", async () => {
+	const page = await mount(scriptedFleet([], [liveSession("local:a", "local")]));
 	status.line = "Reconnecting…";
-	const page = await mount(scriptedFleet([]), { ready: false });
+	await page.setReady(false);
 	expect(page.labelled("Status")).toBe("Status, Reconnecting…");
+	expect(page.labelled("Sessions")).toBe("Sessions, 1 live, out of reach");
 	page.dispose();
 });

@@ -70,15 +70,16 @@ it("asks before the Hub sheet goes while a page inside it holds an unsaved edit"
 	);
 	await act(async () => {});
 	await act(async () => navigation.current?.navigate("Hub"));
+	const root = () => {
+		const state = navigation.current?.getRootState();
+		if (!state) throw new Error("the container has no state");
+		return state;
+	};
 	// The sheet's route is the root's top; dismissing it pops that route.
-	const hubKey = navigation.current?.getRootState().routes.at(-1)?.key;
+	const hubKey = root().routes.at(-1)?.key;
 	await act(async () => {
-		navigation.current?.dispatch({
-			...StackActions.pop(),
-			source: hubKey,
-			target: navigation.current?.getRootState().key,
-		});
+		navigation.current?.dispatch({ ...StackActions.pop(), source: hubKey, target: root().key });
 	});
 	expect(asked).toHaveBeenCalledTimes(1);
-	expect(navigation.current?.getRootState().routes.map((route) => route.name)).toEqual(["Sessions", "Hub"]);
+	expect(root().routes.map((route) => route.name)).toEqual(["Sessions", "Hub"]);
 });
