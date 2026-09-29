@@ -310,10 +310,19 @@ const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) =
 		stop: () => ({ outcome: "stopping" }),
 		readFails: null,
 	};
+// Whether thread/read answers with a history identity, as a v6 hub does:
+// only then does the store take live pushes (overlay streams among them).
+const readHistory = { live: false };
+const READ_HISTORY_IDENTITY = {
+	bootGeneration: "1",
+	epoch: 1,
+	snapshot: { incarnation: "inc-1", length: 0 },
+} as const;
 // Whether model/list refuses, as a hub mid-restart does.
 const catalogHub = { fails: false };
 afterEach(() => {
 	catalogHub.fails = false;
+	readHistory.live = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
@@ -360,7 +369,11 @@ function hubClient(
 				if (params.ref === coordinatorHub.readFails) throw new Error("read failed");
 				// A second session this client can also read, by its ref.
 				const thread = otherThreads.get(String(params.ref)) ?? served;
-				return { thread, ...(olderCursor ? { olderCursor } : {}) };
+				return {
+					thread,
+					...(olderCursor ? { olderCursor } : {}),
+					...(readHistory.live ? READ_HISTORY_IDENTITY : {}),
+				};
 			}
 			// The page before the first read: older turns, and the start of history.
 			if (method === "thread/turns/list") return { data: olderTurns };
@@ -945,6 +958,97 @@ function scrollTo(tree: ReactTestRenderer, y: number) {
 		}),
 	);
 }
+
+describe("following the live end (spec 8.2)", () => {
+	// A drag the way a finger makes one: it begins, the list scrolls to y, and
+	// it ends.
+	function drag(tree: ReactTestRenderer, y: number) {
+		act(() => transcriptList(tree).props.onScrollBeginDrag());
+		scrollTo(tree, y);
+		act(() => transcriptList(tree).props.onScrollEndDrag());
+	}
+	// scrollTo's list is 4,000pt tall in a 600pt viewport: 3,400 is its end.
+	const END = 3_400;
+	// A reply streaming into the session: a new row below whatever you read.
+	function stream(hub: { notify(notification: AnyNotification): void }, served: Thread, id: string) {
+		const key = `stream:${id}:agentMessage`;
+		act(() =>
+			hub.notify({
+				method: "overlay/upserted",
+				params: {
+					threadId: served.id,
+					ref: served.evener.ref,
+					item: {
+						key,
+						kind: "stream",
+						turnId: "turn_2",
+						roundId: id,
+						streamId: id,
+						item: { id: key, type: "agentMessage", text: `streamed ${id}`, status: "inProgress" },
+					},
+				},
+			} as unknown as AnyNotification),
+		);
+	}
+	// The list growing, as it does when a row lands: while following, the
+	// screen answers by scrolling to the end.
+	function grow(tree: ReactTestRenderer, height: number) {
+		flatListCalls.length = 0;
+		act(() => transcriptList(tree).props.onContentSizeChange(390, height));
+		return flatListCalls.some((call) => call.method === "scrollToEnd");
+	}
+	beforeEach(() => {
+		readHistory.live = true;
+	});
+	// Two turns, the second still running, so replies can stream into it.
+	function working(ref: string): Thread {
+		const served = thread(ref, "active");
+		(served as unknown as { turns: unknown[] }).turns = [
+			askReplyTurn("turn_1"),
+			{ ...askReplyTurn("turn_2"), status: "inProgress" },
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnId = "turn_2";
+		return served;
+	}
+	const pill = (tree: ReactTestRenderer) =>
+		tree.root.findAll((node) =>
+			String(node.props.accessibilityLabel ?? "").endsWith("new below, scroll to the end"),
+		)[0];
+
+	it("stops following when you drag up, and says what landed below", async () => {
+		const served = working("ref-follow-away");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		stream(hub, served, "s1");
+		expect(pill(tree)?.props.accessibilityLabel).toBe("1 new below, scroll to the end");
+		expect(grow(tree, 4_200)).toBe(false);
+	});
+
+	it("follows again once you scroll back down to the end by hand", async () => {
+		const served = working("ref-follow-again");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		drag(tree, END);
+		expect(pill(tree)).toBeUndefined();
+		stream(hub, served, "s2");
+		expect(grow(tree, 4_200)).toBe(true);
+		expect(pill(tree)).toBeUndefined();
+	});
+
+	it("follows again when a flick's momentum carries you to the end", async () => {
+		const served = working("ref-follow-flick");
+		const { tree, hub } = await mount(served);
+		drag(tree, 100);
+		act(() => transcriptList(tree).props.onScrollBeginDrag());
+		scrollTo(tree, 1_000);
+		act(() => transcriptList(tree).props.onScrollEndDrag());
+		act(() => transcriptList(tree).props.onMomentumScrollBegin());
+		scrollTo(tree, END);
+		act(() => transcriptList(tree).props.onMomentumScrollEnd());
+		stream(hub, served, "s3");
+		expect(grow(tree, 4_200)).toBe(true);
+	});
+});
 
 it("shows nothing for a loaded conversation with no rows: the composer invites", async () => {
 	const { tree } = await mount(thread("ref-empty", "idle"));

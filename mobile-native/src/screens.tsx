@@ -2583,6 +2583,11 @@ export function ConversationScreen({
 								if (y + layoutMeasurement.height >= contentSize.height - 48) {
 									if (awayKeys !== null) setAwayKeys(null);
 									turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
+									// Back at the end by hand, the transcript follows it again
+									// (spec 8.2): new rows scroll into view, and the restore effect,
+									// which stands down while following, no longer pins the row you
+									// read on the way down.
+									if (readerDragging.current || readerMomentum.current) readerLatest.current = true;
 								} else if (awayKeys === null) {
 									setAwayKeys(new Set(timelineRows.map(readerKey)));
 								}
