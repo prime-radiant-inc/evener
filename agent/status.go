@@ -133,6 +133,7 @@ type DelegateStatusInfo struct {
 	Status              string                       `json:"status"`
 	Outcome             string                       `json:"outcome,omitempty"`
 	Reason              string                       `json:"reason,omitempty"`
+	Error               string                       `json:"error,omitempty"`
 	Terminal            bool                         `json:"terminal,omitempty"`
 	Resumable           bool                         `json:"resumable"`
 	NeedsAttention      bool                         `json:"needs_attention"`
@@ -506,6 +507,7 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 	if row.lastOutcome != nil {
 		out.Outcome = string(row.lastOutcome.Status)
 		out.Reason = row.lastOutcome.Reason
+		out.Error = row.lastOutcome.Error
 		out.Terminal = delegateRunTerminal(row.lastOutcome, row.currentRunOpen)
 		if !row.lastOutcome.EndedAt.IsZero() {
 			out.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
@@ -552,7 +554,7 @@ func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdat
 		DelegateID: info.DelegateID, OwnerSessionID: info.OwnerSessionID, RootSessionID: info.RootSessionID,
 		ChildSessionID: info.ChildSessionID, TranscriptRef: info.TranscriptRef, ParentDelegateID: info.ParentDelegateID,
 		Type: info.Type, Lifecycle: info.Lifecycle, Phase: info.Phase, Status: info.Status, Outcome: info.Outcome,
-		Reason: info.Reason, Terminal: info.Terminal, Resumable: info.Resumable, NeedsAttention: info.NeedsAttention, NotResumableReason: info.NotResumableReason,
+		Reason: info.Reason, Error: info.Error, Terminal: info.Terminal, Resumable: info.Resumable, NeedsAttention: info.NeedsAttention, NotResumableReason: info.NotResumableReason,
 		ProjectionRevision: info.ProjectionRevision, Task: info.Task, Description: info.Description, AgentType: info.AgentType,
 		RequestedModel: info.RequestedModel, ResolvedProfileID: info.ResolvedProfileID, ResolvedModel: info.ResolvedModel,
 		Model: info.Model, ReasoningEffort: info.ReasoningEffort, OriginTurnID: info.OriginTurnID,
