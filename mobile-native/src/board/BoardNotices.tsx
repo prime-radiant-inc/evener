@@ -5,8 +5,8 @@ import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Notice } from "./notices";
 
-/** Opens the Hub at a notice's subject, or today's screen until its page
- * lands. The Board's notice rows and a tapped notice banner both use it. */
+/** Opens the Hub at a notice's subject: a host, a provider's sign-in or a
+ * plugin. The Board's notice rows and a tapped notice banner both use it. */
 export function openNotice(
 	navigation: Pick<NativeStackNavigationProp<Routes>, "navigate">,
 	hubId: string,
@@ -22,7 +22,14 @@ export function openNotice(
 	else if (notice.kind === "host")
 		// Ruling 25: the Hub opens at that host, its home kept under the page.
 		navigation.navigate("Hub", { screen: "Hosts", params: { hubId, focus: notice.sourceId }, initial: false });
-	else navigation.navigate("Plugins", { hubId });
+	else {
+		// Ruling 25 again: the Hub opens at Plugins with that plugin's detail.
+		navigation.navigate("Hub", {
+			screen: "Plugins",
+			params: { hubId, focus: { plugin: notice.pluginId, marketplace: notice.marketplace } },
+			initial: false,
+		});
+	}
 }
 
 /** The Board's notices, one row each under the chips (spec 7.1). */

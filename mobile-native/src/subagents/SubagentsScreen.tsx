@@ -7,11 +7,12 @@ import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { FlatList, Pressable, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { FlatList, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
 import { HubModels } from "../hubModels";
 import type { Routes } from "../screens";
+import { SearchField } from "../sheet/Grouped";
 import { Toast, useToast } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type SubagentFilter, type SubagentListItem, subagentListItems, subagentListKey } from "./subagentList";
@@ -167,7 +168,9 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				</View>
 			) : null}
 			{/* Kept while it has words, so a list that shrinks never stays filtered with no way to clear it. */}
-			{tally.total > SEARCH_AFTER || query !== "" ? <SearchField query={query} onChange={setQuery} /> : null}
+			{tally.total > SEARCH_AFTER || query !== "" ? (
+				<SearchField label="Filter subagents" query={query} onChange={setQuery} />
+			) : null}
 			{notice ? (
 				<Text allowFontScaling={allowFontScaling} style={quiet}>
 					{notice}
@@ -283,47 +286,6 @@ function FilterChip({
 				<Text style={{ color: palette.inkMid, fontVariant: ["tabular-nums"] }}>{count}</Text>
 			</Text>
 		</Pressable>
-	);
-}
-
-function SearchField({ query, onChange }: { query: string; onChange(query: string): void }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<View
-			style={{
-				marginHorizontal: 16,
-				minHeight: 36,
-				flexDirection: "row",
-				alignItems: "center",
-				gap: 6,
-				paddingHorizontal: 10,
-				borderRadius: 10,
-				backgroundColor: palette.inset,
-			}}
-		>
-			<SymbolView name="magnifyingglass" size={15} tintColor={palette.inkLow} />
-			<TextInput
-				accessibilityLabel="Filter subagents"
-				placeholder="Filter subagents"
-				placeholderTextColor={palette.inkLow}
-				value={query}
-				onChangeText={onChange}
-				autoCorrect={false}
-				allowFontScaling={allowFontScaling}
-				style={{ flex: 1, color: palette.inkHi, fontSize: 17 * scale, paddingVertical: 8 }}
-			/>
-			{query ? (
-				<Pressable
-					accessibilityRole="button"
-					accessibilityLabel="Clear filter"
-					onPress={() => onChange("")}
-					hitSlop={10}
-				>
-					<SymbolView name="xmark.circle.fill" size={15} tintColor={palette.inkLow} />
-				</Pressable>
-			) : null}
-		</View>
 	);
 }
 

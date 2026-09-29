@@ -17,14 +17,15 @@ import { useDisplayChoices } from "../display/displayContext";
 import { APPEARANCE_LABELS } from "../display/displayPreferences";
 import { versionDriftTag } from "../hosts/hostStatus";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
-import { providerStatus } from "../providers/providerStatus";
+import { statusOf } from "../providers/providerStatus";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { appVersionText, hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useAuthStatuses } from "./useAuthStatuses";
+import { useInstalledPluginCount } from "./useInstalledPluginCount";
 
-type InterimScreen = "Plugins" | "KeybindingPreferences" | "LaunchSettings" | "HubSettings";
+type InterimScreen = "KeybindingPreferences" | "LaunchSettings" | "HubSettings";
 
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
 	const { hubId, hubName, client, ready, canUseConnection, updates, hosts } = useHubSheet();
@@ -75,6 +76,9 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 		// the previous hub's statuses.
 		useAuthStatuses(canUseConnection() ? client : null),
 	);
+	// Gated on canUseConnection, so a re-key window never reads the previous
+	// hub's list.
+	const installedPlugins = useInstalledPluginCount(canUseConnection() ? client : null);
 	return (
 		<GroupedPage>
 			<Text
@@ -114,7 +118,13 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					chevron
 					onPress={() => navigation.navigate("Providers", { hubId })}
 				/>
-				<Row icon="puzzlepiece.extension" label="Plugins" chevron onPress={() => leaveFor("Plugins")} />
+				<Row
+					icon="puzzlepiece.extension"
+					label="Plugins"
+					value={installedPlugins ?? undefined}
+					chevron
+					onPress={() => navigation.navigate("Plugins", { hubId })}
+				/>
 			</Group>
 			<GroupLabel>This phone</GroupLabel>
 			<Group>
@@ -195,11 +205,13 @@ function fleetSummary(rows: readonly HostRow[] | null, hubVersion: string | unde
 
 /** The Providers row's value: every instance, tagged amber with how many
  * need a sign-in (only "Sign-in expired" does, ruling 6). */
-function providersSummary(instances: readonly InstanceEntry[] | null, auth: ReadonlyMap<string, AuthStatusResponse>) {
+function providersSummary(
+	instances: readonly InstanceEntry[] | null,
+	auth: ReadonlyMap<string, AuthStatusResponse> | null,
+) {
 	if (!instances) return null;
-	const toSignIn = instances.filter(
-		(instance) => providerStatus(instance, auth.get(instance.name)).tone === "attention",
-	).length;
+	// No tag until the statuses are read: only they say a sign-in expired.
+	const toSignIn = instances.filter((instance) => statusOf(instance, auth)?.tone === "attention").length;
 	return {
 		count: instances.length,
 		tag: toSignIn > 0 ? { text: `${toSignIn} to sign in`, tone: "amber" as const } : null,

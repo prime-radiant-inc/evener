@@ -32,9 +32,9 @@ export function useTranscript(ref: string): UseTranscriptResult {
   // The re-entrancy guard is a REF, not the loadingOlder state: two callers in
   // the same tick both read `false` from a state closure and both fire, which
   // is exactly what happened once paging became automatic - the near-top scroll
-  // trigger and the sentinel's IntersectionObserver both fired for one scroll
-  // and requested the SAME cursor twice (observed live: cursors 132, 102, 102,
-  // 72...). A ref is updated synchronously, so the second caller sees the first
+  // trigger and the geometry fill both fired for one scroll and requested the
+  // SAME cursor twice (observed live: cursors 132, 102, 102, 72...). A ref is
+  // updated synchronously, so the second caller sees the first
   // one's claim. loadingOlder stays as the RENDER signal it always was.
   const inFlightRef = useRef(false);
 

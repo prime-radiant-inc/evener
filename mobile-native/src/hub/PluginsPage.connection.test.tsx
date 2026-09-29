@@ -1,12 +1,12 @@
-// Screen-level tests for the recovery the reconnect banners promise: a
-// screen that survives a connection flap behind a banner must also catch up
-// on what changed while it was away. The wall this screen used to show
-// remounted the plugins store on every recovery, so the catch-up read came
-// free with the remount; keeping the store mounted hands that duty to the
-// store's own reconnect recovery (storeLifecycle.ts), which only runs when a
-// host drives connectionChanged - the way useCredentialStore drives the
-// credential store (credentialStore.ts). Mirrors hub/ProvidersPage.test.tsx's
-// mocking: every native edge the screen reaches is mocked here and nowhere
+// Page-level tests for a connection flap: a page that survives one keeps
+// its content under the sheet's status line, and must also catch up on what
+// changed while it was away, keep a write's gate shut across it, and ignore
+// a replaced client's late result. It offers no Reconnect: the app
+// reconnects on its own. Keeping the store mounted hands the catch-up read to
+// the store's own reconnect recovery (storeLifecycle.ts), which only runs
+// when a host drives connectionChanged - the way useCredentialStore drives
+// the credential store (credentialStore.ts). Mirrors hub/ProvidersPage.test.tsx's
+// mocking: every native edge the page reaches is mocked here and nowhere
 // else, and the hub is the SDK's FakeClient.
 import type { ComponentProps } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
@@ -14,32 +14,38 @@ import { expect, it, vi } from "vitest";
 import type { ConnectionState, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { INCOMPATIBLE_VERSIONS } from "./connectionRecovery";
-import { MarketplaceBrowser } from "./MarketplaceBrowser";
-import { PluginsScreen } from "./PluginsScreen";
-import { createPluginMutationGate } from "./pluginMutationGate";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
+import { MarketplaceBrowser } from "../MarketplaceBrowser";
+import { PluginsPage } from "./PluginsPage";
+import { createPluginMutationGate } from "../pluginMutationGate";
 import {
 	dropped,
 	nativeModuleMock,
 	render,
 	renderedText,
 	screenConnection as connection,
-} from "./renderNative.testkit";
+} from "../renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 vi.mock("react-native", async () => ({
-	...(await import("./renderNative.testkit")).nativeModuleMock(),
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	Switch: "Switch",
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+// Shown once, as a page that stays in front.
+vi.mock("@react-navigation/native", async () => {
+	const { useEffect } = await import("react");
+	return { useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]) };
+});
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const props = {
 	route: { params: { hubId: "hub-1" } },
-} as unknown as ComponentProps<typeof PluginsScreen>;
+} as unknown as ComponentProps<typeof PluginsPage>;
 
 const ACME: MarketplaceEntry = {
 	name: "acme",
@@ -47,7 +53,7 @@ const ACME: MarketplaceEntry = {
 	lastUpdated: 1,
 };
 
-// The residue guard PluginsScreen wires around the browser in production, in
+// The residue guard PluginsPage wires around the browser in production, in
 // the minimal shape a reconnect test needs: nothing is fenced, nothing is
 // recorded, and every authoritative read reports to nobody. These tests
 // exercise the connection's own recovery, never a marketplace removal.
@@ -87,6 +93,18 @@ function subtreeText(node: ReactTestInstance): string {
 	return chunks.join(" ");
 }
 
+/** An installed plugin's row, which opens its detail. */
+function pluginRow(tree: ReturnType<typeof render>, name: string): ReactTestInstance {
+	const rows = tree.root.findAll(
+		(node) =>
+			node.props.accessibilityRole === "button" &&
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith(`${name}, `),
+	);
+	if (rows.length !== 1) throw new Error(`expected one ${name} row, found ${rows.length}`);
+	return rows[0];
+}
+
 function modalContaining(tree: ReturnType<typeof render>, needle: string): ReactTestInstance {
 	const modals = tree.root
 		.findAll((node) => (node.type as unknown as string) === "Modal")
@@ -105,18 +123,18 @@ it("reads the plugin list again once a flap the screen survived is ready again",
 		};
 	});
 	harness.connection = connection(hub, "ready");
-	const tree = render(<PluginsScreen {...props} />);
+	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("kept");
 	expect(reads).toBe(1);
 
 	harness.connection = connection(hub, "reconnecting");
 	await act(async () => {
-		tree.update(<PluginsScreen {...props} />);
+		tree.update(<PluginsPage {...props} />);
 	});
 	harness.connection = connection(hub, "ready");
 	await act(async () => {
-		tree.update(<PluginsScreen {...props} />);
+		tree.update(<PluginsPage {...props} />);
 	});
 	await act(async () => {});
 	await act(async () => {});
@@ -131,11 +149,9 @@ it("shows the connection status inside an open plugin detail modal, with no Reco
 	const hub = new FakeClient("ready");
 	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
 	harness.connection = connection(hub, "ready");
-	const tree = render(<PluginsScreen {...props} />);
+	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
-	const row = tree.root.find(
-		(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith("kept"),
-	);
+	const row = pluginRow(tree, "kept");
 	act(() => {
 		row.props.onPress();
 	});
@@ -146,12 +162,12 @@ it("shows the connection status inside an open plugin detail modal, with no Reco
 	// modal's own content intact. The app reconnects on its own.
 	harness.connection = dropped(connection(hub, "ready"));
 	await act(async () => {
-		tree.update(<PluginsScreen {...props} />);
+		tree.update(<PluginsPage {...props} />);
 	});
-	const modal = modalContaining(tree, "Installation details");
+	const modal = modalContaining(tree, "Upgrade automatically");
 	expect(subtreeText(modal)).toContain("Reconnecting…");
 	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
-	expect(subtreeText(modal)).toContain("Installation details");
+	expect(subtreeText(modal)).toContain("Upgrade automatically");
 });
 
 it("keeps the last action's notice when a disconnected press never runs the action", async () => {
@@ -163,11 +179,9 @@ it("keeps the last action's notice when a disconnected press never runs the acti
 		return { plugins: [plugin("kept")] };
 	});
 	harness.connection = connection(hub, "ready");
-	const tree = render(<PluginsScreen {...props} />);
+	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
-	const row = tree.root.find(
-		(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith("kept"),
-	);
+	const row = pluginRow(tree, "kept");
 	act(() => {
 		row.props.onPress();
 	});
@@ -175,11 +189,11 @@ it("keeps the last action's notice when a disconnected press never runs the acti
 
 	// A successful upgrade leaves its notice in the open modal.
 	await act(async () => {
-		modalContaining(tree, "Installation details").findByProps({ accessibilityLabel: "Upgrade" }).props.onPress();
+		modalContaining(tree, "Upgrade automatically").findByProps({ accessibilityLabel: "Upgrade" }).props.onPress();
 	});
 	await act(async () => {});
 	expect(upgrades).toBe(1);
-	expect(subtreeText(modalContaining(tree, "Installation details"))).toContain("Checked for upgrades.");
+	expect(subtreeText(modalContaining(tree, "Upgrade automatically"))).toContain("Already up to date");
 
 	// The connection drops with the modal open: a press now is a no-op the
 	// gate refuses on readiness, and it must not retire the notice the last
@@ -187,21 +201,21 @@ it("keeps the last action's notice when a disconnected press never runs the acti
 	// nothing ran.
 	harness.connection = connection(hub, "reconnecting");
 	await act(async () => {
-		tree.update(<PluginsScreen {...props} />);
+		tree.update(<PluginsPage {...props} />);
 	});
 	await act(async () => {
-		modalContaining(tree, "Installation details").findByProps({ accessibilityLabel: "Upgrade" }).props.onPress();
+		modalContaining(tree, "Upgrade automatically").findByProps({ accessibilityLabel: "Upgrade" }).props.onPress();
 	});
 	await act(async () => {});
 	expect(upgrades).toBe(1);
-	expect(subtreeText(modalContaining(tree, "Installation details"))).toContain("Checked for upgrades.");
+	expect(subtreeText(modalContaining(tree, "Upgrade automatically"))).toContain("Already up to date");
 });
 
 it("walls a fatal close with the reason no retry can clear it", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
 	harness.connection = connection(hub, "ready");
-	const tree = render(<PluginsScreen {...props} />);
+	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("kept");
 
@@ -214,10 +228,10 @@ it("walls a fatal close with the reason no retry can clear it", async () => {
 		error: INCOMPATIBLE_VERSIONS,
 	};
 	await act(async () => {
-		tree.update(<PluginsScreen {...props} />);
+		tree.update(<PluginsPage {...props} />);
 	});
 	const walled = renderedText(tree);
-	expect(walled).toContain("Connect to Work hub to manage plugins.");
+	expect(walled).not.toContain("kept");
 	expect(walled).toContain(INCOMPATIBLE_VERSIONS);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
@@ -240,6 +254,7 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 	harness.connection = connection(hub, "ready");
 	const browser = (state: ConnectionState) => (
 		<MarketplaceBrowser
+			segment="marketplaces"
 			client={client}
 			connectionState={state}
 			hubName="Work hub"
@@ -259,7 +274,7 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 	);
 	const tree = render(browser("ready"));
 	await act(async () => {});
-	const add = tree.root.find((node) => node.props.accessibilityLabel === "Add marketplace");
+	const add = tree.root.findByProps({ accessibilityLabel: "Add marketplace" });
 	act(() => {
 		add.props.onPress();
 	});
@@ -279,9 +294,8 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	const fakeA = new FakeClient("ready");
 	fakeA.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
 	harness.connection = connection(fakeA, "ready");
-	const forHub = (hubId: string) =>
-		({ route: { params: { hubId } } }) as unknown as ComponentProps<typeof PluginsScreen>;
-	const tree = render(<PluginsScreen {...forHub("hub-1")} />);
+	const forHub = (hubId: string) => ({ route: { params: { hubId } } }) as unknown as ComponentProps<typeof PluginsPage>;
+	const tree = render(<PluginsPage {...forHub("hub-1")} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("kept");
 
@@ -296,13 +310,15 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: null,
 		state: "connecting",
 		fatal: false,
+		downSince: null,
+		lastLiveAt: null,
 	};
 	await act(async () => {
-		tree.update(<PluginsScreen {...forHub("hub-2")} />);
+		tree.update(<PluginsPage {...forHub("hub-2")} />);
 	});
 	const rekeyed = renderedText(tree);
 	expect(rekeyed).not.toContain("kept");
-	expect(rekeyed).toContain("to manage plugins.");
+	expect(rekeyed).toContain("Connecting to Two hub…");
 	expect(fakeA.calls.filter((call) => call.method === "evener/plugin/list").length).toBe(1);
 
 	// The new hub is a fresh mount: its own list renders once its
@@ -313,9 +329,11 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: fakeB,
 		state: "ready",
 		fatal: false,
+		downSince: null,
+		lastLiveAt: null,
 	};
 	await act(async () => {
-		tree.update(<PluginsScreen {...forHub("hub-2")} />);
+		tree.update(<PluginsPage {...forHub("hub-2")} />);
 	});
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("from-b");
@@ -325,7 +343,7 @@ it("recovers a replacement client's failed first read when it becomes ready", as
 	const first = new FakeClient("ready");
 	first.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
 	harness.connection = connection(first, "ready");
-	const tree = render(<PluginsScreen {...props} />);
+	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("kept");
 
@@ -341,7 +359,7 @@ it("recovers a replacement client's failed first read when it becomes ready", as
 	}));
 	harness.connection = connection(second, "connecting");
 	await act(async () => {
-		tree.update(<PluginsScreen {...props} />);
+		tree.update(<PluginsPage {...props} />);
 	});
 	expect(renderedText(tree)).toContain("kept");
 	expect(renderedText(tree)).not.toContain("Could not load installed plugins");
@@ -349,7 +367,7 @@ it("recovers a replacement client's failed first read when it becomes ready", as
 	second.state = "ready";
 	harness.connection = connection(second, "ready");
 	await act(async () => {
-		tree.update(<PluginsScreen {...props} />);
+		tree.update(<PluginsPage {...props} />);
 	});
 	await act(async () => {});
 	await act(async () => {});
@@ -379,7 +397,7 @@ it("re-reads the marketplaces the browse panel shows when the connection is read
 	// The store's connection wiring is the screen's now, so the recovery this
 	// pins is driven the way the app drives it: through the mounted screen.
 	harness.connection = connection(hub, "ready");
-	const tree = render(<PluginsScreen {...props} />);
+	const tree = render(<PluginsPage {...props} />);
 	await act(async () => {});
 	// Switch to the browse tab, which mounts MarketplaceBrowser.
 	await act(async () => {
@@ -390,11 +408,11 @@ it("re-reads the marketplaces the browse panel shows when the connection is read
 
 	harness.connection = connection(hub, "reconnecting");
 	await act(async () => {
-		tree.update(<PluginsScreen {...props} />);
+		tree.update(<PluginsPage {...props} />);
 	});
 	harness.connection = connection(hub, "ready");
 	await act(async () => {
-		tree.update(<PluginsScreen {...props} />);
+		tree.update(<PluginsPage {...props} />);
 	});
 	await act(async () => {});
 	await act(async () => {});
@@ -402,4 +420,86 @@ it("re-reads the marketplaces the browse panel shows when the connection is read
 	// already read is read again, and a change made while it was away lands.
 	expect(reads).toBe(2);
 	expect(renderedText(tree)).toContain("added-while-away");
+});
+
+it("holds a plugin write's gate across a flap the write outlives", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept"), plugin("other")] }));
+	let release!: () => void;
+	hub.on(
+		"evener/plugin/disable",
+		() =>
+			new Promise((resolve) => {
+				release = () => resolve({ plugins: [{ ...plugin("kept"), enabled: false }, plugin("other")] });
+			}),
+	);
+	harness.connection = connection(hub, "ready");
+	const tree = render(<PluginsPage {...props} />);
+	await act(async () => {});
+	const toggle = (name: string) => tree.root.findByProps({ accessibilityLabel: `${name} on by default` });
+	await act(async () => {
+		toggle("kept").props.onValueChange(false);
+	});
+	expect(toggle("other").props.disabled).toBe(true);
+
+	// The connection flaps while the write is on the wire. The gate lives above
+	// the page's connection handling, so the flap can't open it: back to ready,
+	// the other plugin's switch still waits for the write to land.
+	harness.connection = connection(hub, "reconnecting");
+	await act(async () => {
+		tree.update(<PluginsPage {...props} />);
+	});
+	harness.connection = connection(hub, "ready");
+	await act(async () => {
+		tree.update(<PluginsPage {...props} />);
+	});
+	await act(async () => {});
+	expect(toggle("other").props.disabled).toBe(true);
+
+	await act(async () => {
+		release();
+	});
+	await act(async () => {});
+	expect(toggle("other").props.disabled).toBe(false);
+});
+
+it("ignores a replaced client's late upgrade result", async () => {
+	const first = new FakeClient("ready");
+	first.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	let release!: () => void;
+	first.on(
+		"evener/plugin/upgrade",
+		() =>
+			new Promise((resolve) => {
+				release = () => resolve({ plugins: [{ ...plugin("kept"), version: "2.0.0" }] });
+			}),
+	);
+	harness.connection = connection(first, "ready");
+	const tree = render(<PluginsPage {...props} />);
+	await act(async () => {});
+	act(() => {
+		pluginRow(tree, "kept").props.onPress();
+	});
+	await act(async () => {
+		modalContaining(tree, "Upgrade automatically").findByProps({ accessibilityLabel: "Upgrade" }).props.onPress();
+	});
+
+	// A fresh client replaces the first while its upgrade is still on the wire.
+	const second = new FakeClient("ready");
+	second.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	harness.connection = connection(second, "ready");
+	await act(async () => {
+		tree.update(<PluginsPage {...props} />);
+	});
+	await act(async () => {});
+
+	// The first client's answer lands late: it speaks for a client the page no
+	// longer reads through, so the detail says nothing about it.
+	await act(async () => {
+		release();
+	});
+	await act(async () => {});
+	const detail = subtreeText(modalContaining(tree, "Upgrade automatically"));
+	expect(detail).not.toContain("Upgraded to");
+	expect(detail).not.toContain("Already up to date");
 });

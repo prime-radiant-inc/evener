@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
-import { authByProvider, providerStatus, signInKind } from "./providerStatus";
+import { authByProvider, providerStatus, signInKind, statusOf } from "./providerStatus";
 
 type Facts = Pick<InstanceEntry, "activeSource" | "authModes" | "credentialRequired">;
 const instance = (over: Partial<Facts>): Facts => ({
@@ -41,4 +41,18 @@ it("says how a provider signs in", () => {
 	expect(signInKind({ authModes: ["apiKey"] })).toBe("API key");
 	expect(signInKind({ authModes: ["credentialJson"] })).toBe("API key");
 	expect(signInKind({ authModes: [] })).toBe("None");
+});
+
+it("says nothing of an account sign-in until the hub's statuses have been read", () => {
+	// An expired sign-in would otherwise read "Signed in" from the row alone.
+	const oauth = { ...instance({ activeSource: "oauth", authModes: ["oauth"] }), name: "codex" };
+	expect(statusOf(oauth, null)).toBeNull();
+	expect(statusOf(oauth, new Map())).toEqual({ word: "Signed in", tone: "ink" });
+	expect(statusOf(oauth, authByProvider([{ provider: "codex", needsLogin: true } as AuthStatusResponse]))).toEqual({
+		word: "Sign-in expired",
+		tone: "attention",
+	});
+	// A key's state is on the row itself.
+	const key = { ...instance({ activeSource: "store", authModes: ["apiKey"] }), name: "lunaroute" };
+	expect(statusOf(key, null)).toEqual({ word: "Key set", tone: "ink" });
 });

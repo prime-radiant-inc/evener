@@ -99,6 +99,7 @@ async function mount(
 		/** Whether a control that needs the hub may act (a re-key window says no). */
 		usable?: boolean;
 		fleet?: ScriptedFleet;
+		client?: HubSheetContextValue["client"];
 		providers?: FakeClient;
 	} = {},
 ) {
@@ -110,7 +111,7 @@ async function mount(
 	context = {
 		hubId: "hub-1",
 		hubName: "Work hub",
-		client: (options.providers ?? null) as HubSheetContextValue["client"],
+		client: options.client ?? ((options.providers ?? null) as HubSheetContextValue["client"]),
 		ready: options.ready ?? true,
 		canUseConnection: () => live.usable,
 		updates: updates.controller,
@@ -241,7 +242,6 @@ it("says the hub is connected and lists its pages", async () => {
 it("leaves the sheet for today's screens until their pages land (rulings 10 and 12)", async () => {
 	const { root, sheet, press } = await mount();
 	const interim: [string, string][] = [
-		["Plugins", "Plugins"],
 		["Keyboard shortcuts", "KeybindingPreferences"],
 		["Launch defaults", "LaunchSettings"],
 		["Hub settings", "HubSettings"],
@@ -255,6 +255,48 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	}
 	expect(root.navigate).not.toHaveBeenCalled();
 	expect(sheet.navigate).not.toHaveBeenCalled();
+});
+
+/** A hub with `count` plugins installed, which can say its plugins changed. */
+function pluginHub(count: number) {
+	const hub = { count, notify: (_notification: { method: string }) => {} };
+	const client = {
+		request: async (method: string) => {
+			if (method !== "evener/plugin/list") throw new Error(`unexpected ${method}`);
+			return { plugins: Array.from({ length: hub.count }, (_, index) => ({ plugin: `p${index}` })) };
+		},
+		onNotification: (listener: (notification: { method: string }) => void) => {
+			hub.notify = listener;
+			return () => {};
+		},
+	} as unknown as HubSheetContextValue["client"];
+	return { hub, client };
+}
+
+it("pushes Plugins inside the sheet, valued with the number installed", async () => {
+	const { hub, client } = pluginHub(3);
+	const { root, sheet, find, press } = await mount({ client });
+	// No update tag: the hub doesn't say which plugins have one (ruling 7).
+	expect(find("Plugins, 3")).not.toBeNull();
+	press("Plugins, 3");
+	expect(sheet.navigate).toHaveBeenCalledWith("Plugins", { hubId: "hub-1" });
+	expect(root.dispatch).not.toHaveBeenCalled();
+
+	// The count follows the hub's own word that its plugins changed.
+	hub.count = 4;
+	await act(async () => {
+		hub.notify({ method: "evener/plugin/updated" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	expect(find("Plugins, 4")).not.toBeNull();
+});
+
+it("reads no plugins while the connection can't be used, even when it says ready", async () => {
+	// A re-key window: the client may still be the previous hub's.
+	const { client } = pluginHub(3);
+	const { find } = await mount({ client, usable: false });
+	expect(find("Plugins, 3")).toBeNull();
+	expect(find("Plugins")).not.toBeNull();
 });
 
 it("pushes Hubs inside the sheet, valued with the number of saved hubs", async () => {
@@ -284,7 +326,8 @@ it("keeps every row, pressable, while the connection is down, and never asks to 
 	expect(renderedText(tree)).toContain("Reconnecting…");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
 	for (const label of ROWS) expect(find(label)?.props.disabled).toBe(false);
-	press("Plugins");
+	// A row still leaving for today's screen works while the connection is down.
+	press("Hub settings");
 	expect(root.dispatch).toHaveBeenCalledTimes(1);
 });
 

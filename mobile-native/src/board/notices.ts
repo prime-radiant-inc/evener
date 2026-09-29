@@ -6,7 +6,7 @@ import { plural } from "./attention";
 export type Notice = { key: string; text: string } & (
 	| { kind: "signIn"; action: "Sign in"; providerId: string }
 	| { kind: "host"; action: "Details"; sourceId: string }
-	| { kind: "plugin"; action: "Plugins"; pluginId: string }
+	| { kind: "plugin"; action: "Plugins"; pluginId: string; marketplace: string }
 );
 
 /** The Board's notices: every provider whose sign-in expired, every offline
@@ -54,6 +54,7 @@ export function notices(input: {
 			text: `${shared ? `${plugin} from ${marketplace}` : plugin} is broken`,
 			action: "Plugins",
 			pluginId: plugin,
+			marketplace,
 		});
 	}
 	return result;

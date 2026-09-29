@@ -1,16 +1,22 @@
+// The Hub's Plugins page (spec 12; rulings 7 and 9): the plugins installed on
+// the hub, grouped by marketplace, each with its "On by default" switch and a
+// detail sheet; the marketplaces, added, refreshed and removed; and Browse, the
+// marketplaces' catalogs to install from. The mutation gate, the applied-removal
+// guard and the stores live here, above the connection's early returns, and the
+// details open as sheets over the list so that machinery stays with it.
+import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
-	ActivityIndicator,
-	Alert,
-	FlatList,
-	Platform,
-	Pressable,
-	ScrollView,
-	Switch,
-	TextInput,
-	View,
-} from "react-native";
+	Fragment,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
+import { ActivityIndicator, Alert, Pressable, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type {
 	AnyNotification,
@@ -18,29 +24,46 @@ import type {
 	MarketplaceEntry,
 	MethodName,
 	MethodTypes,
+	PluginEntry,
 	PluginRefParams,
 } from "@evener/appwire-client";
 import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { HoldingModal } from "./alerts/HoldingModal";
-import { ConnectionStatus } from "./ConnectionStatus";
-import { isReady, whenReady } from "./connectionDisplay";
-import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "./MarketplaceBrowser";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { HoldingModal } from "../alerts/HoldingModal";
+import { isReady } from "../connectionDisplay";
+import { destructiveButton } from "../haptics";
+import { INSTALLED_PLUGINS_FAILED, MarketplaceBrowser } from "../MarketplaceBrowser";
 import {
 	createPluginMutationGate,
 	PLUGIN_MUTATION_BUSY,
 	runGatedMutation,
 	type PluginMutationGate,
-} from "./pluginMutationGate";
+} from "../pluginMutationGate";
+import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
 import {
-	ConnectionWall,
-	HUB_NO_LONGER_SELECTED,
-	ModalConnectionStatus,
-	useRetainedScreenConnection,
-} from "./retainedScreen";
-import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
-import { destructiveButton } from "./haptics";
+	Group,
+	GroupedPage,
+	GroupFooter,
+	GroupGap,
+	GroupLabel,
+	Row,
+	SearchField,
+	Segmented,
+	SwitchRow,
+} from "../sheet/Grouped";
+import { Connecting, SheetStatus } from "../sheet/SheetStatus";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
+import type { HubRoutes } from "./hubSheetContext";
+
+type Segment = "installed" | "marketplaces" | "browse";
+
+const SEGMENTS: readonly { value: Segment; label: string }[] = [
+	{ value: "installed", label: "Installed" },
+	{ value: "marketplaces", label: "Marketplaces" },
+	{ value: "browse", label: "Browse" },
+];
+
+type PluginFocus = NonNullable<HubRoutes["Plugins"]["focus"]>;
 
 /** The applied marketplace removals one client's writes reported, keyed by
  * name with the publication version each fence predates: a name is one a
@@ -64,16 +87,16 @@ type AppliedRemovalGuard = {
 
 const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
 
-// A mounted screen re-keyed to another hub is a fresh screen: the
-// reconnect-retention state below - the banner's everReady, the last
+// A mounted page re-keyed to another hub is a fresh page: the
+// reconnect-retention state below - the display's everReady, the last
 // client a retry's gap renders through - belongs to the hub it was built
 // for, and a re-key remounts the body whole (the keyed wrapper's own
 // rationale: useRetainedScreenConnection's doc).
-export function PluginsScreen(props: NativeStackScreenProps<Routes, "Plugins">) {
-	return <PluginsScreenBody key={props.route.params.hubId} {...props} />;
+export function PluginsPage(props: NativeStackScreenProps<HubRoutes, "Plugins">) {
+	return <PluginsPageBody key={props.route.params.hubId} {...props} />;
 }
 
-function PluginsScreenBody({ route }: NativeStackScreenProps<Routes, "Plugins">) {
+function PluginsPageBody({ route, navigation }: NativeStackScreenProps<HubRoutes, "Plugins">) {
 	// One plugin mutation at a time, across this list AND the browser: switching
 	// tabs unmounts whichever one started it, so the gate lives here, at the
 	// screen's own top level - above the early returns below, which unmount and
@@ -86,7 +109,7 @@ function PluginsScreenBody({ route }: NativeStackScreenProps<Routes, "Plugins">)
 	// credential store is (credentialStore.ts), as committed state a discarded
 	// render cannot leave behind.
 	const [gate] = useState(createPluginMutationGate);
-	const { activeProfile, client, state, error, display, canUseConnection, renderClient } = useRetainedScreenConnection(
+	const { activeProfile, client, state, display, canUseConnection, renderClient } = useRetainedScreenConnection(
 		route.params.hubId,
 	);
 	// An applied marketplace removal's residue lives beside the gate, above the
@@ -250,27 +273,37 @@ function PluginsScreenBody({ route }: NativeStackScreenProps<Routes, "Plugins">)
 		if (currentClient.current !== owner) return;
 		setMarketplaceWarning((current) => (current?.name === name ? null : current));
 	}, []);
-	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
+	const clearFocus = useCallback(() => navigation.setParams({ focus: undefined }), [navigation]);
+	if (activeProfile?.id !== route.params.hubId)
+		return (
+			<GroupedPage>
+				<GroupFooter>{HUB_NO_LONGER_SELECTED}</GroupFooter>
+			</GroupedPage>
+		);
 	if (display === "wall" || !renderClient)
-		return <ConnectionWall hubName={activeProfile.name} purpose="manage plugins" error={error} />;
+		return (
+			<GroupedPage>
+				<SheetStatus />
+				<Connecting hubName={activeProfile.name} />
+			</GroupedPage>
+		);
 	return (
-		<>
-			{display === "banner" ? <ConnectionStatus /> : null}
-			<Plugins
-				key={activeProfile.id}
-				client={renderClient}
-				connectionState={state}
-				canUseConnection={canUseConnection}
-				hubName={activeProfile.name}
-				gate={gate}
-				appliedRemovalNames={appliedRemovalNames}
-				marketplaceWarning={visibleMarketplaceWarning}
-				onAppliedRemoval={markAppliedRemoval}
-				onAuthoritativeMarketplaces={reconcileAppliedRemovals}
-				onMarketplaceAdded={clearAddedMarketplace}
-				onRemovedMarketplace={clearMarketplaceWarning}
-			/>
-		</>
+		<Plugins
+			key={activeProfile.id}
+			client={renderClient}
+			connectionState={state}
+			canUseConnection={canUseConnection}
+			hubName={activeProfile.name}
+			gate={gate}
+			appliedRemovalNames={appliedRemovalNames}
+			marketplaceWarning={visibleMarketplaceWarning}
+			onAppliedRemoval={markAppliedRemoval}
+			onAuthoritativeMarketplaces={reconcileAppliedRemovals}
+			onMarketplaceAdded={clearAddedMarketplace}
+			onRemovedMarketplace={clearMarketplaceWarning}
+			focus={route.params.focus}
+			onFocused={clearFocus}
+		/>
 	);
 }
 
@@ -286,6 +319,8 @@ function Plugins({
 	onMarketplaceAdded,
 	onRemovedMarketplace,
 	canUseConnection,
+	focus,
+	onFocused,
 }: {
 	client: ConversationClientLike;
 	connectionState: ConnectionState;
@@ -308,8 +343,12 @@ function Plugins({
 	onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 	onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
 	canUseConnection: () => boolean;
+	/** A plugin to open once, from a notice (ruling 25). */
+	focus: PluginFocus | undefined;
+	onFocused(): void;
 }) {
-	const colors = useColors();
+	const { palette } = useColors();
+	const scale = useTextScale();
 	const model = useMemo(() => createPluginsStore(client), [client]);
 	// The hub's add answer is the one place that names what the write
 	// registered, and the store cannot be trusted to hand it over: a newer
@@ -346,20 +385,15 @@ function Plugins({
 	const marketplaces = useMemo(() => createMarketplacesStore(marketplaceStoreClient), [marketplaceStoreClient]);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const ready = isReady(connectionState);
-	const [panel, setPanel] = useState<"installed" | "browse">("installed");
+	const [panel, setPanel] = useState<Segment>("installed");
 	const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
-	const [query, setQuery] = useState("");
 	const [selected, setSelected] = useState<PluginRefParams | null>(null);
+	const [query, setQuery] = useState("");
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
-	const [details, setDetails] = useState(false);
 	const editorVersion = useRef(0);
 	const entry = state.plugins?.find(
 		(item) => item.plugin === selected?.plugin && item.marketplace === selected?.marketplace,
-	);
-	const needle = query.trim().toLowerCase();
-	const visible = (state.plugins ?? []).filter(
-		(item) => item.plugin.toLowerCase().includes(needle) || item.marketplace.toLowerCase().includes(needle),
 	);
 	// The browser's first list read is a passive effect. Bind this screen-owned
 	// store before child effects run so that first read is not mistaken for a
@@ -393,18 +427,23 @@ function Plugins({
 			model.dispose();
 		};
 	}, [model]);
-	const listError = state.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
 	const close = useCallback(() => {
 		editorVersion.current += 1;
 		setSelected(null);
 		setActionError(null);
 		setNotice(null);
-		setDetails(false);
 	}, []);
 	useEffect(() => {
 		if (selected && state.plugins && !entry) close();
 	}, [selected, state.plugins, entry, close]);
-	async function act(action: () => Promise<void>, success?: string) {
+	// A notice's plugin opens once, when the list first mounts; the page
+	// clears the param so a remount doesn't open it again.
+	useEffect(() => {
+		if (!focus) return;
+		setSelected({ plugin: focus.plugin, marketplace: focus.marketplace });
+		onFocused();
+	}, [focus, onFocused]);
+	async function act(action: () => Promise<void>, success?: () => string) {
 		const version = editorVersion.current;
 		const outcome = await runGatedMutation(gate, canUseConnection, action);
 		if (version !== editorVersion.current) return;
@@ -418,7 +457,7 @@ function Plugins({
 		if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
 		else if (outcome === "failed")
 			setActionError("Could not confirm the change. Check this plugin’s status before trying again.");
-		else if (success) setNotice(success);
+		else if (success) setNotice(success());
 	}
 	function remove() {
 		if (!selected || busy || !canUseConnection()) return;
@@ -432,19 +471,98 @@ function Plugins({
 			}),
 		]);
 	}
+	function upgrade(target: PluginRefParams, before: PluginEntry) {
+		void act(
+			() => state.upgradePlugin(target.plugin, target.marketplace),
+			// The upgrade answers with the whole list; the entry in it says
+			// whether anything changed (ruling 7).
+			() => upgradeOutcome(before, model.getState().plugins),
+		);
+	}
+	function setOnByDefault(target: PluginRefParams, enabled: boolean) {
+		void act(() =>
+			enabled
+				? state.enablePlugin(target.plugin, target.marketplace)
+				: state.disablePlugin(target.plugin, target.marketplace),
+		);
+	}
+	const listError = state.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
+	// Today's filter, by plugin or marketplace name: useful on a hub with many.
+	const needle = query.trim().toLowerCase();
+	const visible = (state.plugins ?? []).filter(
+		(item) => item.plugin.toLowerCase().includes(needle) || item.marketplace.toLowerCase().includes(needle),
+	);
+	// A failed installed list reads again when the page comes back to the
+	// front, as evener/plugin/updated already does; nothing asks you to (no
+	// pull-to-refresh, no button: Task 15). Refs keep the effect's identity
+	// fixed, so it runs on focus alone.
+	const failed = useRef(false);
+	failed.current = state.pluginsError !== null;
+	useFocusEffect(
+		useCallback(() => {
+			if (failed.current) void model.getState().fetchPlugins();
+		}, [model]),
+	);
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
-			<View style={[styles.row, { paddingHorizontal: 12 }]}>
-				<Action tone={panel === "installed" ? "accent" : "quiet"} onPress={() => setPanel("installed")}>
-					Installed
-				</Action>
-				<Action tone={panel === "browse" ? "accent" : "quiet"} onPress={() => setPanel("browse")}>
-					Browse
-				</Action>
-			</View>
-			<ErrorMessage message={marketplaceWarning} />
-			{panel === "browse" ? (
+		<GroupedPage>
+			<SheetStatus />
+			<GroupGap />
+			<Segmented<Segment> label="Plugins" options={SEGMENTS} value={panel} onChange={setPanel} />
+			{marketplaceWarning ? <GroupFooter tone="danger">{marketplaceWarning}</GroupFooter> : null}
+			{panel === "installed" ? (
+				<>
+					<GroupFooter>
+						“On by default” sets which plugins new sessions start with. You can still choose per session.
+					</GroupFooter>
+					{listError ? <GroupFooter tone="danger">{listError}</GroupFooter> : null}
+					{!selected && actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
+					{state.plugins === null && state.pluginsLoading ? (
+						<ActivityIndicator accessibilityLabel="Loading installed plugins" />
+					) : null}
+					{/* The field stays while a filter is set, so it can always be cleared. */}
+					{state.plugins?.length || query !== "" ? (
+						<SearchField label="Filter installed plugins" query={query} onChange={setQuery} />
+					) : null}
+					{state.plugins?.length === 0 && query === "" ? (
+						<GroupFooter>No plugins installed on this hub.</GroupFooter>
+					) : null}
+					{state.plugins !== null && query !== "" && visible.length === 0 ? (
+						<GroupFooter>No matching plugins.</GroupFooter>
+					) : null}
+					{byMarketplace(visible).map(([marketplace, plugins]) => (
+						<Fragment key={marketplace}>
+							<GroupLabel machine>{marketplace}</GroupLabel>
+							<Group>
+								{plugins.map((item) => {
+									const sub = item.broken
+										? "Broken"
+										: `${item.version || "Unknown version"}${item.autoUpgrade ? " · Upgrades automatically" : ""}`;
+									return (
+										<SwitchRow
+											key={item.plugin}
+											label={item.plugin}
+											sub={sub}
+											subTone={item.broken ? "danger" : "normal"}
+											accessibilityLabel={`${item.plugin}, ${item.marketplace}, ${sub}`}
+											switchLabel={`${item.plugin} on by default`}
+											value={item.enabled}
+											disabled={busy || !ready}
+											onChange={(enabled) => setOnByDefault(item, enabled)}
+											onPress={() => {
+												close();
+												setSelected({ plugin: item.plugin, marketplace: item.marketplace });
+											}}
+										/>
+									);
+								})}
+							</Group>
+						</Fragment>
+					))}
+				</>
+			) : (
 				<MarketplaceBrowser
+					key={panel}
+					segment={panel}
 					client={client}
 					connectionState={connectionState}
 					hubName={hubName}
@@ -464,158 +582,100 @@ function Plugins({
 					onMarketplaceAdded={onMarketplaceAdded}
 					onRemovedMarketplace={onRemovedMarketplace}
 				/>
-			) : (
-				<FlatList
-					data={visible}
-					keyExtractor={(item) => JSON.stringify([item.marketplace, item.plugin])}
-					contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
-					keyboardShouldPersistTaps="handled"
-					refreshing={state.pluginsLoading}
-					onRefresh={() => {
-						if (canUseConnection()) void state.fetchPlugins();
-					}}
-					ListHeaderComponent={
-						<View style={{ gap: 8, paddingBottom: 12 }}>
-							<Copy muted>{hubName}</Copy>
-							<TextInput
-								accessibilityLabel="Filter installed plugins"
-								placeholder="Filter plugins or marketplaces"
-								placeholderTextColor={colors.secondary}
-								value={query}
-								onChangeText={setQuery}
-								autoCorrect={false}
-								autoCapitalize="none"
-								style={[styles.input, { color: colors.text, borderColor: colors.border }]}
-							/>
-							<ErrorMessage message={listError} />
-							{listError && (
-								<Action
-									disabled={!ready}
-									onPress={whenReady(canUseConnection, () => {
-										void state.fetchPlugins();
-									})}
-								>
-									Retry
-								</Action>
-							)}
-						</View>
-					}
-					ListEmptyComponent={
-						state.pluginsLoading ? (
-							<ActivityIndicator accessibilityLabel="Loading installed plugins" />
-						) : state.plugins !== null ? (
-							<Copy muted>{needle ? "No matching plugins." : "No plugins installed on this hub."}</Copy>
-						) : null
-					}
-					renderItem={({ item }) => (
-						<Pressable
-							accessibilityRole="button"
-							accessibilityLabel={`${item.plugin}, ${item.marketplace}, ${item.broken ? "broken" : item.enabled ? "enabled by default" : "off by default"}`}
-							onPress={() => {
-								close();
-								setSelected({
-									plugin: item.plugin,
-									marketplace: item.marketplace,
-								});
-							}}
-							style={({ pressed }) => ({
-								minHeight: 56,
-								paddingVertical: 9,
-								borderBottomWidth: 0.5,
-								borderColor: colors.border,
-								opacity: pressed ? 0.65 : 1,
-							})}
-						>
-							<Copy numberOfLines={2}>{item.plugin}</Copy>
-							<Copy muted numberOfLines={2}>
-								{item.marketplace} · {item.version || "Unknown version"}
-								{item.broken ? " · Broken" : !item.enabled ? " · Off by default" : ""}
-								{item.autoUpgrade ? " · Auto-upgrade" : ""}
-							</Copy>
-						</Pressable>
-					)}
-				/>
 			)}
 			{entry && selected && (
 				<HoldingModal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
-					<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
-						<View style={[styles.row, { paddingHorizontal: 16 }]}>
-							<View style={styles.fill}>
-								<Copy muted>{hubName}</Copy>
-							</View>
-							<Action onPress={close}>Done</Action>
-						</View>
-						<ModalConnectionStatus connectionState={connectionState} />
-						<ScrollView
-							automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-							contentContainerStyle={{ padding: 20, gap: 12 }}
+					<SafeAreaView style={{ flex: 1, backgroundColor: palette.canvas }}>
+						<View
+							style={{
+								flexDirection: "row",
+								alignItems: "center",
+								gap: 12,
+								minHeight: 44,
+								paddingHorizontal: 16,
+								paddingTop: 8,
+							}}
 						>
-							<Copy>{entry.plugin}</Copy>
-							<Copy muted>
-								{entry.marketplace} · {entry.version || "Unknown version"}
-							</Copy>
-							{entry.broken && <ErrorMessage message="This plugin is broken. Check its source or try upgrading it." />}
-							<ErrorMessage message={actionError} />
-							{notice && <Copy>{notice}</Copy>}
-							{busy && <ActivityIndicator accessibilityLabel="Updating plugin" />}
-							<View style={[styles.row, { minHeight: 48, gap: 16 }]}>
-								<View style={styles.fill}>
-									<Copy>Enabled by default</Copy>
-								</View>
-								<Switch
-									accessibilityLabel="Plugin enabled by default"
+							<Text
+								allowFontScaling={allowFontScaling}
+								numberOfLines={1}
+								style={{ flex: 1, color: palette.inkHi, fontSize: 17 * scale, fontWeight: "600" }}
+							>
+								{entry.plugin}
+							</Text>
+							<Pressable accessibilityRole="button" accessibilityLabel="Done" hitSlop={8} onPress={close}>
+								<Text
+									allowFontScaling={allowFontScaling}
+									style={{ color: palette.accentInk, fontSize: 17 * scale, fontWeight: "600" }}
+								>
+									Done
+								</Text>
+							</Pressable>
+						</View>
+						<GroupedPage>
+							{/* The sheet covers the page's status line, so it carries its own. */}
+							{connectionState === "ready" ? null : <SheetStatus />}
+							{entry.broken ? (
+								<GroupFooter tone="danger">This plugin is broken. Upgrade it or remove it.</GroupFooter>
+							) : null}
+							<GroupGap />
+							<Group>
+								<SwitchRow
+									label="On by default"
 									value={entry.enabled}
 									disabled={busy || !ready}
-									onValueChange={(enabled) => {
-										const target = selected;
-										void act(() =>
-											enabled
-												? state.enablePlugin(target.plugin, target.marketplace)
-												: state.disablePlugin(target.plugin, target.marketplace),
-										);
-									}}
+									onChange={(enabled) => setOnByDefault(selected, enabled)}
 								/>
-							</View>
-							<View style={[styles.row, { minHeight: 48, gap: 16 }]}>
-								<View style={styles.fill}>
-									<Copy>Automatic upgrades</Copy>
-								</View>
-								<Switch
-									accessibilityLabel="Automatic plugin upgrades"
+								<SwitchRow
+									label="Upgrade automatically"
 									value={entry.autoUpgrade}
 									disabled={busy || !ready}
-									onValueChange={(value) => {
+									onChange={(value) => {
 										const target = selected;
 										void act(() => state.setPluginAutoUpgrade(target.plugin, target.marketplace, value));
 									}}
 								/>
-							</View>
-							<Action
-								disabled={busy || !ready}
-								onPress={() => {
-									const target = selected;
-									void act(() => state.upgradePlugin(target.plugin, target.marketplace), "Checked for upgrades.");
-								}}
-							>
-								Upgrade
-							</Action>
-							<Action expanded={details} onPress={() => setDetails((value) => !value)}>
-								Installation details
-							</Action>
-							{details && (
-								<>
-									<Copy muted>Path on {hubName}</Copy>
-									<Copy>{entry.installPath}</Copy>
-									{entry.gitCommitSha && <Copy muted>{entry.gitCommitSha}</Copy>}
-								</>
-							)}
-							<Action disabled={busy || !ready} onPress={remove}>
-								Remove plugin
-							</Action>
-						</ScrollView>
+							</Group>
+							<GroupGap />
+							<Group>
+								<Row label="Upgrade" tone="accent" disabled={busy || !ready} onPress={() => upgrade(selected, entry)} />
+								<Row
+									label="Remove"
+									accessibilityLabel="Remove plugin"
+									tone="danger"
+									disabled={busy || !ready}
+									onPress={remove}
+								/>
+							</Group>
+							{actionError ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
+							{notice ? <GroupFooter>{notice}</GroupFooter> : null}
+							{busy ? <ActivityIndicator accessibilityLabel="Updating plugin" /> : null}
+							<GroupLabel>Details</GroupLabel>
+							<Group>
+								<Row label="Version" value={entry.version || "Unknown version"} />
+								<Row label="Marketplace" sub={entry.marketplace} machineSub />
+								<Row label={`Path on ${hubName}`} sub={entry.installPath} machineSub />
+								{entry.gitCommitSha ? <Row label="Commit" sub={entry.gitCommitSha} machineSub /> : null}
+							</Group>
+						</GroupedPage>
 					</SafeAreaView>
 				</HoldingModal>
 			)}
-		</SafeAreaView>
+		</GroupedPage>
 	);
+}
+
+/** The installed plugins by marketplace, in the order the hub lists them. */
+function byMarketplace(plugins: readonly PluginEntry[]): [string, PluginEntry[]][] {
+	const groups = new Map<string, PluginEntry[]>();
+	for (const item of plugins) groups.set(item.marketplace, [...(groups.get(item.marketplace) ?? []), item]);
+	return [...groups];
+}
+
+/** What an upgrade did, from the entry before it and the list it answered
+ * with: the same version and commit is "Already up to date" (ruling 7). */
+function upgradeOutcome(before: PluginEntry, after: readonly PluginEntry[] | null): string {
+	const now = after?.find((item) => item.plugin === before.plugin && item.marketplace === before.marketplace);
+	if (!now || (now.version === before.version && now.gitCommitSha === before.gitCommitSha)) return "Already up to date";
+	return `Upgraded to ${now.version || "an unknown version"}`;
 }
