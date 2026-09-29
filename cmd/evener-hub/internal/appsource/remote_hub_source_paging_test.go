@@ -1876,6 +1876,32 @@ func TestRemoteHubSourceCursorlessBeforeOlderRemoteRefusal(t *testing.T) {
 	}
 }
 
+// A newer remote that understands the before field can still refuse for an
+// unrelated reason. That refusal is the remote's own and must pass through, not
+// be rewritten as the older-hub cursorless-before refusal.
+func TestRemoteHubSourceCursorlessBeforeKeepsUnrelatedInvalidParams(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadTurnsList {
+			return scriptedReply{wireErr: &appwire.WireError{
+				Code:    appwire.CodeInvalidParams,
+				Message: "invalid ref: host:missing",
+			}}
+		}
+		return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+	})
+	before := appwire.ThreadItemPosition{Entry: 7}
+	_, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &before,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("unrelated invalid params: error = %T %v, want invalid params", err, err)
+	}
+	if !strings.Contains(wireErr.Message, "invalid ref: host:missing") {
+		t.Fatalf("unrelated invalid params: message = %q, want the remote's own message", wireErr.Message)
+	}
+}
+
 // A cursorless before with no retained window still forwards: the remote mints
 // its own cursor and the controller records the page under a fresh identity.
 func TestRemoteHubSourceCursorlessBeforeWithoutRetainedWindow(t *testing.T) {

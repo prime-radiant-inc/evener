@@ -1609,19 +1609,27 @@ func (s *RemoteHubSource) recordRemoteBeforePage(
 }
 
 // remoteCursorlessBeforeRefusal maps a remote hub's refusal of a cursorless
-// before. A hub older than the before field decodes the request without it and
-// refuses with invalid params; surface the same refusal a cursorless before got
-// before this source could forward one, rather than the remote's wording. Every
-// other failure (a fresh page, or a transport failure) passes through unchanged.
+// before back to the refusal a cursorless before got before this source could
+// forward one. A hub older than the before field decodes the request without
+// it, so its cursor is empty: it refuses because a cursor or before is
+// required, or, under strict decoding, because the before field is unknown.
+// Only those two shapes are rewritten; any other failure — including a newer
+// hub's unrelated invalid-params refusal — passes through unchanged, so this
+// rewrite never masks a real error.
 func remoteCursorlessBeforeRefusal(params appwire.ThreadTurnsListParams, err error) error {
 	if params.Before == nil {
 		return err
 	}
 	var wireErr appwire.WireError
-	if errors.As(err, &wireErr) && wireErr.Code == appwire.CodeInvalidParams {
-		return appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		return err
 	}
-	return err
+	missingCursor := strings.Contains(wireErr.Message, "cursor or before is required")
+	unknownField := strings.Contains(wireErr.Message, "unknown field") && strings.Contains(wireErr.Message, "before")
+	if !missingCursor && !unknownField {
+		return err
+	}
+	return appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
 }
 
 // AdminCall forwards one hub-scoped admin RPC to this remote host's hub over
