@@ -46,6 +46,7 @@ const HOOK_LABELS: Record<(typeof HOOK_EXIT_DETAILS)[number], string> = {
 };
 
 const NOT_SAVED = "The change couldn't be saved. Choose it again.";
+const NOT_DONE = "That didn't go through. Try it again.";
 const NOT_LOADED = "Couldn't load this hub's setting. It loads again once the hub is back.";
 const NOT_UPDATED = "This phone couldn't update its copy of this setting.";
 
@@ -104,7 +105,18 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	// A choice the phone still holds after its save failed, or after an
 	// uncertain write settled without the hub taking it: the rows show it, so
 	// the page says it hasn't landed and offers to send it again.
-	const unsaved = !!state.draft && !state.saving && !writeUncertain && !state.conflict;
+	// A draft the phone can't keep in step (a confirmed save whose cleanup
+	// failed, a draft it couldn't save or restore) is the storage footer's to
+	// explain; every write is held until then anyway.
+	const unsaved = !!state.draft && !state.saving && !writeUncertain && !state.conflict && !state.storageUnavailable;
+	const stateErrorShown =
+		!!state.error && !state.draftUnreadable && !writeUncertain && (!conflict || state.storageUnavailable);
+	// A choice that failed can be chosen again; a failed conflict action or
+	// discard stays on screen, so the page says it didn't go through unless
+	// the store's own failure already says why.
+	const failedChoice =
+		failed && !unsaved && !writeUncertain && !conflict && !state.storageUnavailable && !state.draftUnreadable;
+	const failedAction = failed && !writeUncertain && (conflict || state.draftUnreadable) && !stateErrorShown;
 	return (
 		<GroupedPage>
 			<SheetStatus />
@@ -150,16 +162,15 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 				</>
 			) : null}
 			{/* During a conflict the storage failure still shows: it is why the rows hold. */}
-			{state.error && !state.draftUnreadable && !writeUncertain && (!conflict || state.storageUnavailable) ? (
+			{stateErrorShown ? (
 				// The store's own messages name its plumbing ("transcript display",
 				// a Check current settings button this page doesn't have), so the
 				// page says what happened in its own words.
 				<GroupFooter tone="danger">{state.error === HUB_UNCONFIRMED_MESSAGE ? NOT_LOADED : NOT_UPDATED}</GroupFooter>
 			) : null}
 			{/* The phone that can't keep a change holds every row, so there is nothing to choose again. */}
-			{failed && !unsaved && !writeUncertain && !conflict && !state.storageUnavailable ? (
-				<GroupFooter tone="danger">{NOT_SAVED}</GroupFooter>
-			) : null}
+			{failedChoice ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
+			{failedAction ? <GroupFooter tone="danger">{NOT_DONE}</GroupFooter> : null}
 			{unsaved ? (
 				<>
 					<GroupFooter tone="attention">This change hasn't reached the hub yet.</GroupFooter>

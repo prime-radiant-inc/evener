@@ -14,7 +14,16 @@ vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
 	useConnectionStatusText: () => status.line,
 }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: "ready", fatal: false }) }));
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => ({
+		state: "ready",
+		fatal: false,
+		profiles: [
+			{ id: "hub-1", name: "Work hub", origin: "https://work:9180" },
+			{ id: "hub-2", name: "Home hub", origin: "https://home:9180" },
+		],
+	}),
+}));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
@@ -79,11 +88,8 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 	};
 	if (options.check) await updates.controller.runCheck();
 	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
-	const sheet = { navigate: vi.fn() };
-	const navigation = { getParent: () => root, navigate: sheet.navigate } as unknown as NativeStackScreenProps<
-		HubRoutes,
-		"HubHome"
-	>["navigation"];
+	const sheet = { getParent: () => root, navigate: vi.fn() };
+	const navigation = sheet as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
 	const route = { key: "HubHome", name: "HubHome", params: { hubId: "hub-1" } } as const;
 	const tree = render(
 		<HubSheetProvider value={context}>
@@ -108,7 +114,7 @@ const ROWS = [
 	"Plugins",
 	"Display, System",
 	"In-app alerts",
-	"Hubs",
+	"Hubs, 2",
 	"Keyboard shortcuts",
 	"Launch defaults",
 	"Hub settings",
@@ -157,7 +163,7 @@ it("says the hub is connected and lists its pages", async () => {
 });
 
 it("leaves the sheet for today's screens until their pages land (rulings 10 and 12)", async () => {
-	const { root, press } = await mount();
+	const { root, sheet, press } = await mount();
 	const interim: [string, string][] = [
 		["Providers", "Providers"],
 		["Plugins", "Plugins"],
@@ -172,8 +178,17 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 			payload: { name: screen, params: { hubId: "hub-1" } },
 		});
 	}
-	press("Hubs");
-	expect(root.navigate).toHaveBeenLastCalledWith("Hubs");
+	expect(root.navigate).not.toHaveBeenCalled();
+	expect(sheet.navigate).not.toHaveBeenCalled();
+});
+
+it("pushes Hubs inside the sheet, valued with the number of saved hubs", async () => {
+	const { tree, root, sheet, press } = await mount();
+	expect(renderedText(tree)).toContain("2");
+	press("Hubs, 2");
+	expect(sheet.navigate).toHaveBeenCalledWith("Hubs");
+	expect(root.navigate).not.toHaveBeenCalled();
+	expect(root.dispatch).not.toHaveBeenCalled();
 });
 
 it("opens In-app alerts inside the sheet, between Display and Hubs", async () => {
@@ -183,7 +198,7 @@ it("opens In-app alerts inside the sheet, between Display and Hubs", async () =>
 		.map((node) => node.props.accessibilityLabel)
 		.filter((label): label is string => ROWS.includes(label));
 	const display = labels.indexOf("Display, System");
-	expect(labels.slice(display, display + 3)).toEqual(["Display, System", "In-app alerts", "Hubs"]);
+	expect(labels.slice(display, display + 3)).toEqual(["Display, System", "In-app alerts", "Hubs, 2"]);
 	press("In-app alerts");
 	expect(sheet.navigate).toHaveBeenLastCalledWith("Alerts", { hubId: "hub-1" });
 });
