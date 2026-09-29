@@ -387,6 +387,12 @@ export function scriptedClient(
 	return { client, methods, requests, unsubscribes: () => unsubscribes };
 }
 
+/** What expo-haptics played, in order ("selection", "impact:light",
+ * "notification:warning"...), recorded by the setup file's fake
+ * (vitestSetup.ts). Clear it (`playedHaptics.length = 0`) before the press
+ * a test asserts on. */
+export const playedHaptics: string[] = [];
+
 /** The connection value the retained-screen suites report through their
  * mocked ConnectionProvider: the Work hub's profile, its client, the state
  * the test drives, and the fatal flag the retained-screen wiring reads. One literal where five suites' fixtures matched field for

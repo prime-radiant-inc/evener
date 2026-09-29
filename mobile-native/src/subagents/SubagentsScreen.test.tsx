@@ -7,7 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { playedHaptics, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
 import { Toast } from "../Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
@@ -205,8 +205,11 @@ it("lists failed, then running, then a folded done, with chips that count the sa
 
 it("filters to a chip's state, and offers no chip for a state with no subagents", async () => {
 	const tree = await mount();
+	playedHaptics.length = 0;
 	act(() => pressable(tree, "Failed, 2")?.props.onPress());
 	expect(pressable(tree, "Failed, 2")?.props.accessibilityState).toMatchObject({ selected: true });
+	// Spec 16.6: a selection tick on a chip.
+	expect(playedHaptics).toEqual(["selection"]);
 	const shown = text(tree);
 	expect(shown).toContain("Fix race in tree settle");
 	expect(shown).not.toContain("Running task 1");

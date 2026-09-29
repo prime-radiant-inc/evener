@@ -175,6 +175,7 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { destructiveButton, haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
@@ -345,15 +346,11 @@ export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs"
 			"The saved hub, its credentials, and its local drafts will be removed from this device.",
 			[
 				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Remove",
-					style: "destructive",
-					onPress: () => {
-						void removeHub(id).catch((error: unknown) =>
-							setError(error instanceof Error ? error.message : "Could not remove this hub. Try again."),
-						);
-					},
-				},
+				destructiveButton("Remove", () => {
+					void removeHub(id).catch((error: unknown) =>
+						setError(error instanceof Error ? error.message : "Could not remove this hub. Try again."),
+					);
+				}),
 			],
 		);
 	}
@@ -727,7 +724,10 @@ export function ConversationScreen({
 	}, [navigation, othersWaitingCount]);
 	// Leaving for another session marks it seen, the way the Board marks a
 	// row it opens (spec 8.3).
+	// Next and a title-bar swipe both move to another session (spec 16.6's
+	// lateral move).
 	function leaveFor(target: NavigationSessionSummary) {
+		haptic("selection");
 		Keyboard.dismiss();
 		fleet.seen.markRead(connected ? client : null, [target]);
 	}
@@ -1207,6 +1207,7 @@ export function ConversationScreen({
 	function chooseSessionAction(action: SessionMenuAction) {
 		switch (action.kind) {
 			case "level":
+				haptic("selection");
 				levels.set(route.params.ref, action.level);
 				toaster.show({ text: levelToast(action.level) });
 				return;
@@ -1893,10 +1894,12 @@ export function ConversationScreen({
 				acceptedAnswers = true;
 				return true;
 			});
-			if (acceptedAnswers)
+			if (acceptedAnswers) {
+				haptic("success");
 				toaster.show({
 					text: batch.questions.length > 1 ? "Answers sent" : "Answer sent",
 				});
+			}
 			if (
 				acceptedAnswers &&
 				connectionReady.current &&
@@ -2235,7 +2238,10 @@ export function ConversationScreen({
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState()[kind](through, buildComposerInput(text, images));
 			const accepted = store.getState().lastAcceptedMutation;
-			return accepted != null && accepted !== previous && accepted.kind === kind;
+			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
+			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
+			if (admitted) haptic("light");
+			return admitted;
 		},
 		[store],
 	);
@@ -2880,7 +2886,10 @@ export function ConversationScreen({
 									// waits, without Allow or Deny.
 									controls={approvalControls}
 									waiting={(conversation?.pendingEscalations.length ?? 1) - 1}
-									onDecided={(allowed) => toaster.show({ text: allowed ? "Allowed once" : "Denied" })}
+									onDecided={(allowed) => {
+										if (allowed) haptic("success");
+										toaster.show({ text: allowed ? "Allowed once" : "Denied" });
+									}}
 								/>
 							) : null}
 							{(bottom.dock === "question" || bottom.dock === "foldedQuestion") && questionBatch ? (

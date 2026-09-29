@@ -27,6 +27,7 @@ import {
 } from "./marketplaceBrowserModel";
 import { ModalConnectionStatus } from "./retainedScreen";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { destructiveButton } from "./haptics";
 
 // The stores keep each failed request's own text; this screen shows the same
 // copy for every failure, as the web's section translates its at render.
@@ -214,89 +215,85 @@ export function MarketplaceBrowser({
 		const version = revision.current;
 		Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Remove",
-				style: "destructive",
-				onPress: () => {
-					// The dialog can stay open across another client's removal, which
-					// a trusted read lands without the name, and across the screen
-					// fencing it: re-read both the guard the screen holds now and the
-					// store's own state, never the captured ones, because a removal
-					// that already stood must not be issued again. A failed read
-					// cannot vouch either way, so its retained rows never stop the
-					// write - the hub's own applied answer is what speaks then.
-					const current = marketplaces.getState();
-					if (
-						revision.current !== version ||
-						!canUseConnection() ||
-						appliedRemovalNamesRef.current.has(name) ||
-						(current.marketplacesError === null &&
-							current.marketplaces !== null &&
-							!current.marketplaces.some((item) => item.name === name))
-					)
+			destructiveButton("Remove", () => {
+				// The dialog can stay open across another client's removal, which
+				// a trusted read lands without the name, and across the screen
+				// fencing it: re-read both the guard the screen holds now and the
+				// store's own state, never the captured ones, because a removal
+				// that already stood must not be issued again. A failed read
+				// cannot vouch either way, so its retained rows never stop the
+				// write - the hub's own applied answer is what speaks then.
+				const current = marketplaces.getState();
+				if (
+					revision.current !== version ||
+					!canUseConnection() ||
+					appliedRemovalNamesRef.current.has(name) ||
+					(current.marketplacesError === null &&
+						current.marketplaces !== null &&
+						!current.marketplaces.some((item) => item.name === name))
+				)
+					return;
+				// Classify, record, and reconcile BEFORE the revision fence: the
+				// guard and warning live at the screen, so they must survive this
+				// view's selection changes and remounts; only the browser-local
+				// busy and write-failed displays stay behind the fence.
+				void (async () => {
+					let caught: unknown;
+					const outcome = await runGatedMutation(gate, canUseConnection, () =>
+						state.removeMarketplace(name).catch((error: unknown) => {
+							caught = error;
+							throw error;
+						}),
+					);
+					if (outcome === "not-ready") {
+						// Nothing ran, so nothing reports: a not-ready removal is
+						// not one the hub confirmed, and reporting it would retire a
+						// cleanup warning that still stands. The status copy the
+						// connection banner already shows covers the reason nothing
+						// ran, and the write-failed copy an earlier outcome left
+						// stays too - a press that ran nothing retires nothing.
 						return;
-					// Classify, record, and reconcile BEFORE the revision fence: the
-					// guard and warning live at the screen, so they must survive this
-					// view's selection changes and remounts; only the browser-local
-					// busy and write-failed displays stay behind the fence.
-					void (async () => {
-						let caught: unknown;
-						const outcome = await runGatedMutation(gate, canUseConnection, () =>
-							state.removeMarketplace(name).catch((error: unknown) => {
-								caught = error;
-								throw error;
-							}),
-						);
-						if (outcome === "not-ready") {
-							// Nothing ran, so nothing reports: a not-ready removal is
-							// not one the hub confirmed, and reporting it would retire a
-							// cleanup warning that still stands. The status copy the
-							// connection banner already shows covers the reason nothing
-							// ran, and the write-failed copy an earlier outcome left
-							// stays too - a press that ran nothing retires nothing.
-							return;
-						}
-						setError(null);
-						if (outcome === "refused") {
-							if (revision.current !== version) return;
-							setError(PLUGIN_MUTATION_BUSY);
-							return;
-						}
-						if (outcome === "ran") {
-							// Report before the revision fence, the way an applied outcome
-							// records: the warning is the screen's, so it must survive this
-							// view's selection changes and remounts.
-							onRemovedMarketplace(name, client);
-							return;
-						}
-						// An applied removal (appliedRemovalNotice's doc) never reads as
-						// a failed write: record it with the parent's guard - the notice
-						// becomes the screen-level warning, null shows nothing - and
-						// reconcile a stale list, never a retry hint.
-						const notice = appliedRemovalNotice(caught);
-						if (notice !== undefined) {
-							// The store as the outcome landed - the screen's own, which
-							// survives this view: the snapshot decides whether a fence is
-							// needed at all, and its publication version is the baseline
-							// the screen records against that name. Everything the store
-							// published at or below it predates this fence - including a
-							// stale read's answer the rejection just passed ownership to -
-							// so only a later publication retires it (the prop's doc).
-							// The reconciliation read still publishes somewhere a mounted
-							// browser reads: this view's own unmount must not stop it -
-							// the remount whose first read fails is exactly the case the
-							// retained model exists for.
-							const current = marketplaces.getState();
-							if (!onAppliedRemoval(name, notice, client, current.marketplaces, current.marketplacesPublicationVersion))
-								return;
-							if (refetchAfterRemoval(marketplaces, name)) void state.fetchMarketplaces();
-							return;
-						}
+					}
+					setError(null);
+					if (outcome === "refused") {
 						if (revision.current !== version) return;
-						setError(WRITE_FAILED);
-					})();
-				},
-			},
+						setError(PLUGIN_MUTATION_BUSY);
+						return;
+					}
+					if (outcome === "ran") {
+						// Report before the revision fence, the way an applied outcome
+						// records: the warning is the screen's, so it must survive this
+						// view's selection changes and remounts.
+						onRemovedMarketplace(name, client);
+						return;
+					}
+					// An applied removal (appliedRemovalNotice's doc) never reads as
+					// a failed write: record it with the parent's guard - the notice
+					// becomes the screen-level warning, null shows nothing - and
+					// reconcile a stale list, never a retry hint.
+					const notice = appliedRemovalNotice(caught);
+					if (notice !== undefined) {
+						// The store as the outcome landed - the screen's own, which
+						// survives this view: the snapshot decides whether a fence is
+						// needed at all, and its publication version is the baseline
+						// the screen records against that name. Everything the store
+						// published at or below it predates this fence - including a
+						// stale read's answer the rejection just passed ownership to -
+						// so only a later publication retires it (the prop's doc).
+						// The reconciliation read still publishes somewhere a mounted
+						// browser reads: this view's own unmount must not stop it -
+						// the remount whose first read fails is exactly the case the
+						// retained model exists for.
+						const current = marketplaces.getState();
+						if (!onAppliedRemoval(name, notice, client, current.marketplaces, current.marketplacesPublicationVersion))
+							return;
+						if (refetchAfterRemoval(marketplaces, name)) void state.fetchMarketplaces();
+						return;
+					}
+					if (revision.current !== version) return;
+					setError(WRITE_FAILED);
+				})();
+			}),
 		]);
 	}
 	const needle = query.trim().toLowerCase();
