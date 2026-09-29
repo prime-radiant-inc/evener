@@ -847,23 +847,28 @@ func TestUpdateSidecarRefusesReadOnlyTarget(t *testing.T) {
 	}
 }
 
-// TestUpdateSidecarReusesOrphanedTemp: a crash-orphaned temp file beside the
-// target is reused and cleared by the next update, so interrupted updates do
-// not accumulate temp files forever.
-func TestUpdateSidecarReusesOrphanedTemp(t *testing.T) {
+// TestUpdateSidecarToleratesStaleTemp: a temp file orphaned by an interrupted
+// update neither blocks nor corrupts a later update (the temp namespace is
+// random and O_EXCL, so the new update takes its own name), and it stays
+// invisible to the sidecar listings because it has no ".json" suffix.
+func TestUpdateSidecarToleratesStaleTemp(t *testing.T) {
 	dir := t.TempDir()
 	sc := testSidecar()
 	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
 		t.Fatalf("WriteSidecarExcl: %v", err)
 	}
-	tmpPath := sidecarPath(dir, sc.Name) + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte("orphaned partial temp"), 0o644); err != nil {
+	stale := filepath.Join(dir, ".sidecar-tmp-orphan")
+	if err := os.WriteFile(stale, []byte("orphaned partial temp"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err != nil {
-		t.Fatalf("UpdateSidecar: %v", err)
+		t.Fatalf("UpdateSidecar with a stale temp present: %v", err)
 	}
-	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
-		t.Fatalf("orphaned temp survived a successful update (stat err = %v); it must be reused and renamed away", err)
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got.BaseSHA != "changed" {
+		t.Fatalf("update with a stale temp present read = %+v, %v; want BaseSHA changed", got, err)
+	}
+	list, err := ListSidecars(dir)
+	if err != nil || len(list) != 1 || list[0].Name != sc.Name {
+		t.Fatalf("stale temp leaked into the listing: %+v, %v", list, err)
 	}
 }
