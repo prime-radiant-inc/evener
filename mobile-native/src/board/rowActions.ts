@@ -1,13 +1,19 @@
 // What a Board row can do (spec 7.3), and how each change reaches the hub:
 // the path the Session or the Projects screen already takes for it (this
 // plan's "How the Board's actions reach the hub"). Stop is BoardStops.
-import type { ArchiveParams, NavigationSessionSummary, SessionPinAssignParams } from "@evener/appwire-client";
+import {
+	type ArchiveParams,
+	errorText,
+	type NavigationSessionSummary,
+	type SessionPinAssignParams,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "../navigationActionRepository";
 import type { NavigationActions } from "../navigationActions";
 import { localSessionId } from "../sessionDeletionResult";
 import type { ClassifiedRow } from "./attention";
 import { organizationFree } from "./organizationCheck";
+import type { ProjectMenuAction } from "./projectMenu";
 
 export type RowAction = "pin" | "markRead" | "markUnread" | "stop" | "shutDown" | "archive" | "unarchive" | "rename";
 
@@ -120,6 +126,20 @@ export function archiveSession(
 	return journaled(actions, () => actions.archive(target, archived));
 }
 
+/** A project's Pin to top, Unpin, Archive or Unarchive (ruling 15), through
+ * the same journal, as a held one replays. */
+export function projectChange(
+	actions: NavigationActions,
+	project: { key: string; workingDir?: string },
+	action: ProjectMenuAction,
+): Promise<boolean> {
+	return journaled(actions, () =>
+		action === "pin" || action === "unpin"
+			? actions.favorite(project.key, action === "pin")
+			: actions.archive({ kind: "project", id: project.key, workingDir: project.workingDir }, action === "archive"),
+	);
+}
+
 /** Select mode's Pin (ruling 18); a single row's Pin opens PinAssignment. */
 export function pinSession(actions: NavigationActions, target: SessionPinAssignParams): Promise<boolean> {
 	return journaled(actions, () => actions.assignPin(target));
@@ -140,6 +160,12 @@ export function archivingSessionId(
 		return null;
 	return operation.params.id;
 }
+
+/** What Shut down and Rename say afterwards, online or replayed. */
+export const SHUT_DOWN_DONE = "Session shut down";
+export const RENAMED = "Renamed";
+export const shutDownFailed = (title: string, error: unknown) => `Couldn't shut down “${title}”: ${errorText(error)}`;
+export const renameFailed = (title: string, error: unknown) => `Couldn't rename “${title}”: ${errorText(error)}`;
 
 /** Shut down: the Session's own request (conversation.ts:1128-1132). */
 export async function shutDownSession(client: ConversationClientLike, ref: string): Promise<void> {

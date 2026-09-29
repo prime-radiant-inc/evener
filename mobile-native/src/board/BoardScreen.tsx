@@ -1,5 +1,4 @@
 import {
-	errorText,
 	type NavigationPinSectionDescriptor,
 	type NavigationProjectSummary,
 	type NavigationSessionSummary,
@@ -105,7 +104,11 @@ import {
 	type RowAction,
 	type RowActionContext,
 	renameSession,
+	RENAMED,
+	renameFailed,
 	rowMenuActions,
+	SHUT_DOWN_DONE,
+	shutDownFailed,
 	shutDownSession,
 } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
@@ -114,7 +117,8 @@ import { SearchResults } from "./SearchResults";
 import { SelectBar } from "./SelectBar";
 import { selectionActions, toggleSelected } from "./selection";
 import { listScrollHandlers } from "./settledList";
-import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
+import { organizationOpen } from "./organizationCheck";
+import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
 import { destructiveButton, haptic } from "../haptics";
@@ -1214,8 +1218,8 @@ function confirmShutDown(
 		destructiveButton("Shut down", () => {
 			if (!client) return;
 			shutDownSession(client, row.ref).then(
-				() => toast.show({ text: "Session shut down" }),
-				(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
+				() => toast.show({ text: SHUT_DOWN_DONE }),
+				(error: unknown) => toast.show({ text: shutDownFailed(row.title, error) }),
 			);
 		}),
 	]);
@@ -1239,9 +1243,9 @@ function promptRename(
 					if (!client) return;
 					renameSession(client, row.ref, name ?? "").then(
 						(renamed) => {
-							if (renamed) toast.show({ text: "Renamed" });
+							if (renamed) toast.show({ text: RENAMED });
 						},
-						(error: unknown) => toast.show({ text: `Couldn't rename “${row.title}”: ${errorText(error)}` }),
+						(error: unknown) => toast.show({ text: renameFailed(row.title, error) }),
 					);
 				},
 			},

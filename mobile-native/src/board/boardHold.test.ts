@@ -19,6 +19,7 @@ const archive = (ref: string, archived = true): HeldAction => ({
 const stop = (ref: string, turnEndedAt: string | null = null): HeldAction => ({
 	kind: "stop",
 	ref,
+	title: `Session ${ref}`,
 	seen: { turnEndedAt },
 });
 const kinds = (hold: BoardHold) =>
@@ -46,8 +47,8 @@ describe("the Board's hold (phase 6 ruling 18)", () => {
 		const hold = new BoardHold(memory(), "hub-1");
 		hold.hold(archive("local:a"), 1);
 		hold.hold(stop("local:b"), 2);
-		hold.hold({ kind: "rename", ref: "local:c", name: "One" }, 3);
-		hold.hold({ kind: "rename", ref: "local:c", name: "Two" }, 4);
+		hold.hold({ kind: "rename", ref: "local:c", title: "C", name: "One" }, 3);
+		hold.hold({ kind: "rename", ref: "local:c", title: "C", name: "Two" }, 4);
 		hold.hold(stop("local:b", "2026-09-28T10:00:00.000Z"), 5);
 		expect(kinds(hold)).toEqual(["archive:local:a", "stop:local:b", "rename:local:c:Two"]);
 		expect(hold.getSnapshot()[1]?.action).toMatchObject({ seen: { turnEndedAt: "2026-09-28T10:00:00.000Z" } });

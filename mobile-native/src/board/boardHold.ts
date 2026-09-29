@@ -27,8 +27,10 @@ export type HeldAction =
 	| { kind: "archive"; ref: string; target: Omit<ArchiveParams, "archived">; archived: boolean }
 	| { kind: "pin"; target: SessionPinAssignParams }
 	| { kind: "project"; project: { key: string; workingDir?: string }; action: ProjectMenuAction }
-	| { kind: "rename"; ref: string; name: string }
-	| { kind: "stop" | "shutDown"; ref: string; seen: TurnSeen };
+	/** `title` is the row's when you pressed, for the toast the online
+	 * action shows. */
+	| { kind: "rename"; ref: string; title: string; name: string }
+	| { kind: "stop" | "shutDown"; ref: string; title: string; seen: TurnSeen };
 
 export interface HeldRecord {
 	id: string;
@@ -105,11 +107,12 @@ function isAction(value: unknown): value is HeldAction {
 					value.action === "unarchive")
 			);
 		case "rename":
-			return text(value.ref) && text(value.name);
+			return text(value.ref) && text(value.title) && text(value.name);
 		case "stop":
 		case "shutDown":
 			return (
 				text(value.ref) &&
+				text(value.title) &&
 				isPlainObject(value.seen) &&
 				(value.seen.turnEndedAt === null || text(value.seen.turnEndedAt))
 			);
