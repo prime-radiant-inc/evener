@@ -1305,7 +1305,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		...detail,
 		description,
 		summary,
-		...(words ? { words } : {}),
+		words,
 		arguments: args,
 		output,
 		error,

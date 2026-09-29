@@ -9,7 +9,7 @@ import { type AnsiLine, parseAnsiLines } from "../../../cmd/evener-hub/frontend/
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MarkdownResponse } from "../MarkdownResponse";
 import { TASK_STATUS_GLYPH, TASK_STATUS_LABEL } from "../taskStatus";
-import { typeRoles } from "../design/tokens";
+import { scaledType, typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -18,14 +18,6 @@ import { LogViewer } from "./LogViewer";
 import { stepWords } from "./transcriptRows";
 
 type Palette = ReturnType<typeof useColors>["palette"];
-
-function machineText(scale: number) {
-	return {
-		fontFamily: typeRoles.machine.fontFamily,
-		fontSize: typeRoles.machine.fontSize * scale,
-		lineHeight: typeRoles.machine.lineHeight * scale,
-	};
-}
 
 // Output and diff lines repeat ("ok", "+}"), so each is keyed by where it
 // starts in the text, which is unique and never changes for a given text.
@@ -151,7 +143,7 @@ function Diff({ text, added, removed }: { text: string; added: number; removed: 
 					<Text
 						key={key}
 						allowFontScaling={allowFontScaling}
-						style={{ ...machineText(scale), ...diffLineStyle(line, palette) }}
+						style={{ ...scaledType(typeRoles.machine, scale), ...diffLineStyle(line, palette) }}
 					>
 						{line}
 					</Text>
@@ -176,7 +168,7 @@ export function EvidenceView({ evidence, title }: { evidence: Evidence; title: s
 					style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
 				>
 					{"Wrote "}
-					<Text style={{ ...machineText(scale), color: palette.inkMid }}>{evidence.path}</Text>
+					<Text style={{ ...scaledType(typeRoles.machine, scale), color: palette.inkMid }}>{evidence.path}</Text>
 				</Text>
 			);
 		case "exit":
@@ -206,7 +198,7 @@ export function EvidenceView({ evidence, title }: { evidence: Evidence; title: s
 								<Text
 									allowFontScaling={allowFontScaling}
 									numberOfLines={1}
-									style={{ ...machineText(scale), color: palette.inkMid, flexShrink: 1 }}
+									style={{ ...scaledType(typeRoles.machine, scale), color: palette.inkMid, flexShrink: 1 }}
 								>
 									{evidence.url}
 								</Text>

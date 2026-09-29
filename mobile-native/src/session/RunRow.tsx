@@ -4,10 +4,11 @@
 // with evidence opens it under its line (StepEvidence). A run held open while
 // it is live (the last run of the turn in progress, at the levels that show
 // tool calls) has no fold control until it finishes.
+import { composeStepWords } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Fragment } from "react";
 import { Pressable, Text, View } from "react-native";
-import { typeRoles } from "../design/tokens";
+import { scaledType, typeRoles } from "../design/tokens";
 import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import type { RunStep, TimelineRow } from "../timeline";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -35,12 +36,7 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 	const ownIntent = step.detail.description;
 	const { words } = step.detail;
 	const target = words?.target;
-	const machine = {
-		fontFamily: typeRoles.machine.fontFamily,
-		fontSize: typeRoles.machine.fontSize * scale,
-		lineHeight: typeRoles.machine.lineHeight * scale,
-		color: palette.inkMid,
-	};
+	const machine = { ...scaledType(typeRoles.machine, scale), color: palette.inkMid };
 	const evidence = useStepEvidence(step);
 	const hasEvidence = evidence.length > 0 || (step.images?.length ?? 0) > 0;
 	const [disclosureId = ""] = rowDisclosureIds(hubId, sessionRef, step);
@@ -92,7 +88,9 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 			) : null}
 		</>
 	);
-	const label = [ownIntent ? [ownIntent, target] : [stepWords(step)], failed ? "failed" : "done"]
+	// The label reads what the line draws: the same bounded words, composed.
+	const sentence = words ? composeStepWords(words) : stepWords(step);
+	const label = [ownIntent ? [ownIntent, target] : [sentence], failed ? "failed" : "done"]
 		.flat()
 		.filter(Boolean)
 		.join(", ");
