@@ -498,37 +498,41 @@ test("settleReceipt reports false for a record that is in none of the three tabl
 	await expect(storage.settleReceipt("missing", "pending")).resolves.toBe(false);
 });
 
-// A sweep fault leaves NO part of the settlement behind: the earlier note
-// survives and the settling note is still in the outbox, instead of the sweep
-// half-applying and the record retiring. Falsified by a trigger that aborts the
-// sweep's delete; the trigger is dropped in the finally so no schema state
-// leaks past the contract. The web adapter proves the same atomicity through
-// its beforeCommit seam (mutationOutbox.test.ts).
-async function expectFailedSweepRollsBackSettlement(settle: (clientMutationId: string) => Promise<boolean>) {
+// The supersede sweep runs BEFORE the settlement's own deletes, so the test
+// faults the settlement delete (the outbox row), not the sweep itself: the
+// sweep's successful removal of the earlier note must roll back with the
+// failed settlement. Faulting the sweep instead would prove nothing about the
+// shared transaction, since SQLite already aborts that one statement's delete
+// on its own. The trigger is dropped in the finally so no schema state leaks
+// past the contract. The web adapter proves the same atomicity through its
+// beforeCommit seam (mutationOutbox.test.ts).
+async function expectFailedSettlementRollsBackSweep(settle: (clientMutationId: string) => Promise<boolean>) {
 	const older = await storage.enqueueIntent(noteIntent("refused older"));
 	await storage.transferToRecovery(older.clientMutationId, "rejected", "note refused");
 	const settling = await storage.enqueueIntent(noteIntent("accepted now"));
 
 	database.exec(
-		`CREATE TRIGGER reject_supersede BEFORE DELETE ON mutation_recovery
-		 WHEN OLD.client_mutation_id = '${older.clientMutationId}'
-		 BEGIN SELECT RAISE(ABORT, 'supersede failed'); END`,
+		`CREATE TRIGGER reject_settle_delete BEFORE DELETE ON mutation_outbox
+		 WHEN OLD.client_mutation_id = '${settling.clientMutationId}'
+		 BEGIN SELECT RAISE(ABORT, 'settle failed'); END`,
 	);
 	try {
-		await expect(settle(settling.clientMutationId)).rejects.toThrow("supersede failed");
+		await expect(settle(settling.clientMutationId)).rejects.toThrow("settle failed");
+		// The sweep already deleted the earlier note; only a shared savepoint
+		// restores it once the settlement delete fails.
 		expect(rawRow("mutation_recovery", older.clientMutationId)).toMatchObject({ method: "notes/human/set" });
 		expect(rawRow("mutation_outbox", settling.clientMutationId)).toMatchObject({ method: "notes/human/set" });
 	} finally {
-		database.exec("DROP TRIGGER reject_supersede");
+		database.exec("DROP TRIGGER reject_settle_delete");
 	}
 }
 
-test("a failed superseded-note sweep rolls settleReceipt back", async () => {
-	await expectFailedSweepRollsBackSettlement((id) => storage.settleReceipt(id, "pending"));
+test("a failed settlement delete rolls settleReceipt's supersede sweep back", async () => {
+	await expectFailedSettlementRollsBackSweep((id) => storage.settleReceipt(id, "pending"));
 });
 
-test("a failed superseded-note sweep rolls settleApplied back", async () => {
-	await expectFailedSweepRollsBackSettlement((id) => storage.settleApplied(id));
+test("a failed settlement delete rolls settleApplied's supersede sweep back", async () => {
+	await expectFailedSettlementRollsBackSweep((id) => storage.settleApplied(id));
 });
 
 // Oracle: settleReceipt resolves "outbox ?? recovery ?? optimistic" as its

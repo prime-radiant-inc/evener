@@ -378,5 +378,29 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
         clientMutationId: refused.clientMutationId,
       });
     });
+
+    // settleApplied's transaction carries the same guard: an applied turn must
+    // not touch the ref's refused note recovery rows.
+    test("settling a non-note intent via settleApplied preserves the ref's refused note recovery rows", async () => {
+      const refused = await storage.enqueueIntent(conformanceNoteIntent("refused older"));
+      await storage.transferToRecovery(refused.clientMutationId, "rejected", "note refused");
+      const settling = await storage.enqueueIntent(conformanceTextIntent("a turn", CONFORMANCE_TARGET));
+      await expect(storage.settleApplied(settling.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getRecovery(refused.clientMutationId)).resolves.toMatchObject({
+        clientMutationId: refused.clientMutationId,
+      });
+    });
+
+    // The settlement source may be a recovery row, not only the outbox: a note
+    // already in recovery that later settles still supersedes the ref's earlier
+    // note recovery rows.
+    test("a note settling from recovery still supersedes earlier note recovery rows", async () => {
+      const older = await storage.enqueueIntent(conformanceNoteIntent("refused older"));
+      await storage.transferToRecovery(older.clientMutationId, "rejected", "note refused");
+      const settling = await storage.enqueueIntent(conformanceNoteIntent("recovered then receipted"));
+      await storage.transferToRecovery(settling.clientMutationId, "rejected", "note refused");
+      await expect(storage.settleReceipt(settling.clientMutationId, "pending")).resolves.toBe(true);
+      await expect(storage.getRecovery(older.clientMutationId)).resolves.toBeUndefined();
+    });
   });
 }
