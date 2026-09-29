@@ -285,7 +285,7 @@ describe("the summary-only ruling at compact levels", () => {
 			const conversation = projectConversation(hydrateThread({ thread: writeThread }, "ref-1", 0), undefined, config);
 			const presented = projectNativeTranscript(conversation, config);
 			const presentation = presented.activityPresentation.get("w1");
-			expect(presentation?.summary, `the ${config.content} level lost the write line`).toBe("Write /tmp/x");
+			expect(presentation?.summary, `the ${config.content} level lost the write line`).toBe("Wrote /tmp/x");
 		}
 	});
 });

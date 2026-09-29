@@ -10,6 +10,7 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AlertBannerHost } from "./src/alerts/AlertBannerHost";
 import { AlertsProvider } from "./src/alerts/AlertsProvider";
@@ -78,20 +79,23 @@ followAppearanceChoice();
 
 export default function App() {
 	// Gesture handlers recognize touches only inside this view, so it wraps
-	// everything, and it fills the screen.
+	// everything, and it fills the screen. The keyboard controller reports the
+	// keyboard's frames to what moves with it (the Session's composer).
 	return (
 		<GestureHandlerRootView style={{ flex: 1 }}>
-			<SafeAreaProvider>
-				<DisplayProvider value={displayPreferences}>
-					<ConnectionProvider>
-						<NativePreferencesProvider>
-							<AlertsProvider>
-								<Navigation />
-							</AlertsProvider>
-						</NativePreferencesProvider>
-					</ConnectionProvider>
-				</DisplayProvider>
-			</SafeAreaProvider>
+			<KeyboardProvider>
+				<SafeAreaProvider>
+					<DisplayProvider value={displayPreferences}>
+						<ConnectionProvider>
+							<NativePreferencesProvider>
+								<AlertsProvider>
+									<Navigation />
+								</AlertsProvider>
+							</NativePreferencesProvider>
+						</ConnectionProvider>
+					</DisplayProvider>
+				</SafeAreaProvider>
+			</KeyboardProvider>
 		</GestureHandlerRootView>
 	);
 }

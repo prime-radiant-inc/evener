@@ -24,6 +24,7 @@ import type {
 	InputItem,
 	ItemModel,
 	MutationReceipt,
+	ThreadItemPosition,
 	ThreadModel,
 	TranscriptDisplayConfigV1,
 	TurnModel,
@@ -68,7 +69,6 @@ import {
 	ownTimelineIdentities,
 	projectConversation,
 	projectTimeline,
-	RETAINED_ITEM_CAP,
 	truncateItem as sharedTruncateItem,
 	timelineIdentities,
 	timelineIdentity,
@@ -369,6 +369,11 @@ export interface ConversationState {
 	// (capAndTruncate) every other rebuild passes through.
 	readonly displayConfig: TranscriptDisplayConfigV1 | null;
 	readonly olderCursor: string | null;
+	// The 500-row cap trimmed rows from the top of the timeline, so older
+	// history sits above it whether or not olderCursor is set: loadOlder pages
+	// the trimmed rows back by naming the oldest row kept (thread/turns/list's
+	// before), rebasing olderCursor when there is one.
+	readonly trimmedAbove: boolean;
 	readonly hasEarlierItems: boolean;
 	readonly hasLaterItems: boolean;
 	readonly loadingOlder: boolean;
@@ -404,6 +409,11 @@ export interface ConversationState {
 	// changed one re-projects a live conversation at the new level, once,
 	// inside the store's display boundary.
 	setDisplayConfig(config: TranscriptDisplayConfigV1 | null): void;
+	// Whether the reader follows the live end. The 500-row cap trims the top
+	// of the timeline only while they do: trimming above a reader moves what
+	// they read and drops rows they may scroll back to. Rows that grew past
+	// the cap while they read above are trimmed when they return.
+	setFollowingLiveEnd(following: boolean): void;
 }
 
 // Required live state interface (F3): the production store always implements
@@ -501,6 +511,27 @@ export function truncateItem(
 	bound: BoundText = (text) => truncateText(text, MAX_ITEM_BYTES),
 ): MobileTimelineItem {
 	return sharedTruncateItem(item, bound);
+}
+
+/** The row the next older page ends above after a trim: the oldest row kept
+ * that names its transcript position. Rows ahead of it with none (a live
+ * overlay row, a notice) come back in the page, where they fold into the
+ * rows already held. */
+export function trimBoundary(
+	state: Pick<ConversationState, "trimmedAbove" | "conversation">,
+): ThreadItemPosition | undefined {
+	return state.trimmedAbove ? state.conversation?.items.find((row) => row.position !== undefined)?.position : undefined;
+}
+
+/** The next older page as one key, for telling page attempts apart, or null
+ * when nothing older is known: the cursor, the trim boundary, or both. */
+export function olderPageKey(
+	state: Pick<ConversationState, "olderCursor" | "trimmedAbove" | "conversation">,
+): string | null {
+	const before = trimBoundary(state);
+	if (before === undefined && state.olderCursor === null) return null;
+	// JSON keeps the hub's opaque cursor from running into the boundary.
+	return JSON.stringify([state.olderCursor, before?.entry, before?.item]);
 }
 
 export function createConversationStore(options: ConversationStoreOptions = {}) {
@@ -903,7 +934,38 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		return null;
 	}
 
-	function capAndTruncate(conversation: MobileConversation): MobileConversation {
+	// Whether the reader follows the live end (setFollowingLiveEnd).
+	let followingLiveEnd = true;
+	// Whether the hub last said it pages this thread from a before position
+	// (ThreadCapabilities.pageBefore), on a read or on a status frame it
+	// relayed; a frame straight from a daemon names none. A hub that doesn't say
+	// so (an older hub, or a thread on another host until #3176) keeps every
+	// row, since trimmed rows couldn't come back: a memory trade-off that lasts
+	// until it does.
+	let pagesBefore = false;
+	/** Takes the hub's pageBefore when it says one as a boolean, `otherwise`
+	 * when it doesn't. */
+	function adoptPageBefore(said: unknown, otherwise: boolean): void {
+		pagesBefore = typeof said === "boolean" ? said : otherwise;
+	}
+	function adoptRead(conversation: MobileConversation): void {
+		adoptPageBefore(conversation.capabilities?.pageBefore, false);
+	}
+
+	// The rows the timeline keeps: the newest RETAINED_ITEM_CAP while the
+	// reader follows the live end of a thread the hub pages from a before
+	// position, every row otherwise.
+	function retainedRows(rows: MobileTimelineItem[]): MobileTimelineItem[] {
+		return followingLiveEnd && pagesBefore ? capItems(rows) : rows;
+	}
+
+	// The display boundary every publish runs: the cap (retainedRows) and the
+	// text bound. trimmed says whether the cap dropped rows from the top, for the
+	// caller's publish to record (trimmedState).
+	function capAndTruncate(conversation: MobileConversation): {
+		conversation: MobileConversation;
+		trimmed: boolean;
+	} {
 		const previous = boundedText;
 		const next = new Map<string, string>();
 		const bound: BoundText = (text) => {
@@ -919,7 +981,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			return bounded;
 		};
 		const seated = seatTransientWarnings(conversation.items);
-		const items = capItems(seated).map((item) => truncateItem(item, bound));
+		const capped = retainedRows(seated);
+		const items = capped.map((item) => truncateItem(item, bound));
 		const retainedIdentities = new Set(items.map(timelineIdentity));
 		for (let index = transientWarnings.length - 1; index >= 0; index -= 1) {
 			if (!retainedIdentities.has(timelineIdentity(transientWarnings[index].row))) {
@@ -927,7 +990,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			}
 		}
 		boundedText = next;
-		return { ...conversation, items };
+		return { conversation: { ...conversation, items }, trimmed: capped.length < seated.length };
 	}
 
 	// The transient notices rejoin the timeline here, each seated at
@@ -943,8 +1006,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// the cap kept means an evicted notice stays evicted.
 	// RoboRev review round 4: the seating is extracted so loadOlder can
 	// read the same window the publish will show — a notice consumes a
-	// cap slot, so the overflow the honest stop reads and the window the
-	// retained-turn bound trims against must both count it.
+	// cap slot, so the window the retained-turn bound trims against must
+	// count it.
 	// R38: the row a sub-run of a split cluster re-projects as — the same
 	// shape clusterActivityRun builds: a run of one is the member's own
 	// row, a longer run is that row with the run's aggregate state and the
@@ -1373,7 +1436,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		config: TranscriptDisplayConfigV1 | null,
 	): MobileTimelineItem[] {
 		if (config === null) return levelItems;
-		return levelItems.concat(capItems(projectConversation(model).items));
+		return levelItems.concat(retainedRows(projectConversation(model).items));
 	}
 
 	// #1919 follow-up: bound retained page-turn data. The keep-window is the
@@ -1580,6 +1643,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			rawSet(partial);
 		};
 		storeGet = get;
+		// What a publish records when its cap trimmed rows from the top. An older
+		// page in flight asked from above rows the trim just dropped: merged, it
+		// would leave those rows a hole nothing pages back, so it is dropped and
+		// the next page names the oldest row kept.
+		const trimmedState = (trimmed: boolean): Partial<ConversationState> => {
+			if (!trimmed) return {};
+			if (!get().loadingOlder) return { trimmedAbove: true };
+			loadOlderToken += 1;
+			return { trimmedAbove: true, loadingOlder: false };
+		};
 		return {
 			ref: null,
 			profileId: null,
@@ -1589,6 +1662,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			conversation: null,
 			displayConfig: options.displayConfig ?? null,
 			olderCursor: null,
+			trimmedAbove: false,
 			hasEarlierItems: false,
 			hasLaterItems: false,
 			loadingOlder: false,
@@ -1628,7 +1702,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// boundary runs, or the seating walk drops it and the prune
 				// retires it as if the model had withdrawn the anchor.
 				reanchorTransientWarnings(conversation.items, projected.items);
-				const bounded = capAndTruncate(projected);
+				const { conversation: bounded, trimmed } = capAndTruncate(projected);
 				// The retained-turn bound every other publish runs, against the
 				// level-independent window (retentionWindowItems): the level
 				// change hides rows without shedding their payloads. The active
@@ -1643,6 +1717,30 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							bounded.activeTurnId,
 						),
 					},
+					...trimmedState(trimmed),
+				});
+			},
+
+			setFollowingLiveEnd(following) {
+				if (followingLiveEnd === following) return;
+				followingLiveEnd = following;
+				const current = get();
+				const conversation = current.conversation;
+				// Rows that grew past the cap while the reader was above are
+				// trimmed as they return, with the payloads behind them.
+				if (!following || conversation === null) return;
+				const { conversation: bounded, trimmed } = capAndTruncate(conversation);
+				if (!trimmed) return;
+				set({
+					conversation: {
+						...bounded,
+						turns: boundRetainedTurns(
+							bounded.turns,
+							retentionWindowItems(conversation, bounded.items, current.displayConfig),
+							bounded.activeTurnId,
+						),
+					},
+					...trimmedState(trimmed),
 				});
 			},
 
@@ -1677,6 +1775,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					error: null,
 					conversation: null,
 					olderCursor: null,
+					trimmedAbove: false,
 					hasEarlierItems: false,
 					hasLaterItems: false,
 					loadingOlder: false,
@@ -1691,8 +1790,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					const conv = await service.open(ref);
 					// Reject if a newer conversation generation was opened during the await.
 					if (gen !== conversationGen) return;
+					adoptRead(conv);
+					const { conversation: bounded, trimmed } = capAndTruncate(conv);
 					set({
-						conversation: capAndTruncate(conv),
+						conversation: bounded,
+						...trimmedState(trimmed),
 						status: "open",
 						olderCursor: null,
 					});
@@ -1744,6 +1846,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					error: null,
 					conversation: null,
 					olderCursor: null,
+					trimmedAbove: false,
 					loadingOlder: false,
 					draft: "",
 					pendingSend: null,
@@ -1777,8 +1880,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// atomically consistent under the same exact identity tuple.
 					const accepted = sink.setLiveView(activity, identity);
 					if (!accepted) return;
+					adoptRead(conversation);
+					const { conversation: bounded, trimmed } = capAndTruncate(conversation);
 					set({
-						conversation: capAndTruncate(conversation),
+						conversation: bounded,
+						...trimmedState(trimmed),
 						status: "open",
 						olderCursor,
 						hasEarlierItems: hasEarlierItems ?? false,
@@ -2143,9 +2249,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// own paging cursor, and the fresh reread's window cursor knows
 					// nothing about pages this client already consumed — keep the
 					// advancement, or the next loadOlder re-requests that page (or
-					// resurrects paging at a cursor the cap or exhausted history had
-					// honestly stopped). A FAILED racing page also bumps the page
-					// token but moves the cursor not at all, so the entry comparison
+					// resurrects paging at a cursor exhausted history had stopped).
+					// A FAILED racing page also bumps the page token but moves the
+					// cursor not at all, so the entry comparison
 					// — not the token, and not row ownership — is what separates the
 					// two: the fresh read's own signal still wins unless the store's
 					// own cursor actually moved during the await.
@@ -2161,6 +2267,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					const accepted = sink.setLiveView(activity, identity);
 					if (!accepted) return;
 					acceptedRehydrate = { generation: gen, sink };
+					adoptRead(conversation);
 					// R1: Success preserves any newer error owner. Only clear error if
 					// the error-owner revision hasn't changed AND no failed mutation
 					// owns the error. A failed mutation's error persists until a
@@ -2193,7 +2300,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// alone).
 						mergedTurns = boundRetainedTurns(
 							mergedTurns,
-							retentionWindowItems(rehydrateModel, capItems(rehydrateSeated), projectConfig ?? null),
+							retentionWindowItems(rehydrateModel, retainedRows(rehydrateSeated), projectConfig ?? null),
 							conversation.activeTurnId,
 						);
 						seatedRehydrateItems = rehydrateSeated;
@@ -2220,7 +2327,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// sheds its anchor row. Re-projecting here instead would drop the
 					// shed rows, leave the notice no anchor to seat at, and the
 					// carried-filter prune would retire a warning the cap kept.
-					const committedConversation = capAndTruncate(
+					const { conversation: committedConversation, trimmed: rehydrateTrimmed } = capAndTruncate(
 						withSyncedHistoryTurns(
 							seatedRehydrateItems === null
 								? projectConversation(
@@ -2243,6 +2350,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					);
 					const commitBase = {
 						conversation: committedConversation,
+						// A read of another instance replaces the window, and with it
+						// any trim above it; the same instance keeps its trim.
+						...(replacesInstance ? { trimmedAbove: rehydrateTrimmed } : rehydrateTrimmed ? { trimmedAbove: true } : {}),
 						olderCursor: mergedCursor,
 						hasEarlierItems: hasEarlierItems ?? currentSnapshot.hasEarlierItems,
 						hasLaterItems: hasLaterItems ?? currentSnapshot.hasLaterItems,
@@ -2284,9 +2394,15 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				if (state.loadingOlder || state.conversation === null) {
 					return { status: "ignored" };
 				}
-				// F8: Never request with a null/empty cursor — no more older pages.
-				if (state.olderCursor === null) return { status: "ignored" };
+				// Older history is above: past the cursor, or trimmed from the top by
+				// the cap, when the page names the oldest row kept (thread/turns/list's
+				// before), rebasing the cursor when there is one.
+				// A hub that has stopped paging from a before position since the trim
+				// can't bring those rows back, so nothing above them is asked for.
 				const cursor = state.olderCursor;
+				const before = trimBoundary(state);
+				if (before !== undefined && !pagesBefore) return { status: "ignored" };
+				if (cursor === null && before === undefined) return { status: "ignored" };
 				const gen = state.conversationGeneration;
 				// C1: Capture a service-specific operation binding. If the supplied
 				// service is wrong (A after B bound), binding is null — zero request.
@@ -2303,7 +2419,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				const entryErrorRev = errorOwnerRev;
 				set({ loadingOlder: true });
 				try {
-					const result = await service.loadOlder(cursor);
+					const result = await service.loadOlder(cursor, before);
 					// C1: Recheck the exact operation binding after the await. If the
 					// binding changed (rebind to B), A's completion makes ZERO state
 					// changes — no items/cursor/loading.
@@ -2348,19 +2464,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// through liveAskQuestions, which gates on askPending and
 						// excludes every ask before the newest resolution item, so a
 						// page's settled ask renders as the tool row it is.
-						// F8: When the merge trimmed rows — the pre-cap merged set
-						// overflowed the retained cap, so capItems discarded the overflow
-						// from the oldest end — disable further paging honestly: set
-						// cursor to null so we don't repeatedly load rows that will be
-						// discarded. The overflow, never the final row count, is the
-						// signal: capItems also drops a leading orphaned attachment whose
-						// source fell off the cut, so a trimmed merge can end below
-						// RETAINED_ITEM_CAP (a 501-row merge that drops one orphan ends at
-						// 499) while it discarded its whole page, and a merge that ends at
-						// exactly the cap may have discarded nothing at all. Paging
-						// therefore ends exactly when the cap discarded rows, and
-						// hasEarlierItems must say so — a cursor of null with the flag
-						// still true offers a load that early-returns "ignored".
 						// D18 B3 round 3/6: conversation.turns/olderCursor (the
 						// ThreadModel fields sessionTokens reads) must stay in sync with
 						// items/the store's own olderCursor, or a session with no
@@ -2395,9 +2498,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						}
 						// A failed turn projects its own row keyed failure:<turnId>
 						// (projectedRows.ts), never an item identity — count it too, or
-						// the F8 honest-stop below never sees the cap discard a page's
-						// own failure-row contribution and keeps offering a cursor whose
-						// every page discards its own history. A real v6 turn id is
+						// a page whose only contribution is a failure row reports none.
+						// A real v6 turn id is
 						// stable (mergeHistory never renames one), so the raw page
 						// turn's own id is exactly the merged output's id.
 						for (const turn of result.turnsPage.data) {
@@ -2481,13 +2583,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							...reconcileCrossTurnReissues(currentConv.turns, versionedMerge.turns),
 						];
 						// The rows re-project from the merged model. mergedInput is the
-						// pre-cap projection the at-cap signal reads (F8): the overflow,
-						// never the final row count, is what ends paging.
+						// pre-cap projection.
 						// RoboRev review round 4: the transient warnings seat into it
 						// here, with the same seating the publish performs — a notice
-						// consumes a cap slot, so the overflow the honest stop reads
-						// and the window the retained-turn bound trims against must
-						// both count it. capAndTruncate's carried filter makes the
+						// consumes a cap slot, so the window the retained-turn bound
+						// trims against must count it. capAndTruncate's carried filter makes the
 						// re-seat below a no-op.
 						const mergedModel = withSyncedHistoryTurns({ ...currentConv, turns: strippedPageTurns }, strippedPageTurns);
 						// The page merge projects at the user's display config, exactly
@@ -2495,35 +2595,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						const mergedInput = seatTransientWarnings(
 							projectTimeline(mergedModel, undefined, get().displayConfig ?? undefined),
 						);
-						// F8 under D23d: the pre-cap merged projection can overflow
-						// with rows the entry window already discarded — an in-window
-						// turn keeps payloads beyond its own rows (#1919's keep-window
-						// bound), so its out-of-window row items re-project on every
-						// merge and the cap re-discards them. That re-discard loses
-						// nothing this load brought, so it is not the honest stop:
-						// paging ends only when the cap discarded rows the entry window
-						// held (the load displaced live history) or rows this page
-						// contributed (the next pages' rows would be discarded the same
-						// way). A usage-only page over a full window keeps paging.
-						const overflow = mergedInput.length - RETAINED_ITEM_CAP;
-						let atCap = false;
-						if (overflow > 0) {
-							const discarded = mergedInput.slice(0, overflow);
-							const pageRowIdentities = new Set<string>(rawPageIdentities);
-							for (const key of pageKeys) {
-								pageRowIdentities.add(key);
-							}
-							const entryRowIdentities = new Set<string>();
-							for (const row of currentConv.items) {
-								for (const id of timelineIdentities(row)) entryRowIdentities.add(id);
-							}
-							atCap = discarded.some((row) =>
-								[...timelineIdentities(row)].some((id) => entryRowIdentities.has(id) || pageRowIdentities.has(id)),
-							);
-						}
-						const nextCursor = atCap ? null : (result.nextCursor ?? null);
-						const pageMerged = capItems(mergedInput);
-						const pageConversation = capAndTruncate({
+						// Paging never ends on a trim: a page that lands while the
+						// reader follows the live end is trimmed like any publish, and
+						// the next page names the oldest row kept (trimmedAbove).
+						const nextCursor = result.nextCursor ?? null;
+						const pageMerged = retainedRows(mergedInput);
+						const { conversation: pageConversation, trimmed: pageTrimmed } = capAndTruncate({
 							...mergedModel,
 							items: mergedInput,
 						});
@@ -2536,19 +2613,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// merge too (retentionWindowItems unions the show-everything
 						// cap; the null config keeps pageMerged alone) — a coarse page
 						// load must not shed the payloads of the turns the level hides.
-						// The F8/atCap inputs read mergedInput above, which this does
-						// not touch: the honest stop is level-independent already.
 						const boundedTurns = boundRetainedTurns(
 							strippedPageTurns,
 							retentionWindowItems(mergedModel, pageMerged, get().displayConfig),
 							currentConv.activeTurnId,
 						);
 						set({
-							// conversation.olderCursor is the wire truth (result.nextCursor),
-							// never the capped nextCursor above.
-							// atCap only stops the STORE's own paging honestly (F8); it says
-							// nothing about whether the daemon actually has more history, so
-							// sessionTokens must not read it as "this is the whole session".
+							// conversation.olderCursor is the wire truth (result.nextCursor).
 							conversation: withSyncedHistoryTurns(
 								{
 									...pageConversation,
@@ -2558,7 +2629,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 								boundedTurns,
 							),
 							olderCursor: nextCursor,
-							hasEarlierItems: atCap ? false : (result.hasEarlierItems ?? get().hasEarlierItems),
+							trimmedAbove: pageTrimmed,
+							hasEarlierItems: result.hasEarlierItems ?? get().hasEarlierItems,
 							hasLaterItems: result.hasLaterItems ?? get().hasLaterItems,
 							loadingOlder: false,
 						});
@@ -3083,6 +3155,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					pendingMutations: null,
 					lastAcceptedMutation: null,
 					olderCursor: null,
+					trimmedAbove: false,
 					loadingOlder: false,
 					conversationGeneration: conversationGen,
 				});
@@ -3096,6 +3169,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// when it carries one, else by threadId; a frame naming neither is
 				// not about this thread. Silently drop everything else.
 				if (!notificationTargetsThread(n, state.conversation)) return;
+				// A status frame the hub relays names pageBefore for its thread; one
+				// straight from a daemon names none and leaves the last answer.
+				if (n.method === "thread/status/changed" && n.params.threadId === state.conversation.threadId)
+					adoptPageBefore(n.params.capabilities?.pageBefore, pagesBefore);
 
 				// Every frame about this thread folds into the package reducer's
 				// model, and the display rows are a projection of that model: one
@@ -3161,7 +3238,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// The frame's rows project at the user's display config — the
 						// same level every other publish projects at.
 						const projected = projectConversation(applied, undefined, get().displayConfig ?? undefined);
-						const bounded = capAndTruncate(projected);
+						const { conversation: bounded, trimmed } = capAndTruncate(projected);
 						// #1919 follow-up: a row-changing frame can repopulate a
 						// compacted turn's entire payload (a completion's full view)
 						// with no applier pass left to bound it — the keep-window is
@@ -3178,7 +3255,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 								bounded.activeTurnId,
 							),
 						};
-						set({ conversation });
+						set({ conversation, ...trimmedState(trimmed) });
 					} else {
 						// The model advanced — the frame is the authority on whatever it
 						// carried, and lastFrameAt moved — but no row changed, so the rows
@@ -3290,6 +3367,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					profileId: null,
 					conversation: null,
 					olderCursor: null,
+					trimmedAbove: false,
 					loadingOlder: false,
 					status: "idle",
 					error: null,
