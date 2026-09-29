@@ -30,7 +30,7 @@ func TestGitleaksAllowlistsBuiltFrontendDist(t *testing.T) {
 	t.Parallel()
 
 	paths := gitleaksAllowlistPaths(t)
-	if !anyGitleaksPathMatches(paths, builtDistChunk) {
+	if !anyGitleaksPathMatches(t, paths, builtDistChunk) {
 		t.Fatalf(".gitleaks.toml allowlists no path matching the built frontend dist chunk %q, "+
 			"so a bare `make lint` after a web build fails on gitleaks' generic-api-key rule; "+
 			"add the built output path to [allowlist].paths", builtDistChunk)
@@ -38,7 +38,7 @@ func TestGitleaksAllowlistsBuiltFrontendDist(t *testing.T) {
 	// Negative control: the exclusion must stay scoped to build output. A regex
 	// broad enough to cover the whole frontend would hide a real secret in a
 	// tracked source beside the dist.
-	if anyGitleaksPathMatches(paths, trackedHubSource) {
+	if anyGitleaksPathMatches(t, paths, trackedHubSource) {
 		t.Errorf(".gitleaks.toml allowlists %q, but that is a tracked frontend source, not "+
 			"build output; scope the dist exclusion so sources stay scanned", trackedHubSource)
 	}
@@ -64,9 +64,14 @@ func gitleaksAllowlistPaths(t *testing.T) []string {
 	return cfg.Allowlist.Paths
 }
 
-func anyGitleaksPathMatches(paths []string, target string) bool {
+func anyGitleaksPathMatches(t *testing.T, paths []string, target string) bool {
+	t.Helper()
 	for _, p := range paths {
-		if re, err := regexp.Compile(p); err == nil && re.MatchString(target) {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			t.Fatalf("allowlist path %q does not compile: %v", p, err)
+		}
+		if re.MatchString(target) {
 			return true
 		}
 	}

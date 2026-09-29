@@ -61,11 +61,10 @@ paths = [
   # agree on it. Not a credential; the generic API-key rule cannot tell a
   # schema fixture's identifier from a secret.
   '''cmd/evener-hub/testdata/navigation/value-records\.json''',
-  # The regression test for the built frontend dist exclusion embeds the exact
-  # minified snippet gitleaks mis-flags plus an unallowlisted-key control
-  # fixture, so the generic-api-key rule fires on the test source itself.
-  # Path-allowlisted like the redaction tests above, not by chasing a
-  # value-regex per fixture.
+  # The regression test for the built frontend dist exclusion names the exact
+  # minified snippet gitleaks mis-flags in its doc comment, so the
+  # generic-api-key rule fires on the test source itself. Path-allowlisted like
+  # the redaction tests above, not by chasing a value-regex per fixture.
   '''gitleaks_dist_allowlist_test\.go''',
   # inspo/ holds untracked vendored reference source (Pi, codex) whose test
   # fixtures carry deliberately-planted fake keys; it is gitignored and never
