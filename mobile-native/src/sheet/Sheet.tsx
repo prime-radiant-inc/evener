@@ -112,6 +112,9 @@ export function Sheet({ title, onCancel, done, accessory, children }: SheetProps
 							numberOfLines={1}
 							style={{
 								flexShrink: 1,
+								// The prototype's 220 of 390pt: the side slots keep room
+								// for Cancel and Done, and a long title truncates.
+								maxWidth: "56%",
 								textAlign: "center",
 								color: palette.inkHi,
 								fontSize: 17 * scale,

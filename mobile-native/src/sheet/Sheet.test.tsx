@@ -136,4 +136,15 @@ describe("the sheet's chrome", () => {
 		expect(done).toHaveBeenCalledOnce();
 		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Cancel")).toEqual([]);
 	});
+
+	it("caps a long title's width, as the prototype does, so it truncates before it squeezes Cancel", () => {
+		const tree = render(
+			<Sheet title="Sign in to codex-jesse-fsck.com" onCancel={() => {}}>
+				<ScrollView />
+			</Sheet>,
+		);
+		const title = tree.root.findByProps({ accessibilityRole: "header" });
+		expect(title.props.numberOfLines).toBe(1);
+		expect(title.props.style.maxWidth).toBe("56%");
+	});
 });
