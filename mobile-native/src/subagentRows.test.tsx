@@ -158,7 +158,7 @@ describe("a subagent row", () => {
 		expect(renderedText(tree)).toContain("Fix race in tree settle");
 		expect(renderedText(tree)).toMatch(/running · \d+/);
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0]?.props.onPress());
-		expect(openSubagent).toHaveBeenCalledWith("local:02wMz5TxvChildSession1", "Fix race in tree settle");
+		expect(openSubagent).toHaveBeenCalledWith(RECEIPT.transcript_ref, "Fix race in tree settle");
 	});
 
 	it.each(LEVELS)("reads a failed subagent as failed at %s, though its call succeeded", (level) => {
