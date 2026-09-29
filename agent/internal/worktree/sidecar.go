@@ -323,8 +323,10 @@ const (
 	// CorruptReservationInGrace is an undecodable record younger than grace,
 	// which may be a live create the winner has opened but not yet written.
 	CorruptReservationInGrace
-	// CorruptReservationIndeterminate is an undecodable record that vanished
-	// between the read and the age probe (a concurrent delete).
+	// CorruptReservationIndeterminate is an undecodable record whose age could
+	// not be established: it vanished between the read and the age probe (a
+	// concurrent delete), or the probe failed for another reason (a permission
+	// or I/O error) that cannot show it is past the grace.
 	CorruptReservationIndeterminate
 	// CorruptReservationStaleCorrupt is an undecodable record past grace: the
 	// residue of a create that died between its O_EXCL open and its write.
@@ -335,18 +337,18 @@ const (
 // sidecar read and its age probe describe a repairable stale torn reservation,
 // a possibly-live create still inside the grace window, or neither. readErr is
 // the ReadSidecar result; age and ageErr are the subsequent SidecarAge probe.
-// Only a decode failure can be any kind of corrupt reservation, so a
-// non-decode error (a missing file after a concurrent delete, a permission or
-// I/O failure) is None; a decode failure that has since vanished is
-// Indeterminate.
+// Only a decode failure can be any kind of corrupt reservation, so a non-decode
+// error is None. A decode failure whose age probe did not succeed is
+// Indeterminate — a failed probe cannot establish that the record is past the
+// grace — so only a successful probe at or beyond grace is StaleCorrupt.
 func ClassifyCorruptReservation(readErr error, age time.Duration, ageErr error, grace time.Duration) CorruptReservationState {
 	if !errors.Is(readErr, ErrCorruptSidecar) {
 		return CorruptReservationNone
 	}
-	if os.IsNotExist(ageErr) {
+	if ageErr != nil {
 		return CorruptReservationIndeterminate
 	}
-	if ageErr == nil && age < grace {
+	if age < grace {
 		return CorruptReservationInGrace
 	}
 	return CorruptReservationStaleCorrupt

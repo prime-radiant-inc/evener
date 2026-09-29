@@ -751,7 +751,7 @@ func TestClassifyCorruptReservation(t *testing.T) {
 		{"stale and readable", corrupt, grace + time.Minute, nil, CorruptReservationStaleCorrupt},
 		{"fresh may be a live create", corrupt, time.Second, nil, CorruptReservationInGrace},
 		{"vanished between read and probe", corrupt, 0, os.ErrNotExist, CorruptReservationIndeterminate},
-		{"probe failed otherwise", corrupt, 0, os.ErrPermission, CorruptReservationStaleCorrupt},
+		{"probe failed otherwise", corrupt, 0, os.ErrPermission, CorruptReservationIndeterminate},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
