@@ -1261,7 +1261,7 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	};
 	await open("codex");
 	expect(hasControl(tree, "Status, Signed in")).toBe(true);
-	expect(hasControl(tree, "Type, openai-codex")).toBe(true);
+	expect(hasControl(tree, "Type, openai-codex, Default")).toBe(true);
 	expect(hasControl(tree, "Sign-in, Account")).toBe(true);
 	expect(hasControl(tree, "gpt-5.6")).toBe(true);
 	expect(hasControl(tree, "gpt-5.5")).toBe(false);
@@ -1442,4 +1442,60 @@ it("closes the detail with Done while an unrelated write is in flight, with no k
 	await act(async () => {});
 	press(tree, (label) => label === "Done");
 	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+});
+
+async function openDetail(tree: ReactTestRenderer, name: string) {
+	press(tree, (label) => label.startsWith(`${name},`));
+	await act(async () => {});
+}
+
+it("names each confirmation's action on its button, and the provider in its message (spec 5)", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], activeSource: "store", hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const asked = () => {
+		const request = alertRequests.at(-1);
+		return [request?.title, request?.message, request?.buttons?.map((button) => button.text)];
+	};
+	press(tree, (label) => label === "Remove");
+	expect(asked()).toEqual(["Remove provider?", "work on Work hub", ["Cancel", "Remove"]]);
+	press(tree, (label) => label === "Clear credentials");
+	expect(asked()).toEqual(["Clear credentials?", "work on Work hub", ["Cancel", "Clear"]]);
+});
+
+it("names the key it clears on the button", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], activeSource: "env:WORK_KEY", hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Clear stored key");
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.text)).toEqual(["Cancel", "Clear key"]);
+});
+
+it("keeps a provider's facts in its group: Default as a tag, where it's defined, and each credential", async () => {
+	providersHub([
+		instance({
+			isDefault: true,
+			implicit: true,
+			activeSource: "env:WORK_KEY",
+			hasStoredFile: true,
+			authModes: ["apiKey"],
+		}),
+	]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const modal = tree.root.findByType("Modal" as never);
+	const text = subtreeText(modal);
+	expect(text).not.toContain("The default provider.");
+	expect(text).not.toContain("From the environment.");
+	expect(text).not.toContain("Shadowed");
+	const tags = modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default");
+	expect(tags).not.toHaveLength(0);
+	expect(hasControl(tree, "Defined in, Environment")).toBe(true);
+	expect(hasControl(tree, "Credential, Configured via environment variable (WORK_KEY)")).toBe(true);
+	expect(hasControl(tree, "Also stored, Configured via stored API key, Not used")).toBe(true);
 });

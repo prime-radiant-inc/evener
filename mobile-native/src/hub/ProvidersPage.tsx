@@ -10,7 +10,6 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { Alert } from "react-native";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
 import {
-	activeSourceLabel,
 	CONNECTION_REPLACED_ERROR,
 	credentialLayers,
 	fromEnvironment,
@@ -382,11 +381,18 @@ function Providers({
 			);
 		}
 	}
-	function confirm(title: string, action: () => Promise<unknown>, options: { endpointAsserted?: boolean } = {}) {
+	/** Asks before a destructive action, naming the provider and the hub, with
+	 * the action's own verb on its button (spec 5). */
+	function confirm(
+		title: string,
+		verb: string,
+		action: () => Promise<unknown>,
+		options: { endpointAsserted?: boolean } = {},
+	) {
 		if (!canUseConnection()) return;
 		Alert.alert(title, `${selected} on ${hubName}`, [
 			{ text: "Cancel", style: "cancel" },
-			destructiveButton("Confirm", () => act(action, options)),
+			destructiveButton(verb, () => act(action, options)),
 		]);
 	}
 
@@ -697,6 +703,7 @@ function Providers({
 															}
 															confirm(
 																instance.auth === "gcp-adc" ? "Clear stored credential JSON?" : "Clear stored key?",
+																instance.auth === "gcp-adc" ? "Clear JSON" : "Clear key",
 																() => surface.clearStoredKey(instance.name, instance.endpointFingerprint),
 																{ endpointAsserted: true },
 															);
@@ -714,7 +721,8 @@ function Providers({
 																return;
 															}
 															confirm(
-																"Clear active credentials?",
+																"Clear credentials?",
+																"Clear",
 																() => surface.logout(instance.name, instance.endpointFingerprint),
 																{ endpointAsserted: true },
 															);
@@ -732,7 +740,8 @@ function Providers({
 																return;
 															}
 															confirm(
-																"Remove provider instance?",
+																"Remove provider?",
+																"Remove",
 																() => surface.remove(instance.name, instance.endpointFingerprint),
 																{ endpointAsserted: true },
 															);
@@ -774,18 +783,26 @@ function ProviderFacts({
 						accessibilityLabel={`Status, ${status.word}`}
 					/>
 				) : null}
-				<Row label="Type" value={instance.providerId} />
+				<Row
+					label="Type"
+					value={
+						<RowValue text={instance.providerId} tag={instance.isDefault ? { text: "Default", tone: "gray" } : null} />
+					}
+					accessibilityLabel={["Type", instance.providerId, instance.isDefault ? "Default" : null]
+						.filter(Boolean)
+						.join(", ")}
+				/>
 				<Row label="Sign-in" value={signInKind(instance)} />
 				<Row label="Endpoint" sub={styleInfoText(instance)} machineSub />
+				{fromEnvironment(instance) ? <Row label="Defined in" value="Environment" /> : null}
+				{credentialLayers(instance).map((layer) =>
+					layer.effective ? (
+						<Row key={layer.source} label="Credential" sub={layer.label} />
+					) : (
+						<Row key={layer.source} label="Also stored" sub={layer.label} value="Not used" />
+					),
+				)}
 			</Group>
-			{instance.activeSource === "none" ? null : <GroupFooter>{activeSourceLabel(instance)}</GroupFooter>}
-			{credentialLayers(instance)
-				.filter((layer) => !layer.effective)
-				.map((layer) => (
-					<GroupFooter key={layer.source}>{`${layer.label} · Shadowed`}</GroupFooter>
-				))}
-			{instance.isDefault ? <GroupFooter>The default provider.</GroupFooter> : null}
-			{fromEnvironment(instance) ? <GroupFooter>From the environment.</GroupFooter> : null}
 			{instance.warnings?.map((message) => (
 				<GroupFooter key={message} tone="attention">
 					{message}
