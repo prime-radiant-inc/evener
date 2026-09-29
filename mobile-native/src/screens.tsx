@@ -363,7 +363,6 @@ export function ConversationScreen({
 		// background color is itself clear.
 		navigation.setOptions({
 			headerTransparent: navGlass,
-			scrollEdgeEffects: { top: "hidden" },
 			headerStyle: { backgroundColor: navGlass ? "transparent" : colors.background },
 		});
 	}, [navigation, navGlass, colors.background]);
