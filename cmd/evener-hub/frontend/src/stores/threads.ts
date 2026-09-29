@@ -1427,7 +1427,14 @@ export async function retryBlockedMutation(
     // capture above: a Stop that landed between the capture and this release
     // outranks the Retry, and the refused release leaves the row canceled
     // for it — the release returning false is this press's refusal.
-    if (!(await runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }))) return false;
+    // Registered around the write: the reopened row is undelivered work, and a
+    // fallback send must see it before the async refresh can.
+    const released = await trackOutboxWrite(
+      record.targetRef,
+      () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }),
+      (didRelease) => didRelease,
+    );
+    if (!released) return false;
     notifyMutationPersistence([record.targetRef]);
   }
   // Shared storage can become blocked after this tab's authoritative snapshot.
@@ -1492,7 +1499,13 @@ export async function resendRecoveryMutation(
   const runtime = requireMutationRuntime();
   await runtime.start;
   const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames);
-  const record = await runtime.storage.resendRecovery(clientMutationId, intent);
+  // Registered around the write: the resent row is undelivered work, and a
+  // fallback send must see it before the async refresh can.
+  const record = await trackOutboxWrite(
+    targetRef,
+    () => runtime.storage.resendRecovery(clientMutationId, intent),
+    (resent) => resent !== undefined && resent.state !== "canceled",
+  );
   if (!record) return undefined;
   pinnedMutationRefs.add(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
@@ -1915,6 +1928,18 @@ function threadInstanceID(model: ThreadModel | undefined): string | undefined {
   return model?.instanceId ?? model?.threadId;
 }
 
+// The composer's routes and the wire methods they build, in ONE place: both
+// composerMutationIntent and DIRECT_FALLBACK_METHODS read this map, so a route
+// added here (or a method changed) cannot leave the fallback set silently
+// behind. The Record<ComposerMutationRoute, string> annotation makes the map
+// exhaustive over the route union at compile time.
+const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
+  send: "turn/start",
+  queue: "turn/queue",
+  steer: "turn/steer",
+  drain: "turn/drainAsSteer",
+};
+
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
@@ -1953,13 +1978,13 @@ function composerMutationIntent(
   if (route === "send") {
     return {
       ...base,
-      method: "turn/start",
+      method: COMPOSER_ROUTE_METHODS.send,
       payload: { ref, expectedInstanceId, input },
-      optimisticDisplay: { method: "turn/start", input },
+      optimisticDisplay: { method: COMPOSER_ROUTE_METHODS.send, input },
     };
   }
   if (route === "queue" || route === "steer") {
-    const method = route === "queue" ? "turn/queue" : "turn/steer";
+    const method = COMPOSER_ROUTE_METHODS[route];
     return {
       ...base,
       method,
@@ -1973,9 +1998,9 @@ function composerMutationIntent(
   const expectedQueueRevision = model?.queue?.revision ?? 0;
   return {
     ...base,
-    method: "turn/drainAsSteer",
+    method: COMPOSER_ROUTE_METHODS.drain,
     payload: { ref, expectedInstanceId, expectedQueueRevision, input },
-    optimisticDisplay: { method: "turn/drainAsSteer", input },
+    optimisticDisplay: { method: COMPOSER_ROUTE_METHODS.drain, input },
   };
 }
 
@@ -2206,27 +2231,54 @@ const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "notes/human/set": "Notes aren't available until this session is resumed",
 };
 
-// The composer's four send verbs - exactly the routes composerMutationIntent
-// builds (turn/start, turn/queue, turn/steer, turn/drainAsSteer). These are the
-// only mutations the direct fallback answers when the durable outbox cannot be
-// written: each has no response-side local commit beyond the wire call itself,
-// so a plain RPC looks to the rest of the store exactly like the dispatched row
-// would have. Every other durable write keeps its own contract and stays
-// fail-closed - see the catch in enqueueMutationIntent.
-const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set([
-  "turn/start",
-  "turn/queue",
-  "turn/steer",
-  "turn/drainAsSteer",
-]);
+// The composer's four send verbs, DERIVED from COMPOSER_ROUTE_METHODS so the
+// builder and this set cannot drift. These are the only mutations the direct
+// fallback answers when the durable outbox cannot be written: each has no
+// response-side local commit beyond the wire call itself, so a plain RPC looks
+// to the rest of the store exactly like the dispatched row would have. Every
+// other durable write keeps its own contract and stays fail-closed - see the
+// catch in enqueueMutationIntent.
+const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set(Object.values(COMPOSER_ROUTE_METHODS));
 
 // Decrement a ref's in-flight durable-enqueue count, dropping the entry at
-// zero. Paired exactly with the increment before enqueueMutationIntent's try,
-// on both the settle and the throw path.
+// zero. Paired exactly with the increment in enqueueMutationIntent and
+// trackOutboxWrite, on both the settle and the throw path. A release with no
+// matching acquire is a bookkeeping bug, not a normal case, so it throws rather
+// than defaulting the missing entry to 1 - that default would also hide a
+// double release or a mid-flight reset.
 function releaseInflightDurableEnqueue(ref: string): void {
-  const remaining = (inflightDurableEnqueues.get(ref) ?? 1) - 1;
-  if (remaining > 0) inflightDurableEnqueues.set(ref, remaining);
+  const current = inflightDurableEnqueues.get(ref);
+  if (current === undefined) {
+    throw new Error(`threads store: released an in-flight durable enqueue for ${ref} that was never acquired`);
+  }
+  if (current > 1) inflightDurableEnqueues.set(ref, current - 1);
   else inflightDurableEnqueues.delete(ref);
+}
+
+// Register an outbox write that can create or reopen a row this tab now owes
+// delivery (resendRecovery, releaseCanceled), not only the send funnel. It is
+// counted in flight for the fallback's concurrent-enqueue guard, and the ref is
+// marked as holding undelivered work when the write commits a row that is not
+// canceled. Without this the guard's in-memory state stays stale-empty until an
+// async refresh reads the row back - and if storage wedges first, a fallback
+// send jumps the row that was just written. (Writes that only REMOVE or cancel
+// rows - discardRecovery, updateRecoveryInput, discardCanceled,
+// discardCanceledOfInstance, cancelUnattempted - need no registration: they
+// never create undelivered work, and the next refresh/hydration recomputes the
+// set from the records when it can read them.)
+async function trackOutboxWrite<T>(
+  ref: string,
+  write: () => Promise<T>,
+  committedUndelivered: (result: T) => boolean,
+): Promise<T> {
+  inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
+  try {
+    const result = await write();
+    if (committedUndelivered(result)) undeliveredMutationRefs.add(ref);
+    return result;
+  } finally {
+    releaseInflightDurableEnqueue(ref);
+  }
 }
 
 // Remove a ref's dispatch arm once the ref is genuinely idle: it has no
