@@ -59,6 +59,10 @@ interface Options {
 	draft?: Partial<CreationDraft>;
 	/** How thread/start answers: a refusal, or the thread it made. */
 	refuseStart?: Error;
+	/** thread/start waits for the test's releaseStart. */
+	holdStart?: boolean;
+	/** How often the form's hosts controller reads the hub's hosts. */
+	hostPollMs?: number;
 }
 
 /** The form inside a context as NewSessionSheet builds it: a real creation
@@ -67,6 +71,8 @@ interface Options {
 async function mount(options: Options = {}) {
 	const fleet = scriptedFleet(options.hosts ?? []);
 	const calls: { method: string; params: unknown }[] = [];
+	let releaseStart = () => {};
+	const held = new Promise<void>((resolve) => (releaseStart = resolve));
 	const client = {
 		request: async (method: string, params: unknown) => {
 			calls.push({ method, params });
@@ -76,6 +82,7 @@ async function mount(options: Options = {}) {
 			if (forwarded === "evener/path/validate") return { path: "", valid: true };
 			if (method === "thread/start") {
 				if (options.refuseStart) throw options.refuseStart;
+				if (options.holdStart) await held;
 				return { thread: { id: "t", name: "Fix the flaky test", evener: { ref: "paradise-park:t" } }, turn: {} };
 			}
 			return fleet.client.request(method as never, params as never);
@@ -104,14 +111,15 @@ async function mount(options: Options = {}) {
 	store.getState().bind(createNewSessionService(client as never));
 	void store.getState().loadMetadata();
 	void store.getState().loadModels(true);
-	const hosts = new HostsController(client as never);
+	const hosts = new HostsController(client as never, undefined, options.hostPollMs);
 	const live = new LiveSessionsReader(client as never);
 	const memory = new LaunchMemory(memoryStorage(), "hub-1");
 	let context = sheetContext(store, { client: client as never, hosts, live, memory });
 	let headerOptions: NativeStackNavigationOptions = {};
 	const parent = { goBack: vi.fn(), dispatch: vi.fn() };
+	const focus = { focused: true };
 	const navigation = {
-		isFocused: () => true,
+		isFocused: () => focus.focused,
 		navigate: vi.fn(),
 		getParent: () => parent,
 		setOptions: vi.fn((next: NativeStackNavigationOptions) => {
@@ -151,8 +159,18 @@ async function mount(options: Options = {}) {
 		});
 		await settle();
 	};
+	/** A new connection's client takes over the sheet. */
+	const swapClient = async () => {
+		context = { ...context, client: { ...client } as never };
+		await act(async () => {
+			tree.update(form());
+		});
+	};
 	return {
 		tree,
+		focus,
+		releaseStart,
+		swapClient,
 		store,
 		calls,
 		drafts,
@@ -353,4 +371,67 @@ it("puts the Host row's note under WHERE when the project moved with the host", 
 	await act(async () => form.store.setState({ hostNote: "evener isn't on paradise-park. Choose a project." }));
 	expect(form.text()).toContain("evener isn't on paradise-park. Choose a project.");
 	form.dispose();
+});
+
+it("opens nothing when the form lost focus while the start was on its way", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	form.focus.focused = false;
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+	expect(form.parent.dispatch).not.toHaveBeenCalled();
+	// The session exists: the start is remembered and the form is empty for next time.
+	expect(form.memory.history()).toHaveLength(1);
+	expect(form.store.getState().prompt).toBe("");
+	form.dispose();
+});
+
+it("opens nothing when another connection took over while the start was on its way", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
+	await act(async () => void form.header("headerRight").props.onPress());
+	await form.swapClient();
+	await act(async () => form.releaseStart());
+	await settle();
+	expect(form.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+	expect(form.parent.dispatch).not.toHaveBeenCalled();
+	expect(form.memory.history()).toHaveLength(1);
+	form.dispose();
+});
+
+it("keeps the draft when the sheet is swiped away (ruling 18)", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" } });
+	await act(async () => form.prompt().props.onChangeText("half a thought"));
+	form.dispose();
+	expect(alertRequests).toEqual([]);
+	expect(form.parent.goBack).not.toHaveBeenCalled();
+	expect(form.drafts.get("hub-1")).toMatchObject({ cwd: "/home/jesse/git/evener", prompt: "half a thought" });
+});
+
+it("asks before Cancel deletes a draft that holds only an image", async () => {
+	const form = await mount({
+		draft: {
+			cwd: "/home/jesse/git/evener",
+			images: [{ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }],
+		},
+	});
+	await act(async () => form.header("headerLeft").props.onPress());
+	expect(alertRequests.at(-1)?.title).toBe("Delete this draft?");
+	expect(form.parent.goBack).not.toHaveBeenCalled();
+	form.dispose();
+});
+
+it("reads the hub's hosts while the form is on screen, and stops when it leaves", async () => {
+	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" }, hostPollMs: 5 });
+	const reads = () => form.calls.filter((call) => call.method === "evener/host/list").length;
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 30));
+	});
+	expect(reads()).toBeGreaterThan(1);
+	act(() => form.tree.unmount());
+	const after = reads();
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 30));
+	});
+	expect(reads()).toBe(after);
 });

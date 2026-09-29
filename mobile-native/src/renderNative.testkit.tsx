@@ -160,6 +160,7 @@ export function nativeModuleMock() {
 		Appearance: { setColorScheme: () => {} },
 		Alert: { alert: recordAlert, prompt: recordPrompt },
 		FlatList,
+		Image: "Image",
 		KeyboardAvoidingView,
 		Modal: "Modal",
 		Platform: { OS: "ios" as const },
