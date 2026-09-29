@@ -78,11 +78,20 @@ describe("changing host (ruling 17)", () => {
 		});
 	});
 
-	it("names both folders by their paths when they share a name, so the line never contradicts itself", () => {
+	it("names two folders of one name by the shortest ends of their paths that tell them apart", () => {
+		expect(moveToHost("/src/work/evener", "paradise-park", false, ["/src/oss/evener"])).toEqual({
+			cwd: "/src/oss/evener",
+			note: "work/evener isn't on paradise-park, so the project changed to oss/evener.",
+		});
+		// Paths that differ only at their first folder are given whole.
 		expect(moveToHost("/home/jesse/git/evener", "paradise-park", false, ["/Users/jesse/git/evener"])).toEqual({
 			cwd: "/Users/jesse/git/evener",
 			note: "/home/jesse/git/evener isn't on paradise-park, so the project changed to /Users/jesse/git/evener.",
 		});
+		// One path the end of the other: both are given whole.
+		expect(moveToHost("/a/evener", "paradise-park", false, ["/b/a/evener"]).note).toBe(
+			"/a/evener isn't on paradise-park, so the project changed to /b/a/evener.",
+		);
 	});
 
 	it("asks for a project when the host remembers none", () => {

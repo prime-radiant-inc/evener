@@ -111,10 +111,25 @@ export function moveToHost(
 	const name = projectName(cwd);
 	if (!recent) return { cwd: "", note: `${name} isn't on ${hostLabel}. Choose a project.` };
 	// Two folders with one name (a repository cloned on both hosts) would read
-	// "evener isn't on paradise-park, so the project changed to evener": their
-	// paths tell them apart.
-	const [from, to] = name === projectName(recent) ? [cwd, recent] : [name, projectName(recent)];
+	// "evener isn't on paradise-park, so the project changed to evener": the
+	// shortest ends of their paths that differ tell them apart.
+	const [from, to] = name === projectName(recent) ? distinctTails(cwd, recent) : [name, projectName(recent)];
 	return { cwd: recent, note: `${from} isn't on ${hostLabel}, so the project changed to ${to}.` };
+}
+
+/** The shortest ends of two paths that differ ("work/evener" and
+ * "oss/evener"); a path that runs out first is given whole. */
+function distinctTails(a: string, b: string): [string, string] {
+	const left = a.split("/").filter(Boolean);
+	const right = b.split("/").filter(Boolean);
+	// Compared by folder, so a path given whole never differs by its slash alone.
+	const tail = (segments: string[], whole: string, count: number) =>
+		count >= segments.length ? whole : segments.slice(-count).join("/");
+	for (let count = 1; count <= Math.max(left.length, right.length); count++) {
+		if (left.slice(-count).join("/") !== right.slice(-count).join("/"))
+			return [tail(left, a, count), tail(right, b, count)];
+	}
+	return [a, b];
 }
 
 /** A project's name: its folder (spec 11's "Project evener"). */

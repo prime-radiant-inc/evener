@@ -222,8 +222,9 @@ export function createNewSessionStore(
 			});
 		},
 		async setCwd(cwd, refresh = true) {
+			// A project chosen here answers the host-change line (ruling 17).
 			if (cwd.trim() === get().cwd.trim()) {
-				set({ cwd });
+				set({ cwd, hostNote: null });
 				if (refresh) await get().loadModels();
 				return;
 			}
@@ -233,6 +234,7 @@ export function createNewSessionStore(
 			refreshingModels = false;
 			set({
 				cwd,
+				hostNote: null,
 				models: [],
 				recentModels: [],
 				model: null,
