@@ -157,7 +157,7 @@ test.each([
 });
 
 // An informational warning (a coded "no action needed" notice, the projector
-// only lets through at high verbosity) renders as ONE quiet line instead of
+// only lets through at Full) renders as ONE quiet line instead of
 // the attention-chip block: no chip, no separate hint row, the message as the
 // line's text, the hint reachable on the line's hover title.
 test("an informational warning renders one quiet line with the hint on the hover title", () => {

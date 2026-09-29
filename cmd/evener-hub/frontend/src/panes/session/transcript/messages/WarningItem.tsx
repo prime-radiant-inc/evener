@@ -44,8 +44,8 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
   if (!title && !message && !hint) return null; // nothing to show
 
   // An informational warning (a coded "no action needed" notice - budget
-  // arithmetic, not a failure; the projector only lets it through at high
-  // verbosity) renders as ONE quiet line instead of the attention-chip block:
+  // arithmetic, not a failure; the projector only lets it through at Full)
+  // renders as ONE quiet line instead of the attention-chip block:
   // the message is the line, the hint stays reachable on the hover title, and
   // nothing about the row reads as a failure. The same quiet one-liner grammar
   // SystemNoticeItem's .line uses (caption size, --ink-low, no chip).
