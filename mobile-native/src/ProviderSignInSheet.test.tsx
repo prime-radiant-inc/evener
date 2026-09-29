@@ -238,6 +238,28 @@ it("drops a copy failure once the sign-in lands", async () => {
 	expect(renderedText(tree)).not.toContain("Could not copy the code.");
 });
 
+it("stops saying it's waiting once a poll fails, until Check again resumes it", async () => {
+	let polls = 0;
+	const { tree } = await mount({
+		...deviceFlow,
+		"evener/auth/device/poll": () => {
+			polls += 1;
+			if (polls === 1) throw new Error("socket closed");
+			return { state: "pending" };
+		},
+	});
+	await press(tree, "Open sign-in page");
+	expect(renderedText(tree)).toContain("Waiting for you to finish signing in…");
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(2000);
+	});
+	// Nothing is being waited on now: the next check is yours.
+	expect(renderedText(tree)).not.toContain("Waiting for you to finish signing in…");
+	expect(pressable(tree, "Check again")).toBeDefined();
+	await press(tree, "Check again");
+	expect(renderedText(tree)).toContain("Waiting for you to finish signing in…");
+});
+
 it("offers Check again after a failed poll, which polls again", async () => {
 	let polls = 0;
 	const { tree, calls } = await mount({

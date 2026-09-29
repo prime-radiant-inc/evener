@@ -1046,6 +1046,20 @@ it("reads the listing again on coming back to the page after a read failed, with
 	expect(renderedText(tree)).not.toContain("Could not load providers");
 });
 
+it('calls no account sign-in "Signed in" before the hub\'s statuses are read', async () => {
+	const fake = providersHub([
+		instance({ name: "codex", providerId: "openai-codex", activeSource: "oauth", authModes: ["oauth"] }),
+	]);
+	fake.on("evener/auth/list", () => {
+		throw new Error("hub busy");
+	});
+	const { tree } = mountPage();
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("codex");
+	expect(renderedText(tree)).not.toContain("Signed in");
+});
+
 it("says each provider's sign-in state, with only an expired sign-in in amber", async () => {
 	providersHub(
 		[

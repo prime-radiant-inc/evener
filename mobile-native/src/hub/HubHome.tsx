@@ -17,7 +17,7 @@ import { useDisplayChoices } from "../display/displayContext";
 import { APPEARANCE_LABELS } from "../display/displayPreferences";
 import { versionDriftTag } from "../hosts/hostStatus";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
-import { providerStatus } from "../providers/providerStatus";
+import { statusOf } from "../providers/providerStatus";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { appVersionText, hubStatusLine } from "./hubHeader";
@@ -195,11 +195,13 @@ function fleetSummary(rows: readonly HostRow[] | null, hubVersion: string | unde
 
 /** The Providers row's value: every instance, tagged amber with how many
  * need a sign-in (only "Sign-in expired" does, ruling 6). */
-function providersSummary(instances: readonly InstanceEntry[] | null, auth: ReadonlyMap<string, AuthStatusResponse>) {
+function providersSummary(
+	instances: readonly InstanceEntry[] | null,
+	auth: ReadonlyMap<string, AuthStatusResponse> | null,
+) {
 	if (!instances) return null;
-	const toSignIn = instances.filter(
-		(instance) => providerStatus(instance, auth.get(instance.name)).tone === "attention",
-	).length;
+	// No tag until the statuses are read: only they say a sign-in expired.
+	const toSignIn = instances.filter((instance) => statusOf(instance, auth)?.tone === "attention").length;
 	return {
 		count: instances.length,
 		tag: toSignIn > 0 ? { text: `${toSignIn} to sign in`, tone: "amber" as const } : null,
