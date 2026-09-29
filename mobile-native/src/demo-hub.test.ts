@@ -24,8 +24,9 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 
 	async function withFleetHub(
 		run: (hub: Awaited<ReturnType<typeof createDemoHub>>, client: ReturnType<typeof createHubClient>) => Promise<void>,
+		options: { planRevised?: boolean } = {},
 	) {
-		const hub = await createDemoHub(0, undefined, { now: Date.now() });
+		const hub = await createDemoHub(0, undefined, { now: Date.now(), ...options });
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			await client.connect();
@@ -89,14 +90,22 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 		});
 	});
 
-	it("serves the plan on the same port, then its revision", async () => {
+	it("serves the plan on the same port, however often it's read", async () => {
+		// A document chip and a Files row read the plan too, so a version that
+		// changed with the read count would reach the Reader already revised.
 		await withFleetHub(async (hub) => {
 			const port = nativeDocPort(hub.origin, "");
-			const first = await readDocFile(PR2138, PLAN, port);
-			const second = await readDocFile(PR2138, PLAN, port);
-			expect(first.text).toBe(SETTLE_RACE_PLAN);
-			expect(second.text).toBe(SETTLE_RACE_PLAN_REVISED);
+			for (let read = 0; read < 3; read++) expect((await readDocFile(PR2138, PLAN, port)).text).toBe(SETTLE_RACE_PLAN);
 		});
+	});
+
+	it("serves the plan's revision once restarted with EVENER_DEMO_FLEET_PLAN_REVISED", async () => {
+		await withFleetHub(
+			async (hub) => {
+				expect((await readDocFile(PR2138, PLAN, nativeDocPort(hub.origin, ""))).text).toBe(SETTLE_RACE_PLAN_REVISED);
+			},
+			{ planRevised: true },
+		);
 	});
 });
 
