@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -49,6 +51,32 @@ func TestHubInitializeAdvertisesNavigationCapability(t *testing.T) {
 	}
 	if response.Navigation.Version != 1 {
 		t.Fatalf("navigation version = %d, want 1", response.Navigation.Version)
+	}
+}
+
+// TestHubInitializeReportsOwnMachineFacts pins that the hub's handshake names
+// its own machine: its system and architecture from the running binary, and
+// its project roots from hub.toml's top-level `roots` (WebConfig.MachineRoots),
+// so a client showing the hub's own machine beside its SSH hosts has the same
+// facts a HostRow carries.
+func TestHubInitializeReportsOwnMachineFacts(t *testing.T) {
+	server := newHubAppServer(hubcore.WebConfig{
+		Past:         hubcore.NewPastIndex(""),
+		MachineRoots: []string{"/Users/jesse/git", "/srv/work"},
+	}, appsource.NewRegistry())
+	message := server.NewConnection("test").HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if message.Response == nil {
+		t.Fatalf("initialize response = %#v, want success", message)
+	}
+	response, ok := message.Response.Result.(appwire.InitializeResponse)
+	if !ok {
+		t.Fatalf("initialize result = %T, want appwire.InitializeResponse", message.Response.Result)
+	}
+	if response.ServerInfo.OS != runtime.GOOS || response.ServerInfo.Arch != runtime.GOARCH {
+		t.Fatalf("ServerInfo system = %q/%q, want %q/%q", response.ServerInfo.OS, response.ServerInfo.Arch, runtime.GOOS, runtime.GOARCH)
+	}
+	if got, want := response.ServerInfo.Roots, []string{"/Users/jesse/git", "/srv/work"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ServerInfo roots = %v, want %v", got, want)
 	}
 }
 

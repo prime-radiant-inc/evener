@@ -20,6 +20,14 @@ type ServerConfig struct {
 	Version    string
 	SourceID   string
 	Features   appwire.FeatureSet
+	// OS, Arch and Roots describe the serving machine, reported in
+	// ServerInfo so a client can show the hub's own machine's system and
+	// project roots beside the hosts it reaches over SSH. Empty OS/Arch and a
+	// nil Roots leave them absent; a server that does not claim a machine
+	// leaves all three unset.
+	OS    string
+	Arch  string
+	Roots []string
 	// WebSocketTrace records raw data frames and lifecycle events for each
 	// accepted connection. Nil keeps tracing disabled.
 	WebSocketTrace *WebSocketTrace
@@ -522,7 +530,13 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 		capability = s.cfg.NavigationCapability()
 	}
 	return appwire.InitializeResponse{
-		ServerInfo:      appwire.ServerInfo{Name: s.cfg.ServerName, Version: s.cfg.Version},
+		ServerInfo: appwire.ServerInfo{
+			Name:    s.cfg.ServerName,
+			Version: s.cfg.Version,
+			OS:      s.cfg.OS,
+			Arch:    s.cfg.Arch,
+			Roots:   append([]string(nil), s.cfg.Roots...),
+		},
 		ProtocolVersion: protocolVersion,
 		SourceID:        s.cfg.SourceID,
 		Features:        s.cfg.Features,

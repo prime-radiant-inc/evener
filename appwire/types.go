@@ -848,9 +848,20 @@ type NoticesListResponse struct {
 	Notices []HubNotice `json:"notices"`
 }
 
+// ServerInfo names the serving hub and its machine: Name and Version identify
+// the build, while OS, Arch and Roots describe the hub's own machine — the same
+// system and project-root facts a HostRow carries for a host the hub reaches
+// over SSH. A client that already shows the hub's own machine (the phone's
+// Hosts) renders those fields instead of leaving the machine's system and roots
+// unknown. OS and Arch name the machine's system and are absent when a server
+// does not report them; Roots is the machine's project roots, absent when it
+// has none.
 type ServerInfo struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name    string   `json:"name"`
+	Version string   `json:"version"`
+	OS      string   `json:"os,omitempty"`
+	Arch    string   `json:"arch,omitempty"`
+	Roots   []string `json:"roots,omitempty"`
 }
 
 type FeatureSet struct {
