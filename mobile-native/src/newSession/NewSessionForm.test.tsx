@@ -807,17 +807,18 @@ it("says once why Start holds a draft whose last start may have worked (#3104)",
 	failed.dispose();
 });
 
-it("leaves Start open, with the hub's one reason, when the hub refused the start before running it", async () => {
+it("holds Start, with one line that says why, when the hub refused the start as invalid (#3184)", async () => {
 	const form = await mount({
 		draft: { cwd: "/home/jesse/git/evener", prompt: "go" },
-		refuseStart: new WireError("cwd is not a directory", -32602),
+		refuseStart: new WireError("skill input is not supported", -32602),
 	});
 	await act(async () => form.header("headerRight").props.onPress());
 	await settle();
-	expect(form.header("headerRight").props.disabled).toBe(false);
-	expect(form.text()).toContain("cwd is not a directory\n\nNo session was started. Your input is kept.");
-	expect(form.text()).not.toContain("may have started");
-	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: false });
+	expect(form.header("headerRight").props.disabled).toBe(true);
+	const why = "It may have started: check the Board before starting this draft again, or change the draft.";
+	expect(form.text().split(why)).toHaveLength(2);
+	expect(form.text()).toContain("skill input is not supported");
+	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: true });
 	form.dispose();
 });
 

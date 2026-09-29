@@ -6,7 +6,6 @@ import {
 	pluginSelectionFromOverrides,
 	pluginSelectionIssues,
 	resolveScalars,
-	refusedBeforeRunning,
 	stripMarker,
 	WireError,
 } from "@evener/appwire-client";
@@ -472,16 +471,10 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 				return { status: "created", hubId, thread: result.thread };
 			} catch (error) {
 				if (generation !== connection) return { status: "obsolete" };
-				if (startDispatched && refusedBeforeRunning(error)) {
-					// The hub refused the start before running it: no session exists,
-					// so this draft isn't one that may have started, and Start stays.
-					unconfirmedContent = null;
-					set({
-						unconfirmedCreation: false,
-						error: `${error.message}\n\nNo session was started. Your input is kept.`,
-					});
-					return { status: "failed" };
-				}
+				// Any failure of a start the hub was sent leaves it uncertain: the hub
+				// can refuse one after its session already exists (a validation
+				// refusal of the initial input comes after the spawn), and the
+				// phone can't tell those apart yet (#3184).
 				set({
 					error: startDispatched
 						? (error instanceof WireError ? `${error.message}\n\n` : "") +

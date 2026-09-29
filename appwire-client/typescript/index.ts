@@ -188,7 +188,6 @@ export {
   isUpgradeRequiredError,
   mutationErrorData,
   RequestTimeoutError,
-  refusedBeforeRunning,
   sessionActionError,
   sessionActionHeadline,
   WireError,
