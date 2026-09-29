@@ -415,10 +415,26 @@ the end notices. The [job-control contract](../job-control.md) distinguishes
 durable registration and delivery records from process-local observation,
 timers and callbacks.
 
-**Discuss.** Decide which authorized watch intents should be reconstructed after
-restart. Declarative timers/filters are different from arbitrary callback
-closures. Define due times, missed ticks, output cursors, receiver/generation
-validation and explicit-stop behavior before promising durable monitoring.
+**Decision — shell-job lifetime.** Ordinary session-owned shell jobs stop when
+their owning execution runtime shuts down. Watch recovery must not keep those
+processes alive or automatically rerun commands merely to recreate their watches.
+Retain the stopped/interrupted outcome and available output; a watch tied to that
+ended execution settles rather than continuing to wait for it. A hub-only restart
+does not shut down the independent session runtimes. Explicitly detached processes
+have a separately chosen lifetime outside session-owned job supervision.
+
+The normal shutdown path already marks and signals owned jobs in
+[closeRuntimeState](../../agent/jobs.go#L757), followed by tracked process-group
+[cleanup](../../agent/execenv/local.go#L1330). After an abrupt loss, the restored
+job record's `runtime_lost` status describes lost supervision; it does not by
+itself prove that every OS process was terminated.
+
+**Discuss.** Decide which continuing timers and watches of surviving targets
+should be reconstructed after restart. Declarative timers/filters are different
+from arbitrary callback closures. Define due times, missed ticks, output cursors,
+receiver/generation validation and explicit-stop behavior before promising
+durable monitoring. Automatic restoration and the proposed single catch-up check
+for missed monitoring intervals remain under discussion.
 
 **Acceptance.** Restart during an eligible repeating watch and resume future
 observation under the chosen policy, preserving already-pending deliveries
