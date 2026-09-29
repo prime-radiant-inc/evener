@@ -110,7 +110,11 @@ export function moveToHost(
 	if (projectExists) return { cwd, note: null };
 	const name = projectName(cwd);
 	if (!recent) return { cwd: "", note: `${name} isn't on ${hostLabel}. Choose a project.` };
-	return { cwd: recent, note: `${name} isn't on ${hostLabel}, so the project changed to ${projectName(recent)}.` };
+	// Two folders with one name (a repository cloned on both hosts) would read
+	// "evener isn't on paradise-park, so the project changed to evener": their
+	// paths tell them apart.
+	const [from, to] = name === projectName(recent) ? [cwd, recent] : [name, projectName(recent)];
+	return { cwd: recent, note: `${from} isn't on ${hostLabel}, so the project changed to ${to}.` };
 }
 
 /** A project's name: its folder (spec 11's "Project evener"). */
