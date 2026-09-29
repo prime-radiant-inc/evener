@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,7 +81,7 @@ func TestModelCallWarningsLeaveTheErrorBodyOut(t *testing.T) {
 		contextErr := func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("canary-provider", 413, "context length exceeded: "+body, nil, nil)
 		}
-		sess, _ := canarySession(t, contextErr, contextErr)
+		sess, _ := canarySession(t, slices.Repeat([]func(llm.Request) (llm.Response, error){contextErr}, 2)...)
 		eventsDone := captureSessionEvents(sess)
 		sess.strategy = nil
 		sess.contextMgr = nil
@@ -97,6 +98,24 @@ func TestModelCallWarningsLeaveTheErrorBodyOut(t *testing.T) {
 		_, _ = sess.ProcessInput(context.Background(), "task", nil)
 		sess.Close()
 		requireBareWarning(t, <-eventsDone, "context strategy error")
+	})
+
+	t.Run("note elicitation", func(t *testing.T) {
+		t.Parallel()
+		sess, _ := canarySession(t)
+		sess.contextMgr.CheckpointThreshold = 0
+		sess.contextMgr.PreserveRecentTurns = 0
+		history := []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("task")),
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+		}
+		sess.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
+			return "", llm.ErrorFromHTTPStatus("canary-provider", 400, body, nil, nil)
+		}
+		eventsDone := captureSessionEvents(sess)
+		sess.maybeElicitNoteBeforeCompaction(context.Background(), history, 0)
+		sess.Close()
+		requireBareWarning(t, <-eventsDone, "note elicitation failed")
 	})
 
 	t.Run("after action", func(t *testing.T) {

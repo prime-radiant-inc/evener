@@ -36,6 +36,10 @@ func TestWarningDataFromErrorCarriesItsCause(t *testing.T) {
 	if ansi := warningDataFromError("inspect delegate attention", errors.New("disk full\x1b[2K\x1b[1Gall\bgood\x7f")); ansi.Message != "inspect delegate attention: disk full[2K[1Gallgood" {
 		t.Fatalf("control-character message = %q", ansi.Message)
 	}
+	// A tab keeps words apart rather than gluing them.
+	if tab := warningDataFromError("label", errors.New("disk\tfull")); tab.Message != "label: disk full" {
+		t.Fatalf("tab message = %q", tab.Message)
+	}
 	long := warningDataFromError("label", errors.New(strings.Repeat("€", 400)))
 	if !utf8.ValidString(long.Message) || len(long.Message) > len("label: ")+warningCauseLimit {
 		t.Fatalf("long cause: %d bytes, valid=%v", len(long.Message), utf8.ValidString(long.Message))
