@@ -96,6 +96,35 @@ describe("a switch row", () => {
 		expect(toggle.props.ios_backgroundColor).toBe(light.edgeStrong);
 		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(0.4);
 	});
+
+	it("opens a detail from its text while its switch flips on its own, and says a problem in danger ink", () => {
+		const onPress = vi.fn();
+		const onChange = vi.fn();
+		const tree = render(
+			<SwitchRow
+				label="cracked"
+				sub="Broken"
+				subTone="danger"
+				accessibilityLabel="cracked, core, Broken"
+				switchLabel="cracked on by default"
+				value
+				disabled
+				onChange={onChange}
+				onPress={onPress}
+			/>,
+		);
+		const button = tree.root.findByProps({ accessibilityRole: "button" });
+		expect(button.props.accessibilityLabel).toBe("cracked, core, Broken");
+		button.props.onPress();
+		expect(onPress).toHaveBeenCalledTimes(1);
+		const toggle = tree.root.findByType("Switch" as never);
+		expect(toggle.props.accessibilityLabel).toBe("cracked on by default");
+		expect(toggle.props.disabled).toBe(true);
+		// The detail still opens while the switch waits, so the row doesn't dim.
+		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(1);
+		const broken = texts(tree).find((node) => node.props.children === "Broken");
+		expect(merged(broken?.props.style).color).toBe(light.dangerInk);
+	});
 });
 
 describe("a segmented control", () => {

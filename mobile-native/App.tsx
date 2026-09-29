@@ -35,7 +35,6 @@ import {
 	PinnedSectionScreen,
 	PinSectionsScreen,
 } from "./src/PinSectionsScreen";
-import { PluginsScreen } from "./src/PluginsScreen";
 import {
 	ProjectScreen,
 	ProjectsScreen,
@@ -210,7 +209,6 @@ function Navigation() {
 						options={{ title: "Keyboard shortcuts" }}
 					/>
 					<Stack.Screen name="Providers" component={ProvidersScreen} />
-					<Stack.Screen name="Plugins" component={PluginsScreen} />
 					<Stack.Screen
 						name="HubSettings"
 						component={HubSettingsScreen}

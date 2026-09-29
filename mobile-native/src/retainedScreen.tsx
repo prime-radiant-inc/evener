@@ -19,7 +19,7 @@ import { Copy, ErrorMessage } from "./ui";
 export const HUB_NO_LONGER_SELECTED = "This hub is no longer selected. Choose it again in Hubs.";
 
 /** The connection wiring every retained ready-only screen runs at the top of
- * its body - the block PluginsScreen, HubSettingsScreen and ProvidersScreen
+ * its body - the block PluginsPage, HubSettingsScreen and ProvidersScreen
  * each carried in their own copy (#1942): the active connection, the display
  * the connection yields for the screen, the live readiness a deferred write
  * or a re-read checks against, and the client a fresh attempt's dialing gap

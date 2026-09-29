@@ -70,7 +70,14 @@ function hub(check: UpdateCheckResponse | Error) {
 let updates: PhoneHubUpdates;
 let context: HubSheetContextValue;
 
-async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boolean; fleet?: ScriptedFleet } = {}) {
+async function mount(
+	options: {
+		check?: UpdateCheckResponse | Error;
+		ready?: boolean;
+		fleet?: ScriptedFleet;
+		client?: HubSheetContextValue["client"];
+	} = {},
+) {
 	const fake = hub(options.check ?? UP_TO_DATE);
 	const readiness = createReadiness();
 	readiness.set(true);
@@ -79,7 +86,7 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 	context = {
 		hubId: "hub-1",
 		hubName: "Work hub",
-		client: null,
+		client: options.client ?? null,
 		ready: options.ready ?? true,
 		canUseConnection: () => live.usable,
 		updates: updates.controller,
@@ -166,7 +173,6 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	const { root, sheet, press } = await mount();
 	const interim: [string, string][] = [
 		["Providers", "Providers"],
-		["Plugins", "Plugins"],
 		["Keyboard shortcuts", "KeybindingPreferences"],
 		["Launch defaults", "LaunchSettings"],
 		["Hub settings", "HubSettings"],
@@ -180,6 +186,40 @@ it("leaves the sheet for today's screens until their pages land (rulings 10 and 
 	}
 	expect(root.navigate).not.toHaveBeenCalled();
 	expect(sheet.navigate).not.toHaveBeenCalled();
+});
+
+/** A hub with `count` plugins installed, which can say its plugins changed. */
+function pluginHub(count: number) {
+	const hub = { count, notify: (_notification: { method: string }) => {} };
+	const client = {
+		request: async (method: string) => {
+			if (method !== "evener/plugin/list") throw new Error(`unexpected ${method}`);
+			return { plugins: Array.from({ length: hub.count }, (_, index) => ({ plugin: `p${index}` })) };
+		},
+		onNotification: (listener: (notification: { method: string }) => void) => {
+			hub.notify = listener;
+			return () => {};
+		},
+	} as unknown as HubSheetContextValue["client"];
+	return { hub, client };
+}
+
+it("pushes Plugins inside the sheet, valued with the number installed", async () => {
+	const { hub, client } = pluginHub(3);
+	const { root, sheet, find, press } = await mount({ client });
+	// No update tag: the hub doesn't say which plugins have one (ruling 7).
+	expect(find("Plugins, 3")).not.toBeNull();
+	press("Plugins, 3");
+	expect(sheet.navigate).toHaveBeenCalledWith("Plugins", { hubId: "hub-1" });
+	expect(root.dispatch).not.toHaveBeenCalled();
+
+	// The count follows the hub's own word that its plugins changed.
+	hub.count = 4;
+	await act(async () => {
+		hub.notify({ method: "evener/plugin/updated" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	expect(find("Plugins, 4")).not.toBeNull();
 });
 
 it("pushes Hubs inside the sheet, valued with the number of saved hubs", async () => {

@@ -20,11 +20,12 @@ import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../s
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { appVersionText, hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
+import { useInstalledPluginCount } from "./useInstalledPluginCount";
 
-type InterimScreen = "Providers" | "Plugins" | "KeybindingPreferences" | "LaunchSettings" | "HubSettings";
+type InterimScreen = "Providers" | "KeybindingPreferences" | "LaunchSettings" | "HubSettings";
 
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
-	const { hubId, hubName, ready, canUseConnection, updates, hosts } = useHubSheet();
+	const { hubId, hubName, client, ready, canUseConnection, updates, hosts } = useHubSheet();
 	const update = useSyncExternalStore(updates.subscribe, updates.getState);
 	const { profiles } = useConnection();
 	const { appearance } = useDisplayChoices();
@@ -55,6 +56,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 		}, [hosts]),
 	);
 	const fleet = fleetSummary(useOptionalSnapshot(hosts)?.rows ?? null, check?.currentVersion);
+	const installedPlugins = useInstalledPluginCount(ready ? client : null);
 	return (
 		<GroupedPage>
 			<Text
@@ -83,7 +85,13 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			<GroupLabel>Setup</GroupLabel>
 			<Group>
 				<Row icon="key" label="Providers" chevron onPress={() => leaveFor("Providers")} />
-				<Row icon="puzzlepiece.extension" label="Plugins" chevron onPress={() => leaveFor("Plugins")} />
+				<Row
+					icon="puzzlepiece.extension"
+					label="Plugins"
+					value={installedPlugins ?? undefined}
+					chevron
+					onPress={() => navigation.navigate("Plugins", { hubId })}
+				/>
 			</Group>
 			<GroupLabel>This phone</GroupLabel>
 			<Group>

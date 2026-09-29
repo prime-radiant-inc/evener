@@ -2419,7 +2419,11 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 		initial: false,
 	});
 	pressLabel(tree, "Plugins, superpowers is broken");
-	expect(nav.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: id });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
+		screen: "Plugins",
+		params: { hubId: id, focus: { plugin: "superpowers", marketplace: "evener" } },
+		initial: false,
+	});
 	// Update needed comes first.
 	connect(id, null, "closed", { fatal: true });
 	rerender(tree, nav);

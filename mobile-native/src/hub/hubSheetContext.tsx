@@ -18,6 +18,8 @@ export type HubRoutes = {
 	/** focus opens that host's detail once. */
 	Hosts: { hubId: string; focus?: string };
 	HostDetail: { hubId: string; name: string };
+	/** focus opens that plugin's detail once. */
+	Plugins: { hubId: string; focus?: { plugin: string; marketplace: string } };
 	Hubs: undefined;
 	AddHub: { how: How };
 	HubDetails: { id: string };

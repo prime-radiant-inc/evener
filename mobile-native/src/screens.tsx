@@ -211,7 +211,6 @@ export type Routes = {
 	SessionLocation: { hubId: string; location: SessionLocation };
 	Projects: { hubId: string; archived?: boolean };
 	Providers: { hubId: string };
-	Plugins: { hubId: string };
 	HubSettings: { hubId: string };
 	KeybindingPreferences: {
 		hubId: string;
