@@ -1595,7 +1595,9 @@ it("titles a Google provider's paste sheet for its credential JSON", async () =>
 	const sheet = tree.root.findAllByType("Modal" as never).at(-1);
 	if (!sheet) throw new Error("no credential sheet");
 	expect(sheet.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Set credential JSON");
-	expect(control(tree, "Google credential JSON").props.multiline).toBe(true);
+	// No plaintext field: the sheet shows only what was pasted, and a Paste control.
+	expect(hasControl(tree, "Google credential JSON, Not pasted")).toBe(true);
+	expect(hasControl(tree, "Paste credential JSON")).toBe(true);
 });
 
 it("saves a key from the keyboard's Done only when Save could, never twice", async () => {

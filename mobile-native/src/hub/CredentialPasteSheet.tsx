@@ -1,9 +1,12 @@
 // Pasting a key or a credential JSON (spec 12: "Replace key (paste)";
 // prototype hub.js's key sheet): its own sheet over the provider's detail,
-// with Cancel and Save in the header, the one field, and where the credential
-// is kept. The page owns the draft and the write; this is the form.
-import { useMemo } from "react";
-import { FormError, Group, GroupedPage, GroupFooter, TextFieldRow } from "../sheet/Grouped";
+// with Cancel and Save in the header, the key field or the JSON paste control,
+// and where the credential is kept. The page owns the draft and the write;
+// this is the form.
+import { getStringAsync } from "expo-clipboard";
+import { useEffect, useMemo, useState } from "react";
+import { AppState } from "react-native";
+import { FormError, Group, GroupedPage, GroupFooter, Row, TextFieldRow } from "../sheet/Grouped";
 import { ModalSheet } from "../sheet/ModalSheet";
 
 export function CredentialPasteSheet({
@@ -33,6 +36,23 @@ export function CredentialPasteSheet({
 	onCancel(): void;
 }) {
 	const json = kind === "credentialJson";
+	// A multiline field can't be secure, so a pasted credential JSON is never
+	// shown: the sheet says only how much was pasted. The paste itself reads the
+	// clipboard, so the secret stays in the page's draft and off the screen.
+	const [active, setActive] = useState(AppState.currentState === "active");
+	useEffect(() => {
+		const subscription = AppState.addEventListener("change", (state) => setActive(state === "active"));
+		return () => subscription.remove();
+	}, []);
+	async function pasteJson() {
+		let text = "";
+		try {
+			text = await getStringAsync();
+		} catch {
+			// An unreadable clipboard reads as an empty one; nothing to paste.
+		}
+		if (text.trim()) onChangeText(text);
+	}
 	// FormError speaks each new report, so the same words land as one report.
 	const report = useMemo(() => (error ? { message: error } : null), [error]);
 	// Save and the keyboard's Done run through one gate: never while a save
@@ -47,20 +67,31 @@ export function CredentialPasteSheet({
 			cancelDisabled={busy}
 			done={{ label: busy ? "Saving…" : "Save", disabled: busy || !canSave, busy, onPress: save }}
 			onRequestClose={onCancel}
+			privacyCover={json && !active}
 		>
 			<GroupedPage>
 				<FormError error={report} />
 				<Group>
-					<TextFieldRow
-						label={json ? "Google credential JSON" : "API key"}
-						placeholder={json ? "Paste the credential JSON" : "Paste the API key"}
-						multiline={json}
-						secure={!json}
-						value={value}
-						onChangeText={onChangeText}
-						disabled={busy}
-						{...(json ? null : { returnKeyType: "done" as const, onSubmitEditing: save })}
-					/>
+					{json ? (
+						<>
+							<Row
+								label="Google credential JSON"
+								value={value.trim() ? `${value.trim().length} characters` : "Not pasted"}
+							/>
+							<Row label="Paste credential JSON" tone="accent" disabled={busy} onPress={() => void pasteJson()} />
+						</>
+					) : (
+						<TextFieldRow
+							label="API key"
+							placeholder="Paste the API key"
+							secure
+							value={value}
+							onChangeText={onChangeText}
+							disabled={busy}
+							returnKeyType="done"
+							onSubmitEditing={save}
+						/>
+					)}
 				</Group>
 				<GroupFooter>
 					{json
