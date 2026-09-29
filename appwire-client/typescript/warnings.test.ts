@@ -9,7 +9,12 @@ import { describe, expect, test } from "vitest";
 import payloadsGo from "../../agent/events/payloads.go?raw";
 import type { ItemModel } from "./model";
 import { goConstantValue } from "./testing/goConstants";
-import { isInformationalWarning, WarningCodeContextBudget, WarningCodeDelegateAttentionRestore } from "./warnings";
+import {
+  attentionWarningNotice,
+  isInformationalWarning,
+  WarningCodeContextBudget,
+  WarningCodeDelegateAttentionRestore,
+} from "./warnings";
 
 // goWarningCode reads one warning code's value out of agent/events/payloads.go
 // (goConstants.ts's own header says why reading the source is what makes the
@@ -94,5 +99,31 @@ describe("isInformationalWarning", () => {
     expect(isInformationalWarning(warningItem({ type: "steering", warning: { code: WarningCodeContextBudget } }))).toBe(
       false,
     );
+  });
+});
+
+// A daemon warning that isn't informational is a failure a human should see:
+// both clients render it with the warning treatment, reading its title and
+// hint from the notice's raw.warning (#3387).
+describe("attentionWarningNotice", () => {
+  const notice = (raw: unknown) => warningItem({ type: "systemMessage", eventKind: "warning", text: "disk full", raw });
+
+  test("reads an uncoded warning notice's title and hint", () => {
+    expect(
+      attentionWarningNotice(notice({ warning: { title: "Evener error", hint: "Free some space, then retry." } })),
+    ).toEqual({ title: "Evener error", hint: "Free some space, then retry." });
+  });
+
+  test("leaves out a blank or non-string title and hint", () => {
+    expect(attentionWarningNotice(notice({ warning: { title: "  ", hint: 3 } }))).toEqual({});
+    expect(attentionWarningNotice(notice(undefined))).toEqual({});
+  });
+
+  test("is null for an informational warning, and for anything but a warning notice", () => {
+    expect(
+      attentionWarningNotice(notice({ warning: { title: "Context budget", code: WarningCodeContextBudget } })),
+    ).toBeNull();
+    expect(attentionWarningNotice(warningItem({ type: "systemMessage", eventKind: "plugin_loaded" }))).toBeNull();
+    expect(attentionWarningNotice(warningItem({ warning: { title: "Relay" } }))).toBeNull();
   });
 });

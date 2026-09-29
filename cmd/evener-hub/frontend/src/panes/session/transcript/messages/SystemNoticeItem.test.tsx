@@ -441,3 +441,47 @@ test("a round_timings item whose raw fails to narrow (malformed) falls back to t
   render(<TurnBlock turn={turnWith([badItem])} />);
   expect(screen.getByTestId("system-notice-line").textContent).toBe("Round 0 total=1.5s");
 });
+
+// --- daemon warnings (#3387) -------------------------------------------------
+// A daemon warning arrives as a systemMessage with eventKind "warning" and its
+// title, hint and code on raw.warning. One that isn't informational is a
+// failure a human should see: it renders as the warning block (the attention
+// chip with its title, the message, the hint beneath), as a type:"warning"
+// item does. An informational one keeps the quiet line at Full.
+
+const fullConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+
+function renderTurnFull(turn: TurnModel) {
+  return render(
+    <TranscriptRenderProvider config={fullConfig} surface="readOnly" disclosureScope="sni:full">
+      <TurnBlock turn={turn} />
+    </TranscriptRenderProvider>,
+  );
+}
+
+test("an uncoded daemon warning renders as the warning block, with its title, message and hint", () => {
+  const warning = item("w", {
+    eventKind: "warning",
+    text: "inspect delegate attention: open delegates.jsonl: permission denied",
+    raw: { warning: { title: "Evener error", hint: "Check the session's state directory." } },
+  });
+  renderTurnFull(turnWith([warning]));
+  const block = screen.getByTestId("warning-item");
+  expect(block.textContent).toContain("Evener error");
+  expect(screen.getByTestId("warning-message").textContent).toBe(
+    "inspect delegate attention: open delegates.jsonl: permission denied",
+  );
+  expect(screen.getByTestId("warning-hint").textContent).toBe("Check the session's state directory.");
+  expect(screen.queryByTestId("system-notice-line")).toBeNull();
+});
+
+test("an informational daemon warning keeps the quiet line", () => {
+  const budget = item("b", {
+    eventKind: "warning",
+    text: "Output clamped to fit the context window",
+    raw: { warning: { title: "Context budget", code: "context_budget" } },
+  });
+  renderTurnFull(turnWith([budget]));
+  expect(screen.getByTestId("system-notice-line").textContent).toBe("Output clamped to fit the context window");
+  expect(screen.queryByTestId("warning-item")).toBeNull();
+});

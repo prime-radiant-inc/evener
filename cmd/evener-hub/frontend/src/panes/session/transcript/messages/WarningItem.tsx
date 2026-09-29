@@ -62,6 +62,16 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
     );
   }
 
+  return <WarningBlock title={title} message={message} hint={hint} />;
+}, ignoringTurn);
+
+/**
+ * A warning a human should see: the attention chip with its title (or
+ * "Warning"), the message, and the hint beneath. A type:"warning" item and a
+ * daemon's warning notice (SystemNoticeItem, #3387) render through it, so the
+ * two kinds of warning look the same.
+ */
+export function WarningBlock({ title, message, hint }: { title?: string; message: string; hint?: string }) {
   return (
     <div className={CLASS.row} data-testid="warning-item">
       <Chip tone="attention">{title || "Warning"}</Chip>
@@ -77,6 +87,6 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
       )}
     </div>
   );
-}, ignoringTurn);
+}
 
 registerItemRenderer("warning", WarningItem);

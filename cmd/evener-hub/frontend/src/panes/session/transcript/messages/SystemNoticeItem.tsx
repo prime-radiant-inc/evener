@@ -25,6 +25,7 @@
 
 import type { ItemModel, TranscriptMetadataVisibility, TurnModel } from "@evener/appwire-client";
 import {
+  attentionWarningNotice,
   echoesTurnError,
   firstLine,
   formatCharCount,
@@ -47,6 +48,7 @@ import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { roundTimingsSummary } from "./roundTimingsView";
 import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
+import { WarningBlock } from "./WarningItem";
 
 const CLASS = {
   line: requireClass(styles.line, "systemnoticeitem.module.css", "line"),
@@ -269,6 +271,10 @@ function SystemLine({
 }) {
   if (isErrorEvent(item)) return <FailureLine item={item} turn={turn} />;
   if (isCompactHookFailure(item, metadata.hookExits)) return <FailureLine item={item} turn={turn} />;
+  // A daemon warning a human should see (not an informational one) gets the
+  // warning block a type:"warning" item gets, not the quiet line (#3387).
+  const attention = attentionWarningNotice(item);
+  if (attention) return <WarningBlock title={attention.title} message={item.text ?? ""} hint={attention.hint} />;
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   return (

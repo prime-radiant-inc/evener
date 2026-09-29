@@ -10,6 +10,7 @@
 
 import type { ItemModel } from "./model";
 import { isPlainObject } from "./plainObject";
+import { hasWarningText } from "./reducer";
 
 /**
  * The context-budget notices (an output-allocation clamp, a context-usage
@@ -60,4 +61,27 @@ export function isInformationalWarning(item: ItemModel): boolean {
 function noticeWarningCode(raw: unknown): unknown {
   if (!isPlainObject(raw) || !isPlainObject(raw.warning)) return undefined;
   return raw.warning.code;
+}
+
+/** The title and hint of a daemon warning a human should see, or null. */
+export interface AttentionWarning {
+  title?: string;
+  hint?: string;
+}
+
+/**
+ * A daemon warning notice (a systemMessage with eventKind "warning") that is
+ * not informational: a failure both clients render with the warning
+ * treatment rather than as a quiet system line (#3387). Returns its title and
+ * hint from raw.warning (internal/appoverlay/notices.go warningAnnouncement),
+ * each only when it is a non-blank string; null for an informational
+ * warning or anything but a warning notice.
+ */
+export function attentionWarningNotice(item: ItemModel): AttentionWarning | null {
+  if (item.type !== "systemMessage" || item.eventKind !== "warning" || isInformationalWarning(item)) return null;
+  const fields = isPlainObject(item.raw) && isPlainObject(item.raw.warning) ? item.raw.warning : {};
+  return {
+    ...(hasWarningText(fields.title) ? { title: fields.title } : {}),
+    ...(hasWarningText(fields.hint) ? { hint: fields.hint } : {}),
+  };
 }
