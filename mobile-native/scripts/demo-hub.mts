@@ -504,17 +504,15 @@ export async function createDemoHub(
 								evenerErrorInfo: "conflict",
 							});
 						// A message queued for a session at rest (idle, or waiting
-						// on you) with nothing queued before it runs as its own turn,
-						// as the daemon's ProcessPendingUserInput runs it; a Stop
-						// parks the queue (the last turn "interrupted").
-						const lastTurn = selected.turns?.at(-1);
-						if (
+						// on you) runs the queue's head as its own turn, as the
+						// daemon's ProcessPendingUserInput does; queueing again also
+						// releases a Stop's hold (session_client_mutation_queue.go).
+						// With nothing queued, the head is this message.
+						const resting =
 							request.method === "turn/queue" &&
 							(selected.status.type === "idle" ||
-								selected.status.type === "awaiting") &&
-							(selected.evener.queue.depth ?? 0) === 0 &&
-							lastTurn?.status !== "interrupted"
-						) {
+								selected.status.type === "awaiting");
+						if (resting && (selected.evener.queue.depth ?? 0) === 0) {
 							const turn = startScriptedTurn(
 								selected,
 								inputText(params.input),
@@ -578,6 +576,16 @@ export async function createDemoHub(
 								mutationIds.splice(params.index, 1);
 							}
 						}
+						// At rest with a message parked ahead of this one, the
+						// parked one runs now and this one waits behind it.
+						let released: { text: string; mutationId: string } | undefined;
+						if (resting && ids.length > 1) {
+							ids.shift();
+							released = {
+								text: texts.shift() ?? "",
+								mutationId: mutationIds.shift() ?? "",
+							};
+						}
 						if (method !== "turn/steer") {
 							queue.revision += 1;
 							queue.ids = ids;
@@ -614,6 +622,8 @@ export async function createDemoHub(
 								removedTexts.join("\n"),
 								params.clientMutationId,
 							);
+						else if (released)
+							startScriptedTurn(selected, released.text, released.mutationId);
 						const receipt: MutationReceipt = {
 							clientMutationId: params.clientMutationId,
 							disposition: "applied",

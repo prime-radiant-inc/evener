@@ -1219,7 +1219,7 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 		}
 	});
 
-	it("keeps a message queued after Stop held, as the daemon parks the queue", async () => {
+	it("runs a message queued after Stop, since queueing again releases the Stop's hold", async () => {
 		const hub = await createDemoHub(0);
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const identity = { ref: "demo:playground", expectedInstanceId: "demo-instance" };
@@ -1234,12 +1234,46 @@ describe("the demo hub's staged events for the phase 6 screenshots", () => {
 			const queued = (await client.request("turn/queue", {
 				...identity,
 				clientMutationId: "queue-1",
-				input: [{ type: "text", text: "Held one" }],
+				input: [{ type: "text", text: "One more" }],
 			})) as { receipt: { turnId?: string } };
-			expect(queued.receipt.turnId).toBeUndefined();
+			expect(queued.receipt.turnId).toBeDefined();
 			const thread = (await client.request("thread/read", { ref: identity.ref, includeTurns: false })).thread;
-			expect(thread.status.type).toBe("idle");
-			expect(thread.evener.queue.depth).toBe(1);
+			expect(thread.status.type).toBe("active");
+			expect(thread.evener.queue.depth ?? 0).toBe(0);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("runs the message a Stop parked first when another is queued, keeping the new one behind it", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const identity = { ref: "demo:playground", expectedInstanceId: "demo-instance" };
+		const read = async () => (await client.request("thread/read", { ref: identity.ref, includeTurns: true })).thread;
+		try {
+			await client.connect();
+			await client.request("turn/start", {
+				...identity,
+				clientMutationId: "start-1",
+				input: [{ type: "text", text: "Go" }],
+			});
+			await client.request("turn/queue", {
+				...identity,
+				clientMutationId: "queue-1",
+				input: [{ type: "text", text: "Parked one" }],
+			});
+			await client.request("turn/interrupt", { ...identity, clientMutationId: "stop-1" });
+			expect((await read()).evener.queue.depth).toBe(1);
+			await client.request("turn/queue", {
+				...identity,
+				clientMutationId: "queue-2",
+				input: [{ type: "text", text: "New one" }],
+			});
+			const thread = await read();
+			expect(thread.status.type).toBe("active");
+			expect(thread.turns?.at(-1)?.items?.find((item) => item.type === "userMessage")?.text).toBe("Parked one");
+			expect(thread.evener.queue.texts).toEqual(["New one"]);
 		} finally {
 			client.close();
 			await hub.close();
