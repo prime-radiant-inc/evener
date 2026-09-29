@@ -5,7 +5,7 @@
 // ensureSystemRun/coalesceSystemRun "adjacency-only" run continuation
 // (parity-m4-transcript.md #9: any other item type in between forces a new
 // run) without needing a stateful accumulator.
-import type { ItemModel } from "@evener/appwire-client";
+import { ERROR_EVENT_KIND, type ItemModel } from "@evener/appwire-client";
 
 export interface SystemRun {
   items: ItemModel[];
@@ -23,14 +23,13 @@ export interface SystemRun {
 const MIN_GROUP_SIZE = 3;
 
 // A persisted turn failure arrives as a systemMessage item carrying the wire's
-// typed "error" eventKind (appwire.ThreadItemEventKindError). It is the one
-// system item that is not lifecycle churn, and the one readers actively hunt
-// for, so it is classified off that typed field rather than by reading English
-// out of the message - the same rule the scaffold and hook-exit kinds follow.
-const TURN_FAILURE_EVENT_KIND = "error";
-
+// typed "error" eventKind (appwire.ThreadItemEventKindError, the package's
+// ERROR_EVENT_KIND). It is the one system item that is not lifecycle churn,
+// and the one readers actively hunt for, so it is classified off that typed
+// field rather than by reading English out of the message - the same rule the
+// scaffold and hook-exit kinds follow.
 export function isTurnFailureItem(item: ItemModel): boolean {
-  return item.type === "systemMessage" && item.eventKind === TURN_FAILURE_EVENT_KIND;
+  return item.type === "systemMessage" && item.eventKind === ERROR_EVENT_KIND;
 }
 
 function isSystemMessage(item: ItemModel): boolean {

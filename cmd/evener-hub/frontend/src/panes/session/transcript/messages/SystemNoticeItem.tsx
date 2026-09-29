@@ -24,7 +24,16 @@
 // item.
 
 import type { ItemModel, TranscriptMetadataVisibility, TurnModel } from "@evener/appwire-client";
-import { firstLine, formatCharCount, formatDurationMs, scopedDisclosureId } from "@evener/appwire-client";
+import {
+  CONTEXT_SUMMARY_LABEL,
+  contextCompactedText,
+  echoesTurnError,
+  firstLine,
+  formatCharCount,
+  formatDurationMs,
+  pluginLoadedText,
+  scopedDisclosureId,
+} from "@evener/appwire-client";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
@@ -78,7 +87,13 @@ function isScaffoldItem(item: ItemModel): boolean {
 // provide.
 const FALLBACK_LABEL = "System event";
 
+// What a quiet line says. A plugin load carries its summary in the
+// description and no text, and a compaction pass's text is the engine's
+// "Layer / Turns / Estimated tokens" report, so both read their structured
+// raw through the package's systemEventCopy, as the phone does.
 function noticeText(item: ItemModel): string {
+  if (item.eventKind === "plugin_loaded") return pluginLoadedText(item.raw);
+  if (item.eventKind === "context_compaction") return contextCompactedText(item.raw);
   return item.text || FALLBACK_LABEL;
 }
 
@@ -91,6 +106,8 @@ function noticeText(item: ItemModel): string {
 // own summary.
 function scaffoldLabel(item: ItemModel): string {
   if (item.eventKind === "system_prompt" || item.id === SYSTEM_PROMPT_ITEM_ID) return "System prompt";
+  // A compaction's summary or checkpoint: the label the phone folds it under.
+  if (item.eventKind === "compaction") return CONTEXT_SUMMARY_LABEL;
   return firstLine(noticeText(item), 60) || FALLBACK_LABEL;
 }
 
@@ -205,15 +222,17 @@ const FAILURE_FALLBACK_LABEL = "Turn failed";
 
 // What the failure row says. The end cap that closes a failed turn (TurnBlock
 // renders it on exactly this condition) already states the message with its
-// taxonomy chip, hint and recovery action, so with a cap the row names the
-// event and lets the cap carry the detail - saying the same sentence twice, ten
-// pixels apart, is what a reloaded failure did before. With no cap (an item
-// that reached a client without a turn-level error) the row leads with the
-// message, since nothing else will carry it: a failure is never left unstated.
+// taxonomy chip, hint and recovery action, so the row that echoes that error
+// (echoesTurnError, the check the phone uses to drop it) names the event and
+// lets the cap carry the detail - saying the same sentence twice, ten pixels
+// apart, is what a reloaded failure did before. Any other error row leads with
+// its own message, since the cap speaks only for the turn's failure: with no
+// cap at all, or an earlier, distinct error in the same turn, nothing else
+// carries it, and a failure is never left unstated.
 function failureText(item: ItemModel, turn: TurnModel): string {
   const named = item.description?.trim();
   const message = item.text.trim();
-  const preferred = asTurnError(turn.error) ? [named, message] : [message, named];
+  const preferred = echoesTurnError(item, asTurnError(turn.error)) ? [named, message] : [message, named];
   return preferred.find((candidate) => candidate) ?? FAILURE_FALLBACK_LABEL;
 }
 

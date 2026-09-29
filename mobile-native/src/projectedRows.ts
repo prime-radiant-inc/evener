@@ -37,7 +37,11 @@
 import {
 	ACTION_SUMMARY_UNAVAILABLE,
 	type AskQuestionRef,
+	CONTEXT_SUMMARY_LABEL,
 	configFingerprint,
+	contextCompactedText,
+	ERROR_EVENT_KIND,
+	echoesTurnError,
 	hasItemFailure,
 	hasWarningText,
 	isActiveItem,
@@ -48,6 +52,7 @@ import {
 	makeTranscriptDisplayConfig,
 	parseAskUserQuestions,
 	pendingTextJoined,
+	pluginLoadedText,
 	projectThread,
 	steeringKindLabel,
 	steeringNotificationFragments,
@@ -64,7 +69,6 @@ import type {
 	TurnModel,
 } from "@evener/appwire-client";
 import { hubTime } from "./board/attention";
-import { CONTEXT_SUMMARY_LABEL, contextCompactedText, pluginLoadedText } from "./session/systemEventCopy";
 
 // --- the conversation native holds -------------------------------------------
 
@@ -636,10 +640,6 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 
 // --- notice rows ------------------------------------------------------------------
 
-/** The systemMessage event kind of an error: a turn's failure, or a session
- * error the live overlay shows. */
-export const ERROR_EVENT_KIND = "error";
-
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
 const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
@@ -912,7 +912,7 @@ function rowsForProjectedTurn(
 		// failure as an error systemMessage (apptranscript's TurnFailure item),
 		// which would say it a second time. Only that echo goes: another error
 		// in the same turn is news of its own.
-		if (turnError && echoesTurnError(entry.item, turnError)) continue;
+		if (echoesTurnError(entry.item, turnError)) continue;
 		if (isAskUser(entry.item)) {
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);
@@ -1077,12 +1077,6 @@ export function projectConversation(
 
 // --- failure rows ----------------------------------------------------------------
 
-// The error systemMessage that says what turn.error says: apptranscript's
-// TurnFailure item carries the failure's message as its text (both fall back
-// to "The turn failed." when the failure has none).
-function echoesTurnError(it: ItemModel, error: NonNullable<Turn["error"]>): boolean {
-	return it.type === "systemMessage" && it.eventKind === ERROR_EVENT_KIND && it.text.trim() === error.message.trim();
-}
 
 function failureItem(
 	error: NonNullable<Turn["error"]>,
