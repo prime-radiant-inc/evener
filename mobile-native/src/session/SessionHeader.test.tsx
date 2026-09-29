@@ -3,7 +3,8 @@ import { AccessibilityInfo, Animated, Text } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { keyboard, render, renderedText, renderHook } from "../renderNative.testkit";
+import { composerFocusedAs, keyboard, render, renderedText, renderHook } from "../renderNative.testkit";
+import type { ComposerFocus } from "./composerFocus";
 import { NotesBar } from "./NotesBar";
 import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
 import type { ChipKind, ContextChip } from "./sessionState";
@@ -51,7 +52,7 @@ function header(
 		status?: string | null;
 		chips?: readonly ContextChip[];
 		hidden?: boolean;
-		composerKeyboard?: boolean;
+		composerFocus?: ComposerFocus;
 		onChip?: (kind: ChipKind) => void;
 		find?: ReactNode;
 		notes?: ReactNode;
@@ -63,7 +64,7 @@ function header(
 			status={over.status ?? null}
 			chips={over.chips ?? []}
 			hidden={over.hidden ?? false}
-			composerKeyboard={over.composerKeyboard}
+			composerFocus={over.composerFocus ?? composerFocusedAs(false)}
 			notes={over.notes}
 			glassTop={over.glassTop}
 			onChip={over.onChip ?? (() => {})}
@@ -310,7 +311,7 @@ describe("hiding on scroll (spec 8.1)", () => {
 	// header reads the keyboard itself, so the keyboard coming and going
 	// re-renders it alone.
 	it("slides the row away while the keyboard is up for the composer, and back when it lowers", async () => {
-		const tree = render(header({ chips: [goal], composerKeyboard: true }));
+		const tree = render(header({ chips: [goal], composerFocus: composerFocusedAs(true) }));
 		await flushReduceMotion();
 		measured(tree);
 		act(() => keyboard.show());
@@ -320,7 +321,7 @@ describe("hiding on scroll (spec 8.1)", () => {
 	});
 
 	it("keeps the row while the keyboard is up for something other than the composer", async () => {
-		const tree = render(header({ chips: [goal], composerKeyboard: false }));
+		const tree = render(header({ chips: [goal], composerFocus: composerFocusedAs(false) }));
 		await flushReduceMotion();
 		measured(tree);
 		act(() => keyboard.show());
@@ -392,8 +393,18 @@ describe("hiding on scroll (spec 8.1)", () => {
 	});
 });
 
-it("renders nothing with no chips and no status", () => {
-	expect(render(header()).toJSON()).toBeNull();
+it("shows nothing with no chips and no status, its empty panel still floating for the screen to measure", () => {
+	// The screen keeps the list clear of the panel's measured height, so the
+	// panel stays mounted, empty, to report it going to nothing.
+	const panel = render(header()).toJSON();
+	expect(panel).toMatchObject({ type: "View", children: null });
+	expect(Array.isArray(panel)).toBe(false);
+	expect(panel && !Array.isArray(panel) && panel.props.style).toEqual({
+		position: "absolute",
+		top: 0,
+		left: 0,
+		right: 0,
+	});
 });
 
 it("never says Reconnect, Connected or Refresh", () => {

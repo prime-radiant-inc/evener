@@ -7,14 +7,16 @@
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useState } from "react";
-import { Alert } from "react-native";
+import { Alert, Text } from "react-native";
 import { whenReady } from "../connectionDisplay";
+import { fonts, scaledType, space, uiType } from "../design/tokens";
 import { destructiveButton } from "../haptics";
 import { hostStatus, systemLabel, VERSION_DRIFT_FOOTER, versionDriftTag } from "../hosts/hostStatus";
 import { liveSessionsText } from "../hosts/liveCounts";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, RowValue } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import { HostsNotListed } from "../hosts/HostsNotListed";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 import { useHostsOnScreen, useLeavesWithHost } from "./useHostsOnScreen";
 
@@ -23,6 +25,8 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 	const { hubId, hubName, ready, canUseConnection, hosts } = useHubSheet();
 	const [removing, setRemoving] = useState(false);
 	const [removeError, setRemoveError] = useState<string | null>(null);
+	const { palette } = useColors();
+	const scale = useTextScale();
 	const { state, loadError, liveCount, hubVersion } = useHostsOnScreen();
 	const row = state?.rows?.find((candidate) => candidate.name === name);
 	useLeavesWithHost(state ? !!row : null, navigation.goBack);
@@ -78,12 +82,22 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 				<Row label="Defined in" value={row.origin === "sidecar" ? "the app or web" : "hub.toml"} />
 			</Group>
 			{!row.attached && row.lastAttachError ? (
-				<>
-					<GroupLabel>Last error</GroupLabel>
-					<GroupFooter tone="danger" machine>
+				// Raw text the hub reported, at the prototype's footnote size
+				// (hub.js:67): too long for a 17pt row label.
+				<Group label="Last error">
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{
+							color: palette.dangerInk,
+							...scaledType(uiType.footnote, scale),
+							fontFamily: fonts.mono,
+							paddingHorizontal: space.rowInset,
+							paddingVertical: space.rowPadding,
+						}}
+					>
 						{row.lastAttachError}
-					</GroupFooter>
-				</>
+					</Text>
+				</Group>
 			) : null}
 			<Group>
 				{!row.attached && (status.canConnect || connecting) ? (

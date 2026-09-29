@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,7 +185,7 @@ func TestBuildVersionFromManifestCachesSeparatelyPerPackage(t *testing.T) {
 	}
 }
 
-// TestBuildVersionFromManifestConcurrentBuildsOfSameCommitBothSucceed: two
+// TestBuildVersionFromManifestConcurrentBuildsOfSameCommitBothSucceed: several
 // concurrent builds of the same commit must not race over a shared worktree
 // path (one's cleanup deleting the other's in-flight checkout) or over a
 // shared final binary path (one seeing the other's half-written file as a
@@ -194,7 +195,7 @@ func TestBuildVersionFromManifestConcurrentBuildsOfSameCommitBothSucceed(t *test
 	t.Parallel()
 	repo, _, secondSHA := manifestFixtureRepo(t)
 	cache := t.TempDir()
-	const n = 2
+	const n = 8
 	bins := make([]string, n)
 	errs := make([]error, n)
 	var wg sync.WaitGroup
@@ -223,6 +224,35 @@ func TestBuildVersionFromManifestConcurrentBuildsOfSameCommitBothSucceed(t *test
 	}
 	if strings.Count(strings.TrimSpace(string(out)), "\n") != 0 {
 		t.Errorf("worktree list = %s, want only the repo's own primary worktree", out)
+	}
+}
+
+// TestWorktreeAddAndRemoveOnOneRepoTolerateConcurrency: `git worktree add`
+// scans every .git/worktrees/* admin directory, so it can read another
+// call's half-written one and fail ("failed to read commondir"). Many
+// concurrent adds and removes on one repo must all succeed.
+func TestWorktreeAddAndRemoveOnOneRepoTolerateConcurrency(t *testing.T) {
+	t.Parallel()
+	repo, _, secondSHA := manifestFixtureRepo(t)
+	base := t.TempDir()
+	const n = 64
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			wt := filepath.Join(base, fmt.Sprintf("wt-%d", i), fmt.Sprintf("wt-%d", i))
+			if errs[i] = addDetachedWorktree(context.Background(), repo, wt, secondSHA); errs[i] == nil {
+				removeWorktree(context.Background(), repo, wt)
+			}
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("add %d: %v", i, err)
+		}
 	}
 }
 

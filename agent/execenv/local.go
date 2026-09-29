@@ -2215,7 +2215,7 @@ func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, pa
 	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
 	if err == nil {
 		// Best-effort cap: keep first maxResults lines.
-		lines := strings.Split(res.Stdout, "\n")
+		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir))
 		if len(lines) > maxResults {
 			lines = lines[:maxResults]
 		}
@@ -2226,6 +2226,37 @@ func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, pa
 		return "", nil
 	}
 	return res.Stdout + res.Stderr, err
+}
+
+// grepTargetsOneFile reports whether a grep's resolved target names a single
+// file rather than a directory to walk.
+func grepTargetsOneFile(dir string) bool {
+	info, err := os.Stat(dir)
+	return err == nil && !info.IsDir()
+}
+
+// ripgrepOutputLines splits ripgrep's output into lines in the shape the
+// native fallback (grepNative) gives, so a search reads the same whether or
+// not ripgrep is installed (#3259): no trailing newline, and each path
+// relative to the searched directory. rg echoes the directory it was given
+// in front of every path, so that prefix comes off each line; a single named
+// file is "." to the fallback, where rg names it in files-with-matches mode.
+// Content and count lines for a single file carry no path from either.
+func ripgrepOutputLines(stdout, dir string, oneFile bool) []string {
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if oneFile {
+		for i, line := range lines {
+			if line == dir {
+				lines[i] = "."
+			}
+		}
+		return lines
+	}
+	prefix := strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator)
+	for i, line := range lines {
+		lines[i] = strings.TrimPrefix(line, prefix)
+	}
+	return lines
 }
 
 func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {

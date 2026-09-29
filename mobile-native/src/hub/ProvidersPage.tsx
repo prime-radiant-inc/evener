@@ -35,7 +35,7 @@ import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "../retainedScreen";
-import { Group, GroupedPage, GroupFooter, GroupLabel, Row, RowValue } from "../sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, RowValue, SwitchRow } from "../sheet/Grouped";
 import { guardLeave } from "../sheet/confirmDiscard";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { Sheet } from "../sheet/Sheet";
@@ -49,6 +49,7 @@ import {
 	ENDPOINT_CHANGED_WARNING,
 	FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
 	FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
+	MODELS_NOT_CHECKED,
 	PROVIDERS_NOT_LOADED,
 	UNCONFIRMED_CHANGE,
 	UNCONFIRMED_CREDENTIAL,
@@ -195,13 +196,15 @@ function Providers({
 	// The store triple is what binds React to the credential core: every field
 	// read below is the core's own state, with no projection in between.
 	const core = useSyncExternalStore(store.subscribe, store.getState, store.getInitialState);
-	const editorVersion = useRef(0);
+	// Changes whenever you leave or switch the provider detail, so a late result
+	// from an earlier visit is ignored.
+	const detailVisitId = useRef(0);
 	// A screen the user has left must not act on a write that outlives it: the
-	// bump makes every captured version stale, so a late `act` continuation or
+	// bump makes every captured visit stale, so a late `act` continuation or
 	// probe result neither reports an error nor issues a listing read.
 	useEffect(
 		() => () => {
-			editorVersion.current += 1;
+			detailVisitId.current += 1;
 		},
 		[],
 	);
@@ -301,18 +304,46 @@ function Providers({
 			{ secret: true, endpointAsserted: true },
 		);
 	}
+	// Asking the provider for its current models is a read: it runs beside a
+	// write, and its answer lands in the listing like any other.
+	const [checkingModels, setCheckingModels] = useState<string | null>(null);
+	// The id of the newest model check, so only that check can clear "Checking
+	// for new models…". Unlike detailVisitId it survives a link that reopens the
+	// same provider, and closing the detail forgets the check.
+	const latestModelCheckId = useRef(0);
+	// The provider whose detail is open, for a check's late failure to find.
+	const shownProvider = useRef(selected);
+	useEffect(() => {
+		shownProvider.current = selected;
+	}, [selected]);
+	async function checkModels(name: string) {
+		const check = ++latestModelCheckId.current;
+		const current = () => check === latestModelCheckId.current;
+		setActionError(null);
+		setCheckingModels(name);
+		try {
+			await surface.checkModels(name);
+		} catch {
+			// Only on the detail that asked: a link may have opened another one.
+			if (current() && shownProvider.current === name) setActionError(MODELS_NOT_CHECKED);
+		} finally {
+			if (current()) setCheckingModels(null);
+		}
+	}
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
 	// before the text goes (spec 6), whether by its Cancel, Done or a swipe.
 	const leaveKey = (leave: () => void) =>
 		guardLeave({ busy: !!editingCredential && surface.busy, dirty: !!(editingCredential && key.trim()) }, leave);
 	function close() {
-		editorVersion.current += 1;
+		detailVisitId.current += 1;
 		setSelected(null);
 		setConfiguration(null);
 		setEditingCredential(null);
 		setCredentialTarget(null);
 		setKey("");
 		setActionError(null);
+		latestModelCheckId.current += 1;
+		setCheckingModels(null);
 	}
 	async function act(
 		action: () => Promise<unknown>,
@@ -324,12 +355,12 @@ function Providers({
 		// what keeps a request that cannot be sent from clearing input the user
 		// may still want once ready again.
 		if (!canUseConnection()) return;
-		const version = editorVersion.current;
+		const visit = detailVisitId.current;
 		setActionError(null);
 		setActionWarning(null);
 		try {
 			const applied = await action();
-			if (version !== editorVersion.current) return;
+			if (visit !== detailVisitId.current) return;
 			// An instance mutation answers false when a newer request superseded the
 			// listing it answered with: the write may have landed, but this screen
 			// cannot confirm it, so it does not report success. The surface that
@@ -342,7 +373,7 @@ function Providers({
 			setCredentialTarget(null);
 			setKey("");
 		} catch (err) {
-			if (version !== editorVersion.current) return;
+			if (visit !== detailVisitId.current) return;
 			// A refusal for rows of a replaced connection, or a destination that
 			// moved since the row was read, is not an unconfirmed operation: say what
 			// changed and re-read so the action is retryable against the rows now on
@@ -414,11 +445,11 @@ function Providers({
 			return;
 		}
 		// The error belongs to the provider the user is looking at when it lands:
-		// selecting another row bumps editorVersion, so a probe whose row was left
+		// selecting another row bumps detailVisitId, so a probe whose row was left
 		// behind neither names this row nor reports on the one just picked.
-		const version = editorVersion.current;
+		const visit = detailVisitId.current;
 		void surface.testCredentials(name, row?.endpointFingerprint).catch((err) => {
-			if (version !== editorVersion.current) return;
+			if (visit !== detailVisitId.current) return;
 			if (isEndpointConflict(err)) setActionError(ENDPOINT_CHANGED_TEST_MESSAGE);
 		});
 	}
@@ -439,7 +470,7 @@ function Providers({
 		const target = core.instances.find((item) => item.name === focus);
 		if (target && signInFocus && target.authModes?.includes("oauth")) onSignIn(target.name);
 		else if (target) {
-			editorVersion.current += 1;
+			detailVisitId.current += 1;
 			setSelected(target.name);
 		}
 		onFocused();
@@ -476,7 +507,7 @@ function Providers({
 											accessibilityLabel={[item.name, sub, status?.word].filter(Boolean).join(", ")}
 											chevron
 											onPress={() => {
-												editorVersion.current += 1;
+												detailVisitId.current += 1;
 												setActionError(null);
 												setSelected(item.name);
 											}}
@@ -553,7 +584,17 @@ function Providers({
 						<GroupedPage>
 							{instance ? (
 								<>
-									<ProviderFacts instance={instance} auth={auth} />
+									<ProviderFacts
+										instance={instance}
+										auth={auth}
+										togglesHeld={writeHeld}
+										onToggleModel={(model, disabled) => {
+											void act(() => surface.setModelDisabled(instance.name, model, disabled));
+										}}
+										checking={checkingModels === instance.name}
+										checkHeld={!ready}
+										onCheckModels={whenReady(canUseConnection, () => void checkModels(instance.name))}
+									/>
 									<Group>
 										{instance.authModes?.includes("oauth") && (
 											<Row
@@ -716,17 +757,31 @@ function Providers({
 
 /** What a provider is: its sign-in state (amber only when expired), its
  * type, how it signs in and where it points, where its credential comes
- * from, and the models it offers. */
+ * from, and the models it offers, each with a switch (as on the web), and
+ * the action that asks the provider for new ones. */
 function ProviderFacts({
 	instance,
 	auth,
+	togglesHeld,
+	onToggleModel,
+	checking,
+	checkHeld,
+	onCheckModels,
 }: {
 	instance: InstanceEntry;
 	auth: ReadonlyMap<string, AuthStatusResponse> | null;
+	/** A write is in flight or configuration can't be written: the switches hold. */
+	togglesHeld: boolean;
+	onToggleModel(model: string, disabled: boolean): void;
+	/** The provider is being asked for its current models. */
+	checking: boolean;
+	/** The connection can't carry a check right now. */
+	checkHeld: boolean;
+	onCheckModels(): void;
 }) {
 	const status = statusOf(instance, auth);
 	const defaultTag = instance.isDefault ? ({ text: "Default", tone: "gray" } as const) : null;
-	const models = (instance.models ?? []).filter((model) => !model.disabled);
+	const models = instance.models ?? [];
 	return (
 		<>
 			<Group>
@@ -763,18 +818,27 @@ function ProviderFacts({
 					{message}
 				</GroupFooter>
 			))}
-			{models.length > 0 ? (
-				<Group label="Models">
-					{models.map((model) => (
-						<Row key={model.id} label={model.id} machineLabel />
-					))}
-				</Group>
-			) : (
-				<>
-					<GroupLabel>Models</GroupLabel>
-					<GroupFooter>No models listed</GroupFooter>
-				</>
-			)}
+			<Group label="Models">
+				{models.map((model) => (
+					// A model name is a name, not machine text: SF Pro (spec 16.2).
+					<SwitchRow
+						key={model.id}
+						label={model.id}
+						value={!model.disabled}
+						disabled={togglesHeld}
+						onChange={(on) => onToggleModel(model.id, !on)}
+					/>
+				))}
+				{/* An action the hub doesn't take on its own: it asks the provider
+				    for its current catalogue. The list itself follows the hub. */}
+				<Row
+					label={checking ? "Checking for new models…" : "Check for new models"}
+					tone="accent"
+					disabled={checking || checkHeld}
+					onPress={onCheckModels}
+				/>
+			</Group>
+			{models.length === 0 ? <GroupFooter>No models listed.</GroupFooter> : null}
 		</>
 	);
 }

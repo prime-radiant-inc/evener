@@ -21,11 +21,14 @@ import {
 	type MarketplaceEntry,
 	type PluginEntry,
 } from "@evener/appwire-client";
-import { MARKETPLACE_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/extensions";
+import {
+	HUB_WRITE_BUSY,
+	HubWriteBusyError,
+	MARKETPLACE_REFETCH_DEBOUNCE_MS,
+} from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { AddMarketplace } from "../MarketplaceBrowser";
-import { createPluginMutationGate } from "../pluginMutationGate";
 import { PluginsPage } from "./PluginsPage";
 import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
 
@@ -2649,7 +2652,6 @@ it("adds a marketplace from a grouped form: a segmented kind, field rows, Add up
 			client={pluginsClient([]).client}
 			connectionState="ready"
 			hubName="Work hub"
-			gate={createPluginMutationGate()}
 			ready
 			canUseConnection={() => true}
 			onClose={onClose}
@@ -2690,7 +2692,6 @@ it("holds Add marketplace open, and says Adding, while the add is in flight", as
 			client={pluginsClient([]).client}
 			connectionState="ready"
 			hubName="Work hub"
-			gate={createPluginMutationGate()}
 			ready
 			canUseConnection={() => true}
 			onClose={onClose}
@@ -2722,7 +2723,6 @@ it("heads Add marketplace with the shared sheet header: its title and Cancel, an
 			client={pluginsClient([]).client}
 			connectionState="ready"
 			hubName="Work hub"
-			gate={createPluginMutationGate()}
 			ready
 			canUseConnection={() => true}
 			onClose={onClose}
@@ -2753,7 +2753,6 @@ it("keeps Add marketplace open when readiness is lost during submit", async () =
 			client={hub.client}
 			connectionState="ready"
 			hubName="Work hub"
-			gate={createPluginMutationGate()}
 			ready
 			canUseConnection={() => readinessChecks++ === 0}
 			onClose={onClose}
@@ -3190,7 +3189,6 @@ function mountAdd(onClose = vi.fn()) {
 			client={pluginsClient([]).client}
 			connectionState="ready"
 			hubName="Work hub"
-			gate={createPluginMutationGate()}
 			ready
 			canUseConnection={() => true}
 			onClose={onClose}
@@ -3199,6 +3197,26 @@ function mountAdd(onClose = vi.fn()) {
 	);
 	return { tree, onClose };
 }
+
+it("shows the busy copy when the shared gate refuses the add", async () => {
+	const tree = render(
+		<AddMarketplace
+			client={pluginsClient([]).client}
+			connectionState="ready"
+			hubName="Work hub"
+			ready
+			canUseConnection={() => true}
+			onClose={vi.fn()}
+			onAdd={() => Promise.reject(new HubWriteBusyError())}
+		/>,
+	);
+	act(() => tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins"));
+	await act(async () => {
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" }).props.onPress();
+	});
+	// A refusal is not a failure: the modal stays open on the busy copy.
+	expect(renderedText(tree)).toContain(HUB_WRITE_BUSY);
+});
 
 it("closes an untouched Add marketplace at once, by Cancel or a swipe", () => {
 	alertRequests.length = 0;

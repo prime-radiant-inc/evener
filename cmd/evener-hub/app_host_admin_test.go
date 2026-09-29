@@ -527,6 +527,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/project/delete":                   false,
 		"evener/projects/recent":                  true, // discovery: the host's recent project directories
 		"evener/sandbox/escalation/resolve":       false,
+		"evener/archived/list":                    false,
 		"evener/search":                           false,
 		"evener/session-pin/assign":               false,
 		"evener/session-pin/unpin":                false,

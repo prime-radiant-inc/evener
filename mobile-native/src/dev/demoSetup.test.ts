@@ -57,6 +57,45 @@ describe("providers", () => {
 		expect(instances.find((instance) => instance.name === "ollama")).toMatchObject({ credentialRequired: false });
 	});
 
+	it("turns a model off and back on, and lists it either way", () => {
+		const demo = setup();
+		const lunaroute = (list: { instances: { name: string; models?: { id: string; disabled?: boolean }[] }[] }) =>
+			list.instances.find((instance) => instance.name === "lunaroute")?.models;
+		const off = demo.answer("evener/instance/setModelDisabled", {
+			name: "lunaroute",
+			model: "glm-5.3",
+			disabled: true,
+		});
+		expect(lunaroute(off)).toContainEqual({ id: "glm-5.3", disabled: true });
+		expect(lunaroute(demo.answer("evener/instance/list", {}))).toContainEqual({ id: "glm-5.3", disabled: true });
+		const on = demo.answer("evener/instance/setModelDisabled", {
+			name: "lunaroute",
+			model: "glm-5.3",
+			disabled: false,
+		});
+		expect(lunaroute(on)).toContainEqual({ id: "glm-5.3" });
+	});
+
+	it("finds lunaroute's new model on a check, and nothing new elsewhere", () => {
+		const demo = setup();
+		const models = (list: { instances: { name: string; models?: { id: string }[] }[] }, name: string) =>
+			list.instances.find((instance) => instance.name === name)?.models?.map((model) => model.id);
+		expect(models(demo.answer("evener/instance/list", {}), "lunaroute")).not.toContain("glm-5.4");
+		const checked = demo.answer("evener/instance/refreshModels", { name: "lunaroute" });
+		expect(models(checked, "lunaroute")).toContain("glm-5.4");
+		expect(models(demo.answer("evener/instance/refreshModels", { name: "meta" }), "meta")).toEqual(["muse-spark-1.3"]);
+	});
+
+	it("refuses a model change or a check for a provider it doesn't have, as the hub does", () => {
+		const demo = setup();
+		expect(() =>
+			demo.answer("evener/instance/setModelDisabled", { name: "nowhere", model: "k3", disabled: true }),
+		).toThrow('instance "nowhere" not found');
+		expect(() => demo.answer("evener/instance/refreshModels", { name: "nowhere" })).toThrow(
+			'instance "nowhere" not found',
+		);
+	});
+
 	it("describes each provider's sign-in the way the hub does (app_auth.go's authModesFor)", () => {
 		const byName = new Map(
 			setup()

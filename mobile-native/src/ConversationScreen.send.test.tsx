@@ -32,6 +32,7 @@ import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKe
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { FindBar } from "./session/FindBar";
+import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
@@ -493,6 +494,12 @@ function field(tree: ReactTestRenderer) {
 		.find((node) => node.props.accessibilityLabel === "Message");
 }
 
+/** Puts the composer's field in focus, which raises the keyboard for it. */
+function typeInComposer(tree: ReactTestRenderer) {
+	act(() => field(tree)?.props.onFocus());
+	act(() => keyboard.show());
+}
+
 async function type(tree: ReactTestRenderer, text: string) {
 	const input = field(tree);
 	if (!input) throw new Error("no Message field");
@@ -689,7 +696,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
 		await press(tree, "Other answer…");
 		expect(options()).not.toHaveLength(0);
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
 		expect(options()).toHaveLength(0);
 		expect(pressable(tree, "Send answer")).toBeUndefined();
@@ -716,8 +723,10 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("brings the options back from Show options, which lowers the keyboard", async () => {
 		const { tree } = await mount(thread("ref-question-show-options", "awaiting", true));
 		await press(tree, "Other answer…");
-		act(() => keyboard.show());
-		act(() => pressable(tree, "Show options")?.props.onPress());
+		typeInComposer(tree);
+		const showOptions = pressable(tree, "Show options");
+		expect(showOptions).toBeDefined();
+		act(() => showOptions?.props.onPress());
 		expect(pressable(tree, "Send answer")).toBeDefined();
 		expect(pressable(tree, "Show options")).toBeUndefined();
 	});
@@ -725,7 +734,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("sends what you typed as the answer while the keyboard is up", async () => {
 		const { tree, hub } = await mount(thread("ref-question-typed-send", "awaiting", true));
 		await press(tree, "Other answer…");
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		await type(tree, "Drop them");
 		const send = composerSend(tree, "Send your answer");
 		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
@@ -1550,15 +1559,16 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		return { transparent: options.headerTransparent, topEdge: options.scrollEdgeEffects?.top };
 	};
 	const header = (tree: ReactTestRenderer) => tree.root.findByType(SessionHeader);
+	const panel = (tree: ReactTestRenderer) => header(tree).findByType(GlassHeaderPanel);
 	const layout = (tree: ReactTestRenderer) => ({
-		headerTop: Object.assign({}, ...[header(tree).parent?.props.style].flat(Number.POSITIVE_INFINITY)).top,
+		headerTop: Object.assign({}, ...[panel(tree).props.style].flat(Number.POSITIVE_INFINITY)).top,
 		glassTop: header(tree).props.glassTop,
 		listTop: transcriptList(tree).props.contentContainerStyle.paddingTop,
 		keyboardOffset: tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView")[0]?.props
 			.keyboardVerticalOffset,
 	});
 	const measureHeader = (tree: ReactTestRenderer, height: number) =>
-		act(() => header(tree).parent?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
+		act(() => panel(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
 
 	it("runs the transcript under one glass spanning the bar and the chips, its top below them", async () => {
 		systemGlass.available = true;
@@ -2326,7 +2336,7 @@ describe("queued messages above the composer (spec 8.5)", () => {
 	// message, its action; with several, their count, which opens them.
 	it("folds one queued message while you type, steers from there, and shows it again when the keyboard lowers", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(renderedText(tree)).not.toContain("check the logs");
 		expect(pressable(tree, "1 queued")).toBeDefined();
 		await press(tree, "Steer now, check the logs");
@@ -2337,7 +2347,7 @@ describe("queued messages above the composer (spec 8.5)", () => {
 
 	it("folds several queued messages to their count while you type", async () => {
 		const { tree } = await mount(thread("ref-typing-several", "active", false, ["check the logs", "then deploy"]));
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(pressable(tree, "2 queued")).toBeDefined();
 		expect(pressable(tree, "Steer now, check the logs")).toBeUndefined();
 		act(() => keyboard.hide());
@@ -2345,7 +2355,7 @@ describe("queued messages above the composer (spec 8.5)", () => {
 
 	it("folds a held message to its count and Send now while you type", async () => {
 		const { tree } = await mount(thread("ref-typing-held", "idle", false, ["check the logs"]));
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(pressable(tree, "1 held")).toBeDefined();
 		expect(pressable(tree, "Send now, check the logs")).toBeDefined();
 		act(() => keyboard.hide());
@@ -2356,6 +2366,35 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		const { tree } = await mount(thread("ref-typing-find", "active", false, ["check the logs"]));
 		chooseMenu("Find in session");
 		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	// Find stays open while you type in the composer: the keyboard is the
+	// composer's then, so the queue folds as it does without find (#3232).
+	it("folds the queue while you type in the composer with find open", async () => {
+		const { tree } = await mount(thread("ref-typing-find-composer", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		typeInComposer(tree);
+		expect(renderedText(tree)).not.toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeDefined();
+		act(() => keyboard.hide());
+		expect(renderedText(tree)).toContain("check the logs");
+	});
+
+	// Moving from the composer to the find bar's field keeps the keyboard up;
+	// it isn't the composer's any more, so the queue opens again.
+	it("opens the queue again when you move from the composer to the find bar with the keyboard up", async () => {
+		const { tree } = await mount(thread("ref-typing-to-find", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		typeInComposer(tree);
+		expect(renderedText(tree)).not.toContain("check the logs");
+		const findField = tree.root.find(
+			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+		);
+		act(() => field(tree)?.props.onBlur());
+		act(() => findField.props.onFocus?.());
 		expect(renderedText(tree)).toContain("check the logs");
 		expect(pressable(tree, "1 queued")).toBeUndefined();
 		act(() => keyboard.hide());
@@ -3423,7 +3462,7 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 	it("steps Next aside while you type, and brings it back when the keyboard lowers", async () => {
 		const { tree } = await mount(thread("ref-next-typing", "idle"));
 		expect(capsule(tree)).toBeDefined();
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(capsule(tree)).toBeUndefined();
 		act(() => keyboard.hide());
 		expect(capsule(tree)).toBeDefined();

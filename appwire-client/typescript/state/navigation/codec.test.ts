@@ -4,8 +4,10 @@ import { expect, test, vi } from "vitest";
 // consumer's test runner uses, and package-test-files.mjs refuses one.
 import timestampFixture from "../../../../cmd/evener-hub/testdata/navigation/timestamps.json?raw";
 import valueRecordsFixture from "../../../../cmd/evener-hub/testdata/navigation/value-records.json?raw";
+import { completeSession } from "../../testing/navigation";
 import type { NavigationSessionSummary, NavigationSnapshot } from "../../types.gen";
 import {
+  decodeArchivedListSessions,
   decodeNavigationResponse,
   materializeNavigationResource,
   materializeSnapshot,
@@ -1546,4 +1548,37 @@ test("a snapshot read runs each session value's validator twice, not five times"
   }
 
   expect(timestampChecks).toHaveLength(2);
+});
+
+test("an archived list decodes rows with nested fork-original children", () => {
+  const rows = [
+    completeSession({
+      ref: "local:root",
+      updated_at: "2026-09-01T00:00:00Z",
+      favorite: true,
+      children: [{ ref: "local:original", kind: "fork" }],
+    }),
+    completeSession({ ref: "devbox:remote", host_id: "devbox", offline: true }),
+  ];
+  expect(decodeArchivedListSessions(rows)).toEqual(rows);
+});
+
+test("an archived list rejects a malformed row, a malformed child, and a non-array", () => {
+  const missingRef = { ...completeSession({ ref: "local:root" }) };
+  delete missingRef.ref;
+  const badChild = {
+    ...completeSession({ ref: "local:root" }),
+    children: [{ ...completeSession({ ref: "local:child" }), session_id: undefined }],
+  };
+  for (const value of [[missingRef], [badChild], { sessions: [] }, null]) {
+    expect(() => decodeArchivedListSessions(value)).toThrow("navigation protocol: invalid archived list");
+  }
+});
+
+test("an archived list rejects children nested deeper than the navigation depth bound", () => {
+  let row = completeSession({ ref: "local:leaf" });
+  for (let depth = 0; depth < 40; depth++) {
+    row = completeSession({ ref: `local:level-${depth}`, children: [row] });
+  }
+  expect(() => decodeArchivedListSessions([row])).toThrow("navigation protocol: invalid archived list");
 });

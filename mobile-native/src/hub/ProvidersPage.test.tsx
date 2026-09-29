@@ -24,6 +24,7 @@ import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { ProviderEditor } from "../ProviderEditor";
 import { Tag } from "../sheet/Grouped";
+import { MODELS_NOT_CHECKED, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
 import { ProvidersPage } from "./ProvidersPage";
 import {
 	alertRequests,
@@ -1264,7 +1265,8 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	expect(hasControl(tree, "Type, openai-codex, Default")).toBe(true);
 	expect(hasControl(tree, "Sign-in, Account")).toBe(true);
 	expect(hasControl(tree, "gpt-5.6")).toBe(true);
-	expect(hasControl(tree, "gpt-5.5")).toBe(false);
+	// A disabled model is listed too, with its switch off.
+	expect(hasControl(tree, "gpt-5.5")).toBe(true);
 	expect(hasControl(tree, "Sign in again")).toBe(true);
 	expect(hasControl(tree, "Set key")).toBe(false);
 	expect(hasControl(tree, "Replace key")).toBe(false);
@@ -1273,7 +1275,7 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	expect(hasControl(tree, "Replace key")).toBe(true);
 	expect(hasControl(tree, "Sign in")).toBe(false);
 	expect(hasControl(tree, "Make default")).toBe(true);
-	expect(renderedText(tree)).toContain("No models listed");
+	expect(renderedText(tree)).toContain("No models listed.");
 	await open("vertex");
 	expect(hasControl(tree, "Sign-in, API key")).toBe(true);
 	expect(hasControl(tree, "Set credential JSON")).toBe(true);
@@ -1539,17 +1541,12 @@ it("calls a shadowed environment variable what it is, never a stored credential"
 	expect(subtreeText(tree.root.findByType("Modal" as never))).not.toContain("Also stored");
 });
 
-async function openDetailOf(tree: ReactTestRenderer, name: string) {
-	press(tree, (label) => label.startsWith(`${name},`));
-	await act(async () => {});
-}
-
 it("pastes a key in its own sheet: the action as its title, Cancel and Save, and where the key is kept", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
 	fake.on("evener/auth/apiKey/set", () => ({ provider: "work", activeSource: "store" }) as never);
 	const { tree } = mountPage();
 	await act(async () => {});
-	await openDetailOf(tree, "work");
+	await openDetail(tree, "work");
 	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
 	press(tree, (label) => label === "Replace key");
 	const modals = tree.root.findAllByType("Modal" as never);
@@ -1577,7 +1574,7 @@ it("says why a key didn't save in its own sheet, which stays open with the key",
 	});
 	const { tree } = mountPage();
 	await act(async () => {});
-	await openDetailOf(tree, "work");
+	await openDetail(tree, "work");
 	press(tree, (label) => label === "Replace key");
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
 	press(tree, (label) => label === "Save");
@@ -1593,7 +1590,7 @@ it("titles a Google provider's paste sheet for its credential JSON", async () =>
 	providersHub([instance({ auth: "gcp-adc", authModes: ["credentialJson"], hasStoredFile: false })]);
 	const { tree } = mountPage();
 	await act(async () => {});
-	await openDetailOf(tree, "work");
+	await openDetail(tree, "work");
 	press(tree, (label) => label === "Set credential JSON");
 	const sheet = tree.root.findAllByType("Modal" as never).at(-1);
 	if (!sheet) throw new Error("no credential sheet");
@@ -1606,7 +1603,7 @@ it("saves a key from the keyboard's Done only when Save could, never twice", asy
 	fake.on("evener/auth/apiKey/set", () => new Promise(() => {}));
 	const { tree } = mountPage();
 	await act(async () => {});
-	await openDetailOf(tree, "work");
+	await openDetail(tree, "work");
 	press(tree, (label) => label === "Replace key");
 	const submit = () => act(() => control(tree, "API key").props.onSubmitEditing());
 	act(() => control(tree, "API key").props.onChangeText("   "));
@@ -1626,7 +1623,7 @@ it("says Saving, busy, and holds Cancel while a pasted key saves", async () => {
 	fake.on("evener/auth/apiKey/set", () => new Promise(() => {}));
 	const { tree } = mountPage();
 	await act(async () => {});
-	await openDetailOf(tree, "work");
+	await openDetail(tree, "work");
 	press(tree, (label) => label === "Replace key");
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
 	press(tree, (label) => label === "Save");
@@ -1636,4 +1633,355 @@ it("says Saving, busy, and holds Cancel while a pasted key saves", async () => {
 	const saving = sheet.findByProps({ accessibilityRole: "button", accessibilityLabel: "Saving…" });
 	expect(saving.props.accessibilityState).toEqual({ disabled: true, busy: true });
 	expect(sheet.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.disabled).toBe(true);
+});
+
+const withModels = () =>
+	instance({
+		authModes: ["apiKey"],
+		models: [{ id: "gpt-5.6" }, { id: "gpt-5.5", disabled: true }],
+	});
+
+it("lists every model with a switch, off for one that's disabled, in SF Pro (spec 16.2)", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	// VoiceOver reads the model's name, then the switch's own state.
+	expect(control(tree, "gpt-5.6").props.value).toBe(true);
+	expect(control(tree, "gpt-5.5").props.value).toBe(false);
+	const label = tree.root.find((node) => String(node.type) === "Text" && node.props.children === "gpt-5.5");
+	expect(JSON.stringify(label.props.style)).not.toContain("Menlo");
+});
+
+it("turns a model on or off through the hub", async () => {
+	const fake = providersHub([withModels()]);
+	fake.on("evener/instance/setModelDisabled", (params: { name: string; model: string; disabled: boolean }) => ({
+		instances: [
+			{
+				...withModels(),
+				models: [
+					{ id: "gpt-5.6", disabled: params.disabled },
+					{ id: "gpt-5.5", disabled: true },
+				],
+			},
+		],
+		availableProviders: [],
+	}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	await act(async () => {
+		control(tree, "gpt-5.6").props.onValueChange(false);
+	});
+	await act(async () => {});
+	const call = fake.calls.find((entry) => entry.method === "evener/instance/setModelDisabled");
+	expect(call?.params).toMatchObject({ name: "work", model: "gpt-5.6", disabled: true });
+	expect(control(tree, "gpt-5.6").props.value).toBe(false);
+});
+
+it("asks the provider for new models, and the list takes them in as they land", async () => {
+	const fake = providersHub([withModels()]);
+	let answer: (value: InstanceListResponse) => void = () => {};
+	fake.on(
+		"evener/instance/refreshModels",
+		() =>
+			new Promise<InstanceListResponse>((resolve) => {
+				answer = resolve;
+			}),
+	);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	expect(control(tree, "Checking for new models…").props.accessibilityState).toMatchObject({ disabled: true });
+	await act(async () =>
+		answer({
+			instances: [{ ...withModels(), models: [{ id: "gpt-5.6" }, { id: "gpt-5.5", disabled: true }, { id: "gpt-6" }] }],
+			availableProviders: [],
+		}),
+	);
+	await act(async () => {});
+	expect(control(tree, "gpt-6").props.value).toBe(true);
+	expect(hasControl(tree, "Check for new models")).toBe(true);
+});
+
+it("says plainly when it couldn't check for new models", async () => {
+	const fake = providersHub([withModels()]);
+	fake.on("evener/instance/refreshModels", () => {
+		throw new Error("upstream 502");
+	});
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await act(async () => {});
+	const text = subtreeText(tree.root.findByType("Modal" as never));
+	expect(text).toContain("The hub couldn't check for new models. Try again in a moment.");
+	expect(text).not.toContain("upstream 502");
+});
+
+it("holds the model switches while a write runs, and takes the next flip once it lands", async () => {
+	const fake = providersHub([withModels()]);
+	const answers: ((value: InstanceListResponse) => void)[] = [];
+	fake.on(
+		"evener/instance/setModelDisabled",
+		() =>
+			new Promise<InstanceListResponse>((resolve) => {
+				answers.push(resolve);
+			}),
+	);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	await act(async () => control(tree, "gpt-5.6").props.onValueChange(false));
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(true);
+	expect(control(tree, "gpt-5.5").props.disabled).toBe(true);
+	await act(async () =>
+		answers[0]?.({
+			instances: [
+				{
+					...withModels(),
+					models: [
+						{ id: "gpt-5.6", disabled: true },
+						{ id: "gpt-5.5", disabled: true },
+					],
+				},
+			],
+			availableProviders: [],
+		}),
+	);
+	await act(async () => {});
+	expect(control(tree, "gpt-5.5").props.disabled).toBe(false);
+	await act(async () => control(tree, "gpt-5.5").props.onValueChange(true));
+	const flips = fake.calls
+		.filter((call) => call.method === "evener/instance/setModelDisabled")
+		.map((call) => call.params);
+	expect(flips).toEqual([
+		expect.objectContaining({ model: "gpt-5.6", disabled: true }),
+		expect.objectContaining({ model: "gpt-5.5", disabled: false }),
+	]);
+});
+
+it("holds the model switches when the hub refuses writes", async () => {
+	const fake = providersHub([withModels()]);
+	fake.on("evener/instance/list", () => ({ instances: [withModels()], availableProviders: [], writesRefused: true }));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(true);
+});
+
+it("holds the model switches while the connection is down", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(false);
+	const props = tree.root.findByType(ProvidersPage).props as ComponentProps<typeof ProvidersPage>;
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersPage {...props} />);
+	});
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(true);
+});
+
+it("holds the model switches on a replaced connection's rows until its own listing lands", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const props = tree.root.findByType(ProvidersPage).props as ComponentProps<typeof ProvidersPage>;
+	let resolveListing: (value: InstanceListResponse) => void = () => {};
+	const second = new FakeClient("ready");
+	second.on(
+		"evener/instance/list",
+		() =>
+			new Promise<InstanceListResponse>((resolve) => {
+				resolveListing = resolve;
+			}),
+	);
+	second.on("evener/auth/list", () => ({ providers: [] }));
+	harness.connection = {
+		...harness.connection,
+		client: second as unknown as ConversationClientLike,
+		state: "connecting",
+	};
+	await act(async () => tree.update(<ProvidersPage {...props} />));
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => tree.update(<ProvidersPage {...props} />));
+	await act(async () => {});
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(true);
+	await act(async () => resolveListing({ instances: [withModels()], availableProviders: [] }));
+	await act(async () => {});
+	expect(control(tree, "gpt-5.6").props.disabled).toBe(false);
+});
+
+it("snaps a switch back and says so when the hub doesn't take the flip", async () => {
+	const fake = providersHub([withModels()]);
+	fake.on("evener/instance/setModelDisabled", () => {
+		throw new Error("config write failed: /home/jesse/.evener/providers.toml");
+	});
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	await act(async () => control(tree, "gpt-5.6").props.onValueChange(false));
+	await act(async () => {});
+	expect(control(tree, "gpt-5.6").props.value).toBe(true);
+	const text = subtreeText(tree.root.findByType("Modal" as never));
+	expect(text).toContain(UNCONFIRMED_CHANGE);
+	expect(text).not.toContain("providers.toml");
+});
+
+it("forgets a check for new models when the detail closes, and never reports it elsewhere", async () => {
+	const fake = providersHub([withModels()]);
+	let fail: (reason: Error) => void = () => {};
+	fake.on(
+		"evener/instance/refreshModels",
+		() =>
+			new Promise<InstanceListResponse>((_resolve, reject) => {
+				fail = reject;
+			}),
+	);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	press(tree, (label) => label === "Done");
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(hasControl(tree, "Check for new models")).toBe(true);
+	// The check left behind fails while the detail is open again.
+	await act(async () => fail(new Error("upstream 502")));
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
+});
+
+it("ends a check's Checking state when it lands, even after a new link reopened the provider", async () => {
+	const fake = providersHub([withModels()]);
+	let answer: (value: InstanceListResponse) => void = () => {};
+	fake.on(
+		"evener/instance/refreshModels",
+		() =>
+			new Promise<InstanceListResponse>((resolve) => {
+				answer = resolve;
+			}),
+	);
+	const navigation = { setParams: vi.fn() };
+	const page = (params: { focus?: string }) =>
+		({ route: { params: { hubId: "hub-1", ...params } }, navigation }) as unknown as ComponentProps<
+			typeof ProvidersPage
+		>;
+	const tree = render(<ProvidersPage {...page({ focus: "work" })} />);
+	await act(async () => {});
+	await act(async () => {});
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	expect(control(tree, "Checking for new models…").props.accessibilityState).toMatchObject({ disabled: true });
+	// A second link to the same provider arrives while the check runs.
+	await act(async () => tree.update(<ProvidersPage {...page({})} />));
+	await act(async () => tree.update(<ProvidersPage {...page({ focus: "work" })} />));
+	await act(async () => answer({ instances: [withModels()], availableProviders: [] }));
+	await act(async () => {});
+	expect(control(tree, "Check for new models").props.accessibilityState).toMatchObject({ disabled: false });
+});
+
+it("holds Check for new models while the connection is down", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(control(tree, "Check for new models").props.accessibilityState).toMatchObject({ disabled: false });
+	const props = tree.root.findByType(ProvidersPage).props as ComponentProps<typeof ProvidersPage>;
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersPage {...props} />);
+	});
+	expect(control(tree, "Check for new models").props.accessibilityState).toMatchObject({ disabled: true });
+});
+
+/** A page opened at `focus`, whose later links arrive through `relink`. */
+function linkedPage(focus: string) {
+	const navigation = { setParams: vi.fn() };
+	const page = (params: { focus?: string }) =>
+		({ route: { params: { hubId: "hub-1", ...params } }, navigation }) as unknown as ComponentProps<
+			typeof ProvidersPage
+		>;
+	const tree = render(<ProvidersPage {...page({ focus })} />);
+	const relink = async (next: string) => {
+		await act(async () => tree.update(<ProvidersPage {...page({})} />));
+		await act(async () => tree.update(<ProvidersPage {...page({ focus: next })} />));
+	};
+	return { tree, relink };
+}
+
+/** Answers each evener/instance/refreshModels call in turn, by provider. */
+function heldChecks(fake: FakeClient) {
+	const pending = new Map<
+		string,
+		{ resolve: (value: InstanceListResponse) => void; reject: (reason: Error) => void }
+	>();
+	fake.on(
+		"evener/instance/refreshModels",
+		(params: { name: string }) =>
+			new Promise<InstanceListResponse>((resolve, reject) => {
+				pending.set(params.name, { resolve, reject });
+			}),
+	);
+	return pending;
+}
+
+it("says a check failed when it lands after a new link reopened the same provider", async () => {
+	const fake = providersHub([withModels()]);
+	const checks = heldChecks(fake);
+	const { tree, relink } = linkedPage("work");
+	await act(async () => {});
+	await act(async () => {});
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await relink("work");
+	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
+	await act(async () => {});
+	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
+});
+
+it("keeps a check's failure off another provider a link opened meanwhile", async () => {
+	const fake = providersHub([withModels(), { ...withModels(), name: "home", isDefault: false }]);
+	const checks = heldChecks(fake);
+	const { tree, relink } = linkedPage("work");
+	await act(async () => {});
+	await act(async () => {});
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	await relink("home");
+	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
+});
+
+it("checks two providers back to back: only the newer check ends its Checking state", async () => {
+	const fake = providersHub([withModels(), { ...withModels(), name: "home", isDefault: false }]);
+	const checks = heldChecks(fake);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	press(tree, (label) => label === "Done");
+	await act(async () => {});
+	await openDetail(tree, "home");
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	const listing = {
+		instances: [withModels(), { ...withModels(), name: "home", isDefault: false }],
+		availableProviders: [],
+	};
+	await act(async () => checks.get("work")?.resolve(listing));
+	await act(async () => {});
+	expect(hasControl(tree, "Checking for new models…")).toBe(true);
+	await act(async () => checks.get("home")?.resolve(listing));
+	await act(async () => {});
+	expect(hasControl(tree, "Check for new models")).toBe(true);
 });
