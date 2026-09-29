@@ -50,6 +50,7 @@ func runnerEnv(t *testing.T, overrides ...string) []string {
 		"GOFLAGS": true, "GOCACHE": true, "GOMODCACHE": true, "GOPATH": true,
 		"GOENV": true, "GOTOOLCHAIN": true, "GOPROXY": true, "GOSUMDB": true,
 		"GOPRIVATE": true, "GONOPROXY": true, "GONOSUMDB": true, "GOTMPDIR": true,
+		"GOWORK": true,
 	}
 	base := make([]string, 0, len(os.Environ()))
 	for _, entry := range os.Environ() {
@@ -59,7 +60,11 @@ func runnerEnv(t *testing.T, overrides ...string) []string {
 		}
 		base = append(base, entry)
 	}
-	base = append(base, "GOFLAGS=")
+	// GOWORK is forced empty (auto-discovery) rather than inherited: an ambient
+	// workspace path would make the fixture modules, which live outside it, fail
+	// to resolve while the runner's own repo-root build still needs to find the
+	// repository's go.work.
+	base = append(base, "GOFLAGS=", "GOWORK=")
 	for _, name := range []string{"GOTOOLCHAIN", "GOPROXY", "GOSUMDB", "GOCACHE", "GOMODCACHE", "GOPATH"} {
 		base = append(base, name+"="+goEnvValue(t, name))
 	}
