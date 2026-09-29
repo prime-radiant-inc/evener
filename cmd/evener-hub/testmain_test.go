@@ -156,7 +156,7 @@ func canonicalTempDir(t *testing.T) string {
 	return resolved
 }
 
-func writeRendezvous(t *testing.T, dir string, e rendezvous.Entry) {
+func writeRendezvous(t testing.TB, dir string, e rendezvous.Entry) {
 	t.Helper()
 	if _, err := rendezvous.Write(dir, e); err != nil {
 		t.Fatalf("write rendezvous: %v", err)

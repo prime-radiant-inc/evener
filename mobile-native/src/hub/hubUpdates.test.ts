@@ -22,11 +22,15 @@ const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => 
  * restarting. */
 function hub() {
 	const calls: string[] = [];
-	const state = { version: "0.9.412" };
+	const state = { version: "0.9.412", failNextCheck: false };
 	const client = {
 		request: (async (method: string) => {
 			calls.push(method);
 			if (method === "evener/update/apply") return { restarting: true };
+			if (state.failNextCheck) {
+				state.failNextCheck = false;
+				throw new Error("the hub is still starting");
+			}
 			return check({ currentVersion: state.version, updateAvailable: state.version === "0.9.412" });
 		}) as never,
 	};
@@ -172,4 +176,19 @@ it("asks once when the hub comes back from an update, and shows what that answer
 	expect(h.calls).toEqual(["evener/update/check"]);
 	expect(hook.result.current.getState()).toMatchObject({ restarting: false, check: { currentVersion: "0.9.413" } });
 	hook.unmount();
+});
+
+it("ends the restart when the hub is back but its first answer fails, rather than waiting on", async () => {
+	const h = hub();
+	const readiness = createReadiness();
+	readiness.set(true);
+	const updates = createPhoneHubUpdates(h.client, readiness);
+	await updates.controller.runCheck();
+	const applying = updates.controller.apply();
+	await settle();
+	h.state.failNextCheck = true;
+	readiness.set(false);
+	readiness.set(true);
+	await applying;
+	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
 });

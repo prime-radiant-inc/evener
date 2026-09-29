@@ -159,7 +159,7 @@ func testHubProtocolUpgrade(t *testing.T, protocol string, cleared, cached bool)
 
 }
 
-func protocolMismatchPeer(t *testing.T) string {
+func protocolMismatchPeer(t testing.TB) string {
 	t.Helper()
 	peer := httptest.NewServer(http.HandlerFunc(serveProtocolMismatch))
 	t.Cleanup(peer.Close)

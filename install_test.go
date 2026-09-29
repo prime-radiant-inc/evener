@@ -1489,7 +1489,9 @@ func isETXTBSYExecFailure(err error, out []byte) bool {
 }
 
 // assertNoEvenerDevInstalled fails if an install put evener-dev, the dev
-// tooling binary, into the managed dir or on PATH.
+// tooling binary, into the managed dir or on PATH. Install archives no longer
+// carry it, so the skip path is exercised with a legacy archive in
+// internal/remoteinstall/remoteinstall_test.go.
 func assertNoEvenerDevInstalled(t *testing.T, dirs ...string) {
 	t.Helper()
 	for _, dir := range dirs {
@@ -1503,9 +1505,9 @@ func assertNoEvenerDevInstalled(t *testing.T, dirs ...string) {
 	}
 }
 
-// writeInstallReleaseArchive writes a release archive as releases currently
-// ship: evener, plus evener-dev, which the archive keeps carrying so older
-// installed versions (which require it) can still upgrade into it.
+// writeInstallReleaseArchive writes a release archive as releases ship it:
+// evener alone. evener-dev is dev tooling with no install path and no longer
+// rides in the archive.
 func writeInstallReleaseArchive(t *testing.T, path, root string) {
 	t.Helper()
 
@@ -1521,7 +1523,7 @@ func writeInstallReleaseArchive(t *testing.T, path, root string) {
 	tw := tar.NewWriter(gz)
 	defer tw.Close()
 
-	for _, bin := range []string{"evener", "evener-dev"} {
+	for _, bin := range []string{"evener"} {
 		body := fmt.Sprintf("#!/bin/sh\necho %s\n", bin)
 		header := &tar.Header{
 			Name: filepath.ToSlash(filepath.Join(root, bin)),

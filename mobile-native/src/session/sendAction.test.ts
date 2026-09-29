@@ -62,8 +62,7 @@ describe("what Send does (spec 8.5)", () => {
 		expect(sendAction(session("idle"), [pendingSend({ fromThisClient: false })], true)).toBe("send");
 	});
 
-	it("does nothing offline, while paused, or where the harness can't take it", () => {
-		expect(sendAction(session("idle"), [], false)).toBe("none");
+	it("does nothing while paused, or where the harness can't take it", () => {
 		expect(sendAction(session("idle", { resumeRequired: true }), [], true)).toBe("none");
 		expect(sendAction(session("active", { capabilities: caps({ queue: false }) }), [], true)).toBe("none");
 		expect(sendAction(session("ended", { capabilities: caps({ send: false }) }), [], true)).toBe("none");
@@ -81,5 +80,39 @@ describe("the composer says what Send will do", () => {
 	] as const)("%s, question pending %s", (action, question, placeholder, label) => {
 		expect(composerPlaceholder(action, question)).toBe(placeholder);
 		expect(sendLabel(action, question)).toBe(label);
+	});
+});
+
+describe("Send while offline (phase 6)", () => {
+	it.each([
+		["idle", "queue"],
+		["awaiting", "queue"],
+		["systemError", "queue"],
+		["active", "queue"],
+		["notLoaded", "resume"],
+		["ended", "resume"],
+		["closed", "resume"],
+		["restartRequired", "none"],
+	] as const)("%s → %s: it queues where a turn may be running by the time it arrives", (type, expected) => {
+		expect(sendAction(session(type), [], false)).toBe(expected);
+	});
+
+	it("queues a message behind one this phone still holds, a shut-down session's first included", () => {
+		expect(sendAction(session("ended"), [pendingSend()], false)).toBe("queue");
+		expect(sendAction(session("notLoaded"), [pendingSend({ state: "blockedUnknown" })], false)).toBe("queue");
+		expect(sendAction(session("idle"), [pendingSend()], false)).toBe("queue");
+	});
+
+	it("waits for the connection where the harness can't queue, and while paused", () => {
+		expect(sendAction(session("idle", { capabilities: caps({ queue: false }) }), [], false)).toBe("none");
+		expect(sendAction(session("active", { capabilities: caps({ queue: false }) }), [], false)).toBe("none");
+		expect(sendAction(session("idle", { resumeRequired: true }), [], false)).toBe("none");
+		expect(sendAction(session("ended", { capabilities: caps({ send: false }) }), [], false)).toBe("none");
+	});
+
+	it("says Send waits for the connection", () => {
+		expect(sendLabel("queue", false, false)).toBe("Send when you're back online");
+		expect(sendLabel("queue", true, false)).toBe("Send answer when you're back online");
+		expect(sendLabel("queue", false)).toBe("Queue message");
 	});
 });

@@ -2014,7 +2014,7 @@ test("the primary verb is Start, in the card's own corner, and the page is title
 // icon-only button the phone gets, and a viewport media query cannot see that
 // (the overflowguard's 390px-pane-in-desktop-window measurement proved it).
 // The 559px boundary matches the composer cluster's own compact threshold
-// (SessionChrome's GoalControl chip swap).
+// (the status row's first container query, statusrow.module.css).
 test("the Start button's word collapses to the glyph below the compact pane threshold", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "spawn.module.css"), "utf8");

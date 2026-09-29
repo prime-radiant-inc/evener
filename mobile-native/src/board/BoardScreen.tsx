@@ -76,6 +76,7 @@ import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
+import { onBoardJump } from "./boardJump";
 import { BoardStops, stopToast } from "./boardStops";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
@@ -369,6 +370,7 @@ function Board({
 	const liveEnd = useRef<number | null>(null);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
 		offsets.current[key] = event.nativeEvent.layout.y;
+		jumpWhenLaidOut.current();
 	};
 	const scrollTo = (key: string, withinLive = false) =>
 		scrollBoardTo((withinLive ? (offsets.current.live ?? 0) : 0) + (offsets.current[key] ?? 0));
@@ -376,6 +378,26 @@ function Board({
 		if (band === "idle") foldIdle(false);
 		scrollTo(band, true);
 	};
+	// A tapped "3 sessions need you" banner asks for Needs you here, since the
+	// Board's route takes no params (boardJump.ts). It can ask before the
+	// Board has laid out (it popped to a Board just mounted), so the jump
+	// waits until Live and the band have, then scrolls.
+	const pendingJump = useRef<Band | null>(null);
+	const jumpWhenLaidOut = useRef(() => {});
+	jumpWhenLaidOut.current = () => {
+		const band = pendingJump.current;
+		if (band === null || offsets.current.live === undefined || offsets.current[band] === undefined) return;
+		pendingJump.current = null;
+		jumpToBand(band);
+	};
+	useEffect(
+		() =>
+			onBoardJump((section) => {
+				pendingJump.current = section;
+				jumpWhenLaidOut.current();
+			}),
+		[],
+	);
 	// Within about a screen of the end of Live, read its next page. Layout
 	// checks too, so a first page too short to scroll keeps reading.
 	const viewport = useRef({ offset: 0, height: 0 });
@@ -998,6 +1020,7 @@ function Board({
 									offsets.current.live = y;
 									liveEnd.current = y + height;
 									readMoreLiveIfNear();
+									jumpWhenLaidOut.current();
 								}}
 							>
 								{live}

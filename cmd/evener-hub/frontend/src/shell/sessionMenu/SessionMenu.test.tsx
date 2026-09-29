@@ -267,3 +267,44 @@ test("Delete… confirms before calling onDelete", async () => {
   await waitFor(() => expect(actions.onDelete).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });
+
+test("turn verbs lead the menu in their own group, ahead of the pane group, and dispatch", async () => {
+  const user = userEvent.setup();
+  const onStop = vi.fn();
+  const onSteer = vi.fn();
+  renderMenu({ turnVerbs: { stop: { onSelect: onStop }, steer: { onSelect: onSteer } } });
+  await openMenu(user);
+  const menu = screen.getByRole("menu");
+  const stopItem = within(menu).getByRole("menuitem", { name: "Stop" });
+  const steerItem = within(menu).getByRole("menuitem", { name: "Steer" });
+  const details = within(menu).getByRole("menuitem", { name: "Details" });
+  // Stop before Steer, both before the pane group, and their group separated
+  // from it (the menu's other two separators are the organize/destructive ones).
+  expect(stopItem.compareDocumentPosition(steerItem) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(steerItem.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(screen.getAllByRole("separator")).toHaveLength(3);
+  await user.click(stopItem);
+  expect(onStop).toHaveBeenCalledOnce();
+  await openMenu(user);
+  await user.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Steer" }));
+  expect(onSteer).toHaveBeenCalledOnce();
+});
+
+test("a disabled turn verb stays put when clicked", async () => {
+  const user = userEvent.setup();
+  const onSteer = vi.fn();
+  renderMenu({ turnVerbs: { steer: { onSelect: onSteer, disabled: true } } });
+  await openMenu(user);
+  expect(screen.getByRole("menuitem", { name: "Steer" }).getAttribute("aria-disabled")).toBe("true");
+  await user.click(screen.getByRole("menuitem", { name: "Steer" }));
+  expect(onSteer).not.toHaveBeenCalled();
+});
+
+test("a caller that passes only one turn verb gets only that item", async () => {
+  const user = userEvent.setup();
+  const onStop = vi.fn();
+  renderMenu({ turnVerbs: { stop: { onSelect: onStop } } });
+  await openMenu(user);
+  expect(screen.getByRole("menuitem", { name: "Stop" })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
+});

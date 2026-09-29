@@ -46,7 +46,7 @@ import {
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import { type ConversationState, createConversationStore } from "../../mobile/src/state/conversation";
 import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
@@ -147,6 +147,7 @@ import { FindBar } from "./session/FindBar";
 import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import { configForLevel, currentLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
+import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
 import { type NotesHost, notesHosts } from "./session/NotesSheet";
@@ -1866,14 +1867,21 @@ export function ConversationScreen({
 		const current = store.getState();
 		questionBatches.reconcile(pendingQuestions(current.conversation));
 		const text = composeQuestionAnswers(batch.questions, selections);
+		// Offline, the answers wait in the phone's outbox as a message would
+		// (spec 8.5), fenced to the instance this phone last read.
+		const offline = !connectionReady.current;
+		const online = service;
+		const target = offline ? offlineTarget(current) : null;
+		const offlineAction = offline ? offlineSendAction(current) : "none";
 		if (
-			!service ||
-			!ready ||
-			!connectionReady.current ||
+			(offline
+				? target === null || offlineAction === "none"
+				: !service ||
+					!ready ||
+					current.status !== "open" ||
+					current.conversationGeneration !== bindingGeneration ||
+					current.conversation?.instanceId !== bindingInstance) ||
 			!screenInFront(navigation, route.key) ||
-			current.status !== "open" ||
-			current.conversationGeneration !== bindingGeneration ||
-			current.conversation?.instanceId !== bindingInstance ||
 			controls?.getSnapshot().pending != null ||
 			current.pendingMutation?.status === "pending" ||
 			!(current.conversation && conversationControls(current.conversation).send) ||
@@ -1886,15 +1894,24 @@ export function ConversationScreen({
 		try {
 			await document.submitText(text, async (input) => {
 				if (!questionBatches.begin(batch)) return false;
-				const previous = store.getState().lastAcceptedMutation;
-				await store.getState().send(service, [{ type: "text", text: input }]);
-				const accepted = store.getState().lastAcceptedMutation;
-				if (!accepted || accepted === previous || accepted.kind !== "send") return false;
+				if (target !== null && offlineAction !== "none") {
+					await getNativeMutationRuntime().submit(
+						offlineRequest(target, offlineAction, [{ type: "text", text: input }]),
+					);
+				} else if (online) {
+					const previous = store.getState().lastAcceptedMutation;
+					await store.getState().send(online, [{ type: "text", text: input }]);
+					const accepted = store.getState().lastAcceptedMutation;
+					if (!accepted || accepted === previous || accepted.kind !== "send") return false;
+				} else return false;
 				questionBatches.finish(batch.id, true);
 				acceptedAnswers = true;
 				return true;
 			});
-			if (acceptedAnswers) {
+			// Kept offline isn't sent yet: its ghost says it waits, and the
+			// haptic is Send's.
+			if (acceptedAnswers && offline) haptic("light");
+			else if (acceptedAnswers) {
 				haptic("success");
 				toaster.show({
 					text: batch.questions.length > 1 ? "Answers sent" : "Answer sent",
@@ -1902,12 +1919,14 @@ export function ConversationScreen({
 			}
 			if (
 				acceptedAnswers &&
+				online &&
+				!offline &&
 				connectionReady.current &&
 				screenInFront(navigation, route.key) &&
 				store.getState().conversationGeneration === bindingGeneration &&
 				store.getState().conversation?.instanceId === bindingInstance
 			)
-				await store.getState().rehydrate(service, activitySink);
+				await store.getState().rehydrate(online, activitySink);
 		} catch {
 			setAnswerError("Could not confirm delivery. Your answers are retained; check delivery before trying again.");
 		} finally {
@@ -2133,8 +2152,24 @@ export function ConversationScreen({
 	// The render-time action drives the placeholder, the label and whether
 	// Send is enabled; a press routes on the live state instead.
 	const action = conversation ? sendAction(conversation, snapshot.pendingMutations, connected) : "none";
+	// What Send does once the connection is there, which the placeholder
+	// describes offline too: it describes the session, not the outbox.
+	const onlineAction = connected
+		? action
+		: conversation
+			? sendAction(conversation, snapshot.pendingMutations, true)
+			: "none";
+	// Offline, Send keeps the message in the phone's outbox, for a session
+	// this phone has read since launch (ruling 12).
+	const offlineAdmits =
+		!connected && focused && offlineTarget(snapshot) !== null && offlineSendAction(snapshot) !== "none";
 	const composerReady =
-		ready && draft.loaded && !draft.error && !draft.submitting && unconfirmedSend === null && !imageState.busy;
+		(ready || offlineAdmits) &&
+		draft.loaded &&
+		!draft.error &&
+		!draft.submitting &&
+		unconfirmedSend === null &&
+		!imageState.busy;
 	// While a question waits, Send answers it with your text (ruling 14).
 	const answering = questionBatch !== null;
 	const sendEnabled = answering
@@ -2145,14 +2180,16 @@ export function ConversationScreen({
 			// Your text answers against the saved answers, so it waits for them.
 			questionDraft.loaded
 		: command !== null
-			? composerReady &&
+			? // A command asks the hub, so it waits for the connection.
+				ready &&
+				composerReady &&
 				!(command.command.id === "goal" && !goalCommand && !conversation?.goal) &&
 				!!conversation &&
 				composerCommandAvailable(command.command, conversation)
 			: composerReady && (!!draft.record.draft.trim() || !!draft.record.images?.length) && action !== "none";
 	const composerSendLabel =
 		answering || command === null
-			? sendLabel(action, answering)
+			? sendLabel(action, answering, connected)
 			: command.command.id === "compact"
 				? "Compact transcript"
 				: command.command.id === "goal"
@@ -2170,6 +2207,10 @@ export function ConversationScreen({
 			return;
 		}
 		if (imageSelection.getSnapshot().busy) return;
+		if (!connectionReady.current) {
+			await sendOffline();
+			return;
+		}
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
 		setActionError(null);
@@ -2182,6 +2223,41 @@ export function ConversationScreen({
 			// A refused Send adds no text of its own: the draft stays, and the
 			// unconfirmed ghost document.submit leaves says what happened and
 			// what to do.
+		}
+	}
+	// The session a message sent offline is fenced to: the instance this
+	// phone last read (ruling 12), exactly as an online send's durable request
+	// carries it. A session not read since launch has none, so Send waits.
+	function offlineTarget(state: ConversationState): OfflineTarget | null {
+		const read = state.conversation;
+		if (!read || state.ref !== route.params.ref) return null;
+		return {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+			threadId: read.threadId,
+			instanceId: read.instanceId ?? read.threadId,
+		};
+	}
+	function offlineSendAction(state: ConversationState) {
+		return state.conversation ? sendAction(state.conversation, state.pendingMutations, false) : "none";
+	}
+	// Send while offline (spec 8.5): the message goes straight into the
+	// phone's outbox, which sends it once the connection returns and this
+	// session reads again.
+	async function sendOffline() {
+		const live = store.getState();
+		const target = offlineTarget(live);
+		const kind = offlineSendAction(live);
+		if (target === null || kind === "none") return;
+		setActionError(null);
+		try {
+			await document.submit(async (text, images) => {
+				await getNativeMutationRuntime().submit(offlineRequest(target, kind, buildComposerInput(text, images)));
+				haptic("light");
+				return true;
+			});
+		} catch {
+			// As Send's: the draft stays, and its ghost says what happened.
 		}
 	}
 	// Your text as the free answer to the question the dock is on. When that
@@ -2896,7 +2972,14 @@ export function ConversationScreen({
 								<QuestionDock
 									questions={questionBatch.questions}
 									draft={questionDraft}
-									ready={ready && !!permitted?.send && draft.loaded && !draft.error && unconfirmedSend === null}
+									ready={
+										(ready || offlineAdmits) &&
+										!!permitted?.send &&
+										draft.loaded &&
+										!draft.error &&
+										unconfirmedSend === null
+									}
+									waitsForConnection={!connected}
 									sending={draft.submitting || questionBatch.sending}
 									folded={bottom.dock === "foldedQuestion"}
 									onFold={setQuestionFolded}
@@ -2948,7 +3031,7 @@ export function ConversationScreen({
 										document.edit(text);
 									}}
 									inputRef={composerInput}
-									placeholder={composerPlaceholder(action, answering)}
+									placeholder={composerPlaceholder(onlineAction, answering)}
 									// Under an open dock, whose own button reads "Send answer",
 									// this Send says it sends what you typed.
 									sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}

@@ -7,7 +7,15 @@ import { ActionSheetIOS, Platform } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { alertRequests, pressable, render, renderedText, swipeRowFully, textOf } from "../renderNative.testkit";
+import {
+	alertRequests,
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	swipeRowFully,
+	textOf,
+} from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
@@ -356,9 +364,13 @@ describe("links", () => {
 			destructiveButtonIndex: 2,
 			cancelButtonIndex: 3,
 		});
+		playedHaptics.length = 0;
 		act(() => choose?.(1));
 		expect(clipboard.setStringAsync).toHaveBeenCalledWith("https://example.com/pr/1");
+		expect(playedHaptics).toEqual([]);
 		act(() => choose?.(2));
+		// Spec 16.6: rigid on a destructive choice, and only that one.
+		expect(playedHaptics).toEqual(["impact:rigid"]);
 		await flush();
 		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
 			"u1",
@@ -378,6 +390,10 @@ describe("links", () => {
 			expect(request?.title).toBe("The PR");
 			expect(request?.buttons?.map((button) => button.text)).toEqual(["Open", "Copy link", "Remove link"]);
 			expect(request?.options).toEqual({ cancelable: true });
+			// Spec 16.6: rigid on the destructive choice here too.
+			playedHaptics.length = 0;
+			act(() => request?.buttons?.[2]?.onPress?.());
+			expect(playedHaptics).toEqual(["impact:rigid"]);
 		} finally {
 			(Platform as { OS: string }).OS = os;
 		}
