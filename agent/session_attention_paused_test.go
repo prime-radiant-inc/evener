@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -125,8 +127,13 @@ func TestAttentionPausedMessageSaysHowToResume(t *testing.T) {
 // The pause warning names the provider instance (Evener's own configuration)
 // and nothing a provider said: its hint is the failure's kind and status. A
 // provider's error body can carry anything, so none of it reaches the
-// transcript.
+// transcript or this line in the daemon log. Not parallel: it swaps the
+// default slog handler.
 func TestAttentionPausedWarningCarriesNoProviderText(t *testing.T) {
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
 	const canary = "PROVIDER-BODY-CANARY sk-live-secret"
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, canary, map[string]any{"error": map[string]any{"message": canary}}, nil))
 	warnings := pausedWarnings(t, s)
@@ -147,6 +154,9 @@ func TestAttentionPausedWarningCarriesNoProviderText(t *testing.T) {
 	}
 	if got[0].Hint != "HTTP 401 (authentication)" {
 		t.Fatalf("paused warning hint = %q, want the kind and status only", got[0].Hint)
+	}
+	if strings.Contains(logged.String(), "CANARY") || !strings.Contains(logged.String(), "background updates paused") {
+		t.Fatalf("daemon log = %q, want the pause logged without provider text", logged.String())
 	}
 }
 

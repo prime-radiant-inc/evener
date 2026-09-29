@@ -881,15 +881,17 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 // and how to resume. Without it the updates just stop arriving. It is
 // visible at every level (its code is not informational) and goes to the
 // daemon log too. Nothing a provider said reaches the warning: a provider's
-// error body can carry anything, so the hint is the failure's kind and
-// status only, and the whole error goes to the log.
+// error body can carry anything, so the hint and the log line are the
+// failure's kind and status only; the serve loop's own turn-failure line
+// already records the failed turn.
 func (s *Session) announceRootAttentionPaused(turnErr error) {
-	slog.Warn("background updates paused", "session", s.ID(), "error", turnErr.Error())
+	summary := providerFailureSummary(turnErr)
+	slog.Warn("background updates paused", "session", s.ID(), "failure", summary)
 	s.emit(events.EventWarning, events.WarningData{
 		Message: rootAttentionPausedMessage(turnErr),
 		Source:  string(diagnostic.SourceEvener),
 		Title:   "Background updates paused",
-		Hint:    providerFailureSummary(turnErr),
+		Hint:    summary,
 		Code:    events.WarningCodeAttentionPaused,
 	})
 }
