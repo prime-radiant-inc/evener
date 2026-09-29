@@ -73,29 +73,47 @@ func (m *hubModel) applySandboxEscalation(params appwire.SandboxEscalationReques
 	}
 }
 
-// setDashboardRowApproval flips the approval flag on any cached dashboard row
-// for ref and recomputes that row's project group, so the live escalation path
-// (raise / answer / snapshot merge) keeps the row's ◆ marker, needs-you count,
-// sort position and project summary honest without a tree refetch (the
-// dashboard has no periodic refresh). No-op when no row matches.
+// setDashboardRowApproval keeps the dashboard's approval state live (raise /
+// answer / snapshot merge) without a tree refetch — the dashboard has no
+// periodic refresh. It flips the flag on the cached TREE node for ref and
+// rebuilds the rows from the tree, so every derived surface (the ◆ marker,
+// needs-you count, row order, project rollup/summary) follows from one source
+// and cannot drift from the rows that were kept in step by hand. The selected
+// row is restored by identity. No-op when the tree holds no node for ref.
 func (m *hubModel) setDashboardRowApproval(ref string, pending bool) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return
 	}
-	groups := map[string]bool{}
-	for i := range m.rows {
-		if m.rows[i].ref.String() == ref {
-			m.rows[i].approvalPending = pending
-			groups[dashboardGroupKey(m.rows[i])] = true
+	changed := setTreeNodeApproval(m.tree.Live, ref, pending)
+	for i := range m.tree.Projects {
+		if setTreeNodeApproval(m.tree.Projects[i].Sessions, ref, pending) {
+			changed = true
 		}
 	}
-	for groupKey := range groups {
-		m.refreshDashboardGroup(groupKey)
+	if !changed {
+		return
 	}
-	if len(groups) > 0 {
-		m.clampSelection()
+	selected := m.selectedRowID()
+	m.rows = buildDashboardRows(m.tree)
+	m.restoreRowSelection(selected)
+	m.clampSelection()
+}
+
+// setTreeNodeApproval sets ApprovalPending on the node for ref, recursing into
+// children, and reports whether it changed anything.
+func setTreeNodeApproval(nodes []hubTreeNode, ref string, pending bool) bool {
+	changed := false
+	for i := range nodes {
+		if nodes[i].Ref == ref && nodes[i].ApprovalPending != pending {
+			nodes[i].ApprovalPending = pending
+			changed = true
+		}
+		if setTreeNodeApproval(nodes[i].Children, ref, pending) {
+			changed = true
+		}
 	}
+	return changed
 }
 
 // headEscalation returns the front-of-queue escalation for the CURRENTLY-VIEWED

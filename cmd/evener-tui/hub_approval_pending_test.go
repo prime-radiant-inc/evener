@@ -161,43 +161,56 @@ func TestCommandPaletteSessionEntry_ApprovalReadsNeedsYou(t *testing.T) {
 // the live escalation path (raise/answer), not only the thread/list snapshot
 // (roborev #3129 round 2).
 func TestApplySandboxEscalation_KeepsDashboardRowLive(t *testing.T) {
-	ref, err := appwire.ParseRef("local:th_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := hubModel{rows: []hubRow{{kind: hubRowSession, ref: ref, state: "active"}}}
+	m := approvalTestModel(t, false)
 	m.applySandboxEscalation(appwire.SandboxEscalationRequested{EscalationID: "esc_1"}, "local:th_1")
-	if !m.rows[0].approvalPending {
+	if !sessionApproval(m.rows, "local:th_1") {
 		t.Fatal("a live escalation must mark the session's dashboard row as approval-pending")
 	}
 }
 
 func TestHandleEscalationResolved_ClearsDashboardRowLive(t *testing.T) {
-	ref, err := appwire.ParseRef("local:th_1")
-	if err != nil {
-		t.Fatal(err)
+	m := approvalTestModel(t, true)
+	if !sessionApproval(m.rows, "local:th_1") {
+		t.Fatal("fixture should start approval-pending")
 	}
-	m := hubModel{rows: []hubRow{{kind: hubRowSession, ref: ref, state: "active", approvalPending: true}}}
 	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1"}}}
 	m.handleEscalationResolved(hubEscalationResolvedMsg{ref: "local:th_1", id: "esc_1", approve: true})
-	if m.rows[0].approvalPending {
+	if sessionApproval(m.rows, "local:th_1") {
 		t.Fatal("answering the escalation must clear the row's approval flag")
 	}
 }
 
 func TestMergeSnapshotEscalations_FlagsDashboardRow(t *testing.T) {
-	ref, err := appwire.ParseRef("local:th_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := hubModel{rows: []hubRow{{kind: hubRowSession, ref: ref, state: "active"}}}
+	m := approvalTestModel(t, false)
 	m.mergeSnapshotEscalations(hubSessionDetail{
 		Ref:                "local:th_1",
 		PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1"}},
 	})
-	if !m.rows[0].approvalPending {
+	if !sessionApproval(m.rows, "local:th_1") {
 		t.Fatal("a snapshot/reconnect escalation must flag the session's dashboard row")
 	}
+}
+
+// approvalTestModel builds a dashboard with one active session in one project,
+// with or without a pending approval on the tree node, and its rows.
+func approvalTestModel(t *testing.T, approval bool) hubModel {
+	t.Helper()
+	tree := hubTreeResponse{Projects: []hubTreeProject{{
+		Key: "p", Name: "evener",
+		Sessions: []hubTreeNode{{
+			Ref: "local:th_1", State: appwire.ThreadStatusActive, Live: true, ApprovalPending: approval,
+		}},
+	}}}
+	return hubModel{tree: tree, rows: buildDashboardRows(tree)}
+}
+
+func sessionApproval(rows []hubRow, ref string) bool {
+	for _, row := range rows {
+		if row.kind == hubRowSession && row.ref.String() == ref {
+			return row.approvalPending
+		}
+	}
+	return false
 }
 
 // Clearing an approval must also recompute the project's rollup and re-sort the
@@ -218,6 +231,13 @@ func TestSetDashboardRowApproval_RecomputesGroupAndOrder(t *testing.T) {
 	if sessionRowIndex(m.rows, "local:s1") > sessionRowIndex(m.rows, "local:s2") {
 		t.Fatal("the approval row should sort first before it is cleared")
 	}
+	// Select s2 (the later row) so the re-sort must carry the selection.
+	for i, row := range m.dashboardRows() {
+		if row.kind == hubRowSession && row.ref.String() == "local:s2" {
+			m.selected = i
+		}
+	}
+	selected := m.selectedRowID()
 
 	m.setDashboardRowApproval("local:s1", false)
 
@@ -226,6 +246,20 @@ func TestSetDashboardRowApproval_RecomputesGroupAndOrder(t *testing.T) {
 	}
 	if sessionRowIndex(m.rows, "local:s1") < sessionRowIndex(m.rows, "local:s2") {
 		t.Fatal("after clearing, the more recent working row should sort first")
+	}
+	if got := m.selectedRowID(); got != selected {
+		t.Fatalf("selection moved from %q to %q across the rebuild", selected, got)
+	}
+}
+
+func TestAttentionState_FailureOutranksApproval(t *testing.T) {
+	if got := attentionState("errored", true); got != "errored" {
+		t.Fatalf("attentionState(errored, approval) = %q, want errored", got)
+	}
+	row := hubRow{kind: hubRowSession, state: "errored", approvalPending: true, title: "x"}
+	rendered := renderDashboardSessionRow(row, false, 80, false, "")
+	if strings.Contains(rendered, "awaiting") {
+		t.Fatalf("an errored approval row must still read errored, got %q", rendered)
 	}
 }
 

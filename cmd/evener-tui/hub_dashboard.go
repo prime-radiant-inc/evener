@@ -84,28 +84,29 @@ func dashboardGroupState(sessions []hubRow) string {
 	return state
 }
 
-// refreshDashboardGroup recomputes a project row's rollup state from its
-// session rows and re-sorts them, so a live approval change that flipped a
-// row's flag also updates the group's summary and the row's sort position
-// without waiting for a tree fetch (the dashboard has no periodic refresh).
-func (m *hubModel) refreshDashboardGroup(groupKey string) {
-	start := -1
-	for i := range m.rows {
-		if m.rows[i].kind == hubRowProject && dashboardGroupKey(m.rows[i]) == groupKey {
-			start = i
-			break
-		}
+// selectedRowID is the identity of the selected dashboard row, so a live
+// row rebuild can restore the selection instead of leaving it on a row that
+// moved.
+func (m hubModel) selectedRowID() string {
+	rows := m.dashboardRows()
+	if m.selected < 0 || m.selected >= len(rows) {
+		return ""
 	}
-	if start == -1 {
+	return rows[m.selected].rowID
+}
+
+// restoreRowSelection reselects the row with rowID after a rebuild. A missing
+// id (row gone) leaves the selection for clampSelection to fix.
+func (m *hubModel) restoreRowSelection(rowID string) {
+	if rowID == "" {
 		return
 	}
-	end := start + 1
-	for end < len(m.rows) && m.rows[end].kind == hubRowSession && dashboardGroupKey(m.rows[end]) == groupKey {
-		end++
+	for i, row := range m.dashboardRows() {
+		if row.rowID == rowID {
+			m.selected = i
+			return
+		}
 	}
-	sessions := m.rows[start+1 : end]
-	sort.SliceStable(sessions, func(i, j int) bool { return dashboardRowLess(sessions[i], sessions[j]) })
-	m.rows[start].state = dashboardGroupState(sessions)
 }
 
 func buildDashboardRows(tree hubTreeResponse) []hubRow {
