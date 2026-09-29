@@ -5,9 +5,11 @@
 import type { AppwireClient, HubUpdateController } from "@evener/appwire-client";
 import type { HostsController } from "../hosts/hostsController";
 import type { LiveSessionsReader } from "../hosts/liveCounts";
+import type { How } from "../hubs/AddHub";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 
-/** The Hub's pages. Every page names the hub it was opened for. */
+/** The Hub's pages. A page about the connected hub names the hub it was
+ * opened for; Hubs and its pages are about the phone's saved hubs. */
 export type HubRoutes = {
 	HubHome: { hubId: string };
 	Display: { hubId: string };
@@ -16,6 +18,9 @@ export type HubRoutes = {
 	Hosts: { hubId: string; focus?: string };
 	HostDetail: { hubId: string; name: string };
 	HostEdit: { hubId: string; name: string };
+	Hubs: undefined;
+	AddHub: { how: How };
+	HubDetails: { id: string };
 };
 
 export interface HubSheetContextValue {

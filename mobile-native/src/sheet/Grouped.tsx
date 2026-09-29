@@ -71,6 +71,12 @@ export function Group({ children }: { children: ReactNode }) {
 	);
 }
 
+/** The space above a group that has no label: an action's group under the
+ * fields it acts on, or a page's first group. */
+export function GroupGap() {
+	return <View style={{ height: 20 }} />;
+}
+
 /** A row's leading slot: a bare symbol, or the empty space an unchecked
  * picker row keeps so its label lines up with the checked one. */
 function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
@@ -160,9 +166,10 @@ export function Row({
 		paddingVertical: 11,
 		opacity: disabled ? 0.4 : 1,
 	} as const;
+	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
 	if (!onPress)
 		return (
-			<View accessible accessibilityLabel={reading} style={style}>
+			<View accessible accessibilityLabel={reading} accessibilityState={state} style={style}>
 				{body}
 			</View>
 		);
@@ -170,7 +177,7 @@ export function Row({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={reading}
-			accessibilityState={checked === undefined ? { disabled } : { disabled, selected: checked }}
+			accessibilityState={state}
 			disabled={disabled}
 			onPress={onPress}
 			style={({ pressed }) => [style, pressed ? { backgroundColor: palette.pressed } : null]}
