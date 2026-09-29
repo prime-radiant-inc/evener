@@ -675,6 +675,17 @@ describe("a New session start that failed after its sheet closed (#3104)", () =>
 		expect(shown(alerts)).toEqual(["startFailed"]);
 	});
 
+	it("tells its listeners about a hub switch, with the failed start still on the banner", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		alerts.offer(failed);
+		const snapshots: (string[] | undefined)[] = [];
+		alerts.subscribe(() => snapshots.push(shown(alerts)));
+		alerts.reset();
+		expect(snapshots.length).toBeGreaterThan(0);
+		expect(snapshots.at(-1)).toEqual(["startFailed"]);
+	});
+
 	it("goes only for the hub whose New session is opened", () => {
 		const { alerts } = center();
 		alerts.offer(failed);
