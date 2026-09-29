@@ -810,24 +810,11 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 		if err != nil {
 			return ItemCandidateResult{}, remoteCursorlessBeforeRefusal(params, err)
 		}
-		if params.Before != nil && len(candidates) > 0 {
-			// A page fetched before a boundary must report only items older than
-			// it: clip any the remote reports at or above the boundary, exactly as
-			// the cursor path (validateRemoteContinuationPage) and
-			// LocalDaemonSource's before window do, so an inclusive remote cannot
-			// have them retained or served as older. A non-empty page with nothing
-			// older is stale; an empty page is the honest page before the first
-			// item and is left for the recording below to answer as exhausted.
-			candidates = remoteCandidatesBefore(candidates, *params.Before)
-			if len(candidates) == 0 {
-				return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
-			}
+		if params.Before != nil {
+			return s.recordRemoteBeforePage(key, *params.Before, candidates, native, history)
 		}
 		if err := validateRemotePageCursor(native, candidates); err != nil {
 			return ItemCandidateResult{}, err
-		}
-		if params.Before != nil {
-			return s.recordRemoteBeforePage(key, *params.Before, candidates, native, history)
 		}
 		identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
 		return s.recordRemoteItemPage(key, identity, candidates, native, history, head, hasHead, nil)
@@ -1615,22 +1602,54 @@ func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.Curso
 // from=&before so the page's observed run joins any recorded run that covers
 // the boundary: the retained identity is kept whenever the page merges without
 // contradiction, so other viewers' cursors survive, and only a real rewrite
-// rotates it. A page fetched with no retained window (or one the merge
-// contradicts) mints a fresh identity, as a fresh page does.
+// rotates it.
+//
+// Two edges the cursor path does not meet are handled here. The page is clipped
+// to strictly older than before, so an inclusive remote cannot have the boundary
+// item retained or served as older; but the contradiction check runs on the
+// unclipped page first, so a boundary item re-reported with changed contents is
+// still seen as the rewrite it is. And a page whose boundary is not covered by a
+// retained run starts a run of its own: its own exhaustion says nothing about the
+// region between it and the retained window, so it must not overwrite the
+// retained continuation cursor or claim the window reached the thread's bottom.
 func (s *RemoteHubSource) recordRemoteBeforePage(
 	key string,
 	before appwire.ThreadItemPosition,
-	candidates []appitempaging.TranscriptItemCandidate,
+	page []appitempaging.TranscriptItemCandidate,
 	native string,
 	history HistoryIdentity,
 ) (ItemCandidateResult, error) {
+	if len(page) == 0 {
+		// Nothing precedes the boundary: an empty page, answered exhausted. It
+		// carries no continuation, so the retained state — and the cursor other
+		// viewers hold into it — is left exactly as it was.
+		if err := validateRemotePageCursor(native, page); err != nil {
+			return ItemCandidateResult{}, err
+		}
+		identity := s.mintRemoteItemIdentity(key)
+		if state, ok := s.itemPaging.peek(key); ok {
+			identity = state.identity
+		}
+		return ItemCandidateResult{Identity: identity, Exhausted: true, History: history}, nil
+	}
+	older := remoteCandidatesBefore(page, before)
+	if len(older) == 0 {
+		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+	}
+	if err := validateRemotePageCursor(native, older); err != nil {
+		return ItemCandidateResult{}, err
+	}
 	if state, ok := s.itemPaging.peek(key); ok {
-		if _, compatible := remoteMergeCandidates(state.candidates, candidates); compatible {
-			return s.recordRemoteItemPage(key, state.identity, candidates, native, history, state.head, state.hasHead, &before)
+		if _, compatible := remoteMergeCandidates(state.candidates, page); compatible {
+			if remoteSpanContaining(state.spans, before) < 0 && native == "" {
+				native = state.native
+			}
+			return s.recordRemoteItemPage(key, state.identity, older, native, history, state.head, state.hasHead, &before)
 		}
 	}
-	identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
-	return s.recordRemoteItemPage(key, identity, candidates, native, history, head, hasHead, &before)
+	identity := s.mintRemoteItemIdentity(key)
+	head, hasHead := remoteItemPageHead(older)
+	return s.recordRemoteItemPage(key, identity, older, native, history, head, hasHead, &before)
 }
 
 // remoteCursorlessBeforeRefusal maps a remote hub's refusal of a cursorless
