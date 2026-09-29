@@ -63,6 +63,13 @@ func sidecarPath(metaDir, name string) string {
 // the branch-exists check upstream, and a plain write would let the loser
 // clobber the winner's provenance (creator_session/base_sha inversion — spec
 // §3 step 5). On a losing race the returned error satisfies os.IsExist.
+//
+// If the write or close fails after O_EXCL has created the file, that file is
+// this call's own half-written reservation and is removed before returning:
+// left in place it would be invisible to ListSidecars (undecodable JSON) yet
+// block every same-name retry with EEXIST, making the name persistently
+// uncreatable until a human deletes it. O_EXCL proves the file is ours, so the
+// removal never reclaims another creator's reservation.
 func WriteSidecarExcl(metaDir, name string, sc Sidecar) error {
 	path := sidecarPath(metaDir, name)
 	raw, _ := json.MarshalIndent(sc, "", "  ")
@@ -73,9 +80,25 @@ func WriteSidecarExcl(metaDir, name string, sc Sidecar) error {
 	}
 	if _, err := sidecarWrite(f, raw); err != nil {
 		_ = f.Close()
-		return err
+		return removePartialCreate(path, err)
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return removePartialCreate(path, err)
+	}
+	return nil
+}
+
+// removePartialCreate deletes the sidecar at path — the residue of a create
+// whose O_EXCL open succeeded but whose write or close failed — and returns
+// cause. The caller owns path by construction, so the removal is the opposite
+// of reclaiming a competing reservation. If the removal itself fails the
+// reservation really does persist, so cause is wrapped with that failure
+// rather than dropped; the wrap preserves cause for errors.Is/As.
+func removePartialCreate(path string, cause error) error {
+	if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+		return fmt.Errorf("%w (removing partial sidecar %s: %v)", cause, path, rmErr)
+	}
+	return cause
 }
 
 // ReadSidecar reads and decodes name's sidecar from metaDir. A missing file
@@ -94,10 +117,13 @@ func ReadSidecar(metaDir, name string) (Sidecar, error) {
 	return sc, nil
 }
 
-// UpdateSidecar reads name's sidecar, applies mutate, and writes the result
-// back with a plain truncating write (unlike the create path, an update has
-// no loser to protect from — the caller already holds exclusive knowledge
-// of the entry via git's occupancy lock, so O_EXCL does not apply here).
+// UpdateSidecar reads name's sidecar, applies mutate, and atomically replaces
+// the file with the result (unlike the create path, an update has no loser to
+// protect from — the caller already holds exclusive knowledge of the entry
+// via git's occupancy lock, so O_EXCL does not apply here). The replacement
+// writes a temporary file in metaDir and renames it over the target, so a
+// failure partway through — a full disk, a quota limit — leaves the previous
+// record intact instead of truncating the only copy of the lane's provenance.
 func UpdateSidecar(metaDir, name string, mutate func(*Sidecar)) error {
 	sc, err := ReadSidecar(metaDir, name)
 	if err != nil {
@@ -105,7 +131,43 @@ func UpdateSidecar(metaDir, name string, mutate func(*Sidecar)) error {
 	}
 	mutate(&sc)
 	raw, _ := json.MarshalIndent(sc, "", "  ")
-	return os.WriteFile(sidecarPath(metaDir, name), raw, 0o644)
+	return replaceSidecar(sidecarPath(metaDir, name), raw)
+}
+
+// replaceSidecar atomically replaces the file at path with raw: it writes a
+// temporary file in the destination directory, closes it, and renames it over
+// path. os.Rename replaces an existing target atomically within a directory,
+// so a reader sees either the old bytes or the new ones, never a torn mix.
+// The temporary name carries a non-".json" suffix so ListSidecars, which only
+// considers ".json" files, ignores it while it exists.
+func replaceSidecar(path string, raw []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".sidecar-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // DeleteSidecar removes name's sidecar from metaDir. A missing file returns
@@ -122,11 +184,37 @@ func DeleteSidecar(metaDir, name string) error {
 // case spec §6 documents at the tool layer, not a codec failure. Only a
 // failure to read metaDir itself is returned as an error.
 func ListSidecars(metaDir string) ([]Sidecar, error) {
+	out, _, err := ListSidecarsWithErrors(metaDir)
+	return out, err
+}
+
+// SidecarLoadError is one *.json file in metaDir whose basename decodes to a
+// valid worktree name but whose contents could not be decoded as a Sidecar.
+// It carries the name recovered from the filename — the only identity a
+// corrupt file offers — so a repair or reconciliation sweep can name the
+// reserved-but-unusable worktree instead of dropping it silently.
+type SidecarLoadError struct {
+	Name  string
+	Error error
+}
+
+// ListSidecarsWithErrors returns every decodable sidecar under metaDir
+// together with the load failures for files whose basename decodes to a valid
+// worktree name but whose bytes do not decode as a Sidecar. ListSidecars
+// tolerates a corrupt record by dropping it (an unmanaged file in metaDir is
+// the "unmanaged_meta" case spec §6 documents at the tool layer); a repair or
+// reconciliation sweep that must report a reserved-but-unusable name cannot
+// use that tolerant view, so it uses this enumeration instead. Only a failure
+// to read metaDir itself is returned as an error.
+func ListSidecarsWithErrors(metaDir string) ([]Sidecar, []SidecarLoadError, error) {
 	entries, err := os.ReadDir(metaDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []Sidecar
+	var (
+		out      []Sidecar
+		failures []SidecarLoadError
+	)
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -142,11 +230,12 @@ func ListSidecars(metaDir string) ([]Sidecar, error) {
 		}
 		sc, err := ReadSidecar(metaDir, name)
 		if err != nil {
+			failures = append(failures, SidecarLoadError{Name: name, Error: err})
 			continue
 		}
 		out = append(out, sc)
 	}
-	return out, nil
+	return out, failures, nil
 }
 
 // SidecarAge returns how long ago name's sidecar file was last written,

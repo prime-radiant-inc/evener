@@ -1230,6 +1230,15 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	}
 	if werr := s.writeWorktreeSidecar(metaDir, name, sc); werr != nil {
 		if os.IsExist(werr) {
+			// The name is occupied. Either a live concurrent create won the
+			// race, or a create died between its O_EXCL open and its write,
+			// leaving a sidecar ListSidecars hides. Name the corruption rather
+			// than report a create that is not happening, so the reserved name
+			// is discoverable and repairable; the file is never removed here —
+			// malformed metadata does not authorize a destructive cleanup.
+			if _, rErr := worktree.ReadSidecar(metaDir, name); rErr != nil && !os.IsNotExist(rErr) {
+				return worktreeCreateCoreResult{}, fmt.Errorf("%s: worktree %q is reserved by a corrupt sidecar (%w); remove that file to repair", errPrefix, name, rErr)
+			}
 			return worktreeCreateCoreResult{}, fmt.Errorf("%s: a worktree named %q is already being created", errPrefix, name)
 		}
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: write sidecar: %w", errPrefix, werr)
@@ -2578,13 +2587,13 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 
 	// Step 10: sidecar disposition. Gone (deleted here) → delete the sidecar;
 	// survives → keep it and mark worktree_removed + tip_sha_at_removal. The
-	// mark write is UpdateSidecar's plain truncating write, not atomic — a
-	// crash mid-write can leave it torn or unwritten, which sweep 2's
-	// reconciliation (spec §5 prune sweep 2) explicitly tolerates via its "or
-	// no removal record" branch: a sidecar with no (or a torn) removal record
-	// is judged exactly like tip == base_sha for merge-gated collection, so an
-	// unmarked sidecar is still handled correctly, just less precisely
-	// reported meanwhile.
+	// mark write is UpdateSidecar's atomic replace (a temp write renamed over
+	// the target), so a crash mid-write leaves the pre-mark record rather than
+	// a torn one, which sweep 2's reconciliation (spec §5 prune sweep 2)
+	// explicitly tolerates via its "or no removal record" branch: a sidecar
+	// carrying no removal record is judged exactly like tip == base_sha for
+	// merge-gated collection, so an unmarked sidecar is still handled
+	// correctly, just less precisely reported meanwhile.
 	if result.BranchDeleted {
 		if err := s.deleteWorktreeSidecar(metaDir, name); err != nil && !os.IsNotExist(err) {
 			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: deleting sidecar: %w", err)
@@ -3160,7 +3169,7 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 		registered[e.Name] = true
 	}
 
-	sidecars, err := worktree.ListSidecars(metaDir)
+	sidecars, corrupt, err := worktree.ListSidecarsWithErrors(metaDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
@@ -3173,6 +3182,31 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 	grace := policy.grace
 	if grace == 0 {
 		grace = worktree.ReconcileGrace
+	}
+
+	// A reserved name whose bytes do not decode — a crash-torn create that no
+	// error path could clean up — is invisible to ListSidecars, so reconciliation
+	// must surface it rather than skip it: the name stays uncreatable until a
+	// human removes the file, and naming it here is how that repair is
+	// discoverable. It is reported, never deleted: malformed metadata does not
+	// authorize a destructive cleanup. The same grace that protects an in-flight
+	// create's not-yet-written sidecar applies here, so a create caught between
+	// its O_EXCL open and its write is not misreported as corrupt.
+	for _, ce := range corrupt {
+		if ctxCancelled(ctx) {
+			break
+		}
+		if registered[ce.Name] {
+			continue // a live registered worktree exists; sweep 1 already reports it "sidecar-less"
+		}
+		if age, ageErr := worktree.SidecarAge(metaDir, ce.Name); ageErr == nil && age < grace {
+			skipped = append(skipped, WorktreePruneEntry{Name: ce.Name, Reason: "in-grace"})
+			continue
+		}
+		skipped = append(skipped, WorktreePruneEntry{
+			Name:   ce.Name,
+			Reason: "corrupt sidecar: " + ce.Error.Error(),
+		})
 	}
 
 	for _, sc := range sidecars {

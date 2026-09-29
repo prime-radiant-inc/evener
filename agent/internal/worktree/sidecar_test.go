@@ -595,6 +595,19 @@ func TestWriteSidecarExclEncodeFailureHelper(t *testing.T) {
 			t.Fatalf("WriteSidecarExcl under a 4-byte RLIMIT_FSIZE = nil, want a write error")
 		}
 	})
+	// A failed exclusive create must clean up the reservation it made: the
+	// partially written file is ours (O_EXCL proved it), and leaving it behind
+	// both hides it from ListSidecars and blocks every same-name retry with
+	// EEXIST. Assert the name is immediately creatable again.
+	if _, statErr := os.Stat(sidecarPath(dir, sc.Name)); !os.IsNotExist(statErr) {
+		t.Fatalf("failed WriteSidecarExcl left residue at %s (stat err = %v); the name must stay creatable", sidecarPath(dir, sc.Name), statErr)
+	}
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
+		t.Fatalf("retry after failed create: %v", err)
+	}
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got != sc {
+		t.Fatalf("retry after failed create read = %+v, %v; want %+v", got, err, sc)
+	}
 }
 
 // TestUpdateSidecarEncodeFailure exercises UpdateSidecar's encode-error path
@@ -621,4 +634,49 @@ func TestUpdateSidecarEncodeFailureHelper(t *testing.T) {
 			t.Fatalf("UpdateSidecar under a 4-byte RLIMIT_FSIZE = nil, want a write error")
 		}
 	})
+	// A failed update must not destroy the only provenance record: the atomic
+	// replace leaves the previous sidecar intact rather than truncating it,
+	// and the update is retryable once the write can proceed.
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got != sc {
+		t.Fatalf("failed UpdateSidecar altered the record: got %+v, %v; want preserved %+v", got, err, sc)
+	}
+	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err != nil {
+		t.Fatalf("retry UpdateSidecar: %v", err)
+	}
+	if got, err := ReadSidecar(dir, sc.Name); err != nil || got.BaseSHA != "changed" {
+		t.Fatalf("retried update read = %+v, %v; want BaseSHA %q", got, err, "changed")
+	}
+}
+
+// TestListSidecarsWithErrorsSurfacesCorruptReservation: a reserved name whose
+// bytes do not decode — a crash-torn write that no error path could clean up —
+// is invisible to the tolerant ListSidecars, which is exactly how a reserved-but-
+// unusable name becomes unreconcilable. The WithErrors view names it so repair is
+// discoverable, while the tolerant listing keeps its documented contract of
+// dropping undecodable metadata rather than failing the whole sweep.
+func TestListSidecarsWithErrorsSurfacesCorruptReservation(t *testing.T) {
+	dir := t.TempDir()
+	good := testSidecar()
+	if err := WriteSidecarExcl(dir, good.Name, good); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	if err := os.WriteFile(sidecarPath(dir, "torn"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sidecars, failures, err := ListSidecarsWithErrors(dir)
+	if err != nil {
+		t.Fatalf("ListSidecarsWithErrors: %v", err)
+	}
+	if len(sidecars) != 1 || sidecars[0].Name != good.Name {
+		t.Fatalf("decodable sidecars = %+v, want only %q", sidecars, good.Name)
+	}
+	if len(failures) != 1 || failures[0].Name != "torn" || failures[0].Error == nil {
+		t.Fatalf("failures = %+v, want exactly one for %q carrying its decode error", failures, "torn")
+	}
+
+	tolerant, err := ListSidecars(dir)
+	if err != nil || len(tolerant) != 1 {
+		t.Fatalf("ListSidecars = %+v, %v; want the tolerant view unchanged (one entry)", tolerant, err)
+	}
 }
