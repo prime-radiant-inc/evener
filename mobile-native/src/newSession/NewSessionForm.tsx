@@ -9,7 +9,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { useStore } from "zustand";
-import { useOfferAlert } from "../alerts/alertsContext";
+import { useOfferAlert, useStartFailureSeen } from "../alerts/alertsContext";
 import { creationImageDraft } from "../creationImageDraft";
 import { space } from "../design/tokens";
 import { destructiveButton } from "../haptics";
@@ -41,7 +41,7 @@ const readBranch = (service: NewSessionService, host: string, cwd: string) => se
 const MORE_OPTIONS = ["contextStrategy", "maxSubagentDepth", "maxRounds"] as const;
 
 export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSessionRoutes, "Form">) {
-	const { store, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
+	const { store, hubId, hubName, client, ready, hosts, memory, hostLabel, plugins, launchDefaults } = useNewSession();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const form = useStore(store);
@@ -84,9 +84,13 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		startMayRepeat,
 	});
 	const offerAlert = useOfferAlert();
+	const startFailureSeen = useStartFailureSeen(hubId);
 	const latest = useRef({ ready, client, blocked: block !== null });
 	latest.current = { ready, client, blocked: block !== null };
 	useEffect(() => showForm(store, { navigation, latest }), [store, navigation]);
+	// Whenever this form is in front, it shows the store's own error, so an
+	// alert saying the same goes.
+	useFocusEffect(startFailureSeen);
 	const close = useCallback(() => navigation.getParent()?.goBack(), [navigation]);
 	const start = useCallback(async () => {
 		if (!latest.current.ready || latest.current.blocked || imageSelection.getSnapshot().busy) return;
@@ -99,9 +103,16 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 		// was on its way, whether or not the hub is reachable from it.
 		const front = formFront(store);
 		const inFront = !!front && front.navigation.isFocused();
-		// A start that didn't create a session leaves its reason on the store,
-		// which the form shows whenever it is open.
-		if (outcome.status !== "created") return;
+		if (outcome.status !== "created") {
+			// A form in front shows the store's error itself; else an alert says
+			// it. With no error there is nothing to say: nothing was started.
+			// Uncertain only while a start of this very draft may exist, the same
+			// measure Start holds on: a changed draft's failure is a plain one.
+			const { error, startMayRepeat } = store.getState();
+			if (inFront || !error) return;
+			offerAlert({ kind: "startFailed", hubId, hubName, uncertain: startMayRepeat() });
+			return;
+		}
 		try {
 			memory.recordStart(setup, Date.now());
 		} catch {
@@ -127,7 +138,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				title: outcome.thread.name || "Conversation",
 			}),
 		);
-	}, [store, memory, imageSelection, offerAlert]);
+	}, [store, hubId, hubName, memory, imageSelection, offerAlert]);
 	const cancel = useCallback(() => {
 		const { prompt, images, submitting } = store.getState();
 		// A draft whose start is on its way can't be discarded: Cancel only closes.

@@ -5,9 +5,8 @@
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import type { NewSessionRoutes, NewSessionStore } from "./newSessionContext";
 
-/** A form showing a store. With none in front when a start lands, a session
- * made is announced, and a failure waits on the store for the form to show
- * when it opens. */
+/** A form showing a store. With none in front when a start lands, an alert
+ * says what happened. */
 export interface FormFront {
 	navigation: Pick<NativeStackNavigationProp<NewSessionRoutes, "Form">, "isFocused" | "getParent">;
 	latest: { current: { ready: boolean; client: unknown } };
