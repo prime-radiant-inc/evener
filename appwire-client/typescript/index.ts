@@ -72,8 +72,14 @@ export type {
 export { createAskDockStore, nextUnansweredKey } from "./askDock";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
 export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
-export type { RejectableFile } from "./attachmentLimits";
-export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
+export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
+export {
+  admissionRejection,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS,
+  rejectionReason,
+  sizeRejection,
+} from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BootGenerationAction } from "./bootGeneration";
