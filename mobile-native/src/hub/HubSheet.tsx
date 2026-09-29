@@ -106,7 +106,11 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					component={KeybindingPreferencesScreen}
 					options={{ title: "Keyboard shortcuts" }}
 				/>
-				<HubStack.Screen name="LaunchSettings" component={LaunchSettingsScreen} options={{ title: "Launch defaults" }} />
+				<HubStack.Screen
+					name="LaunchSettings"
+					component={LaunchSettingsScreen}
+					options={{ title: "Launch defaults" }}
+				/>
 				<HubStack.Screen name="HubSettings" component={HubSettingsScreen} options={{ title: "Hub settings" }} />
 			</HubStack.Navigator>
 		</HubSheetProvider>

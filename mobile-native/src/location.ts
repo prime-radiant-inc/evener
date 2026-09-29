@@ -115,9 +115,7 @@ export class LocationRepository {
 			value.reader !== undefined &&
 			(!reader(value.reader) ||
 				!conversation(value.conversation) ||
-				["pinAssignment", "fork", "deleteSession", "pinned", "projects"].some(
-					(key) => value[key] !== undefined,
-				))
+				["pinAssignment", "fork", "deleteSession", "pinned", "projects"].some((key) => value[key] !== undefined))
 		)
 			return null;
 		return {
