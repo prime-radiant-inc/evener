@@ -526,11 +526,17 @@ export async function navigateTo(
   const requestOwners = new Map();
   const navigationAttempts = new Map();
   const loaderAttempts = new Map();
-  const frameAttempts = new Map();
-  // Waiters parked on the next top-frame commit. A navigation's load event can
-  // resolve before its commit (a delayed load from the old document), so the
-  // loop holds the next boot check until THIS navigation's commit is recorded.
-  const commitWaiters = [];
+  // loaderIds a Page.frameNavigated has actually committed. loaderAttempts also
+  // holds send-time bindings, so a commit wait must test this set, not that map.
+  const committedLoaderIds = new Set();
+  // Waiters parked on a commit. A navigation's load event can resolve before its
+  // commit (a delayed load from the old document), so the loop holds the next
+  // boot check until THIS navigation's commit is recorded. Each waiter matches
+  // only its own navigation (by the loaderId its response named, or the next top
+  // commit for a loaderless response), and is removed when it settles or times
+  // out, so a stale or unrelated commit can neither release it nor leak it.
+  const commitWaiters = new Set();
+  let topCommitSeq = 0;
   const failures = [];
   // The last navigation whose main frame has COMMITTED (Page.frameNavigated).
   // It advances only at that commit - never at the counter increment - so in
@@ -545,7 +551,11 @@ export async function navigateTo(
   // late, after attempts++ has moved on, must still name its own navigation.
   // The commit listener lives for this whole window, never only for one
   // navigation, so a commit cannot be missed when a navigation's load event
-  // resolves early off stale input.
+  // resolves early off stale input. A frame loaderId that is NOT a top-level
+  // navigation's (a subframe's) is bound at SEND time instead - a subframe
+  // document's own commit carries a stable frame id reused by later
+  // navigations, so keying on it would let a delayed iframe commit resolve to
+  // the newest attempt.
   let currentLoaderId = null;
   let currentAttempt = null;
   // Attribute a failure only when the verdict is read, from evidence SETTLED
@@ -561,6 +571,34 @@ export async function navigateTo(
     return loaderAttempts.get(loaderId) ?? requestOwners.get(failure.requestId) ?? failure.ownerAtArrival;
   };
   const failuresForAttempt = (attempt) => failures.filter((failure) => resolveOwner(failure) === attempt);
+  const settleCommitWaiters = () => {
+    for (const waiter of [...commitWaiters]) {
+      if (waiter.matches()) {
+        commitWaiters.delete(waiter);
+        waiter.settle();
+      }
+    }
+  };
+  // Park until `matches()` holds, bounded by COMMIT_SETTLE_MS. The waiter leaves
+  // the set when it settles OR times out, so an abandoned promise cannot be
+  // resolved by a later unrelated commit and the set cannot grow across retries.
+  const waitForCommit = (matches) => {
+    if (matches()) return Promise.resolve();
+    return new Promise((resolve) => {
+      let timer;
+      const waiter = {
+        matches,
+        settle: () => {
+          clearTimeout(timer);
+          commitWaiters.delete(waiter);
+          resolve();
+        },
+      };
+      timer = setTimeout(waiter.settle, COMMIT_SETTLE_MS);
+      commitWaiters.add(waiter);
+      if (matches()) waiter.settle();
+    });
+  };
   const onLoadingFailed = (event) => {
     // This handler sits on the guards' shared CDP socket, which other
     // listeners (connectPage's pending-command resolver, the load tripwire)
@@ -583,26 +621,27 @@ export async function navigateTo(
       // of the arrival counter. The TOP frame's commit is bound to the
       // navigation that named its loaderId (navigationAttempts), so a commit
       // delivered after the next retry began still names its own attempt; a
-      // subframe takes the attempt of its OWN parent frame (frameAttempts), so
-      // a delayed iframe commit from an earlier document still names that
-      // document rather than whatever retry is current. Only the TOP frame
-      // defines the live-document identity (currentLoaderId/currentAttempt)
-      // that loaderless requests and unseen failures anchor to.
-      const { id: frameId, loaderId, parentId } = message.params.frame;
+      // subframe keeps the SEND-time attempt its own request already bound it
+      // to, because a frame id is stable across navigations and cannot name the
+      // document that committed this iframe. Only the TOP frame defines the
+      // live-document identity (currentLoaderId/currentAttempt) that loaderless
+      // requests and unseen failures anchor to.
+      const { loaderId, parentId } = message.params.frame;
       if (loaderId) {
         // Bound to its own navigation when the response named the loaderId;
-        // otherwise (a response that reported none) the in-flight attempt for a
-        // top frame, and the parent frame's attempt for a subframe.
+        // otherwise the in-flight attempt for a top frame (a response that
+        // reported none), and the send-time binding for a subframe.
         const bound = navigationAttempts.get(loaderId);
         const attempt = parentId
-          ? (frameAttempts.get(parentId) ?? bound ?? currentAttempt ?? attempts)
+          ? (bound ?? loaderAttempts.get(loaderId) ?? currentAttempt ?? attempts)
           : (bound ?? attempts);
         loaderAttempts.set(loaderId, attempt);
-        if (frameId) frameAttempts.set(frameId, attempt);
+        committedLoaderIds.add(loaderId);
         if (!parentId) {
           currentLoaderId = loaderId;
           currentAttempt = attempt;
-          for (const settle of commitWaiters.splice(0)) settle();
+          topCommitSeq++;
+          settleCommitWaiters();
         }
       } else if (!parentId) {
         // A top document that reported no loaderId has no identity to bind; the
@@ -610,8 +649,8 @@ export async function navigateTo(
         // key would hold a PREVIOUS attempt and misattribute the commit).
         currentLoaderId = null;
         currentAttempt = attempts;
-        if (frameId) frameAttempts.set(frameId, attempts);
-        for (const settle of commitWaiters.splice(0)) settle();
+        topCommitSeq++;
+        settleCommitWaiters();
       }
       return;
     }
@@ -621,16 +660,18 @@ export async function navigateTo(
       // the counter already points at the new attempt. First writer wins: a
       // request's redirects re-emit requestWillBeSent under the SAME
       // requestId and loaderId, and the document that started the request owns
-      // its whole lifecycle. A reported loaderId is not mapped here: it
-      // resolves at verdict time through the frame's commit, so a failure
-      // delivered before the commit still lands on the right attempt.
+      // its whole lifecycle. A first-seen loaderId is bound to the attempt live
+      // at SEND time; a top-level navigation's commit later overwrites it with
+      // the attempt its response named, while a subframe keeps the send-time
+      // binding (a frame id cannot name its document). Resolving at verdict
+      // time means a failure delivered before the commit still lands right.
       if (message.params.requestId && !requestLoaderIds.has(message.params.requestId)) {
         requestLoaderIds.set(message.params.requestId, message.params.loaderId ?? null);
-        // Every seen request keeps the attempt owning the live document at SEND
-        // time (independent of its optional loaderId, tracked as
-        // currentAttempt). It is the settled owner for a loaderless request and
-        // the fallback for a loaderId whose frame never commits.
-        requestOwners.set(message.params.requestId, loaderAttempts.get(currentLoaderId) ?? currentAttempt ?? attempts);
+        const ownerAtSend = loaderAttempts.get(currentLoaderId) ?? currentAttempt ?? attempts;
+        requestOwners.set(message.params.requestId, ownerAtSend);
+        if (message.params.loaderId && !loaderAttempts.has(message.params.loaderId)) {
+          loaderAttempts.set(message.params.loaderId, ownerAtSend);
+        }
       }
       return;
     }
@@ -665,6 +706,7 @@ export async function navigateTo(
     for (;;) {
       attempts++;
       let expectedLoaderId = null;
+      const commitsBefore = topCommitSeq;
       // The commit that names this navigation's document is observed by the
       // shared listener above, at Page.frameNavigated - not by anything the
       // load event can stand in for. The navigate response registers which
@@ -675,14 +717,13 @@ export async function navigateTo(
         if (navigatedLoaderId) navigationAttempts.set(navigatedLoaderId, attempts);
       });
       // A load event from the previous document can resolve the wait before
-      // THIS navigation commits. Hold the boot check until the commit lands
-      // (bounded), so no check reads attribution for a document not yet named.
-      if (expectedLoaderId && !loaderAttempts.has(expectedLoaderId)) {
-        const settled = new Promise((resolve) => commitWaiters.push(resolve));
-        if (!loaderAttempts.has(expectedLoaderId)) {
-          await withTimeout(settled, COMMIT_SETTLE_MS, "waitForCommit").catch(() => {});
-        }
-      }
+      // THIS navigation commits. Hold the boot check until THIS navigation's
+      // commit lands (bounded): matched by the loaderId its response named, or -
+      // for a loaderless response - by the next top commit after this attempt
+      // began, since no identity exists to match on.
+      const commitMatches = () =>
+        expectedLoaderId ? committedLoaderIds.has(expectedLoaderId) : topCommitSeq > commitsBefore;
+      await waitForCommit(commitMatches);
       if (await evaluate(send, bootExpression)) return;
       if (attempts > BOOT_RETRY_LIMIT) {
         const budget =

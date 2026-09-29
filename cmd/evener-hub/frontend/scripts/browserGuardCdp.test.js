@@ -1746,11 +1746,12 @@ test("a loaderless navigation commits against the attempt in flight, not an earl
   assert.equal(socket.listenerCount("message"), 0);
 });
 
-// A subframe commit resolves through its OWN parent frame, not the ambient top
-// document: a delayed iframe Page.frameNavigated from an earlier document must
-// still name that document, so its already-recorded request failure cannot be
-// promoted into the final attempt.
-test("a delayed subframe commit resolves through its parent frame, not the current retry", async () => {
+// A subframe commit keeps the SEND-time attempt its own request bound it to. A
+// frame id is stable across navigations, so keying on it (or on the ambient top
+// document) would let a delayed iframe Page.frameNavigated from an earlier
+// document resolve to the newest attempt; the failure could then be promoted
+// into the final verdict. This test reuses ONE top frame id to pin that.
+test("a delayed subframe commit keeps the send-time attempt, not the current retry", async () => {
   const socket = fakeSocket();
   let navigations = 0;
   const send = async (method) => {
@@ -1761,7 +1762,7 @@ test("a delayed subframe commit resolves through its parent frame, not the curre
           socket.dispatch("message", {
             data: JSON.stringify({
               method: "Page.frameNavigated",
-              params: { frame: { id: "top-1", loaderId: "loader-1" } },
+              params: { frame: { id: "top", loaderId: "loader-1" } },
             }),
           });
           socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
@@ -1778,7 +1779,7 @@ test("a delayed subframe commit resolves through its parent frame, not the curre
           socket.dispatch("message", {
             data: JSON.stringify({
               method: "Page.frameNavigated",
-              params: { frame: { id: `top-${navigations}`, loaderId: `loader-${navigations}` } },
+              params: { frame: { id: "top", loaderId: `loader-${navigations}` } },
             }),
           });
           if (navigations === 1 + BOOT_RETRY_LIMIT) {
@@ -1787,7 +1788,7 @@ test("a delayed subframe commit resolves through its parent frame, not the curre
             socket.dispatch("message", {
               data: JSON.stringify({
                 method: "Page.frameNavigated",
-                params: { frame: { id: "sub-1", parentId: "top-1", loaderId: "loader-sub" } },
+                params: { frame: { id: "sub-1", parentId: "top", loaderId: "loader-sub" } },
               }),
             });
             socket.dispatch("message", {
@@ -1892,6 +1893,148 @@ test("a pending commit is awaited before the final verdict is read", async () =>
       navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.match(error.message, /environment problem, not a test case failure/);
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// The commit wait must match THIS navigation only. A stale top commit (here
+// loaderless, from before this navigation) must not release it, or the check
+// runs before the awaited loaderId commits and its failure falls back.
+test("a stale top commit does not release the commit wait", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations !== 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { id: "top", loaderId: `loader-${navigations}` } },
+            }),
+          });
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+        }
+        // The wait resolves on a stale load; the final navigation's own request
+        // dies before it commits.
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Network.requestWillBeSent",
+            params: { requestId: "req-final", loaderId: `loader-${navigations}` },
+          }),
+        });
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Network.loadingFailed",
+            params: { requestId: "req-final", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+          }),
+        });
+        // A stale, LOADERLESS top commit lands first; the awaited commit only
+        // lands on a later task.
+        setTimeout(() => {
+          socket.dispatch("message", {
+            data: JSON.stringify({ method: "Page.frameNavigated", params: { frame: { id: "top" } } }),
+          });
+        }, 0);
+        setTimeout(() => {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { id: "top", loaderId: `loader-${navigations}` } },
+            }),
+          });
+        }, 5);
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.match(error.message, /environment problem, not a test case failure/);
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// A loaderless navigation has no loaderId to match on, but its commit must
+// still be awaited: otherwise the check reads attribution before its document
+// is live and the failure is misreported as a regression.
+test("a loaderless navigation's commit is awaited before the verdict", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations !== 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({ method: "Page.frameNavigated", params: { frame: { id: "top" } } }),
+          });
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          return { result: { frameId: "fixture-frame" } };
+        }
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        setTimeout(() => {
+          // The loaderless commit, then an unseen death in its own document.
+          socket.dispatch("message", {
+            data: JSON.stringify({ method: "Page.frameNavigated", params: { frame: { id: "top" } } }),
+          });
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }, 0);
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
+        bootExpression: "typeof window.settledShell !== 'undefined'",
+        bootLabel: "the shellguard entry global window.settledShell",
         retryDelayMs: 0,
       }),
       (error) => {
