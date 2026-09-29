@@ -4,8 +4,7 @@
 // is kept. The page owns the draft and the write; this is the form.
 import { useMemo } from "react";
 import { FormError, Group, GroupedPage, GroupFooter, TextFieldRow } from "../sheet/Grouped";
-import { ModalFrame } from "../sheet/ModalSheet";
-import { Sheet } from "../sheet/Sheet";
+import { ModalSheet } from "../sheet/ModalSheet";
 
 export function CredentialPasteSheet({
 	title,
@@ -36,35 +35,39 @@ export function CredentialPasteSheet({
 	const json = kind === "credentialJson";
 	// FormError speaks each new report, so the same words land as one report.
 	const report = useMemo(() => (error ? { message: error } : null), [error]);
+	// Save and the keyboard's Done run through one gate: never while a save
+	// runs, and only when Save could.
+	const save = () => {
+		if (canSave && !busy) onSave();
+	};
 	return (
-		<ModalFrame onRequestClose={onCancel}>
-			<Sheet
-				title={title}
-				onCancel={onCancel}
-				cancelDisabled={busy}
-				done={{ label: busy ? "Saving…" : "Save", disabled: busy || !canSave, busy, onPress: onSave }}
-			>
-				<GroupedPage>
-					<FormError error={report} />
-					<Group>
-						<TextFieldRow
-							label={json ? "Google credential JSON" : "API key"}
-							placeholder={json ? "Paste the credential JSON" : "Paste the API key"}
-							multiline={json}
-							secure={!json}
-							value={value}
-							onChangeText={onChangeText}
-							disabled={busy}
-							{...(json ? null : { returnKeyType: "done" as const, onSubmitEditing: onSave })}
-						/>
-					</Group>
-					<GroupFooter>
-						{json
-							? "Paste a service-account key or application_default_credentials.json. The hub checks and keeps it."
-							: "The key is stored on the hub, not on this phone."}
-					</GroupFooter>
-				</GroupedPage>
-			</Sheet>
-		</ModalFrame>
+		<ModalSheet
+			title={title}
+			onCancel={onCancel}
+			cancelDisabled={busy}
+			done={{ label: busy ? "Saving…" : "Save", disabled: busy || !canSave, busy, onPress: save }}
+			onRequestClose={onCancel}
+		>
+			<GroupedPage>
+				<FormError error={report} />
+				<Group>
+					<TextFieldRow
+						label={json ? "Google credential JSON" : "API key"}
+						placeholder={json ? "Paste the credential JSON" : "Paste the API key"}
+						multiline={json}
+						secure={!json}
+						value={value}
+						onChangeText={onChangeText}
+						disabled={busy}
+						{...(json ? null : { returnKeyType: "done" as const, onSubmitEditing: save })}
+					/>
+				</Group>
+				<GroupFooter>
+					{json
+						? "Paste a service-account key or application_default_credentials.json. The hub checks and keeps it."
+						: "The key is stored on the hub, not on this phone."}
+				</GroupFooter>
+			</GroupedPage>
+		</ModalSheet>
 	);
 }

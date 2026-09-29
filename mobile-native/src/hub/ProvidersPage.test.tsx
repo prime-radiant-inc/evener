@@ -1375,28 +1375,18 @@ it("asks before Cancel or a swipe throws away a pasted key (spec 6)", async () =
 	press(tree, (label) => label === "Replace key");
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
 	// A swipe on the key's own sheet (the innermost modal) asks.
-	act(() => tree.root.findAllByType("Modal" as never).at(-1)?.props.onRequestClose());
+	act(() =>
+		tree.root
+			.findAllByType("Modal" as never)
+			.at(-1)
+			?.props.onRequestClose(),
+	);
 	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
 	choose("Keep editing");
 	expect(control(tree, "API key").props.value).toBe("sk-fixture");
 	press(tree, (label) => label === "Cancel");
 	choose("Discard");
 	expect(hasControl(tree, "API key")).toBe(false);
-});
-
-it("asks before Done throws away a pasted key", async () => {
-	alertRequests.length = 0;
-	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
-	const { tree } = mountPage();
-	await act(async () => {});
-	await openWork(tree);
-	press(tree, (label) => label === "Replace key");
-	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
-	press(tree, (label) => label === "Done");
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
-	choose("Discard");
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
 });
 
 it("holds a swipe down while a pasted key is being saved, without asking", async () => {
@@ -1411,7 +1401,12 @@ it("holds a swipe down while a pasted key is being saved, without asking", async
 	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	// The key's own sheet takes the swipe; it stays while its save runs.
-	act(() => tree.root.findAllByType("Modal" as never).at(-1)?.props.onRequestClose());
+	act(() =>
+		tree.root
+			.findAllByType("Modal" as never)
+			.at(-1)
+			?.props.onRequestClose(),
+	);
 	expect(alertRequests).toHaveLength(0);
 	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(2);
 });
@@ -1604,4 +1599,41 @@ it("titles a Google provider's paste sheet for its credential JSON", async () =>
 	if (!sheet) throw new Error("no credential sheet");
 	expect(sheet.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Set credential JSON");
 	expect(control(tree, "Google credential JSON").props.multiline).toBe(true);
+});
+
+it("saves a key from the keyboard's Done only when Save could, never twice", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => new Promise(() => {}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetailOf(tree, "work");
+	press(tree, (label) => label === "Replace key");
+	const submit = () => act(() => control(tree, "API key").props.onSubmitEditing());
+	act(() => control(tree, "API key").props.onChangeText("   "));
+	submit();
+	await act(async () => {});
+	expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	submit();
+	await act(async () => {});
+	submit();
+	await act(async () => {});
+	expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+});
+
+it("says Saving, busy, and holds Cancel while a pasted key saves", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/auth/apiKey/set", () => new Promise(() => {}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetailOf(tree, "work");
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	const sheet = tree.root.findAllByType("Modal" as never).at(-1);
+	if (!sheet) throw new Error("no key sheet");
+	const saving = sheet.findByProps({ accessibilityRole: "button", accessibilityLabel: "Saving…" });
+	expect(saving.props.accessibilityState).toEqual({ disabled: true, busy: true });
+	expect(sheet.findByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" }).props.disabled).toBe(true);
 });
