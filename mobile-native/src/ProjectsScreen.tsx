@@ -671,7 +671,7 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 					{belongs ? activeProfile?.name : "Disconnected hub"}
 					{location.params.tier ? ` · ${location.params.tier}` : ""}
 				</Copy>
-				{location.revealRef !== location.ref ? <Copy muted>Showing the parent of this subagent</Copy> : null}
+				{location.revealRef !== location.ref ? <Copy muted>Showing the row that owns this session</Copy> : null}
 			</View>
 			{pages ? (
 				<PageList

@@ -163,10 +163,11 @@ export function BoardRow({
 	// uses), which the hub revises on invalidation; it is not the Board's S5
 	// activity read, which is Board-only and can lag behind this count.
 	const tally = subagentTallyToShow(row);
-	const chipText = tally ? subagentChipText(tally) : undefined;
 	// A working row with nothing more specific to say reads "Working" once.
 	const reason = why && why.text !== word ? why.text : undefined;
-	const label = [row.title, word, waiting ?? reason, chipText, age && spokenAge(age)].filter(Boolean).join(", ");
+	// The chip's own accessibilityLabel mirrors its text; the row speaks the
+	// why line's single source so VoiceOver never hears two subagent counts.
+	const label = [row.title, word, waiting ?? reason, age && spokenAge(age)].filter(Boolean).join(", ");
 	const lineOne = 22 * scale;
 	return (
 		<Pressable

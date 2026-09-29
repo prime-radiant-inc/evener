@@ -227,8 +227,12 @@ describe("a Board row (spec 7.2)", () => {
 			item: item("working", { state: "active", subagents: { running: 2, failed: 0, done: 4 } }),
 		});
 		expect(textWith(running, "2 running")).toHaveLength(1);
-		expect(running.root.findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(1);
-		expect(pressable(running).props.accessibilityLabel).toContain("2 running");
+		const chip = running.root.findAll((node) => node.props.testID === "subagent-chip");
+		expect(chip).toHaveLength(1);
+		// The chip's own label mirrors its text; the row keeps the why line's
+		// single source so VoiceOver never hears two subagent counts.
+		expect(chip[0]?.props.accessibilityLabel).toBe("2 running");
+		expect(pressable(running).props.accessibilityLabel).not.toContain("2 running");
 
 		const failed = mount({ item: item("failed", { subagents: { running: 0, failed: 3, done: 4 } }) });
 		const chipText = textWith(failed, "3 failed")[0];
@@ -317,7 +321,7 @@ describe("a Board row (spec 7.2)", () => {
 			}),
 		});
 		expect(pressable(working).props.accessibilityLabel).toBe(
-			"Fix Endless Provider Retry Loop, Working, Waiting on 1 subagent, 1 running, 1 hour",
+			"Fix Endless Provider Retry Loop, Working, Waiting on 1 subagent, 1 hour",
 		);
 		const idle = mount({ variant: "quiet", item: item("idle", { state: "idle", updated_at: minutesAgo(3 * 1440) }) });
 		expect(pressable(idle).props.accessibilityLabel).toBe("Fix Endless Provider Retry Loop, Idle, 3 days");
