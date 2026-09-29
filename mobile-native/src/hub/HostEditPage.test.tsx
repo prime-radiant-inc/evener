@@ -250,3 +250,22 @@ it("leaves the stack alone when a save lands after the page was swiped away", as
 	expect(page.navigation.goBack).not.toHaveBeenCalled();
 	page.dispose();
 });
+
+it("refuses an edit made while someone else changed the host, and never saves over theirs", async () => {
+	const fleet = scriptedFleet([attic]);
+	const page = await mount(fleet, "attic");
+	// Another client edits attic, and the page's poll brings it in while this
+	// form is still open on generation 1.
+	fleet.hosts = [{ ...attic, address: "attic.other", generation: 2 }];
+	await act(async () => page.hosts.read());
+	page.type("SSH address", "attic.local");
+	await page.save();
+	const updates = fleet.calls.filter((call) => call.method === "evener/host/update");
+	expect(updates.map((call) => (call.params as { expectedGeneration: number }).expectedGeneration)).toEqual([1]);
+	expect(fleet.hosts[0]?.address).toBe("attic.other");
+	const text = renderedText(page.tree);
+	expect(text).toContain("This host changed since you opened it. Cancel, then open it again to see the change.");
+	expect(text.indexOf("This host changed")).toBeLessThan(text.indexOf("SSH address"));
+	expect(page.navigation.goBack).not.toHaveBeenCalled();
+	page.dispose();
+});

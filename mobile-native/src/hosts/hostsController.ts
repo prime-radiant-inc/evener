@@ -9,6 +9,7 @@ import {
 	friendlyErrorMessage,
 	HOST_GATE_TIMEOUT_MS,
 	type HostEntry,
+	type HostMutationPair,
 	type HostMutations,
 	type HostRow,
 } from "@evener/appwire-client";
@@ -149,10 +150,12 @@ export class HostsController {
 		this.publish({ connecting: new Set([...this.state.connecting].filter((host) => host !== name)) });
 	}
 
-	/** Edits a host (evener/host/update), then re-reads the rows. A refusal
-	 * rejects, so the edit page can put it under the field it names. */
-	async update(name: string, entry: HostEntry): Promise<void> {
-		await this.mutations.update({ name, entry });
+	/** Edits a host (evener/host/update) against `expected`, the pair of the
+	 * row the edit form opened on, then re-reads the rows. A refusal rejects,
+	 * so the edit page can put it under the field it names, or say the host
+	 * changed since it opened. */
+	async update(name: string, entry: HostEntry, expected: HostMutationPair): Promise<void> {
+		await this.mutations.update({ name, entry, expected });
 		await this.read();
 	}
 
