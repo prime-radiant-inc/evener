@@ -267,7 +267,11 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		readDirForInfo := secureReadDirChunk
 		secureReadDirChunk = func(*os.File, int) ([]os.DirEntry, error) { return []os.DirEntry{fakeEntry}, io.EOF }
 		var synthetic []DirEntry
-		if err := rootFS.walkDirFd(context.Background(), -1, "", root, 1, &ListDirBudget{}, &synthetic); err != nil || len(synthetic) != 1 || !synthetic[0].IsExec {
+		fd, ferr := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+		if ferr != nil {
+			t.Fatal(ferr)
+		}
+		if err := rootFS.walkDirFd(context.Background(), fd, "", root, 1, &ListDirBudget{}, &synthetic); err != nil || len(synthetic) != 1 || !synthetic[0].IsExec {
 			t.Fatalf("synthetic executable entry=%+v err=%v", synthetic, err)
 		}
 		secureReadDirChunk = readDirForInfo
