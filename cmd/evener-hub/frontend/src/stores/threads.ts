@@ -3965,7 +3965,11 @@ function waitForReadyOrRewire(client: AppwireClientLike, timeoutMs: number): Pro
 // enqueueMutationIntent gate) deliberately do NOT call this - they keep
 // AppwireClient's synchronous rejection, so a caller retrying a mutation
 // whose first attempt may already be executing server-side can never have
-// both attempts land.
+// both attempts land. The one mutation that does wait here is
+// enqueueMutationIntent's storage-unavailable fallback send
+// (dispatchMutationDirectly): it reuses ONE clientMutationId across its
+// attempts, so the daemon dedups a replay and the double-land reason above
+// does not hold.
 //
 // Loops rather than waiting once: a rewire mid-wait can land on a client
 // that is ALSO not yet ready (a fresh client still mid-handshake), so this
