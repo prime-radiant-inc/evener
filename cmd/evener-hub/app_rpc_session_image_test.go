@@ -183,6 +183,35 @@ func TestHubSessionImageServesFileBackedBytes(t *testing.T) {
 	}
 }
 
+// A session whose folder is reached through a symlink still serves its images:
+// the check resolves the folder and the path alike, and the open measures one
+// against the other (#3188). A symlink made here, so every platform runs it,
+// not only macOS with its /var link.
+func TestHubSessionImageServesFromASessionFolderReachedThroughASymlink(t *testing.T) {
+	folder := t.TempDir()
+	if err := os.WriteFile(filepath.Join(folder, "shot.png"), sessionImageTestPNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(t.TempDir(), "session")
+	if err := os.Symlink(folder, cwd); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	past := seedSessionImageSession(t, cwd, sessionImageTestPNG, "image/png")
+	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past})
+	defer srv.Close()
+
+	resp, err := requestSessionImage(t, srv, appwire.SessionImageParams{
+		SessionID: sessionImageTestSession,
+		Path:      "shot.png",
+	})
+	if err != nil {
+		t.Fatalf("evener/session/image through a symlinked session folder: %v", err)
+	}
+	if !bytes.Equal(resp.Data, sessionImageTestPNG) {
+		t.Fatalf("Data = %q, want the file's bytes", resp.Data)
+	}
+}
+
 // Every refusal the contract names is typed: malformed or ambiguous request
 // fields are InvalidParams, and anything the host cannot resolve — unknown
 // session, missing transcript, unresolvable path or sha, unsupported media,
