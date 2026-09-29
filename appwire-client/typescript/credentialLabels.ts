@@ -257,9 +257,9 @@ export const CONNECTION_REPLACED_ERROR =
 
 // FINGERPRINT_UNAVAILABLE_ERROR is what a credential write says when the row has
 // a destination but serves no fingerprint: the hub accepts an empty assertion
-// rather than validating it, so the save is refused locally with the
-// uncheckable-endpoint wording ("try again in a moment") - the next listing
-// that carries the fingerprint is what makes the save work.
+// rather than validating it, so the save is refused locally with the same
+// "review its destination" remedy as a moved endpoint - the listing that carries
+// the fingerprint again is what makes the save work.
 export const FINGERPRINT_UNAVAILABLE_ERROR = endpointUncheckable("the key wasn't sent");
 
 // FINGERPRINT_UNAVAILABLE_TEST_MESSAGE is what a credential test says when the
