@@ -864,7 +864,7 @@ func TestHubRPCItemTurnsListLiveEmptyWithoutSavedReturnsLivePage(t *testing.T) {
 		Params: mustPagingJSON(t, appwire.ThreadTurnsListParams{Ref: "local:no-saved-item-page", ItemLimit: 40}),
 	})
 	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || wireErr.Message != "cursor is required for thread/turns/list" {
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || wireErr.Message != "cursor or before is required for thread/turns/list" {
 		t.Fatalf("empty transcript-list validation = %T %v, want required-cursor invalid params", err, err)
 	}
 	if live.candidateListCalls != 0 {
@@ -945,7 +945,7 @@ func TestHubRPCItemTurnsListLegacyZeroItemTurnDoesNotUseSavedFallback(t *testing
 }
 
 func TestHubRPCItemTurnsListRequiresCursorBeforeSourceLookup(t *testing.T) {
-	const wantMessage = "cursor is required for thread/turns/list"
+	const wantMessage = "cursor or before is required for thread/turns/list"
 	server := newHubAppServer(hubcore.WebConfig{}, appsource.NewRegistry())
 	_, err := server.Router().Dispatch(t.Context(), appwire.Request{
 		ID: appwire.NewIntID(1), Method: appwire.MethodThreadTurnsList,
@@ -1428,22 +1428,68 @@ func TestHubRPCTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
 		t.Fatalf("turns list without before = %v, want item-35..39", got)
 	}
 
-	// before rebases a cursor; it can't stand in for one.
-	_, err = client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
-		Ref: ref, ItemLimit: 5, Cursor: "not-a-cursor", Before: boundary,
+	// The phone's case: a cursor from an early read, and before at the
+	// oldest row it kept, newer than the cursor's own boundary.
+	var newer *appwire.ThreadItemPosition
+	for _, item := range flattenTestItems(wide.Thread.Turns) {
+		if item.Text == "item-40" {
+			newer = item.Position
+		}
+	}
+	if newer == nil || wide.OlderCursor == "" {
+		t.Fatal("wide read has no positioned item-40 or no cursor")
+	}
+	forward, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, ItemLimit: 5, Cursor: wide.OlderCursor, Before: newer,
 	})
-	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) {
-		t.Fatalf("before on a malformed cursor: error = %T %v, want typed stale cursor", err, err)
+	if err != nil {
+		t.Fatalf("turns list before item-40 from an older cursor: %v", err)
 	}
-	stale := false
-	switch data := wireErr.Data.(type) {
-	case appwire.ErrorData:
-		stale = data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
-	case map[string]any:
-		stale = data["evenerErrorInfo"] == string(appwire.ErrorTranscriptItemCursorStale)
+	if got := texts(forward); !slicesEqual(got, []string{"item-35", "item-36", "item-37", "item-38", "item-39"}) {
+		t.Fatalf("turns list before item-40 from an older cursor = %v, want item-35..39", got)
 	}
-	if !stale {
-		t.Fatalf("before on a malformed cursor: error data = %#v, want stale cursor", wireErr.Data)
+
+	// No cursor at all, as when the phone's first read held the whole session:
+	// the source mints one from the thread's current identity.
+	cursorless, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, ItemLimit: 5, Before: boundary,
+	})
+	if err != nil {
+		t.Fatalf("cursorless turns list before item-30: %v", err)
+	}
+	if got := texts(cursorless); !slicesEqual(got, []string{"item-25", "item-26", "item-27", "item-28", "item-29"}) {
+		t.Fatalf("cursorless turns list before item-30 = %v, want item-25..29", got)
+	}
+
+	// A malformed cursor, a cursor fenced to another thread, and a boundary
+	// past the end of the transcript are each stale.
+	otherThread, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{
+		ThreadRef: "local:another-session", Incarnation: "inc-1", ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}, *boundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := &appwire.ThreadItemPosition{Entry: boundary.Entry + 10_000}
+	for name, params := range map[string]appwire.ThreadTurnsListParams{
+		"malformed cursor":       {Ref: ref, ItemLimit: 5, Cursor: "not-a-cursor", Before: boundary},
+		"another thread's fence": {Ref: ref, ItemLimit: 5, Cursor: otherThread, Before: boundary},
+		"future before":          {Ref: ref, ItemLimit: 5, Before: future},
+		"future before, cursor":  {Ref: ref, ItemLimit: 5, Cursor: narrow.OlderCursor, Before: future},
+	} {
+		_, err := client.ThreadTurnsList(t.Context(), params)
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) {
+			t.Fatalf("%s: error = %T %v, want typed stale cursor", name, err, err)
+		}
+		stale := false
+		switch data := wireErr.Data.(type) {
+		case appwire.ErrorData:
+			stale = data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+		case map[string]any:
+			stale = data["evenerErrorInfo"] == string(appwire.ErrorTranscriptItemCursorStale)
+		}
+		if !stale {
+			t.Fatalf("%s: error = %v data %#v, want stale cursor", name, err, wireErr.Data)
+		}
 	}
 }

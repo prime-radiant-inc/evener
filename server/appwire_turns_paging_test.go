@@ -601,4 +601,24 @@ func TestAppWireTurnsListBeforeRebasesTheCursorBoundary(t *testing.T) {
 	if got := page(nil); got != "c" {
 		t.Fatalf("page without before = %q, want c", got)
 	}
+	// Without a cursor the daemon mints one from the thread's identity.
+	cursorless, err := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "local:th_before", ItemLimit: 1, Before: boundary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cursorless.Data) != 1 || len(cursorless.Data[0].Items) != 1 || cursorless.Data[0].Items[0].Text != "b" {
+		t.Fatalf("cursorless page before c = %+v, want b", cursorless.Data)
+	}
+	_, err = srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "local:th_before", ItemLimit: 1, Before: &appwire.ThreadItemPosition{Entry: boundary.Entry + 10_000},
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("cursorless page before a future position: error = %T %v, want a wire error", err, err)
+	}
+	if data, ok := wireErr.Data.(appwire.HistoryReadErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("cursorless page before a future position: error data = %#v, want stale cursor", wireErr.Data)
+	}
 }

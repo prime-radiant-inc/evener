@@ -1974,3 +1974,35 @@ func TestPastEntryTurns_FlushesUnpairedCommunicate(t *testing.T) {
 		t.Errorf("full read flushed Text = %q, paged read flushed Text = %q, want equal", fullFlushed, pagedFlushed)
 	}
 }
+
+// A saved transcript pages before a boundary with no cursor the same as with
+// the cursor that points there.
+func TestPastThreadTurnsListBeforeWithoutACursor(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	latest, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5})
+	if !found || err != nil {
+		t.Fatalf("latest saved page: found=%v err=%v", found, err)
+	}
+	items := flattenTestItems(latest.Data)
+	if len(items) == 0 || items[0].Position == nil || latest.NextCursor == "" {
+		t.Fatalf("latest saved page = %+v, want positioned items and a cursor", latest)
+	}
+	withCursor, _, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Cursor: latest.NextCursor})
+	if err != nil {
+		t.Fatalf("saved page with a cursor: %v", err)
+	}
+	cursorless, _, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Before: items[0].Position})
+	if err != nil {
+		t.Fatalf("saved page before the latest page's first item: %v", err)
+	}
+	ids := func(page appwire.ThreadTurnsListResponse) []string {
+		var out []string
+		for _, item := range flattenTestItems(page.Data) {
+			out = append(out, item.ID)
+		}
+		return out
+	}
+	if got, want := ids(cursorless), ids(withCursor); len(want) == 0 || !slicesEqual(got, want) {
+		t.Fatalf("cursorless saved page = %v, want the cursor's page %v", got, want)
+	}
+}

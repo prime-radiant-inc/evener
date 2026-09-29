@@ -1517,7 +1517,11 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 		return appwire.ThreadTurnsListResponse{BootGeneration: s.bootGenerationFor(threadID)}, nil
 	}
 	epoch := history.Epoch()
-	turns, olderCursor, snapshot, err := history.before(history.ref, params.Cursor, params.ItemLimit)
+	cursor, err := history.cursorFor(history.ref, params)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), history.bootGeneration, epoch)
+	}
+	turns, olderCursor, snapshot, err := history.before(history.ref, cursor, params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), history.bootGeneration, epoch)
 	}

@@ -285,6 +285,26 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		return ItemCandidateResult{}, err
 	}
 
+	// A Before boundary with no cursor pages from a cursor minted under a
+	// fresh snapshot's identity, the one the cursor path below checks.
+	if params.Cursor == "" && params.Before != nil {
+		itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+		snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView, itemLimit)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
+			return ItemCandidateResult{}, err
+		}
+		if params.Cursor, err = appitempaging.MintCursor(params, localDaemonItemSnapshotIdentity(snapshot)); err != nil {
+			return ItemCandidateResult{}, err
+		}
+		params.Before = nil
+	}
+
 	if params.Cursor == "" {
 		itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
 		if err != nil {

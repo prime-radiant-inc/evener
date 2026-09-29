@@ -111,12 +111,13 @@ func validIdentity(identity CursorIdentity) bool {
 	return utf8.ValidString(identity.ThreadRef) && utf8.ValidString(identity.Incarnation) && strings.TrimSpace(identity.ThreadRef) != "" && strings.TrimSpace(identity.Incarnation) != "" && identity.ProjectionVersion != 0
 }
 
-// ApplyBefore spends a thread/turns/list request's Before: it rebases the
-// request's cursor onto that boundary, keeping the cursor's identity fence,
-// and clears Before so nothing downstream applies it twice. Without Before
-// the params pass through unchanged.
+// ApplyBefore spends a thread/turns/list request's Before when it comes with a
+// cursor: it rebases the cursor onto that boundary, keeping the cursor's
+// identity fence, and clears Before so nothing downstream applies it twice.
+// Without Before, or without a cursor to rebase, the params pass through
+// unchanged; a cursorless Before is the source's to mint (MintCursor).
 func ApplyBefore(params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListParams, error) {
-	if params.Before == nil {
+	if params.Before == nil || params.Cursor == "" {
 		return params, nil
 	}
 	cursor, err := RebaseCursor(params.Cursor, *params.Before)
@@ -126,4 +127,19 @@ func ApplyBefore(params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListP
 	params.Cursor = cursor
 	params.Before = nil
 	return params, nil
+}
+
+// MintCursor is the cursor a thread/turns/list request pages with: its own,
+// or, when it names only a Before boundary, one minted at that boundary under
+// the identity the source would check a cursor against (the thread's current
+// one). The source then pages exactly as it would for a client's cursor. A
+// minted cursor carries no fence from the client, which is safe: the page's
+// response names its snapshot, so a client paging against a thread that was
+// reset since its read sees another incarnation and discards the page, and a
+// boundary that names no transcript item is stale like any other.
+func MintCursor(params appwire.ThreadTurnsListParams, identity CursorIdentity) (string, error) {
+	if params.Cursor != "" || params.Before == nil {
+		return params.Cursor, nil
+	}
+	return EncodeCursor(identity, *params.Before)
 }

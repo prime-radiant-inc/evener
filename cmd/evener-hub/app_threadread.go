@@ -125,7 +125,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 	if !ok {
 		return appwire.ThreadTurnsListResponse{}, false, nil
 	}
-	page, err := pastEntryPageItems(ctx, entry, params.Cursor, itemLimit)
+	page, err := pastEntryPageItems(ctx, entry, params, itemLimit)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, true, err
 	}
@@ -273,11 +273,12 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 	return page, err
 }
 
-// pastEntryPageItems reads the page before cursor, or the latest window when
-// there is no cursor. A cursor from another incarnation is stale: the client
-// re-reads the latest window.
-func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, cursor string, limit int) (pastItemPage, error) {
-	if cursor == "" {
+// pastEntryPageItems reads the page before the request's cursor, or before
+// its Before boundary with no cursor (appitempaging.MintCursor), or the latest
+// window when it names neither. A cursor from another incarnation is stale:
+// the client re-reads the latest window.
+func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params appwire.ThreadTurnsListParams, limit int) (pastItemPage, error) {
+	if params.Cursor == "" && params.Before == nil {
 		return pastEntryLatestItems(ctx, entry, limit, nil)
 	}
 	var page pastItemPage
@@ -286,7 +287,12 @@ func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, cursor str
 		if err != nil {
 			return err
 		}
-		before, err := appitempaging.DecodeCursor(cursor, pastCursorIdentity(entry, incarnation))
+		identity := pastCursorIdentity(entry, incarnation)
+		cursor, err := appitempaging.MintCursor(params, identity)
+		if err != nil {
+			return err
+		}
+		before, err := appitempaging.DecodeCursor(cursor, identity)
 		if err != nil {
 			return err
 		}

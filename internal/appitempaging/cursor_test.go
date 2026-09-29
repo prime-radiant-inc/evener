@@ -287,6 +287,22 @@ func TestApplyBeforeRebasesTheCursorAndKeepsItsFence(t *testing.T) {
 	_, err = DecodeCursor(got.Cursor, identity)
 	assertStaleCursorError(t, err)
 
+	// No cursor: before is left for the source to mint under its identity.
+	cursorless := appwire.ThreadTurnsListParams{Ref: "local:thread", Before: &boundary}
+	if got, err := ApplyBefore(cursorless); err != nil || got != cursorless {
+		t.Fatalf("ApplyBefore without a cursor = %+v, %v; want it unchanged", got, err)
+	}
+	minted, err := MintCursor(cursorless, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if position, err := DecodeCursor(minted, identity); err != nil || position != boundary {
+		t.Fatalf("minted cursor decodes to %+v, %v; want %+v", position, err, boundary)
+	}
+	if kept, err := MintCursor(plain, identity); err != nil || kept != cursor {
+		t.Fatalf("MintCursor with a cursor = %q, %v; want the request's own", kept, err)
+	}
+
 	// A malformed cursor has no fence to keep.
 	_, err = ApplyBefore(appwire.ThreadTurnsListParams{Ref: "local:thread", Cursor: "not-a-cursor", Before: &boundary})
 	assertStaleCursorError(t, err)

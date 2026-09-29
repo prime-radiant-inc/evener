@@ -794,6 +794,12 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	remote.ThreadID = ref.ThreadID
 	remote.ItemLimit = itemLimit
 
+	// Each remote page mints its own controller identity, so there is none to
+	// mint a cursor under for a Before with no cursor. Refuse it plainly
+	// rather than serve the remote's latest window as the page asked for.
+	if params.Cursor == "" && params.Before != nil {
+		return ItemCandidateResult{}, appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
+	}
 	if params.Cursor == "" {
 		remote.Cursor = ""
 		candidates, native, history, err := s.remoteItemPage(ctx, remote)

@@ -3988,11 +3988,11 @@ export interface ThreadTurnsListParams {
   itemsView?: string;
   itemLimit?: number;
   /**
-   * Before, when set, moves Cursor's boundary to this position, keeping the
-   * cursor's identity fence: the page ends just before it. A client that
-   * dropped rows from the top of its window names the oldest row it kept
-   * and pages the dropped rows back. It rebases a cursor and can't stand in
-   * for one.
+   * Before, when set, ends the page just before this position. With a
+   * Cursor it moves the cursor's boundary, keeping the cursor's identity
+   * fence; with none the source mints a cursor there under the thread's
+   * current identity. A client that dropped rows from the top of its window
+   * names the oldest row it kept and pages the dropped rows back.
    */
   before?: ThreadItemPosition;
 }

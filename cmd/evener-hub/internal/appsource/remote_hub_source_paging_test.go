@@ -3,6 +3,7 @@ package appsource
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -1654,5 +1655,28 @@ func TestRemotePositionCompareOrdersBySub(t *testing.T) {
 	}
 	if got := remotePositionCompare(older, older); got != 0 {
 		t.Errorf("remotePositionCompare(equal) = %d, want 0", got)
+	}
+}
+
+// A controller mints its own identity per remote page, so it has none to mint
+// a cursor under for a Before with no cursor: it refuses the request plainly
+// rather than serve the remote's latest window as if it were the page asked
+// for, and the remote is never called.
+func TestRemoteHubSourceRefusesBeforeWithoutACursor(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		t.Error("the remote was called for a cursorless before")
+		return scriptedReply{result: itemPageWithCursor(5, "")}
+	})
+	_, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Before: &appwire.ThreadItemPosition{Entry: 3},
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("cursorless before on a remote host: error = %T %v, want invalid params", err, err)
+	}
+	for _, call := range calls() {
+		if call.method == appwire.MethodThreadTurnsList {
+			t.Fatalf("remote calls = %+v, want no thread/turns/list", calls())
+		}
 	}
 }
