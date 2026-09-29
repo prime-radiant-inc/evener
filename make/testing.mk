@@ -256,9 +256,11 @@ vet:
 ## Ratchet per-package test wall time against testing-budget.json.
 ## proves: A timing regression does not silently erode the suite's runtime
 ##   wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat
-##   per-test ceiling. Ratio enforcement is suspended (warn-only) while the
-##   budget file's metric marker is absent, which the checked-in pre-#172
-##   baseline is until a rebaseline rewrites it under package wall time.
+##   per-test ceiling. While the budget file's metric marker is absent (the
+##   checked-in pre-#172 baseline, until a rebaseline rewrites it under package
+##   wall time), the Go-package ratio check is suspended to a warning; the
+##   frontend ("web") row and the per-test ceiling keep their unchanged metrics
+##   and stay enforced.
 ## trigger: Local/on-demand; not required CI — deliberately not part of make
 ##   merge-approval-gate, since measuring durations means a second full test
 ##   run. CHECK=1 enforces the ratios; bare invocation only measures and
@@ -270,11 +272,11 @@ vet:
 ##   mode, and --bless refuses it. A narrowed bless refreshes the packages it
 ##   measured and preserves the rest of the file instead of deleting entries it
 ##   did not measure; a full rebaseline also drops entries go list no longer
-##   reports. Under CHECK=1 in a CI-shaped environment a package over 1.5x its
-##   budget or any per-test ceiling breach is nonzero too, but only once the
-##   budget file carries the wall-time metric marker: while the marker is absent
-##   (as for the checked-in pre-#172 baseline) the ratios are warn-only and the
-##   run exits zero. A missing or empty budget file always exits zero.
+##   reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x
+##   its budget is nonzero once the budget file carries the wall-time metric
+##   marker; while the marker is absent those ratios are warnings. The "web" row
+##   and any per-test ceiling breach are metric-independent and nonzero
+##   regardless, and a missing or empty budget file always exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 

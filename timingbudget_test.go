@@ -158,3 +158,36 @@ func TestTimingBudgetBlessDoesNotStampAStaleFile(t *testing.T) {
 		t.Fatalf("a narrowed bless of a stale file stamped the wall-time marker:\n%s", got)
 	}
 }
+
+// TestTimingBudgetStillEnforcesTheWebRowWithoutTheMarker pins the scope of the
+// stale-units suspension: the "web" entry is the vitest reporter's assertion
+// durations, the metric issue #172 did not change, so it stays comparable to the
+// checked-in budget and over 1.5x must still fail even while the Go packages'
+// units are stale.
+func TestTimingBudgetStillEnforcesTheWebRowWithoutTheMarker(t *testing.T) {
+	measured := "SUM\tweb\t10.00\n"
+	budget := `{"perTestCeilingSeconds":3,"packages":{"web":1}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err == nil {
+		t.Fatalf("the web row's units did not change, so over 1.5x must still fail:\n%s", out)
+	}
+	if !strings.Contains(out, "FAIL  web") {
+		t.Fatalf("no FAIL for the web row over 1.5x:\n%s", out)
+	}
+}
+
+// TestTimingBudgetStillEnforcesTheCeilingWithoutTheMarker pins that the per-test
+// ceiling stays enforced while the Go-package ratios are suspended: its seconds
+// come from the same field on both sides of issue #172, so a breach is a defect
+// regardless of the budget's metric.
+func TestTimingBudgetStillEnforcesTheCeilingWithoutTheMarker(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestSlow\t9.00\n"
+	budget := `{"perTestCeilingSeconds":3,"packages":{"pkg":100}}`
+	out, err := runTimingBudgetCompare(t, measured, budget)
+	if err == nil {
+		t.Fatalf("the per-test ceiling is metric-independent; a breach must still fail:\n%s", out)
+	}
+	if !strings.Contains(out, "per-test ceiling") {
+		t.Fatalf("no ceiling FAIL while the metric marker is absent:\n%s", out)
+	}
+}

@@ -124,16 +124,6 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/scratch-lib.sh"
 
-# bless_full records whether THIS run measured the whole budgeted surface: the
-# default module list (no --modules), the frontend included, and a real
-# measurement rather than a --measured replay. A bless needs it to decide
-# whether every number left in the file is in the metric this run just measured
-# — see the metric-marker logic in compare.py below.
-bless_full=false
-if [ -z "$measured_override" ] && [ "$modules_overridden" -eq 0 ] && $web && [ -d "$web_dir" ]; then
-	bless_full=true
-fi
-
 if [ -n "$strict_override" ]; then
 	strict=$([ "$strict_override" = "1" ] && echo true || echo false)
 else
@@ -202,12 +192,17 @@ module_short_flag() {
 }
 
 go_measure_failed=0
+module_missing=0
 if [ -n "$measured_override" ]; then
 	[ -f "$measured_override" ] || { echo "test-timing-budget: --measured file not found: $measured_override" >&2; run_failed=1; exit 1; }
 	cp "$measured_override" "$measured"
 else
 	for m in $modules; do
-		[ -f "$repo_root/$m/go.mod" ] || { echo "test-timing-budget: no module at $m, skipping" >&2; continue; }
+		if [ ! -f "$repo_root/$m/go.mod" ]; then
+			echo "test-timing-budget: no module at $m, skipping" >&2
+			module_missing=1
+			continue
+		fi
 		name="$m"; [ "$name" = "." ] && name="root"
 		base="$work/$(printf '%s' "$name" | tr / _)"
 		log="$base.jsonl"
@@ -299,6 +294,18 @@ if [ "$go_measure_failed" -ne 0 ]; then
 	exit 1
 fi
 
+# bless_full records whether THIS run measured the whole budgeted surface: the
+# default module list (no --modules), every default module present (a sparse
+# checkout that skipped one is not full), the frontend included, and a real
+# measurement rather than a --measured replay. A bless needs it to decide
+# whether every number left in the file is in the metric this run just measured
+# — see the metric-marker logic in compare.py below. It is computed here, after
+# the module loop, because that loop is what records a skipped module.
+bless_full=false
+if [ -z "$measured_override" ] && [ "$modules_overridden" -eq 0 ] && [ "$module_missing" -eq 0 ] && $web && [ -d "$web_dir" ]; then
+	bless_full=true
+fi
+
 # compare.py is the whole comparison contract: package ratios against the
 # checked-in budget, the flat per-test ceiling, the missing-budget-entry warn,
 # and the global no-baseline-yet warn. It can be exercised entirely through
@@ -326,6 +333,12 @@ WARN_RATIO = 1.1
 # enforcing numbers in the wrong units would be worse than not enforcing them
 # (issue #172 review).
 WALL_METRIC = "package-wall-seconds"
+
+# The frontend rolls up under this one key. Its number is the vitest reporter's
+# assertion durations, the same metric issue #172 left unchanged, so it stays
+# comparable to the checked-in budget even while the Go packages' units are
+# stale and held back (below).
+WEB_KEY = "web"
 
 sums = {}
 tests = []  # (package, name, seconds)
@@ -372,10 +385,11 @@ if no_baseline:
 		"result below is informational only and --check always exits 0 until "
 		"`make test-rebaseline` lands a measured baseline (kata b6rv).")
 elif stale_units:
-	lines.append("STALE UNITS: testing-budget.json was blessed under the pre-#172 "
-		"sum-of-test-Elapsed metric; its numbers are not comparable to the package "
-		"wall time measured now, so ratio failures are warnings until #141 regenerates "
-		f"the baseline (a rebaseline records \"metric\": \"{WALL_METRIC}\").")
+	lines.append("STALE UNITS: testing-budget.json's Go-package numbers were blessed "
+		"under the pre-#172 sum-of-test-Elapsed metric; they are not comparable to the "
+		"package wall time measured now, so their ratio failures are warnings until #141 "
+		f"regenerates the baseline (a rebaseline records \"metric\": \"{WALL_METRIC}\"). "
+		f"The \"{WEB_KEY}\" entry is the unchanged vitest metric and stays enforced.")
 
 for pkg in sorted(sums):
 	m = sums[pkg]
@@ -386,7 +400,7 @@ for pkg in sorted(sums):
 		continue
 	ratio = (m / b) if b > 0 else (float("inf") if m > 0 else 0.0)
 	if ratio > FAIL_RATIO:
-		if stale_units:
+		if stale_units and pkg != WEB_KEY:
 			lines.append(f"WARN  {pkg}: {m:.2f}s over stale budget {b:.2f}s "
 				f"({ratio:.2f}x > {FAIL_RATIO}x; not enforced until the #141 rebaseline)")
 			raise_worst("warn")
