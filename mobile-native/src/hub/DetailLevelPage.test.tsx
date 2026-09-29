@@ -262,9 +262,14 @@ it("offers no discard when nothing unreadable is stored, or a readable draft is"
 	expect(mount(transcript({ draft: readable })).button("Discard it")).toBeNull();
 });
 
-it("holds the discard while the hub is away", () => {
-	const { button } = mount(transcript({ confirmed: null, draftUnreadable: true, storageUnavailable: true }), false);
-	expect(button("Discard it")?.props.disabled).toBe(true);
+it("lets the discard go through while the hub is away, since it touches only this phone", async () => {
+	const { fake, button, press } = mount(
+		transcript({ confirmed: null, draftUnreadable: true, storageUnavailable: true }),
+		false,
+	);
+	expect(button("Discard it")?.props.disabled).toBe(false);
+	await press("Discard it");
+	expect(fake.calls).toEqual([["discard"]]);
 });
 
 it("shows a failed load as a line with nothing to press", () => {
