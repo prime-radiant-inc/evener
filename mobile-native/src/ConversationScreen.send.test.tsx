@@ -14,6 +14,7 @@ import {
 	flatListScrollFailures,
 	alertRequests,
 	type PanGestureMock,
+	playedHaptics,
 	pressable,
 	render,
 	renderedText,
@@ -464,8 +465,11 @@ it("sends a message when the agent is at rest", async () => {
 	await type(tree, "first");
 	const send = pressable(tree, "Send");
 	expect(send?.findByType("SymbolView" as never).props.name).toBe("paperplane.fill");
+	playedHaptics.length = 0;
 	await press(tree, "Send");
 	expect(hub.mutations()).toEqual(["turn/start"]);
+	// Spec 16.6: a light impact on send, once the hub took it.
+	expect(playedHaptics).toEqual(["impact:light"]);
 });
 
 it("stops the running turn from the tray and says so", async () => {
@@ -545,7 +549,10 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("sends the option chosen in the dock, and says so", async () => {
 		const { tree, hub } = await mount(thread("ref-question-option", "awaiting", true));
 		await press(tree, "Drop them");
+		playedHaptics.length = 0;
 		await press(tree, "Send answer");
+		// Spec 16.6: success on answer sent.
+		expect(playedHaptics).toEqual(["notification:success"]);
 		const starts = hub.requests.filter((request) => request.method === "turn/start");
 		expect(starts.map((request) => request.params.input)).toEqual([
 			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' }],
@@ -736,6 +743,52 @@ it("does nothing when a Stop lands after the turn already ended", async () => {
 	expect(renderedText(tree)).not.toContain("Stopped");
 	// No error text of any kind: the screen reads exactly as it did.
 	expect(renderedText(tree)).toBe(before);
+});
+
+it("brings back messages a Stop held before they left the phone: Cancel drops one, Send now sends one (phase 6)", async () => {
+	const ref = "ref-held";
+	const { tree, hub } = await mount(thread(ref, "idle"));
+	const runtime = getNativeMutationRuntime();
+	const targetKey = nativeMutationTargetKey("hub-1", ref);
+	const yours = (text: string) =>
+		runtime.storage.enqueueIntent({
+			targetRef: targetKey,
+			method: "turn/queue",
+			payload: { ref, input: [{ type: "text", text }] },
+			attachments: [],
+			optimisticDisplay: { text },
+		});
+	const dropped = await yours("drop this one");
+	const kept = await yours("send this one");
+	// A Stop commits before either left the phone, and holds them both.
+	await runtime.storage.enqueueInterruptAndCancel({
+		targetRef: targetKey,
+		method: "turn/interrupt",
+		payload: { ref },
+		attachments: [],
+		optimisticDisplay: { method: "turn/interrupt" },
+	});
+	await act(async () => {
+		await runtime.discardRecovery("no-such-row", targetKey);
+	});
+	await settle();
+	const text = renderedText(tree);
+	expect(text).toContain("drop this one");
+	expect(text).toContain("send this one");
+	expect(text).toContain("Held · you stopped this turn");
+
+	// Cancel drops the first from the phone's outbox; it never reaches the hub.
+	await press(tree, "Cancel");
+	await settle();
+	expect(await runtime.storage.getOutbox(dropped.clientMutationId)).toBeUndefined();
+	expect(renderedText(tree)).not.toContain("drop this one");
+
+	// Send now releases the second behind the Stop that held it.
+	await press(tree, "Send now");
+	await settle();
+	await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/interrupt", "turn/queue"]));
+	const sent = hub.requests.find((request) => request.method === "turn/queue");
+	expect(sent?.params).toMatchObject({ clientMutationId: kept.clientMutationId });
 });
 
 it("holds Stop while a queued message is handed to the outbox", async () => {
@@ -929,8 +982,11 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 	];
 	const { tree, hub } = await mount(served);
 	await type(tree, "keep this");
+	playedHaptics.length = 0;
 	await press(tree, "Retry");
 	expect(hub.mutations()).toEqual(["turn/start"]);
+	// Spec 16.6: a light impact on send, a retry's included.
+	expect(playedHaptics).toEqual(["impact:light"]);
 	const start = hub.requests.find((request) => request.method === "turn/start");
 	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
 	expect(field(tree)?.props.value).toBe("keep this");
@@ -1546,12 +1602,23 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 	it("allows the one file, and says so", async () => {
 		const { tree, hub } = await mount(withApproval("ref-approval-allow"));
+		playedHaptics.length = 0;
 		await press(tree, "Allow this file only");
+		// Spec 16.6: success on approval allowed.
+		expect(playedHaptics).toEqual(["notification:success"]);
 		const resolves = hub.requests.filter((request) => request.method === "evener/sandbox/escalation/resolve");
 		expect(resolves.map((request) => request.params)).toEqual([
 			{ ref: "ref-approval-allow", escalationId: "esc-1", approve: true },
 		]);
 		expect(renderedText(tree)).toContain("Allowed once");
+	});
+
+	it("denies without a haptic: spec 16.6 plays success only for allowed", async () => {
+		const { tree } = await mount(withApproval("ref-approval-deny"));
+		playedHaptics.length = 0;
+		await press(tree, "Deny");
+		expect(renderedText(tree)).toContain("Denied");
+		expect(playedHaptics).toEqual([]);
 	});
 });
 
@@ -2031,8 +2098,11 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		const { tree, hub } = await mount(thread("ref-next", "idle"));
 		const next = capsule(tree);
 		if (!next) throw new Error("no Next capsule");
+		playedHaptics.length = 0;
 		await act(async () => next.props.onPress());
 		await settle();
+		// Spec 16.6: a selection tick on a lateral session move.
+		expect(playedHaptics).toEqual(["selection"]);
 		expect(navigation.push).toHaveBeenCalledWith("Conversation", {
 			hubId: "hub-1",
 			ref: "local:fail",

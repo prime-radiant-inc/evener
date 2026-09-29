@@ -16,7 +16,7 @@ import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Thread } from "@evener/appwire-client";
-import { alertRequests, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { alertRequests, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { SessionHeader } from "./session/SessionHeader";
@@ -499,8 +499,11 @@ it("shows the chosen detail level and confirms it", async () => {
 	const { tree } = mount();
 	await flush();
 
+	playedHaptics.length = 0;
 	act(() => levelAction("Full").onPress());
 
+	// Spec 16.6: a selection tick on a detail level.
+	expect(playedHaptics).toEqual(["selection"]);
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
 	expect(renderedText(tree)).toContain("Full: everything, including the agent's reasoning");
