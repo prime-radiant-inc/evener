@@ -18,11 +18,10 @@ import {
 	shellOutput,
 	skillContext,
 	str,
-	type TaskRow,
 	toolFamily,
 	webFetchResult,
 } from "@evener/appwire-client";
-import type { ActivityDetail } from "../projectedRows";
+import type { ActivityDetail, DetailTask } from "../projectedRows";
 import type { RunStep } from "../timeline";
 
 export type Evidence =
@@ -46,7 +45,7 @@ export type Evidence =
 	| { kind: "error"; text: string; exitCode?: number };
 
 /** A task in a task_list step's checklist, with the note the call added. */
-export type ChecklistTask = Pick<TaskRow, "id" | "status" | "description"> & { note?: string };
+export type ChecklistTask = DetailTask & { note?: string };
 
 /** Output lines shown in the transcript before "Show all N lines". */
 export const EVIDENCE_PREVIEW_LINES = 40;
