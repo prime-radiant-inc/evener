@@ -1858,3 +1858,45 @@ it("forgets a check for new models when the detail closes, and never reports it 
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
 });
+
+it("ends a check's Checking state when it lands, even after a new link reopened the provider", async () => {
+	const fake = providersHub([withModels()]);
+	let answer: (value: InstanceListResponse) => void = () => {};
+	fake.on(
+		"evener/instance/refreshModels",
+		() =>
+			new Promise<InstanceListResponse>((resolve) => {
+				answer = resolve;
+			}),
+	);
+	const navigation = { setParams: vi.fn() };
+	const page = (params: { focus?: string }) =>
+		({ route: { params: { hubId: "hub-1", ...params } }, navigation }) as unknown as ComponentProps<
+			typeof ProvidersPage
+		>;
+	const tree = render(<ProvidersPage {...page({ focus: "work" })} />);
+	await act(async () => {});
+	await act(async () => {});
+	press(tree, (label) => label === "Check for new models");
+	await act(async () => {});
+	// A second link to the same provider arrives while the check runs.
+	await act(async () => tree.update(<ProvidersPage {...page({})} />));
+	await act(async () => tree.update(<ProvidersPage {...page({ focus: "work" })} />));
+	await act(async () => answer({ instances: [withModels()], availableProviders: [] }));
+	await act(async () => {});
+	expect(control(tree, "Check for new models").props.accessibilityState).toMatchObject({ disabled: false });
+});
+
+it("holds Check for new models while the connection is down", async () => {
+	providersHub([withModels()]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(control(tree, "Check for new models").props.accessibilityState).toMatchObject({ disabled: false });
+	const props = tree.root.findByType(ProvidersPage).props as ComponentProps<typeof ProvidersPage>;
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersPage {...props} />);
+	});
+	expect(control(tree, "Check for new models").props.accessibilityState).toMatchObject({ disabled: true });
+});

@@ -305,10 +305,15 @@ function Providers({
 	// Asking the provider for its current models is a read: it runs beside a
 	// write, and its answer lands in the listing like any other.
 	const [checkingModels, setCheckingModels] = useState<string | null>(null);
+	// Which check the Checking state belongs to. It moves only when a check
+	// starts or the detail closes, never with editorVersion (a row or a link
+	// bumps that while the check's provider stays open), so the latest check
+	// always ends its own Checking state.
+	const checkVersion = useRef(0);
 	async function checkModels(name: string) {
-		// Like `act`, a check the user has left behind reports nothing: closing
-		// the detail bumps the version and forgets the check.
+		// Like `act`, a check the user has left behind reports nothing.
 		const version = editorVersion.current;
+		const check = ++checkVersion.current;
 		setActionError(null);
 		setCheckingModels(name);
 		try {
@@ -316,7 +321,7 @@ function Providers({
 		} catch {
 			if (version === editorVersion.current) setActionError(MODELS_NOT_CHECKED);
 		} finally {
-			if (version === editorVersion.current) setCheckingModels(null);
+			if (check === checkVersion.current) setCheckingModels(null);
 		}
 	}
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
@@ -331,6 +336,7 @@ function Providers({
 		setCredentialTarget(null);
 		setKey("");
 		setActionError(null);
+		checkVersion.current += 1;
 		setCheckingModels(null);
 	}
 	async function act(
@@ -580,6 +586,7 @@ function Providers({
 											void act(() => surface.setModelDisabled(instance.name, model, disabled));
 										}}
 										checking={checkingModels === instance.name}
+										checkHeld={!ready}
 										onCheckModels={whenReady(canUseConnection, () => void checkModels(instance.name))}
 									/>
 									<Group>
@@ -752,6 +759,7 @@ function ProviderFacts({
 	togglesHeld,
 	onToggleModel,
 	checking,
+	checkHeld,
 	onCheckModels,
 }: {
 	instance: InstanceEntry;
@@ -761,6 +769,8 @@ function ProviderFacts({
 	onToggleModel(model: string, disabled: boolean): void;
 	/** The provider is being asked for its current models. */
 	checking: boolean;
+	/** The connection can't carry a check right now. */
+	checkHeld: boolean;
 	onCheckModels(): void;
 }) {
 	const status = statusOf(instance, auth);
@@ -818,7 +828,7 @@ function ProviderFacts({
 				<Row
 					label={checking ? "Checking for new models…" : "Check for new models"}
 					tone="accent"
-					disabled={checking}
+					disabled={checking || checkHeld}
 					onPress={onCheckModels}
 				/>
 			</Group>
