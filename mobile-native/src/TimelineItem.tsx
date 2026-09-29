@@ -20,7 +20,7 @@ import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
 import { askRowQuestions, timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
-import { isCriticalNotice, steeringNoticeLabel, type TimelineRow } from "./timeline";
+import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
 import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
 
@@ -76,7 +76,7 @@ export function TimelineItem({
 	// error rule, unless the thought itself failed.
 	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
 	const textScale = useTextScale();
-	const noticeLabel = item.kind === "notice" ? steeringNoticeLabel(item) : undefined;
+	const label = item.kind === "notice" ? noticeLabel(item) : undefined;
 	let content: ReactNode;
 	switch (item.kind) {
 		case "details":
@@ -143,7 +143,9 @@ export function TimelineItem({
 					onAction={onErrorAction}
 				/>
 			) : (
-				<SystemEvent label={noticeLabel} text={item.text} expanded={expanded} onToggle={toggle} />
+				<SystemEvent label={label} text={item.text} expanded={expanded} onToggle={toggle}>
+					{item.rendersMarkdown ? <MarkdownResponse markdown={item.text} /> : undefined}
+				</SystemEvent>
 			);
 			break;
 		case "failure":
