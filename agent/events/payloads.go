@@ -583,8 +583,9 @@ type CompactionTurnData struct {
 const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 
 // WarningCodeContextBudget identifies the informational context-budget
-// notices (a context-usage heads-up, an output-allocation clamp): budget
-// arithmetic succeeding, not a failure. Clients demote and verbosity-gate
+// notices (a context-usage heads-up, an output-allocation clamp, a predictive
+// checkpoint that fell back to the deterministic one): context management
+// that worked, not a failure. Clients demote and verbosity-gate
 // these warnings by this stable code, never by matching their prose.
 const WarningCodeContextBudget = "context_budget"
 
