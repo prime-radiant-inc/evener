@@ -585,10 +585,14 @@ export async function navigateTo(
       }
     }
   };
+  const removePendingLoaderless = (attempt) => {
+    const at = pendingLoaderless.indexOf(attempt);
+    if (at >= 0) pendingLoaderless.splice(at, 1);
+  };
   // Park until `matches()` holds, bounded by COMMIT_SETTLE_MS. The waiter leaves
   // the set when it settles OR times out, so an abandoned promise cannot be
   // resolved by a later unrelated commit and the set cannot grow across retries.
-  const waitForCommit = (matches) => {
+  const waitForCommit = (matches, onTimeout) => {
     if (matches()) return Promise.resolve();
     return new Promise((resolve) => {
       let timer;
@@ -600,7 +604,10 @@ export async function navigateTo(
           resolve();
         },
       };
-      timer = setTimeout(waiter.settle, COMMIT_SETTLE_MS);
+      timer = setTimeout(() => {
+        onTimeout?.();
+        waiter.settle();
+      }, COMMIT_SETTLE_MS);
       commitWaiters.add(waiter);
       if (matches()) waiter.settle();
     });
@@ -716,6 +723,10 @@ export async function navigateTo(
       attempts++;
       let expectedLoaderId = null;
       const navigating = attempts;
+      // The navigation is queued for a loaderless commit BEFORE Page.navigate
+      // is issued: a loaderless Page.frameNavigated can arrive before its
+      // response, and would otherwise have no entry to consume and be lost.
+      pendingLoaderless.push(navigating);
       // The commit that names this navigation's document is observed by the
       // shared listener above, at Page.frameNavigated - not by anything the
       // load event can stand in for. The navigate response registers which
@@ -723,8 +734,12 @@ export async function navigateTo(
       // attempt even if the load event resolved early off stale input.
       await navigateToOnce(page, url, (navigatedLoaderId) => {
         expectedLoaderId = navigatedLoaderId;
-        if (navigatedLoaderId) navigationAttempts.set(navigatedLoaderId, attempts);
-        else pendingLoaderless.push(navigating);
+        if (navigatedLoaderId) {
+          // A loaderId response is NOT a loaderless navigation: drop its queued
+          // entry so it cannot consume a later loaderless commit.
+          removePendingLoaderless(navigating);
+          navigationAttempts.set(navigatedLoaderId, navigating);
+        }
       });
       // A load event from the previous document can resolve the wait before
       // THIS navigation commits. Hold the boot check until THIS navigation's
@@ -732,7 +747,9 @@ export async function navigateTo(
       // for a loaderless response - by its queued attempt being consumed.
       const commitMatches = () =>
         expectedLoaderId ? committedLoaderIds.has(expectedLoaderId) : committedLoaderless.has(navigating);
-      await waitForCommit(commitMatches);
+      // A loaderless navigation that never commits must not stay queued to
+      // consume a LATER navigation's commit: expire it on timeout.
+      await waitForCommit(commitMatches, () => removePendingLoaderless(navigating));
       if (await evaluate(send, bootExpression)) return;
       if (attempts > BOOT_RETRY_LIMIT) {
         const budget =

@@ -2053,12 +2053,11 @@ test("a loaderless navigation's commit is awaited before the verdict", async () 
   assert.equal(socket.listenerCount("message"), 0);
 });
 
-// A loaderless navigation is correlated by POSITION in the pending queue, not
-// by the ambient counter: when one retry's commit arrives only after its settle
-// window has passed - during the NEXT retry - it must still consume its own
-// queued attempt, so the next retry does not adopt it (and the stale document's
-// failure cannot be counted as the next retry's evidence).
-test("a stale loaderless commit is not adopted by the next retry", async () => {
+// A loaderless navigation that never commits must be EXPIRED, not left at the
+// head of the pending queue: otherwise the NEXT navigation's legitimate commit
+// is consumed by the stale entry, that navigation times out, and its evidence
+// is excluded from its own verdict.
+test("a never-committing loaderless navigation does not consume the next retry's commit", async () => {
   const socket = fakeSocket();
   let navigations = 0;
   const send = async (method) => {
@@ -2066,36 +2065,25 @@ test("a stale loaderless commit is not adopted by the next retry", async () => {
       case "Page.navigate":
         navigations++;
         if (navigations === 1) {
-          setTimeout(() => {
-            socket.dispatch("message", {
-              data: JSON.stringify({ method: "Page.frameNavigated", params: { frame: {} } }),
-            });
-            socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
-          }, 0);
-          return { result: { frameId: "fixture-frame" } };
-        }
-        if (navigations === 2) {
-          // The wait resolves on a stale load; this navigation's own commit is
-          // delayed past its settle window, into the next retry.
+          // This navigation never commits: its wait must expire.
           socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
           return { result: { frameId: "fixture-frame" } };
         }
+        // The wait resolves on a stale load; the commit lands after the
+        // response queued this navigation's attempt.
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
         setTimeout(() => {
-          // Attempt 2's late commit arrives first, then a stale death from
-          // attempt 2's document, then this navigation's own commit.
           socket.dispatch("message", {
             data: JSON.stringify({ method: "Page.frameNavigated", params: { frame: {} } }),
           });
-          socket.dispatch("message", {
-            data: JSON.stringify({
-              method: "Network.loadingFailed",
-              params: { type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
-            }),
-          });
-          socket.dispatch("message", {
-            data: JSON.stringify({ method: "Page.frameNavigated", params: { frame: {} } }),
-          });
-          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          if (navigations === 1 + BOOT_RETRY_LIMIT) {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.loadingFailed",
+                params: { type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+              }),
+            });
+          }
         }, 0);
         return { result: { frameId: "fixture-frame" } };
       case "Runtime.evaluate":
@@ -2115,10 +2103,71 @@ test("a stale loaderless commit is not adopted by the next retry", async () => {
       }),
       (error) => {
         assert.match(error.message, /never booted/);
-        // The stale death belongs to attempt 2; the final attempt captured
-        // nothing of its own.
-        assert.doesNotMatch(error.message, /environment problem/);
-        assert.match(error.message, /No request failures were captured/);
+        // The final attempt's own delete (its commit and death) must count.
+        assert.match(error.message, /environment problem, not a test case failure/);
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// A loaderless Page.frameNavigated can arrive BEFORE its Page.navigate response.
+// The navigation is queued before the command is issued, so that early commit
+// reconciles instead of being lost and forcing a needless settle timeout that
+// leaves the live-document identity stale.
+test("a loaderless commit arriving before its response is reconciled", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations !== 1 + BOOT_RETRY_LIMIT) {
+          setTimeout(() => {
+            socket.dispatch("message", {
+              data: JSON.stringify({ method: "Page.frameNavigated", params: { frame: {} } }),
+            });
+            socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          }, 0);
+          return { result: { frameId: "fixture-frame" } };
+        }
+        // The final navigation's commit arrives BEFORE its response.
+        socket.dispatch("message", {
+          data: JSON.stringify({ method: "Page.frameNavigated", params: { frame: {} } }),
+        });
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Network.loadingFailed",
+            params: { type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+          }),
+        });
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/spawnguard.html", {
+        bootExpression: "typeof window.settledSpawn !== 'undefined'",
+        bootLabel: "the spawnguard entry global window.settledSpawn",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.match(error.message, /environment problem, not a test case failure/);
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
         return true;
       },
     );
