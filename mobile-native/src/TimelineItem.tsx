@@ -33,7 +33,7 @@ import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from 
 // run never spans a turn.
 function disclosureKey(item: TimelineRow): string[] {
 	const callId = item.kind === "run" ? item.steps[0]?.detail.callId : undefined;
-	return callId ? ["run-call", item.turnId ?? "", callId] : [item.kind, item.id];
+	return item.kind === "run" && callId ? ["run-call", item.turnId ?? "", callId] : [item.kind, item.id];
 }
 
 export function TimelineItem({
