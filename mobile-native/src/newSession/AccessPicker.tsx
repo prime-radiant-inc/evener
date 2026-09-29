@@ -1,8 +1,8 @@
 // New session's Access (spec 11; ruling 14): the four access levels, checked
-// on the one the session gets once that is known, and Network inside a sandbox. Access is the
-// launch override `sandbox` and Network is `sandboxNet`; choosing what the hub
-// already defaults to for this project drops the override, so the setup keeps
-// following the hub.
+// on the one the session gets once that is known, and Network inside a
+// sandbox. Access is the launch override `sandbox` and Network is
+// `sandboxNet`; choosing what the hub already defaults to for this project
+// drops the override, so the setup keeps following the hub.
 import { useStore } from "zustand";
 import { Group, GroupedPage, GroupFooter, GroupGap, Row, SwitchRow } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";

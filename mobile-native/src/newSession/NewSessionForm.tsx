@@ -212,7 +212,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 				/>
 				{/* Information only: the hub can't start a session on a new branch
 				    (ruling 15), so there is nothing to choose. */}
-				{branch ? <Row key="branch" icon="arrow.triangle.branch" label="Branch" value={branch} /> : null}
+				{branch ? <Row icon="arrow.triangle.branch" label="Branch" value={branch} /> : null}
 			</Group>
 			{form.hostNote ? <GroupFooter>{form.hostNote}</GroupFooter> : null}
 			<GroupLabel>Agent</GroupLabel>
