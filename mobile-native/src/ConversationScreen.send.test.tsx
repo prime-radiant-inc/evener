@@ -1520,6 +1520,32 @@ it("doesn't page older history for a reading position restored near the top befo
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 
+it("keeps the transcript's first row when an older page lands above it", async () => {
+	// Timed turns, the older one ending five minutes before the next starts,
+	// so a whole history marks only the first.
+	const minute = 60_000;
+	const start = Date.parse("2026-09-28T12:00:00Z");
+	const timed = (id: string, from: number) => ({ ...askReplyTurn(id), startedAt: from, completedAt: from + minute });
+	const served = thread("ref-older-first-key", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		timed("turn_1", start + 6 * minute),
+		timed("turn_2", start + 8 * minute),
+	];
+	const { tree } = await mount(served, { olderCursor: "cursor-1", olderTurns: [timed("turn_0", start)] });
+	const ids = () => (transcriptList(tree).props.data as { id: string }[]).map((row) => row.id);
+	const first = ids()[0];
+	// No time marker leads while older history is still to load.
+	expect(first).toBe("u-turn_1");
+	const at = {
+		nativeEvent: { contentOffset: { y: 100 }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+	};
+	act(() => transcriptList(tree).props.onScrollBeginDrag(at));
+	act(() => transcriptList(tree).props.onScrollEndDrag(at));
+	await settle();
+	expect(ids()).toContain("u-turn_0");
+	expect(ids()).toContain(first);
+});
+
 it("doesn't page older history while the hub is away", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-older-away"), { olderCursor: "cursor-1" });
 	harness.connection = { ...harness.connection, state: "connecting" };
