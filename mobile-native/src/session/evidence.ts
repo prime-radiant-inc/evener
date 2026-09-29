@@ -69,7 +69,9 @@ function shellNotes(run: ShellOutput): Evidence[] {
 	if (run.stillRunning)
 		notes.push({
 			kind: "note",
-			text: run.timedOut ? "Still running in the background after its wait timed out" : "Still running in the background",
+			text: run.timedOut
+				? "Still running in the background after its wait timed out"
+				: "Still running in the background",
 		});
 	else if (run.timedOut) notes.push({ kind: "note", text: "Timed out" });
 	return notes;
