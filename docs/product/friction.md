@@ -5,10 +5,11 @@ its machinery, loses the ability to recover, or imposes a restriction that needs
 a product justification. Use the [principles](principles.md) to assess the user
 cost and the [subsystem map](subsystems.md) to find the owning code.
 
-**Every case below awaits a product decision.** A direction is a proposal, not an
-approved implementation plan. Discuss cases individually before changing their
-behavior. Preserve the user's work and chosen boundaries while deciding how the
-product should restore capability.
+Cases remain open until their agreed behavior is implemented and verified.
+**Decision** records an agreed product outcome; **Discuss** describes an unresolved
+proposal. Neither is an implementation plan or a claim that behavior has changed.
+Discuss cases individually before changing their behavior. Preserve the user's
+work and chosen boundaries while deciding how the product restores capability.
 
 High priority means blocked work, lost content, duplicate-operation risk, or lost
 ongoing intent. Medium means repeated intervention or a substantial capability
@@ -156,14 +157,21 @@ blocks automatic loading on error, while
 [useTranscriptScroll](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts#L1487)
 catches the raw loader's failure. `LoadOlderRow.test.tsx` pins Retry behavior.
 
-**Discuss.** Retain demand for the page/search and release a failed in-flight
-guard, then retry with backoff while that demand remains. Separate a transient
-failure from a successful page that makes no progress. Keep cursor generations,
-deduplication and scroll anchors.
+**Decision.** Keep retrying a transient or unresolved older-history failure for
+as long as the user is actively waiting for that history or search result. Backoff
+bounds the request rate; a fixed attempt count or elapsed-time limit must not
+abandon the demand and require another interaction. Preserve demand when the
+view is inactive and resume recovery when it becomes active again. Keep loaded
+content and reading position usable throughout; Find must distinguish incomplete
+search from confirmed absence of matches. A proven permanent condition needs an
+accurate explanation rather than repeated identical requests. Implementation
+remains pending.
 
-**Acceptance.** Fail one older page once. Without leaving the screen or clicking
-Retry, the page appears and Find reaches a match or the confirmed end. No duplicate
-pages, jump to live output, or false absence of matches.
+**Acceptance.** Fail an older page both once and through a prolonged outage, then
+restore reads without a scroll, click or reconnect event. The page appears and
+Find reaches a match or the confirmed end. Attempts slow during failure without
+being abandoned; there are no duplicate pages, jumps to live output, or false
+absence of matches. Leaving and returning preserves the outstanding demand.
 
 ### C05 Native outbox convergence
 
