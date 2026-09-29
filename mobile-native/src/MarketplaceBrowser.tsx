@@ -29,6 +29,7 @@ import {
 } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { SheetStatus } from "./sheet/SheetStatus";
+import { guardLeave } from "./sheet/confirmDiscard";
 import { Spinner } from "./sheet/Spinner";
 import { allowFontScaling, useColors, useTextScale } from "./ui";
 import { destructiveButton } from "./haptics";
@@ -632,6 +633,9 @@ export function AddMarketplace({
 			setError("Could not confirm the marketplace was added. Check the list and source before trying again.");
 		else onClose();
 	}
+	// Cancel and a swipe down wait out an add in flight, and ask before a
+	// typed source or name goes (spec 6).
+	const leave = () => guardLeave({ busy, dirty: !!(source.trim() || name.trim()) }, onClose);
 	const add = whenReady(canUseConnection, () => {
 		void submit();
 	});
@@ -639,7 +643,7 @@ export function AddMarketplace({
 	return (
 		<ModalSheet
 			title="Add marketplace"
-			onCancel={onClose}
+			onCancel={leave}
 			cancelDisabled={busy}
 			done={{
 				label: busy ? "Adding…" : "Add",
@@ -647,10 +651,7 @@ export function AddMarketplace({
 				busy,
 				onPress: add,
 			}}
-			onRequestClose={() => {
-				// A swipe down waits out an add in flight, as Cancel does.
-				if (!busy) onClose();
-			}}
+			onRequestClose={leave}
 			accessory={
 				<>
 					<Text
