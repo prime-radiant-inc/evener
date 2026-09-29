@@ -365,7 +365,9 @@ describe("a step's evidence", () => {
 				),
 			],
 		};
-		const tree = render(<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-w" />);
+		const tree = render(
+			<RunRow run={run} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-w" />,
+		);
 		act(() => line(tree.root, "job_watch: create, done").props.onPress());
 		expect(shown(tree.root).map((node) => node.props.evidence)).toEqual([
 			[{ kind: "output", text: "Check the deploy finished.", lines: 1 }],
