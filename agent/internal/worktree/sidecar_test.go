@@ -4,6 +4,7 @@ package worktree
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -678,5 +679,68 @@ func TestListSidecarsWithErrorsSurfacesCorruptReservation(t *testing.T) {
 	tolerant, err := ListSidecars(dir)
 	if err != nil || len(tolerant) != 1 {
 		t.Fatalf("ListSidecars = %+v, %v; want the tolerant view unchanged (one entry)", tolerant, err)
+	}
+}
+
+// TestCorruptStaleReservation nails the classifier the create path uses to
+// tell a repairable torn record from a live concurrent create. Only an
+// undecodable file past the grace is reported: a valid record, a missing file,
+// and a fresh (possibly mid-write) undecodable file all yield nil.
+func TestCorruptStaleReservation(t *testing.T) {
+	dir := t.TempDir()
+	grace := ReconcileGrace
+
+	if err := CorruptStaleReservation(dir, "missing", grace); err != nil {
+		t.Fatalf("CorruptStaleReservation(missing) = %v, want nil", err)
+	}
+
+	good := testSidecar()
+	if err := WriteSidecarExcl(dir, good.Name, good); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	if err := CorruptStaleReservation(dir, good.Name, grace); err != nil {
+		t.Fatalf("CorruptStaleReservation(valid) = %v, want nil", err)
+	}
+
+	torn := sidecarPath(dir, "torn")
+	if err := os.WriteFile(torn, []byte("{torn"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CorruptStaleReservation(dir, "torn", grace); err != nil {
+		t.Fatalf("CorruptStaleReservation(fresh corrupt) = %v, want nil (may be a live create mid-write)", err)
+	}
+
+	old := time.Now().Add(-(grace + time.Minute))
+	if err := os.Chtimes(torn, old, old); err != nil {
+		t.Fatal(err)
+	}
+	err := CorruptStaleReservation(dir, "torn", grace)
+	if !errors.Is(err, ErrCorruptSidecar) {
+		t.Fatalf("CorruptStaleReservation(stale corrupt) = %v, want an ErrCorruptSidecar error", err)
+	}
+}
+
+// TestUpdateSidecarPreservesFileMode: the atomic replace must keep the
+// target's existing permission bits, exactly as a plain rewrite would, so a
+// deliberately hardened sidecar is not silently widened to 0o644.
+func TestUpdateSidecarPreservesFileMode(t *testing.T) {
+	dir := t.TempDir()
+	sc := testSidecar()
+	if err := WriteSidecarExcl(dir, sc.Name, sc); err != nil {
+		t.Fatalf("WriteSidecarExcl: %v", err)
+	}
+	path := sidecarPath(dir, sc.Name)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if err := UpdateSidecar(dir, sc.Name, func(s *Sidecar) { s.BaseSHA = "changed" }); err != nil {
+		t.Fatalf("UpdateSidecar: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("sidecar mode after update = %o, want 600", got)
 	}
 }

@@ -1232,12 +1232,13 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		if os.IsExist(werr) {
 			// The name is occupied. Either a live concurrent create won the
 			// race, or a create died between its O_EXCL open and its write,
-			// leaving a sidecar ListSidecars hides. Name the corruption rather
-			// than report a create that is not happening, so the reserved name
-			// is discoverable and repairable; the file is never removed here —
-			// malformed metadata does not authorize a destructive cleanup.
-			if _, rErr := worktree.ReadSidecar(metaDir, name); rErr != nil && !os.IsNotExist(rErr) {
-				return worktreeCreateCoreResult{}, fmt.Errorf("%s: worktree %q is reserved by a corrupt sidecar (%w); remove that file to repair", errPrefix, name, rErr)
+			// leaving a stale sidecar ListSidecars hides. Only the stale,
+			// undecodable case is named — a fresh undecodable file may be the
+			// winner mid-write, and directing repair at it would point at a
+			// live reservation. The file is never removed here: malformed
+			// metadata does not authorize a destructive cleanup.
+			if corrErr := worktree.CorruptStaleReservation(metaDir, name, worktree.ReconcileGrace); corrErr != nil {
+				return worktreeCreateCoreResult{}, fmt.Errorf("%s: worktree %q is reserved by a corrupt sidecar (%w); remove that file to repair", errPrefix, name, corrErr)
 			}
 			return worktreeCreateCoreResult{}, fmt.Errorf("%s: a worktree named %q is already being created", errPrefix, name)
 		}

@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,9 +102,16 @@ func removePartialCreate(path string, cause error) error {
 	return cause
 }
 
+// ErrCorruptSidecar marks a sidecar whose bytes were read but do not decode as
+// a Sidecar. It separates a torn record from the other errors ReadSidecar can
+// return — a missing file (os.IsNotExist) or a read failure such as a
+// permission or I/O error — which are not evidence of corruption and must not
+// be classified as one.
+var ErrCorruptSidecar = errors.New("worktree: corrupt sidecar")
+
 // ReadSidecar reads and decodes name's sidecar from metaDir. A missing file
-// returns an error satisfying os.IsNotExist; malformed JSON returns the
-// json.Unmarshal error.
+// returns an error satisfying os.IsNotExist; a file whose bytes do not decode
+// returns an error wrapping ErrCorruptSidecar.
 func ReadSidecar(metaDir, name string) (Sidecar, error) {
 	path := sidecarPath(metaDir, name)
 	raw, err := os.ReadFile(path)
@@ -112,7 +120,7 @@ func ReadSidecar(metaDir, name string) (Sidecar, error) {
 	}
 	var sc Sidecar
 	if err := json.Unmarshal(raw, &sc); err != nil {
-		return Sidecar{}, fmt.Errorf("worktree: decode sidecar %s: %w", path, err)
+		return Sidecar{}, fmt.Errorf("%w: decode %s: %w", ErrCorruptSidecar, path, err)
 	}
 	return sc, nil
 }
@@ -137,10 +145,18 @@ func UpdateSidecar(metaDir, name string, mutate func(*Sidecar)) error {
 // replaceSidecar atomically replaces the file at path with raw: it writes a
 // temporary file in the destination directory, closes it, and renames it over
 // path. os.Rename replaces an existing target atomically within a directory,
-// so a reader sees either the old bytes or the new ones, never a torn mix.
-// The temporary name carries a non-".json" suffix so ListSidecars, which only
-// considers ".json" files, ignores it while it exists.
+// so a reader sees either the old bytes or the new ones, never a torn mix. The
+// replacement keeps the target's existing permission bits (a systematic
+// os.WriteFile would too); only a missing target falls back to 0o644. The
+// temporary name carries a non-".json" suffix so ListSidecars, which only
+// considers ".json" files, ignores it while it exists; a crash between the
+// create and the rename leaves one such inert file behind — it reserves no
+// name and is invisible to every listing, so it needs no in-band cleanup.
 func replaceSidecar(path string, raw []byte) error {
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".sidecar-tmp-*")
 	if err != nil {
 		return err
@@ -156,7 +172,7 @@ func replaceSidecar(path string, raw []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -204,7 +220,10 @@ type SidecarLoadError struct {
 // tolerates a corrupt record by dropping it (an unmanaged file in metaDir is
 // the "unmanaged_meta" case spec §6 documents at the tool layer); a repair or
 // reconciliation sweep that must report a reserved-but-unusable name cannot
-// use that tolerant view, so it uses this enumeration instead. Only a failure
+// use that tolerant view, so it uses this enumeration instead. Only a decode
+// failure is a load error: a missing file (a concurrent delete) or an
+// unreadable one (a permission or I/O error) is not evidence of a torn record
+// and is skipped, preserving ListSidecars' tolerant contract. Only a failure
 // to read metaDir itself is returned as an error.
 func ListSidecarsWithErrors(metaDir string) ([]Sidecar, []SidecarLoadError, error) {
 	entries, err := os.ReadDir(metaDir)
@@ -230,12 +249,34 @@ func ListSidecarsWithErrors(metaDir string) ([]Sidecar, []SidecarLoadError, erro
 		}
 		sc, err := ReadSidecar(metaDir, name)
 		if err != nil {
-			failures = append(failures, SidecarLoadError{Name: name, Error: err})
+			if errors.Is(err, ErrCorruptSidecar) {
+				failures = append(failures, SidecarLoadError{Name: name, Error: err})
+			}
 			continue
 		}
 		out = append(out, sc)
 	}
 	return out, failures, nil
+}
+
+// CorruptStaleReservation returns name's sidecar decode error when the file at
+// name is an undecodable record older than grace — the residue of a create
+// that died between its O_EXCL open and its write — and nil otherwise. Two
+// cases that are not corruption yield nil: a file younger than grace may be a
+// live concurrent create the winner has opened but not yet written, and a
+// missing or unreadable file (a concurrent delete, a permission or I/O error)
+// is not a torn record. Callers use it to tell a genuinely repairable torn
+// reservation from a live one instead of misdirecting repair at a reserved
+// name that is still being written.
+func CorruptStaleReservation(metaDir, name string, grace time.Duration) error {
+	_, err := ReadSidecar(metaDir, name)
+	if err == nil || !errors.Is(err, ErrCorruptSidecar) {
+		return nil
+	}
+	if age, ageErr := SidecarAge(metaDir, name); ageErr == nil && age < grace {
+		return nil
+	}
+	return err
 }
 
 // SidecarAge returns how long ago name's sidecar file was last written,
