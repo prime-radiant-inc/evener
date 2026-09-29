@@ -547,15 +547,26 @@ function SpawnForm({
   // standing. The ref records the pair, so a late answer can be checked against
   // both the host and the draft it was issued for.
   const cwdHostRef = useRef<{ host: string; draft: SpawnDraft } | null>(null);
+  // Every switch's resolution is a NEW question, even when it names a host the
+  // form has visited before and the draft is the same object (a round trip
+  // A -> B -> A -> B): the issuance counter is what tells an answer apart from
+  // an answer to an earlier visit's question. The non-switch runs above must
+  // not bump it, so a resolution still in flight for this host and this draft
+  // can still land.
+  const cwdIssuanceRef = useRef(0);
   useEffect(() => {
     const previous = cwdHostRef.current;
     cwdHostRef.current = { host: submittedSource, draft };
     if (previous === null || previous.draft !== draft || previous.host === submittedSource) return;
     const issuedFor = submittedSource;
-    // Every answer below is a statement about the machine selected NOW: one
-    // that lands after another switch (or after the draft moved on) describes a
-    // machine the form has left, so it is dropped.
-    const superseded = () => cwdHostRef.current?.host !== issuedFor || cwdHostRef.current.draft !== draft;
+    const issuance = ++cwdIssuanceRef.current;
+    // Every answer below is a statement about the machine selected NOW, for the
+    // question asked NOW: one that lands after another switch (or after the
+    // draft moved on) describes a moment the form has left, so it is dropped.
+    const superseded = () =>
+      cwdIssuanceRef.current !== issuance ||
+      cwdHostRef.current?.host !== issuedFor ||
+      cwdHostRef.current.draft !== draft;
     const seedOwnDefault = () => {
       if (isLocalHost(issuedFor)) {
         reseedSpawnDirectory(draft, controllerDefaultDirectory());

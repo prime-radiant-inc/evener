@@ -6762,6 +6762,61 @@ test("a same-host re-read neither re-resolves nor discards the working directory
   expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toHaveLength(resolutions);
 });
 
+// The other half of "a reconnect is not a switch": a re-VISIT to the same host
+// IS a switch, and a new question. An answer to an earlier visit's question -
+// issued for this same host and this same draft - describes a moment the form
+// has left, so it must not land: only the newest issuance's answer decides.
+test("a stale answer from an earlier visit to the same host cannot move the directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // The FIRST buildbox question about this directory hangs; every later one
+  // answers the way a host that has the directory does. The hanging answer is a
+  // refusal, which late would re-seed the form from buildbox's home.
+  const firstVisit = deferred<{ path: string; valid: boolean; error?: string }>();
+  let buildboxDirectoryAsks = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "/tmp/visit-a") {
+        buildboxDirectoryAsks++;
+        return buildboxDirectoryAsks === 1 ? firstVisit.promise : { path, valid: true };
+      }
+      if (path === "~") return { path: "/home/buildbox", valid: true };
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/visit-a");
+  renderSpawn(fake);
+  await settled();
+
+  // local -> buildbox: this first question hangs.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expect(buildboxDirectoryAsks).toBe(1);
+  // buildbox -> local: the local host has the directory, so it stays.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await settled();
+  // local -> buildbox again: the second question answers "this host has it".
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expect(buildboxDirectoryAsks).toBe(2);
+  expectWorkingDir("/tmp/visit-a");
+
+  // The first visit's refusal finally lands. It is not this switch's answer.
+  await act(async () => {
+    firstVisit.resolve({ path: "/tmp/visit-a", valid: false, error: "no such file or directory" });
+  });
+  await settled();
+  expectWorkingDir("/tmp/visit-a");
+  // Nothing re-seeded: only the latest issuance's answer landed, so the host's
+  // own home was never resolved over it.
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
+});
+
 // A picked directory is the person's own choice, and it opens that directory's
 // own draft (drafts are keyed by the exact directory). Selecting another draft
 // is not a switch of the selected host, so the picked directory's draft keeps
