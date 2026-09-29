@@ -70,6 +70,10 @@ export interface NativeTranscriptPresentation {
 	items: MobileTimelineItem[];
 	activityPresentation: ReadonlyMap<string, ActivityPresentation>;
 	expandByDefault: boolean;
+	/** The live run shows its steps: at the levels that show tool calls. At
+	 * Chat and Intent the tray shows the live step, so the run keeps to its
+	 * line (S7). */
+	liveRunsOpen: boolean;
 	usage: SessionAccounting | null;
 	showDuration: boolean;
 }
@@ -204,14 +208,16 @@ export function projectNativeTranscript(
 			items,
 			activityPresentation,
 			expandByDefault: false,
+			liveRunsOpen: false,
 			usage: null,
 			showDuration: true,
 		};
+	const content = config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
 	return {
 		items,
 		activityPresentation,
-		expandByDefault: (config.content.kind === "preset" ? presetContent(config.content.level) : config.content)
-			.expandByDefault,
+		expandByDefault: content.expandByDefault,
+		liveRunsOpen: content.toolCalls,
 		usage: accountingFor(conversation, config),
 		showDuration: config.advanced.roundTimings,
 	};

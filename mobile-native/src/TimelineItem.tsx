@@ -1,14 +1,15 @@
-import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
-import { type ReactNode, useMemo, useState } from "react";
+import type { EvenerDelegateInfo } from "@evener/appwire-client";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { copyText } from "./clipboard";
 import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longPressMenu";
 import { MarkdownResponse } from "./MarkdownResponse";
-import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
+import { setDisclosureOpenAll, useDisclosureOpenAmong } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
 import { useMinuteClock } from "./session/minuteClock";
+import { rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
 import { NotificationCards } from "./session/NotificationCards";
@@ -35,6 +36,7 @@ export function TimelineItem({
 	forkDisabled = false,
 	quote,
 	live = false,
+	liveRunsOpen = false,
 	delegates,
 	openSubagent,
 	answerFor,
@@ -54,6 +56,8 @@ export function TimelineItem({
 	quote?: (text: string) => void;
 	/** This row is the live run: the last run of the turn in progress. */
 	live?: boolean;
+	/** The live run shows its steps (NativeTranscriptPresentation.liveRunsOpen). */
+	liveRunsOpen?: boolean;
 	/** The session's subagents, for a subagent row's state and activity. */
 	delegates?: readonly EvenerDelegateInfo[];
 	/** Opens a subagent's own transcript. */
@@ -67,10 +71,20 @@ export function TimelineItem({
 	 * decides which documents a message names and where a chip opens. */
 	documentChips?: (message: { id: string; markdown: string; streaming: boolean }) => ReactNode;
 }) {
-	const disclosureId = scopedDisclosureId(JSON.stringify([hubId, sessionRef]), JSON.stringify([item.kind, item.id]));
+	const disclosureIds = rowDisclosureIds(hubId, sessionRef, item);
 	const defaultOpen = (item.kind === "activity" || item.kind === "run") && expandByDefault;
-	const expanded = useDisclosureOpen(disclosureId, defaultOpen);
-	const toggle = () => toggleDisclosure(disclosureId, defaultOpen);
+	const expanded = useDisclosureOpenAmong(disclosureIds, defaultOpen);
+	const toggle = () => setDisclosureOpenAll(disclosureIds, !expanded);
+	// Nothing collapses on its own: a run held open while it is live stays
+	// open once it finishes, until the reader folds it.
+	const heldOpen = item.kind === "run" && live && liveRunsOpen;
+	// Pinned even where the level already opens every run, or a switch to a
+	// level that doesn't would fold it.
+	const disclosureKey = disclosureIds.join("\n");
+	// biome-ignore lint/correctness/useExhaustiveDependencies: disclosureKey stands for disclosureIds, a new array each render.
+	useEffect(() => {
+		if (heldOpen) setDisclosureOpenAll(disclosureIds, true);
+	}, [heldOpen, disclosureKey]);
 	const colors = useColors();
 	// A thought the projector didn't show reads as one quiet line, with no
 	// error rule, unless the thought itself failed.
@@ -130,7 +144,7 @@ export function TimelineItem({
 						fragments={item.notifications}
 						delegates={delegates}
 						openSubagent={openSubagent}
-						disclosureId={disclosureId}
+						disclosureId={disclosureIds[0] ?? ""}
 					/>
 				);
 				break;
@@ -241,7 +255,7 @@ export function TimelineItem({
 			content = (
 				<RunRow
 					run={item}
-					live={live}
+					live={heldOpen}
 					expanded={expanded}
 					onToggle={toggle}
 					hubId={hubId}

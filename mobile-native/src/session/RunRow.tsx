@@ -1,9 +1,9 @@
 // A run of steps on the transcript (spec 8.2): one line that folds the steps
 // ("▸ 12 steps · 8m · read 6 files, ran go test (2 failed)"), and, expanded,
 // one line per step with its intent, its target and a status mark. A step
-// with evidence opens it under its line (StepEvidence). A live run (the last
-// run of the turn in progress) never folds.
-import { scopedDisclosureId } from "@evener/appwire-client";
+// with evidence opens it under its line (StepEvidence). A run held open while
+// it is live (the last run of the turn in progress, at the levels that show
+// tool calls) has no fold control until it finishes.
 import { SymbolView } from "expo-symbols";
 import { Fragment, useMemo } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -11,6 +11,7 @@ import { typeRoles } from "../design/tokens";
 import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import type { RunStep, TimelineRow } from "../timeline";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { rowDisclosureIds } from "./disclosureKeys";
 import { useStepEvidence } from "./useStepEvidence";
 import { StepEvidence } from "./StepEvidence";
 import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepTarget } from "./transcriptRows";
@@ -33,9 +34,7 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 	const target = useMemo(() => stepTarget(step.label, step.detail.arguments), [step.label, step.detail.arguments]);
 	const evidence = useStepEvidence(step);
 	const hasEvidence = evidence.length > 0 || (step.images?.length ?? 0) > 0;
-	// The same key a standalone activity row uses, so a step keeps its open
-	// state when a level change unfolds it from its run.
-	const disclosureId = scopedDisclosureId(JSON.stringify([hubId, sessionRef]), JSON.stringify(["activity", step.id]));
+	const [disclosureId = ""] = rowDisclosureIds(hubId, sessionRef, step);
 	const open = useDisclosureOpen(disclosureId, evidenceOpenByDefault) && hasEvidence;
 	const failed = step.state === "failed";
 	const line = (
