@@ -5,9 +5,9 @@ import { ActivityIndicator, RefreshControl, ScrollView, View } from "react-nativ
 import { SafeAreaView } from "react-native-safe-area-context";
 import { type ConnectionState, createHubOverviewStore, friendlyErrorMessage } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ConnectionStatus } from "./ConnectionStatus";
 import { isReady, whenReady } from "./connectionDisplay";
-import { ConnectionWall, HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
+import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
+import { Connecting, SheetStatus } from "./sheet/SheetStatus";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -23,15 +23,20 @@ export function HubSettingsScreen(props: Props) {
 }
 
 function HubSettingsScreenBody({ route }: Props) {
-	const { activeProfile, state, error, display, canUseConnection, renderClient } = useRetainedScreenConnection(
-		route.params.hubId,
-	);
+	const { activeProfile, state, canUseConnection, renderClient } = useRetainedScreenConnection(route.params.hubId);
 	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
-	if (display === "wall" || !renderClient)
-		return <ConnectionWall hubName={activeProfile.name} purpose="view hub settings" error={error} />;
+	// Calm (spec 14): one status line, and the last hub information stays while
+	// the connection is away; a page that never loaded says it is connecting.
+	if (!renderClient)
+		return (
+			<>
+				<SheetStatus />
+				<Connecting hubName={activeProfile.name} />
+			</>
+		);
 	return (
 		<>
-			{display === "banner" ? <ConnectionStatus /> : null}
+			<SheetStatus />
 			<HubSettings
 				client={renderClient}
 				connectionState={state}
@@ -102,7 +107,7 @@ function HubSettings({
 	} | null>(null);
 	const recoveredForClient = useRef<ConversationClientLike | null>(null);
 	// useFocusEffect covers a screen the user comes back to; a passive
-	// reconnect never refocuses it, and the client a manual retry replaces
+	// reconnect never refocuses it, and the client a new connection replaces
 	// this one with is still connecting when the focus effect re-runs, so
 	// that read fails with nothing left to re-run it once the connection is
 	// ready. The overview store keeps the last successful load through a

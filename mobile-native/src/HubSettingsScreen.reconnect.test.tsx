@@ -1,9 +1,9 @@
 // Screen-level tests for the hub settings screen's reconnect recovery: the
 // overview store keeps the last successful load through a failed refresh
-// (hubOverview.ts), so a screen that survives a flap behind a banner must
-// re-read once the connection is ready again - the wall this screen used to
-// show remounted the store instead, and a manual retry's replacement client
-// is still connecting when the stores around it first read. Mirrors
+// (hubOverview.ts), so a screen that keeps its data through a flap under the
+// status line must re-read once the connection is ready again, and a new
+// connection's client is still connecting when the stores around it first
+// read. Mirrors
 // hub/ProvidersPage.test.tsx's mocking; the focus effect stands in for
 // @react-navigation/native's the way the installed hook (7.3.18) behaves -
 // it runs the callback on mount and on every identity change while the
@@ -98,7 +98,7 @@ it("reads through a replacement client once its connection is ready", async () =
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
 
-	// A manual retry hands the screen a fresh client while it is still
+	// A new connection hands the screen a fresh client while it is still
 	// connecting; the overview it owes can only land once the connection is
 	// ready.
 	const second = new FakeClient("connecting");
@@ -153,7 +153,7 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	});
 	const rekeyed = renderedText(tree);
 	expect(rekeyed).not.toContain("Evener 1.2.3");
-	expect(rekeyed).toContain("to view hub settings.");
+	expect(rekeyed).toContain("Connecting to Two hub…");
 
 	// The new hub is a fresh mount: its own overview renders once its
 	// connection is ready.
@@ -201,7 +201,7 @@ it("reads a replacement recovery once while the screen is focused", async () => 
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
 
-	// A manual retry hands the screen a fresh client while it is still
+	// A new connection hands the screen a fresh client while it is still
 	// connecting, and the screen stays focused through the whole gap: the
 	// replacement re-runs the focus effect in the same commit the ready
 	// transition recovers in.
@@ -356,4 +356,28 @@ it("recovers a client replaced while the connection stays ready", async () => {
 	await act(async () => {});
 	expect(reads).toBe(1);
 	expect(renderedText(tree)).toContain("Evener 9.9.9");
+});
+
+it("says it is connecting, with no wall and nothing to press, before the first load", async () => {
+	harness.connection = { ...connection(null, "connecting"), client: null };
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	const text = renderedText(tree);
+	expect(text).toContain("Connecting to Work hub…");
+	expect(text).not.toMatch(/\bReconnect\b|Connect to Work hub/);
+});
+
+it("keeps the last hub information under the status line when the versions stop matching", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/settings/overview", () => ({ hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 } }));
+	harness.connection = connection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	harness.connection = { ...dropped(connection(hub, "ready"), "closed"), fatal: true };
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	const text = renderedText(tree);
+	expect(text).toContain("Evener 1.2.3");
+	expect(text).toContain("Update needed");
 });
