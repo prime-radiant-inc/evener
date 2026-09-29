@@ -208,13 +208,7 @@ export function TimelineItem({
 			}
 			if (item.label === "delegate") {
 				content = (
-					<Subagent
-						row={item}
-						hubId={hubId}
-						delegates={delegates}
-						source={subagentTree}
-						openSubagent={openSubagent}
-					/>
+					<Subagent row={item} hubId={hubId} delegates={delegates} source={subagentTree} openSubagent={openSubagent} />
 				);
 				break;
 			}
