@@ -3,6 +3,7 @@ package appwire
 import (
 	"errors"
 	"fmt"
+	"reflect"
 )
 
 const (
@@ -705,15 +706,73 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 // NotAccepted marks the refusal as a request that wasn't carried out and isn't
 // to be retried as it is, since it would be refused the same way.
 // clientMutationID names the refused mutation, or is empty when the request
-// carried none. The code, message and evenerErrorInfo stay; data of another
-// shape gives way to the standard ErrorData, so the outcome is always readable.
+// carried none. The code and message stay, and so does the data: the standard
+// ErrorData, or a struct that embeds it (HostFieldErrorData,
+// LifecycleErrorData and the like), is marked where it stands, keeping its
+// evenerErrorInfo and every field of its own. Data of any other shape, or
+// none, gives way to a bare ErrorData, so the outcome is always readable.
 func (e WireError) NotAccepted(clientMutationID string) WireError {
-	data, _ := e.Data.(ErrorData)
-	data.ClientMutationID = clientMutationID
-	data.MutationOutcome = MutationOutcomeNotAccepted
-	data.RetryDisposition = RetryDispositionNone
-	e.Data = data
+	e.Data = markedNotAccepted(e.Data, clientMutationID)
 	return e
+}
+
+var errorDataType = reflect.TypeFor[ErrorData]()
+
+// ErrorDataOf is the standard data an error's Data is, or a struct of it embeds
+// (HostFieldErrorData and the like), and whether it has one.
+func ErrorDataOf(data any) (ErrorData, bool) {
+	if plain, ok := data.(ErrorData); ok {
+		return plain, true
+	}
+	value := reflect.ValueOf(data)
+	if value.Kind() != reflect.Struct {
+		return ErrorData{}, false
+	}
+	field, ok := embeddedErrorData(value)
+	if !ok {
+		return ErrorData{}, false
+	}
+	return field.Interface().(ErrorData), true
+}
+
+// markedNotAccepted is a copy of data with its ErrorData marked: data itself
+// when it is one, or the ErrorData a struct embeds. The error data types embed
+// ErrorData by value, and Data holds them by value, so reaching the embedded
+// one means copying the struct into something settable; reflection does that
+// for every such type without each one opting in, so a new wrapper can't be
+// missed. Data of any other shape gives way to a fresh ErrorData.
+func markedNotAccepted(data any, clientMutationID string) any {
+	mark := func(data *ErrorData) {
+		data.ClientMutationID = clientMutationID
+		data.MutationOutcome = MutationOutcomeNotAccepted
+		data.RetryDisposition = RetryDispositionNone
+	}
+	if plain, ok := data.(ErrorData); ok {
+		mark(&plain)
+		return plain
+	}
+	if value := reflect.ValueOf(data); value.Kind() == reflect.Struct {
+		copied := reflect.New(value.Type()).Elem()
+		copied.Set(value)
+		if field, ok := embeddedErrorData(copied); ok {
+			mark(field.Addr().Interface().(*ErrorData))
+			return copied.Interface()
+		}
+	}
+	var fresh ErrorData
+	mark(&fresh)
+	return fresh
+}
+
+// embeddedErrorData is the ErrorData field a struct value embeds itself,
+// settable when the struct is. FieldByName also finds one promoted from a
+// deeper embed (a longer Index), which isn't this data's, so that doesn't count.
+func embeddedErrorData(value reflect.Value) (reflect.Value, bool) {
+	field, ok := value.Type().FieldByName("ErrorData")
+	if !ok || !field.Anonymous || field.Type != errorDataType || len(field.Index) != 1 {
+		return reflect.Value{}, false
+	}
+	return value.Field(field.Index[0]), true
 }
 
 func MutationUnknown(clientMutationID, message string) WireError {
