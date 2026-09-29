@@ -124,12 +124,21 @@ function Scan({ onPairing, onPasteInstead }: { onPairing(target: PairingTarget):
 	// Whether the one request this page makes has come back. Android can
 	// leave canAskAgain true after a refusal, so that alone can't end the wait.
 	const [answered, setAnswered] = useState(false);
+	const mounted = useRef(true);
+	useEffect(
+		() => () => {
+			mounted.current = false;
+		},
+		[],
+	);
 	const canAsk = permission !== null && !permission.granted && permission.canAskAgain;
 
 	useEffect(() => {
 		if (!canAsk || asked.current) return;
 		asked.current = true;
-		void requestPermission().finally(() => setAnswered(true));
+		void requestPermission().finally(() => {
+			if (mounted.current) setAnswered(true);
+		});
 	}, [canAsk, requestPermission]);
 
 	// The hook reads the permission on mount and after a request only; a

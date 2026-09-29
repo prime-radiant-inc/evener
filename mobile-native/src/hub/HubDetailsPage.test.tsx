@@ -141,7 +141,8 @@ it("says why a hub couldn't be removed, and stays", async () => {
 	const footer = tree.root.find(
 		(node) => String(node.type) === "Text" && node.props.children === "Saved drafts for this hub could not be removed.",
 	);
-	expect(footer.props.style.color).toBe(palettes.light.dangerInk);
+	// GroupFooter's style is a list: its tone, then Menlo for machine text.
+	expect(Object.assign({}, ...[footer.props.style].flat()).color).toBe(palettes.light.dangerInk);
 	expect(navigation.goBack).not.toHaveBeenCalled();
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
 });

@@ -19,6 +19,9 @@ vi.mock("./HubHome", () => ({ HubHome: () => null }));
 vi.mock("./HubsPage", () => ({ HubsPage: () => null }));
 vi.mock("./HubDetailsPage", () => ({ HubDetailsPage: () => null }));
 vi.mock("./AddHubPage", () => ({ AddHubPage: () => null }));
+vi.mock("./HostsPage", () => ({ HostsPage: () => null }));
+vi.mock("./HostDetailPage", () => ({ HostDetailPage: () => null }));
+vi.mock("../hosts/useHubFleet", () => ({ useHubFleet: () => ({}) }));
 vi.mock("@react-navigation/native-stack", () => ({
 	createNativeStackNavigator: () => ({ Navigator: () => null, Screen: () => null }),
 }));

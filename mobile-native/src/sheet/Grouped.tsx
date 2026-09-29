@@ -153,16 +153,7 @@ export function Row({
 					</Text>
 				) : null}
 			</View>
-			{plainValue !== undefined ? (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkMid, fontSize: 17 * scale, fontVariant: ["tabular-nums"] }}
-				>
-					{plainValue}
-				</Text>
-			) : (
-				(value ?? null)
-			)}
+			{plainValue !== undefined ? <RowValue text={plainValue} /> : (value ?? null)}
 			{chevron ? <SymbolView name="chevron.right" tintColor={palette.inkLow} size={13} /> : null}
 		</>
 	);
@@ -264,9 +255,12 @@ export function SwitchRow({
 export function GroupFooter({
 	children,
 	tone = "normal",
+	machine = false,
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
+	/** Text the machine wrote, such as an error the hub reported: Menlo. */
+	machine?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -274,14 +268,17 @@ export function GroupFooter({
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
-			style={{
-				color,
-				fontSize: 13 * scale,
-				lineHeight: 18 * scale,
-				paddingHorizontal: 32,
-				paddingTop: 6,
-				paddingBottom: 8,
-			}}
+			style={[
+				{
+					color,
+					fontSize: 13 * scale,
+					lineHeight: 18 * scale,
+					paddingHorizontal: 32,
+					paddingTop: 6,
+					paddingBottom: 8,
+				},
+				machine ? { fontFamily: fonts.mono } : null,
+			]}
 		>
 			{children}
 		</Text>
@@ -388,5 +385,38 @@ export function Tag({ text, tone }: { text: string; tone: keyof typeof TAG_TONES
 		>
 			{text}
 		</Text>
+	);
+}
+
+/** A row's trailing value with a tag beside it: a host's version and its gray
+ * "Hub runs 0.9.412", or the Hosts count and its amber "1 offline". */
+export function RowValue({
+	text,
+	tag,
+	tone = "normal",
+}: {
+	text?: string;
+	tag?: { text: string; tone: keyof typeof TAG_TONES } | null;
+	/** "attention" for a value that may need a human, such as Offline. */
+	tone?: "normal" | "attention";
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+			{text ? (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{
+						color: tone === "attention" ? palette.attentionInk : palette.inkMid,
+						fontSize: 17 * scale,
+						fontVariant: ["tabular-nums"],
+					}}
+				>
+					{text}
+				</Text>
+			) : null}
+			{tag ? <Tag text={tag.text} tone={tag.tone} /> : null}
+		</View>
 	);
 }
