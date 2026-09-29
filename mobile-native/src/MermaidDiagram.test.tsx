@@ -424,3 +424,31 @@ it("ignores a height reply from a superseded source", () => {
 	});
 	expect(wrapper(tree, "Diagram").props.style.height).toBe(120);
 });
+
+it("does not fail on an error reply from a superseded source", () => {
+	const postMessage = vi.fn();
+	let tree!: ReactTestRenderer;
+	act(() => {
+		tree = create(<MermaidDiagram source="graph TD; A-->B" />, {
+			createNodeMock: (element) => (element.type === ("WebView" as never) ? { postMessage } : {}),
+		});
+	});
+	const webview = () => tree.root.findByType("WebView" as never);
+	act(() => {
+		webview().props.onMessage({ nativeEvent: { data: JSON.stringify({ type: "ready" }) } });
+	});
+	const supersededId = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string).id;
+	// The source changes to a valid diagram before the first render's reply lands.
+	act(() => {
+		tree.update(<MermaidDiagram source="graph TD; P-->Q" />);
+	});
+	// The superseded render's late error must not throw the current source into
+	// the fallback and unmount the WebView its own queued render still needs.
+	act(() => {
+		webview().props.onMessage({
+			nativeEvent: { data: JSON.stringify({ type: "error", message: "Parse error", id: supersededId }) },
+		});
+	});
+	expect(tree.root.findAllByType("WebView" as never)).toHaveLength(1);
+	expect(renderedText(tree)).not.toContain("Couldn't render this diagram.");
+});

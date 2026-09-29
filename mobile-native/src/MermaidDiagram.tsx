@@ -227,7 +227,12 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 			renderPosts.settle();
 			return;
 		}
-		setFailed(true);
+		// Only the newest render's error may fail the current source: a superseded
+		// render's late error would unmount the WebView that the queued, valid
+		// render still needs. An id-less page reply (no echo) is still honored.
+		if (message.id === undefined || message.id === renderPosts.latestId()) {
+			setFailed(true);
+		}
 		renderPosts.settle();
 	}
 
