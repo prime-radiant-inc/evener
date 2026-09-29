@@ -76,6 +76,7 @@ import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
+import { onBoardJump } from "./boardJump";
 import { BoardStops, stopToast } from "./boardStops";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
@@ -376,6 +377,11 @@ function Board({
 		if (band === "idle") foldIdle(false);
 		scrollTo(band, true);
 	};
+	// A tapped "3 sessions need you" banner asks for Needs you here, since the
+	// Board's route takes no params (boardJump.ts).
+	const jumpToBandNow = useRef(jumpToBand);
+	jumpToBandNow.current = jumpToBand;
+	useEffect(() => onBoardJump((section) => jumpToBandNow.current(section)), []);
 	// Within about a screen of the end of Live, read its next page. Layout
 	// checks too, so a first page too short to scroll keeps reading.
 	const viewport = useRef({ offset: 0, height: 0 });
