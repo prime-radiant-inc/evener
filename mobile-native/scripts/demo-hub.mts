@@ -224,6 +224,10 @@ export async function createDemoHub(
 		},
 	};
 	let turnNumber = 0;
+	// The Board-row changes a fleet session's turns made while answering one
+	// message: setTurnRunning appends them, and the handler broadcasts every one
+	// after it answers, the way it broadcasts an archive's invalidation.
+	const turnNavigations: NavigationInvalidatedPayload[] = [];
 	// Tells every socket connected at that moment that navigation changed,
 	// as a real hub broadcasts navigation changes to every navigation client.
 	function broadcastNavigation(payload: NavigationInvalidatedPayload) {
@@ -232,8 +236,16 @@ export async function createDemoHub(
 			method: "evener/navigation/invalidated",
 			params: payload,
 		});
-		for (const socket of server.clients)
-			if (socket.readyState === WebSocket.OPEN) socket.send(notification);
+		for (const socket of server.clients) {
+			if (socket.readyState !== WebSocket.OPEN) continue;
+			// One socket that fails mid-send must not skip the rest of the
+			// broadcast, as a real hub's per-client fan-out does.
+			try {
+				socket.send(notification);
+			} catch {
+				// The socket is gone; its close handler removes it.
+			}
+		}
 	}
 	// Makes the fleet's working row ask its question. Returned for tests to
 	// fire on demand.
@@ -347,6 +359,10 @@ export async function createDemoHub(
 		if (fleetRefs.has(thread.evener.ref)) {
 			if (turn) startFleetTurn(thread, turn, Date.now());
 			else restFleetSession(thread, "idle", Date.now());
+			// The Board follows the turn: a running turn reads Working, a
+			// stopped one Idle, so a Stop leaves the row where its thread is.
+			const invalidated = requireFleet().setSessionState(thread.evener.ref, turn ? "working" : "idle");
+			if (invalidated) turnNavigations.push(invalidated);
 			return;
 		}
 		const running = turn !== undefined;
@@ -752,6 +768,9 @@ export async function createDemoHub(
 						},
 					}),
 				);
+			} finally {
+				for (const invalidated of turnNavigations) broadcastNavigation(invalidated);
+				turnNavigations.length = 0;
 			}
 		});
 	});
@@ -814,7 +833,9 @@ if (
 	import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
 	if (process.argv.includes("--help") || process.argv.includes("-h")) {
-		process.stdout.write(USAGE);
+		// Exit only once the help has drained: into a pipe, stdout is
+		// asynchronous, and exiting at once can cut it short.
+		await new Promise((resolve) => process.stdout.write(USAGE, resolve));
 		process.exit(0);
 	}
 	const hub = await createDemoHub(

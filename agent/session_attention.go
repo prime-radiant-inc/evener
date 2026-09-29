@@ -477,6 +477,18 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 	return s.appendDelegateAttentionMessageDurably(attentionID, llm.User(content))
 }
 
+// delegateAttentionTurn is the steering turn an attention message appends
+// as: a subagent's report or quiet watchdog, or a stable shell job's
+// completion. It carries its attention identity and a fresh stable turn id,
+// and no steering kind.
+func delegateAttentionTurn(attentionID string, message llm.Message, now time.Time) schema.Turn {
+	turn := schema.NewTurn(schema.TurnSteering, message)
+	turn.Timestamp = now.UTC()
+	turn.AttentionID = attentionID
+	turn.StableTurnID = newQueueEntryID()
+	return turn
+}
+
 // appendDelegateAttentionMessageDurably is the message-preserving core of
 // appendDelegateNotificationDurably. Escalation of a fenced delegate's
 // attention transfers the exact original message under its original identity,
@@ -535,10 +547,7 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 		}
 		return false, nil
 	}
-	turn := schema.NewTurn(schema.TurnSteering, message)
-	turn.Timestamp = s.sclock().Now().UTC()
-	turn.AttentionID = attentionID
-	turn.StableTurnID = newQueueEntryID()
+	turn := delegateAttentionTurn(attentionID, message, s.sclock().Now())
 	// The synced door records AND syncs, or errors; a retained (recorded but
 	// unsynced) line the read-back would find is not durable. Attention
 	// arrives from delivery goroutines at any time, so it joins the running

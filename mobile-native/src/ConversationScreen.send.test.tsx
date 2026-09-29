@@ -46,6 +46,7 @@ import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetT
 import { FloatingStack } from "./session/FloatingStack";
 import { Toast } from "./Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
+import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { SubagentScreen } from "./subagents/SubagentScreen";
 import { flattenSubagents } from "./subagents/subagentModel";
 
@@ -1727,6 +1728,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		const { tree, hub } = await mount(served);
 		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
 		expect(renderedText(tree)).toContain("1 more waiting");
+		const firstBody = dockBody(tree, "approval-dock").scroller;
 		await press(tree, "Allow this file only");
 		act(() =>
 			hub.notify({
@@ -1740,6 +1742,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
 		expect(text).not.toContain("more waiting");
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
+		// The next approval gets a fresh dock (keyed by escalationId), so its
+		// body opens at its top, whatever the last one was scrolled to.
+		expect(dockBody(tree, "approval-dock").scroller).not.toBe(firstBody);
 	});
 
 	it("shows the dock in the tray's place, and never the composer", async () => {
@@ -1752,7 +1757,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 	it("puts a long approval's target in the dock's scroller, and Allow and Deny outside it", async () => {
 		const served = withApproval("ref-approval-long");
-		const deniedPath = `/home/jesse/sites/${"docs/reference/appwire/protocol/".repeat(6)}index.html`;
+		const deniedPath = `/home/jesse/sites/${"docs/reference/wire/".repeat(6)}index.html`;
 		const [escalation] = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener
 			.pendingEscalations;
 		if (!escalation) throw new Error("no escalation");
@@ -2606,9 +2611,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 	}
 
-	/** The coordinator's thread, as the phone reads it without following it. */
-	function coordinator(stopSubagent: boolean) {
+	/** The coordinator's thread, as the phone reads it without following it.
+	 * `id` models a coordinator that restarted under a new thread. */
+	function coordinator(stopSubagent: boolean, id = COORDINATOR.threadId) {
 		const served = thread(COORDINATOR.ref, "active");
+		(served as unknown as { id: string }).id = id;
 		(served as unknown as { evener: { capabilities: Record<string, boolean> } }).evener.capabilities = {
 			...CAPABILITIES,
 			...(stopSubagent ? { stopSubagent: true } : {}),
@@ -2628,9 +2635,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		return served;
 	}
 
-	async function mountSubagent(served: Thread, { stopSubagent = false, jobs = subagentTree() } = {}) {
+	async function mountSubagent(
+		served: Thread,
+		{ stopSubagent = false, jobs = subagentTree(), coordinatorId = COORDINATOR.threadId } = {},
+	) {
 		coordinatorHub.tree = jobs;
-		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent));
+		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent, coordinatorId));
 		const hub = hubClient(served);
 		harness.connection = {
 			...screenConnection(hub.client, "ready"),
@@ -2790,6 +2800,16 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
+	});
+
+	it("reads the tree under the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+		// The screen opened with the route's thread, but the coordinator has
+		// since restarted under a new one: its tree comes back under that new
+		// thread, so the panel must ask for it by the thread it reads now.
+		forgetSubagentTrees("hub-1");
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		const { tree } = await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
 	});
 
 	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
@@ -3176,4 +3196,33 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		expect(hub.mutations()).toEqual(["turn/queue"]);
 		expect(pressable(tree, "Discard")).toBeDefined();
 	});
+});
+
+it("clears the lost send's outbox row with one Discard on the draft ghost", async () => {
+	const ref = "ref-draft-lost";
+	const key = nativeMutationTargetKey("hub-1", ref);
+	const runtime = getNativeMutationRuntime();
+	// The draft kept a send the outbox also holds, and the outbox couldn't
+	// confirm its outcome: ghosts() shows one ghost, the draft's, standing in for
+	// the blockedUnknown row. Seed that exact pair before mounting.
+	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
+	const { clientMutationId } = await runtime.storage.enqueueIntent({
+		targetRef: key,
+		method: "turn/start",
+		payload: { ref, input: [{ type: "text", text: "lost send" }] },
+		attachments: [],
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "lost send" }] },
+	});
+	await runtime.storage.markAttempted(clientMutationId);
+	await runtime.storage.markUnknown(clientMutationId, "blockedUnknown", { onlyAttempted: true });
+
+	const { tree } = await mount(thread(ref, "idle"));
+	await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't confirm this was sent"));
+	await press(tree, "Discard");
+
+	// One Discard clears both: the draft's uncertainty and the row it stood in
+	// for, which otherwise returns as its own ghost.
+	await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toEqual([]));
+	await settle();
+	expect(renderedText(tree)).not.toContain("Couldn't confirm this was sent");
 });

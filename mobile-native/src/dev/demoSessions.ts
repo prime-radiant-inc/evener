@@ -647,7 +647,7 @@ const LONG_CONTENT: Record<string, SessionContent> = {
 					escalation: {
 						...mirror.escalation,
 						deniedPath:
-							"/home/jesse/sites/docs/reference/appwire/protocol/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
+							"/home/jesse/sites/docs/reference/wire/v6/notifications/evener-navigation-invalidated-and-thread-resync-ordering-guarantees/index.html",
 						partiallyRan: true,
 					},
 				}

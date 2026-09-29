@@ -194,6 +194,19 @@ describe("transcript display config", () => {
     expect(fromWireConfig({ ...wire, advanced: { ...wire.advanced, hookExits: undefined } })).toBeUndefined();
   });
 
+  test("rejects a non-plain-object wire value (the shared strict plain-object guard)", () => {
+    // A class instance carries the same own keys as a wire config but its
+    // prototype is not Object.prototype. The shared isPlainObject guard rejects
+    // it; a private loose "non-null, non-array object" guard accepted it.
+    const wire = toWireConfig(shippedDefaults.desktop.config);
+    class WireConfigStub {
+      version = wire.version;
+      content = wire.content;
+      advanced = wire.advanced;
+    }
+    expect(fromWireConfig(new WireConfigStub())).toBeUndefined();
+  });
+
   test("fromWireDefault accepts future top-level fields", () => {
     const wire = toWireDefault(shippedDefaults.desktop);
     expect(fromWireDefault({ ...wire, futureField: "ignored" })).toEqual(shippedDefaults.desktop);
