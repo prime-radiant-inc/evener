@@ -9,13 +9,21 @@ export type Notice = { key: string; text: string } & (
 	| { kind: "plugin"; action: "Plugins"; pluginId: string; marketplace: string }
 );
 
+/** Whether `row` failed because `provider` needs a sign-in: the hub's
+ * signInRequired cause, or the provider refusing it with a 401. A rate limit
+ * or any other failure from the same provider isn't one. */
+function signInFailure(row: NavigationSessionSummary, provider: string): boolean {
+	const failure = row.failure;
+	return failure?.provider === provider && (failure.cause_kind === "signInRequired" || failure.status === 401);
+}
+
 /** The Board's notices: every provider whose sign-in expired, every offline
  * host and every broken plugin, in that order.
  *
  * Each names the sessions it affects that the Board has loaded, each once
- * however many sections loaded it: for an expired sign-in, the failed rows
- * whose failure names that provider; for an offline host, the rows running
- * on it. The hub sends no such counts, so a session on a page not yet loaded
+ * however many sections loaded it: for an expired sign-in, the rows that
+ * failed on that provider's sign-in (signInFailure); for an offline host,
+ * the rows running on it. The hub sends no such counts, so a session on a page not yet loaded
  * goes uncounted: a count can fall short but never runs over, until a hub
  * rollup (S11) replaces it. */
 export function notices(input: {
@@ -36,7 +44,7 @@ export function notices(input: {
 			result.push({
 				key: `signIn:${provider}`,
 				kind: "signIn",
-				text: withCount(`${provider} sign-in expired`, (row) => row.failure?.provider === provider),
+				text: withCount(`${provider} sign-in expired`, (row) => signInFailure(row, provider)),
 				action: "Sign in",
 				providerId: provider,
 			});

@@ -87,6 +87,28 @@ it("counts the loaded sessions an expired sign-in stopped, each once, and says n
 	).toEqual(["codex-jesse-fsck.com sign-in expired · 2 sessions", "openai sign-in expired"]);
 });
 
+// Only a failure an expired sign-in raised counts toward its notice: one
+// the hub marks signInRequired, or a 401. A rate limit or any other failure
+// from the same provider isn't one.
+it("counts only the sign-in failures toward the sign-in notice, not other failures from the provider", () => {
+	const failed = (ref: string, failure: NavigationSessionSummary["failure"]): NavigationSessionSummary => ({
+		...row(ref, "laptop"),
+		state: "failed",
+		failure,
+	});
+	expect(
+		notices({
+			...none,
+			auth: [provider("openai", { needsLogin: true })],
+			loadedRows: [
+				failed("laptop:a", { title: "Sign-in required", cause_kind: "signInRequired", provider: "openai" }),
+				failed("laptop:b", { title: "Usage limit reached", cause_kind: "provider", provider: "openai", status: 429 }),
+				failed("laptop:c", { title: "Provider error", cause_kind: "provider", provider: "openai", status: 500 }),
+			],
+		}).map((notice) => notice.text),
+	).toEqual(["openai sign-in expired · 1 session"]);
+});
+
 it("counts an offline host's loaded sessions once each, even a session loaded from both Live and Needs you", () => {
 	const studio = [row("studio:a", "studio"), row("studio:b", "studio"), row("studio:c", "studio")];
 	expect(
