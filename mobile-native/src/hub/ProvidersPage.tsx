@@ -10,7 +10,6 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { Alert } from "react-native";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
 import {
-	activeSourceLabel,
 	CONNECTION_REPLACED_ERROR,
 	credentialLayers,
 	fromEnvironment,
@@ -44,30 +43,15 @@ import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
 import { useAuthStatuses } from "./useAuthStatuses";
-
-// The warnings shown for the two refusals the generic "could not be confirmed"
-// line would misreport: a provider-instance write the hub APPLIED before a
-// later step failed, and the hub's refusal of an asserted destination. They are
-// this client's own wording: the rejection's text came from the hub and can
-// echo submitted credentials, so it must never reach the screen (the same rule
-// the catch's generic error keeps).
-const APPLIED_REMOVAL_WARNING =
-	"The instance was removed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
-const APPLIED_RENAME_WARNING =
-	"The instance was renamed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
-const ENDPOINT_CHANGED_WARNING =
-	"This instance changed to a different endpoint since the form was opened. The provider list was refreshed; review its destination and try again.";
-
-// What clearing a credential or removing an instance says when the hub cannot
-// fingerprint the destination: no key is being sent, so it does not reuse the
-// save-specific wording.
-const FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE =
-	"The hub cannot check this endpoint right now, so the action was not run. Review its destination and try again once it can be checked.";
-
-// What a credential save (a key or a JSON blob) says for the same condition;
-// neutral about which credential kind, unlike the key-specific package copy.
-const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE =
-	"The hub cannot check this endpoint right now, so the credential was not saved. Review its destination and try again once it can be checked.";
+import {
+	appliedButFailed,
+	ENDPOINT_CHANGED_WARNING,
+	FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
+	FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
+	PROVIDERS_NOT_LOADED,
+	UNCONFIRMED_CHANGE,
+	UNCONFIRMED_CREDENTIAL,
+} from "../providers/providerCopy";
 
 // A mounted page re-keyed to another hub is a fresh page: the
 // reconnect-retention state below - the status line's everReady, the sign-in
@@ -242,7 +226,9 @@ function Providers({
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [actionWarning, setActionWarning] = useState<string | null>(null);
 	const instance = core.instances.find((item) => item.name === selected);
-	const loadError = core.error === null ? null : sessionActionError("Could not load providers", core.error);
+	// A Google provider's stored credential is a JSON file, not a key.
+	const json = instance?.auth === "gcp-adc";
+	const loadError = core.error === null ? null : sessionActionError(PROVIDERS_NOT_LOADED, core.error);
 	// A failed listing reads again when the page comes back to the front, as
 	// the store's notifications and a reconnect already do; nothing asks you
 	// to (no pull-to-refresh, ruling 21).
@@ -327,7 +313,7 @@ function Providers({
 			// cannot confirm it, so it does not report success. The surface that
 			// issued the write owns the recovery read.
 			if (applied === false) {
-				setActionError("The operation could not be confirmed. Check the current state before trying again.");
+				setActionError(UNCONFIRMED_CHANGE);
 				return;
 			}
 			setEditingCredential(null);
@@ -354,7 +340,7 @@ function Providers({
 				// for the passive evener/auth/updated notification, and warn with our
 				// own sentence rather than the rejection's text.
 				close();
-				setActionWarning(applied === "remove" ? APPLIED_REMOVAL_WARNING : APPLIED_RENAME_WARNING);
+				setActionWarning(appliedButFailed(applied === "remove" ? "removed" : "renamed"));
 				surface.refresh();
 				return;
 			}
@@ -375,18 +361,21 @@ function Providers({
 			}
 			// Provider/transport errors may echo submitted credentials. Keep the
 			// editor's error independent of upstream response text.
-			setActionError(
-				secret
-					? "Could not confirm the credential save. Check the connection and credential status before trying again."
-					: "The operation could not be confirmed. Check the current state before trying again.",
-			);
+			setActionError(secret ? UNCONFIRMED_CREDENTIAL : UNCONFIRMED_CHANGE);
 		}
 	}
-	function confirm(title: string, action: () => Promise<unknown>, options: { endpointAsserted?: boolean } = {}) {
+	/** Asks before a destructive action, naming the provider and the hub, with
+	 * the action's own verb on its button (spec 5). */
+	function confirm(
+		title: string,
+		verb: string,
+		action: () => Promise<unknown>,
+		options: { endpointAsserted?: boolean } = {},
+	) {
 		if (!canUseConnection()) return;
 		Alert.alert(title, `${selected} on ${hubName}`, [
 			{ text: "Cancel", style: "cancel" },
-			destructiveButton("Confirm", () => act(action, options)),
+			destructiveButton(verb, () => act(action, options)),
 		]);
 	}
 
@@ -684,7 +673,7 @@ function Providers({
 												)}
 												{instance.hasStoredFile && instance.activeSource !== "store" && (
 													<Row
-														label={instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
+														label={json ? "Clear stored credential JSON" : "Clear stored key"}
 														tone="danger"
 														disabled={surface.busy || stale || !ready}
 														onPress={() => {
@@ -696,7 +685,8 @@ function Providers({
 																return;
 															}
 															confirm(
-																instance.auth === "gcp-adc" ? "Clear stored credential JSON?" : "Clear stored key?",
+																json ? "Clear stored credential JSON?" : "Clear stored key?",
+																json ? "Clear JSON" : "Clear key",
 																() => surface.clearStoredKey(instance.name, instance.endpointFingerprint),
 																{ endpointAsserted: true },
 															);
@@ -714,7 +704,8 @@ function Providers({
 																return;
 															}
 															confirm(
-																"Clear active credentials?",
+																"Clear credentials?",
+																"Clear credentials",
 																() => surface.logout(instance.name, instance.endpointFingerprint),
 																{ endpointAsserted: true },
 															);
@@ -732,7 +723,8 @@ function Providers({
 																return;
 															}
 															confirm(
-																"Remove provider instance?",
+																"Remove provider?",
+																"Remove",
 																() => surface.remove(instance.name, instance.endpointFingerprint),
 																{ endpointAsserted: true },
 															);
@@ -763,6 +755,7 @@ function ProviderFacts({
 	auth: ReadonlyMap<string, AuthStatusResponse> | null;
 }) {
 	const status = statusOf(instance, auth);
+	const defaultTag = instance.isDefault ? ({ text: "Default", tone: "gray" } as const) : null;
 	const models = (instance.models ?? []).filter((model) => !model.disabled);
 	return (
 		<>
@@ -774,18 +767,27 @@ function ProviderFacts({
 						accessibilityLabel={`Status, ${status.word}`}
 					/>
 				) : null}
-				<Row label="Type" value={instance.providerId} />
+				<Row
+					label="Type"
+					value={<RowValue text={instance.providerId} tag={defaultTag} />}
+					accessibilityLabel={defaultTag ? `Type, ${instance.providerId}, Default` : `Type, ${instance.providerId}`}
+				/>
 				<Row label="Sign-in" value={signInKind(instance)} />
 				<Row label="Endpoint" sub={styleInfoText(instance)} machineSub />
+				{fromEnvironment(instance) ? <Row label="Defined in" value="Environment" /> : null}
+				{credentialLayers(instance).map((layer) =>
+					layer.effective ? (
+						<Row key={layer.source} label="Credential" sub={layer.label} />
+					) : (
+						<Row
+							key={layer.source}
+							label={layer.source === "store" ? "Also stored" : "Also in the environment"}
+							sub={layer.label}
+							value="Not used"
+						/>
+					),
+				)}
 			</Group>
-			{instance.activeSource === "none" ? null : <GroupFooter>{activeSourceLabel(instance)}</GroupFooter>}
-			{credentialLayers(instance)
-				.filter((layer) => !layer.effective)
-				.map((layer) => (
-					<GroupFooter key={layer.source}>{`${layer.label} · Shadowed`}</GroupFooter>
-				))}
-			{instance.isDefault ? <GroupFooter>The default provider.</GroupFooter> : null}
-			{fromEnvironment(instance) ? <GroupFooter>From the environment.</GroupFooter> : null}
 			{instance.warnings?.map((message) => (
 				<GroupFooter key={message} tone="attention">
 					{message}

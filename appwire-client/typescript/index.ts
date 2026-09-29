@@ -126,6 +126,8 @@ export {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  endpointMoved,
+  endpointUncheckable,
   FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,

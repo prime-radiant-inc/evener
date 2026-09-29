@@ -416,8 +416,8 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("The instance was removed on the hub");
-	expect(text).not.toContain("The operation could not be confirmed");
+	expect(text).toContain("The provider was removed, but a later step failed. Check the list.");
+	expect(text).not.toContain("The hub didn't confirm the change.");
 	// Secret-safety: the hub's own text can echo submitted credentials, so the
 	// warning above must never carry it.
 	expect(text).not.toContain("the hub left work's stored key behind");
@@ -448,7 +448,7 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/remove"]);
 	const text = renderedText(tree);
-	expect(text).toContain("The operation could not be confirmed");
+	expect(text).toContain("The hub didn't confirm the change.");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor stays open on the instance the refusal names.
 	expect(hasControl(tree, "Remove")).toBe(true);
@@ -540,7 +540,7 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	});
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/edit", "evener/instance/list"]);
 	const text = renderedText(tree);
-	expect(text).toContain("changed to a different endpoint");
+	expect(text).toContain("now points somewhere else");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor cleared like a completed save; the instance's detail remains.
 	expect(text).not.toContain("Base URL");
@@ -584,8 +584,8 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("changed to a different endpoint");
-	expect(text).not.toContain("The operation could not be confirmed");
+	expect(text).toContain("now points somewhere else");
+	expect(text).not.toContain("The hub didn't confirm the change.");
 	// Secret-safety: the hub's text can echo submitted values and never renders.
 	expect(text).not.toContain("work no longer resolves");
 	// Cleared like a completed removal: the detail and its actions are gone.
@@ -632,8 +632,8 @@ it("keeps the create form for a name-collision conflict", async () => {
 	expect(create).toHaveBeenCalledTimes(1);
 	expect(onEndpointConflict).not.toHaveBeenCalled();
 	const text = renderedText(tree);
-	expect(text).toContain("Save could not be confirmed");
-	expect(text).not.toContain("changed to a different endpoint");
+	expect(text).toContain("The hub didn't confirm the change.");
+	expect(text).not.toContain("now points somewhere else");
 	// The form survives for the correction.
 	expect(text).toContain("Base URL");
 });
@@ -711,7 +711,7 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("changed to a different endpoint");
+	expect(text).toContain("now points somewhere else");
 	expect(text).not.toContain("Base URL");
 });
 
@@ -765,7 +765,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	// completed write.
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/list", "evener/instance/edit"]);
 	const text = renderedText(tree);
-	expect(text).not.toContain("changed to a different endpoint");
+	expect(text).not.toContain("now points somewhere else");
 	expect(text).not.toContain("Base URL");
 });
 
@@ -1101,14 +1101,14 @@ it("reads the listing again on coming back to the page after a read failed, with
 	const { tree } = mountPage();
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Could not load providers");
+	expect(renderedText(tree)).toContain("Couldn't load the providers");
 	expect(renderedText(tree)).not.toMatch(/\bRetry\b|\bReconnect\b/);
 	await act(async () => {
 		refocus();
 	});
 	await act(async () => {});
 	expect(reads).toBe(2);
-	expect(renderedText(tree)).not.toContain("Could not load providers");
+	expect(renderedText(tree)).not.toContain("Couldn't load the providers");
 });
 
 it('calls no account sign-in "Signed in" before the hub\'s statuses are read', async () => {
@@ -1261,7 +1261,7 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	};
 	await open("codex");
 	expect(hasControl(tree, "Status, Signed in")).toBe(true);
-	expect(hasControl(tree, "Type, openai-codex")).toBe(true);
+	expect(hasControl(tree, "Type, openai-codex, Default")).toBe(true);
 	expect(hasControl(tree, "Sign-in, Account")).toBe(true);
 	expect(hasControl(tree, "gpt-5.6")).toBe(true);
 	expect(hasControl(tree, "gpt-5.5")).toBe(false);
@@ -1442,4 +1442,102 @@ it("closes the detail with Done while an unrelated write is in flight, with no k
 	await act(async () => {});
 	press(tree, (label) => label === "Done");
 	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+});
+
+async function openDetail(tree: ReactTestRenderer, name: string) {
+	press(tree, (label) => label.startsWith(`${name},`));
+	await act(async () => {});
+}
+
+it("names each confirmation's action on its button, and the provider in its message (spec 5)", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], activeSource: "store", hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const asked = () => {
+		const request = alertRequests.at(-1);
+		return [request?.title, request?.message, request?.buttons?.map((button) => button.text)];
+	};
+	const styles = () => alertRequests.at(-1)?.buttons?.map((button) => button.style);
+	press(tree, (label) => label === "Remove");
+	expect(asked()).toEqual(["Remove provider?", "work on Work hub", ["Cancel", "Remove"]]);
+	expect(styles()).toEqual(["cancel", "destructive"]);
+	press(tree, (label) => label === "Clear credentials");
+	expect(asked()).toEqual(["Clear credentials?", "work on Work hub", ["Cancel", "Clear credentials"]]);
+	expect(styles()).toEqual(["cancel", "destructive"]);
+});
+
+it("names the key it clears on the button", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], activeSource: "env:WORK_KEY", hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Clear stored key");
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.text)).toEqual(["Cancel", "Clear key"]);
+	expect(alertRequests.at(-1)?.buttons?.at(-1)?.style).toBe("destructive");
+});
+
+it("names a Google provider's stored credential JSON, not a key, when it clears it", async () => {
+	alertRequests.length = 0;
+	providersHub([
+		instance({ auth: "gcp-adc", authModes: ["credentialJson"], activeSource: "adc", hasStoredFile: true }),
+	]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	press(tree, (label) => label === "Clear stored credential JSON");
+	const request = alertRequests.at(-1);
+	expect(request?.title).toBe("Clear stored credential JSON?");
+	expect(request?.buttons?.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Clear JSON", "destructive"],
+	]);
+});
+
+it("leaves the Type row untagged for a provider that isn't the default, and keeps warnings under the group", async () => {
+	providersHub([instance({ isDefault: false, warnings: ["The key expires soon."] })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	expect(hasControl(tree, "Type, anthropic")).toBe(true);
+	const modal = tree.root.findByType("Modal" as never);
+	expect(modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default")).toHaveLength(0);
+	expect(subtreeText(modal)).toContain("The key expires soon.");
+});
+
+it("keeps a provider's facts in its group: Default as a tag, where it's defined, and each credential", async () => {
+	providersHub([
+		instance({
+			isDefault: true,
+			implicit: true,
+			activeSource: "env:WORK_KEY",
+			hasStoredFile: true,
+			authModes: ["apiKey"],
+		}),
+	]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const modal = tree.root.findByType("Modal" as never);
+	const text = subtreeText(modal);
+	expect(text).not.toContain("The default provider.");
+	expect(text).not.toContain("From the environment.");
+	expect(text).not.toContain("Shadowed");
+	const tags = modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default");
+	expect(tags).not.toHaveLength(0);
+	expect(hasControl(tree, "Defined in, Environment")).toBe(true);
+	expect(hasControl(tree, "Credential, Configured via environment variable (WORK_KEY)")).toBe(true);
+	expect(hasControl(tree, "Also stored, Configured via stored API key, Not used")).toBe(true);
+});
+
+it("calls a shadowed environment variable what it is, never a stored credential", async () => {
+	providersHub([instance({ activeSource: "api_key", shadowedEnvVar: "WORK_KEY", hasStoredFile: false })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openDetail(tree, "work");
+	const shadowed = "Also in the environment, Configured via environment variable (WORK_KEY), Not used";
+	expect(hasControl(tree, shadowed)).toBe(true);
+	expect(subtreeText(tree.root.findByType("Modal" as never))).not.toContain("Also stored");
 });
