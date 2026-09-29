@@ -50,23 +50,26 @@ import { useAuthStatuses } from "./useAuthStatuses";
 // this client's own wording: the rejection's text came from the hub and can
 // echo submitted credentials, so it must never reach the screen (the same rule
 // the catch's generic error keeps).
-const APPLIED_REMOVAL_WARNING =
-	"The instance was removed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
-const APPLIED_RENAME_WARNING =
-	"The instance was renamed on the hub before a later step failed. The provider list was refreshed; check it before trying again.";
+const APPLIED_REMOVAL_WARNING = "The provider was removed.";
+const APPLIED_RENAME_WARNING = "The provider was renamed.";
 const ENDPOINT_CHANGED_WARNING =
-	"This instance changed to a different endpoint since the form was opened. The provider list was refreshed; review its destination and try again.";
+	"This provider now points somewhere else, so nothing was changed. Review where it points and try again.";
 
-// What clearing a credential or removing an instance says when the hub cannot
+// What a write the hub didn't answer for says (spec 5: what happened and
+// the one thing to do, never the plumbing between).
+const UNCONFIRMED_CHANGE = "The hub didn't confirm the change. Check the provider and try again.";
+const UNCONFIRMED_KEY = "The hub didn't confirm the key was saved. Check the provider's status and try again.";
+
+// What clearing a credential or removing a provider says when the hub cannot
 // fingerprint the destination: no key is being sent, so it does not reuse the
 // save-specific wording.
 const FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE =
-	"The hub cannot check this endpoint right now, so the action was not run. Review its destination and try again once it can be checked.";
+	"The hub can't check where this provider points right now, so nothing was changed. Try again in a moment.";
 
 // What a credential save (a key or a JSON blob) says for the same condition;
 // neutral about which credential kind, unlike the key-specific package copy.
 const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE =
-	"The hub cannot check this endpoint right now, so the credential was not saved. Review its destination and try again once it can be checked.";
+	"The hub can't check where this provider points right now, so nothing was saved. Try again in a moment.";
 
 // A mounted page re-keyed to another hub is a fresh page: the
 // reconnect-retention state below - the status line's everReady, the sign-in
@@ -326,7 +329,7 @@ function Providers({
 			// cannot confirm it, so it does not report success. The surface that
 			// issued the write owns the recovery read.
 			if (applied === false) {
-				setActionError("The operation could not be confirmed. Check the current state before trying again.");
+				setActionError(UNCONFIRMED_CHANGE);
 				return;
 			}
 			setEditingCredential(null);
@@ -374,11 +377,7 @@ function Providers({
 			}
 			// Provider/transport errors may echo submitted credentials. Keep the
 			// editor's error independent of upstream response text.
-			setActionError(
-				secret
-					? "Could not confirm the credential save. Check the connection and credential status before trying again."
-					: "The operation could not be confirmed. Check the current state before trying again.",
-			);
+			setActionError(secret ? UNCONFIRMED_KEY : UNCONFIRMED_CHANGE);
 		}
 	}
 	/** Asks before a destructive action, naming the provider and the hub, with

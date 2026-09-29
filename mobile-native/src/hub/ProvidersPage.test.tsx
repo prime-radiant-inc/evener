@@ -416,8 +416,8 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("The instance was removed on the hub");
-	expect(text).not.toContain("The operation could not be confirmed");
+	expect(text).toContain("The provider was removed.");
+	expect(text).not.toContain("The hub didn't confirm the change.");
 	// Secret-safety: the hub's own text can echo submitted credentials, so the
 	// warning above must never carry it.
 	expect(text).not.toContain("the hub left work's stored key behind");
@@ -448,7 +448,7 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/remove"]);
 	const text = renderedText(tree);
-	expect(text).toContain("The operation could not be confirmed");
+	expect(text).toContain("The hub didn't confirm the change.");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor stays open on the instance the refusal names.
 	expect(hasControl(tree, "Remove")).toBe(true);
@@ -540,7 +540,7 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	});
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/edit", "evener/instance/list"]);
 	const text = renderedText(tree);
-	expect(text).toContain("changed to a different endpoint");
+	expect(text).toContain("now points somewhere else");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor cleared like a completed save; the instance's detail remains.
 	expect(text).not.toContain("Base URL");
@@ -584,8 +584,8 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("changed to a different endpoint");
-	expect(text).not.toContain("The operation could not be confirmed");
+	expect(text).toContain("now points somewhere else");
+	expect(text).not.toContain("The hub didn't confirm the change.");
 	// Secret-safety: the hub's text can echo submitted values and never renders.
 	expect(text).not.toContain("work no longer resolves");
 	// Cleared like a completed removal: the detail and its actions are gone.
@@ -632,8 +632,8 @@ it("keeps the create form for a name-collision conflict", async () => {
 	expect(create).toHaveBeenCalledTimes(1);
 	expect(onEndpointConflict).not.toHaveBeenCalled();
 	const text = renderedText(tree);
-	expect(text).toContain("Save could not be confirmed");
-	expect(text).not.toContain("changed to a different endpoint");
+	expect(text).toContain("The hub didn't confirm the save.");
+	expect(text).not.toContain("now points somewhere else");
 	// The form survives for the correction.
 	expect(text).toContain("Base URL");
 });
@@ -711,7 +711,7 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("changed to a different endpoint");
+	expect(text).toContain("now points somewhere else");
 	expect(text).not.toContain("Base URL");
 });
 
@@ -765,7 +765,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	// completed write.
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/list", "evener/instance/edit"]);
 	const text = renderedText(tree);
-	expect(text).not.toContain("changed to a different endpoint");
+	expect(text).not.toContain("now points somewhere else");
 	expect(text).not.toContain("Base URL");
 });
 

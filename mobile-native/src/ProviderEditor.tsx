@@ -25,6 +25,9 @@ import { guardLeave } from "./sheet/confirmDiscard";
 import { SearchField } from "./sheet/SearchField";
 import { Sheet } from "./sheet/Sheet";
 
+/** What a save the hub didn't answer for says (spec 5). */
+const UNCONFIRMED_SAVE = "The hub didn't confirm the save. Check the provider list and try again.";
+
 const CREDENTIAL_HEADER_HELP = "Optional. Use a $VARIABLE reference here; store API keys from the provider’s details.";
 
 /** Runs `leave` if the editor may go now: never mid-save, and only after
@@ -145,7 +148,7 @@ export function ProviderEditor({
 				// A newer listing superseded this save's answer: the write may have
 				// landed on the host, but the store cannot confirm it, so the editor
 				// does not close reporting success.
-				if (alive.current) setError("Save could not be confirmed. Check the provider list before trying again.");
+				if (alive.current) setError(UNCONFIRMED_SAVE);
 				return;
 			}
 			if (alive.current) onSaved(instance?.name ?? draft.name.trim());
@@ -159,7 +162,7 @@ export function ProviderEditor({
 					// is never shown.
 					onEndpointConflict(instance?.name ?? draft.name.trim());
 				} else {
-					setError("Save could not be confirmed. Check the provider list before trying again.");
+					setError(UNCONFIRMED_SAVE);
 				}
 			}
 		} finally {
