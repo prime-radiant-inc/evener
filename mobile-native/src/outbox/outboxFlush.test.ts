@@ -615,6 +615,33 @@ it("never throws when the mutations database can't open, and looks again after a
 	}
 });
 
+it("looks again after a backoff when storage fails while settling for a covered screen", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const outbox = runtime();
+		const client = new FakeClient("ready");
+		client.on("thread/read", () => read("ref-1"));
+		client.on("turn/start", applied);
+		// A session screen under the Reader, holding its target.
+		const unregister = outbox.registerTarget("hub-1", "ref-1", client);
+		await outbox.submit(message());
+		vi.spyOn(outbox.storage, "listOutbox").mockRejectedValueOnce(new Error("the database is busy"));
+		const flush = new OutboxFlush(() => outbox);
+
+		flush.bind("hub-1", client);
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) - 1);
+		expect(methods(client)).toEqual([]);
+		await vi.advanceTimersByTimeAsync(1);
+
+		await vi.waitFor(() => expect(methods(client)).toEqual(["thread/read", "turn/start"]));
+		flush.dispose();
+		unregister();
+		await outbox.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 it("reads the hub and ref out of a composite target key", () => {
 	expect(parseTargetKey(JSON.stringify(["hub-1", "local:thread-1"]))).toEqual({
 		hubId: "hub-1",

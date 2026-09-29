@@ -166,6 +166,7 @@ export class OutboxFlush {
 		ref: string,
 		client: AppwireClientLike,
 	): Promise<void> {
+		const { generation } = this;
 		const holder = runtime.targetClient(hubId, ref);
 		if (holder !== undefined) {
 			// A session screen holds this target. Under the Reader or a subagent
@@ -180,12 +181,17 @@ export class OutboxFlush {
 			this.settlingForScreens.set(key, mark);
 			try {
 				if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, ref, client);
+			} catch {
+				// Storage failed: nothing else looks again for a screen's target
+				// (changed() leaves it to the screen), so retry on the backoff, as
+				// the claim path does.
+				this.readFailures += 1;
+				this.retryLater(generation);
 			} finally {
 				if (this.settlingForScreens.get(key) === mark) this.settlingForScreens.delete(key);
 			}
 			return;
 		}
-		const { generation } = this;
 		const claim: Claim = { release: runtime.registerTarget(hubId, ref, client), settling: true };
 		this.owned.set(key, claim);
 		this.touched.delete(key);
