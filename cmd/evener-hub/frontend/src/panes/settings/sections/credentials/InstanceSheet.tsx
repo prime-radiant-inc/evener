@@ -202,6 +202,9 @@ export interface InstanceSheetProps {
   pendingToggles?: ReadonlySet<string>;
   testCredentialsPending?: boolean;
   testCredentialsResult?: AuthTestResponse;
+  /** The hub's error for this instance's credential (AuthStatusResponse.error,
+   * #3539), in the hub's words: what went wrong and what to do. */
+  authError?: string;
   /** Disables Save/Remove/make default while providers.toml cannot be
    * written (InstanceListResponse.writesRefused, spec §11.3) - Set key/Sign
    * in/Clear/Clear stored key/Test credentials are unaffected: they write
@@ -227,6 +230,7 @@ export function InstanceSheet({
   pendingToggles,
   testCredentialsPending = false,
   testCredentialsResult,
+  authError,
   writesRefused = false,
 }: InstanceSheetProps) {
   const instances = useCredentialsStore((s) => s.instances);
@@ -833,6 +837,11 @@ export function InstanceSheet({
                 </p>
               )}
             </form>
+          )}
+          {authError !== undefined && authError !== "" && (
+            <p className={CLASS.formError} role="alert">
+              {authError}
+            </p>
           )}
           {unconfigured !== null ? (
             <p className={CLASS.unconfigured}>{unconfigured}</p>

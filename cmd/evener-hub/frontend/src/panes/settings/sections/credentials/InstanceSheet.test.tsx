@@ -2228,3 +2228,26 @@ describe("the form", () => {
     expect(saveButton().disabled).toBe(true);
   });
 });
+
+// The hub's sentence for a credential it found an error with (#3539) says what
+// went wrong and what to do; the sheet shows it as an alert.
+test("shows the hub's error for the instance's credential", () => {
+  const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
+  renderSheet(
+    {
+      name: "lunaroute",
+      providerId: "openai",
+      protocol: "openai-chat",
+      auth: "bearer",
+      implicit: false,
+      isDefault: false,
+      activeSource: "store",
+      hasStoredFile: true,
+      hasStoredOAuth: false,
+      credentialRequired: true,
+      authModes: ["apiKey"],
+    },
+    { authError: error },
+  );
+  expect(screen.getByRole("alert").textContent).toBe(error);
+});
