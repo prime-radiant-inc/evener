@@ -1734,3 +1734,36 @@ it.each(["close Find", "jump live", "remove hub", "new binding"])(
 		}
 	},
 );
+
+it.each(["browse", "Find"])(
+	"preserves imperative %s while disconnected and recovers on reconnection",
+	async (demand) => {
+		let attempts = 0;
+		const { tree, client } = mount(
+			busy,
+			olderHistoryAnswers(() => {
+				++attempts;
+				return olderHistoryPage("offline search needle");
+			}),
+		);
+		try {
+			await flush();
+			vi.useFakeTimers();
+			harness.connection = { ...screenConnection(client, "reconnecting"), error: null, disconnect: () => {} };
+			act(() => tree.update(screen()));
+			if (demand === "browse") sessionList(tree).drag(100);
+			else openFind(tree, "offline search needle");
+			await advanceHistory(60_000);
+			expect(attempts).toBe(0);
+			if (demand === "Find") expect(renderedText(tree)).not.toContain("No matches");
+			harness.connection = { ...screenConnection(client, "ready"), error: null, disconnect: () => {} };
+			act(() => tree.update(screen()));
+			await advanceHistory(1000);
+			expect(attempts).toBe(1);
+			expect(renderedText(tree)).toContain("offline search needle");
+			if (demand === "Find") expect(renderedText(tree)).toContain("1 of 1");
+		} finally {
+			act(() => tree.unmount());
+		}
+	},
+);

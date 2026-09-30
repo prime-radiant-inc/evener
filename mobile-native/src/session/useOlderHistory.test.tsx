@@ -61,7 +61,7 @@ function historyReader() {
 	const sink = createActivityStore().getState();
 	const input = {
 		store,
-		service,
+		service: service as typeof service | null,
 		active: false,
 		hubId: "hub",
 		ref: "history",
@@ -495,4 +495,124 @@ it("forgets the saved page boundary when a reopened reader authoritatively has n
 	expect(returned.client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
 	reopened.unmount();
 	expect(historyForSession("hub", "history")).toBeUndefined();
+});
+
+it("a committed new session binding retires every old same-session reader's demand", async () => {
+	const first = await openedReader();
+	first.client.on("thread/turns/list", () => {
+		throw new Error("old binding temporary");
+	});
+	vi.useFakeTimers();
+	const clearFind = vi.fn();
+	const oldMounted = renderHook(() =>
+		useOlderHistory({ ...first.input, find: newFind("old query"), setFind: clearFind }),
+	);
+	act(() => oldMounted.result.current.findOlder());
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(0);
+	});
+	first.input.active = false;
+	oldMounted.rerender();
+	const second = await openedReader();
+	second.input.active = false;
+	const oldDetached = renderHook(() => useOlderHistory(second.input));
+	act(() => oldDetached.result.current.loadOlder());
+	oldDetached.unmount();
+	const fresh = historyReader();
+	fresh.thread.evener.instanceId = "new-authoritative-instance";
+	await fresh.store.getState().openProjected(fresh.service, fresh.sink, "history");
+	fresh.input.binding = fresh.store.getState().conversation?.instanceId;
+	fresh.input.active = true;
+	const current = renderHook(() => useOlderHistory(fresh.input));
+	try {
+		expect(current.result.current.state.pending).toBe(false);
+		expect(oldMounted.result.current.state.pending).toBe(false);
+		expect(clearFind).toHaveBeenCalledWith(null);
+		expect(oldMounted.result.current.isCurrentReader()).toBe(false);
+		first.input.service = second.service;
+		oldMounted.rerender();
+		expect(current.result.current.isCurrentReader()).toBe(true);
+		act(() => current.result.current.loadOlder());
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(fresh.client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+		first.input.active = true;
+		oldMounted.rerender();
+		act(() => oldMounted.result.current.findOlder());
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(60_000);
+		});
+		expect(first.client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+	} finally {
+		current.unmount();
+		oldMounted.unmount();
+	}
+	expect(historyForSession("hub", "history")).toBeUndefined();
+});
+
+it.each(["loadOlder", "findOlder"] as const)(
+	"quietly retains %s demand when its committed service is unavailable",
+	async (demand) => {
+		const reader = await openedReader();
+		const service = reader.input.service;
+		reader.input.service = null;
+		vi.useFakeTimers();
+		const hook = renderHook(() => useOlderHistory(reader.input));
+		act(() => hook.result.current[demand]());
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(hook.result.current.state).toMatchObject({ pending: true, loading: false, error: null, permanent: false });
+		expect(reader.client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(999);
+		});
+		expect(hook.result.current.state.pending).toBe(true);
+		reader.input.service = service;
+		hook.rerender();
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1);
+		});
+		expect(reader.client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+		expect(hook.result.current.state.pending).toBe(false);
+		hook.unmount();
+	},
+);
+
+it("hub removal clears mounted Find and cannot revive it through service changes or a reader return", async () => {
+	const reader = await openedReader();
+	const service = reader.input.service;
+	reader.client.on("thread/turns/list", () => {
+		throw new Error("temporary");
+	});
+	const clearFind = vi.fn();
+	vi.useFakeTimers();
+	const hook = renderHook(() =>
+		useOlderHistory({ ...reader.input, find: newFind("removed hub query"), setFind: clearFind }),
+	);
+	act(() => hook.result.current.findOlder());
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(0);
+	});
+	act(() => forgetHistoryForHub("hub"));
+	expect(clearFind).toHaveBeenCalledWith(null);
+	reader.input.service = null;
+	reader.input.active = false;
+	hook.rerender();
+	reader.input.service = service;
+	reader.input.active = true;
+	hook.rerender();
+	act(() => {
+		hook.result.current.findOlder();
+		hook.result.current.loadOlder();
+	});
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(60_000);
+	});
+	expect(hook.result.current.isCurrentReader()).toBe(false);
+	expect(reader.client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+	hook.unmount();
+	expect(historyForSession("hub", "history")).toBeUndefined();
+	expect(vi.getTimerCount()).toBe(0);
 });

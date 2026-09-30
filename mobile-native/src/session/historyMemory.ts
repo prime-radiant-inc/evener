@@ -13,6 +13,7 @@ export interface OlderHistoryOwner {
 	service: ConversationService | null;
 	find: FindState | null;
 	reader: symbol | null;
+	retired: boolean;
 	requestedPage: string | null;
 	paging: HistoryPaging;
 }
@@ -26,7 +27,7 @@ export function historyForSession(hubId: string, ref: string): OlderHistoryOwner
 
 function releaseHistory(owner: OlderHistoryOwner): void {
 	const state = owner.paging.getSnapshot();
-	if (owner.reader !== null || state.pending || state.loading || owner.find?.seeking) return;
+	if (!owner.retired && (owner.reader !== null || state.pending || state.loading || owner.find?.seeking)) return;
 	const sessions = histories.peek(owner.hubId);
 	const owners = sessions?.get(owner.ref);
 	owners?.delete(owner);
@@ -43,6 +44,7 @@ export function createHistoryOwner(hubId: string, ref: string, binding: string |
 		service: null,
 		find: null,
 		reader: null,
+		retired: false,
 		requestedPage: null,
 		paging: new HistoryPaging(
 			() => {
@@ -80,7 +82,7 @@ export function attachHistory(
 	service: ConversationService | null,
 	reader: symbol,
 ): boolean {
-	if (owner.reader !== null && owner.reader !== reader) return false;
+	if (owner.retired || (owner.reader !== null && owner.reader !== reader)) return false;
 	owner.reader = reader;
 	owner.store = store;
 	owner.service = service;
@@ -107,13 +109,25 @@ export function cancelHistory(owner: OlderHistoryOwner, consumer: "reader" | "fi
 	if (!owner.paging.getSnapshot().pending) owner.requestedPage = null;
 }
 
+/** A confirmed new binding makes every prior binding's intent obsolete.
+ * Mounted readers cannot recreate it before their own store converges. */
+export function confirmHistoryBinding(owner: OlderHistoryOwner, binding: string): void {
+	for (const other of histories.peek(owner.hubId)?.get(owner.ref) ?? []) {
+		if (other !== owner && other.binding !== undefined && other.binding !== binding) retireHistory(other);
+	}
+}
+
+export function retireHistory(owner: OlderHistoryOwner): void {
+	owner.retired = true;
+	owner.find = null;
+	owner.requestedPage = null;
+	owner.paging.cancel("reader");
+	owner.paging.cancel("find");
+	releaseHistory(owner);
+}
+
 export function forgetHistoryForHub(hubId: string): void {
 	for (const owners of histories.forget(hubId)?.values() ?? []) {
-		for (const owner of owners) {
-			owner.find = null;
-			owner.requestedPage = null;
-			owner.paging.cancel("reader");
-			owner.paging.cancel("find");
-		}
+		for (const owner of owners) retireHistory(owner);
 	}
 }
