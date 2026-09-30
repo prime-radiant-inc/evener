@@ -97,7 +97,10 @@ export interface ContextChip {
  * (a local toggle) need no connection either, and all three always show when
  * they have content. `files` counts the session's documents, and `fresh`
  * says one is new or changed since you last opened it. `subagents` supplies
- * authoritative summary counts; a transcript roster is never a count source. */
+ * authoritative summary counts; a transcript roster is never a count source,
+ * only evidence that subagents exist while the count isn't known. A shut-down
+ * session's count can stay unknown for good, so that chip shows no count
+ * rather than an ellipsis that never resolves. */
 export function contextChips(
 	session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">,
 	connected: boolean,
@@ -106,19 +109,18 @@ export function contextChips(
 ): ContextChip[] {
 	const chips: ContextChip[] = [];
 	const known = subagents?.known === true;
-	if (connected && (!known || (subagents?.total ?? 0) > 0)) {
-		const count = known ? String(subagents?.total) : "…";
+	if (connected && (known ? (subagents?.total ?? 0) > 0 : (session.delegates?.length ?? 0) > 0)) {
 		const failed = known && (subagents?.failed ?? 0) > 0 ? `${subagents?.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
-			label: `Subagents ${count}`,
+			label: known ? `Subagents ${subagents?.total}` : "Subagents",
 			failed,
 			attention: false,
 			accessibilityLabel: !known
 				? "Subagents, count unknown"
 				: failed
-					? `Subagents, ${count}, ${failed}`
-					: `Subagents, ${count}`,
+					? `Subagents, ${subagents?.total}, ${failed}`
+					: `Subagents, ${subagents?.total}`,
 		});
 	}
 	if (files.count > 0)
