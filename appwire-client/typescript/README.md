@@ -180,7 +180,10 @@ Useful rows survive transient failures, stale cursors, and reconnects. Transient
 failure retries continue while observed after 1, 2, 4, 8, 16, then 30 seconds,
 capped at 30 seconds. A typed `sessionActivityCursorStale` rejection restarts only
 the affected collection. Invalid inputs, deleted resources and unsupported
-methods do not retry automatically. Typed activity invalidations revalidate only
+methods do not retry automatically. A source read `actionUnavailable` with an
+explicit `retryDisposition: "automatic"` uses the same paced retry owner and can
+heal on typed activity invalidation; definitive absence and unsupported resources
+remain parked. Typed activity invalidations revalidate only
 observed resources; subtree owners accept descendant changes routed to their
 subscription. Collection pages merge stable identities only within the current
 source epoch and root read lifetime. A thread resync fences all pre-resync
