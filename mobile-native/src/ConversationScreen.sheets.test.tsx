@@ -4,6 +4,9 @@
 // it out of the front. Its header's title and ⋯ menu open those sheets and
 // act on the session (spec 8.1). On ConversationScreen.recovery.test.tsx's
 // harness.
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { SessionActivityReadParams } from "@evener/appwire-client";
+import { threadActivityFixture } from "./subagents/sessionActivityTestUtils";
 import { CommonActions, StackRouter } from "@react-navigation/routers";
 import type {
 	NativeStackHeaderItemMenu,
@@ -235,9 +238,7 @@ type Answers = Record<string, unknown>;
  * request the screen makes. */
 function sessionClient(read: Thread, answers: Answers) {
 	const requests: { method: string; params: unknown }[] = [];
-	const client = {
-		state: "ready",
-		onStateChange: () => () => {},
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (method: string, params?: unknown) => {
 			requests.push({ method, params });
 			if (method in answers) {
@@ -247,10 +248,13 @@ function sessionClient(read: Thread, answers: Answers) {
 				return answer;
 			}
 			if (method === "thread/read") return { thread: read };
+			if (method === "thread/unsubscribe") return {};
+			if (method === "evener/thread/activity/read")
+				return threadActivityFixture(read, params as SessionActivityReadParams).summary;
 			return new Promise<never>(() => {});
 		},
 		onNotification: () => () => {},
-	};
+	});
 	return { client, requests };
 }
 

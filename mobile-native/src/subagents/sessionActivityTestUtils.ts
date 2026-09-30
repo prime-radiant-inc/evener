@@ -1,6 +1,7 @@
 // Typed external activity replies for native tests that share the rich row fixtures.
 import {
 	type ActivityTree,
+	type Thread,
 	type SessionActivityContext,
 	type SessionActivityCounts,
 	type SessionActivityReadParams,
@@ -79,6 +80,28 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 		watches: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
 	};
 	return { context, scope, delegates, jobs, issues, continuation, summary };
+}
+
+/** Builds independent activity authority for a scripted thread's declared fixture resources. */
+export function threadActivityFixture(thread: Thread, params: SessionActivityReadParams) {
+	return activityFixture(
+		{
+			revision: 1,
+			root: {
+				label: "",
+				aggregate: "working",
+				counts: { active: 0, failed: 0, completed: 0, complete: true },
+				branch: {},
+				ref: thread.evener.ref,
+				sessionId: thread.id,
+				entries: (thread.evener.diagnostics?.delegates ?? []).map((delegate) => ({
+					kind: "delegate",
+					delegate: { ...delegate, childRef: delegate.transcriptRef, branch: {} },
+				})),
+			},
+		},
+		params,
+	);
 }
 
 /** The fixture callback supplies each journal membership page, never a legacy RPC. */
