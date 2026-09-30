@@ -49,7 +49,9 @@ then consume Task 1's commit before qualification. Task 4 starts after Task 1.
 Task 5's navigation contract/projection/codec slice (5a) may run after Task 1,
 independently of the session read backend and client owner. Its browser consumer
 slice (5b) and Task 6 start after Task 4 and consume the version 3 navigation
-contract. Task 7 runs after the integrated functional tasks. No two workers edit
+contract. Shared presentation work (4p) supplies their pure loaded-data adapter
+and ref-qualified entity lookup before either consumer migrates. Task 7 runs
+after the integrated functional tasks. No two workers edit
 the same ownership area concurrently. There are at most three active workers;
 a reviewer takes a freed worker slot.
 
@@ -61,9 +63,10 @@ a reviewer takes a freed worker slot.
 | 2 | Agent read projections, bounded derived indexes, domain invalidations | Task 1 types |
 | 3 | Server hooks, serve wiring, hub/appsource routing and notification relay | Tasks 1 and 2 interfaces |
 | 4 | Framework-free SessionActivity client, public exports and tests | Task 1 types |
+| 4p | Pure shared presentation, watch formatting and qualified entity lookup | Task 4 snapshot and Task 1 rows |
 | 5a | Navigation contract/projection/shared codec and resource cleanup | Task 1; coordinated generation ownership |
-| 5b | Browser activity surfaces, transcript leases and browser guards | Tasks 3, 4 and 5a |
-| 6 | Native activity adapter, transcript leases and consumer lifecycle | Tasks 3, 4 and 5a |
+| 5b | Browser activity surfaces, transcript leases and browser guards | Tasks 3, 4, 4p and 5a |
+| 6 | Native activity adapter, transcript leases and consumer lifecycle | Tasks 3, 4, 4p and 5a |
 | 7 | Integrated qualification, evergreen docs and AGENTS ownership guidance | Tasks 1–6 |
 
 ### Task 1: Typed session activity contract
@@ -134,6 +137,25 @@ event type/payload after its first commit.
 - [ ] Run the new Vitest file from the frontend test environment and capture red evidence.
 - [ ] Implement the shared owner using generated types and existing AppWire error classification. A stale cursor restarts only that collection; partial source issues retain successful rows and retry while observed. No UI copy or framework code belongs here.
 - [ ] Run focused client tests, package checks/typecheck, and Biome on touched package files. Commit and report the exact exported interface for consumers.
+
+### Task 4p: Shared activity presentation
+
+**Files:** Add `appwire-client/typescript/sessionActivityPresentation.ts` and its
+tests. Adapt `activityData.ts`, `activityRows.ts`, `entityView.ts`, `watchText.ts`,
+their tests, and package exports/build/qualification surfaces. Browser and native
+networking and actions remain owned by Tasks 5b and 6.
+
+**Interfaces:** `projectSessionActivity(snapshot)` is a pure adapter over loaded
+domain rows, returning the rendering tree, original context and summary, domain
+watches, completeness, pending state and issues. Rendering identities combine
+authoritative refs with logical IDs. Entity lookup uses kind, logical ID and
+owning ref; raw action targets remain separate from rendering keys. Partial
+usage and missing logical session IDs remain unknown rather than fabricated.
+
+- [ ] Pin reversed parent/child pages, missing parents, equal logical IDs on separate sources, retained/live reconciliation, original action targets, optional facts, unknown counts and explicit watch states with structured behavior tests.
+- [ ] Project loaded records without networking, retry state, lifecycle folding or a new ordering authority. Keep unresolved descendants visible with incomplete relationship evidence.
+- [ ] Move shared watch presentation to `SessionWatch` and generated domain cadence types. Preserve armed, ended and unknown distinctly.
+- [ ] Run focused shared tests, installed package qualification and the pinned formatter. Enumerate consumer migrations and obtain independent spec and quality review.
 
 ### Task 5: Browser activity surfaces and navigation boundary
 
