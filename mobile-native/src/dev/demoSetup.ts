@@ -451,7 +451,7 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 				authModes: ["oauth"],
 				hasStoredOAuth: true,
 				needsLogin: false,
-				...(provider.email ? { email: provider.email } : {}),
+				email: provider.email,
 			}));
 			return { providers: [...fleetStatuses, ...signedIn] };
 		},
