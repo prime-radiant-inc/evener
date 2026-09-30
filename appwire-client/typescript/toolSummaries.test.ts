@@ -556,3 +556,15 @@ test("phrases a housekeeping call as its step line does", () => {
   expect(housekeepingAction("notes_agent_set", {})).toBe("updated its note");
   expect(housekeepingAction("compact_context", {})).toBe("asked for a context compaction");
 });
+
+// A call whose arguments the hub didn't send can't say it only clears a
+// note, so it says what the tool usually does, running and done alike.
+test("says notes_agent_set's usual lines when its arguments are missing", () => {
+  expect(toolStepProgress({ toolName: "notes_agent_set" })).toBe("Updating its note");
+  expect(toolStepSummary({ toolName: "notes_agent_set" })).toBe("Updated its note");
+});
+
+test("says compact_context's usual lines when its arguments are missing", () => {
+  expect(toolStepProgress({ toolName: "compact_context" })).toBe("Asking for a context compaction");
+  expect(toolStepSummary({ toolName: "compact_context" })).toBe("Asked for a context compaction");
+});
