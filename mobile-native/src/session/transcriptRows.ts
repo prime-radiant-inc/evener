@@ -327,7 +327,7 @@ function programOf(command: string | undefined): string | undefined {
 }
 
 // A step's part: one per family, except that each tool no summary covers gets
-// its own ("used compact context once"). MCP tools share one part.
+// its own ("used reindex workspace once"). MCP tools share one part.
 function partOf(label: string): { key: string; family: ToolFamily; name: string } {
 	const family = toolFamily(label);
 	if (family === "tool") {

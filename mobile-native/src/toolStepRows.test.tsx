@@ -73,7 +73,7 @@ describe("a step with no intent", () => {
 			"Activated skill: systematic-debugging",
 			"Used github: create issue",
 			"Used linear app: list issues",
-			"Used compact context",
+			"Used reindex workspace",
 		]) {
 			expect(text).toContain(summary);
 		}
@@ -144,7 +144,7 @@ describe("no raw tool name, anywhere", () => {
 	it("names each tool family in a run's line", () => {
 		const lines = runsAt("tools").map((run) => runSummaryText(runSummary(run.steps)));
 		const all = lines.join("\n");
-		for (const part of ["used skill systematic-debugging", "used 2 MCP tools", "used compact context once"]) {
+		for (const part of ["used skill systematic-debugging", "used 2 MCP tools", "used reindex workspace once"]) {
 			expect(all).toContain(part);
 		}
 	});
