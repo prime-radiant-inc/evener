@@ -164,9 +164,12 @@ describe("a step line's Menlo target", () => {
 	});
 
 	it("sets nothing in Menlo when the words name no target", () => {
-		const tree = drawn({ summary: "Used compact context", words: { verb: "Used compact context" } }, "compact_context");
+		const tree = drawn(
+			{ summary: "Used reindex workspace", words: { verb: "Used reindex workspace" } },
+			"reindex_workspace",
+		);
 		expect(menlo(tree.root)).toEqual([]);
-		expect(texts(tree.root).map(textOf)).toContain("Used compact context");
+		expect(texts(tree.root).map(textOf)).toContain("Used reindex workspace");
 	});
 });
 

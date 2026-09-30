@@ -22,7 +22,7 @@
 // case, never an empty checklist or a fabricated auto-start.
 import type { ItemModel } from "./model";
 import { parseTaskListData, type TaskRow } from "./taskListData";
-import { parseArgs, str } from "./toolCallText";
+import { capitalized, parseArgs, str } from "./toolCallText";
 
 /** The parts of a task_list step its rows read: the call's arguments and the
  * task list it returned. */
@@ -284,7 +284,7 @@ export function taskMutationRecap(item: TaskListStep): string {
     byVerb.set(verb, labels);
   }
   const sentence = [...byVerb].map(([verb, labels]) => `${verb} ${labels.join(", ")}`).join("; ");
-  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+  return capitalized(sentence);
 }
 
 // The notes THIS call added, keyed by task id - the only notes a client

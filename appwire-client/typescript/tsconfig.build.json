@@ -44,6 +44,7 @@
     "toolEvidence.ts",
     "stepWords.ts",
     "delegateSteps.ts",
+    "housekeepingSteps.ts",
     "jobSteps.ts",
     "jobWatchSteps.ts",
     "toolSummaries.ts",

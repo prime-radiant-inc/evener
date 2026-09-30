@@ -660,10 +660,10 @@ func TestToolCallWireFixtures(t *testing.T) {
 			output: `{"issues":[]}`,
 		},
 		{
-			id: "call_unknown", tool: "compact_context",
-			note:   "Hand-written: a tool no step summary covers; only its name matters.",
-			args:   map[string]any{"note_to_self": "Next: run the race detector."},
-			output: "compacted",
+			id: "call_unknown", tool: "reindex_workspace",
+			note:   "Hand-written: a tool no step summary covers (no such tool exists); only its name matters.",
+			args:   map[string]any{"scope": "agent"},
+			output: "reindexed 42 files",
 		},
 	}
 
