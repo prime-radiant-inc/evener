@@ -69,6 +69,10 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			const tail = parseJobLogTail((response as { data: unknown }).data);
 			expect(tail?.tail).toContain("FAIL");
 			expect(tail?.totalBytes).toBe(new TextEncoder().encode(tail?.tail ?? "").length);
+			// Only the owning session answers for the job, as on a real hub.
+			await expect(client.request("evener/jobs/output", { ref: PR2138, jobId: failed.id })).rejects.toThrow(
+				`job not found: ${failed.id}`,
+			);
 		});
 	});
 

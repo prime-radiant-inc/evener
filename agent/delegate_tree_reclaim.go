@@ -203,7 +203,7 @@ func (c *delegateTreeController) CompleteRuntimeReclamation(claim *delegateRunti
 			continue
 		}
 		if live := c.live[entry.delegateID]; live != nil && live.binding == nil && live.runtime == entry.runtime {
-			live.runtime = nil
+			c.setResidentRuntimeLocked(live, nil)
 		}
 	}
 	c.releaseRuntimeReclamationLocked(claim)

@@ -268,10 +268,15 @@ func TestReplaceDelegateAttentionLockedEmpty(t *testing.T) {
 		attentionWakeIDs: map[string]map[string]struct{}{
 			"dlg_1": {"att_1": {}},
 		},
+		attentionDriveTurns: map[string]uint64{"dlg_1": 3},
 	}
 	c.replaceDelegateAttentionLocked("dlg_1", nil)
 	if _, exists := c.attentionWakeIDs["dlg_1"]; exists {
 		t.Fatalf("expected dlg_1 to be deleted for empty list")
+	}
+	// A delegate that no longer owes attention leaves the drive's line.
+	if _, exists := c.attentionDriveTurns["dlg_1"]; exists {
+		t.Fatalf("expected dlg_1's drive turn to be deleted for empty list")
 	}
 }
 
@@ -300,11 +305,15 @@ func TestReplaceDelegateAttentionLockedEmptyStringsFiltered(t *testing.T) {
 func TestReplaceDelegateAttentionLockedAllEmptyStrings(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{},
+		attentionWakeIDs:    map[string]map[string]struct{}{},
+		attentionDriveTurns: map[string]uint64{"dlg_1": 3},
 	}
 	c.replaceDelegateAttentionLocked("dlg_1", []string{"", ""})
 	if _, exists := c.attentionWakeIDs["dlg_1"]; exists {
 		t.Fatalf("expected dlg_1 to be deleted when all IDs are empty")
+	}
+	if _, exists := c.attentionDriveTurns["dlg_1"]; exists {
+		t.Fatalf("expected dlg_1's drive turn to be deleted when all IDs are empty")
 	}
 }
 

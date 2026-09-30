@@ -314,8 +314,8 @@ func parseShellToolArgs(ctx context.Context, args map[string]any) (shellArgs, er
 		Background: mode == shellModeBackground,
 		// WorkingDir is the raw model-supplied cwd, if any; "" means omitted. It is
 		// resolved (relative paths joined against env.WorkingDirectory(), validated
-		// against the sandbox root) by resolveShellWorkingDir before dispatch, which
-		// also supplies the env.WorkingDirectory() fallback when this is "".
+		// against the active command policy) by resolveShellWorkingDir before
+		// dispatch, which also supplies the env.WorkingDirectory() fallback.
 		WorkingDir: stringArg(args, "cwd"),
 	}
 	var ok bool
@@ -348,17 +348,11 @@ func parseShellMode(args map[string]any) (shellMode, error) {
 	}
 }
 
-// resolveShellWorkingDir resolves the shell tool's raw `cwd` argument against
-// env, or falls back to env.WorkingDirectory() when raw is empty — the
-// unconditional default this kata preserves exactly for the omitted case. A
-// relative raw is joined against env.WorkingDirectory() and filepath.Clean'ed;
-// an absolute raw is Clean'ed as-is. The result is then validated to (a) not
-// escape the sandbox root, reusing the same symlink-aware escape check
-// ExecCommand/StreamCommand already apply to workingDir (execenv.RootBoundary,
-// backed by ensureUnderRoot/resolveSymlinksBestEffort), and (b) exist and be a
-// directory, so a bad cwd fails here — before any process is spawned — rather
-// than surfacing as an opaque exec error. Errors name the RESOLVED path, not
-// the raw input, since that's what the sandbox and the filesystem actually saw.
+// resolveShellWorkingDir defaults an omitted cwd to the working directory,
+// resolves relative paths against it, and checks explicit paths against the
+// environment's command boundary and the filesystem before spawning. Off
+// sessions permit cwd outside the workspace; confined policies keep their scope.
+// Errors name the resolved path so the caller can correct the actual target.
 func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -369,8 +363,8 @@ func resolveShellWorkingDir(env execenv.ExecutionEnvironment, raw string) (strin
 		abs = filepath.Join(env.WorkingDirectory(), abs)
 	}
 	abs = filepath.Clean(abs)
-	if rb, ok := env.(execenv.RootBoundary); ok {
-		if err := rb.EnsureUnderRoot(abs); err != nil {
+	if rb, ok := env.(execenv.CommandWorkingDirectoryBoundary); ok {
+		if err := rb.EnsureCommandWorkingDirectory(abs); err != nil {
 			return "", fmt.Errorf("cwd %q resolves to %s, which escapes the sandbox: %w", raw, abs, err)
 		}
 	}

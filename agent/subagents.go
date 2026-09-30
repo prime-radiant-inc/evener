@@ -1992,6 +1992,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if hook := a.sess.cfg.testOnly.subagentAfterFinalStatePublish; hook != nil {
 		hook(a)
 	}
+	// The finished generation's announcements (its idle snapshot, and its
+	// result to the parent and any waiting send) wait until the tail's end:
+	// see announceFinishedGeneration.
+	var announcements delegateMutationPlans
 	if stableRun && a.sess.delegateController != nil {
 		finish.endedAt = finalizeTime
 		var plans delegateMutationPlans
@@ -2001,6 +2005,8 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		} else {
 			plans, finishErr = a.sess.delegateController.FinishGeneration(lease, finish)
 		}
+		announcements = delegateMutationPlans{updates: plans.updates, deliveries: plans.deliveries}
+		plans.updates, plans.deliveries = nil, nil
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}
@@ -2017,6 +2023,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
 		a.sess.notify()
 	}
+	if stableRun && a.sess.delegateController != nil {
+		if hook := a.sess.cfg.testOnly.subagentBeforeGenerationAnnounced; hook != nil {
+			hook(a)
+		}
+		a.announceFinishedGeneration(lease, announcements)
+	}
+	// Remaining attention is re-armed only once the finished generation is
+	// announced and released: a successor generation must not start ahead
+	// of its predecessor's result.
 	if stableRun {
 		if pending, pendingErr := a.sess.pendingDelegateAttentionIDs(); pendingErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("inspect remaining delegate attention", pendingErr))
@@ -2026,17 +2041,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			}
 		}
 	}
-
 	if done != nil {
 		close(done)
 	}
 	if stableRun && a.sess.delegateController != nil {
-		if reportErr := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); reportErr != nil {
-			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
-		}
-		if hook := a.sess.cfg.testOnly.subagentAfterFinalizationQuiesced; hook != nil {
-			hook(a)
-		}
 		// The schedule is armed whether or not the quiescence report
 		// succeeded, and that is load-bearing: a failed report is
 		// stale-shaped — this generation superseded, the resident runtime
@@ -2051,6 +2059,20 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.sess.scheduleIdleRuntimeRelease(lease.generation)
 		}
 	}
+}
+
+// announceFinishedGeneration is a stable run's last step for its finished
+// generation: it announces the generation (its idle snapshot, and its result
+// to the parent and to any waiting send), then releases the delegate for its
+// next start, whatever announcing did. Until then the delegate is refused a
+// start (a send waits for the release), so nothing hears the generation
+// finished before the delegate is ready for a send, and no successor starts
+// ahead of the result.
+func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements delegateMutationPlans) {
+	if err := a.sess.executeDelegateMutationPlans(announcements); err != nil {
+		a.sess.emit(events.EventWarning, warningDataFromError("delegate result delivery incomplete", err))
+	}
+	a.sess.releaseFinishedGeneration(lease, a.sess)
 }
 
 func (a *subagent) drainForFinalization(ctx context.Context, result string) (string, func(), error) {

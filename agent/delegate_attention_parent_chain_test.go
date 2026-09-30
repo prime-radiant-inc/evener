@@ -50,3 +50,35 @@ func TestAChildUnderAnIdleColdParentIsSelected(t *testing.T) {
 		t.Fatalf("under an idle cold parent: selected %q pending=%t, want dlg_child", delegateID, pending)
 	}
 }
+
+// The walk continues past an idle ancestor: an idle parent can be restored,
+// but not under a grandparent that is running without a resident runtime, so
+// the grandchild waits for the grandparent the same way. Once the
+// grandparent is resident, the chain restores and the grandchild is selected.
+func TestAGrandchildWaitsWhileItsGrandparentIsRunningWithoutARuntime(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateControllerRunning(t, c, "dlg_grandparent", "")
+	seedDelegateControllerIdle(t, c, "dlg_parent", "dlg_grandparent")
+	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
+	if !c.noteDelegateAttention("dlg_child", "delegate:dlg_child") {
+		t.Fatal("note child attention")
+	}
+
+	if delegateID, _, pending := c.nextIdleDelegateAttention(); pending {
+		t.Fatalf("selected %s under a grandparent running with no resident runtime; its restore can only fail", delegateID)
+	}
+	if c.hasRunnableDelegateAttention() {
+		t.Fatal("attention under a non-resident running grandparent reads as runnable")
+	}
+	if !c.hasPendingDelegateAttention() {
+		t.Fatal("the child's attention stopped reading as pending; the retry must keep waiting")
+	}
+
+	c.mu.Lock()
+	c.live["dlg_grandparent"].runtime = &Session{}
+	c.mu.Unlock()
+	if delegateID, _, pending := c.nextIdleDelegateAttention(); !pending || delegateID != "dlg_child" {
+		t.Fatalf("with the grandparent resident: selected %q pending=%t, want dlg_child", delegateID, pending)
+	}
+}

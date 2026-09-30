@@ -1587,8 +1587,11 @@ export function ConversationScreen({
 		if (findCurrent !== null) scrollToFindMatch(findCurrent);
 		return cancelFindRetry;
 	}, [findKey]);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
-	useEffect(() => {
+	// Moves the list to the reading position once what it needs has laid out.
+	// It runs when what it reads changes: the effect below for the screen's
+	// state, and after the cells' layouts and the list's content size, which it
+	// reads from refs, so a layout never re-renders the screen.
+	function restoreReadingPosition() {
 		const anchor = readerAnchor.current;
 		if (
 			!anchor ||
@@ -1640,7 +1643,9 @@ export function ConversationScreen({
 			restoreFrame.current = null;
 			const currentKey = readerKey(timelineRows[command.index]);
 			const measurement = readerMeasurements.current.get(currentKey);
-			if (!measurement) return;
+			// Until the list reports its content size, how far it can scroll
+			// isn't known, and a restore would clamp short of the row.
+			if (!measurement || readerContentHeight.current === 0) return;
 			const desired = measurement.y - command.viewOffset;
 			// On iOS the bar's inset extends how far the list can scroll.
 			const scrollOffset = reachableReaderOffset(
@@ -1666,6 +1671,26 @@ export function ConversationScreen({
 			});
 			landOpening();
 		}
+	}
+	// The latest restore, with this render's rows, for the layout timer below.
+	const restoreReadingPositionNow = useRef(restoreReadingPosition);
+	useLayoutEffect(() => {
+		restoreReadingPositionNow.current = restoreReadingPosition;
+	});
+	// A frame's layout events arrive together (the cells, then the content size
+	// they add up to), so the restore runs once after them: a row measured
+	// before the content size is known would otherwise restore short of it.
+	const restoreAfterLayoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	function restoreAfterLayout() {
+		if (restoreAfterLayoutTimer.current !== null) return;
+		restoreAfterLayoutTimer.current = setTimeout(() => {
+			restoreAfterLayoutTimer.current = null;
+			restoreReadingPositionNow.current();
+		}, 0);
+	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: restoreReadingPosition reads these through its closure; the list names what reruns it, a layout revision (the viewport, a drag settling, focus) included.
+	useEffect(() => {
+		restoreReadingPosition();
 	}, [
 		bindingInstance,
 		layoutRevision,
@@ -1685,6 +1710,7 @@ export function ConversationScreen({
 			if (readerAnchor.current) readerPositions.save(readerAnchor.current);
 			if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 			restoreFrame.current = null;
+			if (restoreAfterLayoutTimer.current !== null) clearTimeout(restoreAfterLayoutTimer.current);
 		},
 		[],
 	);
@@ -2667,7 +2693,7 @@ export function ConversationScreen({
 							if (!openingLandedNow.current && key === lastRowKey() && follow.state.current.following) {
 								pinOpeningToEnd();
 							}
-							setLayoutRevision((revision) => revision + 1);
+							restoreAfterLayout();
 						}}
 					>
 						{children}
@@ -2823,7 +2849,7 @@ export function ConversationScreen({
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
 								readerContentHeight.current = height;
-								setLayoutRevision((revision) => revision + 1);
+								restoreAfterLayout();
 								if (follow.state.current.following)
 									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 							}}
