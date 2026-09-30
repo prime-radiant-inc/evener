@@ -485,6 +485,20 @@ describe("a run's one line", () => {
 		]);
 	});
 
+	// At Intent a settled step with a rationale keeps its words but not its
+	// arguments or output (projectedRows' intentRow), so a run can't tell a
+	// clear from a set: it says what the tool usually does, never a clear.
+	it("says a summary-only housekeeping step's usual action", () => {
+		const summarized = (id: string, label: string, verb: string) =>
+			step(id, label, { summaryOnly: true, detail: { description: `Rationale ${id}`, words: { verb } } });
+		expect(
+			runSummary([
+				summarized("a", "notes_agent_set", "Updated its note"),
+				summarized("b", "compact_context", "Asked for a context compaction"),
+			]).parts.map((part) => part.text),
+		).toEqual(["updated its note once", "asked for a context compaction once"]);
+	});
+
 	it("says a run updated the task list, or only checked it", () => {
 		const tasks = (id: string, args: Record<string, unknown>): RunStep =>
 			step(id, "task_list", { detail: { arguments: JSON.stringify(args) } });

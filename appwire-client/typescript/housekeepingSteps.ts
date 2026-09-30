@@ -69,10 +69,12 @@ const onlyClearsNote = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
 // printed (the start of it: a repeated call gets the registry's repetition
 // note after), else, before it has printed, what its arguments ask for. An
 // empty note that still asks for a compaction also starts "Note cleared.",
-// so the whole first sentence is matched.
+// so the whole first sentence is matched. A step with neither (a
+// summary-only row) can't say, and reads as the tool's usual action.
 const clearedCompactionNote = (step: HousekeepingStep) => {
   const output = step.output?.trim();
-  return output ? output.startsWith("Note cleared. No compaction requested.") : onlyClearsNote(step);
+  if (output) return output.startsWith("Note cleared. No compaction requested.");
+  return step.argumentsJSON !== undefined && onlyClearsNote(step);
 };
 
 const nextPage = (step: StepArgs) => Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
@@ -82,7 +84,9 @@ const selectorOf = (step: StepArgs) => str(parseArgs(step.argumentsJSON), "selec
 const HOUSEKEEPING: Record<string, HousekeepingTool> = {
   notes_agent_set: {
     action: "updated its note",
-    actionFor: (step) => (noteCleared(step) ? "cleared its note" : undefined),
+    // Only arguments that are here can say the note was cleared: a step
+    // without them (a summary-only row) says what the tool usually does.
+    actionFor: (step) => (step.argumentsJSON !== undefined && noteCleared(step) ? "cleared its note" : undefined),
     words: (_step, did) => ({ verb: did }),
     progress: (step) => (noteCleared(step) ? "Clearing its note" : "Updating its note"),
   },

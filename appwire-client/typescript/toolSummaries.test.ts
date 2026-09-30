@@ -551,4 +551,8 @@ test("phrases a housekeeping call as its step line does", () => {
   ).toBe("asked for a context compaction");
   expect(housekeepingAction("urls_add", housekeeping("urls_add", { url: "https://x" }))).toBe("added a link");
   expect(housekeepingAction("shell", housekeeping("shell", {}))).toBeUndefined();
+  // A step whose arguments and output are gone (a summary-only row) can't
+  // tell a clear from a set, so it says what the tool usually does.
+  expect(housekeepingAction("notes_agent_set", {})).toBe("updated its note");
+  expect(housekeepingAction("compact_context", {})).toBe("asked for a context compaction");
 });
