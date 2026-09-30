@@ -275,6 +275,13 @@ Its existing views may use a pure adapter from flat domain rows into their
 rendering model; that adapter owns no networking, retries, or lifecycle state.
 Preserve native shell-job detail/output behavior and delegate stop semantics.
 
+Shared rendering identities qualify delegate and job IDs with their authoritative
+session refs, so equal IDs on different sources cannot share disclosure or entity
+state. Presentation models preserve explicit session IDs when supplied and leave
+them absent otherwise; they never invent IDs from opaque refs. A loaded descendant
+whose parent page has not arrived remains visible with incomplete relationship
+evidence, then attaches to its known parent when that row arrives.
+
 Navigation stays roots-only. Remove the unmerged `subagents` resource, its global
 fingerprints, and the new child-derived needs-you count. Remove job/watch detail
 arrays from navigation once all consumers are migrated; retain small cached
