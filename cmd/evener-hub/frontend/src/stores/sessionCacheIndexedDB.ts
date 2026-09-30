@@ -35,6 +35,10 @@ export interface SessionCacheOpenDiagnostic {
 export interface SessionCacheIndexedDBOptions {
   indexedDB?: IDBFactory;
   databaseName?: string;
+  // The cap on the sum of encoded record bytes. The spec pins the default;
+  // injection is the test discipline, the way the debounce intervals are
+  // injected, so tests exercise eviction with small records.
+  maxBytes?: number;
   onOpenDiagnostic?: (diagnostic: SessionCacheOpenDiagnostic) => void;
 }
 export type SessionCacheWriteOutcome =
@@ -98,6 +102,7 @@ function decodeRecord(row: unknown): CachedSessionRecord | undefined {
 export class SessionCacheIndexedDB {
   readonly #indexedDB: IDBFactory;
   readonly #databaseName: string;
+  readonly #maxBytes: number;
   #database: IDBDatabase | undefined;
   #databasePromise: Promise<IDBDatabase> | undefined;
   readonly #onOpenDiagnostic: (d: SessionCacheOpenDiagnostic) => void;
@@ -105,6 +110,7 @@ export class SessionCacheIndexedDB {
   constructor(options: SessionCacheIndexedDBOptions = {}) {
     this.#indexedDB = options.indexedDB ?? globalThis.indexedDB;
     this.#databaseName = options.databaseName ?? DATABASE_NAME;
+    this.#maxBytes = options.maxBytes ?? SESSION_CACHE_MAX_BYTES;
     this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
   }
 
@@ -143,11 +149,51 @@ export class SessionCacheIndexedDB {
     });
   }
 
-  // put/clear/deleteRecords/count arrive in Tasks 3 and 4; declared now so
-  // the class compiles with stubs that throw "not implemented in this task".
-  async put(_record: CachedSessionRecord, _scheduledEpoch: number, _now: number): Promise<SessionCacheWriteOutcome> {
-    throw new Error("put: implemented in Task 3");
+  async put(record: CachedSessionRecord, scheduledEpoch: number, now: number): Promise<SessionCacheWriteOutcome> {
+    // bytes by construction: the meta row stores the encoded length; the body
+    // carries no bytes field of its own (a length stored inside the body it
+    // measures cannot be exact).
+    const encoded = JSON.stringify(record);
+    const bytes = encoded.length;
+    let observed = 0;
+    const written = await this.#readwriteOutcome("put", async (tx) => {
+      const metaStore = tx.objectStore(META_STORE);
+      const epochRow = await requestResult(metaStore.get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>);
+      observed = epochRow?.epoch ?? 0;
+      if (observed > scheduledEpoch) return { outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome;
+
+      const rows = await requestResult(metaStore.getAll() as IDBRequest<CacheMetaRow[]>);
+      const live: CacheMetaRow[] = [];
+      for (const row of rows) {
+        if (row.ref === EPOCH_ROW_KEY) continue; // exempt by construction: no savedAt, never evicted or expired
+        if (row.savedAt + TTL_MS <= now) {
+          await this.#deleteRows(tx, row.ref); // expiry runs inside every write transaction
+          continue;
+        }
+        live.push(row);
+      }
+      if (bytes > this.#maxBytes) {
+        await this.#deleteRows(tx, record.ref); // a session that outgrew its cache leaves nothing stale behind
+        return { outcome: "oversize" } as SessionCacheWriteOutcome;
+      }
+      const previous = live.find((row) => row.ref === record.ref);
+      if (previous) live.splice(live.indexOf(previous), 1); // a re-write replaces its own accounting
+      metaStore.put({ ref: record.ref, bytes, savedAt: record.savedAt } satisfies CacheMetaRow);
+      tx.objectStore(RECORDS_STORE).put(JSON.parse(encoded) as CachedSessionRecord);
+      let total = live.reduce((sum, row) => sum + row.bytes, 0) + bytes;
+      live.sort((a, b) => a.savedAt - b.savedAt); // whole-record LRU by last write
+      for (const victim of live) {
+        if (total <= this.#maxBytes) break;
+        await this.#deleteRows(tx, victim.ref);
+        total -= victim.bytes;
+      }
+      return { outcome: "written" } as SessionCacheWriteOutcome;
+    });
+    return written ?? ({ outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome);
   }
+
+  // clear/deleteRecords/count arrive in Task 4; declared now so the class
+  // compiles with stubs that throw "not implemented in this task".
   async clear(): Promise<{ committed: boolean; epoch: number }> {
     throw new Error("clear: implemented in Task 4");
   }
@@ -173,6 +219,16 @@ export class SessionCacheIndexedDB {
     } catch {
       return undefined; // every failure is a miss; the diagnostic seam carries the why
     }
+  }
+
+  // The write failure discipline: #readwrite turns a failure into a miss;
+  // a write turns the same failure into the "failed" outcome instead - open,
+  // transaction, and quota errors all drop silently here, never a throw.
+  async #readwriteOutcome(
+    label: string,
+    body: (tx: IDBTransaction) => Promise<SessionCacheWriteOutcome>,
+  ): Promise<SessionCacheWriteOutcome> {
+    return (await this.#readwrite(label, body)) ?? { outcome: "failed" };
   }
 
   // One attempt per call: a timeout fails this call and the next call tries

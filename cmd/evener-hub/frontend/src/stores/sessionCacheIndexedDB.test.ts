@@ -26,14 +26,14 @@ function record(overrides: Partial<CachedSessionRecord> = {}): CachedSessionReco
   };
 }
 
-// `put` and `count` are throwing stubs in this task (Tasks 3 and 4 replace
-// them, and their own RED steps expect the throws), so these tests seed and
-// observe rows the way the real methods will: straight through the adapter's
-// own factory, in one readwrite transaction writing the two rows a real put
-// writes - the record body and its `{ ref, bytes, savedAt }` meta row. The
-// adapter opens its schema first, so store creation and epoch-row seeding run
-// exactly as in production. Task 3 may switch `write` back to `adapter.put`
-// once `put` lands.
+// Raw seeding stays for the corrupt-row test only: that test seeds a valid
+// row and then poisons the body behind the adapter's back, so it must not
+// depend on `put`'s correctness to set up a `get` test. Everything else
+// writes through the adapter (`write` calls `put` since Task 3 landed). One
+// readwrite transaction writes the two rows a real put writes - the record
+// body and its `{ ref, bytes, savedAt }` meta row - after a trigger `get`
+// lets the adapter open its schema first, so store creation and epoch-row
+// seeding run exactly as in production.
 async function seedRecord(
   adapter: SessionCacheIndexedDB,
   factory: IDBFactory,
@@ -65,16 +65,17 @@ async function seedRecord(
   });
 }
 
-// The records store's row count, read directly: `count` is a Task 4 stub,
-// and the corrupt-row test needs the number now.
-function countRecordsRows(factory: IDBFactory): Promise<number> {
+// A store's row count, read directly: `count` is a Task 4 stub, and the
+// adapter tests need the numbers now - records for the delete/corruption
+// assertions, meta for eviction (the epoch row is one of these rows).
+function countStoreRows(factory: IDBFactory, store: "records" | "meta"): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const request = factory.open("evener-session-cache");
     request.addEventListener(
       "success",
       () => {
         const db = request.result;
-        const count = db.transaction("records", "readonly").objectStore("records").count();
+        const count = db.transaction(store, "readonly").objectStore(store).count();
         count.addEventListener(
           "success",
           () => {
@@ -85,6 +86,71 @@ function countRecordsRows(factory: IDBFactory): Promise<number> {
           { once: true },
         );
         count.addEventListener("error", () => reject(count.error), { once: true });
+      },
+      { once: true },
+    );
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+}
+
+// The records store's row count, the raw-read helper the Task 2 tests use.
+function countRecordsRows(factory: IDBFactory): Promise<number> {
+  return countStoreRows(factory, "records");
+}
+
+// Poison a record body row (valid meta row kept): opens the cache database
+// directly on the adapter's own factory and writes a structurally invalid
+// body row beside a real meta row, in one readwrite transaction. put's cap
+// enumeration must read only meta rows, so a body no decode could survive
+// has to pass under it unnoticed.
+async function poisonRecordBody(factory: IDBFactory, ref: string): Promise<void> {
+  const body = { ref }; // no history: structurally invalid, like a truncated write
+  await new Promise<void>((resolve, reject) => {
+    const request = factory.open("evener-session-cache", 1);
+    request.addEventListener(
+      "success",
+      () => {
+        const db = request.result;
+        const tx = db.transaction(["records", "meta"], "readwrite");
+        tx.objectStore("records").put(body);
+        tx.objectStore("meta").put({ ref, bytes: JSON.stringify(body).length, savedAt: 1_000 });
+        tx.addEventListener(
+          "complete",
+          () => {
+            db.close();
+            resolve();
+          },
+          { once: true },
+        );
+        tx.addEventListener("error", () => reject(tx.error), { once: true });
+      },
+      { once: true },
+    );
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+}
+
+// Bump the durable epoch row on the same factory: Task 4's clear() is the
+// production bumper; a test moves the row behind the adapter's back to prove
+// a scheduled write reads it before committing anything.
+async function bumpEpochRow(factory: IDBFactory, epoch: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = factory.open("evener-session-cache", 1);
+    request.addEventListener(
+      "success",
+      () => {
+        const db = request.result;
+        const tx = db.transaction("meta", "readwrite");
+        tx.objectStore("meta").put({ ref: "__clearEpoch", epoch });
+        tx.addEventListener(
+          "complete",
+          () => {
+            db.close();
+            resolve();
+          },
+          { once: true },
+        );
+        tx.addEventListener("error", () => reject(tx.error), { once: true });
       },
       { once: true },
     );
@@ -108,8 +174,8 @@ function freshAdapter(): {
 } {
   const factory = new IDBFactory();
   const adapter = new SessionCacheIndexedDB({ indexedDB: factory });
-  const write = async (r: CachedSessionRecord, _epoch = 0) => {
-    await seedRecord(adapter, factory, r);
+  const write = async (r: CachedSessionRecord, epoch = 0) => {
+    await adapter.put(r, epoch, r.savedAt);
     await settleProjectionWorkForTests();
   };
   return { adapter, factory, write };
@@ -209,6 +275,140 @@ describe("SessionCacheIndexedDB get", () => {
     expect(await adapter.get("local:thr_1", 2_000)).toBeUndefined();
     await settleProjectionWorkForTests();
     expect(await countRecordsRows(indexedDB)).toBe(0); // the corrupt row was deleted, not left behind
+    adapter.close();
+  });
+});
+
+describe("SessionCacheIndexedDB put", () => {
+  it("replaces on a second write for the same ref, and meta bytes/savedAt follow", async () => {
+    const { adapter, write } = freshAdapter();
+    await write(record());
+    const bigger = record({
+      savedAt: 2_000,
+      history: {
+        ...record().history,
+        length: 20,
+        turns: [{ id: "turn_2", status: "completed", items: [] }],
+      },
+    });
+    await adapter.put(bigger, 0, 2_000);
+    await settleProjectionWorkForTests();
+    const hit = await adapter.get("local:thr_1", 3_000);
+    expect(hit?.record.history.length).toBe(20);
+    adapter.close();
+  });
+
+  it("evicts the least-recently-saved record past maxBytes, deleting record and meta rows together", async () => {
+    // The two fixtures encode to 351 bytes each (ItemModel.text is a required
+    // field), so a 500-byte cap keeps the first write and evicts it when the
+    // second lands: 702 total crosses the small injected cap, which is what
+    // the maxBytes option exists for.
+    const factory = new IDBFactory();
+    const adapter = new SessionCacheIndexedDB({ indexedDB: factory, maxBytes: 500 });
+    const older = record({
+      ref: "local:old",
+      history: {
+        ...record().history,
+        turns: [
+          {
+            id: "t1",
+            status: "completed",
+            items: [{ type: "assistantMessage", id: "i1", turnId: "t1", status: "completed", text: "" }],
+          },
+        ],
+      },
+    });
+    await adapter.put(older, 0, 1_000);
+    await settleProjectionWorkForTests();
+    const newer = record({
+      ref: "local:new",
+      savedAt: 2_000,
+      history: {
+        ...record().history,
+        turns: [
+          {
+            id: "t2",
+            status: "completed",
+            items: [{ type: "assistantMessage", id: "i2", turnId: "t2", status: "completed", text: "" }],
+          },
+        ],
+      },
+    });
+    await adapter.put(newer, 0, 2_000);
+    await settleProjectionWorkForTests();
+    expect(await adapter.get("local:old", 3_000)).toBeUndefined(); // evicted: oldest savedAt
+    expect((await adapter.get("local:new", 3_000))?.record.ref).toBe("local:new");
+    expect(await countStoreRows(factory, "records")).toBe(1); // the victim's body row went with the eviction...
+    expect(await countStoreRows(factory, "meta")).toBe(2); // ...and its meta row too: the epoch row plus the survivor
+    adapter.close();
+  });
+
+  it("enumeration never reads record bodies: a poisoned body row does not break a later put", async () => {
+    const { adapter, factory, write } = freshAdapter();
+    await write(record());
+    await poisonRecordBody(factory, "local:poison"); // structurally invalid body, valid meta row
+    const other = record({ ref: "local:other", savedAt: 1_500 });
+    expect(await adapter.put(other, 0, 1_500)).toMatchObject({ outcome: "written" }); // the enumeration never decoded the poison
+    await settleProjectionWorkForTests();
+    expect(await countRecordsRows(factory)).toBe(3); // count() still counts it: the poisoned row exists
+    expect(await adapter.get("local:poison", 2_000)).toBeUndefined(); // a poisoned body reads as a miss...
+    await settleProjectionWorkForTests();
+    expect(await countRecordsRows(factory)).toBe(2); // ...the miss deleted it...
+    expect(await adapter.get("local:other", 2_000)).toBeDefined(); // ...while the healthy row survived the sweep
+    adapter.close();
+  });
+
+  it("skips an oversize record whole and deletes its stored row", async () => {
+    const adapter = new SessionCacheIndexedDB({ indexedDB: new IDBFactory(), maxBytes: 100 });
+    // TurnModel carries no text; ItemModel.text is the settled text and is
+    // required, so the 500-char bulk lives on the item: the record encodes to
+    // 850 bytes, far past the 100-byte cap.
+    const huge = record({
+      ref: "local:huge",
+      history: {
+        ...record().history,
+        turns: [
+          {
+            id: "t",
+            status: "completed",
+            items: [{ type: "assistantMessage", id: "i1", turnId: "t", status: "completed", text: "x".repeat(500) }],
+          },
+        ],
+      },
+    });
+    expect(await adapter.put(huge, 0, 1_000)).toMatchObject({ outcome: "oversize" });
+    await settleProjectionWorkForTests();
+    expect(await adapter.get("local:huge", 2_000)).toBeUndefined();
+    adapter.close();
+  });
+
+  it("aborts a write scheduled under an older epoch and reports the observed one", async () => {
+    const { adapter, factory, write } = freshAdapter();
+    await write(record()); // durable epoch is 0
+    await bumpEpochRow(factory, 5); // Task 4's clear() is the production bumper; here the row moves behind its back
+    const newer = record({ savedAt: 2_000, history: { ...record().history, length: 30 } });
+    expect(await adapter.put(newer, 0, 2_000)).toEqual({ outcome: "aborted", observedEpoch: 5 });
+    await settleProjectionWorkForTests();
+    const hit = await adapter.get("local:thr_1", 3_000);
+    expect(hit?.record.history.length).toBe(10); // the aborted write changed nothing
+    expect(hit?.epoch).toBe(5);
+    expect(await adapter.put(newer, 5, 2_000)).toMatchObject({ outcome: "written" }); // a write carrying the new epoch commits
+    adapter.close();
+  });
+
+  it("expires past-TTL rows inside every write transaction", async () => {
+    const { adapter, factory, write } = freshAdapter();
+    const stale = record({ ref: "local:stale", savedAt: 1_000 });
+    await write(stale);
+    const TTL_MS = 14 * 24 * 60 * 60 * 1000;
+    const fresh = record({ ref: "local:fresh", savedAt: 2_000 });
+    await adapter.put(fresh, 0, stale.savedAt + TTL_MS + 1);
+    await settleProjectionWorkForTests();
+    // Counted before any get: the read path also expires-and-deletes, so only
+    // the row count here proves the WRITE transaction did the sweeping.
+    expect(await countRecordsRows(factory)).toBe(1); // the stale body died inside the write
+    expect(await adapter.get("local:stale", stale.savedAt + TTL_MS + 2)).toBeUndefined(); // swept by the write
+    expect((await adapter.get("local:fresh", stale.savedAt + TTL_MS + 2))?.record.ref).toBe("local:fresh");
     adapter.close();
   });
 });
