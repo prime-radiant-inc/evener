@@ -317,6 +317,15 @@ export class SessionActivityStore {
             permanent: false,
           });
           this.publish({ context: page.context });
+          // Collection reads can warm retained count indexes without emitting
+          // a notification. Refresh an observed unknown count after useful
+          // progress, paced and coalesced across pages, without scanning merely
+          // because a summary count is unknown.
+          const progressed =
+            page.rows.length > 0 ||
+            (read.cursor !== undefined && read.cursor !== cursor) ||
+            (page.page.complete && !current.complete);
+          if (progressed && this.state.summary && !this.state.summary[resource].known) this.schedule("summary", 100);
           if (
             page.rows.length === 0 &&
             read.cursor &&

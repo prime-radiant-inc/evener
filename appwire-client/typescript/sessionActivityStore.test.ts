@@ -391,3 +391,46 @@ test("existing missing-thread subscription refusal is permanent", async () => {
   await vi.advanceTimersByTimeAsync(120000);
   expect(callsTo(client, "thread/read")).toBe(1);
 });
+
+test("observed unknown counts refresh after bounded collection progress without starting scans", async () => {
+  const client = activityClient();
+  let reconstructed = false;
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    jobs: { known: reconstructed, total: reconstructed ? 321 : 0, active: 0, failed: 0, completed: 0 },
+  }));
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (!cursor) return jobsFixture([jobFixture("first")], "next");
+    reconstructed = true;
+    return jobsFixture([jobFixture("last")]);
+  });
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  expect(store.getSnapshot().context?.ancestryKnown).toBe(true);
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(1);
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.hasMore && !store.getSnapshot().jobs.loading);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  expect(store.getSnapshot().summary?.jobs.known).toBe(false);
+  expect(store.getSnapshot().jobs.complete).toBe(false);
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(1);
+  await store.loadMore("jobs");
+  await vi.advanceTimersByTimeAsync(100);
+  expect(store.getSnapshot().summary?.jobs).toMatchObject({ known: true, total: 321 });
+  expect(store.getSnapshot().jobs.rows).toHaveLength(2);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(3);
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(3);
+
+  const unobserved = owner(client);
+  await unobserved.load("jobs");
+  await unobserved.loadMore("jobs");
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(3);
+});

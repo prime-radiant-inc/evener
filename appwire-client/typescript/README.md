@@ -160,6 +160,10 @@ observed resources; subtree owners accept descendant changes routed to their
 subscription. Collection pages merge stable identities only within the current
 source epoch and root read lifetime.
 
+Useful collection progress refreshes an observed unknown summary count at a
+bounded pace, so retained index reconstruction can make its authoritative count
+known. An unknown badge count alone does not start a collection scan.
+
 Activity and transcript owners share wire membership through
 `acquireThreadSubscription(client, ref)`. Its lease has `ensure`, `read`, and
 idempotent `release`. `ensure` makes a lean additive `thread/read`.
