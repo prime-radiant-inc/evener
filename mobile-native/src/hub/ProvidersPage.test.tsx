@@ -1479,6 +1479,8 @@ it("goes back from a provider's detail when the provider leaves the list", async
 	await act(async () => {});
 	await openWork(tree);
 	expect(detailParams()).toMatchObject({ name: "work" });
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
 	// Another client renames it, and the listing follows.
 	fake.on("evener/instance/list", () => ({
 		instances: [instance({ name: "home", authModes: ["apiKey"], hasStoredFile: true })],
@@ -1498,6 +1500,65 @@ it("goes back from a provider's detail when the provider leaves the list", async
 	expect(renderedText(tree)).toContain("home");
 	expect(detailParams()).toBeNull();
 	expect(hasControl(tree, "Replace key")).toBe(false);
+	// The key pasted for the provider that left goes with it: the provider now
+	// listed opens with no paste sheet and no key (RoboRev on 972ebb8).
+	press(tree, (label) => label.startsWith("home,"));
+	await act(async () => {});
+	expect(hasControl(tree, "API key")).toBe(false);
+	expect(tree.root.findAll((node) => node.props.value === "sk-fixture")).toHaveLength(0);
+});
+
+// Discarding through Back discards the draft for good: the page's close,
+// which the leaving detail runs, clears the paste sheet and its key, so the
+// provider reopens with neither (RoboRev on 972ebb8).
+it("reopens a provider with no paste sheet or key after Back discarded them", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	back();
+	choose("Discard");
+	await act(async () => {});
+	await openWork(tree);
+	expect(hasControl(tree, "API key")).toBe(false);
+	expect(tree.root.findAll((node) => node.props.value === "sk-fixture")).toHaveLength(0);
+	// Nothing left to lose: Back goes without asking.
+	alertRequests.length = 0;
+	back();
+	expect(alertRequests).toHaveLength(0);
+	expect(detailParams()).toBeNull();
+});
+
+// A link while a key is pasted pops the detail through the same guard as
+// Back (spec 6): it asks first, and Keep editing keeps the key and the
+// provider; Discard lets the link open its provider.
+it("asks before a link pops a detail holding a pasted key", async () => {
+	alertRequests.length = 0;
+	providersHub([
+		instance({ authModes: ["apiKey"], hasStoredFile: true }),
+		instance({ name: "home", isDefault: false, authModes: ["apiKey"], hasStoredFile: true }),
+	]);
+	const { tree, relink } = linkedPage("work");
+	await act(async () => {});
+	await act(async () => {});
+	expect(detailParams()).toMatchObject({ name: "work" });
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	await relink("home");
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	choose("Keep editing");
+	await act(async () => {});
+	expect(detailParams()).toMatchObject({ name: "work" });
+	expect(control(tree, "API key").props.value).toBe("sk-fixture");
+	await relink("home");
+	choose("Discard");
+	await act(async () => {});
+	await act(async () => {});
+	expect(detailParams()).toMatchObject({ name: "home" });
+	expect(hasControl(tree, "API key")).toBe(false);
 });
 
 it("holds a swipe down while a pasted key is being saved, without asking", async () => {

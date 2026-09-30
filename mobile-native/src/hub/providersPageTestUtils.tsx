@@ -4,7 +4,7 @@
 // mounts ProvidersStack where it would mount ProvidersPage; `back` is the
 // stack's Back from the detail, through the leave guard the detail sets.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { type ComponentProps, useMemo, useState } from "react";
+import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import { act } from "react-test-renderer";
 import { backGuard } from "./backGuardTestUtils";
 import type { HubRoutes } from "./hubSheetContext";
@@ -32,18 +32,34 @@ export function back(): void {
 
 export function ProvidersStack(props: ComponentProps<typeof ProvidersPage>) {
 	const [detail, setDetail] = useState<DetailParams | null>(null);
+	useEffect(() => {
+		stack.params = detail;
+		stack.close = () => setDetail(null);
+	});
 	// A link to a provider (a notice, or a sign-in error) navigates to Providers
-	// with `pop`, which pops a detail pushed over it and hands the page its new
-	// focus with the list in front (BoardNotices.tsx's openNotice). A new focus
-	// here does the same.
-	const focus = (props.route.params as { focus?: string } | undefined)?.focus;
-	const [lastFocus, setLastFocus] = useState(focus);
-	if (focus !== lastFocus) {
-		setLastFocus(focus);
-		if (focus !== undefined) setDetail(null);
-	}
-	stack.params = detail;
-	stack.close = () => setDetail(null);
+	// with `pop` (BoardNotices.tsx's openNotice): it removes a detail pushed
+	// over the page, which the detail's leave guard may hold, and only then
+	// hands the page its new focus, with the list in front. A new focus here
+	// does the same: the page keeps its last applied params until the pop goes.
+	const next = props.route.params as HubRoutes["Providers"];
+	const [applied, setApplied] = useState(next);
+	const nextKey = JSON.stringify(next);
+	const appliedKey = JSON.stringify(applied);
+	useEffect(() => {
+		if (nextKey === appliedKey) return;
+		const params = JSON.parse(nextKey) as HubRoutes["Providers"];
+		if (params.focus === undefined || !stack.params) {
+			setApplied(params);
+			return;
+		}
+		const go = () => {
+			setDetail(null);
+			setApplied(params);
+		};
+		const guard = backGuard.current;
+		if (guard?.prevent) guard.onPrevent({ data: { action: { type: "NAVIGATE", go } } });
+		else go();
+	}, [nextKey, appliedKey]);
 	const given = props.navigation as unknown as Record<string, unknown> | undefined;
 	const navigation = useMemo(
 		() =>
@@ -60,13 +76,15 @@ export function ProvidersStack(props: ComponentProps<typeof ProvidersPage>) {
 			({
 				canGoBack: () => true,
 				goBack: () => setDetail(null),
-				dispatch: () => setDetail(null),
+				// The action a held leave dispatches: a link's pop carries its own
+				// step; Back's only removes the detail.
+				dispatch: (action: { go?: () => void }) => (action.go ? action.go() : setDetail(null)),
 			}) as unknown as NativeStackScreenProps<HubRoutes, "ProviderDetail">["navigation"],
 		[],
 	);
 	return (
 		<ProvidersScreenSlotProvider>
-			<ProvidersPage {...props} navigation={navigation} />
+			<ProvidersPage {...props} route={{ ...props.route, params: applied }} navigation={navigation} />
 			{detail ? (
 				<ProviderDetailPage
 					navigation={detailNavigation}

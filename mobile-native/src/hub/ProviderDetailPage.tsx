@@ -22,11 +22,10 @@ export function ProviderDetailPage({ navigation, route }: NativeStackScreenProps
 	// list and Add are covered, an edit keeps the name, and a link pops the
 	// detail before the page opens another (openNotice's `pop`).
 	const shown = useRef(false);
-	if (current) shown.current = true;
-	const dropped = shown.current && current === null;
 	useEffect(() => {
-		if (dropped && navigation.canGoBack()) navigation.goBack();
-	}, [dropped, navigation]);
+		if (current) shown.current = true;
+		else if (shown.current && navigation.canGoBack()) navigation.goBack();
+	}, [current, navigation]);
 
 	// Back and the edge swipe ask before a pasted key goes, and wait out its
 	// save, as the paste sheet's own Cancel does (spec 6).
@@ -37,7 +36,9 @@ export function ProviderDetailPage({ navigation, route }: NativeStackScreenProps
 	// Leaving hands the selection back, so the Providers page drops whatever
 	// the detail had open (a draft key, a check's failure).
 	const latest = useRef(current);
-	latest.current = current;
+	useEffect(() => {
+		latest.current = current;
+	});
 	useEffect(() => () => latest.current?.onGone(), []);
 
 	return current ? current.detail : null;
