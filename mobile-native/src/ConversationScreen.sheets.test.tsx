@@ -323,6 +323,24 @@ const withCapabilities = (capabilities: Partial<Thread["evener"]["capabilities"]
 	evener: { ...thread.evener, capabilities: { ...thread.evener.capabilities, ...capabilities } },
 });
 
+// A session with shell jobs and no subagents has an Activity list too, and
+// the session can't tell from its read whether it has jobs, so the menu
+// offers Activity whenever it's connected, as it offers Tasks.
+it("offers Activity from the header menu with no subagents", async () => {
+	const { tree } = mount();
+	await flush();
+
+	act(() => menuAction("Activity").onPress());
+
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+	});
+	tree.unmount();
+});
+
 it("opens Tasks from the header menu as the TasksSheet route", async () => {
 	const { tree } = mount();
 	await flush();
@@ -928,7 +946,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		title: "Session",
 	});
 	vi.mocked(navigation.navigate).mockClear();
-	act(() => menuAction("Subagents").onPress());
+	act(() => menuAction("Activity").onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
 		hubId: "hub-1",
 		ref,

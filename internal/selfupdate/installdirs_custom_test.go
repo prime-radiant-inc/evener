@@ -16,7 +16,7 @@ import (
 // dir holding the launched name -- is the binDir. Fails today: resolution
 // drops the entrypoint and reconstructs <prefix>/bin.
 func TestInstallDirsPreservesCustomBinDir(t *testing.T) {
-	root := t.TempDir()
+	root := symlinkResolvedTempDir(t)
 	shareBin := filepath.Join(root, "share", "evener", "bin")
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestInstallDirsPreservesCustomBinDir(t *testing.T) {
 // installExtractedBinaries Remove the just-installed binary and
 // symlink it to itself. Fails today: sibling==candidate trivially.
 func TestInstallDirsFromPreresolvedShareBinary(t *testing.T) {
-	root := t.TempDir()
+	root := symlinkResolvedTempDir(t)
 	shareBin := filepath.Join(root, "share", "evener", "bin")
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestInstallDirsFromPreresolvedShareBinary(t *testing.T) {
 // suffix matches, so all-empty selects Upgrade's defaults and the hub
 // restarts from an unrelated copy.
 func TestInstallDirsFromArbitraryShareLayout(t *testing.T) {
-	customShare := filepath.Join(t.TempDir(), "custom", "share")
+	customShare := filepath.Join(symlinkResolvedTempDir(t), "custom", "share")
 	if err := os.MkdirAll(customShare, 0o755); err != nil {
 		t.Fatal(err)
 	}
