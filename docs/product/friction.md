@@ -318,7 +318,7 @@ actions. `useProviderSetup` already preserves exact-host scope. The
 copies eligible API keys to matching remote instances; it does not create
 missing custom provider instances or transfer stored credential JSON.
 
-**Discuss.** Connect the launch blockage to supported setup for the selected
+**Decision.** Connect the launch blockage to supported setup for the selected
 host, preserving prompt, images, project and model choice. Offer the existing
 remote sign-in and credential-transfer actions in that flow, clearly naming
 the destination and what a transfer copies. Refresh readiness automatically
@@ -327,6 +327,7 @@ launch once its prerequisites are satisfied, subject to cancellation or changed
 intent; otherwise leave the preserved form ready. Some custom providers still
 require setup on the host, which needs a specific next step. A failed readiness
 read is an unresolved check to retry, not proof that setup must be repeated.
+Implementation remains pending.
 
 **Acceptance.** Complete a supported remote sign-in or chosen credential transfer
 from the blocked launch without route hunting or accidental local-host
