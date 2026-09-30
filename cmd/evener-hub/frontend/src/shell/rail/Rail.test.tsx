@@ -3151,9 +3151,14 @@ describe("archived rows come from evener/archived/list", () => {
       ),
     ]);
     installList([archivedRow(0)], 3, "cursor-1");
-    render(<Rail revealTarget="local:old-2" />, client);
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:old-2" onRevealConsumed={consumed} />, client);
     await waitFor(() => expect(cursors).toEqual(["cursor-1", "cursor-2"]));
     await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-2"]')).not.toBeNull());
+    // The reveal scrolls in a passive effect that can lag the row's render;
+    // the stub cannot be restored until that effect has consumed the reveal.
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(1);
     restoreScroll();
   });
 
@@ -3183,9 +3188,14 @@ describe("archived rows come from evener/archived/list", () => {
         },
       ),
     ]);
-    render(<Rail revealTarget="local:old-0" />, client);
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:old-0" onRevealConsumed={consumed} />, client);
     await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull());
     expect(seen).toEqual([{ catalog: "projects", projectKey: "p" }]);
+    // The reveal scrolls in a passive effect that can lag the row's render;
+    // the stub cannot be restored until that effect has consumed the reveal.
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(1);
     restoreScroll();
   });
 
