@@ -69,6 +69,24 @@ No script in the default tests calls a real hub or LLM provider.
 
 The dated 8 September execution checkpoint remains in the development archive. Its simulator and controller results identify earlier artifacts; use the current acceptance index for the joined checkpoint journey.
 
+## Older-history recovery
+
+[`useOlderHistory`](src/session/useOlderHistory.ts) shares browse and Find demand
+through [`HistoryPaging`](../appwire-client/typescript/historyPaging.ts). Transient
+failures and unresolved reads use capped backoff without an attempt limit.
+[`historyMemory`](src/session/historyMemory.ts) retains pending intent per hub and
+session while a route is disposed; it holds no closed screen's store or service.
+Reopening the same binding resumes demand against the committed reader, including
+the query and saved match boundary needed to continue an older search. Find stays
+incomplete until a match or authoritative history end, with accurate permanent
+failure explanations.
+
+Closing Find and jumping live cancel only their corresponding consumer. Hub
+removal and confirmed new bindings retire old demand; settled or cancelled
+unobserved sessions are reclaimed. Existing conversation stores and reader-position
+restoration still own loaded rows, merging and reading anchors. This intent memory
+lasts for the app lifetime and adds no disk persistence.
+
 ## Current scope
 
 - The recent-session roster is bounded and has server-side search. Project

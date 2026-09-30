@@ -4,6 +4,7 @@
 // it out of the front. Its header's title and ⋯ menu open those sheets and
 // act on the session (spec 8.1). On ConversationScreen.recovery.test.tsx's
 // harness.
+import { CommonActions, StackRouter } from "@react-navigation/routers";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -18,6 +19,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { type Thread, WireError } from "@evener/appwire-client";
 import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
+import { forgetHistoryForHub } from "./session/historyMemory";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
@@ -286,12 +288,13 @@ beforeEach(() => {
 	navigation.navigate.mockClear();
 	navigation.push.mockClear();
 	navigation.pop.mockClear();
-	navigation.goBack.mockClear();
+	navigation.goBack.mockReset();
 	navigation.setOptions.mockClear();
 	alertRequests.length = 0;
 	listScrolls.length = 0;
 	// Each test starts with no detail level chosen on this device.
 	forgetDetailLevelsForHub("hub-1");
+	forgetHistoryForHub("hub-1");
 });
 
 /** The header options the screen set last. */
@@ -1287,14 +1290,14 @@ function olderHistoryAnswers(page: () => unknown, source: Thread = busy): Answer
 	};
 }
 
-function olderHistoryPage(text: string) {
+function olderHistoryPage(text: string, id = "older") {
 	return {
 		data: [
 			{
-				id: "older-turn",
+				id: `${id}-turn`,
 				status: "completed",
 				itemsView: "full",
-				items: [{ id: "older-message", turnId: "older-turn", type: "userMessage", status: "completed", text }],
+				items: [{ id: `${id}-message`, turnId: `${id}-turn`, type: "userMessage", status: "completed", text }],
 			},
 		],
 		nextCursor: null,
@@ -1558,3 +1561,176 @@ it.each([
 	if (find) expect(renderedText(tree)).toContain("1 of 1");
 	act(() => tree.unmount());
 });
+
+/** The pinned stack router pops the detail route. Board navigation then
+ * creates a new route and mounts a fresh screen and store. */
+function boardJourney(answers: Answers) {
+	const { client, requests } = sessionClient(busy, answers);
+	harness.connection = { ...screenConnection(client, "ready"), error: null, disconnect: () => {} };
+	const router = StackRouter({ initialRouteName: "Sessions" });
+	const options = { routeNames: ["Sessions", "Conversation"], routeParamList: {}, routeGetIdList: {} };
+	let state = router.getInitialState(options);
+	const view = () => {
+		stack.state = state;
+		const current = state.routes[state.index];
+		return current?.name === "Conversation" ? (
+			<ConversationScreen
+				key={current.key}
+				route={current as ConversationScreenProps["route"]}
+				navigation={navigation as unknown as ConversationScreenProps["navigation"]}
+			/>
+		) : (
+			<></>
+		);
+	};
+	const tree = render(view());
+	const dispatch = (action: Parameters<typeof router.getStateForAction>[1]) => {
+		const next = router.getStateForAction(state, action, options);
+		if (!next) throw new Error("stack rejected action");
+		state = router.getRehydratedState(next, options);
+		act(() => tree.update(view()));
+	};
+	navigation.goBack.mockImplementation(() => dispatch(CommonActions.goBack()));
+	return {
+		tree,
+		requests,
+		open: () => dispatch(CommonActions.navigate("Conversation", route.params)),
+		back: () => {
+			const options = (navigation.setOptions.mock.calls as [NativeStackNavigationOptions][])
+				.map(([value]) => value)
+				.findLast((value) => value.headerLeft);
+			if (!options?.headerLeft) throw new Error("no Back header");
+			const button = options.headerLeft({ canGoBack: true }) as ReactElement<{ onPress(): void }>;
+			act(() => button.props.onPress());
+			expect(state.routes.map((value) => value.name)).toEqual(["Sessions"]);
+		},
+	};
+}
+
+it.each(["browse", "find"])("resumes %s demand after actual Back pop and Board reopen", async (demand) => {
+	let attempts = 0;
+	const journey = boardJourney(
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	try {
+		journey.open();
+		await flush();
+		vi.useFakeTimers();
+		if (demand === "find") openFind(journey.tree, "unique search needle");
+		else sessionList(journey.tree).drag(100);
+		await advanceHistory(0);
+		expect(attempts).toBe(1);
+		journey.back();
+		expect(appStateListeners.size).toBe(0);
+		expect(vi.getTimerCount()).toBe(0);
+		await advanceHistory(60_000);
+		expect(attempts).toBe(1);
+		journey.open();
+		await advanceHistory(1000);
+		expect(attempts).toBe(2);
+		expect(renderedText(journey.tree)).toContain("unique search needle");
+		if (demand === "find") {
+			const bar = journey.tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+			expect(bar.props).toMatchObject({ query: "unique search needle", settled: true, label: "1 of 1" });
+		}
+	} finally {
+		act(() => journey.tree.unmount());
+	}
+});
+
+it("resumes an older-match search beyond its saved boundary after actual route disposal", async () => {
+	const cursors: unknown[] = [];
+	let failed = false;
+	const answers = olderHistoryAnswers(() => ({}));
+	const read = answers["thread/read"] as { thread: Thread };
+	const current = read.thread.turns?.[0]?.items?.[0];
+	if (!current || current.type !== "userMessage") throw new Error("missing hydrated message");
+	current.text = "needle latest";
+	answers["thread/turns/list"] = (params: { cursor: string }) => {
+		cursors.push(params.cursor);
+		if (params.cursor === "older-page")
+			return { ...olderHistoryPage("needle middle", "middle"), nextCursor: "oldest-page" };
+		if (!failed) {
+			failed = true;
+			throw new Error("temporary oldest page failure");
+		}
+		return olderHistoryPage("needle oldest", "oldest");
+	};
+	const journey = boardJourney(answers);
+	try {
+		journey.open();
+		await flush();
+		vi.useFakeTimers();
+		openFind(journey.tree, "needle");
+		const bar = () => journey.tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+		expect(bar().props.label).toBe("1 of 1");
+		act(() => bar().props.onStep(-1));
+		await advanceHistory(0);
+		expect(bar().props).toMatchObject({ settled: true, label: "1 of 2" });
+		act(() => bar().props.onStep(-1));
+		await advanceHistory(0);
+		expect(cursors).toEqual(["older-page", "oldest-page"]);
+		expect(bar().props.settled).toBe(false);
+		journey.back();
+		await advanceHistory(60_000);
+		expect(cursors).toHaveLength(2);
+		journey.open();
+		await advanceHistory(1000);
+		expect(cursors).toEqual(["older-page", "oldest-page", "older-page"]);
+		expect(bar().props.settled).toBe(false);
+		await advanceHistory(1999);
+		expect(cursors).toHaveLength(3);
+		await advanceHistory(1);
+		expect(cursors).toEqual(["older-page", "oldest-page", "older-page", "oldest-page"]);
+		expect(bar().props).toMatchObject({ query: "needle", settled: true, label: "1 of 3" });
+	} finally {
+		act(() => journey.tree.unmount());
+	}
+});
+
+it.each(["close Find", "jump live", "remove hub", "new binding"])(
+	"does not restore abandoned intent on Board reopen after %s",
+	async (stop) => {
+		let attempts = 0;
+		const answers = olderHistoryAnswers(() => {
+			++attempts;
+			throw new Error("temporary");
+		});
+		const journey = boardJourney(answers);
+		try {
+			journey.open();
+			await flush();
+			vi.useFakeTimers();
+			if (stop === "jump live") sessionList(journey.tree).drag(100);
+			else openFind(journey.tree, "needle");
+			await advanceHistory(0);
+			expect(attempts).toBe(1);
+			if (stop === "close Find") {
+				const bar = journey.tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+				act(() => bar.props.onDone());
+			}
+			if (stop === "jump live") {
+				const composer = journey.tree.root.find((node) => typeof node.props.onJumpToLive === "function");
+				act(() => composer.props.onJumpToLive());
+			}
+			journey.back();
+			if (stop === "remove hub") forgetHistoryForHub("hub-1");
+			if (stop === "new binding") {
+				const read = answers["thread/read"] as { thread: Thread };
+				read.thread = { ...read.thread, evener: { ...read.thread.evener, instanceId: "replacement-instance" } };
+			}
+			journey.open();
+			await advanceHistory(60_000);
+			expect(attempts).toBe(1);
+			expect(
+				journey.tree.root.findAll((node) => typeof node.type === "function" && node.type.name === "FindBar"),
+			).toHaveLength(0);
+		} finally {
+			act(() => journey.tree.unmount());
+		}
+	},
+);

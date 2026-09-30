@@ -35,7 +35,7 @@ and should not be presented as reproduced production incidents.
 | [C01](#c01-browser-first-connection) | High | First browser connection failure needs Retry | S02, S05 |
 | [C02](#c02-uncertain-session-creation) | High | Lost creation response means hunting for a session or creating a duplicate | S02, S03, S05, S06 |
 | [C03](#c03-transcript-repair-rereads) | Medium | A retained transcript can stay failed after its backing condition heals | S02, S03, S10 |
-| [C04](#c04-older-history-and-find) | Medium | Native route disposal loses pending older-history and Find demand | S03, S10 |
+| [C04](#c04-older-history-and-find) | Medium | Browser revisit can leave abandoned pane demand retrying | S02, S10 |
 | [C05](#c05-native-outbox-convergence) | High | A queued message can remain parked after one proof-read failure | S03, S05, S11 |
 | [C06](#c06-rejected-image-message-recovery) | Medium | Rejected image messages cannot be restored intact for correction | S03, S11 |
 | [C07](#c07-model-discovery-and-default-launch) | Medium | Model discovery delays default launch and stays failed in an open form | S02, S03, S16 |
@@ -171,23 +171,22 @@ recovery requests.
 
 ### C04 Older history and Find
 
-**Current behavior.** Browser older-page demand survives transient failures,
-inactive panes and remounts. Native keeps browse and Find demand through
-backgrounding, pushed screens and connection replacement while its conversation
-screen remains mounted. Returning to Board removes that route; reopening the
-same chat creates a new local pager and clears the open Find query, so an
-outstanding older read does not resume. Reading-position restoration retains
-its anchor independently and does not retain pending demand.
+**Current behavior.** Older-page demand survives transient failures and inactive
+readers. Native retains pending browse and Find intent across Back-to-Board and
+reopening the same chat, reconstructing a saved match boundary before seeking
+further older. Browser navigation A→B→A creates a new pane identity; Jump to live
+on the returned pane can leave demand owned by the departed identity retrying.
+Another genuinely open pane's demand must remain independent.
 
-**Evidence.** The conversation header in
-[`ConversationScreen`](../../mobile-native/src/screens.tsx) calls
-`navigation.goBack`; [`BoardScreen`](../../mobile-native/src/board/BoardScreen.tsx)
-opens Conversation through the native stack in [App](../../mobile-native/App.tsx).
-The screen creates and closes its own conversation store and holds `FindState`
-in local state. [`useOlderHistory`](../../mobile-native/src/session/useOlderHistory.ts)
-creates a local retry owner. [`ReaderPositionRepository`](../../mobile-native/src/readerPosition.ts)
-retains the item anchor, binding, offset and last-seen turn, but no browse or
-search demand.
+**Evidence.** Native [`useOlderHistory`](../../mobile-native/src/session/useOlderHistory.ts)
+adopts pending [`session history memory`](../../mobile-native/src/session/historyMemory.ts)
+only after a reader commits. Disposed readers release store/service references
+and timers; [`ReaderPositionRepository`](../../mobile-native/src/readerPosition.ts)
+continues to own reading anchors. Browser
+[`workspace.replacePrimary`](../../cmd/evener-hub/frontend/src/shell/workspace.ts)
+creates a fresh pane identity, while
+[`useTranscript`](../../cmd/evener-hub/frontend/src/panes/session/transcript/useTranscript.ts)
+uses pane consumers for retained paging demand and explicit cancellation.
 
 **Decision.** Keep retrying transient or unresolved older-history demand for as
 long as the user is waiting for that history or search result. Backoff bounds
@@ -196,13 +195,15 @@ returning, including route disposal and reopening the same chat. Keep loaded
 content and reading position usable, distinguish incomplete Find from confirmed
 absence of matches, and retain accurate permanent-condition explanations.
 Closing Find or jumping live cancels only the corresponding consumer's demand.
-The native route-disposal gap remains open.
+The browser revisit/cancellation gap remains open.
 
-**Acceptance.** Fail an older page, leave for Board, restore reads and reopen the
-same chat without another scroll or Find action. Browse resumes and Find reaches
-a match or confirmed end with its query intact. No reads run for an inactive
-reader; return preserves backoff, anchors and consumer ownership. A genuinely
-different session binding cannot inherit the prior demand.
+**Acceptance.** Fail an older page, leave, restore reads and return without
+another scroll or Find action. Browse resumes and Find reaches a match or
+confirmed end with its query and older-match boundary intact. No reads run for an
+inactive reader; return preserves backoff, anchors and consumer ownership.
+Jumping live after A→B→A cancels the returned view's outstanding browse demand
+while preserving another open pane's demand. A genuinely different session
+binding cannot inherit the prior demand.
 
 ### C05 Native outbox convergence
 
@@ -1362,8 +1363,9 @@ These are useful patterns and preservation checks, rather than new fix requests.
   incomplete until a match or confirmed history end; proven permanent failures
   keep their explanations. Closing Find or jumping live cancels only that
   consumer's demand. Fulfilled reads without cursor progress remain quiet and
-  paced rather than reporting a fetch failure. Native route disposal is the
-  remaining [C04](#c04-older-history-and-find) gap.
+  paced rather than reporting a fetch failure. Native session memory also retains pending demand
+  across route disposal without holding a closed store or service. The browser
+  revisit/cancellation ownership gap remains [C04](#c04-older-history-and-find).
 - Browser [`loadOlderTurns`](../../cmd/evener-hub/frontend/src/stores/threads.ts)
   refreshes tracked history when `isStaleCursorError` identifies a stale cursor.
   Native first connection and initial transcript reads have separate retry owners.
