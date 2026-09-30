@@ -79,6 +79,8 @@ Every response carries `context: SessionActivityContext`:
   routing alias;
 - `rootRef`: the root controller's public session reference;
 - `parentRef` and `delegateId`, when the addressed session is a delegate child;
+- `ancestryKnown`: whether delegate ancestry has been established; a cold
+  retained child may be pending while the bounded root index advances;
 - `ancestors: SessionActivityAncestor[]`, ordered root to immediate parent, each
   with `ref`, `sessionId`, optional `delegateId`, and `title`;
 - `epoch`: an opaque identity for the current read-source incarnation; and
@@ -87,6 +89,14 @@ Every response carries `context: SessionActivityContext`:
 Context is returned without loading sibling collections. An unavailable source
 returns the existing typed unavailable/transport error, not an empty retained
 response. Remote refs are never satisfied from a coincidentally named local file.
+An empty ancestor list or absent parent is evidence of a root only when
+`ancestryKnown` is true. A pending context still carries its proven routing,
+session, root and source identity; ordinary index-building progress is not a
+failure. Retained child ancestry may require bounded reads of the shared root
+delegate journal, without reading descendant journals or writing new metadata.
+Publish the chain once immutable delegate descriptors establish it. A source
+that cannot advance returns its actual issue or error rather than remaining
+silently pending forever.
 
 `SessionActivitySummary` carries `context`, `scope`, `delegates`, `jobs`, and
 `watches`. Each summary is `SessionActivityCounts { known, total, active, failed,
@@ -208,6 +218,9 @@ bridge. Watch registration, clearing, delivery, and ending must refresh the
 receiver's view. An event is a scoped invalidation, not a second lifecycle fold.
 Existing delegate/job events may also be consumed, with coalescing. Subscription
 gaps and reconnects revalidate only observed session resources.
+An observed summary with pending ancestry continues bounded reads with a paced
+yield between them. This is normal loading progress; transient-error backoff is
+reserved for failed reads. Unknown badge counts alone do not demand cold scans.
 
 The shared TypeScript owner is `SessionActivityStore`, exported from
 `@evener/appwire-client`. It is framework-free. Its public surface is:
