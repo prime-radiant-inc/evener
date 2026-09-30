@@ -1390,7 +1390,11 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 			{ text: "Cancel", style: "cancel" },
 		]);
 	};
-	const operation = organization.state?.pending ? organization.state.recovery?.operation : undefined;
+	// The unified journal gate (archivingSessionId's): a change in flight or one
+	// the hub couldn't confirm holds the category, so it stays dimmed until the
+	// journal settles.
+	const state = organization.state;
+	const operation = state && (state.pending || state.uncertain) ? state.recovery?.operation : undefined;
 	return {
 		menuFor: (section: NavigationPinSectionDescriptor) => (organization.ready ? () => open(section) : null),
 		changing: (sectionId: string) =>
