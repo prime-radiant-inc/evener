@@ -14,7 +14,7 @@
 // call, a malformed payload) still renders its log without a command line.
 
 import type { ActivityJob, JobLogTail } from "@evener/appwire-client";
-import { jobCommandLabel, parseActivityJob, parseJobLogTail } from "@evener/appwire-client";
+import { jobCommandLabel, jobStatusDisplay, parseActivityJob, parseJobLogTail } from "@evener/appwire-client";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
@@ -58,7 +58,7 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
   // The job's own metadata, for the command line above the log. Best-effort:
   // a failed or malformed read leaves it null and the pane renders the log
   // alone, exactly as an older daemon's answer would.
-  const [job, setJob] = useState<ActivityJob | null>(null);
+  const [metadata, setMetadata] = useState<{ requestedOwner: string; job: ActivityJob } | null>(null);
 
   // Both reads share one ready-gate: the owning session ref is the only route
   // to either, and the one client's handshake is the race Transcript's own
@@ -85,10 +85,12 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
         .jobGet(ownerRef, jobId)
         .then(
           (data) => {
-            if (!cancelled) setJob(parseActivityJob(data));
+            if (cancelled) return;
+            const job = parseActivityJob(data);
+            setMetadata(job ? { requestedOwner: ownerRef, job } : null);
           },
           () => {
-            if (!cancelled) setJob(null);
+            if (!cancelled) setMetadata(null);
           },
         );
       threadsStore
@@ -168,15 +170,23 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
 
   // The shared label the activity strip's detail uses too, so the pane and the
   // strip word a job identically; undefined when the job carries none (or its
-  // payload could not be read). Guarded by job id: a pane switched to another
-  // job must never show the previous job's command while the new read is in
-  // flight, while a Refresh of the same job keeps it - the command is immutable
+  // payload could not be read). Guarded by job id and requested owner: a pane
+  // switched to another job must never show the previous job's command while
+  // its read is in flight. Refresh of the same job keeps the command, which is immutable
   // per job, so clearing it on every fetch would only flicker it away.
-  const command = job !== null && job.jobId === jobId ? jobCommandLabel(job) : undefined;
+  const job = metadata?.requestedOwner === parentRef && metadata?.job.jobId === jobId ? metadata.job : null;
+  const command = job ? jobCommandLabel(job) : undefined;
+  const title = job?.description.trim() || command?.split("\n")[0] || "Job output";
 
   return (
-    <PaneScaffold title={jobId} actions={actions}>
+    <PaneScaffold title={title} actions={actions}>
       <div className={CLASS.body}>
+        {job && (
+          <span className={CLASS.joblogNote} data-testid="joblog-status">
+            {jobStatusDisplay(job.status, job.reason)}
+            {job.exitCode !== undefined ? ` · Exit code ${job.exitCode}` : null}
+          </span>
+        )}
         {command !== undefined && (
           <code className={CLASS.joblogCommand} data-testid="joblog-command">
             {command}
