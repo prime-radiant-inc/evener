@@ -847,13 +847,20 @@ false failure.
 `TestResolveRuntimeCredentialsCoalescesConcurrentRefresh` exercises one
 process; cross-process rotation remains a conditional source finding.
 
-**Discuss.** Coordinate by canonical credential-file identity across processes,
-reread after acquiring authority and before surfacing rejection, and bound waits.
-Keep genuinely revoked credentials and user-selected account identity accurate.
+**Decision.** Coordinate sign-in renewal across all session processes sharing the
+same credential record. One process refreshes while other callers reuse its
+result. Re-read the record after acquiring refresh authority and check for newer
+usable credentials before treating a rejection as requiring sign-in. Recover
+coordination when its owner crashes, and honor cancellation while callers wait.
+Preserve the selected account identity and accurately request sign-in for
+genuinely revoked credentials. Implementation remains pending.
 
 **Acceptance.** Two subprocesses use one expired record and a scripted rotating
-issuer. One redemption occurs and both requests receive the committed replacement;
-a genuinely revoked unchanged record still requests sign-in.
+issuer. One redemption occurs and both requests receive the committed replacement
+without a sign-in prompt. A rejected older attempt discovers a newer usable
+record automatically. A process exiting while holding refresh coordination does
+not leave other callers waiting permanently; cancellation remains effective. A
+genuinely revoked unchanged record still requests sign-in.
 
 ### H09 Issued credentials awaiting persistence
 
