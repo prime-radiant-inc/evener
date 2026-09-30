@@ -30,22 +30,8 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 	// Taken when the tree changes, so the screen runs no clock (ruling 7).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
 	const now = useMemo(() => Date.now(), [snapshot]);
-	const job = row?.job;
-	const target = useMemo(
-		() =>
-			job
-				? { ownerRef: job.ownerRef, jobId: job.jobId, revision: `${job.outputBytes}:${job.status}:${job.terminal}` }
-				: null,
-		[job],
-	);
-	const output = useShellJobOutput(client, target);
-	// Only a listed job shows output: one that left the tree shows none of
-	// what was read for it.
-	const listed = row !== undefined;
-	const lines = useMemo(
-		() => (listed && output.status === "read" ? parseOutputLines(output.tail.tail) : []),
-		[listed, output],
-	);
+	const output = useShellJobOutput(client, row?.job ?? null);
+	const lines = useMemo(() => (output.status === "read" ? parseOutputLines(output.tail.tail) : []), [output]);
 
 	const quiet = { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid };
 	const gone = snapshot.tree
