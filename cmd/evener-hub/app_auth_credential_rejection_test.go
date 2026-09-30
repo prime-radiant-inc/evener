@@ -554,3 +554,61 @@ func TestCredentialRejection_ARemovalRolledBackAfterTheCredentialWentKeepsIt(t *
 		t.Fatal("the rolled-back removal dropped the rejection of the key it put back")
 	}
 }
+
+// A keyless instance sends no credential, so a 401 or 403 from it is not a
+// credential the provider rejected, and nothing the user could replace.
+func TestCredentialRejection_AKeylessInstanceRecordsNothing(t *testing.T) {
+	for _, auth := range []string{registry.AuthNone, registry.AuthOptionalBearer} {
+		t.Run(auth, func(t *testing.T) {
+			clearProviderKeysFromEnvironment(t)
+			client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("local", 401, "unauthorized", nil, nil)}
+			c := newCredentialProbeController(t, client, map[string]registry.Provider{"local": {
+				Base:      "openai-compatible",
+				Transport: registry.Transport{BaseURL: "http://localhost:8080/v1", Auth: auth},
+			}}, nil)
+			resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "local"})
+			if err != nil {
+				t.Fatalf("TestCredentials: %v", err)
+			}
+			if client.callCount() != 1 {
+				t.Fatalf("precondition: the probe dialed %d times, want once (test status %q)", client.callCount(), resp.Status)
+			}
+			status, err := c.Status(appwire.AuthStatusParams{Provider: "local"})
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			if status.ActiveSource != "none" {
+				t.Fatalf("precondition: active source = %q, want none", status.ActiveSource)
+			}
+			if status.Error != "" {
+				t.Fatalf("error = %q for an instance that sent no credential", status.Error)
+			}
+		})
+	}
+}
+
+// The status in the message is the one the rejection is about: a 401 or 403.
+// A rejection classified from another status's message ("invalid key" in a
+// 400) or a status mentioned inside a longer number is no HTTP 401 or 403.
+func TestCredentialRejection_StatusIsOnlyA401Or403(t *testing.T) {
+	cases := []struct {
+		name         string
+		err          error
+		wantRejected bool
+		wantStatus   int
+	}{
+		{name: "invalid key in a 400", err: llm.ErrorFromHTTPStatus("gateway", 400, "Invalid key provided", nil, nil), wantRejected: true, wantStatus: 0},
+		{name: "text 401", err: errors.New("models: HTTP 401: denied"), wantRejected: true, wantStatus: 401},
+		{name: "text status=403", err: errors.New("request failed status=403"), wantRejected: true, wantStatus: 403},
+		{name: "text 4010", err: errors.New("models: HTTP 4010 upstream"), wantRejected: false},
+		{name: "text status=4031", err: errors.New("request failed status=4031"), wantRejected: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, rejected := credentialRejectionStatus(tc.err)
+			if rejected != tc.wantRejected || (rejected && status != tc.wantStatus) {
+				t.Fatalf("credentialRejectionStatus = (%d, %v), want (%d, %v)", status, rejected, tc.wantStatus, tc.wantRejected)
+			}
+		})
+	}
+}

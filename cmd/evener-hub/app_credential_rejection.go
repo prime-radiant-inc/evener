@@ -3,8 +3,8 @@ package hub
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 
 	"primeradiant.com/evener/llm"
@@ -23,6 +23,8 @@ import (
 // Some adapters surface an HTTP failure only as text ("HTTP 401",
 // "status=401"), so the status is read from the message when the error
 // carries none. Only the status number is kept; nothing else from the message.
+// A rejection classified some other way (an "invalid key" message on a 400)
+// reports status 0: the message must not name a status the rejection is not.
 func credentialRejectionStatus(err error) (status int, rejected bool) {
 	if err == nil {
 		return 0, false
@@ -34,22 +36,22 @@ func credentialRejectionStatus(err error) (status int, rejected bool) {
 		status = llmErr.StatusCode()
 	}
 	if status == 0 {
-		message := err.Error()
-		for _, code := range []int{401, 403} {
-			if strings.Contains(message, "HTTP "+strconv.Itoa(code)) || strings.Contains(message, "status="+strconv.Itoa(code)) {
-				status = code
-				break
-			}
+		if match := credentialRejectionText.FindStringSubmatch(err.Error()); match != nil {
+			status, _ = strconv.Atoi(match[1])
 		}
 	}
 	if status == 401 || status == 403 {
 		return status, true
 	}
 	if kind := llm.Kind(err); kind == llm.KindAuthentication || kind == llm.KindAccessDenied {
-		return status, true
+		return 0, true
 	}
-	return status, false
+	return 0, false
 }
+
+// credentialRejectionText finds a 401 or 403 in an error's text, as a whole
+// number: "HTTP 4010" is not one.
+var credentialRejectionText = regexp.MustCompile(`(?:HTTP |status=)(401|403)\b`)
 
 // credentialRejectedMessage is AuthStatusResponse.Error for a rejected
 // credential: words the hub writes, with the HTTP status when it is known and
@@ -109,11 +111,22 @@ func (c *hubAuthController) beginCredentialProbe(name string) credentialProbeSta
 }
 
 // currentCredentialRevision is name's credential configuration revision now,
-// the one its status reports. It resolves the fingerprint key, which can
-// repair the key file, so the caller must not hold credMu.
+// the one its status reports, or empty when name sends no credential: a
+// keyless instance's 401 or 403 is no credential the provider rejected, and
+// nothing the user could replace. An empty revision records nothing
+// (settleCredentialProbe). It resolves the fingerprint key, which can repair
+// the key file, so the caller must not hold credMu.
 func (c *hubAuthController) currentCredentialRevision(name string) string {
+	r := c.registry()
+	if r == nil {
+		return ""
+	}
+	res, err := r.ResolveInstancePresence(name)
+	if err != nil || res.Credential.Source == "none" {
+		return ""
+	}
 	key, _ := resolveEndpointFingerprintKey(c.stateDir)
-	return c.credentialConfigRevisionForKey(key, name)
+	return c.credentialConfigRevisionForKey(key, name, res)
 }
 
 // settleCredentialProbe records what a probe's model listing says about the
@@ -126,9 +139,9 @@ func (c *hubAuthController) currentCredentialRevision(name string) string {
 // credentialRejectionChanged; the caller must not hold credMu, since the
 // announcement reads the instance's status.
 //
-// A probe with no revision (the hub could not resolve its fingerprint key)
-// records nothing: its rejection could not tell the configuration it was
-// about from any other.
+// A probe with no revision records nothing: either the instance sent no
+// credential, or the hub could not resolve its fingerprint key and the
+// rejection could not tell the configuration it was about from any other.
 func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) {
 	status, rejected := credentialRejectionStatus(err)
 	verified := err == nil && listing.Live
