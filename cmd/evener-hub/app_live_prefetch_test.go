@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/valueexpr"
@@ -231,4 +232,39 @@ func TestPrefetchLiveModelsSurvivesUnreachable(t *testing.T) {
 	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
 		t.Fatalf("entry models = %+v, want live gpt-live despite dead sibling", got.Models)
 	}
+}
+
+// The hub lists providers once at startup and never again on a timer: a
+// provider is polled only when someone asks (Jesse, 2026-09-30).
+func TestLiveModelsPrefetchRunsOnceAtStartup(t *testing.T) {
+	ctl, gw := newListingController(t)
+	gw.status.Store(http.StatusOK)
+	runs := runStartupPrefetch(t, func(startBackground func(func())) {
+		startLiveModelsPrefetch(t.Context(), ctl.reg, ctl.auth, startBackground, func() {})
+	})
+	if runs != 1 {
+		t.Fatalf("the prefetch started %d background runs, want 1", runs)
+	}
+	if got := gw.hits.Load(); got != 1 {
+		t.Fatalf("the provider was listed %d times, want once", got)
+	}
+}
+
+// runStartupPrefetch hands start a synchronous background runner and returns
+// how many runs it started. A startup pass returns; a prefetch that polled on
+// a timer would never return, so the wait is bounded.
+func runStartupPrefetch(t *testing.T, start func(startBackground func(func()))) int {
+	t.Helper()
+	runs := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		start(func(fn func()) { runs++; fn() })
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prefetch never returned: it is still running after its startup pass")
+	}
+	return runs
 }
