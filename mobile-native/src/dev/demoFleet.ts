@@ -13,7 +13,7 @@ import {
 	NAVIGATION_SECTION_LIMIT,
 	relativeAge,
 } from "@evener/appwire-client/state/navigation";
-import { capability, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { capability, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type {
 	ArchiveParams,
 	ArchiveResponse,
@@ -21,7 +21,6 @@ import type {
 	NoticesListResponse,
 	NavigationCapability,
 	NavigationInvalidatedPayload,
-	NavigationJobSummary,
 	NavigationProjectSummary,
 	NavigationReadParams,
 	NavigationReadResponse,
@@ -42,7 +41,7 @@ import { parseActivityTree } from "@evener/appwire-client";
 import { flattenJobs } from "../subagents/subagentModel.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
-// initialize handshake. Every wireV2 response must carry the exact same id:
+// initialize handshake. Every wireSnapshot response must carry the exact same id:
 // the shared navigation store rejects any other generation as a mismatch
 // (appwire-client/typescript/state/navigation/revalidator.ts's `validate`,
 // "generation mismatch"). Exported for the tests that assert it.
@@ -52,27 +51,11 @@ export const DEMO_FLEET_GENERATION = "demo-fleet";
 // target revision is one the next read actually reaches: the navigation
 // store refuses a response below the revision it was told to expect.
 const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
-	wireV2(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
+	wireSnapshot(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
 
 const M = 60;
 const H = 3600;
 const D = 86400;
-
-// The hub's own truncation policy for a session's children
-// (maxNavigationChildren in cmd/evener-hub/navigation_projection.go): past
-// this many, the rest are counted in omitted_descendants instead of sent.
-// Mirrored here so a swarm as busy as s-pr2138 (54) or s-fuzz (467) behaves
-// like the real hub instead of shipping an unbounded payload.
-const MAX_CHILDREN = 50;
-
-// The hub's projectNode applies that same cap recursively, at every depth of
-// a session's descendant tree, not only its immediate children -- so this is
-// shared by both toRow (a session's own children) and toChildRow (a child's
-// own children), rather than the top level capping and a nested level not.
-export function capChildren<T>(children: T[]): { capped: T[]; omitted: number } {
-	const capped = children.slice(0, MAX_CHILDREN);
-	return { capped, omitted: children.length - capped.length };
-}
 
 const ARCHIVED_TOTAL = 271; // data.js: archivedTotal (Board mockup: "ARCHIVED · 271")
 // How many archived rows a "project" overview embeds as a preview, versus a
@@ -178,7 +161,6 @@ type ProtoHost = "magic-kingdom" | "paradise-park";
 // the wire's below. "shutdown" covers every non-live session (shut down,
 // test-run and archived alike -- data.js sets `live: false` on all of them).
 export type ProtoState = "failed" | "question" | "approval" | "restart" | "yourmove" | "working" | "idle" | "shutdown";
-type SubState = RawSubagent["state"];
 
 // A subagent as data.js's swarms name it, with the detail the Subagents
 // list's rows show (demoSubagents.ts).
@@ -718,44 +700,6 @@ const WIRE_STATE: Record<ProtoState, { state: string; askPending?: true; approva
 // is "active" on the wire, like the working band.
 const NEEDS_YOU_STATES = new Set<ProtoState>(["failed", "question", "approval", "restart"]);
 
-const SUBAGENT_WIRE_STATE: Record<SubState, { state: string; live: boolean }> = {
-	running: { state: "active", live: true },
-	failed: { state: "errored", live: false },
-	done: { state: "ended", live: false },
-};
-
-// cmd/evener-hub/navigation_projection.go's projectShallow sets Offline the
-// same way for every projected node, subagents included -- it reads the
-// row's own HostID, not anything about its parent -- so a session's
-// children from an offline source are offline too, not just the parent row.
-function toChildRow(
-	sub: RawSubagent,
-	ownerHostId: string,
-	project: string,
-	startupMs: number,
-	offline: boolean,
-): NavigationSessionSummary {
-	const { state, live } = SUBAGENT_WIRE_STATE[sub.state];
-	const { capped, omitted } = capChildren(sub.children ?? []);
-	// A subagent is a session like any other, named by a hub-shaped id; its
-	// parent's delegates name its transcript by this same ref (demoSessions.ts).
-	const sessionId = demoSessionId(sub.id);
-	return {
-		ref: hostSessionRef(ownerHostId, sub.id),
-		host_id: ownerHostId,
-		session_id: sessionId,
-		title: sub.title,
-		project,
-		state,
-		kind: "subagent",
-		live,
-		...(offline ? { offline: true as const } : {}),
-		updated_at: new Date(startupMs - sub.ago * 1000).toISOString(),
-		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
-		children: capped.map((child) => toChildRow(child, ownerHostId, project, startupMs, offline)),
-	};
-}
-
 // Explicitly named subagents (RETRY_CHILDREN etc.) or ones generated from
 // subs counts (genericChildren) -- never both; data.js does the same (a
 // session either names its subagents or just counts them).
@@ -765,10 +709,8 @@ function rawChildren(raw: RawSession): RawSubagent[] {
 	return [];
 }
 
-// A live root's whole-tree subagent tally (S3), as its daemon counts it: every
-// depth, not just the capped rows its children keep. The demo still nests its
-// subagent rows under children for the tree views, but the Board's chip and
-// working why line read this tally, not those rows.
+// A live root's compact whole-tree tally. Activity trees retain the detailed
+// descendants independently of the flat navigation records.
 function subagentTally(subs: readonly RawSubagent[]): { running: number; failed: number; done: number } {
 	const tally = { running: 0, failed: 0, done: 0 };
 	for (const sub of subs) {
@@ -783,16 +725,9 @@ function subagentTally(subs: readonly RawSubagent[]): { running: number; failed:
 
 // "Running <command>" activity lines become a running job; anything else
 // ("Thinking", "Editing ...", "Waiting on N subagents") is not a command.
-function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
+function runningCommand(raw: RawSession): string | undefined {
 	if (!raw.activity?.startsWith("Running ")) return undefined;
-	return [
-		{
-			job_id: `${raw.id}-job`,
-			job_type: "bash",
-			status: "running",
-			command: raw.activity.slice("Running ".length),
-		},
-	];
+	return Array.from(raw.activity.slice("Running ".length)).slice(0, 512).join("");
 }
 
 // The project a fleet session belongs to; the fixture leaves evener's unset.
@@ -890,8 +825,7 @@ function toRow(
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
 	const subs = rawChildren(raw);
-	const { capped, omitted } = capChildren(subs);
-	const jobs = runningJobs(raw);
+	const command = runningCommand(raw);
 	const modelName = raw.model === undefined ? undefined : modelNames[raw.model];
 	return {
 		ref: sessionRef(raw),
@@ -906,11 +840,10 @@ function toRow(
 		...(approvalPending ? { approval_pending: true as const } : {}),
 		...(offline ? { offline: true as const } : {}),
 		updated_at: new Date(startupMs - raw.ago * 1000).toISOString(),
-		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
 		...(live && subs.length > 0 ? { subagents: subagentTally(subs) } : {}),
-		...(jobs ? { running_jobs: jobs } : {}),
+		...(command ? { running_job_count: 1, running_job_command: command } : {}),
 		...(modelName ? { model_name: modelName } : {}),
-		children: capped.map((child) => toChildRow(child, owner, project, startupMs, offline)),
+		children: [],
 	};
 }
 
@@ -1347,15 +1280,8 @@ function fleetAnswers(
 		return { page: items.slice(offset, offset + limit), remaining: Math.max(0, items.length - (offset + limit)) };
 	}
 
-	// cmd/evener-hub/navigation_projection.go sets a resource's Truncated
-	// whenever any row it projected (at any depth) had its own children
-	// capped (OmittedDescendants set) -- not only when the page itself was
-	// cut short. Mirrored here instead of a hardcoded false.
-	function anyTruncated(rows: NavigationSessionSummary[]): boolean {
-		return rows.some((row) => (row.omitted_descendants ?? 0) > 0 || anyTruncated(row.children));
-	}
-
 	function answerNavigationRead(params: NavigationReadParams): NavigationReadResponse {
+		if (params.representationVersion !== 3) throw new Error("Unsupported navigation representation");
 		switch (params.resource) {
 			case "manifest":
 				return respond(revision, params, {
@@ -1379,7 +1305,7 @@ function fleetAnswers(
 					throw new Error(`Unknown demonstration section: ${params.section}`);
 				const source = params.section === "needs_you" ? needsYouSessions : liveSessions;
 				const { page: sessions, remaining } = page(source, params, NAVIGATION_SECTION_LIMIT);
-				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, { sessions, remaining, truncated: false });
 			}
 			case "pin_catalog": {
 				const { page: sections, remaining } = page(pinSections, params, NAVIGATION_CATALOG_LIMIT);
@@ -1389,7 +1315,7 @@ function fleetAnswers(
 				const id = pinCategoryIds.find((candidate) => candidate === params.sectionId);
 				if (!id) throw new Error(`Unknown demonstration pin section: ${params.sectionId}`);
 				const { page: sessions, remaining } = page(pinSessions(id), params, NAVIGATION_SECTION_LIMIT);
-				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, { sessions, remaining, truncated: false });
 			}
 			case "catalog": {
 				// Same as "section": an unrecognized catalog is a hard error, never
@@ -1409,7 +1335,7 @@ function fleetAnswers(
 				const projectKey = knownProjectKey(params);
 				const current = tierRows(projectKey, "current");
 				const recent = tierRows(projectKey, "recent");
-				// wireV2's "project" branch hardcodes every tier's own remaining to
+				// wireSnapshot's "project" branch hardcodes every tier's own remaining to
 				// 0 regardless of input (a real project_page read reports the true
 				// count instead), so only the preview size shown here is ours to
 				// choose: the archived tier is now a real 271-row list, and an
@@ -1422,7 +1348,7 @@ function fleetAnswers(
 					current: { sessions: current, remaining: 0 },
 					recent: { sessions: recent, remaining: 0 },
 					archived: { sessions: archived, remaining: 0 },
-					truncated: anyTruncated([...current, ...recent, ...archived]),
+					truncated: false,
 				});
 			}
 			case "project_page": {
@@ -1438,7 +1364,7 @@ function fleetAnswers(
 					tier,
 					sessions,
 					remaining,
-					truncated: anyTruncated(sessions),
+					truncated: false,
 				});
 			}
 			case "location": {
@@ -1447,19 +1373,17 @@ function fleetAnswers(
 				if (!raw) throw new Error(`Unknown demonstration session location: ${ref}`);
 				// The hub's location is a shallow summary (navigation_projection.go's
 				// projectShallow), not a row with its descendants: a location resource
-				// holds exactly one entity, and projectShallow sets no omitted_descendants
-				// (the child cap is a list-row fact, not the summary's), so the capped
-				// count is dropped with the children. servedTier is the one place this
+				// holds exactly one entity. servedTier is the one place this
 				// row's tier is decided, so the reveal that asks this exact tier's
 				// project_page cannot drift from what tierRows serves it under.
 				const tier = servedTier(raw);
-				const { omitted_descendants: _omitted, ...shallow } = rowOf(raw);
+				const shallow = rowOf(raw);
 				const response = respond(revision, params, {
 					session: { ...shallow, children: [] },
 					top_level_ref: ref,
 					top_level: true,
 				});
-				// The shared v2 encoder (wireV2) builds a location's metadata with only
+				// The shared snapshot encoder (wireSnapshot) builds a location's metadata with only
 				// ref/top_level_ref/top_level; a real hub also names the row's project,
 				// tier and pin section, so they are stamped on here, the way the web's
 				// own fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/

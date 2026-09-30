@@ -23,7 +23,7 @@ export async function locateSession(
 	signal?: AbortSignal,
 ): Promise<SessionLocation> {
 	const response = await client.request("evener/navigation/read", {
-		representationVersion: 2,
+		representationVersion: 3,
 		resource: "location",
 		ref,
 	});

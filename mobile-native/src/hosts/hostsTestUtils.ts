@@ -5,7 +5,7 @@
 // codec.
 import type { HostRow, NavigationReadParams } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 
 export const hostRow = (name: string, over: Partial<HostRow> = {}): HostRow => ({
@@ -101,8 +101,8 @@ export function scriptedFleet(hosts: HostRow[], sessions: ReturnType<typeof live
 				}
 				if (method === "evener/navigation/read") {
 					const read = params as NavigationReadParams;
-					return wireV2(
-						{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
+					return wireSnapshot(
+						{ ...read, representationVersion: 3, offset: read.offset ?? 0, limit: read.limit ?? 50 },
 						{ sessions: fleet.sessions, remaining: 0 },
 						"etag-live",
 						1,

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NavigationPages } from "./navigationPages";
 import { locateSession, revealNavigationRow } from "./navigationReveal";
@@ -17,21 +17,21 @@ it.each([
 		request: async (method: string, args: unknown) => {
 			expect(method).toBe("evener/navigation/read");
 			expect(args).toEqual({
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "location",
 				ref: "child",
 			});
-			const v2 = wireV2(args as never, {
+			const snapshot = wireSnapshot(args as never, {
 				ref: "child",
 				session: { ref: "child", project: "Project" },
 				...fields,
 			});
 			return {
-				...v2,
+				...snapshot,
 				data: {
-					...(v2.data as object),
+					...(snapshot.data as object),
 					metadata: {
-						...(v2.data as { metadata: object }).metadata,
+						...(snapshot.data as { metadata: object }).metadata,
 						...fields,
 					},
 				},
@@ -47,16 +47,16 @@ it.each([
 const locationClient = (fields: Record<string, unknown>, session: Record<string, unknown> = {}) =>
 	({
 		request: async () => {
-			const v2 = wireV2({ representationVersion: 2, resource: "location", ref: "child" } as never, {
+			const snapshot = wireSnapshot({ representationVersion: 3, resource: "location", ref: "child" } as never, {
 				ref: "child",
 				session: { ref: "child", project: "Project", ...session },
 				...fields,
 			});
 			return {
-				...v2,
+				...snapshot,
 				data: {
-					...(v2.data as object),
-					metadata: { ...(v2.data as { metadata: object }).metadata, ...fields },
+					...(snapshot.data as object),
+					metadata: { ...(snapshot.data as { metadata: object }).metadata, ...fields },
 				},
 			};
 		},
@@ -130,9 +130,9 @@ const response = (
 	offset = 0,
 	resource: "section" | "pin_section" = "section",
 ) =>
-	wireV2(
+	wireSnapshot(
 		{
-			representationVersion: 2,
+			representationVersion: 3,
 			resource,
 			...(resource === "section" ? { section: "live" } : { sectionId: "pin" }),
 			offset,
@@ -143,16 +143,11 @@ const response = (
 		revision,
 		"g",
 	);
-it("loads later pages and expands the nested destination's ancestors", async () => {
+it("loads later pages and reveals the flat destination", async () => {
 	const offsets: number[] = [];
 	const list = pages((offset) => {
 		offsets.push(offset);
-		return response(
-			offset === 0 ? [{ ref: "other" }] : [{ ref: "root", children: [{ ref: "child" }] }],
-			offset === 0 ? 1 : 0,
-			1,
-			offset,
-		);
+		return response(offset === 0 ? [{ ref: "other" }] : [{ ref: "child" }], offset === 0 ? 1 : 0, 1, offset);
 	});
 	expect(
 		await revealNavigationRow(
@@ -162,7 +157,7 @@ it("loads later pages and expands the nested destination's ancestors", async () 
 			(r) => r.children ?? [],
 			() => true,
 		),
-	).toEqual(["root", "child"]);
+	).toEqual(["child"]);
 	expect(offsets).toEqual([0, 1]);
 });
 it("does not continue paging after leaving", async () => {

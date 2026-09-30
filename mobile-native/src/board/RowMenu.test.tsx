@@ -85,7 +85,7 @@ describe("the preview card (spec 7.3)", () => {
 	it("says what a working session is doing", () => {
 		const tree = render(
 			<RowPreviewCard
-				item={item("working", { state: "active", running_jobs: [{ command: "npm test" }] as never })}
+				item={item("working", { state: "active", running_job_count: 1, running_job_command: "npm test" })}
 				hostLabel={hostLabel}
 				onPress={() => {}}
 			/>,

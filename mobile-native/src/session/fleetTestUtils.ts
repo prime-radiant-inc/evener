@@ -1,7 +1,7 @@
 // A hub's answers to the reads a Board controller makes, for tests that
 // mount the Session's fleet (useFleet) against a fleet of their own.
 import type { NavigationReadParams, NavigationSessionSummary } from "@evener/appwire-client";
-import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 
 export interface FleetShape {
 	live: NavigationSessionSummary[];
@@ -46,8 +46,8 @@ export function answerFleetRead(fleet: FleetShape, method: string, params: unkno
 		if (read.section === "needs_you") return { sessions: fleet.needsYou, remaining: 0 };
 		return { sessions: fleet.live, remaining: 0 };
 	})();
-	return wireV2(
-		{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
+	return wireSnapshot(
+		{ ...read, representationVersion: 3, offset: read.offset ?? 0, limit: read.limit ?? 50 },
 		body,
 		`etag-${read.resource}-${fleet.revision ?? 1}`,
 		fleet.revision ?? 1,

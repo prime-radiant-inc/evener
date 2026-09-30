@@ -107,7 +107,7 @@ describe("a Board row (spec 7.2)", () => {
 		const needsYou = textWith(mount(), "open the session to see what went wrong")[0];
 		expect(needsYou.props.numberOfLines).toBe(2);
 		const tree = mount({
-			item: item("working", { state: "active", running_jobs: [{ command: "go test ./agent/..." } as never] }),
+			item: item("working", { state: "active", running_job_count: 1, running_job_command: "go test ./agent/..." }),
 		});
 		const activity = textWith(tree, "Running go test ./agent/...")[0];
 		expect(activity.props.numberOfLines).toBe(1);
