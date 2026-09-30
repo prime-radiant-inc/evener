@@ -1,5 +1,5 @@
 import type { ActivityJob, ActivityTree, ItemModel, TurnModel } from "@evener/appwire-client";
-import { buildEntityView, type EntityView } from "@evener/appwire-client";
+import { buildEntityView, type EntityView, findEntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
@@ -65,13 +65,14 @@ function jobView(
       branch: {},
     },
   };
-  const view = buildEntityView({
+  const entities = buildEntityView({
     sessionRef: "local:s",
     tree,
     turns: [],
     stale: state.stale ?? false,
     ended: state.ended ?? false,
-  }).get(id);
+  });
+  const view = findEntityView(entities, "job", id, "local:s");
   if (!view) throw new Error("expected job fixture to resolve");
   return view;
 }
@@ -99,7 +100,12 @@ function watchView(
     status: "completed",
   };
   const turns: TurnModel[] = [{ id: "turn-1", status: "completed", items: [item] }];
-  const view = buildEntityView({ sessionRef: "local:s", turns, stale: false, ended: false }).get(id);
+  const view = findEntityView(
+    buildEntityView({ sessionRef: "local:s", turns, stale: false, ended: false }),
+    "watch",
+    id,
+    "local:s",
+  );
   if (!view) throw new Error("expected watch fixture to resolve");
   return view;
 }
@@ -392,8 +398,8 @@ test("falls back to the shared render-context entity map", () => {
   vi.useFakeTimers();
   const view = jobView("job_context", "From context");
   render(
-    <TranscriptRenderProvider entities={new Map([["job_context", view]])}>
-      <EntityRef id="job_context" />
+    <TranscriptRenderProvider sessionRef="local:s" entities={new Map([[view.id, view]])}>
+      <EntityRef kind="job" id="job_context" />
     </TranscriptRenderProvider>,
   );
 
@@ -406,7 +412,7 @@ test("an explicit view takes precedence over the context entity map", () => {
   const explicit = jobView("job_same", "Explicit view");
   const contextual = jobView("job_same", "Context view");
   render(
-    <TranscriptRenderProvider entities={new Map([["job_same", contextual]])}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={new Map([[contextual.id, contextual]])}>
       <EntityRef id="job_same" view={explicit} />
     </TranscriptRenderProvider>,
   );
@@ -524,4 +530,12 @@ test.each([
   const text = focusCard().textContent;
   expect(text).not.toContain("Source");
   expect(text).not.toContain("this session");
+});
+
+test("partial supplied usage renders without inventing absent counters", () => {
+  vi.useFakeTimers();
+  render(<EntityRef view={delegateView("dlg_partial", {}, { usage: { outputTokens: 300 } })} id="dlg_partial" />);
+  const card = focusCard();
+  expect(card.textContent).toContain("↓300");
+  expect(card.textContent).not.toContain("↑0");
 });

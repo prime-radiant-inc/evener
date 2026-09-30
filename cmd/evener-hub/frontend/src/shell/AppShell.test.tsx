@@ -12,7 +12,7 @@ import type {
 import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -101,9 +101,9 @@ const EMPTY_NAV_RESPONSE = {
 function navigationRead(params: NavigationReadParams): NavigationReadResponse {
   switch (params.resource) {
     case "manifest":
-      return wireV2(params, EMPTY_NAV_RESPONSE, '"test"');
+      return wireSnapshot(params, EMPTY_NAV_RESPONSE, '"test"');
     case "section":
-      return wireV2(
+      return wireSnapshot(
         params,
         {
           sessions: params.section === "live" ? [TREE_SESSION] : [],
@@ -113,9 +113,9 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
         '"test"',
       );
     case "pin_catalog":
-      return wireV2(params, { pin_sections: [], remaining: 0 }, '"test"');
+      return wireSnapshot(params, { pin_sections: [], remaining: 0 }, '"test"');
     case "pin_section":
-      return wireV2(
+      return wireSnapshot(
         params,
         {
           sessions: [],
@@ -125,7 +125,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
         '"test"',
       );
     case "catalog":
-      return wireV2(
+      return wireSnapshot(
         params,
         {
           projects:
@@ -137,7 +137,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
         '"test"',
       );
     case "project":
-      return wireV2(
+      return wireSnapshot(
         params,
         {
           key: "proj1",
@@ -149,7 +149,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
         '"test"',
       );
     case "project_page":
-      return wireV2(
+      return wireSnapshot(
         params,
         {
           key: params.projectKey,
@@ -162,7 +162,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
         '"test"',
       );
     case "location":
-      return wireV2(
+      return wireSnapshot(
         params,
         {
           ref: params.ref,
@@ -176,7 +176,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
       // The StatusBar ensures the scope's subagents page on every mount;
       // answer with an empty one (tests that need rows install them into the
       // store directly).
-      return wireV2(
+      return wireSnapshot(
         params,
         {
           offset: params.offset,
@@ -192,7 +192,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
 
 // A FakeClient whose connect() advertises a v2 navigation capability with a
 // generation matching EMPTY_NAV_RESPONSE. Tests that render <AppShell/> and
-// depend on the navigation store being in mode "v2" (rather than "error")
+// depend on the navigation store being in mode "v3" (rather than "error")
 // must use this instead of a bare `new FakeClient("ready")`, whose default
 // InitializeResponse has no navigation capability.
 function navClient(initialState: ConnectionState = "ready"): FakeClient {
@@ -203,7 +203,7 @@ function navClient(initialState: ConnectionState = "ready"): FakeClient {
     protocolVersion: "evener-appwire-v6",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
   return client;
 }
@@ -263,7 +263,7 @@ function installLocation(location: NavigationSessionLocation): void {
     generationID: location.generation_id,
   });
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: location.generation_id,
     resources,
   });
@@ -311,7 +311,7 @@ function installNeedsYouRows(): void {
     error: null,
     generationID: "generation_test",
   });
-  navigationStore.setState({ mode: "v2", resources });
+  navigationStore.setState({ mode: "v3", resources });
 }
 
 const appShellCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "AppShell.module.css"), "utf8").replace(
@@ -430,7 +430,7 @@ beforeEach(() => {
   // store above, with nothing carried over from the previous test.
   resetNotificationsForTests();
   initNotifications();
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   // afterEach restores Vitest globals; recreate deterministic storage before
   // clearing it so DockHost cannot restore the prior test's layout.
   installLocalStorage(new MemoryStorage());
@@ -762,7 +762,7 @@ test("v1 Mod+J cold-demand requests page zero once and opens its first ref", asy
   });
   act(() =>
     navigationStore.setState({
-      mode: "v2",
+      mode: "v3",
       manifest: {
         data: {
           generation_id: "generation_test",
@@ -865,7 +865,7 @@ test("v2 Mod+J loads the next needs-you page after the focused last row", async 
     navigationStore.setState({ resources: loadedResources });
     return navigationStore.getState().resources.get(keyID(pageKey)) as never;
   });
-  act(() => navigationStore.setState({ mode: "v2", resources, loadSection }));
+  act(() => navigationStore.setState({ mode: "v3", resources, loadSection }));
 
   fireEvent.keyDown(window, { key: "j", metaKey: true });
 
@@ -896,7 +896,7 @@ function seedColdModJPage(ref = "local:late") {
 function setColdModJState(loadSection: NavigationStoreState["loadSection"]) {
   act(() => {
     navigationStore.setState({
-      mode: "v2",
+      mode: "v3",
       manifest: {
         data: {
           generation_id: "generation_test",
@@ -1128,7 +1128,7 @@ test("a deep-link lookup starts exactly once when navigation mode becomes v2", a
   expect(lookupLocation).not.toHaveBeenCalled();
   expect(locationCalls()).toHaveLength(0);
 
-  act(() => navigationStore.setState({ mode: "v2" }));
+  act(() => navigationStore.setState({ mode: "v3" }));
 
   await waitFor(() => expect(locationCalls()).toHaveLength(1));
   expect(lookupLocation).toHaveBeenCalledTimes(1);
@@ -1136,7 +1136,7 @@ test("a deep-link lookup starts exactly once when navigation mode becomes v2", a
   expect(locationCalls()).toEqual([
     {
       method: "evener/navigation/read",
-      params: { resource: "location", ref, representationVersion: 2 },
+      params: { resource: "location", ref, representationVersion: 3 },
     },
   ]);
 });
@@ -1147,7 +1147,7 @@ test("a direct route with a settled gone v2 location replaces unrelated state wi
   const key = { kind: "location", ref } as const;
   const lookupLocation = vi.fn().mockResolvedValue(undefined);
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -1191,7 +1191,7 @@ test("a direct route with a stale old-generation gone tombstone waits for the fr
   const key = { kind: "location", ref } as const;
   const lookupLocation = vi.fn().mockResolvedValue(undefined);
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_next",
     resources: new Map([
       [
@@ -1273,7 +1273,7 @@ test("a nested location opens its explicit owner without loading a project", asy
 test("retained unavailable location data does not retry or lose its owner", async () => {
   const child = "local:retained-child";
   const client = navClient();
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   window.history.pushState({}, "", `/s/${encodeURIComponent(child)}`);
   installLocation({
     generation_id: "generation_test",
@@ -1750,7 +1750,7 @@ test("a saved session layout is replaced by /new with Spawn as the only main pan
 
 test("repairs a nested session restored as main when the root route's tree arrives", async () => {
   await saveLegacyNestedMainLayout();
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
 
   window.history.pushState({}, "", "/");
   render(<AppShell client={navClient()} />);
@@ -1858,7 +1858,7 @@ test("a focused session panel does not invalidate a settled nested route", async
 test("a deferred deep link beats a restored active session panel", async () => {
   await saveRealSessionPanelLayout();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
 
   window.history.pushState({}, "", "/s/local:child");
   render(<AppShell client={new FakeClient("ready")} />);
@@ -2055,7 +2055,7 @@ test("a saved welcome layout is replaced by a fresh routed primary, which lands 
 });
 
 test("deep-linking to a nested /s/{ref} opens the top-level owner in main and nested in secondary after tree arrival", async () => {
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   const client = navClient();
   client.on("evener/navigation/read", (params) => {
     if (params.resource === "location" && params.ref === "local:sub1") {
@@ -2072,7 +2072,7 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
       resources: new Map(
         [...navigationStore.getState().resources].filter(([, resource]) => resource.key.kind !== "location"),
       ),
-      mode: "v2",
+      mode: "v3",
     }),
   );
   await waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("main"));
@@ -2109,7 +2109,7 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
 });
 
 test("nested deep-link remains closed for a missing location until a later location arrives", async () => {
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   const client = navClient();
   client.on("evener/navigation/read", (params) => {
     if (params.resource === "location" && params.ref === "local:sub1") {
@@ -2126,7 +2126,7 @@ test("nested deep-link remains closed for a missing location until a later locat
       resources: new Map(
         [...navigationStore.getState().resources].filter(([, resource]) => resource.key.kind !== "location"),
       ),
-      mode: "v2",
+      mode: "v3",
     }),
   );
   await waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("main"));
@@ -2563,7 +2563,7 @@ test.each([
   const client = navClient();
   client.on("evener/navigation/read", (params) => {
     if (params.resource !== "location") return navigationRead(params);
-    const response = wireV2(
+    const response = wireSnapshot(
       params,
       {
         ref: params.ref,
@@ -2580,7 +2580,7 @@ test.each([
       },
       '"mixed-origin"',
     );
-    // wireV2's location convenience branch defaults top_level to true even
+    // wireSnapshot's location convenience branch defaults top_level to true even
     // when its input says otherwise. Correct the external snapshot metadata,
     // not the navigation store, so the real decoder places a nested session.
     if (response.status === "ok" && response.representation === "snapshot") {
@@ -3040,7 +3040,7 @@ function installSwitchableViewport(): (mobile: boolean) => void {
 // beat: the deep link was gone before the location arrived, and no later
 // evener/changed push could name it again.
 test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of being overwritten by welcome", async () => {
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   installMobileViewport();
 
   window.history.pushState({}, "", "/s/local:s1");
@@ -3159,7 +3159,7 @@ test("desktop boot uses the typed AppWire navigation read seam", async () => {
   ).toBe(true);
   expect(client.calls).toContainEqual({
     method: "evener/navigation/read",
-    params: { resource: "manifest", representationVersion: 2 },
+    params: { resource: "manifest", representationVersion: 3 },
   });
   // Required, not just allowed above: a regression that stops loading the
   // catalog on connect must fail this test, not slip past the allow-list.
@@ -3339,7 +3339,7 @@ function navClientWithLive(sessions: NavigationSessionSummary[]): FakeClient {
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
     if (params.resource === "section" && params.section === "live") {
-      return wireV2(params, { sessions, remaining: 0, truncated: false }, '"test"');
+      return wireSnapshot(params, { sessions, remaining: 0, truncated: false }, '"test"');
     }
     return navigationRead(params);
   });
@@ -3348,7 +3348,7 @@ function navClientWithLive(sessions: NavigationSessionSummary[]): FakeClient {
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
   return client;
 }
@@ -3417,9 +3417,9 @@ test("Alt+Shift+ArrowRight at the last loaded live session demand-loads the next
   client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
     if (params.resource === "section" && params.section === "live") {
       if ((params.offset ?? 0) === 0) {
-        return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
+        return wireSnapshot(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
       }
-      return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
     }
     return navigationRead(params);
   });
@@ -3428,7 +3428,7 @@ test("Alt+Shift+ArrowRight at the last loaded live session demand-loads the next
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
 
   const user = userEvent.setup();
@@ -3461,7 +3461,7 @@ function navClientWithDeferredLivePageTwo(script: {
     (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
       if (params.resource === "section" && params.section === "live") {
         if ((params.offset ?? 0) === 0) {
-          return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
+          return wireSnapshot(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
         }
         return script.onPageTwo(params);
       }
@@ -3473,7 +3473,7 @@ function navClientWithDeferredLivePageTwo(script: {
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
   return client;
 }
@@ -3484,7 +3484,7 @@ test("live-next demand-load retries after the page request fails", async () => {
     onPageTwo: (params) => {
       pageTwoAttempts++;
       if (pageTwoAttempts === 1) throw new Error("transient read failure");
-      return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
     },
   });
   const user = userEvent.setup();
@@ -3522,7 +3522,11 @@ test("an in-flight live demand-load goes inert when a newer live-nav press super
           // below (previous from the last loaded row) is a DIRECT mid-list
           // step, not a demand - a previous from the FIRST loaded row would
           // itself demand the same in-flight page (round-5 tail rule).
-          return wireV2(params, { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 1, truncated: false }, '"test"');
+          return wireSnapshot(
+            params,
+            { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 1, truncated: false },
+            '"test"',
+          );
         }
         return new Promise<NavigationReadResponse>((resolve) => {
           deferred.params = params;
@@ -3537,7 +3541,7 @@ test("an in-flight live demand-load goes inert when a newer live-nav press super
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
   const user = userEvent.setup();
   render(<AppShell client={client} />);
@@ -3559,7 +3563,7 @@ test("an in-flight live demand-load goes inert when a newer live-nav press super
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 });
@@ -3577,7 +3581,7 @@ test("live-next with an unloaded live section re-requests page zero when the man
     if (params.resource === "section" && params.section === "live") {
       liveReads++;
       if (liveReads === 1) throw new Error("transient initial failure");
-      return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 0, truncated: false }, '"test"');
+      return wireSnapshot(params, { sessions: [LIVE_CYCLE_A], remaining: 0, truncated: false }, '"test"');
     }
     return navigationRead(params);
   });
@@ -3586,7 +3590,7 @@ test("live-next with an unloaded live section re-requests page zero when the man
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
 
   const user = userEvent.setup();
@@ -3612,7 +3616,7 @@ test("live-previous with an unloaded live section demand-loads to the tail", asy
     "evener/navigation/read",
     (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
       if (params.resource === "manifest") {
-        return wireV2(
+        return wireSnapshot(
           params,
           { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 2 } } },
           '"test"',
@@ -3625,7 +3629,7 @@ test("live-previous with an unloaded live section demand-loads to the tail", asy
             deferred.resolve = resolve;
           });
         }
-        return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+        return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
       }
       return navigationRead(params);
     },
@@ -3635,7 +3639,7 @@ test("live-previous with an unloaded live section demand-loads to the tail", asy
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
 
   const user = userEvent.setup();
@@ -3651,7 +3655,7 @@ test("live-previous with an unloaded live section demand-loads to the tail", asy
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-zero request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"'));
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });
@@ -3670,7 +3674,7 @@ test("rapid live-next presses at the boundary still navigate when the demand lan
     (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
       if (params.resource === "section" && params.section === "live") {
         if ((params.offset ?? 0) === 0) {
-          return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
+          return wireSnapshot(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
         }
         return new Promise<NavigationReadResponse>((resolve) => {
           deferred.params = params;
@@ -3685,7 +3689,7 @@ test("rapid live-next presses at the boundary still navigate when the demand lan
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
 
   const user = userEvent.setup();
@@ -3706,7 +3710,7 @@ test("rapid live-next presses at the boundary still navigate when the demand lan
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });
@@ -3719,7 +3723,7 @@ test("live-previous wrapping with more pages on the server demand-loads to the t
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
     if (params.resource === "manifest") {
-      return wireV2(
+      return wireSnapshot(
         params,
         { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 3 } } },
         '"test"',
@@ -3727,9 +3731,9 @@ test("live-previous wrapping with more pages on the server demand-loads to the t
     }
     if (params.resource === "section" && params.section === "live") {
       if ((params.offset ?? 0) === 0) {
-        return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 2, truncated: false }, '"test"');
+        return wireSnapshot(params, { sessions: [LIVE_CYCLE_A], remaining: 2, truncated: false }, '"test"');
       }
-      return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
     }
     return navigationRead(params);
   });
@@ -3738,7 +3742,7 @@ test("live-previous wrapping with more pages on the server demand-loads to the t
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
 
   const user = userEvent.setup();
@@ -3786,7 +3790,7 @@ test("an in-flight live demand-load goes inert while the palette is open", async
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 });
@@ -3807,7 +3811,7 @@ test("an opposite-direction press while a demanded page is in flight supersedes 
     "evener/navigation/read",
     (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
       if (params.resource === "manifest") {
-        return wireV2(
+        return wireSnapshot(
           params,
           { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 3 } } },
           '"test"',
@@ -3820,7 +3824,7 @@ test("an opposite-direction press while a demanded page is in flight supersedes 
             deferred.resolve = resolve;
           });
         }
-        return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+        return wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
       }
       return navigationRead(params);
     },
@@ -3830,7 +3834,7 @@ test("an opposite-direction press while a demanded page is in flight supersedes 
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
 
   const user = userEvent.setup();
@@ -3848,7 +3852,7 @@ test("an opposite-direction press while a demanded page is in flight supersedes 
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-zero request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"'));
   });
   // Next from nothing opens the FIRST live row; the previous direction's
   // continuation must not run past it toward the tail.
@@ -3892,7 +3896,7 @@ test("an in-flight live demand-load goes inert when the client generation change
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   // The stale-generation continuation must not navigate.
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
@@ -3906,7 +3910,7 @@ test("live-next focuses the session pane even when the URL already matches", asy
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
     if (params.resource === "section" && params.section === "live") {
-      return wireV2(params, { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      return wireSnapshot(params, { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
     }
     return navigationRead(params);
   });
@@ -3915,7 +3919,7 @@ test("live-next focuses the session pane even when the URL already matches", asy
     protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
   const user = userEvent.setup();
   render(<AppShell client={client} />);
@@ -3998,7 +4002,7 @@ test("a live demand can be re-issued after an invalidation restales the pages", 
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 
@@ -4030,7 +4034,7 @@ test("a live demand can be re-issued after an invalidation restales the pages", 
   const params2 = deferred.params;
   if (!params2 || !resolve2) throw new Error("second page-two request was not issued");
   await act(async () => {
-    resolve2(wireV2(params2, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve2(wireSnapshot(params2, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });
@@ -4077,7 +4081,7 @@ test("a demand that completes inert does not leave the live chord stuck", async 
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
   act(() => {
@@ -4140,7 +4144,7 @@ test("a demand that completes while the composer has focus goes inert", async ()
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   await waitFor(() => expect(pageTwoLoads).toBe(1));
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
@@ -4207,7 +4211,7 @@ test("an in-flight live demand-load goes inert after leaving the session and ret
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 
@@ -4285,7 +4289,7 @@ test("a second press adopts an in-flight demand whose guards went stale", async 
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
   await act(async () => {
-    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+    resolve(wireSnapshot(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });

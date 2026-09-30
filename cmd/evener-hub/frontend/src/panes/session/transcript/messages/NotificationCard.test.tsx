@@ -164,7 +164,12 @@ function notificationEntities() {
 // the card auto-expands so its fields are visible) plus the entity map.
 function renderWithEntities(node: ReactElement) {
   return render(
-    <TranscriptRenderProvider surface="readOnly" disclosureScope="nc:entities" entities={notificationEntities()}>
+    <TranscriptRenderProvider
+      sessionRef="local:s"
+      surface="readOnly"
+      disclosureScope="nc:entities"
+      entities={notificationEntities()}
+    >
       {node}
     </TranscriptRenderProvider>,
   );

@@ -1,11 +1,15 @@
-import type { ActivityJob, ActivityTree, ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { findEntityView } from "@evener/appwire-client";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { connectionStore } from "../../../stores/connection";
+import { sessionActivitySnapshot, useSessionActivity } from "../../../stores/sessionActivity";
 import {
-  activityPanelStore,
-  EMPTY_ACTIVITY_PANEL_ENTRY,
-  resetActivityPanelStoreForTests,
-} from "../../../stores/activityPanel";
+  activityClient,
+  activityContext,
+  activityJob,
+  activitySummary,
+} from "../../../stores/sessionActivityTestUtils";
 import { useEntityView } from "./useEntityView";
 
 const SESSION_REF = "local:s";
@@ -44,41 +48,10 @@ function thread(turns: TurnModel[]): ThreadModel {
   return { ref: SESSION_REF, turns } as unknown as ThreadModel;
 }
 
-function activityTree(jobId = "job_x"): ActivityTree {
-  const job: ActivityJob = {
-    jobId,
-    ownerSessionId: "s",
-    ownerRef: SESSION_REF,
-    type: "shell",
-    status: "running",
-    transcriptRef: `job:${jobId}`,
-    terminal: false,
-    background: true,
-    hasOutput: false,
-    description: "test job",
-    startedAt: "2026-09-13T20:00:00Z",
-    outputBytes: 0,
-  };
-  return {
-    revision: 1,
-    root: {
-      kind: "session",
-      sessionId: "s",
-      ref: SESSION_REF,
-      label: "root",
-      aggregate: "running",
-      counts: { active: 1, failed: 0, completed: 0, complete: false },
-      entries: [{ kind: "shell", job }],
-      branch: {},
-    },
-  };
-}
-
-beforeEach(() => resetActivityPanelStoreForTests());
-
+beforeEach(() => connectionStore.setState({ client: null, state: "idle" }));
 afterEach(() => {
   cleanup();
-  resetActivityPanelStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
 });
 
 test("prose-only turn replacement preserves the derived map identity", () => {
@@ -92,7 +65,7 @@ test("prose-only turn replacement preserves the derived map identity", () => {
   rerender({ model: thread([turn([prose("replacement prose"), { ...watch }])]) });
 
   expect(result.current).toBe(firstView);
-  expect(result.current.get("watch_x")?.kind).toBe("watch");
+  expect(findEntityView(result.current, "watch", "watch_x", SESSION_REF)?.kind).toBe("watch");
 });
 
 test("completed watch output enrichment rebuilds the derived map", () => {
@@ -115,7 +88,7 @@ test("completed watch output enrichment rebuilds the derived map", () => {
   });
 
   expect(result.current).not.toBe(firstView);
-  const entity = result.current.get("watch_x");
+  const entity = findEntityView(result.current, "watch", "watch_x", SESSION_REF);
   if (entity?.kind !== "watch") throw new Error("expected watch entity");
   expect(entity.watch.deliveries).toBe(2);
 });
@@ -139,58 +112,75 @@ test("raw-only watch summary enrichment rebuilds the derived map", () => {
   });
 
   expect(result.current).not.toBe(firstView);
-  const entity = result.current.get("watch_x");
+  const entity = findEntityView(result.current, "watch", "watch_x", SESSION_REF);
   if (entity?.kind !== "watch") throw new Error("expected watch entity");
   expect(entity.watch.deliveries).toBe(2);
 });
 
-test("stale and ended load changes rebuild metadata against the retained tree", () => {
-  const tree = activityTree();
-  activityPanelStore.setState({
-    entries: new Map([
-      [
-        SESSION_REF,
-        {
-          ...EMPTY_ACTIVITY_PANEL_ENTRY,
-          load: { kind: "ready", tree },
-        },
-      ],
-    ]),
+test("transcript retains its shared collection demand after tab disposal and publishes retained recovery metadata", async () => {
+  const client = activityClient();
+  const context = { ...activityContext(SESSION_REF), availability: "retained" as const };
+  client.on("evener/thread/activity/read", () => ({ ...activitySummary(SESSION_REF), context }));
+  client.on("evener/thread/jobs/list", () => ({
+    context,
+    scope: "session",
+    jobs: [activityJob({ ownerRef: SESSION_REF, description: "retained job" })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const transcript = renderHook(() => useEntityView(SESSION_REF, thread([])));
+  const tab = renderHook(() => useSessionActivity(SESSION_REF, "session", "jobs"));
+  await waitFor(() =>
+    expect(findEntityView(transcript.result.current, "job", "job_raw", SESSION_REF)).toMatchObject({
+      stale: false,
+      ended: true,
+    }),
+  );
+  expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(1);
+  expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
+  expect(client.calls.filter((c) => c.method === "evener/thread/watches/list")).toHaveLength(0);
+  tab.unmount();
+  client.on("evener/thread/jobs/list", () => {
+    throw new Error("temporary source");
   });
-  const { result } = renderHook(() => useEntityView(SESSION_REF, thread([])));
-  const freshView = result.current;
-  expect(freshView.get("job_x")).toMatchObject({ stale: false, ended: false });
-
-  act(() => {
-    const entry = activityPanelStore.getState().entries.get(SESSION_REF);
-    if (!entry) throw new Error("expected activity entry");
-    activityPanelStore.setState({
-      entries: new Map([
-        [
-          SESSION_REF,
-          {
-            ...entry,
-            load: {
-              kind: "ready",
-              tree,
-              staleError: { headline: "Refresh failed", sentence: "Refresh failed." },
-            },
-          },
-        ],
-      ]),
-    });
-  });
-  const staleView = result.current;
-  expect(staleView).not.toBe(freshView);
-  expect(staleView.get("job_x")).toMatchObject({ stale: true, ended: false });
-
-  act(() => {
-    const entry = activityPanelStore.getState().entries.get(SESSION_REF);
-    if (!entry) throw new Error("expected activity entry");
-    activityPanelStore.setState({
-      entries: new Map([[SESSION_REF, { ...entry, load: { kind: "ended", tree } }]]),
-    });
-  });
-  expect(result.current).not.toBe(staleView);
-  expect(result.current.get("job_x")).toMatchObject({ stale: false, ended: true });
+  act(() =>
+    client.emitNotification({
+      method: "evener/thread/activity/changed",
+      params: { ref: SESSION_REF, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
+    }),
+  );
+  await waitFor(() =>
+    expect(findEntityView(transcript.result.current, "job", "job_raw", SESSION_REF)).toMatchObject({
+      stale: true,
+      ended: true,
+    }),
+  );
+  client.on("evener/thread/jobs/list", () => ({
+    context,
+    scope: "session",
+    jobs: [activityJob({ ownerRef: SESSION_REF })],
+    page: { complete: true, issues: [] },
+  }));
+  act(() =>
+    client.emitNotification({
+      method: "evener/thread/activity/changed",
+      params: { ref: SESSION_REF, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
+    }),
+  );
+  await waitFor(() =>
+    expect(findEntityView(transcript.result.current, "job", "job_raw", SESSION_REF)).toMatchObject({
+      stale: false,
+      ended: true,
+    }),
+  );
+  transcript.unmount();
+  expect(sessionActivitySnapshot(client, SESSION_REF, "session")).toBeNull();
+  const calls = client.calls.length;
+  act(() =>
+    client.emitNotification({
+      method: "evener/thread/activity/changed",
+      params: { ref: SESSION_REF, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
+    }),
+  );
+  expect(client.calls).toHaveLength(calls);
 });

@@ -8,7 +8,7 @@
 // strip renders in the session CHROME - outside the transcript subtree that
 // provides the same map - and the delegate line names a real entity.
 
-import type { NavigationWatchSummary } from "@evener/appwire-client";
+import type { SessionWatch } from "@evener/appwire-client";
 import {
   type ActivityDelegateRow,
   type ActivityJobRow,
@@ -101,7 +101,7 @@ function keyedInstants(instants: number[]): Array<{ millis: number; key: string 
 // daemon's instants, so distinct deliveries stay distinct and the now marker
 // lands where now actually is. Nothing here implies a drop or a future firing -
 // the only instants drawn are the ones the wire actually carried.
-function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; now: number }): JSX.Element | null {
+function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: number }): JSX.Element | null {
   // The ring is bounded (32 instants) but this strip re-renders on every tick
   // while its row is open, so parse and sort it once per watch identity instead
   // of on every render. A tick hands this component the same watch object, so
@@ -151,9 +151,9 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
   // named in the label when neither end holds it.
   const floatingNow = !markerAtStart && !markerAtEnd ? `, now ${clockFromMillis(now)}` : "";
   const caption =
-    watch.deliveries <= instants.length
+    watch.watch.deliveries <= instants.length
       ? "Delivered to this session"
-      : `Last ${instants.length} of ${watch.deliveries} deliveries`;
+      : `Last ${instants.length} of ${watch.watch.deliveries} deliveries`;
   return (
     <div className={CLASS.watchTimeline} data-testid="watch-timeline">
       <div
@@ -380,7 +380,7 @@ export function ActivityRowDetail({
               the trigger takes no tab stop of its own (ruling R13); triggerOnly:
               the row already carries its own open control, and this line's words
               stay exactly "Delegate <id> · send · stop · status". */}
-          <EntityRef id={delegate.delegateId} embedded triggerOnly />
+          <EntityRef id={delegate.delegateId} ownerRef={row.parentRef} kind="delegate" embedded triggerOnly />
           {" · send · stop · status"}
         </span>
       )}
@@ -418,7 +418,7 @@ export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?:
   const { watch } = row;
   const contextNow = useTreeNow();
   const effectiveNow = now ?? contextNow;
-  const note = watch.note?.trim();
+  const note = watch.watch.note?.trim();
   const leadNote = note !== undefined && note.length > WATCH_NOTE_LEAD_BUDGET ? note : undefined;
   return (
     <div className={CLASS.detailStrip}>

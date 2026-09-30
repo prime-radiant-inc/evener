@@ -13,6 +13,8 @@
 import type { EntityView } from "@evener/appwire-client";
 import { createContext, type ReactNode, useContext } from "react";
 
+const EntityOwnerRefContext = createContext<string | undefined>(undefined);
+
 const EntityViewsContext = createContext<ReadonlyMap<string, EntityView> | undefined>(undefined);
 
 /** Supplies the entity views EntityRef resolves ids from. The value is the map
@@ -20,16 +22,26 @@ const EntityViewsContext = createContext<ReadonlyMap<string, EntityView> | undef
  * replacement re-renders the consumers below. */
 export function EntityViewsProvider({
   entities,
+  ownerRef,
   children,
 }: {
   entities?: ReadonlyMap<string, EntityView>;
+  ownerRef?: string;
   children: ReactNode;
 }): ReactNode {
-  return <EntityViewsContext.Provider value={entities}>{children}</EntityViewsContext.Provider>;
+  return (
+    <EntityOwnerRefContext.Provider value={ownerRef}>
+      <EntityViewsContext.Provider value={entities}>{children}</EntityViewsContext.Provider>
+    </EntityOwnerRefContext.Provider>
+  );
 }
 
 /** Returns the entity views available here, or undefined when no provider owns
  * them (a direct render, or the chrome before ActivityPanelBody mounts). */
 export function useEntityViews(): ReadonlyMap<string, EntityView> | undefined {
   return useContext(EntityViewsContext);
+}
+
+export function useEntityOwnerRef(): string | undefined {
+  return useContext(EntityOwnerRefContext);
 }

@@ -1,7 +1,10 @@
 import type {
+  EvenerWatchInfo,
+  JobActivityJob,
   SessionActivityContext,
   SessionActivitySummary,
   SessionDelegate,
+  SessionWatch,
   ThreadReadResponse,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -107,4 +110,34 @@ export function activityClient(): FakeClient {
     page: { complete: true, issues: [] },
   }));
   return client;
+}
+
+export function activityJob(overrides: Partial<JobActivityJob> = {}): JobActivityJob {
+  return {
+    jobId: "job_raw",
+    ownerSessionId: "owner",
+    ownerRef: activityRef,
+    type: "shell",
+    status: "running",
+    terminal: false,
+    background: true,
+    hasOutput: true,
+    description: "run checks",
+    command: "go test",
+    startedAt: "2026-09-30T12:00:00Z",
+    outputBytes: 8,
+    transcriptRef: "job:authoritative",
+    ...overrides,
+  };
+}
+export function activityWatch(overrides: Partial<EvenerWatchInfo> = {}, receiverRef = activityRef): SessionWatch {
+  const watch: EvenerWatchInfo = {
+    id: "watch_raw",
+    source: "job_raw",
+    deliveries: 0,
+    createdAt: "2026-09-30T12:00:00Z",
+    active: true,
+    ...overrides,
+  };
+  return { ownerRef: activityRef, receiverRef, state: watch.active ? "armed" : "ended", watch };
 }

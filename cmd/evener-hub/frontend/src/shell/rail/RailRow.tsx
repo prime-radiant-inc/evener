@@ -248,7 +248,7 @@ function leadsOverWork(session: RailSession): boolean {
 // figures beside the gloss come from the row's `subagents` tally chip, never
 // from a subtree.
 export function activityGloss(session: RailSession): string {
-  const jobCount = (session.running_jobs ?? []).length;
+  const jobCount = session.running_job_count ?? 0;
   const word = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
   const parts: string[] = [];
   if (leadsOverWork(session) || jobCount === 0 || session.state === "active") parts.push(word);
@@ -656,10 +656,6 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const hostId = session.host_id;
   const showsHost = hostId !== "" && hostId !== LOCAL_HOST;
   const hostOnline = useHostOnline(hostId);
-  // The wire's count of this row's subagent descendants waiting on a person
-  // (needs_you_subagents) - the flat lists' replacement for the children walk
-  // the nested rows used to make derivable.
-  const needsYouCount = session.needs_you_subagents ?? 0;
   // The state this row PRESENTS (railNodes' displayState): a pending approval
   // presents as needs-you whatever the wire state says. Dot, gloss, tint, and
   // tooltip all read this one value so they can never disagree about a row.
@@ -673,7 +669,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // than the rows that aren't, and the list's evenness is worth less than that.
   // The row's own running jobs: the flat rail carries no children, so a row's
   // work is exactly what its summary says.
-  const hasRunningJobs = (session.running_jobs ?? []).length > 0;
+  const hasRunningJobs = (session.running_job_count ?? 0) > 0;
   const hasActiveWork = session.state === "active" || hasRunningJobs;
   // Job activity is a working signal for the owning session. A
   // failure, a restart, a question and a pending approval still win over that
@@ -699,14 +695,13 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // watch on its receiver's summary, so this is every watch the activity
   // sidebar's Watches tab lists for it - see railNodes' activeWatchCount.
   const watchCount = activeWatchCount(session);
-  const omittedWatchCount = session.omitted_watches ?? 0;
   // The retained total the Watches tab lists. The summary line reports this
   // (with the armed count beside it when they differ) so the row and the tab
   // agree even when a retained watch is inactive.
-  const retainedWatchCount = (session.watches ?? []).length;
+  const retainedWatchCount = session.watch_count ?? 0;
   // Omitted rows alone still mean the session holds watches the row does not
   // list, so the line must appear (and say "+N more") even with none retained.
-  const hasWatches = retainedWatchCount > 0 || omittedWatchCount > 0;
+  const hasWatches = retainedWatchCount > 0;
   // A watch is pending work, and it is the one kind that can be the ONLY thing
   // a session has left to do - so it earns the second line on its own. That is
   // a deliberate amendment to "a quiet row is one line" (the rule at the top of
@@ -785,7 +780,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
                 {/* The gloss shares the line's separator convention: the count
                     carries it only when something follows, so a watch-only
                     line ends with the word, not a dangling "·". */}
-                {`${watchCountLabel(watchCount, retainedWatchCount, omittedWatchCount)}${tally !== null || gloss !== "" ? " ·" : ""}`}
+                {`${watchCountLabel(watchCount, retainedWatchCount, 0)}${tally !== null || gloss !== "" ? " ·" : ""}`}
               </span>
             )}
             {tally !== null && (
@@ -817,21 +812,9 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           {"★"}
         </span>
       )}
-      {/* Right slot: ONE shared grid cell (RailRow.module.css's .rightSlot)
-          holding the occupant - the needs-you-subagents Badge (the wire's
-          needs_you_subagents count), or
-          (when there's nothing to flag) a relative timestamp / "Not
-          started", never more than one - plus the hover-revealed actions
-          menu, which borrows the occupant's space instead of reserving its
-          own beside it and covers the occupant while revealed. The session's
-          OWN needs-you already shows via its amber Cadence dot above
-          (cadenceStateFor maps awaiting/warning to "needs-you"), so a
-          needs-you session with no needs-you subagents correctly shows its
-          timestamp here, not a redundant "0"/"1" badge. */}
+      {/* The timestamp shares its slot with hover actions. */}
       <span className={CLASS.rightSlot}>
-        {needsYouCount > 0 ? (
-          <Badge count={needsYouCount} tone="attention" />
-        ) : notStarted ? (
+        {notStarted ? (
           // Words, not a number: a session that has never run has no elapsed
           // work to report, and the age this slot would otherwise show is
           // counting from the moment it was created - which reads as activity

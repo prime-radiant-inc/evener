@@ -18,13 +18,14 @@
 // by the uniform tone treatment.
 import {
   entityOpenTarget,
+  findEntityView,
   isValidTranscriptRef,
   type NotificationTone,
   type ParsedNotification,
   scopedDisclosureId,
 } from "@evener/appwire-client";
 import { Fragment, type ReactNode } from "react";
-import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
+import { useEntityOwnerRef, useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
@@ -232,6 +233,8 @@ export function NotificationCard({
 }) {
   const context = useTranscriptRenderContext();
   const entities = useEntityViews();
+  const contextOwner = useEntityOwnerRef();
+  const entityOwner = sessionRef ?? contextOwner;
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // The disclosure identity prefers the watch id for watch cards: two
@@ -274,7 +277,9 @@ export function NotificationCard({
   // resolution the phone makes by delegate id (#3075). Unresolved leaves the
   // control off, never a dead one.
   const delegateView =
-    notification.type === "delegate" && notification.delegateId ? entities?.get(notification.delegateId) : undefined;
+    notification.type === "delegate" && notification.delegateId && entities && entityOwner
+      ? findEntityView(entities, "delegate", notification.delegateId, entityOwner)
+      : undefined;
   const resolvedRef = delegateView?.kind === "delegate" ? entityOpenTarget(delegateView)?.ref : undefined;
   const transcriptRef =
     notification.type === "delegate" ? [notification.transcriptRef, resolvedRef].find(isValidTranscriptRef) : undefined;

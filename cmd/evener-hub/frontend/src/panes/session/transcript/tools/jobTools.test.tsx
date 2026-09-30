@@ -200,7 +200,7 @@ test("job_status: delegate ID is a trigger and the footer remains the single Ope
   const raw = delegateStatusRaw();
   const id = (raw as { id: string }).id;
   render(
-    <TranscriptRenderProvider entities={delegateEntityViews(id)}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={delegateEntityViews(id)}>
       <Body
         item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })}
         live={false}
@@ -567,9 +567,9 @@ test("job_list: body renders stable direct raw state when the producer supplies 
 test("job_list: rows render one entity ref and exactly one open control per identity", () => {
   const d = toolRendererFor("job_list");
   const Body = d.body!;
-  const ids = ["job_alpha", "job_beta"];
+  const ids = ["job_02wMz5TxvEMoJEDTDGOTil_000000000123", "job_02wMz5TxvEMoJEDTDGOTil_000000000124"];
   render(
-    <TranscriptRenderProvider entities={jobEntityViews(ids)}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(ids)}>
       <Body
         item={item({
           toolName: "job_list",
@@ -598,7 +598,7 @@ test("job_list: rows state the command-outcome statuses under the card's display
   const Body = d.body!;
   const ids = ["job_cen", "job_kil"];
   render(
-    <TranscriptRenderProvider entities={jobEntityViews(ids)}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(ids)}>
       <Body
         item={item({
           toolName: "job_list",
@@ -629,7 +629,7 @@ test("job_list: rows join a legacy failed record to the display word by its reas
   const d = toolRendererFor("job_list");
   const Body = d.body!;
   render(
-    <TranscriptRenderProvider entities={jobEntityViews(["job_l1"])}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={jobEntityViews(["job_l1"])}>
       <Body
         item={item({
           toolName: "job_list",

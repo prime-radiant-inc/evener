@@ -1,3 +1,4 @@
+import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // The Agents tab: the scope's subagents as drillable rows, read from the
 // paged subagents resource (lists and locations carry no children anymore -
 // this resource is the tree). Current subagents inline, the loaded inactive
@@ -6,12 +7,11 @@
 // instead of naming a number nobody can reach. Null resource is a loading
 // state, never "no subagents".
 
-import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { activityNodeID, type SessionDelegate } from "@evener/appwire-client";
 import { useState } from "react";
-import { navigationStore } from "../../stores/navigation/store";
+import { useSessionActivity } from "../../stores/sessionActivity";
 import { Button, Chevron } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { subagentIsCurrent } from "../rail/railNodes";
 import type { ActivityScope } from "../statusbar/statusScope";
 import { workspaceStore } from "../workspace";
 import styles from "./activitybar.module.css";
@@ -24,39 +24,32 @@ const CLASS = {
 };
 
 const PAGE = 20;
-// The resource's page size (the store's default for subagents reads).
-const WIRE_PAGE = 50;
-
-function drill(leaf: NavigationSessionSummary, sub: NavigationSessionSummary): void {
-  // Drilling opens the subagent's transcript beside the parent's: a secondary
-  // pane, which re-scopes the bar and this sidebar when focused
-  // (focusedSession.ts's transcript rule).
-  workspaceStore.getState().openPane("transcript", { ref: sub.ref, parentRef: leaf.ref }, { slot: "secondary" });
+function drill(sub: SessionDelegate): void {
+  workspaceStore
+    .getState()
+    .openPane("transcript", { ref: sub.childRef, parentRef: sub.ownerRef }, { slot: "secondary" });
 }
 
 export function AgentsTab({ scope }: { scope: ActivityScope }) {
   const [foldOpen, setFoldOpen] = useState(false);
   const [shown, setShown] = useState(PAGE);
-  if (scope.subagents === null) {
+  const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "delegates");
+  const collection = snapshot?.delegates;
+  if (collection?.permanent && collection.rows.length === 0)
+    return <span className={CLASS.emptyNote}>Subagents unavailable for this session.</span>;
+  if (!collection || (collection.rows.length === 0 && !collection.complete)) {
     return <span className={CLASS.emptyNote}>Loading subagents…</span>;
   }
-  // Fork originals share the page's rows; they are not agents.
-  const rows = scope.subagents.rows.filter((row) => row.kind === "subagent");
-  // One pass: subagentIsCurrent walks the row's subtree, so two filter()
-  // passes would pay that walk twice (railNodes' splitChildren precedent).
-  const current: NavigationSessionSummary[] = [];
-  const inactive: NavigationSessionSummary[] = [];
-  for (const row of rows) {
-    (subagentIsCurrent(row) ? current : inactive).push(row);
-  }
-  const remaining = scope.subagents.remaining;
+  const rows = collection.rows;
+  const current = rows.filter((row) => !row.terminal);
+  const inactive = rows.filter((row) => row.terminal);
   return (
     <div className={CLASS.stack}>
-      {rows.length === 0 && remaining === 0 ? (
+      {rows.length === 0 && collection.complete ? (
         <span className={CLASS.emptyNote}>No subagents at this level.</span>
       ) : null}
       {current.map((sub) => (
-        <AgentRow key={sub.ref} sub={sub} onDrill={() => drill(scope.leaf, sub)} />
+        <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} onDrill={() => drill(sub)} />
       ))}
       {inactive.length > 0 ? (
         <>
@@ -68,7 +61,7 @@ export function AgentsTab({ scope }: { scope: ActivityScope }) {
           {foldOpen ? (
             <>
               {inactive.slice(0, shown).map((sub) => (
-                <AgentRow key={sub.ref} sub={sub} onDrill={() => drill(scope.leaf, sub)} />
+                <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} onDrill={() => drill(sub)} />
               ))}
               {shown < inactive.length ? (
                 <Button variant="quiet" size="sm" onClick={() => setShown((n) => n + PAGE)}>
@@ -79,20 +72,17 @@ export function AgentsTab({ scope }: { scope: ActivityScope }) {
           ) : null}
         </>
       ) : null}
-      {remaining > 0 ? (
-        // The wire's remainder is a real page fetch, never a passive note:
-        // every row is reachable. Offset is the loaded row count (pages are
-        // contiguous 50-row slices of the same direct-children list).
-        <Button
-          variant="quiet"
-          size="sm"
-          onClick={() =>
-            void navigationStore.getState().loadSubagents(scope.leaf.ref, scope.subagents?.rows.length ?? 0)
-          }
-        >
-          Load {Math.min(WIRE_PAGE, remaining)} more · {remaining} not shown
-        </Button>
-      ) : null}
+      <ActivityPageBoundary
+        resource="delegates"
+        label="subagents"
+        hasMore={collection.hasMore}
+        loading={collection.loading}
+        error={collection.error}
+        permanent={collection.permanent}
+        enabled={foldOpen || inactive.length === 0}
+        loadMore={loadMore}
+      />
+      {collection.error ? <span className={CLASS.emptyNote}>Subagents are updating…</span> : null}
     </div>
   );
 }

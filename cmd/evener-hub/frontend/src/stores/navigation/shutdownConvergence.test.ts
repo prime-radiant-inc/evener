@@ -29,7 +29,7 @@ test("shutdown factory omits absent pin and project scopes", () => {
 test("shutdown settled is true when the ref is absent from live rows", () => {
   resetNavigationStoreForTests();
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     capability: capability(),
     clientGenerationID: "generation_test",
     manifest: {
@@ -59,6 +59,6 @@ test("a waiter armed before initialization converges once navigation is v2", asy
   // Initialization lands before convergence begins: mode is v2 now, but the
   // armed waiter is still the rejected one. Converging must treat it as a
   // successful no-op, not surface a shutdown failure.
-  navigationStore.setState({ mode: "v2", clientGenerationID: "generation_test" });
+  navigationStore.setState({ mode: "v3", clientGenerationID: "generation_test" });
   await expect(convergence.converge(waiter)).resolves.toBeUndefined();
 });

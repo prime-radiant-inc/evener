@@ -1,11 +1,5 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import type { PaneProps } from "../../shell/paneRegistry";
-import {
-  selectSessionOmittedArmedWatches,
-  selectSessionOmittedWatches,
-  selectSessionWatches,
-} from "../../stores/navigation/selectors";
-import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadModel } from "../../stores/useThreadModel";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { ActivityPanelBody } from "../session/chrome/ActivityPanel";
@@ -33,20 +27,6 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
   }
   const { ref } = params;
   const model = useThreadModel(ref);
-  // The standalone Activity pane reads the same navigation-fed watches the
-  // pane footer's chrome does. It deliberately installs no clock of its own:
-  // watch detail falls back to the activity tree's own live tick, which
-  // ActivityTree enables whenever the session carries watch rows - so a
-  // watch-only, live-row-free tree still ticks (pinned by ActivityTree's
-  // "a session whose only work is watches still runs the clock"). Do not drop
-  // that watch-row condition: without it a watch-only tree would freeze. The
-  // Details pane's NOW_TICK_MS clock stays Details-only.
-  // Narrow subscription: selectSessionWatches keeps its result identity while
-  // this session's watch content is unchanged, so the pane no longer re-renders
-  // on every navigation update for any session.
-  const watches = useNavigationStore((state) => selectSessionWatches(ref, state));
-  const omittedWatches = useNavigationStore((state) => selectSessionOmittedWatches(ref, state));
-  const omittedArmedWatches = useNavigationStore((state) => selectSessionOmittedArmedWatches(ref, state));
 
   const title = sessionPanelTitle(kind, ref, model?.name);
 
@@ -62,13 +42,7 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
     kind === "tasks" ? (
       <TasksPanelBody sessionRef={ref} model={model} />
     ) : kind === "activity" ? (
-      <ActivityPanelBody
-        sessionRef={ref}
-        model={model}
-        watches={watches}
-        omittedWatches={omittedWatches}
-        omittedArmedWatches={omittedArmedWatches}
-      />
+      <ActivityPanelBody sessionRef={ref} model={model} />
     ) : (
       <DetailsPaneBody sessionRef={ref} model={model} />
     );

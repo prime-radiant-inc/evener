@@ -18,12 +18,13 @@ import { paletteStore } from "../../../shell/palette/paletteController";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
-import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
+import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
+import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
@@ -158,7 +159,7 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   return { thread: testThread(ref, overrides) };
 }
 
-function emptyActivityTree(ref: string) {
+function _emptyActivityTree(ref: string) {
   return {
     revision: 1,
     root: {
@@ -830,7 +831,6 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
@@ -859,7 +859,6 @@ afterEach(() => {
   vi.useRealTimers();
   resetActivitySidebarStoreForTests();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real
   // ResizeObserver, so the honest baseline for the next test is none at all.
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
@@ -958,13 +957,13 @@ test("the real live Composer mount discovers initial activity without a test-sup
   const fake = connectFakeClient();
   const activityRefs: unknown[] = [];
   fake.on("thread/read", () => readResponse(ref));
-  fake.on("evener/jobs/list", (params) => {
+  fake.on("evener/thread/activity/read", (params) => {
     activityRefs.push(params.ref);
-    return { data: emptyActivityTree(ref) };
+    return activitySummary(params.ref);
   });
   await threadsStore.getState().ensureThread(ref);
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
-  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
 
   render(
     <ClientProvider client={fake}>
@@ -973,8 +972,8 @@ test("the real live Composer mount discovers initial activity without a test-sup
   );
 
   await waitFor(() => expect(activityRefs).toEqual([ref]));
-  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
-  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
 
 // The companion to the test above for the state it cannot cover: a SAVED
@@ -993,9 +992,9 @@ test("a saved notLoaded session with sending enabled discovers activity while it
       evener: { ref, mutationStateAuthoritative: true, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
     }),
   );
-  fake.on("evener/jobs/list", (params) => {
+  fake.on("evener/thread/activity/read", (params) => {
     activityRefs.push(params.ref);
-    return { data: emptyActivityTree(ref) };
+    return activitySummary(params.ref);
   });
   await threadsStore.getState().ensureThread(ref);
 
@@ -1009,8 +1008,8 @@ test("a saved notLoaded session with sending enabled discovers activity while it
   // other discovery opt-in - is genuinely absent for this whole interval.
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   await waitFor(() => expect(activityRefs).toEqual([ref]));
-  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
-  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
 
 test("restores a stored draft into the textarea on mount", async () => {
@@ -3363,7 +3362,7 @@ test("a saved local notLoaded session with sending enabled rests as a bare invit
   const user = userEvent.setup();
   const ref = "local:saved-unfenced";
   const activityRefs: unknown[] = [];
-  await mountComposerWithHandle(
+  const { fake } = await mountComposerWithHandle(
     ref,
     {
       status: { type: "notLoaded" },
@@ -3371,9 +3370,9 @@ test("a saved local notLoaded session with sending enabled rests as a bare invit
     },
     {
       prepare: (fake) => {
-        fake.on("evener/jobs/list", (params) => {
+        fake.on("evener/thread/activity/read", (params) => {
           activityRefs.push(params.ref);
-          return { data: emptyActivityTree(ref) };
+          return activitySummary(params.ref);
         });
       },
     },
@@ -3387,7 +3386,7 @@ test("a saved local notLoaded session with sending enabled rests as a bare invit
   expect(screen.queryByTestId("composer-submit")).toBeNull();
   // The chrome-less owner still discovers for the resting card.
   await waitFor(() => expect(activityRefs).toEqual([ref]));
-  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
 
   // Once focused the card grows its control row, and with it the inline chrome
   // that is now the one discovery owner - the composer's own resting owner

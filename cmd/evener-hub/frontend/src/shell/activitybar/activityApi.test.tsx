@@ -1,0 +1,149 @@
+import { WireError } from "@evener/appwire-client";
+import { createNavigationStore } from "@evener/appwire-client/state/navigation";
+import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { connectionStore } from "../../stores/connection";
+import { activityClient, activityContext, activityDelegate, activityJob } from "../../stores/sessionActivityTestUtils";
+import { deriveScope } from "../statusbar/statusScope";
+import { workspaceStore } from "../workspace";
+import { AgentsTab } from "./AgentsTab";
+import { JobsTab } from "./JobsTab";
+
+afterEach(() => {
+  cleanup();
+  connectionStore.setState({ client: null, state: "idle" });
+  vi.restoreAllMocks();
+});
+const scope = () =>
+  deriveScope(createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(), "remote:owner", null);
+it("shows incomplete empty as progress then drills the exact stable delegate child", async () => {
+  const client = activityClient();
+  let finish: (() => void) | undefined;
+  client.on("evener/thread/delegates/list", async ({ ref, scope }) => {
+    await new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    return {
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      delegates: [activityDelegate({ delegateId: "raw-id", childRef: "other:opaque/child" })],
+      page: { complete: true, issues: [] },
+    };
+  });
+  connectionStore.getState().connect(client);
+  const open = vi.spyOn(workspaceStore.getState(), "openPane").mockImplementation(() => "test-pane");
+  render(<AgentsTab scope={scope()} />);
+  expect(screen.getByText(/Loading subagents/)).toBeTruthy();
+  expect(screen.queryByText(/No subagents/)).toBeNull();
+  await waitFor(() => expect(finish).toBeTypeOf("function"));
+  finish?.();
+  fireEvent.click(await screen.findByRole("button", { name: /inspect/ }));
+  expect(open).toHaveBeenCalledWith(
+    "transcript",
+    { ref: "other:opaque/child", parentRef: "remote:owner" },
+    { slot: "secondary" },
+  );
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(0);
+});
+it("opens job output using the supplied job transcript ref and raw owner", async () => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ jobId: "raw-job", ownerRef: "source:owner", transcriptRef: "job:authoritative" })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const open = vi.spyOn(workspaceStore.getState(), "openPane").mockImplementation(() => "test-pane");
+  render(<JobsTab scope={scope()} />);
+  fireEvent.click(await screen.findByRole("button", { name: /go test/ }));
+  expect(open).toHaveBeenCalledWith(
+    "transcript",
+    { ref: "job:authoritative", parentRef: "source:owner" },
+    { slot: "secondary" },
+  );
+});
+
+it("visible page-boundary demand heals a failed continuation while the actual tab stays mounted", async () => {
+  vi.useFakeTimers();
+  const client = activityClient();
+  let continuationReads = 0;
+  let intersect: (() => void) | undefined;
+  let observerCount = 0;
+  class Observer {
+    constructor(callback: IntersectionObserverCallback) {
+      observerCount += 1;
+      intersect = () =>
+        callback([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    }
+    observe() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("IntersectionObserver", Observer);
+  client.on("evener/thread/delegates/list", ({ cursor, ref, scope }) => {
+    if (!cursor)
+      return {
+        context: activityContext(ref),
+        scope: scope ?? "session",
+        delegates: [activityDelegate({ description: "first loaded" })],
+        page: { complete: false, nextCursor: "next", issues: [] },
+      };
+    continuationReads += 1;
+    if (continuationReads === 1)
+      throw new WireError("source access unavailable", -32014, {
+        evenerErrorInfo: "actionUnavailable",
+        retryDisposition: "automatic",
+      });
+    return {
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      delegates: [activityDelegate({ delegateId: "raw-second", childRef: "other:second", description: "healed page" })],
+      page: { complete: true, issues: [] },
+    };
+  });
+  try {
+    connectionStore.getState().connect(client);
+    let view: ReturnType<typeof render> | undefined;
+    await act(async () => {
+      view = render(<AgentsTab scope={scope()} />);
+    });
+    expect(screen.getByRole("button", { name: /first loaded/ })).toBeTruthy();
+    expect(observerCount).toBe(1);
+    expect(continuationReads).toBe(0);
+    await act(async () => intersect?.());
+    expect(continuationReads).toBe(1);
+    expect(screen.getByRole("button", { name: /first loaded/ })).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(999));
+    expect(continuationReads).toBe(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(screen.getByRole("button", { name: /healed page/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /first loaded/ })).toBeTruthy();
+    view?.unmount();
+    act(() =>
+      client.emitNotification({
+        method: "evener/thread/activity/changed",
+        params: { ref: "remote:owner", threadId: "owner", sessionId: "owner", resources: ["delegates"] },
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(120000));
+    expect(continuationReads).toBe(2);
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  }
+});
+
+it("definitive unavailable jobs never claim empty or remain a loading promise", async () => {
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", () => {
+    throw new WireError("deleted", -32012, { evenerErrorInfo: "resourceNotFound" });
+  });
+  connectionStore.getState().connect(client);
+  render(<JobsTab scope={scope()} />);
+  expect(await screen.findByText("Jobs unavailable for this session.")).toBeTruthy();
+  expect(screen.queryByText("No jobs at this level.")).toBeNull();
+  expect(screen.queryByText("Loading jobs…")).toBeNull();
+  expect(screen.queryByRole("button", { name: /retry|repair/i })).toBeNull();
+});

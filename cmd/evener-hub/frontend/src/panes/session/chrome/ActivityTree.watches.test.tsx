@@ -3,7 +3,12 @@
 // note/facts/no-schedule detail. Real props, real component - no mocks of the
 // subject and no snapshot-only assertions.
 
-import type { ActivityTree as ActivityTreeData, NavigationWatchSummary } from "@evener/appwire-client";
+import type {
+  ActivityTree as ActivityTreeData,
+  EvenerWatchInfo,
+  SessionActivityCounts,
+  SessionWatch,
+} from "@evener/appwire-client";
 import { formatClockTime } from "@evener/appwire-client";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,15 +21,16 @@ const CREATED = "2026-08-05T12:48:00Z";
 const NO_SCHEDULE =
   "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
 
-function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
-  return {
+function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
+  const info: EvenerWatchInfo = {
     id: "watch_1",
     source: "sess_root",
     deliveries: 0,
-    created_at: CREATED,
+    createdAt: CREATED,
     active: true,
     ...overrides,
   };
+  return { ownerRef: "ref_root", receiverRef: "ref_root", state: info.active ? "armed" : "ended", watch: info };
 }
 
 function armedLabel(): string {
@@ -47,17 +53,15 @@ const EMPTY_TREE: ActivityTreeData = {
 };
 
 function renderTree(
-  watches?: NavigationWatchSummary[],
+  watches?: SessionWatch[],
   tree: ActivityTreeData = EMPTY_TREE,
-  omittedWatches?: number,
-  omittedArmedWatches?: number,
+  watchCounts?: SessionActivityCounts,
 ) {
   return render(
     <ActivityTree
       tree={tree}
       watches={watches}
-      omittedWatches={omittedWatches}
-      omittedArmedWatches={omittedArmedWatches}
+      watchCounts={watchCounts}
       expandedFoldIDs={[]}
       onToggleFold={vi.fn()}
     />,
@@ -105,24 +109,33 @@ describe("ActivityTree watch rows", () => {
     expect(screen.getByText("2 armed")).toBeTruthy();
   });
 
-  test("the Watches group header surfaces the rows the projector omitted", () => {
-    renderTree([watch({ note: "Still armed" })], EMPTY_TREE, 4);
-    expect(screen.getByText("1 armed total · +4 more")).toBeTruthy();
+  test("the Watches header uses authoritative totals independently of loaded rows", () => {
+    renderTree([watch({ note: "one loaded" })], EMPTY_TREE, {
+      known: true,
+      total: 40,
+      active: 40,
+      failed: 0,
+      completed: 0,
+    });
+    expect(screen.getByText("40 armed")).toBeTruthy();
   });
-
-  test("the Watches group header reports the armed total across omitted rows", () => {
-    // 32 retained armed rows plus 8 omitted armed rows: the header must add the
-    // omitted armed count to the retained one and label it as a total.
-    const watches = Array.from({ length: 32 }, (_, i) => watch({ id: `armed-${i}` }));
-    renderTree(watches, EMPTY_TREE, 8, 8);
-    expect(screen.getByText("40 armed total · +8 more")).toBeTruthy();
+  test("unknown Watches counts never become an inferred loaded-row total", () => {
+    renderTree([watch({ note: "one loaded" })], EMPTY_TREE, {
+      known: false,
+      total: 0,
+      active: 0,
+      failed: 0,
+      completed: 0,
+    });
+    expect(screen.getByText("… armed")).toBeTruthy();
+    expect(screen.queryByText("1 armed")).toBeNull();
   });
 
   test("a clock watch row renders its next fire with a tilde and never the word about", () => {
     renderTree([
       watch({
         note: "Poll the queue depth",
-        cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+        cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }],
       }),
     ]);
     const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
@@ -134,8 +147,8 @@ describe("ActivityTree watch rows", () => {
     renderTree([
       watch({
         note: "Deploy gate",
-        output_match: "/DONE/",
-        cadence: [{ kind: "output", derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+        outputMatch: "/DONE/",
+        cadence: [{ kind: "output", derivedNextFireAt: "2026-08-05T15:04:12Z" }],
       }),
     ]);
     const row = screen.getByRole("treeitem", { name: "Watch: Deploy gate" });
@@ -205,7 +218,7 @@ describe("ActivityTree watch rows", () => {
         id: "watch_out",
         note: "Migration prints DONE",
         target: "job_ab12cd",
-        output_match: "/DONE/",
+        outputMatch: "/DONE/",
         cadence: [{ kind: "output" }],
         deliveries: 0,
       }),
@@ -238,7 +251,7 @@ describe("ActivityTree watch rows", () => {
       watch({
         id: "watch_wild",
         note: "Any session event",
-        wildcard_events: true,
+        wildcardEvents: true,
         events: [],
         cadence: [{ kind: "events" }],
         deliveries: 0,
@@ -256,7 +269,7 @@ describe("ActivityTree watch rows", () => {
         note: "Check the deploy log",
         cadence: [{ kind: "every", seconds: 600 }],
         deliveries: 3,
-        delivery_times: ["2026-08-05T14:50:00Z", "2026-08-05T14:58:00Z"],
+        deliveryTimes: ["2026-08-05T14:50:00Z", "2026-08-05T14:58:00Z"],
       }),
     ]);
     const facts = screen.getByTestId("watch-facts").textContent ?? "";
@@ -270,7 +283,7 @@ describe("ActivityTree watch rows", () => {
         note: "Check the deploy log",
         cadence: [{ kind: "every", seconds: 600 }],
         deliveries: 3,
-        delivery_times: ["2026-08-05T13:00:00Z", "2026-08-05T14:00:00Z", "2026-08-05T15:00:00Z"],
+        deliveryTimes: ["2026-08-05T13:00:00Z", "2026-08-05T14:00:00Z", "2026-08-05T15:00:00Z"],
       }),
     ]);
     expect(screen.getByTestId("watch-timeline")).toBeTruthy();
@@ -286,9 +299,9 @@ describe("ActivityTree watch rows", () => {
         note: "Poll the queue depth",
         cadence: [{ kind: "every", seconds: 600 }],
         deliveries: 3,
-        delivery_times: ["2026-08-05T14:58:00Z"],
+        deliveryTimes: ["2026-08-05T14:58:00Z"],
       }),
-      watch({ id: "watch_b", note: "Migration prints DONE", output_match: "/DONE/", target: "j", deliveries: 0 }),
+      watch({ id: "watch_b", note: "Migration prints DONE", outputMatch: "/DONE/", target: "j", deliveries: 0 }),
       watch({ id: "watch_c", note: "Watch events", events: ["a"], deliveries: 0 }),
     ]);
     const text = document.body.textContent ?? "";

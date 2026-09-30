@@ -47,10 +47,10 @@ import { navigate, paneToURL } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
-import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
+import { useSessionActivity } from "../../../stores/sessionActivity";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { topNotesStore, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Cadence, useToasts } from "../../../widgets";
@@ -125,7 +125,8 @@ export function SessionChrome({
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
   const activityOpen = !isMobile && sidebarOpenHere;
   const notesOpen = useTopNotesExpanded(sessionRef);
-  const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
+  const { snapshot: activitySnapshot } = useSessionActivity(discoverActivity || discoveryOnly ? sessionRef : null);
+  const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
   // no project is expanded merely to decide menu eligibility.
@@ -184,9 +185,6 @@ export function SessionChrome({
       ref={activityRef}
       sessionRef={sessionRef}
       model={model}
-      watches={fallbackSession?.watches}
-      omittedWatches={fallbackSession?.omitted_watches}
-      omittedArmedWatches={fallbackSession?.omitted_armed_watches}
       hideTrigger
       refreshWhenHidden
       discoverWhenHidden={discoverActivity || discoveryOnly}
@@ -243,7 +241,10 @@ export function SessionChrome({
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
     topNotesStore.getState().toggleAndFocus(sessionRef);
   };
-  const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
+  const activityLabel =
+    activitySummary?.delegates.known && activitySummary.jobs.known
+      ? `Activity · ${activitySummary.delegates.active + activitySummary.jobs.active}`
+      : "Activity";
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:

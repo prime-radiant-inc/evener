@@ -49,7 +49,6 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
-import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { connectedClientPort, connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
@@ -4935,7 +4934,6 @@ export function resetThreadsStoreForTests(): void {
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
   resetTasksPanelStoreForTests();
   if (mutationRuntime) {
     mutationRuntime.active = false;
