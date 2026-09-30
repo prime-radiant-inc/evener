@@ -156,8 +156,9 @@ export function isJobRow(row: ActivityListRow): row is ShellJobRow {
 /** Every subagent and shell job in the tree, depth first in the tree's own
  * order, each once, in one walk-ordered list; a subagent another subagent
  * started names its parent, and a job names the session or subagent that ran
- * it. */
-export function flattenActivity(tree: ActivityTree): ActivityListRow[] {
+ * it. The coordinator is named by `coordinatorTitle`, since the shared
+ * projection labels every session node with its bare ref. */
+export function flattenActivity(tree: ActivityTree, coordinatorTitle: string): ActivityListRow[] {
 	const rows: ActivityListRow[] = [];
 	const seen = new Set<string>();
 	let order = 0;
@@ -175,7 +176,7 @@ export function flattenActivity(tree: ActivityTree): ActivityListRow[] {
 					kind: "job",
 					id: job.jobId,
 					title: job.description.trim() || firstLine(job.command ?? "", 80) || job.jobId,
-					owner: parentTitle ?? tree.root.label,
+					owner: parentTitle ?? coordinatorTitle,
 					state: shellJobState(job),
 					job,
 					order: order++,
@@ -208,13 +209,14 @@ export function flattenActivity(tree: ActivityTree): ActivityListRow[] {
 /** Every subagent in the tree (flattenActivity's subagent rows), for the views
  * that count subagents alone: the strip, the Session's chip, stop requests. */
 export function flattenSubagents(tree: ActivityTree): SubagentRow[] {
-	return flattenActivity(tree).filter(isSubagentRow);
+	// A subagent row names no owner, so the coordinator's title goes unused.
+	return flattenActivity(tree, "").filter(isSubagentRow);
 }
 
 /** Every shell job in the tree (flattenActivity's job rows), for the views
  * that read one job alone, such as its detail screen. */
-export function flattenJobs(tree: ActivityTree): ShellJobRow[] {
-	return flattenActivity(tree).filter(isJobRow);
+export function flattenJobs(tree: ActivityTree, coordinatorTitle: string): ShellJobRow[] {
+	return flattenActivity(tree, coordinatorTitle).filter(isJobRow);
 }
 
 function time(value: string | undefined): number | null {

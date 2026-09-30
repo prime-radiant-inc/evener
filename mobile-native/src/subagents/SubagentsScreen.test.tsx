@@ -294,7 +294,7 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	const labels = tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Shell job,"));
 	expect(new Set(labels.map((node) => node.props.accessibilityLabel))).toEqual(
 		new Set([
-			`Shell job, npm run lint, Command failed, 2 minutes, under local:coord`,
+			`Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`,
 			"Shell job, Serving the docs, running, 3 minutes, under Only one",
 		]),
 	);
@@ -320,7 +320,9 @@ it("opens a shell job's detail over the list", async () => {
 	client = hub(() => treeWithJobs());
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	act(() => pressable(tree, `Shell job, npm run lint, Command failed, 2 minutes, under local:coord`)?.props.onPress());
+	act(() =>
+		pressable(tree, `Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`)?.props.onPress(),
+	);
 	expect(navigation.push).toHaveBeenCalledWith("ShellJob", {
 		hubId: "hub-1",
 		jobId: "j-lint",
@@ -467,6 +469,35 @@ it("says the count is partial and whose subagents are missing when a later page 
 	expect(headerTitle()).toBe("Activity · … Get PR 2138 Test Clean");
 	expect(text(tree)).not.toContain("No subagents or shell jobs yet.");
 	expect(tree.root.findByType("FlatList" as never).props.onEndReached).toBeTypeOf("function");
+});
+
+// A branch whose shell jobs couldn't be read is named by whose it is: the
+// coordinator by its title, a subagent by its row's title, never by a ref.
+// A branch no loaded row names, as when its subagent's row is on a later
+// page, has no title to give, so it goes unnamed. The fixture can't leave a
+// row out of the tree, so that child's ref differs from its delegate's
+// childRef instead.
+it("names whose activity isn't listed by title", async () => {
+	client = hub(() => ({
+		revision: 1,
+		root: session(
+			"local:coord",
+			COORDINATOR.title,
+			[
+				runningOne("solo", "Only one", { child: session("local:solo", "Only one", [], { error: "unavailable" }) }),
+				runningOne("pair", "Second one", {
+					child: session("local:unlisted", "Unlisted", [], { error: "unavailable" }),
+				}),
+			],
+			{ error: "unavailable" },
+		),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const shown = text(await mount());
+	expect(shown).toContain(`Some activity under “${COORDINATOR.title}” isn't listed.`);
+	expect(shown).toContain("Some activity under “Only one” isn't listed.");
+	expect(shown).toContain("Some activity isn't listed.");
+	expect(shown).not.toContain("local:");
 });
 
 it.each([
