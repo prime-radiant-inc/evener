@@ -261,24 +261,51 @@ func TestValidateNavigationResourceSnapshotRejectsNullAndWrongWireTypes(t *testi
 }
 
 func TestValidateNavigationResourceSnapshotEnforcesProjectorDepth(t *testing.T) {
+	// Deep chains live only on the subagents resource now; the lists are flat.
+	fixture := navigationSchemaFixtures(t)["subagents"]
+	t.Run("maximum", func(t *testing.T) {
+		snapshot := navigationSchemaChainSnapshot(t, fixture, maxNavigationDepth)
+		if err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot); err != nil {
+			t.Fatalf("depth %d rejected: %v", maxNavigationDepth, err)
+		}
+	})
+	t.Run("one_beyond", func(t *testing.T) {
+		snapshot := navigationSchemaChainSnapshot(t, fixture, maxNavigationDepth+1)
+		if err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot); err == nil {
+			t.Fatalf("depth %d accepted", maxNavigationDepth+1)
+		} else if err.Error() != "navigation schema: graph" {
+			t.Fatalf("error = %q, want graph category", err)
+		}
+	})
+}
+
+// The flat-lists invariant, structural: a children slot on any list resource
+// is a lying payload and fails graph validation. Only the subagents resource
+// may link children.
+func TestValidateNavigationResourceSnapshotRejectsChildrenOnLists(t *testing.T) {
 	fixtures := navigationSchemaFixtures(t)
-	for _, resource := range []string{"live", "project"} {
-		fixture := fixtures[resource]
-		t.Run(resource+"_maximum", func(t *testing.T) {
-			snapshot := navigationSchemaChainSnapshot(t, fixture, maxNavigationDepth)
-			if err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot); err != nil {
-				t.Fatalf("depth %d rejected: %v", maxNavigationDepth, err)
-			}
-		})
-		t.Run(resource+"_one_beyond", func(t *testing.T) {
-			snapshot := navigationSchemaChainSnapshot(t, fixture, maxNavigationDepth+1)
-			if err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot); err == nil {
-				t.Fatalf("depth %d accepted", maxNavigationDepth+1)
+	for _, resource := range []string{"live", "needs_you", "pin_section", "project", "project_page", "location"} {
+		t.Run(resource, func(t *testing.T) {
+			fixture := fixtures[resource]
+			// Depth 2 puts the second entity under a children slot: a
+			// non-empty children link, which lists must reject.
+			snapshot := navigationSchemaChainSnapshot(t, fixture, 2)
+			err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot)
+			if err == nil {
+				t.Fatalf("a children slot on %s was accepted", resource)
 			} else if err.Error() != "navigation schema: graph" {
 				t.Fatalf("error = %q, want graph category", err)
 			}
 		})
 	}
+	// And the one resource that may link children accepts the same chain.
+	t.Run("subagents", func(t *testing.T) {
+		fixture := fixtures["subagents"]
+		snapshot := navigationSchemaChainSnapshot(t, fixture, 2)
+		if err := validateNavigationResourceSnapshot(fixture.key, navigationSchemaGeneration, navigationSchemaRevision, snapshot); err != nil {
+			t.Fatalf("subagents chain rejected: %v", err)
+		}
+	})
 }
 
 func TestNavigationTimestampParityFixturesMatchGoTime(t *testing.T) {
@@ -561,6 +588,7 @@ func navigationSchemaFixtures(t *testing.T) map[string]navigationSchemaFixture {
 		"project":           {navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "schema-project"}, hubapi.NavigationProjectResource{GenerationID: navigationSchemaGeneration, Revision: navigationSchemaRevision, Key: "schema-project", Current: hubapi.NavigationTier{Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{session}}, Recent: hubapi.NavigationTier{Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}, Archived: hubapi.NavigationTier{Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}}},
 		"project_page":      {navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "schema-project", Tier: "current", Offset: 0, Limit: 50}, hubapi.NavigationProjectPage{GenerationID: navigationSchemaGeneration, Revision: navigationSchemaRevision, Key: "schema-project", Tier: "current", Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{session}}},
 		"location":          {navigationResourceKey{Kind: navigationResourceLocation, ID: "local:schema-session"}, hubapi.NavigationSessionLocation{GenerationID: navigationSchemaGeneration, Revision: navigationSchemaRevision, Ref: "local:schema-session", TopLevelRef: "local:schema-session", TopLevel: true, Session: &session}},
+		"subagents":         {navigationResourceKey{Kind: navigationResourceSubagents, ID: "local:schema-session", Offset: 0, Limit: 50}, section()},
 	}
 	out := make(map[string]navigationSchemaFixture, len(fixtures))
 	for name, fixture := range fixtures {

@@ -131,6 +131,13 @@ func validateNavigationResourceSnapshot(
 			if !navigationOwnedSlotAllowed(key.Kind, kind, container.Owner.EntityKey == projectAnchor, container.Owner.Slot) {
 				return navigationSchemaError("graph")
 			}
+			// Only the subagents resource links children: the lists are flat,
+			// so a non-empty children slot anywhere else is a lying payload,
+			// not a shape to decode. (Every normalized document carries the
+			// empty slot; that is a structural no-op.)
+			if kind == "session" && len(container.Children) > 0 && key.Kind != navigationResourceSubagents {
+				return navigationSchemaError("graph")
+			}
 			if kind == "session" && len(container.Children) > maxNavigationChildren || kind == "project" && len(container.Children) > maxNavigationSectionRows {
 				return navigationSchemaError("graph")
 			}
