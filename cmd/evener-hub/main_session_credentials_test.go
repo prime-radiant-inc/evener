@@ -28,8 +28,8 @@ func TestRunMainProbesACredentialASessionWasRefused(t *testing.T) {
 
 // The roster's status probe timeout is a runMain seam: production keeps
 // 500ms, and a test that reads a real daemon through it sets a generous one,
-// so a loaded runner cannot time the probe out. A daemon slower than 500ms
-// is read under the test's timeout.
+// so a loaded runner cannot time the probe out. A daemon slower than
+// production's 500ms default is read under the test's timeout.
 func TestRunMainRosterProbeTimeoutIsASeam(t *testing.T) {
 	if got := runMainWithARefusedSession(t, 800*time.Millisecond); got != 1 {
 		t.Fatalf("credential checks = %d: a daemon answering in 800ms was not read under the test's probe timeout", got)
