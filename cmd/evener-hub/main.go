@@ -200,6 +200,11 @@ type mainDeps struct {
 	listen              func(context.Context, string, string) (net.Listener, error)
 	serve               func(context.Context, hubHTTPServer) error
 	afterWeb            func(*WebServer)
+	// rosterProbeTimeout bounds the roster's status probe of each live
+	// daemon; zero keeps hubcore.StatusProber's 500ms default. A test that
+	// reads a real daemon through the roster sets a generous one, so a loaded
+	// runner cannot time the probe out.
+	rosterProbeTimeout time.Duration
 	// stdin/stdout carry the process streams the `attach` subcommand bridges to
 	// the hub's loopback AppWire edge. The normal hub command ignores them.
 	stdin  io.Reader
@@ -345,7 +350,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 
 	// Roster + past index
-	prober := &hubcore.StatusProber{Timeout: 500 * time.Millisecond}
+	prober := &hubcore.StatusProber{Timeout: deps.rosterProbeTimeout}
 	roster := hubcore.NewRoster(runDir, prober)
 
 	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
