@@ -165,15 +165,38 @@ it("names the default detail level once: its row says it, with no label repeatin
 	expect(renderedText(tree).match(/Default detail level/g)).toHaveLength(1);
 });
 
-it("says so when the hub doesn't keep a default detail level", () => {
+// Absence is the signal (spec 14): a hub that keeps no default detail level
+// leaves no label or sentence behind (audit N5).
+it("shows nothing about a default detail level when the hub doesn't keep one", () => {
 	const { tree } = mount(transcript({ support: "unsupported" }));
-	expect(renderedText(tree)).toContain("This hub doesn't keep a default detail level.");
+	expect(renderedText(tree)).not.toMatch(/default detail level/i);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Default detail level, Intent" })).toHaveLength(0);
 });
 
-it("never shows a Show model on Board rows toggle (ruling 8), or asks to reconnect", () => {
+// S17 put the model's display name on navigation summaries, so the toggle
+// now changes something (spec 12, ruling 8's condition met; audit N5).
+it("offers Show model on Board rows, off at first, and stores it for this phone", () => {
+	const { tree, storage, prefs } = mount();
+	const toggle = tree.root.findByProps({ accessibilityLabel: "Show model on Board rows", value: false });
+	act(() => toggle.props.onValueChange(true));
+	expect(prefs.getSnapshot().showModel).toBe(true);
+	expect(JSON.parse(storage.get(DISPLAY_KEY) ?? "{}")).toMatchObject({ showModel: true });
+	expect(tree.root.findByProps({ accessibilityLabel: "Show model on Board rows" }).props.value).toBe(true);
+});
+
+it("says Show model on Board rows applies now but won't survive a restart when the phone can't store it", () => {
+	const { tree, prefs } = mount();
+	prefs.set = ((set) => (change: Parameters<typeof set>[0]) => {
+		set(change);
+		throw new Error("disk full");
+	})(prefs.set.bind(prefs));
+	act(() => tree.root.findByProps({ accessibilityLabel: "Show model on Board rows" }).props.onValueChange(true));
+	expect(prefs.getSnapshot().showModel).toBe(true);
+	expect(renderedText(tree)).toContain("This choice applies now but couldn't be saved on this phone.");
+});
+
+it("never asks to reconnect or refresh", () => {
 	const { tree } = mount();
-	expect(renderedText(tree)).not.toContain("Show model");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b|\bRefresh\b|transcript display/i);
 });
 

@@ -654,7 +654,17 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			rollback()
 		}
 	}()
-	restore := func() {
+	// restore returns the pre-install binaries and entrypoints to their
+	// original paths, collecting every restoration failure so the caller can
+	// report a rollback that itself failed instead of hiding it behind the
+	// original commit error.
+	restore := func() error {
+		var errs []error
+		remove := func(path string) {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("restore remove %s: %w", path, err))
+			}
+		}
 		for _, s := range stagedBins {
 			// The binDir entry is restored independently of hadPrev:
 			// the commit loop swaps the link even on a first-time
@@ -664,15 +674,19 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			link := filepath.Join(binDir, s.bin)
 			switch {
 			case !s.linkHadEntry:
-				_ = os.Remove(link)
+				remove(link)
 			case s.linkIsLink:
-				_ = os.Remove(link)
-				_ = os.Symlink(s.linkTarget, link)
+				remove(link)
+				if err := os.Symlink(s.linkTarget, link); err != nil {
+					errs = append(errs, fmt.Errorf("restore entrypoint %s: %w", link, err))
+				}
 			case s.linkIsRegular && s.linkFile != nil:
 				// A copied executable: restore the snapshotted bytes
 				// over the swapped-in link.
-				_ = os.Remove(link)
-				_ = os.WriteFile(link, s.linkFile, 0o755)
+				remove(link)
+				if err := os.WriteFile(link, s.linkFile, 0o755); err != nil {
+					errs = append(errs, fmt.Errorf("restore entrypoint %s: %w", link, err))
+				}
 			default:
 				// A non-regular entry (dir and friends) cannot be
 				// reconstructed after rename-over destroyed it; leave
@@ -681,7 +695,7 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			}
 			dst := filepath.Join(shareBinDir, s.bin)
 			if !s.hadPrev {
-				_ = os.Remove(dst)
+				remove(dst)
 				continue
 			}
 			// Restore via temp+rename: truncating the live path with
@@ -692,30 +706,48 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			// rollback.
 			tmp, err := os.CreateTemp(shareBinDir, s.bin+".*.restore")
 			if err != nil {
+				errs = append(errs, fmt.Errorf("restore %s: %w", dst, err))
 				continue
 			}
 			tmpName := tmp.Name()
 			_ = os.Chmod(tmpName, 0o755)
 			_, werr := tmp.Write(s.previous)
-			_ = closeFile(tmp)
-			if werr != nil {
+			cerr := closeFile(tmp)
+			if werr != nil || cerr != nil {
 				_ = os.Remove(tmpName)
+				if werr != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", dst, werr))
+				}
+				if cerr != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", dst, cerr))
+				}
 				continue
 			}
-			_ = os.Rename(tmpName, dst)
+			if err := os.Rename(tmpName, dst); err != nil {
+				_ = os.Remove(tmpName)
+				errs = append(errs, fmt.Errorf("restore %s: %w", dst, err))
+			}
 		}
+		return errors.Join(errs...)
+	}
+	// abort runs the rollback and returns err, joined with any restoration
+	// failure so a rollback that itself failed is visible. When the rollback
+	// succeeds it returns err unchanged.
+	abort := func(err error) error {
+		if rerr := restore(); rerr != nil {
+			return errors.Join(err, rerr)
+		}
+		return err
 	}
 	for i := range stagedBins {
 		s := &stagedBins[i]
 		if err := ctx.Err(); err != nil {
-			restore()
-			return nil, err
+			return nil, abort(err)
 		}
 		dst := filepath.Join(shareBinDir, s.bin)
 		if err := renameFile(s.tmp, dst); err != nil {
 			_ = os.Remove(s.tmp)
-			restore()
-			return nil, err
+			return nil, abort(err)
 		}
 		// Snapshot a regular-file entrypoint just before swapSymlink
 		// destroys it: deferred from stage time so an earlier abort
@@ -725,14 +757,12 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		if s.linkIsRegular && s.linkFile == nil {
 			data, rerr := os.ReadFile(filepath.Join(binDir, s.bin))
 			if rerr != nil {
-				restore()
-				return nil, fmt.Errorf("snapshot entrypoint %s: %w", filepath.Join(binDir, s.bin), rerr)
+				return nil, abort(fmt.Errorf("snapshot entrypoint %s: %w", filepath.Join(binDir, s.bin), rerr))
 			}
 			s.linkFile = data
 		}
 		if err := swapSymlink(dst, filepath.Join(binDir, s.bin)); err != nil {
-			restore()
-			return nil, err
+			return nil, abort(err)
 		}
 	}
 	// Digest before committing the transaction: a digest failure must roll
@@ -741,8 +771,7 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 	// runs.
 	digests, err := digestsUnderLock(shareBinDir)
 	if err != nil {
-		restore()
-		return nil, err
+		return nil, abort(err)
 	}
 	committed = true
 	return digests, nil

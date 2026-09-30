@@ -13,20 +13,37 @@ function memory(stored?: string) {
 	};
 }
 
-it("starts at the system appearance and the serif", () => {
-	expect(new DisplayPreferences(memory()).getSnapshot()).toEqual({ appearance: "system", readingFont: "serif" });
+it("starts at the system appearance and the serif, with no model on Board rows", () => {
+	expect(new DisplayPreferences(memory()).getSnapshot()).toEqual({
+		appearance: "system",
+		readingFont: "serif",
+		showModel: false,
+	});
 });
 
 it("keeps a choice across launches", () => {
 	const storage = memory();
 	new DisplayPreferences(storage).set({ appearance: "dark" });
-	expect(new DisplayPreferences(storage).getSnapshot()).toEqual({ appearance: "dark", readingFont: "serif" });
+	expect(new DisplayPreferences(storage).getSnapshot()).toEqual({
+		appearance: "dark",
+		readingFont: "serif",
+		showModel: false,
+	});
+});
+
+it("keeps Show model on Board rows across launches", () => {
+	const storage = memory();
+	new DisplayPreferences(storage).set({ showModel: true });
+	expect(new DisplayPreferences(storage).getSnapshot()).toMatchObject({ showModel: true });
 });
 
 it("reads an unknown or broken stored value as the default, one field at a time", () => {
-	expect(new DisplayPreferences(memory('{"appearance":"sepia","readingFont":"sans"}')).getSnapshot()).toEqual({
+	expect(
+		new DisplayPreferences(memory('{"appearance":"sepia","readingFont":"sans","showModel":"yes"}')).getSnapshot(),
+	).toEqual({
 		appearance: "system",
 		readingFont: "sans",
+		showModel: false,
 	});
 	expect(new DisplayPreferences(memory("{not json")).getSnapshot()).toEqual(DEFAULT_DISPLAY);
 });
