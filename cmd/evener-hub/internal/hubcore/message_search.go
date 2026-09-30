@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
@@ -610,11 +609,11 @@ func hasMessageSearchWord(tokens []string) bool {
 	return false
 }
 
-// wordRuneCount is how many of s's runes are letters or digits.
+// wordRuneCount is how many of s's runes are index word characters.
 func wordRuneCount(s string) int {
 	n := 0
 	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		if IsIndexWordRune(r) {
 			n++
 		}
 	}
