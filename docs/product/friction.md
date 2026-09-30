@@ -379,12 +379,24 @@ owns snapshots and notifications without a failed-read timer; browser
 and native [TasksSheet](../../mobile-native/src/TasksSheet.tsx#L75) provide manual
 retry. `TasksPanel.test.tsx` explicitly tests the quiet-session Try again path.
 
-**Discuss.** Retry safe snapshots with bounded backoff while the surface remains
-visible. Retain rows and expansion state; decide when stale status is enough
-without a duplicate toast. Unsupported or deleted scopes remain distinct.
+**Decision.** Recover a failed task-list read automatically for as long as the
+panel remains open. Pace retries with backoff and no attempt limit. Retain the
+last list, expanded rows and reading position, with a quiet indication that the
+display is out of date and recovery is underway. Avoid duplicate error toasts or
+requests for intervention when the product can perform the recovery. If no list
+has loaded, show that retrieval is still pending rather than claiming there are
+no tasks. Clear the recovery indication and retire retries after success;
+healthy panels continue using their existing notifications without added
+polling. Actual failed tasks retain their normal status. A confirmed unsupported
+source or deleted session gets an accurate explanation. Implementation remains
+pending.
 
 **Acceptance.** Fail a task snapshot, then restore reads without task updates or
-reconnect. The open panel recovers by itself and keeps previously expanded rows.
+reconnect, including after a prolonged outage. The open panel recovers by itself
+and keeps previously expanded rows and reading position. An initial read failure
+does not present an empty task list, repeated attempts do not produce repeated
+alerts, and successful recovery retires the retry timer. A healthy panel adds no
+polling, and closing the panel ends its recovery reads.
 
 ### C11 Successful recovery looks like failure
 
