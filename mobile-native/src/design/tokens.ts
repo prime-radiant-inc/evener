@@ -222,6 +222,9 @@ export const uiType = {
 	subheadline: { fontSize: 15, lineHeight: 20 },
 	/** Meta and captions: a row's second line, a group's footer. */
 	footnote: { fontSize: 13, lineHeight: 18 },
+	/** A page's status or summary line, which spec 16.2 doesn't name: the
+	 * prototype's 14/20 (hub.js:17, styles.css .live-sum). */
+	statusLine: { fontSize: 14, lineHeight: 20 },
 	/** One or two words, uppercase, +0.06em (12 × 0.06 = 0.72). */
 	sectionLabel: {
 		fontSize: 12,

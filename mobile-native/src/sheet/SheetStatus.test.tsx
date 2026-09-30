@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
+import { uiType } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
 import { FirstLoad, SheetStatus } from "./SheetStatus";
 
@@ -22,6 +23,20 @@ it("shows nothing while live, and the line with no button while not", () => {
 	const tree = render(<SheetStatus />);
 	expect(renderedText(tree)).toBe("Reconnecting…");
 	expect(tree.root.findAllByProps({ accessibilityRole: "button" })).toHaveLength(0);
+});
+
+// The sheet's status line and a first load's sentence set in spec 16.2's
+// roles: Footnote and Subheadline (settings audit Lev5).
+it("sets its line in the Footnote role and a first load's sentence in Subheadline", () => {
+	status.state = "reconnecting";
+	status.line = "Reconnecting…";
+	const line = render(<SheetStatus />).root.findByType("Text" as never);
+	expect(line.props.style).toMatchObject(uiType.footnote);
+	status.line = null;
+	status.fatal = false;
+	status.state = "connecting";
+	const first = render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />).root.findByType("Text" as never);
+	expect(first.props.style).toMatchObject(uiType.subheadline);
 });
 
 it.each(["connecting", "reconnecting"])("says a never-loaded page is connecting while %s", (state) => {
