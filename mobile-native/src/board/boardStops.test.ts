@@ -180,6 +180,23 @@ it("lets go when the connection drops before the interrupt lands", async () => {
 	await runtime.stop();
 });
 
+it("keeps a Stop whose read fence fails: the interrupt is already durable, and the fence failure is logged, not thrown", async () => {
+	const { runtime, client, stops } = setup();
+	client.on("turn/interrupt", applied);
+	const fault = new Error("storage fault");
+	const fence = vi.spyOn(runtime, "reconcileAuthoritativeRead").mockRejectedValue(fault);
+	const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		await expect(stops.stop(client, "ref-1")).resolves.toBe("stopped");
+		expect(fence).toHaveBeenCalled();
+		expect(logged).toHaveBeenCalledWith(expect.stringContaining("read fence failed"), fault);
+	} finally {
+		fence.mockRestore();
+		logged.mockRestore();
+	}
+	await runtime.stop();
+});
+
 it("sends one interrupt for two Stops at once", async () => {
 	const { runtime, client, stops } = setup();
 	client.on("turn/interrupt", applied);
