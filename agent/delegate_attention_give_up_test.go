@@ -486,3 +486,44 @@ func TestOnlyAMissingTranscriptStandsAParkedEscalationDown(t *testing.T) {
 		}
 	}
 }
+
+// A successful escalation ends its backoff even while a retry for other work
+// is armed. The reset leaves that retry armed, and the retry's fire backs off
+// from the reset delay, not from the delay it was armed with.
+func TestABackoffResetHoldsAcrossAnArmedRetry(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	root, controller := quietHubTestSession(t, clk)
+	seedDelegateControllerIdle(t, controller, "dlg_pending", "")
+	if !controller.noteDelegateAttention("dlg_pending", "delegate:dlg_pending") {
+		t.Fatal("note attention")
+	}
+	if !controller.hasPendingDelegateAttention() {
+		t.Fatal("this test is not in the state it means to be: no attention is pending")
+	}
+	const staleDelay = 2 * time.Second
+	root.attentionMu.Lock()
+	root.stableAttentionRetry.delay = staleDelay
+	root.attentionMu.Unlock()
+	root.scheduleStableDelegateAttentionRetry()
+	root.attentionMu.Lock()
+	armedGeneration := root.stableAttentionRetry.generation
+	root.attentionMu.Unlock()
+
+	root.resetStableDelegateAttentionRetryDelay()
+
+	root.attentionMu.Lock()
+	active, generation := root.stableAttentionRetry.active, root.stableAttentionRetry.generation
+	root.attentionMu.Unlock()
+	if !active || generation != armedGeneration {
+		t.Fatalf("after the reset: active=%t generation=%d, want the armed retry kept (active, generation %d)", active, generation, armedGeneration)
+	}
+	clk.Advance(staleDelay)
+	clk.Drain()
+	root.attentionMu.Lock()
+	delay := root.stableAttentionRetry.delay
+	root.attentionMu.Unlock()
+	if delay != 2*jobNotificationRetryInitialDelay {
+		t.Fatalf("retry delay after the armed retry fired = %v, want %v backed off from the reset delay", delay, 2*jobNotificationRetryInitialDelay)
+	}
+}
