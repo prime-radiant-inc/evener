@@ -1,8 +1,10 @@
-// The Subagents list (spec 9): a coordinator's subagents, read whole from its
-// activity tree. A strip and chips say how many are failed, running and done;
-// the list shows failures first, then what's running, then what's done folded
-// away. It reads again on its own (on focus, on reconnect, on the tree's
-// notifications) and never offers Retry, Refresh or Reconnect.
+// The Activity list (spec 9, with shell jobs by Jesse's ruling): a
+// coordinator's subagents and the shell jobs it and they started, read whole
+// from its activity tree. The strip says how many subagents are failed,
+// running and done, and the chips count jobs too; the list shows failures
+// first, then what's running, then what's done folded away. It reads again
+// on its own (on focus, on reconnect, on the tree's notifications) and never
+// offers Retry, Refresh or Reconnect.
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
@@ -20,7 +22,7 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type SubagentFilter, type SubagentListItem, subagentListItems, subagentListKey } from "./subagentList";
 import {
 	countLabel,
-	flattenSubagents,
+	flattenActivity,
 	SEARCH_AFTER,
 	STATE_ORDER,
 	type SubagentRow,
@@ -30,6 +32,7 @@ import {
 	tallySubagents,
 } from "./subagentModel";
 import { stopRequests } from "./nativeStopRequests";
+import { ShellJobRowView } from "./ShellJobRowView";
 import { SubagentRowView } from "./SubagentRowView";
 import { SubagentStrip, stateColors } from "./SubagentStrip";
 import { useSubagentTree } from "./useSubagentTree";
@@ -55,8 +58,16 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		}, [tree, followed]),
 	);
 
-	const rows = useMemo(() => (snapshot.tree ? flattenSubagents(snapshot.tree) : []), [snapshot.tree]);
+	const activity = useMemo(
+		() => (snapshot.tree ? flattenActivity(snapshot.tree) : { subagents: [], jobs: [] }),
+		[snapshot.tree],
+	);
+	// The strip, stops and subagent screens are the subagents' own; the list,
+	// its chips and its count hold the shell jobs too.
+	const rows = activity.subagents;
+	const listed = useMemo(() => [...activity.subagents, ...activity.jobs], [activity]);
 	const tally = useMemo(() => tallySubagents(rows), [rows]);
+	const listTally = useMemo(() => tallySubagents(listed), [listed]);
 	// Taken when the tree changes, so the list runs no clock (ruling 7).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
 	const now = useMemo(() => Date.now(), [snapshot]);
@@ -65,8 +76,8 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const [query, setQuery] = useState("");
 	const [doneOpen, setDoneOpen] = useState(false);
 	const items = useMemo(
-		() => subagentListItems(rows, { filter, query, doneOpen, missing: snapshot.missing }),
-		[rows, filter, query, doneOpen, snapshot.missing],
+		() => subagentListItems(listed, { filter, query, doneOpen, missing: snapshot.missing }),
+		[listed, filter, query, doneOpen, snapshot.missing],
 	);
 
 	// The stops you asked for, on their rows, and settled against each new
@@ -102,7 +113,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		[navigation, hubId, ref, threadId, title],
 	);
 
-	const count = countLabel(tally.total, snapshot.partial);
+	const count = countLabel(listTally.total, snapshot.partial);
 	useEffect(() => {
 		navigation.setOptions({ headerTitle: () => <HeaderTitle count={count} title={title} /> });
 	}, [navigation, count, title]);
@@ -115,13 +126,15 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		paddingTop: 16,
 	};
 	const notice = snapshot.tree
-		? null
+		? listTally.total === 0 && snapshot.missing.length === 0
+			? "No subagents or shell jobs yet."
+			: null
 		: snapshot.failed
-			? "The subagents couldn't be listed right now."
+			? "The activity couldn't be listed right now."
 			: snapshot.unsupported
-				? "This session can't list its subagents."
+				? "This session can't list its activity."
 				: snapshot.ended
-					? "This session is shut down, so its subagents can't be listed."
+					? "This session is shut down, so its activity can't be listed."
 					: null;
 
 	const renderItem = useCallback(
@@ -134,6 +147,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				case "missing":
 					return <MissingLine title={item.title} />;
 				case "row":
+					if (item.row.kind === "job") return <ShellJobRowView row={item.row} now={now} />;
 					return (
 						<SubagentRowView
 							row={item.row}
@@ -154,18 +168,23 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 			<View style={{ paddingHorizontal: 16 }}>
 				<SubagentStrip tally={tally} width={width - 32} />
 			</View>
-			{tally.total > 0 ? (
+			{listTally.total > 0 ? (
 				// One row, as spec 9 draws it: past the phone's width it scrolls
 				// sideways and fades at its trailing edge, as the Board's and the
 				// Session's chip rows do.
 				<ChipStrip testID="subagent-filters" onGlass={false}>
-					<FilterChip label="All" count={tally.total} selected={filter === "all"} onPress={() => setFilter("all")} />
-					{STATE_ORDER.filter((state) => tally[state] > 0).map((state) => (
+					<FilterChip
+						label="All"
+						count={listTally.total}
+						selected={filter === "all"}
+						onPress={() => setFilter("all")}
+					/>
+					{STATE_ORDER.filter((state) => listTally[state] > 0).map((state) => (
 						<FilterChip
 							key={state}
 							state={state}
 							label={subagentStateWord(state)}
-							count={tally[state]}
+							count={listTally[state]}
 							selected={filter === state}
 							onPress={() => setFilter(state)}
 						/>
@@ -173,9 +192,9 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				</ChipStrip>
 			) : null}
 			{/* Kept while it has words, so a list that shrinks never stays filtered with no way to clear it. */}
-			{tally.total > SEARCH_AFTER || query !== "" ? (
+			{listTally.total > SEARCH_AFTER || query !== "" ? (
 				<View style={{ marginHorizontal: space.margin }}>
-					<SearchField label="Filter subagents" value={query} onChangeText={setQuery} />
+					<SearchField label="Filter activity" value={query} onChangeText={setQuery} />
 				</View>
 			) : null}
 			{notice ? (
@@ -231,7 +250,7 @@ function HeaderTitle({ count, title }: { count: string; title: string }) {
 				numberOfLines={1}
 				style={{ color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600" }}
 			>
-				{`Subagents · ${count}`}
+				{`Activity · ${count}`}
 			</Text>
 			<Text
 				allowFontScaling={allowFontScaling}
@@ -327,7 +346,7 @@ function MissingLine({ title }: { title: string }) {
 			allowFontScaling={allowFontScaling}
 			style={{ padding: 16, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 		>
-			{`Some subagents under “${title}” aren't listed.`}
+			{`Some activity under “${title}” isn't listed.`}
 		</Text>
 	);
 }
@@ -336,7 +355,7 @@ function MissingLine({ title }: { title: string }) {
 function Skeleton() {
 	const { palette } = useColors();
 	return (
-		<View accessible accessibilityLabel="Loading subagents" style={{ gap: 8, paddingTop: 8 }}>
+		<View accessible accessibilityLabel="Loading activity" style={{ gap: 8, paddingTop: 8 }}>
 			{[0, 1, 2].map((index) => (
 				<View
 					key={index}
