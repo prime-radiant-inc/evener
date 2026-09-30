@@ -7,7 +7,7 @@ import { memo } from "react";
 import { Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type ShellJobRow, shellJobEnding, shellJobMeta } from "./subagentModel";
+import { type ShellJobRow, shellJobLabel, shellJobMeta } from "./subagentModel";
 
 export const ShellJobRowView = memo(function ShellJobRowView({
 	row,
@@ -22,15 +22,12 @@ export const ShellJobRowView = memo(function ShellJobRowView({
 	const scale = useTextScale();
 	const meta = shellJobMeta(row, now);
 	const owner = `under ${row.owner}`;
-	// The meta names every other ending; VoiceOver hears a clean finish too.
-	const ending = row.job.terminal ? shellJobEnding(row) : "";
-	const spoken = ending !== "" && !meta.startsWith(ending) ? [ending, meta] : [meta];
 	const hue = row.state === "running" ? palette.aliveInk : row.state === "failed" ? palette.dangerInk : palette.inkLow;
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={["Shell job", row.title, ...spoken, owner].join(", ")}
+			accessibilityLabel={shellJobLabel(row, now)}
 			onPress={() => onOpen(row)}
 			style={({ pressed }) => ({
 				flexDirection: "row",

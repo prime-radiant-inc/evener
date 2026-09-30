@@ -291,8 +291,8 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	const labels = tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Shell job,"));
 	expect(new Set(labels.map((node) => node.props.accessibilityLabel))).toEqual(
 		new Set([
-			`Shell job, npm run lint, Command failed · 2m, under ${COORDINATOR.title}`,
-			"Shell job, Serving the docs, running · 3m, under Only one",
+			`Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`,
+			"Shell job, Serving the docs, running, 3 minutes, under Only one",
 		]),
 	);
 
@@ -318,7 +318,7 @@ it("opens a shell job's detail over the list", async () => {
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	act(() =>
-		pressable(tree, `Shell job, npm run lint, Command failed · 2m, under ${COORDINATOR.title}`)?.props.onPress(),
+		pressable(tree, `Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`)?.props.onPress(),
 	);
 	expect(navigation.push).toHaveBeenCalledWith("ShellJob", {
 		hubId: "hub-1",
