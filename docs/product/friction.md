@@ -5,9 +5,11 @@ its machinery, loses the ability to recover, or imposes a restriction that needs
 a product justification. Use the [principles](principles.md) to assess the user
 cost and the [subsystem map](subsystems.md) to find the owning code.
 
-Cases remain open until their agreed behavior is implemented and verified.
+Cases with agreed behavior changes remain open until implemented and verified.
 **Decision** records an agreed product outcome; **Discuss** describes an unresolved
-proposal. Neither is an implementation plan or a claim that behavior has changed.
+proposal. **Deferred** cases retain their evidence but are not selected for
+behavior changes without material new evidence. None is an implementation plan
+or a claim that behavior has changed.
 Discuss cases individually before changing their behavior. Preserve the user's
 work and chosen boundaries while deciding how the product restores capability.
 
@@ -47,7 +49,7 @@ and should not be presented as reproduced production incidents.
 | [R05](#r05-goal-blocking-after-transient-failure) | Medium | A temporary execution failure leaves an authorized goal blocked | S09, S15 |
 | [R06](#r06-read-only-goal-progress) | Medium | Useful research can count as no progress while attempted writes count | S09, S14 |
 | [R07](#r07-restored-goals-without-a-wake) | Medium | An active restored goal can remain idle until another turn arrives | S08, S09 |
-| [R08](#r08-compaction-with-a-pending-question) | Low | A pending question prevents explicit compaction | S09, S10 |
+| [R08](#r08-compaction-with-a-pending-question) | Low (deferred) | A pending question prevents explicit compaction | S09, S10 |
 | [H01](#h01-credential-store-failure-scope) | High | A credential-file problem prevents the entire hub from starting | S01, S06, S15 |
 | [H02](#h02-live-daemons-after-api-key-repair) | High | Saving a corrected API key leaves running sessions using the old key | S08, S15 |
 | [H03](#h03-host-journal-failure-scope) | High | Incomplete host-journal quarantine prevents unrelated local work | S06, S07 |
@@ -595,15 +597,20 @@ the user to reply or clear it first. The user cannot reduce older context while
 preserving an unanswered question.
 
 **Evidence.** [Compact](../../agent/session_compaction.go#L30) checks pending asks
-before compaction. Existing `session_ask_test.go` tests this refusal.
+before compaction, and the [explicit command
+callback](../../cmd/evener/serve.go#L1430) uses that entry point. Automatic
+[context management](../../agent/internal/contextmgr/context_strategy.go#L91)
+calls the context manager separately. Existing `session_ask_test.go` tests the
+explicit-compaction refusal.
 
-**Discuss.** Determine whether older context can be compacted while retaining
-the exact pending ask, invocation/result relationship, and later answer routing.
-The question's continuity matters more than clearing a gate.
+**Deferred.** Keep the existing behavior. This narrow explicit-compaction case
+does not justify implementation work without evidence of material user impact.
+Revisit if a concrete workflow needs to reclaim context before answering a
+pending question and the refusal obstructs useful work.
 
-**Acceptance.** Compact a large session while a question is pending, answer it
-afterward, and continue once with the same question identity and preserved
-required context.
+**Acceptance if revisited.** Compact a large session while a question is pending,
+answer it afterward, and continue once with the same question identity and
+preserved required context.
 
 ## Hub, hosts and provider setup
 
