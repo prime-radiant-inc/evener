@@ -110,6 +110,7 @@
     "state/navigation/types.ts",
     "state/connection/index.ts",
     "state/connection/core.ts",
+    "state/credentials/authStatuses.ts",
     "state/credentials/index.ts",
     "state/credentials/instances.ts",
     "state/extensions/index.ts",
