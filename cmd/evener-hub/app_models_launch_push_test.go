@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -78,9 +77,7 @@ func TestLaunchRefreshOfAnUnchangedListStaysSilent(t *testing.T) {
 // connected to the hub receives evener/auth/updated when a refresh changes
 // the launch list.
 func TestLaunchRefreshBroadcastsAuthUpdated(t *testing.T) {
-	spawner := &countLaunchContractSpawner{modelsFn: func(call int, _ string) appwire.ModelListResponse {
-		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: fmt.Sprintf("gen-%d", call)}}}
-	}}
+	spawner := &countLaunchContractSpawner{modelsFn: func(call int, _ string) appwire.ModelListResponse { return changingModels(call) }}
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Spawner: spawner})
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
@@ -139,13 +136,7 @@ func TestLaunchRefreshOfAnEvictedEntryAnnounces(t *testing.T) {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	// The refresh is waiting on the launch check; evict the entry under it.
-	deadline := time.Now().Add(5 * time.Second)
-	for spawner.callCount() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("the stale read never started a refresh")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitFor(t, func() bool { return spawner.callCount() >= 2 }, "the stale read never started a refresh")
 	web.launchModels.mu.Lock()
 	delete(web.launchModels.entries, "")
 	web.launchModels.mu.Unlock()
