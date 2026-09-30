@@ -176,7 +176,7 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 		t.Fatalf("nextIdleDelegateAttention offered %s during ancestor stop", delegateID)
 	}
 	c.mu.Lock()
-	_, parked := c.attentionWakeIDs["dlg_child"][attentionID]
+	_, parked := attentionWakeIDsOf(c, "dlg_child")[attentionID]
 	c.mu.Unlock()
 	if !parked {
 		t.Fatal("transient ancestor stop dropped the parked attention")
@@ -334,8 +334,8 @@ func (f fencedGrandchildAttention) owedAndParked() (owed, parked bool) {
 	c := f.root.delegateController
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, owed = c.attentionWakeIDs[f.grandchildDelegateID][f.attentionID]
-	_, parked = c.attentionParked[f.grandchildDelegateID]
+	_, owed = attentionWakeIDsOf(c, f.grandchildDelegateID)[f.attentionID]
+	parked = attentionParkedOf(c, f.grandchildDelegateID)
 	return owed, parked
 }
 

@@ -115,7 +115,9 @@ var escalatableTools = map[string]bool{
 }
 
 // escalationAllowed reports whether a denial is eligible for human escalation. It
-// mirrors ask_user's root-only interactive gate (NonInteractive || subagent), adds
+// uses ask_user's root-only interactive gate (NonInteractive || subagent), except
+// that an attached ask responder never enables it: a scripted answerer must not
+// approve a sandbox bypass. It adds
 // the reconciliation zero-subscriber rule, restricts escalation to the single-file
 // tools (escalatableTools), and — critically — only raises a card for a denial a
 // per-invocation single-leaf grant could actually CURE: a CONTAINMENT denial

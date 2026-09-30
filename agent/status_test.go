@@ -274,7 +274,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 
 			restored.delegateController.mu.Lock()
 			aggregate := restored.delegateController.durable[targetDelegateID]
-			wakeIDs := restored.delegateController.attentionWakeIDs[targetDelegateID]
+			wakeIDs := attentionWakeIDsOf(restored.delegateController, targetDelegateID)
 			_, wakePublished := wakeIDs[attentionID]
 			wakeCount := len(wakeIDs)
 			restored.delegateController.mu.Unlock()

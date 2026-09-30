@@ -284,8 +284,10 @@ func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveSta
 	}
 	close(finalizing.released)
 	live.finalizing = nil
-	if root := c.rootRuntime; root != nil && len(c.attentionWakeIDs[finalizing.delegateID]) != 0 {
-		go root.notify()
+	if state := c.attention[finalizing.delegateID]; state != nil && len(state.wakeIDs) != 0 {
+		if root := c.rootRuntime; root != nil {
+			go root.notify()
+		}
 	}
 }
 
@@ -469,6 +471,43 @@ func delegateStoppedTerminalPacket() delegatestore.TerminalPacket {
 		Reason:  delegatestore.ReasonStoppedByParent,
 	})
 	return packet
+}
+
+// delegateStoppedRunPacket is the packet a parent's stop settles over a run
+// that reported before the stop landed. The report — its message, structured
+// result, warnings and evidence metadata — is kept; only the outcome and
+// reason are restamped as stopped, so the owner's frame reads the stop instead
+// of the report's own "completed". The kind becomes terminal_error to match
+// the stop finish's disposition, which also stops the fold (applyRunFinished)
+// from replacing it with its bare stop literal (#3114). A packet the run
+// already ended as is cloned untouched.
+func delegateStoppedRunPacket(packet delegatestore.TerminalPacket) delegatestore.TerminalPacket {
+	stopped := cloneDelegateTerminalPacket(packet)
+	if stopped.Kind != delegatestore.PacketReported {
+		return stopped
+	}
+	stopped.Kind = delegatestore.PacketTerminalError
+	// Rewrite only the outcome and reason so every other key the run wrote —
+	// name, task, worktree, scratch path, and any key this build does not know
+	// — survives. Malformed metadata cannot come from this process's own
+	// packets; a fresh stamp is still the right fallback if it somehow does.
+	metadata := map[string]json.RawMessage{}
+	if len(stopped.Metadata) > 0 {
+		if err := json.Unmarshal(stopped.Metadata, &metadata); err != nil {
+			metadata = map[string]json.RawMessage{}
+		}
+	}
+	// JSON null is valid terminal-packet metadata and unmarshals to a nil map;
+	// the assignments below would panic on it.
+	if metadata == nil {
+		metadata = map[string]json.RawMessage{}
+	}
+	metadata["outcome"], _ = json.Marshal(delegatestore.OutcomeStopped)
+	metadata["reason"], _ = json.Marshal(delegatestore.ReasonStoppedByParent)
+	if raw, err := json.Marshal(metadata); err == nil {
+		stopped.Metadata = raw
+	}
+	return stopped
 }
 
 func delegateIsMissingTerminalPacket(packet delegatestore.TerminalPacket) bool {

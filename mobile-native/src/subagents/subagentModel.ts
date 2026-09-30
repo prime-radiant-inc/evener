@@ -21,6 +21,7 @@ import {
 	jobIsFailed,
 	jobStatusDisplay,
 	plainQuoteLine,
+	shellJobState,
 } from "@evener/appwire-client";
 import { compactDuration, spokenDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
@@ -144,17 +145,22 @@ export interface ShellJobRow {
 /** A row of the Activity list. */
 export type ActivityListRow = SubagentRow | ShellJobRow;
 
-function shellJobState(job: ActivityJob): SubagentState {
-	if (jobIsFailed(job)) return "failed";
-	return job.terminal ? "done" : "running";
+/** The row-kind guards for the one activity list, shared by the flattening
+ * helpers and anything that narrows a row's kind. */
+export function isSubagentRow(row: ActivityListRow): row is SubagentRow {
+	return row.kind === "subagent";
+}
+
+export function isJobRow(row: ActivityListRow): row is ShellJobRow {
+	return row.kind === "job";
 }
 
 /** Every subagent and shell job in the tree, depth first in the tree's own
- * order, each once; a subagent another subagent started names its parent,
- * and a job names the session or subagent that ran it. */
-export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[]; jobs: ShellJobRow[] } {
-	const subagents: SubagentRow[] = [];
-	const jobs: ShellJobRow[] = [];
+ * order, each once, in one walk-ordered list; a subagent another subagent
+ * started names its parent, and a job names the session or subagent that ran
+ * it. */
+export function flattenActivity(tree: ActivityTree): ActivityListRow[] {
+	const rows: ActivityListRow[] = [];
 	const seen = new Set<string>();
 	let order = 0;
 	// parentTitle is the subagent whose session this is, absent at the root.
@@ -162,12 +168,12 @@ export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[];
 		for (const entry of session.entries) {
 			if (entry.kind === "shell") {
 				// Job ids and delegate ids are separate namespaces, keyed apart
-				// as subagentListKey keys their rows.
+				// as activityListKey keys their rows.
 				const key = `job:${entry.job.jobId}`;
 				if (seen.has(key)) continue;
 				seen.add(key);
 				const job = entry.job;
-				jobs.push({
+				rows.push({
 					kind: "job",
 					id: job.jobId,
 					title: job.description.trim() || firstLine(job.command ?? "", 80) || job.jobId,
@@ -182,7 +188,7 @@ export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[];
 			const delegate = entry.delegate;
 			seen.add(delegate.delegateId);
 			const title = subagentTitle(delegate);
-			subagents.push({
+			rows.push({
 				kind: "subagent",
 				id: delegate.delegateId,
 				ref: delegate.childRef,
@@ -198,13 +204,19 @@ export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[];
 		}
 	};
 	visit(tree.root, undefined);
-	return { subagents, jobs };
+	return rows;
 }
 
-/** Every subagent in the tree (flattenActivity's), for the views that count
- * subagents alone: the strip, the Session's chip, stop requests. */
+/** Every subagent in the tree (flattenActivity's subagent rows), for the views
+ * that count subagents alone: the strip, the Session's chip, stop requests. */
 export function flattenSubagents(tree: ActivityTree): SubagentRow[] {
-	return flattenActivity(tree).subagents;
+	return flattenActivity(tree).filter(isSubagentRow);
+}
+
+/** Every shell job in the tree (flattenActivity's job rows), for the views
+ * that read one job alone, such as its detail screen. */
+export function flattenJobs(tree: ActivityTree): ShellJobRow[] {
+	return flattenActivity(tree).filter(isJobRow);
 }
 
 function time(value: string | undefined): number | null {
@@ -249,9 +261,9 @@ export function subagentSections<Row extends ActivityListRow>(rows: readonly Row
 	return sections;
 }
 
-/** The loaded subagents by state: S3's fallback until the hub counts whole
+/** The loaded activity rows by state: S3's fallback until the hub counts whole
  * trees for the phone. The type is the Session's Subagents chip's (phase 3). */
-export function tallySubagents(rows: readonly { state: SubagentState }[]): SubagentTally {
+export function tallyActivity(rows: readonly { state: SubagentState }[]): SubagentTally {
 	const tally: SubagentTally = { total: rows.length, running: 0, failed: 0, done: 0 };
 	for (const row of rows) tally[row.state] += 1;
 	return tally;
@@ -396,39 +408,27 @@ export function matchesSearch(row: ActivityListRow, query: string): boolean {
 	return words.some((text) => text.toLowerCase().includes(needle));
 }
 
-/** How an ended shell job ended, in words: "Command failed" or "Command
- * killed" (jobStatusDisplay), "Stopped" or "Cancelled", else its state's word
- * ("Failed", "Done"). */
-export function shellJobEnding(row: ShellJobRow): string {
-	const { status, reason } = row.job;
-	const display = jobStatusDisplay(status, reason);
-	if (display !== status) return display;
-	if (status === "stopped") return "Stopped";
-	if (status === "cancelled") return "Cancelled";
-	return subagentStateWord(row.state);
-}
-
 /** A shell job's status in parts, which its meta and its spoken label each
- * word their own way: while it runs, its status (jobStatusDisplay) and how
- * long it has been quiet; once it ends, how it ended and how long it ran.
- * `clean` marks a job that finished well, whose ending the meta leaves to
- * its hue. */
+ * word their own way: while it runs, its status (jobStatusDisplay, the shared
+ * words) and how long it has been quiet; once it ends, the same status words
+ * and how long it ran. `clean` marks a job that finished well, whose status
+ * the meta leaves to its hue. */
 function shellJobStatus(row: ShellJobRow, now: number): { words: string; clean: boolean; ms: number | null } {
 	const { job } = row;
+	const words = jobStatusDisplay(job.status, job.reason);
 	if (!job.terminal) {
 		const since = time(job.lastOutputAt) ?? time(job.startedAt);
 		return {
-			words: jobStatusDisplay(job.status, job.reason),
+			words,
 			clean: false,
 			ms: since === null ? null : Math.max(0, now - since),
 		};
 	}
-	const words = shellJobEnding(row);
 	const started = time(job.startedAt);
 	const ended = time(job.endedAt);
 	return {
 		words,
-		clean: words === subagentStateWord("done"),
+		clean: job.status === "completed" && !jobIsFailed(job),
 		ms: started === null || ended === null ? null : Math.max(0, ended - started),
 	};
 }

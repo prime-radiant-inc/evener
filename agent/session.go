@@ -649,6 +649,21 @@ type Session struct {
 	// part of persisted SessionMeta.
 	askPending []askQuestion
 
+	// askPendingCallArgs holds each pending ask_user call's own arguments
+	// (already normalized, spec §5.1's shape), one entry per call, in call
+	// order — appended alongside askPending by registerAskTool's Exec and
+	// cleared alongside it (clearAskPending). It exists for an external
+	// ask-responder (evener run --ask-responder, PendingAskArguments) that
+	// needs the full question detail (option details included) a live call
+	// carried: Session.Events() is best-effort (session_events.go: "a full
+	// buffer drops"), so a caller for whom missing a call would leave state
+	// permanently wrong — a real pending question it never answers — must
+	// read durable session state instead of the event stream. Guarded by
+	// mu, like askPending above. Not persisted or restored: a resumed
+	// session's pending questions are read back from askPending/the
+	// transcript, and this feature does not (yet) support --resume.
+	askPendingCallArgs [][]byte
+
 	// steeringCarrierClaimClientMutationID is the client mutation id of the
 	// steer a claimed steering-carrier turn (acceptSteeringCarrierInput) is
 	// currently draining, set for the duration of that one call. It tells

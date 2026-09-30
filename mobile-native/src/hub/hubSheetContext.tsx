@@ -23,6 +23,8 @@ export type HubRoutes = {
 	HostEdit: { hubId: string; name: string };
 	/** focus opens that provider's detail once; signIn starts its sign-in instead. */
 	Providers: { hubId: string; focus?: string; signIn?: boolean };
+	/** A provider's detail, pushed over Providers, which builds it. */
+	ProviderDetail: { hubId: string; name: string };
 	/** focus opens that plugin's detail once. */
 	Plugins: { hubId: string; focus?: { plugin: string; marketplace: string } };
 	/** A marketplace pushed from the Plugins page's Marketplaces or Browse list. */

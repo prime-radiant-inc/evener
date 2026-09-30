@@ -1591,7 +1591,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.mu.Lock()
 	s.state = restoredState
-	s.askPending = restoredAskPending
+	// setAskPendingLocked also clears askPendingCallArgs: a freshly
+	// constructed session already has none, but this keeps every
+	// replacement of askPending routed through the one helper that
+	// maintains the invariant, restore included.
+	s.setAskPendingLocked(restoredAskPending)
 	s.mu.Unlock()
 
 	s.emitSessionStartEnvelope(events.SessionStartData{

@@ -49,6 +49,7 @@ export {
   indexActivityEntities,
   jobIsFailed,
   jobRowFields,
+  shellJobState,
   watchDeliveryInstants,
   watchFacts,
   watchIsScheduled,

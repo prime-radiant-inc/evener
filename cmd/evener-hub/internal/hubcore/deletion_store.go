@@ -1,17 +1,13 @@
 package hubcore
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"sync"
-	"syscall"
 
 	"github.com/spf13/afero"
 
@@ -267,25 +263,16 @@ func loadDeletionSnapshotFS(fs afero.Fs, stateRoot string) (deletionSnapshot, er
 	if stateRoot == "" {
 		return empty, nil
 	}
-	data, err := afero.ReadFile(fs, deletionStatePath(stateRoot))
-	if os.IsNotExist(err) {
+	data, ok, err := readStateFile(fs, deletionStatePath(stateRoot), "deletion")
+	if err != nil {
+		return deletionSnapshot{}, err
+	}
+	if !ok {
 		return empty, nil
 	}
-	if err != nil {
-		return deletionSnapshot{}, fmt.Errorf("read deletion state: %w", err)
-	}
 	var state deletionSnapshot
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&state); err != nil {
-		return deletionSnapshot{}, fmt.Errorf("decode deletion state: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return deletionSnapshot{}, errors.New("decode deletion state: trailing JSON value")
-		}
-		return deletionSnapshot{}, fmt.Errorf("decode deletion state trailing data: %w", err)
+	if err := decodeStateFileStrict(data, "deletion", &state); err != nil {
+		return deletionSnapshot{}, err
 	}
 	if err := validateDeletionSnapshot(state); err != nil {
 		return deletionSnapshot{}, fmt.Errorf("validate deletion state: %w", err)
@@ -309,60 +296,7 @@ func saveDeletionSnapshotFS(
 	if err != nil {
 		return false, fmt.Errorf("marshal deletion state: %w", err)
 	}
-	path := deletionStatePath(stateRoot)
-	dir := filepath.Dir(path)
-	if err := fs.MkdirAll(dir, 0o700); err != nil {
-		return false, fmt.Errorf("create deletion state directory: %w", err)
-	}
-	temp, err := afero.TempFile(fs, dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return false, fmt.Errorf("create temp deletion state: %w", err)
-	}
-	tempPath := temp.Name()
-	defer func() {
-		if temp != nil {
-			_ = temp.Close()
-		}
-		if !renamed {
-			_ = fs.Remove(tempPath)
-		}
-	}()
-	if _, err := temp.Write(data); err != nil {
-		return false, fmt.Errorf("write temp deletion state: %w", err)
-	}
-	if err := temp.Sync(); err != nil && !deletionSyncUnsupported(err) {
-		return false, fmt.Errorf("sync temp deletion state: %w", err)
-	}
-	if err := temp.Close(); err != nil {
-		return false, fmt.Errorf("close temp deletion state: %w", err)
-	}
-	temp = nil
-	if faults.BeforeRename != nil {
-		if err := faults.BeforeRename(); err != nil {
-			return false, err
-		}
-	}
-	if err := fs.Rename(tempPath, path); err != nil {
-		return false, fmt.Errorf("rename deletion state: %w", err)
-	}
-	renamed = true
-	directory, err := fs.Open(dir)
-	if err != nil {
-		return true, fmt.Errorf("open deletion state directory: %w", err)
-	}
-	if err := directory.Sync(); err != nil && !deletionSyncUnsupported(err) {
-		_ = directory.Close()
-		return true, fmt.Errorf("sync deletion state directory: %w", err)
-	}
-	if err := directory.Close(); err != nil {
-		return true, fmt.Errorf("close deletion state directory: %w", err)
-	}
-	if faults.AfterRename != nil {
-		if err := faults.AfterRename(); err != nil {
-			return true, err
-		}
-	}
-	return true, nil
+	return writeStateFileAtomic(fs, deletionStatePath(stateRoot), "deletion", data, faults.BeforeRename, faults.AfterRename)
 }
 
 func validateDeletionSnapshot(state deletionSnapshot) error {
@@ -409,10 +343,4 @@ func cloneDeletionSnapshot(state deletionSnapshot) deletionSnapshot {
 func cloneDeletionRecord(record DeletionRecord) DeletionRecord {
 	record.Targets = append([]DeletionTarget(nil), record.Targets...)
 	return record
-}
-
-func deletionSyncUnsupported(err error) bool {
-	return errors.Is(err, syscall.ENOSYS) ||
-		errors.Is(err, syscall.ENOTSUP) ||
-		errors.Is(err, syscall.EINVAL)
 }

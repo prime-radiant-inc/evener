@@ -13,7 +13,7 @@ import {
 import { archiveTarget } from "../board/rowActions.js";
 import { localSessionId } from "../sessionDeletionResult.js";
 import { parseActivityTree } from "@evener/appwire-client";
-import { flattenSubagents, subagentLastLine, tallySubagents } from "../subagents/subagentModel";
+import { flattenSubagents, subagentLastLine, tallyActivity } from "../subagents/subagentModel";
 import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId } from "./demoFleet.js";
 import { DEMO_MODEL_NAMES } from "./demoSetup.js";
 
@@ -1061,7 +1061,7 @@ describe("demo fleet subagents", () => {
 		const tree = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
 		if (!tree) throw new Error("no tree");
 		const rows = flattenSubagents(tree);
-		expect(tallySubagents(rows)).toEqual({ total: 55, running: 32, failed: 2, done: 21 });
+		expect(tallyActivity(rows)).toEqual({ total: 55, running: 32, failed: 2, done: 21 });
 		const settle = rows.find((row) => row.title === "Fix race in tree settle");
 		expect(settle?.delegate).toMatchObject({ outcome: "failed" });
 		expect(subagentLastLine(settle as never, "glm-5.3-vision", (model) => model)).toMatchObject({

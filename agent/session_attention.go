@@ -1265,6 +1265,7 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 	if delay <= 0 {
 		delay = jobNotificationRetryInitialDelay
 	}
+	s.stableAttentionRetry.delay = delay
 	s.stableAttentionRetry.active = true
 	s.stableAttentionRetry.generation++
 	generation := s.stableAttentionRetry.generation
@@ -1287,9 +1288,11 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		// Runnable work the drive retries (a parked delegate's fenced
 		// escalation is runnable without being pending) backs the next retry
 		// off too: resetting here would re-run a persistent failure at the
-		// initial delay forever.
+		// initial delay forever. The backoff doubles the current delay, not
+		// the one this retry was armed with, so a reset that landed while it
+		// was armed holds.
 		if pending || runnable {
-			s.stableAttentionRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+			s.stableAttentionRetry.delay = min(s.stableAttentionRetry.delay*2, jobNotificationRetryMaxDelay)
 		} else {
 			s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
 		}
@@ -1307,6 +1310,17 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 	s.attentionMu.Lock()
 	s.stableAttentionRetry.generation++
 	s.stableAttentionRetry.active = false
+	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
+	s.attentionMu.Unlock()
+}
+
+// resetStableDelegateAttentionRetryDelay ends a backoff episode whose work
+// succeeded, so the next failure retries from the initial delay. It leaves an
+// armed retry in place, since other delegates' work may still need it; that
+// retry fires at the delay it was armed with and backs off from the reset
+// delay.
+func (s *Session) resetStableDelegateAttentionRetryDelay() {
+	s.attentionMu.Lock()
 	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
 	s.attentionMu.Unlock()
 }

@@ -129,7 +129,7 @@ func TestDelegateAttentionWarningEpisodeEndsWhenTheAttentionIsNoLongerOwed(t *te
 		t.Fatalf("NewSession: %v", err)
 	}
 	eventsDone := captureSessionEvents(sess)
-	controller := &delegateTreeController{attentionWakeIDs: map[string]map[string]struct{}{"d1": {"a1": {}}}}
+	controller := &delegateTreeController{attention: map[string]*delegateAttentionState{"d1": {wakeIDs: map[string]struct{}{"a1": {}}}}}
 	sess.delegateController = controller
 	busy := errors.New("delegate runtime is busy")
 
