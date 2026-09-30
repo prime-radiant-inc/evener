@@ -259,7 +259,13 @@ it("drops the output it showed once the job leaves the tree", async () => {
 // an ended job's tail isn't.
 it("reads a running job's output again on its own, and an ended job's only once", async () => {
 	tree = treeWith(
-		shellJob("j-test", { status: "running", outcome: undefined, terminal: false, exitCode: undefined, endedAt: undefined }),
+		shellJob("j-test", {
+			status: "running",
+			outcome: undefined,
+			terminal: false,
+			exitCode: undefined,
+			endedAt: undefined,
+		}),
 	);
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
 	try {
