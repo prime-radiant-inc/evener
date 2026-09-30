@@ -34,7 +34,7 @@ func (s *Server) handleThreadActivityRead(ctx context.Context, params appwire.Se
 	if fn == nil {
 		return appwire.SessionActivitySummary{}, appwire.SessionUnavailable("session activity is unavailable")
 	}
-	return fn(ctx, params)
+	return readCurrentSessionActivity(s, params.Ref, func() (appwire.SessionActivitySummary, error) { return fn(ctx, params) })
 }
 
 // SetThreadDelegatesListFunc installs the context-bearing session activity read.
@@ -55,7 +55,7 @@ func (s *Server) handleThreadDelegatesList(ctx context.Context, params appwire.S
 	if fn == nil {
 		return appwire.SessionDelegatesResponse{}, appwire.SessionUnavailable("session activity is unavailable")
 	}
-	return fn(ctx, params)
+	return readCurrentSessionActivity(s, params.Ref, func() (appwire.SessionDelegatesResponse, error) { return fn(ctx, params) })
 }
 
 // SetThreadJobsListFunc installs the context-bearing session activity read.
@@ -76,7 +76,7 @@ func (s *Server) handleThreadJobsList(ctx context.Context, params appwire.Sessio
 	if fn == nil {
 		return appwire.SessionJobsResponse{}, appwire.SessionUnavailable("session activity is unavailable")
 	}
-	return fn(ctx, params)
+	return readCurrentSessionActivity(s, params.Ref, func() (appwire.SessionJobsResponse, error) { return fn(ctx, params) })
 }
 
 // SetThreadWatchesListFunc installs the context-bearing session activity read.
@@ -97,7 +97,29 @@ func (s *Server) handleThreadWatchesList(ctx context.Context, params appwire.Ses
 	if fn == nil {
 		return appwire.SessionWatchesResponse{}, appwire.SessionUnavailable("session activity is unavailable")
 	}
-	return fn(ctx, params)
+	return readCurrentSessionActivity(s, params.Ref, func() (appwire.SessionWatchesResponse, error) { return fn(ctx, params) })
+}
+
+// readCurrentSessionActivity fences slow results across a root replacement.
+// A stable workspace ref can survive clear, but its old session data cannot.
+// Explicit descendant reads keep their own addressed source across root clear.
+func readCurrentSessionActivity[R any](server *Server, ref string, read func() (R, error)) (R, error) {
+	server.mu.RLock()
+	rootID, rootRef := server.appRootIdentityLocked()
+	rootAddressed := ref == rootRef || ref == (appwire.Ref{SourceID: sourceIDForProjection(server.appSourceID), ThreadID: rootID}).String()
+	server.mu.RUnlock()
+	result, err := read()
+	if err != nil {
+		return result, err
+	}
+	server.mu.RLock()
+	currentID, currentRef := server.appRootIdentityLocked()
+	server.mu.RUnlock()
+	if rootAddressed && (rootID != currentID || rootRef != currentRef) {
+		var zero R
+		return zero, appwire.SessionActivityCursorStale()
+	}
+	return result, nil
 }
 
 func validateSessionActivityRef(ctx context.Context, rawRef, sourceID string) error {

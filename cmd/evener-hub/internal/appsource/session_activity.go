@@ -2,6 +2,7 @@ package appsource
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 
 	"primeradiant.com/evener/appwire"
@@ -54,11 +55,7 @@ func (s *RemoteHubSource) ThreadDelegatesList(ctx context.Context, params appwir
 		return appwire.SessionDelegatesResponse{}, err
 	}
 	params.Ref = ref.String()
-	var out appwire.SessionDelegatesResponse
-	if err := s.call(ctx, appwire.MethodEvenerThreadDelegatesList, params, &out); err != nil {
-		return appwire.SessionDelegatesResponse{}, err
-	}
-	return out, nil
+	return readTranslatedActivityPage[appwire.SessionDelegatesResponse](ctx, s, appwire.MethodEvenerThreadDelegatesList, params)
 }
 
 func (s *LocalDaemonSource) ThreadJobsList(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
@@ -81,11 +78,7 @@ func (s *RemoteHubSource) ThreadJobsList(ctx context.Context, params appwire.Ses
 		return appwire.SessionJobsResponse{}, err
 	}
 	params.Ref = ref.String()
-	var out appwire.SessionJobsResponse
-	if err := s.call(ctx, appwire.MethodEvenerThreadJobsList, params, &out); err != nil {
-		return appwire.SessionJobsResponse{}, err
-	}
-	return out, nil
+	return readTranslatedActivityPage[appwire.SessionJobsResponse](ctx, s, appwire.MethodEvenerThreadJobsList, params)
 }
 
 func (s *LocalDaemonSource) ThreadWatchesList(ctx context.Context, params appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
@@ -108,11 +101,7 @@ func (s *RemoteHubSource) ThreadWatchesList(ctx context.Context, params appwire.
 		return appwire.SessionWatchesResponse{}, err
 	}
 	params.Ref = ref.String()
-	var out appwire.SessionWatchesResponse
-	if err := s.call(ctx, appwire.MethodEvenerThreadWatchesList, params, &out); err != nil {
-		return appwire.SessionWatchesResponse{}, err
-	}
-	return out, nil
+	return readTranslatedActivityPage[appwire.SessionWatchesResponse](ctx, s, appwire.MethodEvenerThreadWatchesList, params)
 }
 
 func (s *RemoteHubSource) translateSessionActivity(context *appwire.SessionActivityContext, page *appwire.SessionActivityPage, refs ...*string) error {
@@ -135,4 +124,34 @@ func (s *RemoteHubSource) translateSessionActivity(context *appwire.SessionActiv
 		*target = translated
 	}
 	return nil
+}
+
+// readTranslatedActivityPage fits the qualified response by rereading the same
+// opaque input cursor. Dropping rows from a returned page would skip identities
+// because its next cursor already advances past those rows.
+func readTranslatedActivityPage[R any](ctx context.Context, source *RemoteHubSource, method string, params appwire.SessionActivityListParams) (R, error) {
+	var zero R
+	limit := params.Limit
+	if limit == 0 {
+		limit = 50
+	}
+	limit = min(limit, 200)
+	for {
+		var out R
+		if err := source.call(ctx, method, params, &out); err != nil {
+			return zero, err
+		}
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			return zero, err
+		}
+		if len(encoded) <= 256<<10 {
+			return out, nil
+		}
+		if limit <= 1 {
+			return zero, appwire.InternalError("qualified session activity response exceeds 256 KiB")
+		}
+		limit = max(1, limit/2)
+		params.Limit = limit
+	}
 }

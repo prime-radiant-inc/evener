@@ -142,3 +142,63 @@ func TestSessionActivitySubtreeInvalidationPreservesAffectedOwner(t *testing.T) 
 		}
 	}
 }
+
+func TestSessionActivityIncarnationFencePreservesAddressedChild(t *testing.T) {
+	for _, method := range []string{appwire.MethodEvenerThreadActivityRead, appwire.MethodEvenerThreadDelegatesList, appwire.MethodEvenerThreadJobsList, appwire.MethodEvenerThreadWatchesList} {
+		for _, ref := range []string{"local:workspace", "local:old", "local:retained-child"} {
+			t.Run(method+"/"+ref, func(t *testing.T) {
+				s := NewServer(ServerConfig{})
+				prepared, err := PrepareAppIdentityForRef("local", "old", "local:workspace", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.ReplaceAppIdentity(prepared, nil)
+				replacement := func() {
+					next, err := PrepareAppIdentityForRef("local", "new", "local:workspace", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					s.ReplaceAppIdentity(next, nil)
+				}
+				ctx := appwire.SessionActivityContext{Ref: ref, SessionID: "retained-child", Availability: "retained"}
+				s.SetThreadActivityReadFunc(func(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+					replacement()
+					return appwire.SessionActivitySummary{Context: ctx}, nil
+				})
+				s.SetThreadDelegatesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+					replacement()
+					return appwire.SessionDelegatesResponse{Context: ctx}, nil
+				})
+				s.SetThreadJobsListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+					replacement()
+					return appwire.SessionJobsResponse{Context: ctx}, nil
+				})
+				s.SetThreadWatchesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+					replacement()
+					return appwire.SessionWatchesResponse{Context: ctx}, nil
+				})
+				raw, _ := json.Marshal(appwire.SessionActivityListParams{Ref: ref})
+				result, err := s.AppServer().Router().Dispatch(t.Context(), appwire.Request{Method: method, Params: raw})
+				if ref == "local:retained-child" {
+					if err != nil || result == nil {
+						t.Fatalf("unrelated addressed child refused: %v", err)
+					}
+					return
+				}
+				var wire appwire.WireError
+				if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+					t.Fatalf("old root result accepted: %v", err)
+				}
+				encoded, _ := json.Marshal(wire.Data)
+				var data struct {
+					Info  string `json:"evenerErrorInfo"`
+					Retry string `json:"retryDisposition"`
+				}
+				_ = json.Unmarshal(encoded, &data)
+				if data.Info != "sessionActivityCursorStale" || data.Retry != "automatic" {
+					t.Fatalf("root replacement is not recoverable: %+v", wire)
+				}
+			})
+		}
+	}
+}
