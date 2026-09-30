@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // evenerFluencyExecutablePath resolves the path to this running binary, so
@@ -40,8 +42,7 @@ func personAskResponderCommand(cfg runConfig, probe probeFile, res probeResult) 
 		return "", fmt.Errorf("resolve evener-fluency executable: %w", err)
 	}
 
-	return fmt.Sprintf("%s respond --brief-file %s --model %s --log %s",
-		shellQuote(self), shellQuote(briefPath), shellQuote(model), shellQuote(logPath)), nil
+	return shellquote.Args(self, "respond", "--brief-file", briefPath, "--model", model, "--log", logPath), nil
 }
 
 // applyAskExchanges attaches a person-driven probe's --ask-responder
@@ -58,11 +59,4 @@ func applyAskExchanges(res *probeResult, probe probeFile) {
 	res.AskUserCalls = res.CanonicalToolCounts["ask_user"]
 	logPath := filepath.Join(filepath.Dir(res.WorkDir), "asks.jsonl")
 	res.Asks = readAskLog(logPath)
-}
-
-// shellQuote wraps s in single quotes for safe inclusion in a command string
-// that a later `sh -c` will parse (evener run's --ask-responder), escaping
-// any single quote already in s.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
