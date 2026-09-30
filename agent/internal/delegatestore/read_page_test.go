@@ -2,6 +2,7 @@ package delegatestore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,7 +32,7 @@ func TestReadPageOversizedBatchAdvancesWithoutExceedingEventBudget(t *testing.T)
 	var got []Event
 	for range 30 {
 		before := cursor.Journal.Offset
-		pending := len(cursor.Events) + len(cursor.Lines)
+		pending := cursor.DecodedEvents
 		page, complete, err := ReadPage(t.Context(), path, &cursor, 4<<20, 2000)
 		if err != nil {
 			t.Fatal(err)
@@ -40,10 +41,13 @@ func TestReadPageOversizedBatchAdvancesWithoutExceedingEventBudget(t *testing.T)
 			t.Fatal("page exceeds event/raw-byte budget")
 		}
 		got = append(got, page...)
+		if decoded := cursor.DecodedEvents - pending; decoded > 2000 || decoded != uint64(len(page)) {
+			t.Fatalf("decoded=%d emitted=%d", decoded, len(page))
+		}
 		if complete {
 			break
 		}
-		if cursor.Journal.Offset <= before && len(cursor.Events)+len(cursor.Lines) >= pending {
+		if cursor.Journal.Offset <= before && cursor.DecodedEvents <= pending {
 			t.Fatal("pending batch did not advance")
 		}
 	}
@@ -119,5 +123,45 @@ func TestReadPageRetainsDelegateBatchUntilTerminatorArrives(t *testing.T) {
 	events, complete, err := ReadPage(t.Context(), path, &cursor, 4<<20, 2000)
 	if err != nil || !complete || !reflect.DeepEqual(events, assigned) {
 		t.Fatalf("events=%v complete=%v error=%v", events, complete, err)
+	}
+}
+
+func TestReadPageDoesNotDecodeBeyondEventBudget(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := json.Marshal(createdEventWithReferenceDescriptor("dlg_first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := json.Marshal(createdEventWithReferenceDescriptor("dlg_second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := header
+	raw = append(raw, '\n')
+	raw = append(raw, []byte(`{"events":[`)...)
+	raw = append(raw, first...)
+	raw = append(raw, ',')
+	raw = append(raw, second...)
+	raw = append(raw, []byte(`,{"seq":"invalid only after budget"}]}
+`)...)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var cursor PageCursor
+	events, complete, err := ReadPage(t.Context(), path, &cursor, 4<<20, 2)
+	if err != nil || complete || len(events) != 2 {
+		t.Fatalf("first page decoded past budget: events=%d complete=%v error=%v", len(events), complete, err)
+	}
+	before := cursor
+	if _, _, err := ReadPage(t.Context(), path, &cursor, 4<<20, 2); err == nil {
+		t.Fatal("later malformed event was not decoded on next page")
+	}
+	if !reflect.DeepEqual(cursor, before) {
+		t.Fatal("failed decode consumed pending position")
 	}
 }
