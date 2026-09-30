@@ -154,7 +154,12 @@ async function treeUpdatedAndRead(hubClient: FakeClient) {
 	act(() =>
 		hubClient.emitNotification({
 			method: "evener/thread/activity/changed",
-			params: { threadId: "coord", sessionId: "coord", ref: "local:coord", resources: ["summary", "delegates", "jobs"] },
+			params: {
+				threadId: "coord",
+				sessionId: "coord",
+				ref: "local:coord",
+				resources: ["summary", "delegates", "jobs"],
+			},
 		} as never),
 	);
 	await settle();

@@ -139,7 +139,12 @@ async function treeChanges(next: { revision: number; root: unknown }) {
 	act(() =>
 		client.emitNotification({
 			method: "evener/thread/activity/changed",
-			params: { threadId: "coord", sessionId: "coord", ref: "local:coord", resources: ["summary", "delegates", "jobs"] },
+			params: {
+				threadId: "coord",
+				sessionId: "coord",
+				ref: "local:coord",
+				resources: ["summary", "delegates", "jobs"],
+			},
 		} as never),
 	);
 	await settle();
