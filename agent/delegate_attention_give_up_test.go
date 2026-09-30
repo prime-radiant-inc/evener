@@ -284,36 +284,87 @@ func TestANilRestoreErrorIsNotCounted(t *testing.T) {
 	}
 }
 
-// A parked delegate stays out of the fenced escalation too: its hand-over
-// already failed once, and the lenient fenced read would treat a missing
-// transcript as empty and forget the attention. It stays owed and parked
-// until new attention unparks it (the PR's known limit).
-func TestAParkedDelegateIsNotEscalatedWhenItsAncestorCloses(t *testing.T) {
-	fenced := newFencedGrandchildAttention(t)
-	root, fixture := fenced.root, fenced.fixture
-	c := root.delegateController
-	c.parkDelegateAttention(fenced.grandchildDelegateID)
-	plans, err := c.CloseResumability(rootDelegateActor(root.ID()), fixture.delegateID, "turn_budget_exhausted")
-	if err != nil {
-		t.Fatalf("close parent resumability: %v", err)
+// A park stops the drive's cold restores; it does not strand attention a
+// closed ancestor has fenced off for good. The fenced scan escalates a parked
+// delegate too, and reads its transcript strictly: present, the message goes
+// to the root and the park ends with the attention; gone, nothing is
+// forgotten as never durable, and the delegate stays parked and owed.
+func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
+	closeParent := func(t *testing.T, fenced fencedGrandchildAttention) {
+		t.Helper()
+		root := fenced.root
+		plans, err := root.delegateController.CloseResumability(rootDelegateActor(root.ID()), fenced.fixture.delegateID, "turn_budget_exhausted")
+		if err != nil {
+			t.Fatalf("close parent resumability: %v", err)
+		}
+		if err := root.executeDelegateMutationPlans(plans); err != nil {
+			t.Fatalf("publish parent closure: %v", err)
+		}
 	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatalf("publish parent closure: %v", err)
+	owedAndParked := func(fenced fencedGrandchildAttention) (owed, parked bool) {
+		c := fenced.root.delegateController
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		_, owed = c.attentionWakeIDs[fenced.grandchildDelegateID][fenced.attentionID]
+		_, parked = c.attentionParked[fenced.grandchildDelegateID]
+		return owed, parked
 	}
 
-	root.drivePendingStableDelegateAttention()
+	t.Run("transcript present: handed to the root", func(t *testing.T) {
+		fenced := newFencedGrandchildAttention(t)
+		fenced.root.delegateController.parkDelegateAttention(fenced.grandchildDelegateID)
+		closeParent(t, fenced)
 
-	rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
-	if err != nil {
-		t.Fatalf("read root attention fold: %v", err)
+		fenced.root.drivePendingStableDelegateAttention()
+
+		rootFold, err := readDelegateAttentionFold(transcriptPath(fenced.fixture.stateDir, fenced.fixture.meta.ID), fenced.fixture.meta.ID)
+		if err != nil {
+			t.Fatalf("read root attention fold: %v", err)
+		}
+		if got := rootFold.content[fenced.attentionID].Text(); got != "undelivered grandchild message" {
+			t.Fatalf("root attention content = %q, want the parked delegate's message escalated", got)
+		}
+		if owed, parked := owedAndParked(fenced); owed || parked {
+			t.Fatalf("after escalation: owed=%t parked=%t, want neither", owed, parked)
+		}
+	})
+
+	t.Run("transcript gone: stays parked and owed", func(t *testing.T) {
+		fenced := newFencedGrandchildAttention(t)
+		fenced.root.delegateController.parkDelegateAttention(fenced.grandchildDelegateID)
+		closeParent(t, fenced)
+		if err := os.Remove(transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)); err != nil {
+			t.Fatalf("remove grandchild transcript: %v", err)
+		}
+
+		fenced.root.drivePendingStableDelegateAttention()
+
+		if owed, parked := owedAndParked(fenced); !owed || !parked {
+			t.Fatalf("after a failed strict escalation: owed=%t parked=%t, want the attention kept and parked", owed, parked)
+		}
+	})
+}
+
+// A park stops the drive's cold restores of a delegate whose runtime could
+// not be restored or handed over. Once the delegate has a live runtime again
+// (the user steered it, say), nothing about that failure stands in the way:
+// its own runtime can take the owed attention, so the park must not refuse
+// the reservation.
+func TestAParkedDelegateWithALiveRuntimeCanReserveItsAttention(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateControllerIdle(t, c, "dlg_parked", "")
+	const attentionID = "delegate:owed-before-the-park"
+	if !c.noteDelegateAttention("dlg_parked", attentionID) {
+		t.Fatal("note attention")
 	}
-	if _, handed := rootFold.content[fenced.attentionID]; handed {
-		t.Fatal("a parked delegate's attention was escalated")
-	}
+	c.parkDelegateAttention("dlg_parked")
+	runtime := &Session{}
 	c.mu.Lock()
-	_, owed := c.attentionWakeIDs[fenced.grandchildDelegateID][fenced.attentionID]
+	c.live["dlg_parked"] = &delegateLiveState{runtime: runtime}
 	c.mu.Unlock()
-	if !owed {
-		t.Fatal("a parked delegate's attention was forgotten")
+
+	if _, err := c.ReserveAttention(runtime, attentionID); err != nil {
+		t.Fatalf("ReserveAttention for a parked delegate that is resident again = %v, want the reservation", err)
 	}
 }

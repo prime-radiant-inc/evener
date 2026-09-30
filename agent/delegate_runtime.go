@@ -1070,9 +1070,16 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 func (s *Session) escalateUnreachableDelegateAttention() bool {
 	progressed, failed := false, false
 	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
-		if err := s.escalateOneUnreachableDelegateAttention(plan, readDelegateAttentionFold); err != nil {
+		readFold := readDelegateAttentionFold
+		if plan.parked {
+			readFold = readExistingDelegateAttentionFold
+		}
+		if err := s.escalateOneUnreachableDelegateAttention(plan, readFold); err != nil {
 			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
-			failed = true
+			// A parked delegate already said it is undeliverable; its failed
+			// escalation waits with it (new attention or a restart) rather
+			// than re-arming the retry.
+			failed = failed || !plan.parked
 			continue
 		}
 		s.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, plan.delegateID)

@@ -440,9 +440,6 @@ func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID 
 	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
 		return false
 	}
-	if _, parked := c.attentionParked[delegateID]; parked {
-		return false
-	}
 	if live := c.live[delegateID]; live != nil && (live.binding != nil || live.recoveryRequired) {
 		return false
 	}
@@ -468,8 +465,11 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
+		// A parked delegate is not the cold-restore drive's work; attention a
+		// closed ancestor fenced off still is, for the escalation.
+		_, parked := c.attentionParked[delegateID]
 		blocked, closedAncestorID := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID)
-		if !blocked || closedAncestorID != "" {
+		if closedAncestorID != "" || !blocked && !parked {
 			return true
 		}
 	}
@@ -522,6 +522,13 @@ func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, stri
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
+		// The park stops this drive's cold restores of a delegate that could
+		// not be restored or handed over, and only that: its own live
+		// runtime can still reserve its attention (ReserveAttention), and
+		// the fenced escalation still reaches it.
+		if _, parked := c.attentionParked[delegateID]; parked {
+			continue
+		}
 		if blocked, _ := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID); blocked {
 			continue
 		}
@@ -548,6 +555,10 @@ type delegateFencedAttentionEscalation struct {
 	transcriptRef string
 	attentionIDs  []string
 	runtime       *Session
+	// parked: the drive gave up on this delegate, and its hand-over failed
+	// once already. Its escalation reads the transcript strictly, so a
+	// missing one keeps the attention owed instead of forgetting it.
+	parked bool
 }
 
 // permanentlyFencedDelegateAttention lists pending attention wakes whose
@@ -572,7 +583,9 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 		if !blocked || closedAncestorID == "" {
 			continue
 		}
-		plans = append(plans, c.escalationPlanLocked(delegateID, aggregate, ids))
+		plan := c.escalationPlanLocked(delegateID, aggregate, ids)
+		_, plan.parked = c.attentionParked[delegateID]
+		plans = append(plans, plan)
 	}
 	sort.Slice(plans, func(i, j int) bool { return plans[i].delegateID < plans[j].delegateID })
 	return plans
