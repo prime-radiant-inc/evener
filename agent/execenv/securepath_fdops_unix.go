@@ -338,7 +338,8 @@ func admitReadFD(fd int, name string, allowDir bool) (*os.File, error) {
 		_ = file.Close()
 		return nil, err
 	}
-	if !info.Mode().IsRegular() && !(allowDir && info.IsDir()) {
+	admitted := info.Mode().IsRegular() || (allowDir && info.IsDir())
+	if !admitted {
 		_ = file.Close()
 		return nil, errNotRegularFile
 	}
