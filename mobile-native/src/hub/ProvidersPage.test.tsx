@@ -23,7 +23,7 @@ import { recordClientReadyHub } from "../connectionIdentity";
 import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { ProviderEditor } from "../ProviderEditor";
-import { SwitchRow, Tag } from "../sheet/Grouped";
+import { GroupFooter, SwitchRow, Tag } from "../sheet/Grouped";
 import { MODELS_NOT_CHECKED, providerGoneWhileEditing, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
 import { ProviderDetailPage } from "./ProviderDetailPage";
 import { back, detailParams, ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
@@ -1201,10 +1201,10 @@ it("shows a rejected credential as Error, and says why on the detail", async () 
 	await openDetail(tree, "lunaroute");
 	expect(hasControl(tree, "Status, Error")).toBe(true);
 	// The hub's sentence stands in a footer with the danger tone.
-	const footers = tree.root.findAll(
-		(node) => typeof node.type !== "string" && node.props.tone === "danger" && subtreeText(node).includes(error),
-	);
-	expect(footers.length).toBeGreaterThan(0);
+	const footers = tree.root
+		.findAllByType(GroupFooter)
+		.filter((node) => node.props.tone === "danger" && subtreeText(node).includes(error));
+	expect(footers).toHaveLength(1);
 });
 
 it("offers no pull-to-refresh and never asks to reconnect", async () => {

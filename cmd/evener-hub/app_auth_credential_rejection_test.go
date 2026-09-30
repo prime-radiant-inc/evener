@@ -641,3 +641,11 @@ func TestCredentialRejection_AStandingRemovalDropsIt(t *testing.T) {
 		t.Fatal("the standing removal kept the rejection of the credential it deleted")
 	}
 }
+
+// A rejection with no HTTP status (an adapter that reports only the kind)
+// still says what went wrong and what to do, naming no status.
+func TestCredentialRejection_AMessageWithNoStatusStillSaysWhatToDo(t *testing.T) {
+	if got, want := credentialRejectedMessage(0), "The provider rejected this credential. Replace the key or sign in again."; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
