@@ -78,6 +78,11 @@ export function lineCount(text: string): number {
   return lines.length;
 }
 
+// capitalized starts a phrase as a sentence: its first letter upper-cased.
+export function capitalized(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 // parseArgs defensively decodes a tool call's argumentsJSON into a plain
 // object: undefined input, malformed JSON, or a well-formed-but-non-object
 // JSON value (array/string/number/null) all degrade to {} rather than

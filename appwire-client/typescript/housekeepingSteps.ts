@@ -19,7 +19,7 @@
 
 import type { ItemModel } from "./model";
 import type { StepWords } from "./stepWords";
-import { parseArgs, str } from "./toolCallText";
+import { capitalized, parseArgs, str } from "./toolCallText";
 
 /** The parts of a housekeeping step its words read. */
 export type HousekeepingStep = Pick<ItemModel, "argumentsJSON" | "output">;
@@ -53,8 +53,6 @@ const goalStatus = (step: StepArgs) => {
 const nextPage = (step: StepArgs) => Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
 
 const selectorOf = (step: StepArgs) => str(parseArgs(step.argumentsJSON), "selector")?.trim();
-
-const sentence = (phrase: string) => phrase.charAt(0).toUpperCase() + phrase.slice(1);
 
 const HOUSEKEEPING: Record<string, HousekeepingTool> = {
   notes_agent_set: {
@@ -147,7 +145,7 @@ export function housekeepingAction(toolName: string): string | undefined {
 /** A housekeeping step's words; undefined for any other tool. */
 export function housekeepingWords(step: Pick<ItemModel, "toolName"> & HousekeepingStep): StepWords | undefined {
   const tool = housekeepingTool(step.toolName);
-  return tool?.words(step, sentence(tool.action));
+  return tool?.words(step, capitalized(tool.action));
 }
 
 /** What a running housekeeping step is doing; undefined for any other tool. */
