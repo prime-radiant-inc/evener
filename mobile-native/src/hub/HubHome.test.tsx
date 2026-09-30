@@ -347,7 +347,6 @@ it("sets its status line as the prototype does: 14pt, 20pt in from the edge (aud
 		(node) => String(node.type) === "Text" && node.props.children === "Connected · evener 0.9.412 · up to date",
 	);
 	expect(line.props.style).toMatchObject({ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 6 });
-	// The prototype's 14/20 status and summary line (settings audit Lev5).
 	expect(line.props.style).toMatchObject(uiType.statusLine);
 });
 

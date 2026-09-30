@@ -79,10 +79,8 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				allowFontScaling={allowFontScaling}
 				style={{
 					color: palette.inkMid,
-					// The status line role: 14pt as the prototype's (hub.js:17), on
-					// the 20pt line of its Live summary (styles.css:285). 20pt in, 2
-					// above and 6 below, as hub.js:17.
 					...scaledType(uiType.statusLine, scale),
+					// 20pt in, 2 above and 6 below, as the prototype's (hub.js:17).
 					paddingHorizontal: 20,
 					paddingTop: 2,
 					paddingBottom: 6,
