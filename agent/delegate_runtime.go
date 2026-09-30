@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1067,6 +1068,16 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 
 // escalateUnreachableDelegateAttention transfers permanently fenced wakes to
 // the root, preserving identity/content and idempotent crash replay.
+// parkedEscalationStandsDown reports whether a parked delegate's failed
+// escalation should wait with it (new attention or a restart) instead of
+// re-arming the retry: only when its transcript is gone, which no retry can
+// bring back. The delegate already said it is undeliverable. Any other
+// failure (appending the hand-over to the root, resolving the source) may
+// clear, so it keeps the retry.
+func parkedEscalationStandsDown(err error) bool {
+	return errors.Is(err, fs.ErrNotExist)
+}
+
 func (s *Session) escalateUnreachableDelegateAttention() bool {
 	progressed, failed := false, false
 	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
@@ -1076,10 +1087,7 @@ func (s *Session) escalateUnreachableDelegateAttention() bool {
 		}
 		if err := s.escalateOneUnreachableDelegateAttention(plan, readFold); err != nil {
 			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
-			// A parked delegate already said it is undeliverable; its failed
-			// escalation waits with it (new attention or a restart) rather
-			// than re-arming the retry.
-			failed = failed || !plan.parked
+			failed = failed || !plan.parked || !parkedEscalationStandsDown(err)
 			continue
 		}
 		s.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, plan.delegateID)

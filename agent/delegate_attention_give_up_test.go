@@ -387,3 +387,23 @@ func TestAParkedUnfencedDelegateIsNotRunnable(t *testing.T) {
 		t.Fatal("a parked, unfenced delegate reads as runnable")
 	}
 }
+
+// Only a missing transcript lets a parked delegate's failed escalation stand
+// down: nothing can bring that transcript back. Any other failure (appending
+// the hand-over to the root, resolving the source) may clear, so it keeps
+// the retry.
+func TestOnlyAMissingTranscriptStandsAParkedEscalationDown(t *testing.T) {
+	t.Parallel()
+	missing := fmt.Errorf("stat delegate attention transcript: %w", os.ErrNotExist)
+	if !parkedEscalationStandsDown(missing) {
+		t.Errorf("a missing transcript (%v) kept the retry", missing)
+	}
+	for _, err := range []error{
+		errors.New("append delegate attention to root: disk full"),
+		fmt.Errorf("resolve delegate attention: %w", errDelegateTargetBusy),
+	} {
+		if parkedEscalationStandsDown(err) {
+			t.Errorf("a transient hand-over failure (%v) stood the retry down", err)
+		}
+	}
+}
