@@ -36,6 +36,7 @@ import {
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useAuthStatusesStore } from "../../../../stores/authStatuses";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
 import {
   Button,
@@ -254,6 +255,16 @@ export function CredentialsSection({
   // handshake finishes, and credentialsStore.fetch() requires a connected
   // client (throws otherwise) - see that hook's own doc comment.
   useConnectedEffect(fetch, [fetch]);
+  // The hub's credential statuses, for a provider whose credential it found an
+  // error with (#3539); the store follows evener/auth/updated from here on.
+  // The statuses store drops a replaced hub's statuses itself; this gate covers
+  // the other half: a listing kept from a replaced connection is the previous
+  // hub's until this one reads its own, so the new hub's statuses are not shown
+  // against it either.
+  const readAuthStatuses = useAuthStatusesStore((state) => state.authStatuses);
+  const authStatuses = listingFromPreviousConnection ? null : readAuthStatuses;
+  const fetchAuthStatuses = useAuthStatusesStore((state) => state.fetchAuthStatuses);
+  useConnectedEffect(fetchAuthStatuses, [fetchAuthStatuses]);
 
   // handleOAuthStart is shared by the sheet's "Sign in…"/"Refresh OAuth"
   // action and the device editor's "Start again" - always begins with
@@ -579,12 +590,14 @@ export function CredentialsSection({
           instances={instances}
           availableProviders={availableProviders}
           onSelect={setSelectedInstance}
+          authStatuses={authStatuses}
         />
       )}
 
       <InstanceSheet
         name={selectedInstance}
         writesRefused={writesRefused}
+        authError={selectedInstance === null ? undefined : authStatuses?.get(selectedInstance)?.error}
         onClose={() => setSelectedInstance(null)}
         onSetApiKey={() =>
           openEditorFromSheet((name) =>

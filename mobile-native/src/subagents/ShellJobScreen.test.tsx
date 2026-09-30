@@ -116,13 +116,14 @@ async function settle() {
 	});
 }
 
-async function mount() {
+async function mount(over: { ownerRef?: string } = {}) {
 	const params = {
 		hubId: "hub-1",
 		jobId: "j-test",
 		ownerRef: "local:fix",
 		title: "go test ./agent/...",
 		coordinator: COORDINATOR,
+		...over,
 	};
 	const screen = render(
 		<ShellJobScreen route={{ key: "job", name: "ShellJob", params } as never} navigation={navigation as never} />,
@@ -165,6 +166,33 @@ it("shows the job's command, how it ended, its exit code and who started it, ove
 	// The output is the owning session's: its ref, not the coordinator's.
 	expect(outputCalls().map((call) => call.params)).toEqual([{ ref: "local:fix", jobId: "j-test" }]);
 	for (const word of ["Refresh", "Stop", "Retry"]) expect(shown).not.toContain(word);
+});
+
+// The coordinator's own job names the coordinator by its title, never its ref.
+it("names the coordinator by its title for a job it started itself", async () => {
+	tree = {
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			shellJob("j-test", { ownerRef: COORDINATOR.ref, ownerSessionId: COORDINATOR.threadId }),
+		]),
+	};
+	const shown = renderedText(await mount({ ownerRef: COORDINATOR.ref }));
+	expect(shown).toContain(`under ${COORDINATOR.title}`);
+	expect(shown).not.toContain("under local:");
+});
+
+// A job whose subagent's row is on a later page sits at the top of the tree,
+// so its detail can't name who started it and says so.
+it("says a job's subagent isn't listed while that subagent's row isn't loaded", async () => {
+	tree = {
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			shellJob("j-test", { ownerRef: "local:later", ownerSessionId: "later" }),
+		]),
+	};
+	const shown = renderedText(await mount({ ownerRef: "local:later" }));
+	expect(shown).toContain("under a subagent that isn't listed");
+	expect(shown).not.toContain(`under ${COORDINATOR.title}`);
 });
 
 it("names no exit code for a job that is running or exited cleanly", async () => {

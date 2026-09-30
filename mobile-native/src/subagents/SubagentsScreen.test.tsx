@@ -295,7 +295,7 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	const labels = tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Shell job,"));
 	expect(new Set(labels.map((node) => node.props.accessibilityLabel))).toEqual(
 		new Set([
-			`Shell job, npm run lint, Command failed, 2 minutes, under local:coord`,
+			`Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`,
 			"Shell job, Serving the docs, running, 3 minutes, under Only one",
 		]),
 	);
@@ -303,6 +303,41 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	act(() => pressable(tree, "Failed, 1")?.props.onPress());
 	expect(text(tree)).toContain("npm run lint");
 	expect(text(tree)).not.toContain("Serving the docs");
+});
+
+// A job whose subagent's row is on a later page sits at the top of the tree
+// until that page loads. It says its subagent isn't listed rather than
+// naming the coordinator, then names the subagent once its row arrives.
+it("says a job's subagent isn't listed until that subagent's page loads, then names it", async () => {
+	client = hub((continuation) =>
+		continuation === "page-2"
+			? { revision: 1, root: session("local:coord", COORDINATOR.title, [runningOne("later", "Later one")]) }
+			: {
+					revision: 1,
+					root: session(
+						"local:coord",
+						COORDINATOR.title,
+						[
+							runningOne("first", "First one"),
+							shellJob("j-later", "Serving the docs", { ownerRef: "local:later", ownerSessionId: "later" }),
+						],
+						{ truncated: true, continuation: "page-2" },
+					),
+				},
+	);
+	harness.connection = screenConnection(client, "ready");
+	const screen = await mount();
+	const jobLabel = () =>
+		screen.root.find((node) => String(node.props.accessibilityLabel).startsWith("Shell job, Serving the docs")).props
+			.accessibilityLabel;
+	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under a subagent that isn't listed");
+	expect(text(screen)).toContain("under a subagent that isn't listed");
+	expect(text(screen)).not.toContain(`under ${COORDINATOR.title}`);
+	await act(async () => {
+		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
+	});
+	await settle();
+	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under Later one");
 });
 
 // The Session's menu offers Activity whenever it's connected, so a session
@@ -321,7 +356,9 @@ it("opens a shell job's detail over the list", async () => {
 	client = hub(() => treeWithJobs());
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	act(() => pressable(tree, `Shell job, npm run lint, Command failed, 2 minutes, under local:coord`)?.props.onPress());
+	act(() =>
+		pressable(tree, `Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`)?.props.onPress(),
+	);
 	expect(navigation.push).toHaveBeenCalledWith("ShellJob", {
 		hubId: "hub-1",
 		jobId: "j-lint",
@@ -468,6 +505,35 @@ it("says the count is partial and whose subagents are missing when a later page 
 	expect(headerTitle()).toBe("Activity · … Get PR 2138 Test Clean");
 	expect(text(tree)).not.toContain("No subagents or shell jobs yet.");
 	expect(tree.root.findByType("FlatList" as never).props.onEndReached).toBeTypeOf("function");
+});
+
+// A branch whose shell jobs couldn't be read is named by whose it is: the
+// coordinator by its title, a subagent by its row's title, never by a ref.
+// A branch no loaded row names, as when its subagent's row is on a later
+// page, has no title to give, so it goes unnamed. The fixture can't leave a
+// row out of the tree, so that child's ref differs from its delegate's
+// childRef instead.
+it("names whose activity isn't listed by title", async () => {
+	client = hub(() => ({
+		revision: 1,
+		root: session(
+			"local:coord",
+			COORDINATOR.title,
+			[
+				runningOne("solo", "Only one", { child: session("local:solo", "Only one", [], { error: "unavailable" }) }),
+				runningOne("pair", "Second one", {
+					child: session("local:unlisted", "Unlisted", [], { error: "unavailable" }),
+				}),
+			],
+			{ error: "unavailable" },
+		),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const shown = text(await mount());
+	expect(shown).toContain(`Some activity under “${COORDINATOR.title}” isn't listed.`);
+	expect(shown).toContain("Some activity under “Only one” isn't listed.");
+	expect(shown).toContain("Some activity isn't listed.");
+	expect(shown).not.toContain("local:");
 });
 
 it.each([

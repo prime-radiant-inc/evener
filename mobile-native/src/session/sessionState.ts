@@ -2,7 +2,7 @@
 // mark (spec 8.1), and the context chips under it. The mark reuses the
 // Board's states (src/board/attention.ts). A session you are looking at is
 // never unread, so a finished one is Idle, with no dot.
-import { subagentState } from "../subagents/subagentModel";
+import { subagentState, summaryTally } from "../subagents/subagentModel";
 import type { EvenerDelegateInfo, ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
 import { compactDuration } from "./format";
@@ -97,7 +97,10 @@ export interface ContextChip {
  * (a local toggle) need no connection either, and all three always show when
  * they have content. `files` counts the session's documents, and `fresh`
  * says one is new or changed since you last opened it. `subagents` supplies
- * authoritative summary counts; a transcript roster is never a count source. */
+ * authoritative summary counts; a transcript roster is never a count source,
+ * only evidence that subagents exist while the count isn't known. A shut-down
+ * session's count can stay unknown for good, so the Subagents chip shows no
+ * count until the summary knows it. */
 export function contextChips(
 	session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">,
 	connected: boolean,
@@ -105,20 +108,22 @@ export function contextChips(
 	subagents: SessionActivityCounts | null = null,
 ): ContextChip[] {
 	const chips: ContextChip[] = [];
-	const known = subagents?.known === true;
-	if (connected && (!known || (subagents?.total ?? 0) > 0)) {
-		const count = known ? String(subagents?.total) : "…";
-		const failed = known && (subagents?.failed ?? 0) > 0 ? `${subagents?.failed} failed` : undefined;
+	const tally = summaryTally(subagents ?? undefined);
+	if (connected && tally && tally.total > 0) {
+		const failed = tally.failed > 0 ? `${tally.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
-			label: `Subagents ${count}`,
+			label: `Subagents ${tally.total}`,
 			failed,
 			attention: false,
-			accessibilityLabel: !known
-				? "Subagents, count unknown"
-				: failed
-					? `Subagents, ${count}, ${failed}`
-					: `Subagents, ${count}`,
+			accessibilityLabel: failed ? `Subagents, ${tally.total}, ${failed}` : `Subagents, ${tally.total}`,
+		});
+	} else if (connected && !tally && (session.delegates?.length ?? 0) > 0) {
+		chips.push({
+			kind: "subagents",
+			label: "Subagents",
+			attention: false,
+			accessibilityLabel: "Subagents, count unknown",
 		});
 	}
 	if (files.count > 0)
