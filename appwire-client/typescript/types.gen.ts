@@ -3216,6 +3216,8 @@ export interface SessionDelegate {
   phase: string;
   status: string;
   outcome?: string;
+  reason?: string;
+  error?: string;
   terminal: boolean;
   resumable: boolean;
   notResumableReason?: string;
