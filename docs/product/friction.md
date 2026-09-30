@@ -641,15 +641,22 @@ file containing valid keys. Repair its mode without changing its contents and
 continue normally. When mode repair fails, the hub and credentials remain usable;
 repair retries converge after the filesystem condition heals without a restart.
 
-**Discuss — unreadable or malformed data.** Isolate affected credential use while
-preserving the original data for recovery. Keep unaffected read/navigation
-capability without treating a missing or malformed key as usable or replacing the
-store with empty data.
+**Decision — unreadable or malformed data.** Keep the hub running when the
+credentials file cannot be read or parsed. History, navigation and work with
+usable authentication remain available. The product owns recovery: retry
+temporary read failures, recover available credential data while preserving the
+original file, and adopt recovered credentials without requiring a hub restart.
+Do not replace an unreadable or malformed store as though it were empty. Only
+work that lacks usable authentication waits, retaining its task and pending
+requests. Request replacement authentication when required credential material
+cannot be recovered. Implementation remains pending.
 
 **Acceptance — unreadable or malformed data.** Start with an unreadable or
-malformed credentials file. The chosen repair/isolation policy keeps unrelated
-work available, preserves existing data, and makes the repaired provider usable
-without a hub restart.
+malformed credentials file. History, navigation and independently authenticated
+work remain usable, and existing credential data is preserved. Heal a temporary
+read failure or repair the credential data: recovery discovers the usable
+credentials and lets affected pending work resume without a hub restart. A
+request that still needs replacement authentication retains its original task.
 
 ### H02 Live daemons after API-key repair
 
