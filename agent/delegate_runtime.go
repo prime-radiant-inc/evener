@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -3274,6 +3275,10 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 	rootID := s.delegateController.rootSessionID
 	for _, row := range plan.rows {
 		ownerID := row.descriptor.OwnerSessionID
+		s.delegateController.mu.Lock()
+		logicalOwner := sessionActivityDelegateOwner(s.delegateController.durable, s.delegateController.durable[row.id])
+		s.delegateController.mu.Unlock()
+		s.emitSessionActivityChanged(logicalOwner, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(now, rootID, row))
 		if runtime := s.delegateController.runtimeForDelegateOwner(row); runtime != nil {
 			runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)

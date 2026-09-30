@@ -306,6 +306,85 @@ func TestHandleAppJobsOutput(t *testing.T) {
 	}
 }
 
+func TestHandleAppJobsGetNilFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsGet, appwire.JobsGetParams{JobID: "job_1"}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("resp=%v, want error", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeUnavailable {
+		t.Errorf("error code: got %d, want %d", resp.Error.Error.Code, appwire.CodeUnavailable)
+	}
+	data, ok := resp.Error.Error.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("error data type=%T, want appwire.ErrorData", resp.Error.Error.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorActionUnavailable {
+		t.Errorf("evenerErrorInfo: got %q, want actionUnavailable", data.EvenerErrorInfo)
+	}
+}
+
+func TestHandleAppJobsGetNotFound(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetJobGetFunc(func(string) (any, bool, error) { return nil, false, nil })
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsGet, appwire.JobsGetParams{JobID: "job_missing"}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("resp=%v, want error", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeInvalidParams {
+		t.Errorf("error code: got %d, want %d", resp.Error.Error.Code, appwire.CodeInvalidParams)
+	}
+	if !strings.Contains(resp.Error.Error.Message, "job_missing") {
+		t.Errorf("error message %q does not carry the job id", resp.Error.Error.Message)
+	}
+}
+
+func TestHandleAppJobsGet(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetJobGetFunc(func(jobID string) (any, bool, error) {
+		if jobID != "job_1" {
+			t.Errorf("jobID = %q, want job_1", jobID)
+		}
+		return agent.JobActivityJob{JobID: jobID, Command: "go test ./...", Type: "shell", Status: "running"}, true, nil
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsGet, appwire.JobsGetParams{JobID: "job_1"}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
+	}
+	out, ok := resp.Response.Result.(appwire.JobsGetResponse)
+	if !ok {
+		t.Fatalf("evener/jobs/get result=%T (%+v)", resp.Response.Result, resp)
+	}
+	job, ok := out.Data.(agent.JobActivityJob)
+	if !ok {
+		t.Fatalf("get data type=%T, want agent.JobActivityJob", out.Data)
+	}
+	if job.JobID != "job_1" || job.Command != "go test ./..." {
+		t.Errorf("job = %+v", job)
+	}
+}
+
 func TestServerAppWireModelList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

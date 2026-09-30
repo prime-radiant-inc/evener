@@ -1875,6 +1875,15 @@ export interface JobActivityWorktree {
   dirty: boolean;
 }
 
+export interface JobsGetParams {
+  ref?: string;
+  jobId: string;
+}
+
+export interface JobsGetResponse {
+  data: unknown;
+}
+
 export interface JobsListParams {
   ref?: string;
   continuation?: string;
@@ -4407,6 +4416,7 @@ export const METHOD_NAMES = [
   "evener/tasks/list",
   "evener/jobs/list",
   "evener/jobs/output",
+  "evener/jobs/get",
   "evener/daemon/list",
   "evener/daemon/retire",
   "evener/daemon/status",
@@ -4661,6 +4671,7 @@ export interface MethodTypes {
   "evener/tasks/list": { params: TaskListParams; result: TaskListResponse };
   "evener/jobs/list": { params: JobsListParams; result: JobsListResponse };
   "evener/jobs/output": { params: JobsOutputParams; result: JobsOutputResponse };
+  "evener/jobs/get": { params: JobsGetParams; result: JobsGetResponse };
   "evener/daemon/list": { params: DaemonListParams; result: DaemonListResponse };
   "evener/daemon/retire": { params: DaemonRetireParams; result: DaemonRetireResponse };
   "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };

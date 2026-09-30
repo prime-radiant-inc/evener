@@ -17,6 +17,7 @@ import {
   activityDelegateState,
   delegateTiming,
   formatClockTime,
+  jobCommandLabel,
   splitMandate,
   watchDeliveryInstants,
   watchFacts,
@@ -350,7 +351,7 @@ export function ActivityRowDetail({
   const mandate = delegate?.mandate ?? delegate?.task ?? delegate?.description;
   const command =
     row.kind === "job"
-      ? (row.job.command ?? row.job.task ?? row.job.description)
+      ? jobCommandLabel(row.job)
       : mandate
         ? undefined
         : (row.delegate.child?.label ?? row.delegate.childSessionId);

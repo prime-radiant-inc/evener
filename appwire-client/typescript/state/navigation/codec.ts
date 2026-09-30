@@ -738,6 +738,7 @@ export function validateGraphForResource(
             ownerEntity.key === anchorKey &&
             ["current", "recent", "archived"].includes(ownerSlot);
       if (!allowed) throw schemaError("resource graph");
+      if (ownerEntity.kind === "session" && item.children.length !== 0) throw schemaError("resource graph");
       if (item.children.length > NAVIGATION_SECTION_LIMIT) throw schemaError("resource graph");
       const owned = slots.get(ownerEntity.key) ?? new Set<string>();
       owned.add(ownerSlot);

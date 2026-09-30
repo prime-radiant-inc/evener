@@ -2337,6 +2337,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		return hubJobsOutput(ctx, cfg, sources, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsGet, func(ctx context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+		return hubJobsGet(ctx, cfg, sources, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadTranscriptsList, func(ctx context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 		return hubThreadTranscriptList(ctx, cfg, sources, params)
 	})

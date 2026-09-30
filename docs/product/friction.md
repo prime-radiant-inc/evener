@@ -315,10 +315,10 @@ can remain at No output yet or old content until Refresh. Refresh replaces the
 tail and discards earlier pages; older output requires repeated clicks and a
 failed older read is silent. Reconnect does not reset the effect's started flag.
 
-**Evidence.** [JobLog](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L49)
-owns the single read, [loadEarlier](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L99)
+**Evidence.** [JobLog](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L68)
+owns the reads, [loadEarlier](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L149)
 only clears loading on failure, and the
-[controls](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L141)
+[controls](../../cmd/evener-hub/frontend/src/panes/transcript/JobLog.tsx#L164)
 require Refresh/Load earlier output. No focused live-view test establishes
 automatic following for this component.
 

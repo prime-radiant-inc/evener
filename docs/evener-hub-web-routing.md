@@ -35,6 +35,10 @@ left to fragment-route.
   `project_page`, and `location` resources provide bounded rows and ownership
   details. The canonical request shapes, pagination rules, and response
   envelope are maintained in the [AppWire navigation resource matrix](developing-evener/agentic-testing.md).
+  Representation version 3 carries flat session summaries with compact activity
+  counts. Session delegate, shell-job and watch collections use the session
+  activity methods in the [AppWire catalog](appwire-protocol.md); a navigation
+  `location` remains a placement lookup.
 - `evener/favorite/set` — set or clear a project's favorite (Pinned) decision;
   the typed method retains the explicit rejection for obsolete session-shaped
   favorite requests.
@@ -43,21 +47,17 @@ left to fragment-route.
   navigation receipt.
 - `evener/thread/name/set` — rename a live or ended session.
 
-## What changed (2026-07-04 sidebar rebuild)
+## Navigation identity and mutations
 
-- The sidebar is now client-rendered: it fetches `GET /api/tree` and
-  reconciles a keyed DOM against it, instead of htmx-swapping a
-  server-rendered partial. The dead `/_partials/sidebar` and
-  `/_partials/sidebar/project` routes and their Go templates are removed.
-- Project identity is the full working directory, not its basename — two
-  same-named projects at different paths get distinct slug-based keys
-  instead of colliding into one node.
-- Project favorites use the typed `evener/favorite/set` method; session pins
-  use the typed `evener/session-pin/assign` and `evener/session-pin/unpin`
-  methods plus the navigation pin catalog.
-- A project and every session under it can be deleted in one action
-  (`evener/project/delete`).
-- Test-run sessions are classified into their own tier server-side, in
-  `/api/tree` — the client does not yet render them as a distinct sidebar
-  section.
+Project identity includes the full working directory; equally named directories
+at different paths remain distinct projects. Source identity keeps projects on
+different machines distinct. The
+[navigation projection](../cmd/evener-hub/navigation_projection.go) owns the
+bounded resources and project tiers used by the client.
+
+Project favorites use `evener/favorite/set`. Session pins use
+`evener/session-pin/assign` and `evener/session-pin/unpin` with the navigation pin
+catalog. A project deletion uses `evener/project/delete`, which validates its
+working directory, reports per-session outcomes, and returns a navigation
+receipt. Clients reconcile the returned invalidation targets through AppWire.
 - Rename uses `evener/thread/name/set` for both live and ended sessions.

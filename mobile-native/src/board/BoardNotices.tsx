@@ -12,17 +12,17 @@ export function openNotice(
 	hubId: string,
 	notice: Notice,
 ): void {
+	// No link names `pop`: a nested navigate carrying it skips a pushed page's
+	// leave guard (React Navigation applies it without beforeRemove), which
+	// would drop an unsaved edit silently. Without it, a link while the Hub is
+	// open would stack a second list page, which no one can reach today, since
+	// a notice can't be tapped over the Hub (#3524).
 	if (notice.kind === "signIn")
 		// Ruling 25: the Hub opens at that provider's sign-in, its home kept under the page.
-		// With the Hub already open, `pop` hands the link to the Providers page in
-		// its stack, popping a provider's detail pushed over it, rather than
-		// stacking a second Providers page (React Navigation 7 only reuses a route
-		// that is focused or named by `pop`).
 		navigation.navigate("Hub", {
 			screen: "Providers",
 			params: { hubId, focus: notice.providerId, signIn: true },
 			initial: false,
-			pop: true,
 		});
 	else if (notice.kind === "host")
 		// Ruling 25: the Hub opens at that host, its home kept under the page.
@@ -35,6 +35,12 @@ export function openNotice(
 			initial: false,
 		});
 	}
+}
+
+/** Opens the Hub at Providers, its home kept under the page: where a sign-in
+ * error that names no provider sends you. No `pop`, as openNotice says. */
+export function openProviders(navigation: Pick<NativeStackNavigationProp<Routes>, "navigate">, hubId: string): void {
+	navigation.navigate("Hub", { screen: "Providers", params: { hubId }, initial: false });
 }
 
 /** The Board's notices, one row each under the chips (spec 7.1). */

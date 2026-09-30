@@ -57,6 +57,7 @@ type delegateTreeController struct {
 	// delegate carries the empty id, so a membership walk never follows a
 	// ""-keyed edge. Guarded by mu.
 	delegateChildren map[string]map[string]struct{}
+	activityKeys     []sessionActivityKey
 	live             map[string]*delegateLiveState
 	rootRuntime      *Session
 
@@ -318,6 +319,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		store:               cfg.store,
 		durable:             durable,
 		delegateChildren:    deriveDelegateChildrenIndex(durable),
+		activityKeys:        deriveSessionActivityDelegateKeys(durable),
 		live:                make(map[string]*delegateLiveState),
 		rootRuntime:         cfg.rootRuntime,
 		rootSessionID:       cfg.rootSessionID,
@@ -385,6 +387,7 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 			// function of durable.
 			if aggregate := c.durable[event.DelegateID]; aggregate != nil {
 				c.addChildEdgeLocked(event.DelegateID, aggregate.Descriptor.ParentDelegateID)
+				c.activityKeys = insertSessionActivityKey(c.activityKeys, sessionActivityCreationKey(aggregate.CreatedAt, event.DelegateID))
 			}
 		}
 	}

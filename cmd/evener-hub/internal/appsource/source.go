@@ -47,6 +47,7 @@ type Source interface {
 	ThreadWatchesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error)
 
 	JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error)
+	JobGet(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error)
 	SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error)
 }
 

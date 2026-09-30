@@ -295,6 +295,11 @@ export interface ThreadsStoreState {
   // activity strip's preview uses it to fetch a couple hundred bytes instead
   // of the daemon's default tail.
   jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<unknown>;
+  // Reads one job's metadata (evener/jobs/get): the activity-job shape,
+  // including the untruncated command. Its Data field is likewise `any` on the
+  // wire catalog and returned raw; the caller validates it with the package's
+  // parseActivityJob.
+  jobGet(ref: string, jobId: string): Promise<unknown>;
   // Answers one evener/sandbox/escalation/requested via evener/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -4860,6 +4865,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       ...(beforeBytes !== undefined && beforeBytes > 0 ? { beforeBytes } : {}),
       ...(maxBytes !== undefined && maxBytes > 0 ? { maxBytes } : {}),
     });
+    return resp.data;
+  },
+
+  async jobGet(ref, jobId) {
+    // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
+    // failing with AppwireClient's synchronous "cannot call ... while
+    // reconnecting" rejection - see requireReadyClient's own comment.
+    const client = await requireReadyClient();
+    const resp = await client.request("evener/jobs/get", { ref, jobId });
     return resp.data;
   },
 
