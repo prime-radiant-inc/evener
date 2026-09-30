@@ -3,6 +3,7 @@ package hub
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"sync"
@@ -14,8 +15,9 @@ import (
 // credential itself: an HTTP 401 or 403, or an llm authentication or
 // access-denied failure. It is the one rule for what "rejected" means: the
 // credential test's classifier uses it, and so does settleCredentialProbe,
-// through which every probe outcome is recorded (Test connection, and the
-// hub's own model listings). Rate
+// through which every probe outcome is recorded: Test connection, the hub's
+// own model listings, and the probe a session's refused turn triggers
+// (sessionCredentialWatch). Rate
 // limits and quota (429), server errors, timeouts, network failures, a missing
 // endpoint and local configuration errors are not rejections: they say nothing
 // about whether the credential is good. status is the HTTP status when one is
@@ -41,13 +43,19 @@ func credentialRejectionStatus(err error) (status int, rejected bool) {
 			status, _ = strconv.Atoi(match[1])
 		}
 	}
-	if status == 401 || status == 403 {
+	if rejectedCredentialStatus(status) {
 		return status, true
 	}
 	if kind := llm.Kind(err); kind == llm.KindAuthentication || kind == llm.KindAccessDenied {
 		return 0, true
 	}
 	return 0, false
+}
+
+// rejectedCredentialStatus reports whether an HTTP status is the provider
+// refusing the credential: 401 or 403.
+func rejectedCredentialStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
 // credentialRejectionText finds a 401 or 403 in an error's text, as a whole

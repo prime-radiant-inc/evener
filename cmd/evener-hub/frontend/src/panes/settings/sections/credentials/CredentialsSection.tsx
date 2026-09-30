@@ -188,7 +188,7 @@ export function CredentialsSection({
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [credentialTests, setCredentialTests] = useState<Record<string, CredentialTestState>>({});
   // Live-model refresh for the sheet is manual: the hub prefetches every
-  // instance's listing at startup and every few minutes after, so the
+  // instance's listing once at startup and never polls after, so the
   // Models toggles read cached inventory. The Refresh button below
   // re-fetches on demand; failures toast and keep the cached rows. The store
   // publishes which instances have a refresh out, so concurrent refreshes

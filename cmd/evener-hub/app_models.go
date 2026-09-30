@@ -158,7 +158,7 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 		return s.loadLaunchModels(loadCtx, workingDir, gen)
 	}
 	// The launch list shares the live list's TTL: both track the same provider
-	// inventory, refreshed by the same prefetch cadence.
+	// inventory, and a picker open past it refreshes the list.
 	if entry.gen == gen && time.Since(entry.filledAt) < liveModelsTTL {
 		return cloneModelListResponse(entry.resp), nil
 	}
@@ -199,8 +199,8 @@ func (s *WebServer) waitLaunchRefreshes() {
 }
 
 // beginLaunchModelsRefresh claims the refresh slot for one working dir,
-// returning false when a refresh of it is already running. The periodic warm
-// uses it too, so a prefetch tick cannot race a request-triggered refresh.
+// returning false when a refresh of it is already running, so a burst of
+// picker opens past the TTL runs one refresh, not one per open.
 func (s *WebServer) beginLaunchModelsRefresh(workingDir string) bool {
 	s.launchModels.mu.Lock()
 	defer s.launchModels.mu.Unlock()
@@ -310,7 +310,7 @@ func (s *WebServer) refreshLaunchModels(workingDir string, gen uint64) {
 // warmLaunchModels loads the unscoped launch model list into the cache, so the
 // first picker open after hub start is served instantly instead of blocking on
 // the live provider listing. Best-effort: a failure leaves the cache cold and
-// the next picker open (or prefetch tick) retries. It warms through the
+// the next picker open retries. It warms through the
 // configured loader, so an embedder's own WebConfig.LaunchModels is warmed
 // rather than bypassed; the built-in loader fills the same cache it serves from.
 func (s *WebServer) warmLaunchModels(ctx context.Context) {
@@ -321,11 +321,11 @@ func (s *WebServer) warmLaunchModels(ctx context.Context) {
 }
 
 // startLaunchModelsPrefetch warms the unscoped launch model list once at
-// startup and refreshes it on interval. It runs through the caller's background
-// runner so hub shutdown cancels it; a failed pass is silent and the next tick
-// retries.
-func startLaunchModelsPrefetch(ctx context.Context, web *WebServer, interval time.Duration, startBackground func(func())) {
-	startPeriodicPrefetch(ctx, interval, startBackground, func() {
+// startup, never on a timer: after that the picker refreshes the list when it
+// is opened. It runs through the caller's background runner so hub shutdown
+// cancels it; a failed warm is silent and the next picker open retries.
+func startLaunchModelsPrefetch(ctx context.Context, web *WebServer, startBackground func(func())) {
+	startBackground(func() {
 		warmCtx, cancel := launchModelsFetchContext(ctx)
 		defer cancel()
 		web.warmLaunchModels(warmCtx)
