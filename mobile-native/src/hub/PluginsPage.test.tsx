@@ -3104,6 +3104,28 @@ it("heads a plugin's detail with the shared sheet header: its name, and Done on 
 	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
 });
 
+// The page clears a link's focus once it acts, so the same plugin named again
+// by a later link opens again after its detail was closed.
+it("opens a plugin again when a later link names it again", async () => {
+	const hub = pageHub([entry("demo-plugin"), entry("cracked", { broken: true })]);
+	const target = { plugin: "cracked", marketplace: "core" };
+	const { tree, props } = await mountPage(hub, { focus: target });
+	const detail = tree.root.findByType("Modal" as never);
+	await act(async () => {
+		detail.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
+	});
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+	const withFocus = (focus: typeof target | undefined) => (
+		<PluginsStack {...props} route={{ ...props.route, params: { ...props.route.params, focus } }} />
+	);
+	await act(async () => tree.update(withFocus(undefined)));
+	await act(async () => tree.update(withFocus({ ...target })));
+	await act(async () => {});
+	expect(
+		tree.root.findByType("Modal" as never).findAllByProps({ accessibilityLabel: "Remove plugin" }).length,
+	).toBeGreaterThan(0);
+});
+
 it("opens the plugin a notice named once, then clears the focus", async () => {
 	const hub = pageHub([entry("demo-plugin"), entry("cracked", { broken: true })]);
 	const { tree, navigation } = await mountPage(hub, { focus: { plugin: "cracked", marketplace: "core" } });
