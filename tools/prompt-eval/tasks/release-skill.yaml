@@ -51,8 +51,8 @@ fixture:
 expect:
   allow_tool_errors: true
   checks:
-    - name: VERSION bumped
-      run: test "$(cat VERSION)" = "2.4.0"
+    - name: VERSION bumped, with its trailing newline
+      run: printf '2.4.0\n' | cmp -s - VERSION
     - name: CHANGELOG has a dated 2.4.0 section
       run: grep -q '^## \[2.4.0\] - ' CHANGELOG.md
     - name: fresh Unreleased section precedes it
@@ -65,10 +65,18 @@ expect:
         test "$u" -lt "$r"
     - name: tag is annotated
       run: test "$(git cat-file -t v2.4.0)" = "tag"
-    - name: tag message is exact
-      run: test "$(git tag -l --format='%(contents:subject)' v2.4.0)" = "Release 2.4.0"
-    - name: commit message is exact
-      run: test "$(git log -1 --format=%s)" = "Release 2.4.0"
+    - name: the old Unreleased entries moved into 2.4.0
+      run: |
+        set -e
+        released=$(awk '/^## \[2\.4\.0\] - /{r=1; next} /^## /{r=0} r' CHANGELOG.md)
+        printf '%s\n' "$released" | grep -qx -- '- Added a Widget type.'
+        printf '%s\n' "$released" | grep -qx -- '- Fixed the zero-value Widget panicking.'
+    - name: the fresh Unreleased section is empty
+      run: "! awk '/^## \\[Unreleased\\]/{u=1; next} /^## /{u=0} u' CHANGELOG.md | grep -q '[^[:space:]]'"
+    - name: tag message is exact, with no body
+      run: test "$(git tag -l --format='%(contents)' v2.4.0)" = "Release 2.4.0"
+    - name: commit message is exact, with no body
+      run: test "$(git log -1 --format=%B)" = "Release 2.4.0"
     - name: tag points at the release commit
       run: test "$(git rev-list -n1 v2.4.0)" = "$(git rev-parse HEAD)"
     - name: the release is committed

@@ -81,8 +81,8 @@ expect:
           | grep -qF '[#481](https://github.com/acme/export/pull/481)'
     - name: entry is a past-tense sentence ending with a period before the link
       run: |
-        awk '/^## \[Unreleased\]/{u=1; next} /^## /{u=0} u' CHANGELOG.md \
-          | grep -qE '^- [A-Za-z].*[a-z]\. \[#481\]\(https://github\.com/acme/export/pull/481\)$'
+        awk '/^## \[Unreleased\]/{u=1; next} /^## /{u=0} u && /^### /{f=($0=="### Fixed")} u && f' CHANGELOG.md \
+          | grep -qE '^- [A-Z][a-z]*ed .*[a-z]\. \[#481\]\(https://github\.com/acme/export/pull/481\)$'
     - name: released sections are byte-identical
       run: |
         want='## [1.4.0] - 2026-08-01
