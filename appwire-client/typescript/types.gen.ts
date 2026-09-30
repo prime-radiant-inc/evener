@@ -3135,6 +3135,102 @@ export interface SessionActivity {
   quietForMs?: number;
 }
 
+export interface SessionActivityAncestor {
+  ref: string;
+  sessionId: string;
+  delegateId?: string;
+  title: string;
+}
+
+export interface SessionActivityChangedParams {
+  threadId: string;
+  ref: string;
+  sessionId: string;
+  resources: SessionActivityResource[];
+}
+
+export interface SessionActivityContext {
+  ref: string;
+  sessionId: string;
+  rootRef: string;
+  parentRef?: string;
+  delegateId?: string;
+  ancestors: SessionActivityAncestor[];
+  epoch: string;
+  availability: string;
+}
+
+export interface SessionActivityCounts {
+  known: boolean;
+  total: number;
+  active: number;
+  failed: number;
+  completed: number;
+}
+
+export interface SessionActivityIssue {
+  ref: string;
+  code: string;
+}
+
+export interface SessionActivityListParams {
+  ref: string;
+  scope?: SessionActivityScope;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface SessionActivityPage {
+  nextCursor?: string;
+  complete: boolean;
+  issues: SessionActivityIssue[];
+}
+
+export interface SessionActivityReadParams {
+  ref: string;
+  scope?: SessionActivityScope;
+}
+
+export interface SessionActivitySummary {
+  context: SessionActivityContext;
+  scope: SessionActivityScope;
+  delegates: SessionActivityCounts;
+  jobs: SessionActivityCounts;
+  watches: SessionActivityCounts;
+}
+
+export interface SessionDelegate {
+  delegateId: string;
+  ownerRef: string;
+  rootRef: string;
+  childRef: string;
+  parentDelegateId?: string;
+  description: string;
+  task: string;
+  type: string;
+  lifecycle: string;
+  phase: string;
+  status: string;
+  outcome?: string;
+  terminal: boolean;
+  resumable: boolean;
+  notResumableReason?: string;
+  model?: string;
+  reasoningEffort?: string;
+  runStartedAt?: string;
+  runEndedAt?: string;
+  latestActivityAt?: string;
+  usage?: EvenerUsage;
+  worktree?: JobActivityWorktree;
+}
+
+export interface SessionDelegatesResponse {
+  context: SessionActivityContext;
+  scope: SessionActivityScope;
+  page: SessionActivityPage;
+  delegates: SessionDelegate[];
+}
+
 export interface SessionDeleteParams {
   ref: string;
 }
@@ -3168,6 +3264,13 @@ export interface SessionImageResponse {
   size: number;
   sha?: string;
   data: string;
+}
+
+export interface SessionJobsResponse {
+  context: SessionActivityContext;
+  scope: SessionActivityScope;
+  page: SessionActivityPage;
+  jobs: JobActivityJob[];
 }
 
 export interface SessionPinAssignParams {
@@ -3225,6 +3328,20 @@ export interface SessionURL {
   label?: string;
   addedBy?: string;
   addedAt?: number;
+}
+
+export interface SessionWatch {
+  ownerRef: string;
+  receiverRef: string;
+  state: SessionWatchState;
+  watch: EvenerWatchInfo;
+}
+
+export interface SessionWatchesResponse {
+  context: SessionActivityContext;
+  scope: SessionActivityScope;
+  page: SessionActivityPage;
+  watches: SessionWatch[];
 }
 
 export interface SettingsAgentEntry {
@@ -4381,6 +4498,10 @@ export const METHOD_NAMES = [
   "evener/daemon/status",
   "evener/daemon/idle-timeout/set",
   "evener/thread/transcripts/list",
+  "evener/thread/activity/read",
+  "evener/thread/delegates/list",
+  "evener/thread/jobs/list",
+  "evener/thread/watches/list",
   "evener/subagentPreview",
   "evener/paths/complete",
   "evener/dirs/create",
@@ -4501,6 +4622,7 @@ export const NOTIFICATION_NAMES = [
   "evener/plugin/updated",
   "evener/notices/changed",
   "evener/thread/resync",
+  "evener/thread/activity/changed",
   "evener/task/updated",
   "evener/goal/updated",
   "evener/notes/updated",
@@ -4519,6 +4641,30 @@ export const NOTIFICATION_NAMES = [
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
+
+export const SESSION_ACTIVITY_SCOPES = [
+  "session",
+  "subtree",
+] as const;
+
+export type SessionActivityScope = (typeof SESSION_ACTIVITY_SCOPES)[number];
+
+export const SESSION_ACTIVITY_RESOURCES = [
+  "summary",
+  "delegates",
+  "jobs",
+  "watches",
+] as const;
+
+export type SessionActivityResource = (typeof SESSION_ACTIVITY_RESOURCES)[number];
+
+export const SESSION_WATCH_STATES = [
+  "armed",
+  "ended",
+  "unknown",
+] as const;
+
+export type SessionWatchState = (typeof SESSION_WATCH_STATES)[number];
 
 export const STEERING_KINDS = [
   "interrupted",
@@ -4606,6 +4752,10 @@ export interface MethodTypes {
   "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };
   "evener/daemon/idle-timeout/set": { params: DaemonIdleTimeoutSetParams; result: DaemonIdleTimeoutSetResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
+  "evener/thread/activity/read": { params: SessionActivityReadParams; result: SessionActivitySummary };
+  "evener/thread/delegates/list": { params: SessionActivityListParams; result: SessionDelegatesResponse };
+  "evener/thread/jobs/list": { params: SessionActivityListParams; result: SessionJobsResponse };
+  "evener/thread/watches/list": { params: SessionActivityListParams; result: SessionWatchesResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
   "evener/dirs/create": { params: DirsCreateParams; result: DirsCreateResponse };
@@ -4724,6 +4874,7 @@ export interface NotificationTypes {
   "evener/plugin/updated": EmptyParams;
   "evener/notices/changed": NoticesListResponse;
   "evener/thread/resync": ThreadResyncParams;
+  "evener/thread/activity/changed": SessionActivityChangedParams;
   "evener/task/updated": TaskUpdatedParams;
   "evener/goal/updated": GoalUpdatedParams;
   "evener/notes/updated": NotesUpdatedParams;

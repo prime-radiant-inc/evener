@@ -121,6 +121,10 @@ no router (reserved).
 | `evener/daemon/status` | daemon | `DaemonStatusParams` | `DaemonStatusResponse` | Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility. |
 | `evener/daemon/idle-timeout/set` | daemon | `DaemonIdleTimeoutSetParams` | `DaemonIdleTimeoutSetResponse` | Retargets the automatic idle-retirement deadline (0 disables it) against exact ownership identity and answers with the current lifecycle; the Hub sets this from session archive decisions. |
 | `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
+| `evener/thread/activity/read` | both | `SessionActivityReadParams` | `SessionActivitySummary` | Reads cheap activity counts and context for an explicit session ref and ownership scope; unknown counts are explicit. |
+| `evener/thread/delegates/list` | both | `SessionActivityListParams` | `SessionDelegatesResponse` | Pages compact stable delegates logically owned by a session or its subtree; bounded by 200 rows and 256 KiB. |
+| `evener/thread/jobs/list` | both | `SessionActivityListParams` | `SessionJobsResponse` | Pages shell jobs logically owned by a session or its subtree; job output is read separately. |
+| `evener/thread/watches/list` | both | `SessionActivityListParams` | `SessionWatchesResponse` | Pages receiver-owned watches and bounded retained history for a session or its subtree. |
 | `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
 | `evener/dirs/create` | hub | `DirsCreateParams` | `DirsCreateResponse` | Creates a missing working directory and its parents for Spawn preflight. |
@@ -244,6 +248,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/notices/changed` | `NoticesListResponse` | Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
+| `evener/thread/activity/changed` | `SessionActivityChangedParams` | Scoped activity invalidation; clients revalidate the named observed resources for the addressed session. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
 | `evener/notes/updated` | `NotesUpdatedParams` | The session's shared-notes whiteboards changed. |
@@ -2197,6 +2202,55 @@ _(no fields)_
 | `match` | `bool` | yes |  |
 
 
+### `SessionActivityChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `resources` | `[]appwire.SessionActivityResource` |  |  |
+
+
+### `SessionActivityListParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `scope` | `appwire.SessionActivityScope` | yes |  |
+| `cursor` | `string` | yes |  |
+| `limit` | `int` | yes |  |
+
+
+### `SessionActivityReadParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `scope` | `appwire.SessionActivityScope` | yes |  |
+
+
+### `SessionActivitySummary`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `delegates` | `appwire.SessionActivityCounts` |  |  |
+| `jobs` | `appwire.SessionActivityCounts` |  |  |
+| `watches` | `appwire.SessionActivityCounts` |  |  |
+
+
+### `SessionDelegatesResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `delegates` | `[]appwire.SessionDelegate` |  |  |
+
+
 ### `SessionDeleteParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2250,6 +2304,16 @@ _(no fields)_
 | `data` | `[]uint8` |  |  |
 
 
+### `SessionJobsResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `jobs` | `[]appwire.JobActivityJob` |  |  |
+
+
 ### `SessionPinAssignParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2300,6 +2364,16 @@ _(no fields)_
 | `ok` | `bool` |  |  |
 | `changed` | `bool` |  |  |
 | `navigation` | `appwire.NavigationMutation` |  |  |
+
+
+### `SessionWatchesResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `watches` | `[]appwire.SessionWatch` |  |  |
 
 
 ### `SettingsOverviewResponse`
