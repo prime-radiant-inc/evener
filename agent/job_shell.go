@@ -59,8 +59,8 @@ type shellArgs struct {
 	MaxRuntimeMS   int
 	// WorkingDir is the resolved, validated absolute directory the command
 	// runs in: env.WorkingDirectory() by default, or the shell tool's
-	// optional model-supplied `cwd` argument once resolved and confirmed to
-	// stay under the sandbox root (resolveShellWorkingDir). It rides onto the
+	// optional model-supplied `cwd` argument once resolved and checked against
+	// the active command policy (resolveShellWorkingDir). It rides onto the
 	// job record so manage_worktree remove/prune's live-work guard can see
 	// which worktree, if any, a background shell job is running under (spec
 	// §5 remove step 4, §7 liveWorkUnder).
