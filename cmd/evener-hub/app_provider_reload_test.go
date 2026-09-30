@@ -141,3 +141,50 @@ func TestProviderFileRetriesFailedLoadWithoutAnotherEdit(t *testing.T) {
 		t.Fatal("recovery stopped after unchanged bytes failed")
 	}
 }
+func TestProviderFileWatcherDoesNotEchoInstanceWrite(t *testing.T) {
+	t.Parallel()
+	f := newInstancesFixture(t, nil)
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		Registry: f.ctl.reg, ProvidersConfigPath: f.tomlPath, CredsStore: f.store,
+	})
+	defer hub.Close()
+	// The initial observation belongs to startup, before this client connects.
+	web.notices.watchRead(context.Background(), newRecordingBroadcaster())
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
+		appwire.InstanceCreateParams{Name: "work", Base: "anthropic", OriginClientId: "tab-a"}, &resp); err != nil {
+		t.Fatal(err)
+	}
+	assertInstanceBroadcastShape(t, appwire.MethodEvenerInstanceCreate, waitForAuthUpdatedRaw(t, client), "tab-a")
+	generation := f.ctl.reg.Generation()
+	broadcaster := newRecordingBroadcaster()
+	web.notices.watchRead(context.Background(), broadcaster)
+	if f.ctl.reg.Generation() != generation || len(broadcaster.broadcasts()) != 0 {
+		t.Fatal("watcher reloaded and announced an already-notified instance write")
+	}
+	// A later external edit still needs the unowned broadcast.
+	writeProvidersToml(t, filepath.Dir(f.tomlPath), "[providers.external]\nbase = \"anthropic\"\n")
+	web.notices.watchRead(context.Background(), broadcaster)
+	got := broadcaster.broadcasts()
+	if len(got) != 1 || got[0].method != appwire.NotifyEvenerAuthUpdated {
+		t.Fatalf("external edit broadcasts = %+v", got)
+	}
+}
+
+func TestProviderFileWatcherDoesNotEchoRolledBackWrite(t *testing.T) {
+	t.Parallel()
+	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 3 })
+	f.ctl.refreshProviderFile() // load 2 establishes the observer baseline
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err == nil {
+		t.Fatal("create unexpectedly survived the scripted load failure")
+	}
+	generation := f.ctl.reg.Generation()
+	if f.ctl.refreshProviderFile() || f.ctl.reg.Generation() != generation {
+		t.Fatal("watcher reloaded or announced a rolled-back instance write")
+	}
+}

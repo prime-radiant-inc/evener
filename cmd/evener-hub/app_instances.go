@@ -63,11 +63,18 @@ func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
 }
 
 func (c *hubInstancesController) write(l *registry.Layer) error {
-	err := registry.WriteConfigFile(c.providersConfigPath, l)
+	raw, err := registry.MarshalConfig(l)
+	if err != nil {
+		return err
+	}
+	err = registry.WriteConfigFile(c.providersConfigPath, l)
 	if err == nil {
 		// The primitive itself records the write the instant it lands; the
 		// mutation's rollback clears it again when it puts the prior file back.
 		c.applied.markApplied()
+		// The RPC announces local writes. Acknowledge exactly
+		// the writer's canonical bytes so the watcher only adopts later edits.
+		c.providerFileSignature = providerConfigSignature(raw)
 	}
 	return err
 }
