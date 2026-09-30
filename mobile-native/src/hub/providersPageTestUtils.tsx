@@ -32,6 +32,16 @@ export function back(): void {
 
 export function ProvidersStack(props: ComponentProps<typeof ProvidersPage>) {
 	const [detail, setDetail] = useState<DetailParams | null>(null);
+	// A link to a provider (a notice, or a sign-in error) navigates to Providers
+	// with `pop`, which pops a detail pushed over it and hands the page its new
+	// focus with the list in front (BoardNotices.tsx's openNotice). A new focus
+	// here does the same.
+	const focus = (props.route.params as { focus?: string } | undefined)?.focus;
+	const [lastFocus, setLastFocus] = useState(focus);
+	if (focus !== lastFocus) {
+		setLastFocus(focus);
+		if (focus !== undefined) setDetail(null);
+	}
 	stack.params = detail;
 	stack.close = () => setDetail(null);
 	const given = props.navigation as unknown as Record<string, unknown> | undefined;

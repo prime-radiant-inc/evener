@@ -2,8 +2,8 @@
 // over Hosts (spec 12; device audit N3). The Providers page underneath builds
 // it and publishes it (providersScreenSlot.tsx); this page shows it while it
 // is the one the route names, asks before Back discards a pasted key, and
-// goes back when the Providers page lets the provider go (it was removed, a
-// write moved it, or its sign-in started).
+// goes back when the Providers page no longer has the provider selected (it
+// was removed, a write moved it, or its sign-in started).
 import { usePreventRemove } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef } from "react";
@@ -14,19 +14,16 @@ export function ProviderDetailPage({ navigation, route }: NativeStackScreenProps
 	const { hubId, name } = route.params;
 	const slot = useProviderDetailSlot();
 	// Only the detail the route names, for the hub it was opened for: after a
-	// hub switch, or for the commit between a swap of the route's provider and
-	// the Providers page publishing its detail, nothing shows rather than
-	// another provider's detail.
+	// hub switch, nothing shows rather than another provider's detail.
 	const current = slot !== null && slot.hubId === hubId && slot.name === name ? slot : null;
 
-	// Having shown its provider, the page goes back once the Providers page
-	// drops the selection or the hub. A publication for another provider is the
-	// page swapping this route to it (openDetail sets the selection and the
-	// route together, and the slot follows a commit later), so the page waits
-	// for it rather than going back.
+	// Having shown its provider, the page goes back once the Providers page no
+	// longer publishes it. Nothing swaps the provider under a pushed detail: the
+	// list and Add are covered, an edit keeps the name, and a link pops the
+	// detail before the page opens another (openNotice's `pop`).
 	const shown = useRef(false);
 	if (current) shown.current = true;
-	const dropped = shown.current && (slot === null || slot.hubId !== hubId || slot.name === null);
+	const dropped = shown.current && current === null;
 	useEffect(() => {
 		if (dropped && navigation.canGoBack()) navigation.goBack();
 	}, [dropped, navigation]);

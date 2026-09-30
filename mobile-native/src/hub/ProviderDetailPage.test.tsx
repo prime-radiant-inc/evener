@@ -59,16 +59,14 @@ it("shows nothing published for another hub", () => {
 	expect(renderedText(tree)).toBe("");
 });
 
-// When the Providers page swaps its detail to another provider (a link opening
-// one in place), the route takes the new name at once and the slot follows a
-// commit later: the page shows neither detail in between and doesn't go back.
-it("shows nothing while the slot catches up with a swapped route, and doesn't go back", () => {
+// Nothing swaps the provider under a pushed detail, so a publication for
+// another provider means this one has gone: the page shows nothing of either
+// and goes back.
+it("shows nothing for another provider's name, and goes back", () => {
 	const { tree, update } = mount(slot({}));
-	update(slot({}), { hubId: "hub-1", name: "home" });
+	update(slot({ name: "home", detail: "home's detail" }));
 	expect(renderedText(tree)).toBe("");
-	expect(navigation.goBack).not.toHaveBeenCalled();
-	update(slot({ name: "home", detail: "home's detail" }), { hubId: "hub-1", name: "home" });
-	expect(renderedText(tree)).toBe("home's detail");
+	expect(navigation.goBack).toHaveBeenCalledTimes(1);
 });
 
 it("goes back once the Providers page lets its provider go", () => {

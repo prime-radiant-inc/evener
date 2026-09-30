@@ -1285,7 +1285,10 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	]);
 	const { tree } = mountPage();
 	await act(async () => {});
+	// Back to the list between providers: the list is covered while a detail
+	// is pushed.
 	const open = async (name: string) => {
+		if (detailParams()) back();
 		press(tree, (label) => label.startsWith(`${name},`));
 		await act(async () => {});
 	};
@@ -2134,7 +2137,10 @@ function heldChecks(fake: FakeClient) {
 	return pending;
 }
 
-it("says a check failed when it lands after a new link reopened the same provider", async () => {
+// A link pops the pushed detail before it reopens the provider, so the
+// visit that started the check has closed, as Back closes it: a failure
+// landing after the link isn't reported on the new visit.
+it("drops a check's failure that lands after a link popped and reopened the provider", async () => {
 	const fake = providersHub([withModels()]);
 	const checks = heldChecks(fake);
 	const { tree, relink } = linkedPage("work");
@@ -2143,9 +2149,10 @@ it("says a check failed when it lands after a new link reopened the same provide
 	press(tree, (label) => label === "Check for new models");
 	await act(async () => {});
 	await relink("work");
+	expect(detailParams()).toMatchObject({ name: "work" });
 	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
 	await act(async () => {});
-	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
+	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
 });
 
 it("keeps a check's failure off another provider a link opened meanwhile", async () => {
@@ -2187,7 +2194,10 @@ it("checks two providers back to back: only the newer check ends its Checking st
 	expect(hasControl(tree, "Check for new models")).toBe(true);
 });
 
-it("keeps a failed check's copy on its own provider when a link then opens another", async () => {
+// A failed check's copy stays with its own provider's visit: a link that
+// opens another provider pops that visit, and a link back to it opens a new
+// one, with no copy from the closed visit.
+it("keeps a failed check's copy on its own provider's visit, which a link closes", async () => {
 	const fake = providersHub([withModels(), { ...withModels(), name: "home", isDefault: false }]);
 	const checks = heldChecks(fake);
 	const { tree, relink } = linkedPage("work");
@@ -2199,9 +2209,11 @@ it("keeps a failed check's copy on its own provider when a link then opens anoth
 	await act(async () => {});
 	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
 	await relink("home");
+	expect(detailParams()).toMatchObject({ name: "home" });
 	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
 	await relink("work");
-	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
+	expect(detailParams()).toMatchObject({ name: "work" });
+	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
 });
 
 it("points an empty provider list at its one action (audit L6)", async () => {
