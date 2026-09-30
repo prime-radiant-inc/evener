@@ -1,5 +1,6 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, expect, it, vi } from "vitest";
-import { ActivityList, parseActivityTree } from "@evener/appwire-client";
+import { ActivityList, parseActivityTree, activityNodeID } from "@evener/appwire-client";
 import type { AnyNotification } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
@@ -46,7 +47,7 @@ function boundary() {
 	const io = {
 		read: async (): Promise<{ data: unknown }> => ({ data: tree() }),
 	};
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (method, params) => {
 			requests.push({ method, params });
 			return io.read();
@@ -57,7 +58,7 @@ function boundary() {
 				handlers.delete(handler);
 			};
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const list = new ActivityList(client, "local:test", "thread");
 	const notify = (ref = "local:test", threadId = "thread") => {
 		for (const handler of handlers)
@@ -71,10 +72,10 @@ function boundary() {
 
 it("refuses a retained tree owned by another session before publishing it", () => {
 	const { io } = boundary();
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: io.read,
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const retained = parseActivityTree(tree());
 	expect(retained).not.toBeNull();
 	expect(() => new ActivityList(client, "other-ref", "thread", retained)).toThrow();
@@ -86,10 +87,10 @@ it("refuses a retained tree owned by another session before publishing it", () =
 
 it("refuses an empty activity owner without sending a request", () => {
 	const { io } = boundary();
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: io.read,
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	expect(() => new ActivityList(client, "", "thread")).toThrow();
 	expect(() => new ActivityList(client, "local:test", " ")).toThrow();
 });
@@ -329,7 +330,7 @@ it("reports the root's diagnostics even when nothing was cut short, and never a 
 	const torn = "delegate_journal_torn_tail: ignored unterminated trailing batch";
 	io.read = async () => ({ data: { ...tree(), root: { ...tree().root, diagnostics: [torn] } } });
 	await list.refresh();
-	expect(list.branches()).toEqual([{ id: "session:thread", label: "Test", diagnostics: [torn] }]);
+	expect(list.branches()).toEqual([{ id: "session:local:test", label: "Test", diagnostics: [torn] }]);
 
 	const rendered = delegateTree({}, {});
 	const entry = rendered.root.entries[0] as { delegate: { child?: Record<string, unknown> } };
@@ -344,13 +345,15 @@ it("reports the root and one row per delegate, never a delegate's child twice", 
 	const { list, io } = boundary();
 	io.read = async () => ({ data: tree(1, ["a"], "cursor") });
 	await list.refresh();
-	expect(list.branches()).toEqual([{ id: "session:thread", label: "Test", truncated: true, continuation: "cursor" }]);
+	expect(list.branches()).toEqual([
+		{ id: "session:local:test", label: "Test", truncated: true, continuation: "cursor" },
+	]);
 
 	io.read = async () => ({ data: delegateTree({}, { truncated: true }) });
 	await list.refresh();
 	expect(list.branches()).toEqual([
 		{
-			id: "delegate:dlg_deep",
+			id: activityNodeID({ kind: "delegate", delegateId: "dlg_deep", childRef: "local:sess_deep_child" }),
 			label: "Deep work",
 			truncated: true,
 			openSessionRef: "local:sess_deep_child",
@@ -363,7 +366,7 @@ it("reports the root and one row per delegate, never a delegate's child twice", 
 	await list.refresh();
 	expect(list.branches()).toEqual([
 		{
-			id: "delegate:dlg_deep",
+			id: activityNodeID({ kind: "delegate", delegateId: "dlg_deep", childRef: "local:sess_deep_child" }),
 			label: "Deep work",
 			truncated: true,
 			continuation: "child-cursor",

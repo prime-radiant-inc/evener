@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse, Thread } from "@evener/appwire-client";
@@ -49,7 +50,7 @@ async function boundary(actions: {
 			},
 		},
 	};
-	const wire: ConversationClientLike = {
+	const wire: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: async (method, params) => {
 			if (method === "thread/read") return { thread };
 			if (method === "model/list") return actions.models?.() ?? { data: [] };
@@ -81,7 +82,7 @@ async function boundary(actions: {
 			await actions.resume?.();
 			return { thread };
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const service = createConversationService(wire);
 	await service.open("local:test");
 	return service;

@@ -120,6 +120,12 @@ test("codec refuses a non-boolean approval flag on a session row", () => {
   expectContentFreeRejection(key, snapshot);
 });
 
+// needs_you_subagents is the flat lists' replacement for the needs-you
+// bubble-up the nested children gave: an optional safe non-negative count the
+// hub computes at projection time (countNeedsYouSubagents in
+// cmd/evener-hub/navigation_projection.go). Any resource kind's session row
+// may carry it; a malformed count is a schema error.
+
 // approval_tool is an identity (at most 1024 UTF-8 bytes) and approval_target a
 // label (at most 512 characters), as the hub bounds them. A value at a bound is
 // kept; past one, or of the wrong type, it is a schema error that names none of
@@ -183,7 +189,7 @@ function decodedSnapshot(resource: ResourceKey, snapshot: NavigationSnapshot) {
   return decoded;
 }
 
-test("codec drops unknown keys on a session row and on its jobs, watches and cadence", () => {
+test("codec drops removed activity detail and unknown keys on a session row", () => {
   const snapshot = liveSnapshot();
   const first = snapshot.entities[0];
   if (!first) throw new Error("missing entity");
@@ -201,9 +207,6 @@ test("codec drops unknown keys on a session row and on its jobs, watches and cad
   expect(rows).toEqual([
     {
       ...sessionValue("local:session"),
-      running_jobs: [job],
-      completed_jobs: [{ ...job, status: "completed" }],
-      watches: [{ ...watch, cadence: [cadence] }],
     },
   ]);
 });
@@ -679,16 +682,7 @@ function sessionBoundSnapshot(resource: ResourceKey, sessionCount: number): Navi
     { length: sessionCount },
     (_, index) => `${scope}/entity/${(index + 1).toString(16).padStart(64, "0")}`,
   );
-  const rootChildren: string[] = [];
-  const childrenByOwner = new Map<string, string[]>();
-  for (let next = 0; next < sessionKeys.length; ) {
-    const parent = sessionKeys[next];
-    if (!parent) throw new Error("missing session key");
-    rootChildren.push(parent);
-    const end = Math.min(next + 51, sessionKeys.length);
-    childrenByOwner.set(parent, sessionKeys.slice(next + 1, end));
-    next = end;
-  }
+  const rootChildren = sessionKeys;
   const sessionEntities = sessionKeys.map((sessionKey, index) => ({
     key: sessionKey,
     kind: "session",
@@ -697,7 +691,7 @@ function sessionBoundSnapshot(resource: ResourceKey, sessionCount: number): Navi
   const sessionContainers = sessionKeys.map((sessionKey) => ({
     key: navigationOwnedContainerKey(sessionKey, "children"),
     owner: { kind: "entity" as const, entityKey: sessionKey, slot: "children" },
-    children: childrenByOwner.get(sessionKey) ?? [],
+    children: [],
   }));
   if (resource.kind === "section" || resource.kind === "project_page")
     return {
@@ -748,17 +742,17 @@ function sessionBoundSnapshot(resource: ResourceKey, sessionCount: number): Navi
       {
         key: navigationOwnedContainerKey(anchorKey, "current"),
         owner: { kind: "entity", entityKey: anchorKey, slot: "current" },
-        children: rootChildren,
+        children: rootChildren.slice(0, NAVIGATION_SECTION_LIMIT),
       },
       {
         key: navigationOwnedContainerKey(anchorKey, "recent"),
         owner: { kind: "entity", entityKey: anchorKey, slot: "recent" },
-        children: [],
+        children: rootChildren.slice(NAVIGATION_SECTION_LIMIT, NAVIGATION_SECTION_LIMIT * 2),
       },
       {
         key: navigationOwnedContainerKey(anchorKey, "archived"),
         owner: { kind: "entity", entityKey: anchorKey, slot: "archived" },
-        children: [],
+        children: rootChildren.slice(NAVIGATION_SECTION_LIMIT * 2),
       },
       ...sessionContainers,
     ],
@@ -884,16 +878,15 @@ test("codec rejects wrong resource metadata, value schema, slots, scope, and orp
   expectContentFreeRejection(manifest.key, extraRoot);
 });
 
-test("codec enforces the projector graph-depth boundary", () => {
+test("codec admits flat sessions and rejects nested graphs for every v3 resource", () => {
   const fixtures = schemaFixtures().filter(
     (fixture) => (fixture.key.kind === "section" && fixture.key.section === "live") || fixture.key.kind === "project",
   );
   for (const fixture of fixtures) {
     expect(
-      decodeNavigationResponse(fixture.key, undefined, snapshotResponse(fixture.key, chainSnapshot(fixture, 32)))
-        .status,
+      decodeNavigationResponse(fixture.key, undefined, snapshotResponse(fixture.key, chainSnapshot(fixture, 1))).status,
     ).toBe("snapshot");
-    expectContentFreeRejection(fixture.key, chainSnapshot(fixture, 33));
+    for (const depth of [2, 32, 33]) expectContentFreeRejection(fixture.key, chainSnapshot(fixture, depth));
   }
 });
 
@@ -985,49 +978,40 @@ test("codec keeps the manifest's source records and a project's owner names apar
 });
 
 test.each([
-  {
-    name: "section",
-    resource: { kind: "section", section: "live", offset: 0, limit: 50 } as const,
-    entities: 2000,
-    containers: 2001,
-  },
+  { name: "section", resource: key, sessions: 50, entities: 50, containers: 51 },
   {
     name: "project",
     resource: { kind: "project", projectKey: "project" } as const,
-    entities: 2001,
-    containers: 2003,
+    sessions: 150,
+    entities: 151,
+    containers: 153,
   },
   {
     name: "project page",
     resource: { kind: "project_page", projectKey: "project", tier: "current", offset: 0, limit: 50 } as const,
-    entities: 2000,
-    containers: 2001,
+    sessions: 50,
+    entities: 50,
+    containers: 51,
   },
-])("codec accepts the maximum $name session graph", ({ resource, entities, containers }) => {
-  const snapshot = sessionBoundSnapshot(resource, 2000);
+])("codec accepts the maximum flat $name placement", ({ resource, sessions, entities, containers }) => {
+  const snapshot = sessionBoundSnapshot(resource, sessions);
   expect(snapshot.entities).toHaveLength(entities);
   expect(snapshot.containers).toHaveLength(containers);
   expect(decodeNavigationResponse(resource, undefined, snapshotResponse(resource, snapshot)).status).toBe("snapshot");
 });
 
 test.each([
+  { name: "section page", resource: key, sessions: 51 },
+  { name: "project tier", resource: { kind: "project", projectKey: "project" } as const, sessions: 151 },
   {
-    name: "section session count",
-    resource: { kind: "section", section: "live", offset: 0, limit: 50 } as const,
-    entities: 2001,
-    containers: 2002,
+    name: "project page",
+    resource: { kind: "project_page", projectKey: "project", tier: "current", offset: 0, limit: 50 } as const,
+    sessions: 51,
   },
-  {
-    name: "project aggregate graph",
-    resource: { kind: "project", projectKey: "project" } as const,
-    entities: 2002,
-    containers: 2004,
-  },
-])("codec rejects the $name above the 2,000-session limit", ({ resource, entities, containers }) => {
-  const snapshot = sessionBoundSnapshot(resource, 2001);
-  expect(snapshot.entities).toHaveLength(entities);
-  expect(snapshot.containers).toHaveLength(containers);
-  expectContentFreeRejection(resource, snapshot);
+  { name: "section graph cap", resource: key, sessions: 2001 },
+  { name: "project graph cap", resource: { kind: "project", projectKey: "project" } as const, sessions: 2001 },
+])("codec rejects flat placement above the $name bound", ({ resource, sessions }) => {
+  expectContentFreeRejection(resource, sessionBoundSnapshot(resource, sessions));
 });
 
 test.each(timestampFixtures.filter((fixture) => fixture.valid).map((fixture) => fixture.value))(
@@ -1102,7 +1086,7 @@ test.each([
   ]);
 });
 
-test("grandchild changes invalidate every recursive ancestor materialization", () => {
+test("generic materialization invalidates recursive ancestors without changing siblings", () => {
   const parentKey = entityKey(key, "1");
   const childKey = entityKey(key, "2");
   const grandchildKey = entityKey(key, "3");
@@ -1158,23 +1142,19 @@ test("grandchild changes invalidate every recursive ancestor materialization", (
   const beforeSibling = before.sessions[1];
   const beforeSiblingChild = beforeSibling?.children[0];
 
-  const changed = applyDelta(
-    initial,
-    {
-      metadata: { ...(snapshot.metadata as Record<string, unknown>), revision: 2 },
-      upsertedEntities: [
-        {
-          key: grandchildKey,
-          kind: "session",
-          value: value("local:grandchild", "Changed grandchild"),
-        },
-      ],
-      removedEntityKeys: [],
-      upsertedContainers: [],
-      removedContainerKeys: [],
+  // Exercise generic materialization independently of navigation v3 wire admission.
+  const changed: NormalizedResource = {
+    ...initial,
+    graph: {
+      ...initial.graph,
+      entities: new Map(initial.graph.entities).set(grandchildKey, {
+        key: grandchildKey,
+        kind: "session",
+        value: value("local:grandchild", "Changed grandchild"),
+      }),
     },
-    { generationId: "g", revision: 2, etag: "tag-2" },
-  );
+    version: { generationId: "g", revision: 2, etag: "tag-2" },
+  };
   const after = materializeNavigationResource(changed) as typeof before;
   const afterParent = after.sessions[0];
   const afterChild = afterParent?.children[0] as typeof beforeParent;
@@ -1214,7 +1194,7 @@ test("repeated compatibility materialization preserves root and nested identity"
   expect(after.sessions[0]?.children).toBe(before.sessions[0]?.children);
 });
 
-test("codec rejects an armed omitted count above the omitted watch total", () => {
+test("codec rejects an armed count above the watch total", () => {
   const session = entityKey(key, "1");
   const snapshotWithOmitted = (omitted: number | undefined, armed: number | undefined): NavigationSnapshot => ({
     ...liveSnapshot(),
@@ -1224,8 +1204,8 @@ test("codec rejects an armed omitted count above the omitted watch total", () =>
         kind: "session",
         value: {
           ...sessionValue("local:session"),
-          ...(omitted === undefined ? {} : { omitted_watches: omitted }),
-          ...(armed === undefined ? {} : { omitted_armed_watches: armed }),
+          ...(omitted === undefined ? {} : { watch_count: omitted }),
+          ...(armed === undefined ? {} : { armed_watch_count: armed }),
         },
       },
     ],
@@ -1605,4 +1585,77 @@ test("an archived list rejects more nested nodes than a navigation session may h
   expect(() => decodeArchivedListSessions([fanOut("a", 1000), fanOut("b", 1000)])).toThrow(
     "navigation protocol: invalid archived list",
   );
+});
+
+test("compact activity counts survive decoding and reject impossible armed totals", () => {
+  const snapshot = liveSnapshot();
+  const value = snapshot.entities[0]?.value as Record<string, unknown>;
+  Object.assign(value, {
+    running_job_count: 7,
+    running_job_command: "command-sentinel",
+    watch_count: 9,
+    armed_watch_count: 4,
+  });
+  const decoded = decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot));
+  expect(decoded.status).toBe("snapshot");
+  if (decoded.status !== "snapshot") throw new Error("snapshot expected");
+  expect(decoded.snapshot.entities[0]?.value).toMatchObject({
+    running_job_count: 7,
+    running_job_command: "command-sentinel",
+    watch_count: 9,
+    armed_watch_count: 4,
+  });
+  value.armed_watch_count = 10;
+  expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot))).toThrow();
+});
+
+test("representation 3 rejects a retained representation 2 graph", () => {
+  const snapshot = liveSnapshot();
+  const stale = JSON.parse(JSON.stringify(snapshot).replaceAll("nav3/", "nav2/"));
+  expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, stale))).toThrow();
+  expect(decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot)).status).toBe("snapshot");
+});
+
+test("v3 snapshots reject session-owned child edges while flat placement works", () => {
+  for (const fixture of schemaFixtures().filter(
+    ({ key }) => (key.kind === "section" && key.section === "live") || key.kind === "project",
+  )) {
+    expect(
+      decodeNavigationResponse(fixture.key, undefined, snapshotResponse(fixture.key, fixture.snapshot)).status,
+    ).toBe("snapshot");
+    expectContentFreeRejection(fixture.key, chainSnapshot(fixture, 2));
+  }
+});
+
+test("v3 deltas reject session-owned child edges without replacing flat authority", () => {
+  for (const fixture of schemaFixtures().filter(
+    ({ key }) => (key.kind === "section" && key.section === "live") || key.kind === "project",
+  )) {
+    const installed = snapshotResource(fixture.key, decodedSnapshot(fixture.key, fixture.snapshot));
+    const nested = chainSnapshot(fixture, 2);
+    const incoming = decodeNavigationResponse(fixture.key, base, {
+      status: "ok",
+      representation: "delta",
+      generationId: "g",
+      revision: 2,
+      etag: "tag-2",
+      base,
+      data: {
+        metadata: { ...(nested.metadata as object), revision: 2 },
+        upsertedEntities: nested.entities,
+        removedEntityKeys: fixture.snapshot.entities
+          .filter(({ key }) => !nested.entities.some((entity) => entity.key === key))
+          .map(({ key }) => key),
+        upsertedContainers: nested.containers,
+        removedContainerKeys: fixture.snapshot.containers
+          .filter(({ key }) => !nested.containers.some((container) => container.key === key))
+          .map(({ key }) => key),
+      },
+    });
+    if (incoming.status !== "delta") throw new Error("expected a delta");
+    expect(() => applyDelta(installed, incoming.delta, incoming.version)).toThrow(NavigationBaseInvalidError);
+    expect(materializeNavigationResource(installed)).toEqual(
+      materializeSnapshot(fixture.key, decodedSnapshot(fixture.key, fixture.snapshot)),
+    );
+  }
 });

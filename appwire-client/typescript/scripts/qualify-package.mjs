@@ -97,12 +97,14 @@ const session = {
 };
 const tree = { revision: 1, root: session };
 assert.equal(client.parseActivityTree(null), null);
-assert.equal(client.activityNodeID(session), "session:thread");
+assert.equal(client.activityNodeID(session), "session:ref");
+assert.equal(client.projectSessionActivity(new client.SessionActivityStore({ state: "ready" }, "ref").getSnapshot()).tree, null);
+assert.equal(client.findEntityView(new Map(), "job", "job", "ref"), undefined);
 assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
 assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
-assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
-assert.equal(client.foldRowID("session:thread"), "session:thread:inactive-fold");
+assert.equal(client.graftContinuationTree(tree, "session:ref", tree).revision, 1);
+assert.equal(client.foldRowID("session:ref"), "session:ref:inactive-fold");
 assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
 assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
 assert.equal(client.activityDelegateState({ kind: "delegate", type: "task", child: session }).failed, false);

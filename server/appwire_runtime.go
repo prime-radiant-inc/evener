@@ -378,6 +378,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
+		pending = append(pending, s.activityChangeNotificationLocked(event)...)
 		for _, item := range projected {
 			// The root's running execution is published by SetProcessingTurn
 			// and its end by finishProcessing (or the input's SESSION_END),
@@ -655,6 +656,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		projected := projection.projector.Project(event)
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
+		pending = append(pending, s.activityChangeNotificationLocked(event)...)
 		for _, item := range projected {
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
@@ -1138,6 +1140,7 @@ func (s *Server) acceptsSessionEventLocked(sessionID string) bool {
 
 func (s *Server) registerAppWireHandlers() {
 	router := s.appServer.Router()
+	s.registerSessionActivityHandlers()
 	appserver.HandleTyped(router, appwire.MethodThreadList, s.handleAppThreadList)
 	appserver.HandleTyped(router, appwire.MethodThreadRead, s.handleAppThreadRead)
 	appserver.HandleTyped(router, appwire.MethodThreadUnsubscribe, s.handleAppThreadUnsubscribe)

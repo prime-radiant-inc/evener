@@ -58,10 +58,10 @@ var navigationBeforePublicationDrainLock = func() {}
 
 var navigationPendingCleared = func() {}
 
-// navigationReadV2MissingCaptured is a deterministic test seam after ReadV2
+// navigationReadV3MissingCaptured is a deterministic test seam after ReadV3
 // observes a missing resource and releases the service lock. Production leaves
 // it as a no-op.
-var navigationReadV2MissingCaptured = func() {}
+var navigationReadV3MissingCaptured = func() {}
 
 type navigationSourceRevision struct {
 	Inputs uint64
@@ -314,7 +314,7 @@ func (s *NavigationService) Capability() *appwire.NavigationCapability {
 	if s.genErr != nil {
 		return nil
 	}
-	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence, ReadVersions: []int{2}}
+	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence, ReadVersions: []int{3}}
 }
 
 // EmptyMutation returns the current navigation generation with no invalidation
@@ -335,7 +335,7 @@ func (s *NavigationService) Stats() NavigationServiceStats {
 }
 
 // CurrentRevision is assertion-oriented. HTTP must pass a semantic, unversioned
-// key directly to readV2, which captures its version and projection in
+// key directly to readV3, which captures its version and projection in
 // one transaction; a VersionedKey then read sequence is racy.
 func (s *NavigationService) CurrentRevision(key navigationResourceKey) uint64 {
 	s.mu.Lock()
@@ -345,7 +345,7 @@ func (s *NavigationService) CurrentRevision(key navigationResourceKey) uint64 {
 
 // VersionedKey atomically obtains the current semantic resource version. It is
 // paired internally with the immutable core projection selected by
-// readV2, so a new projection's bytes cannot enter an old cache key.
+// readV3, so a new projection's bytes cannot enter an old cache key.
 func (s *NavigationService) VersionedKey(ctx context.Context, key navigationResourceKey) (NavigationResourceKey, error) {
 	_, versioned, _, err := s.versionedCore(ctx, key)
 	return versioned, err
@@ -544,19 +544,19 @@ func (s *NavigationService) aliasProjectionLocked(key navigationResourceKey, tom
 	return navigationProjection{}, 0, false
 }
 
-// readV2 captures one authoritative projection and reconciles it against an
+// readV3 captures one authoritative projection and reconciles it against an
 // exact retained base. A history miss is deliberately a normal full snapshot;
 // it is never reported as a transport error. A delta the service cannot build
 // is served the same way, with the reason on DeltaFallback for the caller to
 // log, because the snapshot has already passed full validation.
-func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKey, base *appwire.NavigationReadBase) (navigationReadResult, error) {
+func (s *NavigationService) readV3(ctx context.Context, key navigationResourceKey, base *appwire.NavigationReadBase) (navigationReadResult, error) {
 	_, versioned, projection, err := s.versionedCore(ctx, key)
 	if err != nil {
 		missing, ok := errors.AsType[navigationNotFoundError](err)
 		if !ok {
 			return navigationReadResult{}, err
 		}
-		navigationReadV2MissingCaptured()
+		navigationReadV3MissingCaptured()
 		if !missing.known {
 			return navigationReadResult{}, err
 		}
@@ -578,8 +578,8 @@ func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKe
 	}
 	view := versioned.View()
 	response := appwire.NavigationReadResponse{Status: "ok", GenerationID: generation, Revision: revision, ETag: etag}
-	limit := navigationV2ResponseLimit(versioned.Kind)
-	snapshot, snapshotData, err := fitNavigationV2Snapshot(versioned, object, response, limit)
+	limit := navigationV3ResponseLimit(versioned.Kind)
+	snapshot, snapshotData, err := fitNavigationV3Snapshot(versioned, object, response, limit)
 	if err != nil {
 		return navigationReadResult{}, err
 	}
@@ -624,7 +624,7 @@ func navigationDeltaResponse(
 	if err != nil {
 		return appwire.NavigationReadResponse{}, false, err
 	}
-	fits, err := navigationV2ResponseFits(response, limit)
+	fits, err := navigationV3ResponseFits(response, limit)
 	if err != nil {
 		return appwire.NavigationReadResponse{}, false, err
 	}

@@ -1,7 +1,7 @@
 // DOM assertions for the watch detail's delivery timeline: real props, real
 // component, positions derived only from the supplied instants and `now`.
 
-import type { NavigationWatchSummary } from "@evener/appwire-client";
+import type { EvenerWatchInfo } from "@evener/appwire-client";
 import { type ActivityWatchRow, formatClockTime, watchRowID } from "@evener/appwire-client";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
@@ -10,16 +10,22 @@ import { ActivityWatchDetail, WATCH_NO_SCHEDULE_LINE } from "./ActivityRowDetail
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
 const CREATED = "2026-08-05T12:48:00Z";
 
-function row(overrides: Partial<NavigationWatchSummary> = {}): ActivityWatchRow {
-  const watch: NavigationWatchSummary = {
+function row(overrides: Partial<EvenerWatchInfo> = {}): ActivityWatchRow {
+  const watch: EvenerWatchInfo = {
     id: "watch_1",
     source: "sess_root",
     deliveries: 0,
-    created_at: CREATED,
+    createdAt: CREATED,
     active: true,
     ...overrides,
   };
-  return { kind: "watch", id: watchRowID(watch.id), level: 1, watch, defaultDetailOpen: true };
+  return {
+    kind: "watch",
+    id: watchRowID("ref_root", watch.id),
+    level: 1,
+    watch: { ownerRef: "ref_root", receiverRef: "ref_root", state: watch.active ? "armed" : "ended", watch },
+    defaultDetailOpen: true,
+  };
 }
 
 function leftOf(element: HTMLElement): number {
@@ -33,7 +39,7 @@ describe("ActivityWatchDetail timeline", () => {
   test("draws one dot per supplied instant with non-decreasing positions inside the rail", () => {
     render(
       <ActivityWatchDetail
-        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, deliveryTimes: INSTANTS })}
         now={NOW}
       />,
     );
@@ -58,7 +64,7 @@ describe("ActivityWatchDetail timeline", () => {
         row={row({
           cadence: [{ kind: "every", seconds: 600 }],
           deliveries: 2,
-          delivery_times: ["2026-08-05T13:00:00Z", "2026-08-05T15:00:11Z"],
+          deliveryTimes: ["2026-08-05T13:00:00Z", "2026-08-05T15:00:11Z"],
         })}
         now={NOW}
       />,
@@ -77,7 +83,7 @@ describe("ActivityWatchDetail timeline", () => {
         row={row({
           cadence: [{ kind: "every", seconds: 600 }],
           deliveries: 3,
-          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:55:00Z"],
+          deliveryTimes: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:55:00Z"],
         })}
         now={NOW}
       />,
@@ -107,7 +113,7 @@ describe("ActivityWatchDetail timeline", () => {
         row={row({
           cadence: [{ kind: "every", seconds: 600 }],
           deliveries: 2,
-          delivery_times: ["2026-08-05T15:10:00Z", "2026-08-05T15:20:00Z"],
+          deliveryTimes: ["2026-08-05T15:10:00Z", "2026-08-05T15:20:00Z"],
         })}
         now={NOW}
       />,
@@ -132,7 +138,7 @@ describe("ActivityWatchDetail timeline", () => {
         row={row({
           cadence: [{ kind: "every", seconds: 600 }],
           deliveries: 1,
-          delivery_times: [new Date(NOW).toISOString()],
+          deliveryTimes: [new Date(NOW).toISOString()],
         })}
         now={NOW}
       />,
@@ -150,7 +156,7 @@ describe("ActivityWatchDetail timeline", () => {
         row={row({
           cadence: [{ kind: "every", seconds: 600 }],
           deliveries: 2,
-          delivery_times: [new Date(NOW).toISOString(), "2026-08-05T15:20:00Z"],
+          deliveryTimes: [new Date(NOW).toISOString(), "2026-08-05T15:20:00Z"],
         })}
         now={NOW}
       />,
@@ -173,7 +179,7 @@ describe("ActivityWatchDetail timeline", () => {
         row={row({
           cadence: [{ kind: "every", seconds: 600 }],
           deliveries: 3,
-          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:55:00Z"],
+          deliveryTimes: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:55:00Z"],
         })}
         now={NOW}
       />,
@@ -199,7 +205,7 @@ describe("ActivityWatchDetail timeline", () => {
         row={row({
           cadence: [{ kind: "every", seconds: 600 }],
           deliveries: 3,
-          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:50:01Z"],
+          deliveryTimes: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:50:01Z"],
         })}
         now={NOW}
       />,
@@ -216,7 +222,7 @@ describe("ActivityWatchDetail timeline", () => {
     try {
       render(
         <ActivityWatchDetail
-          row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 2, delivery_times: [same, same] })}
+          row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 2, deliveryTimes: [same, same] })}
           now={NOW}
         />,
       );
@@ -237,7 +243,7 @@ describe("ActivityWatchDetail timeline", () => {
     // bar, so it stays legible around it.
     render(
       <ActivityWatchDetail
-        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, deliveryTimes: INSTANTS })}
         now={NOW}
       />,
     );
@@ -253,7 +259,7 @@ describe("ActivityWatchDetail timeline", () => {
   test("draws a now marker at the right end and hides the marks from assistive tech", () => {
     render(
       <ActivityWatchDetail
-        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, deliveryTimes: INSTANTS })}
         now={NOW}
       />,
     );
@@ -271,7 +277,7 @@ describe("ActivityWatchDetail timeline", () => {
   test("labels the rail with the earliest retained instant and now, both local HH:MM", () => {
     render(
       <ActivityWatchDetail
-        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, deliveryTimes: INSTANTS })}
         now={NOW}
       />,
     );
@@ -284,7 +290,7 @@ describe("ActivityWatchDetail timeline", () => {
   test("caps the caption when deliveries exceed the retained instants", () => {
     render(
       <ActivityWatchDetail
-        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 214, delivery_times: INSTANTS })}
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 214, deliveryTimes: INSTANTS })}
         now={NOW}
       />,
     );
@@ -294,7 +300,7 @@ describe("ActivityWatchDetail timeline", () => {
   test("says delivered to this session when the count fits inside the ring", () => {
     render(
       <ActivityWatchDetail
-        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, deliveryTimes: INSTANTS })}
         now={NOW}
       />,
     );
@@ -304,7 +310,7 @@ describe("ActivityWatchDetail timeline", () => {
   test("an output watch gets the no-schedule line and no timeline", () => {
     render(
       <ActivityWatchDetail
-        row={row({ target: "job_ab12cd", output_match: "/DONE/", cadence: [{ kind: "output" }], deliveries: 4 })}
+        row={row({ target: "job_ab12cd", outputMatch: "/DONE/", cadence: [{ kind: "output" }], deliveries: 4 })}
         now={NOW}
       />,
     );
@@ -340,10 +346,10 @@ describe("ActivityWatchDetail timeline", () => {
       <ActivityWatchDetail
         row={row({
           target: "job_ab12cd",
-          output_match: "/DONE/",
+          outputMatch: "/DONE/",
           cadence: [{ kind: "output" }, { kind: "progress", seconds: 10 }],
           deliveries: 2,
-          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T14:30:00Z"],
+          deliveryTimes: ["2026-08-05T14:00:00Z", "2026-08-05T14:30:00Z"],
         })}
         now={NOW}
       />,
@@ -365,7 +371,7 @@ describe("ActivityWatchDetail timeline", () => {
   test("the timeline text never mentions drops or a next fire", () => {
     render(
       <ActivityWatchDetail
-        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 214, delivery_times: INSTANTS })}
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 214, deliveryTimes: INSTANTS })}
         now={NOW}
       />,
     );

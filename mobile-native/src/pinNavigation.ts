@@ -12,7 +12,7 @@ import { singleFlight } from "./singleFlight";
 export async function readPinLocation(client: ConversationClientLike, ref: string) {
 	const key = { kind: "location", ref } as const;
 	const wire = await client.request("evener/navigation/read", {
-		representationVersion: 2,
+		representationVersion: 3,
 		resource: "location",
 		ref,
 	});

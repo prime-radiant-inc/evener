@@ -69,7 +69,7 @@ func aliasRefresh(t *testing.T, service *NavigationService) hubapi.NavigationMut
 func aliasRead(t *testing.T, service *NavigationService, id string, base *appwire.NavigationReadBase) appwire.NavigationReadResponse {
 	t.Helper()
 	key := navigationResourceKey{Kind: navigationResourceLocation, ID: "local:" + id}
-	result, err := service.readV2(t.Context(), key, base)
+	result, err := service.readV3(t.Context(), key, base)
 	if err != nil {
 		t.Fatalf("read location %s: %v", id, err)
 	}

@@ -281,7 +281,7 @@ describe("following a session from a screen above it", () => {
 			ref: "local:coord",
 			includeTurns: false,
 			subscribe: true,
-			replaceSubscription: true,
+			replaceSubscription: false,
 		});
 	});
 

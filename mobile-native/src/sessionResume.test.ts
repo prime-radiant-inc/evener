@@ -88,7 +88,7 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 		this.methods.push(request.method);
 		const result = async () => {
 			if (request.method === "initialize") return initialize;
-			if (request.method === "initialized") return {};
+			if (request.method === "initialized" || request.method === "thread/unsubscribe") return {};
 			if (request.method === "thread/read") {
 				this.state.readCount += 1;
 				if (this.state.readBarrier && this.state.readCount === 2) await this.state.readBarrier;

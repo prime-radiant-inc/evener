@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, InstanceListResponse } from "@evener/appwire-client";
@@ -43,7 +44,7 @@ function boundary() {
 	const io: { request: (method: string, params: unknown) => Promise<unknown> } = {
 		request: async () => listing(["initial"]),
 	};
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: (method: string, params: unknown) => {
 			requests.push({ method, params });
 			return io.request(method, params);
@@ -54,7 +55,7 @@ function boundary() {
 				handlers.delete(handler);
 			};
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const store = createCredentialInstancesStore({
 		ownClientId: () => "native-test",
 	});
@@ -77,13 +78,13 @@ function foreignAuthChange(handlers: Set<(n: AnyNotification) => void>, provider
 // stale gate answers. It records its requests, so a re-read through it is
 // observable.
 function failingConnection(requests: { method: string; params: unknown }[]): ConversationClientLike {
-	return {
+	return Object.assign(new FakeClient("ready"), {
 		request: (method: string, params: unknown) => {
 			requests.push({ method, params });
 			return Promise.reject(new Error("offline"));
 		},
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 }
 
 it("sanitizes a credential probe reply and never publishes the wire text", async () => {
@@ -518,13 +519,13 @@ it("does not start a second read while the store's restore read is in flight", a
 	await store.getState().fetch();
 	// A replacement connection starts the store's own restore read, still out.
 	const restore = deferred<InstanceListResponse>();
-	const later = {
+	const later = Object.assign(new FakeClient("ready"), {
 		request: (method: string, params: unknown) => {
 			requests.push({ method, params });
 			return restore.promise;
 		},
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	store.connectionChanged(later, "ready");
 	expect(store.getState().loading).toBe(true);
 	const reads = requests.filter((request) => request.method === "evener/instance/list").length;
@@ -542,13 +543,13 @@ it("a refresh coalesces with an in-flight restore read and re-reads once it sett
 	io.request = async () => listing(["initial"]);
 	await store.getState().fetch();
 	const restore = deferred<InstanceListResponse>();
-	const later = {
+	const later = Object.assign(new FakeClient("ready"), {
 		request: (method: string, params: unknown) => {
 			requests.push({ method, params });
 			return restore.promise;
 		},
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	store.connectionChanged(later, "ready");
 	expect(store.getState().loading).toBe(true);
 	const reads = requests.filter((request) => request.method === "evener/instance/list").length;

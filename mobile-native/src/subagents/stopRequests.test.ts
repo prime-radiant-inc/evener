@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ActivityDelegate } from "@evener/appwire-client";
+import { activityNodeID, type ActivityDelegate } from "@evener/appwire-client";
 import { memoryStorage } from "../syncStringStorageTestUtils";
 import { forgetStopRequests, StopRequests } from "./stopRequests";
 import { flattenSubagents, type SubagentRow } from "./subagentModel";
@@ -93,8 +93,9 @@ describe("stop requests you sent a coordinator (spec 9, ruling 10)", () => {
 		for (let index = 0; index < 205; index += 1) requests.request("local:coord", row(d(`s${index}`)), index);
 		const stored = JSON.parse(storage.values.get("evener.native.subagent-stops.hub-1") as string);
 		expect(Object.keys(stored)).toHaveLength(200);
-		expect(stored.s204).toBeDefined();
-		expect(stored.s0).toBeUndefined();
+		const reloaded = new StopRequests(storage, "hub-1");
+		expect(reloaded.view(row(d("s204")))).toBe("requested");
+		expect(reloaded.view(row(d("s0")))).toBeNull();
 	});
 
 	it("tells subscribers when something changes", () => {
@@ -218,5 +219,47 @@ describe("a stop you sent directly (S6)", () => {
 		const requests = new StopRequests(memoryStorage(), "hub-1");
 		requests.request("local:coord", row(working), 1000);
 		expect(requests.direct(row(working))).toBe(false);
+	});
+});
+
+describe("stop evidence for colliding delegate IDs", () => {
+	const a = d("collision", { childRef: "remote:child-a", rootRef: "remote:root-a" });
+	const b = d("collision", { childRef: "remote:child-b", rootRef: "remote:root-b" });
+	it("keeps concurrently requested rows separate through reload and reconciliation", () => {
+		const storage = memoryStorage();
+		const requests = new StopRequests(storage, "hub-1");
+		requests.request("remote:root-a", row(a), 1000, { direct: true });
+		expect(requests.view(row(b))).toBeNull();
+		expect(requests.direct(row(b))).toBe(false);
+		requests.request("remote:root-b", row(b), 2000);
+		const reloaded = new StopRequests(storage, "hub-1");
+		expect(reloaded.view(row(a))).toBe("requested");
+		expect(reloaded.direct(row(a))).toBe(true);
+		expect(reloaded.view(row(b))).toBe("requested");
+		expect(reloaded.direct(row(b))).toBe(false);
+		const endedA = row({ ...a, terminal: true, outcome: "cancelled" });
+		expect(reloaded.reconcile("remote:root-b", [endedA])).toEqual([]);
+		expect(reloaded.reconcile("remote:root-a", [endedA])).toEqual([endedA]);
+		expect(reloaded.view(endedA)).toBe("stopped");
+		expect(reloaded.view(row(b))).toBe("requested");
+		const endedB = row({ ...b, terminal: true, outcome: "completed" });
+		expect(reloaded.reconcile("remote:root-b", [endedB])).toEqual([]);
+		const final = new StopRequests(storage, "hub-1");
+		expect(final.view(endedA)).toBe("stopped");
+		expect(final.view(row(b))).toBeNull();
+	});
+	it("does not attribute unidentified stored bare IDs to a current row", () => {
+		const key = "evener.native.subagent-stops.hub-1";
+		const record = { coordinatorRef: "remote:root-a", requestedAt: 1000, direct: true };
+		const storage = memoryStorage(
+			new Map([
+				[key, JSON.stringify({ collision: record, [activityNodeID({ kind: "delegate", delegate: b })]: record })],
+			]),
+		);
+		const requests = new StopRequests(storage, "hub-1");
+		expect(requests.view(row(a))).toBeNull();
+		expect(requests.view(row(b))).toBeNull();
+		expect(requests.direct(row(b))).toBe(false);
+		expect(requests.reconcile("remote:root-a", [row(a), row(b)])).toEqual([]);
 	});
 });

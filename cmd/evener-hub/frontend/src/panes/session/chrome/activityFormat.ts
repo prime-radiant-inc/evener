@@ -8,7 +8,10 @@ import { type ActivityUsage, formatTokenCount, isActivityFailure } from "@evener
 // the cluster instead of rendering ↑0 ↓0.
 export function formatUsagePair(usage: ActivityUsage | undefined): string | null {
   if (!usage) return null;
-  return `↑${formatTokenCount(usage.inputTokens)} ↓${formatTokenCount(usage.outputTokens)}`;
+  const parts = [];
+  if (usage.inputTokens !== undefined) parts.push(`↑${formatTokenCount(usage.inputTokens)}`);
+  if (usage.outputTokens !== undefined) parts.push(`↓${formatTokenCount(usage.outputTokens)}`);
+  return parts.length ? parts.join(" ") : null;
 }
 
 // formatQuietAge buckets a millisecond age into the rail's compact stamps

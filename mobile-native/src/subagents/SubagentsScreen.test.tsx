@@ -1,3 +1,4 @@
+import { installActivityFixture } from "./sessionActivityTestUtils";
 // The Subagents list (spec 9): a coordinator's subagents, read whole from
 // evener/jobs/list, in failed, running and done sections, with the strip, the
 // chips, search, and each row's why and last line.
@@ -119,7 +120,7 @@ const trees: ReactTestRenderer[] = [];
 
 function hub(pages: (continuation: string | undefined) => unknown) {
 	const next = new FakeClient("ready");
-	next.on("evener/jobs/list", async (params) => ({ data: await pages(params.continuation) }));
+	installActivityFixture(next, pages);
 	next.on(
 		"thread/read",
 		() => ({ thread: { id: "coord", modelProvider: "anthropic/claude-opus", status: { type: "active" } } }) as never,
@@ -152,8 +153,8 @@ async function settle() {
 async function treeUpdatedAndRead(hubClient: FakeClient) {
 	vi.useFakeTimers();
 	hubClient.emitNotification({
-		method: "evener/jobs/treeUpdated",
-		params: { threadId: "coord", ref: "local:coord", revision: 2 },
+		method: "evener/thread/activity/changed",
+		params: { threadId: "coord", sessionId: "coord", ref: "local:coord", resources: ["summary", "delegates", "jobs"] },
 	} as never);
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
@@ -272,7 +273,9 @@ function treeWithJobs() {
 				endedAt: ago(MIN),
 			}),
 			runningOne("solo", "Only one", {
-				child: session("local:solo", "Only one", [shellJob("j-docs", "Serving the docs")]),
+				child: session("local:solo", "Only one", [
+					shellJob("j-docs", "Serving the docs", { ownerRef: "local:solo", ownerSessionId: "solo" }),
+				]),
 			}),
 		]),
 	};
@@ -291,7 +294,7 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	const labels = tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Shell job,"));
 	expect(new Set(labels.map((node) => node.props.accessibilityLabel))).toEqual(
 		new Set([
-			`Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`,
+			`Shell job, npm run lint, Command failed, 2 minutes, under local:coord`,
 			"Shell job, Serving the docs, running, 3 minutes, under Only one",
 		]),
 	);
@@ -317,12 +320,11 @@ it("opens a shell job's detail over the list", async () => {
 	client = hub(() => treeWithJobs());
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	act(() =>
-		pressable(tree, `Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`)?.props.onPress(),
-	);
+	act(() => pressable(tree, `Shell job, npm run lint, Command failed, 2 minutes, under local:coord`)?.props.onPress());
 	expect(navigation.push).toHaveBeenCalledWith("ShellJob", {
 		hubId: "hub-1",
 		jobId: "j-lint",
+		ownerRef: "local:coord",
 		title: "npm run lint",
 		coordinator: COORDINATOR,
 	});
@@ -378,7 +380,7 @@ it("follows the coordinator when it comes into focus", async () => {
 	expect(client.calls.find((call) => call.method === "thread/read")?.params).toMatchObject({
 		ref: "local:coord",
 		subscribe: true,
-		replaceSubscription: true,
+		replaceSubscription: false,
 	});
 });
 
@@ -430,7 +432,13 @@ it("follows the coordinator on a new client when the connection changes under it
 it("shows three quiet rows until the first read answers, and never offers Retry, Refresh or Reconnect", async () => {
 	let answer: (value: unknown) => void = () => {};
 	client = new FakeClient("ready");
-	client.on("evener/jobs/list", () => new Promise((resolve) => (answer = (tree) => resolve({ data: tree }))) as never);
+	installActivityFixture(
+		client,
+		() =>
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+	);
 	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
@@ -456,8 +464,9 @@ it("says the count is partial and whose subagents are missing when a later page 
 	});
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(headerTitle()).toBe("Activity · 2+ Get PR 2138 Test Clean");
-	expect(text(tree)).toContain("Some activity under “Get PR 2138 Test Clean” isn't listed.");
+	expect(headerTitle()).toBe("Activity · … Get PR 2138 Test Clean");
+	expect(text(tree)).not.toContain("No subagents or shell jobs yet.");
+	expect(tree.root.findByType("FlatList" as never).props.onEndReached).toBeTypeOf("function");
 });
 
 it.each([
@@ -469,11 +478,11 @@ it.each([
 	[
 		"is shut down",
 		new WireError("thread not found: coord", -32603, { evenerErrorInfo: "sessionUnavailable" }),
-		"This session is shut down, so its activity can't be listed.",
+		"This session can't list its activity.",
 	],
 ])("says so when the session %s, and offers nothing to press", async (_name, error, words) => {
 	client = new FakeClient("ready");
-	client.on("evener/jobs/list", () => Promise.reject(error));
+	installActivityFixture(client, () => Promise.reject(error));
 	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
@@ -501,7 +510,7 @@ it("keeps the search field while it has words, even once the list shrinks", asyn
 
 it("says why it can't list them when the read fails", async () => {
 	client = new FakeClient("ready");
-	client.on("evener/jobs/list", () => Promise.reject(new Error("boom")));
+	installActivityFixture(client, () => Promise.reject(new Error("boom")));
 	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
@@ -563,4 +572,71 @@ it("toasts a stop recorded after the tree already shows it", async () => {
 	expect(tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text)).toEqual([
 		"“Fix race in tree settle” stopped",
 	]);
+});
+
+it("keeps authoritative counts while visible end-of-list demand loads the next subtree page", async () => {
+	const fixture = { revision: 1, root: session("local:coord", COORDINATOR.title, [runningOne("first", "First task")]) };
+	client = hub(() => fixture);
+	const context = {
+		ref: "local:coord",
+		sessionId: "coord",
+		rootRef: "local:coord",
+		ancestors: [],
+		ancestryKnown: true,
+		epoch: "pages",
+		availability: "retained",
+	};
+	const count = { known: true, total: 501, active: 501, failed: 0, completed: 0 };
+	client.on("evener/thread/activity/read", ({ scope }) => ({
+		context,
+		scope: scope ?? "session",
+		delegates: count,
+		jobs: { ...count, total: 0, active: 0 },
+		watches: { ...count, total: 0, active: 0 },
+	}));
+	let admit = () => {};
+	const admitted = new Promise<void>((resolve) => {
+		admit = resolve;
+	});
+	client.on("evener/thread/delegates/list", (params) => {
+		if (params.cursor) admit();
+		const id = params.cursor ? "second" : "first";
+		return {
+			context,
+			scope: params.scope ?? "session",
+			delegates: [
+				{
+					delegateId: id,
+					ownerRef: "local:coord",
+					rootRef: "local:coord",
+					childRef: `local:${id}`,
+					type: "delegate",
+					task: id,
+					description: `${id} task`,
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					terminal: false,
+					resumable: false,
+				},
+			],
+			page: { complete: false, issues: [], nextCursor: params.cursor ? "later" : "next" },
+		};
+	});
+	harness.connection = screenConnection(client, "ready");
+	const screen = await mount();
+	expect(headerTitle()).toBe("Activity · 501 Get PR 2138 Test Clean");
+	expect(client.calls.filter((call) => call.method === "evener/thread/delegates/list")).toHaveLength(1);
+	await act(async () => {
+		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
+		await admitted;
+	});
+	expect(
+		client.calls.filter((call) => call.method === "evener/thread/delegates/list").map((call) => call.params),
+	).toEqual([
+		{ ref: "local:coord", scope: "subtree" },
+		{ ref: "local:coord", scope: "subtree", cursor: "next" },
+	]);
+	expect(headerTitle()).toBe("Activity · 501 Get PR 2138 Test Clean");
+	expect(text(screen)).toContain("second task");
 });

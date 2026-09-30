@@ -1,12 +1,13 @@
-// The Tasks tab: the navigation summary line (done/total and the current
-// task) plus an Open affordance into the existing tasks pane. Embedding the
-// full TasksPanelBody would force a thread subscription for a glance surface;
-// the pane is one click away and already does it right.
+// The Tasks tab: the task list itself, unfolded in the sidebar - the same
+// TasksPanelBody the tasks pane renders, fed by the shared thread-model
+// subscription (stores/useThreadModel.ts). The navigation summary line rides
+// on top when the wire carries one. No pane affordance: the tab IS where
+// tasks live now.
 
-import { Button } from "../../widgets";
+import { TasksPanelBody } from "../../panes/session/chrome/TasksPanel";
+import { useThreadModel } from "../../stores/useThreadModel";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ActivityScope } from "../statusbar/statusScope";
-import { workspaceStore } from "../workspace";
 import styles from "./activitybar.module.css";
 
 const CLASS = {
@@ -16,26 +17,20 @@ const CLASS = {
 };
 
 export function TasksTab({ scope }: { scope: ActivityScope }) {
+  const ref = scope.leaf.ref;
+  const model = useThreadModel(ref);
   const tasks = scope.leaf.tasks;
-  if (tasks === undefined || tasks.total === 0) {
-    return <span className={CLASS.emptyNote}>No task list for this session.</span>;
+  if (!model) {
+    return <span className={CLASS.emptyNote}>Loading tasks…</span>;
   }
   return (
     <div className={CLASS.stack}>
-      <span className={CLASS.rowMeta}>
-        {tasks.done} of {tasks.total} done{tasks.current ? ` · now: ${tasks.current}` : ""}
-      </span>
-      <div>
-        <Button
-          variant="quiet"
-          size="sm"
-          onClick={() =>
-            workspaceStore.getState().openPane("sessionTasks", { ref: scope.leaf.ref }, { slot: "secondary" })
-          }
-        >
-          Open tasks
-        </Button>
-      </div>
+      {tasks !== undefined && tasks.total > 0 ? (
+        <span className={CLASS.rowMeta}>
+          {tasks.done} of {tasks.total} done{tasks.current ? ` · now: ${tasks.current}` : ""}
+        </span>
+      ) : null}
+      <TasksPanelBody sessionRef={ref} model={model} />
     </div>
   );
 }

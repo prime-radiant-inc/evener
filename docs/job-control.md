@@ -12,6 +12,12 @@ identified by `job_...`. A **delegate** is a durable child conversation owned by
 the root delegate-tree controller and identified by `dlg_...`. They share
 orientation tools without sharing lifecycle authority or identity.
 
+The [session activity APIs](product/session-activity.md) expose scoped, paged
+reads of delegates, shell jobs and receiver-owned watches for clients. They
+project the authorities in this document; they do not start, stop, resume or
+acknowledge work. Navigation carries compact summaries, while activity details
+come from those session reads.
+
 Two public resource types are in scope:
 
 - **`shell`**: a background-capable invocation of the existing shell/bash command tool.

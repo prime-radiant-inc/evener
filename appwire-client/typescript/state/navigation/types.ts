@@ -54,7 +54,7 @@ function canonicalNavigationLimit(limit: number, maximum: number): number {
 
 export function canonicalResourceKey(key: ResourceKey): ResourceKey {
   if (key.kind !== "location" || key.ref.includes(":")) return key;
-  return { kind: "location", ref: `local:${key.ref}` };
+  return { ...key, ref: `local:${key.ref}` };
 }
 
 /** The resource a read's parameters identify. The inverse of the params a
@@ -144,7 +144,7 @@ export function navigationViewScope(key: ResourceKey): string {
       id = key.ref;
       break;
   }
-  return `nav2/${kind}/${rawBase64URL(id)}/${rawBase64URL(sectionID)}/${rawBase64URL(projectKey)}/${rawBase64URL(tier)}/${offset}/${limit}`;
+  return `nav3/${kind}/${rawBase64URL(id)}/${rawBase64URL(sectionID)}/${rawBase64URL(projectKey)}/${rawBase64URL(tier)}/${offset}/${limit}`;
 }
 
 export function navigationRootContainerKey(key: ResourceKey, slot: string): string {
@@ -180,7 +180,7 @@ export interface NavigationResponse<T = unknown> {
   revision: number;
   etag: string;
   data?: T | null;
-  v2?: DecodedNavigationResponse;
+  v3?: DecodedNavigationResponse;
   normalized?: NormalizedResource;
 }
 export type NavigationRequest<T = unknown> = (

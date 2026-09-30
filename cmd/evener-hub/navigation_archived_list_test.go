@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -378,4 +379,172 @@ func TestParseNavigationArchivedListParamsLimitErrorNamesAcceptedRange(t *testin
 	if _, err := parseNavigationArchivedListParams(appwire.ArchivedListParams{Catalog: "projects", ProjectKey: "project", Limit: 0}); err != nil {
 		t.Fatalf("limit 0 must be accepted as absent: %v", err)
 	}
+}
+
+func TestHubArchivedListPreservesForkOriginalsFromAuthoritativeTree(t *testing.T) {
+	now := testNavigationNow()
+	old := now.Add(-40 * 24 * time.Hour)
+	env := schema.EnvironmentInfo{WorkingDir: "/projects/fork"}
+	tree := hubcore.BuildTreeAt([]schema.SessionMeta{
+		{ID: "orig", ForkLabel: "before edit", CreatedAt: old, UpdatedAt: old, EnvInfo: env},
+		{ID: "cont", ParentSessionID: "orig", CreatedAt: old, UpdatedAt: old, EnvInfo: env},
+	}, nil, nil, now)
+	if len(tree.ArchivedProjects) != 1 || len(tree.ArchivedProjects[0].Archived) != 1 {
+		t.Fatalf("authoritative archived tree: %+v", tree)
+	}
+	project := &tree.ArchivedProjects[0]
+	row := &project.Archived[0]
+	if row.ID != "cont" || len(row.Children) != 1 || row.Children[0].ID != "orig" || row.Children[0].Kind != "fork" {
+		t.Fatalf("authoritative fork ownership: %+v", row)
+	}
+	row.Children = append(row.Children, hubcore.TreeNode{ID: "delegate", Kind: "subagent", State: "ended"})
+	source := newTestNavigationSource(now)
+	source.inputs.Tree = tree
+	service := newTestNavigationService(t, source)
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerArchivedListHandler(server, service)
+	response, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "archived_projects", ProjectKey: project.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []hubapi.NavigationSessionSummary
+	if err := json.Unmarshal(response.Sessions, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Ref != "local:cont" || len(rows[0].Children) != 1 || rows[0].Children[0].Ref != "local:orig" || rows[0].Children[0].Kind != "fork" {
+		t.Fatalf("archived API loses fork-only discovery: %+v", rows)
+	}
+	if response.Total != 1 {
+		t.Fatalf("total counts top-level sessions: %d", response.Total)
+	}
+}
+
+func TestArchivedForkOriginalsRespectTraversalAndEnvelopeBounds(t *testing.T) {
+	children := make([]hubcore.TreeNode, maxNavigationNodes+1)
+	for i := range children {
+		children[i] = hubcore.TreeNode{ID: fmt.Sprintf("original-%04d", i), Kind: "fork", State: "ended", Title: strings.Repeat("界", maxNavigationTitleRunes), LastMessage: strings.Repeat("界", appwire.MaxMessageExcerptRunes)}
+	}
+	first := hubcore.TreeNode{ID: "continuation", Kind: "session", State: "ended", UpdatedAt: time.Unix(200, 0), Children: children}
+	second := hubcore.TreeNode{ID: "older", Kind: "session", State: "ended", UpdatedAt: time.Unix(100, 0)}
+	p := archivedProjection(t, hubcore.TreeProject{Key: "project", Archived: []hubcore.TreeNode{first, second}})
+	page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: navigationResourceProjects, ProjectKey: "project", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Sessions) == 0 {
+		t.Fatal("bounded fork page contains no session")
+	}
+	if len(page.Sessions) != 1 || page.Sessions[0].Ref != "local:continuation" || len(page.Sessions[0].Children) == 0 || page.Total != 2 || page.NextCursor == "" {
+		t.Fatalf("bounded fork page lost progress: rows=%d children=%d total=%d cursor=%q", len(page.Sessions), len(page.Sessions[0].Children), page.Total, page.NextCursor)
+	}
+	if len(page.Sessions[0].Children) >= maxNavigationNodes-1 {
+		t.Fatal("oversized fork page did not apply the byte budget")
+	}
+	assertArchivedForkAccounting(t, page.Sessions, 1+len(children))
+	if nodes := navigationSummaryNodes(page.Sessions); nodes > maxNavigationNodes {
+		t.Fatalf("nodes=%d", nodes)
+	}
+	if size := navigationEncodedSize(page); size > maxNavigationResponseBytes {
+		t.Fatalf("bytes=%d", size)
+	}
+	after, err := decodeArchivedCursor(page.NextCursor, navigationResourceProjects, "project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := p.ArchivedList(navigationArchivedListRequest{Catalog: navigationResourceProjects, ProjectKey: "project", Limit: 50, After: &after})
+	if err != nil || len(next.Sessions) != 1 || next.Sessions[0].Ref != "local:older" || next.NextCursor != "" {
+		t.Fatalf("continuation=%+v err=%v", next, err)
+	}
+
+	deep := hubcore.TreeNode{ID: "deepest", Kind: "fork", State: "ended"}
+	for i := range maxNavigationDepth + 5 {
+		deep = hubcore.TreeNode{ID: fmt.Sprintf("fork-%d", i), Kind: "fork", State: "ended", Children: []hubcore.TreeNode{deep}}
+	}
+	bounded := navigationProjector{projection: p}
+	summary, ok := bounded.projectArchivedNode(deep, 1)
+	if !ok || !bounded.truncated || navigationSummaryNodes(hubapi.NavigationArray[hubapi.NavigationSessionSummary]{summary}) != maxNavigationDepth {
+		t.Fatalf("depth bound: ok=%v truncated=%v depth=%d", ok, bounded.truncated, bounded.depth)
+	}
+}
+
+func assertArchivedForkAccounting(t *testing.T, rows []hubapi.NavigationSessionSummary, want int) {
+	t.Helper()
+	var visit func([]hubapi.NavigationSessionSummary) int
+	visit = func(rows []hubapi.NavigationSessionSummary) int {
+		weight := 0
+		for _, row := range rows {
+			if row.Kind == "subagent" || row.MoreSubagents != 0 {
+				t.Fatalf("archived fork accounting includes activity: %+v", row)
+			}
+			weight += 1 + row.OmittedDescendants + visit(row.Children)
+		}
+		return weight
+	}
+	if got := visit(rows); got != want {
+		t.Fatalf("archived fork accounting: published=%d accounted=%d want=%d", navigationSummaryNodes(rows), got, want)
+	}
+}
+
+func TestArchivedForkDepthCapAccountsForOmittedOriginals(t *testing.T) {
+	now := testNavigationNow()
+	old := now.Add(-40 * 24 * time.Hour)
+	env := schema.EnvironmentInfo{WorkingDir: "/projects/long-fork"}
+	var metas []schema.SessionMeta
+	for i := range maxNavigationDepth + 5 {
+		meta := schema.SessionMeta{ID: fmt.Sprintf("fork-%02d", i), CreatedAt: old, UpdatedAt: old, EnvInfo: env}
+		if i > 0 {
+			meta.ParentSessionID = fmt.Sprintf("fork-%02d", i-1)
+		}
+		if i < maxNavigationDepth+4 {
+			meta.ForkLabel = "before edit"
+		}
+		metas = append(metas, meta)
+	}
+	tree := hubcore.BuildTreeAt(metas, nil, nil, now)
+	if len(tree.ArchivedProjects) != 1 || len(tree.ArchivedProjects[0].Archived) != 1 {
+		t.Fatalf("authoritative archived tree: %+v", tree)
+	}
+	project := &tree.ArchivedProjects[0]
+	if nodes := countTreeNodes(project.Archived); nodes != len(metas) {
+		t.Fatalf("authoritative fork nodes=%d want=%d", nodes, len(metas))
+	}
+	// A delegate branch beyond the cutoff is outside this archived discovery,
+	// including a fork original that belongs to that delegate conversation.
+	tail := &project.Archived[0]
+	for range maxNavigationDepth {
+		tail = &tail.Children[0]
+	}
+	tail.Children = append(tail.Children, hubcore.TreeNode{ID: "delegate", Kind: "subagent", Children: []hubcore.TreeNode{{ID: "delegate-original", Kind: "fork"}}})
+	p, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Revision: 1, Tree: tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: navigationResourceArchivedProjects, ProjectKey: project.Key, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodes := navigationSummaryNodes(page.Sessions); nodes != maxNavigationDepth || page.NextCursor != "" || page.Total != 1 {
+		t.Fatalf("depth page: nodes=%d cursor=%q total=%d", nodes, page.NextCursor, page.Total)
+	}
+	assertArchivedForkAccounting(t, page.Sessions, len(metas))
+}
+
+func TestArchivedForkNodeBudgetAccountsForOmittedOriginals(t *testing.T) {
+	const sourceForks = maxNavigationNodes + 5
+	children := make([]hubcore.TreeNode, sourceForks)
+	for i := range children {
+		children[i] = hubcore.TreeNode{ID: fmt.Sprintf("fork-%04d", i), Kind: "fork", State: "ended"}
+	}
+	// An activity branch after node admission has been exhausted is not an
+	// omitted fork original.
+	children = append(children, hubcore.TreeNode{ID: "delegate", Kind: "subagent", Children: []hubcore.TreeNode{{ID: "delegate-original", Kind: "fork"}}})
+	p := archivedProjection(t, hubcore.TreeProject{Key: "project", Archived: []hubcore.TreeNode{{ID: "continuation", Kind: "session", State: "ended", Children: children}}})
+	page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: navigationResourceProjects, ProjectKey: "project", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodes := navigationSummaryNodes(page.Sessions); nodes != maxNavigationNodes || page.NextCursor != "" || page.Total != 1 {
+		t.Fatalf("node page: nodes=%d cursor=%q total=%d", nodes, page.NextCursor, page.Total)
+	}
+	assertArchivedForkAccounting(t, page.Sessions, 1+sourceForks)
 }

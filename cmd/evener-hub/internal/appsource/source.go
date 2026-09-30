@@ -41,6 +41,11 @@ type Source interface {
 	ListModels(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error)
 	ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error)
 	ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error)
+	ThreadActivityRead(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error)
+	ThreadDelegatesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error)
+	ThreadJobsList(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error)
+	ThreadWatchesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error)
+
 	JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error)
 	JobGet(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error)
 	SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error)

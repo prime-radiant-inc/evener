@@ -20,6 +20,14 @@ if (contextMarker.__evenerTestContextInUse) {
 }
 contextMarker.__evenerTestContextInUse = true;
 
+// jsdom never implemented Element.scrollIntoView; production code calls it on
+// real browsers (the rail's reveal scrolls the revealed row to center). The
+// scroll is presentation, never load-bearing, so a no-op keeps tests honest
+// without masking behavior.
+if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 // Guarded here at module scope, before the test file loads, so a file that
 // captures console.error at its own module scope captures the guarded method.
 // Each test's teardown below runs after all of that test's afterEach hooks, and

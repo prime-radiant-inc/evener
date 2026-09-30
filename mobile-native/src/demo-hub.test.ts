@@ -1,7 +1,7 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import type { NavigationReadParams, WebSocketLike } from "@evener/appwire-client";
+import type { NavigationReadParams, WebSocketLike, SessionDelegatesResponse } from "@evener/appwire-client";
 import { type MutationOptimisticRecord, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
@@ -13,7 +13,12 @@ import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } 
 import { DEMO_MODEL_LIST } from "./dev/demoSetup.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
-import { parseActivityTree, parseJobLogTail } from "@evener/appwire-client";
+import {
+	SessionActivityStore,
+	projectSessionActivity,
+	parseActivityTree,
+	parseJobLogTail,
+} from "@evener/appwire-client";
 import { readDocFile } from "@evener/appwire-client/docContent";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
 import { nativeDocPort } from "./nativeDocPort";
@@ -37,6 +42,201 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			await hub.close();
 		}
 	}
+
+	it("serves typed direct and subtree activity with stable paged identities over a real socket", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const summary = await client.request("evener/thread/activity/read", { ref: PR2138, scope: "subtree" });
+			expect(summary).toMatchObject({
+				context: {
+					ref: PR2138,
+					sessionId: demoSessionId("s-pr2138"),
+					rootRef: PR2138,
+					ancestryKnown: true,
+					availability: "live",
+					ancestors: [],
+				},
+				scope: "subtree",
+				delegates: { known: true, total: 55 },
+			});
+			expect(summary.context.epoch).not.toBe("");
+			const direct = await client.request("evener/thread/delegates/list", { ref: PR2138, limit: 200 });
+			expect(direct.scope).toBe("session");
+			expect(direct.delegates).toHaveLength(54);
+			const rows: SessionDelegatesResponse["delegates"] = [];
+			let cursor: string | undefined;
+			do {
+				const page = await client.request("evener/thread/delegates/list", {
+					ref: PR2138,
+					scope: "subtree",
+					cursor,
+					limit: 7,
+				});
+				expect(page.context).toEqual(summary.context);
+				expect(page.page.issues).toEqual([]);
+				rows.push(...page.delegates);
+				cursor = page.page.nextCursor;
+				if (page.page.complete) expect(cursor).toBeUndefined();
+			} while (cursor);
+			expect(rows).toHaveLength(55);
+			expect(new Set(rows.map((row) => row.delegateId)).size).toBe(55);
+			const failedDelegate = rows.find((row) => row.outcome === "failed");
+			if (!failedDelegate) throw new Error("missing failed delegate fixture");
+			expect(failedDelegate).toMatchObject({ terminal: true, lifecycle: "idle", status: "idle", outcome: "failed" });
+			expect(failedDelegate.reason).not.toBe("");
+			const parent = rows.find((row) => row.delegateId === "g-settle");
+			if (!parent) throw new Error("missing parent fixture");
+			const selected = await client.request("evener/thread/delegates/list", { ref: parent.childRef });
+			expect(selected.context).toMatchObject({
+				ref: parent.childRef,
+				sessionId: demoSessionId("g-settle"),
+				rootRef: PR2138,
+				parentRef: PR2138,
+				ancestryKnown: true,
+				ancestors: [{ ref: PR2138, sessionId: demoSessionId("s-pr2138") }],
+			});
+			expect(selected.delegates).toHaveLength(1);
+			expect(selected.delegates[0]).toMatchObject({
+				delegateId: "g-settle-1",
+				ownerRef: parent.childRef,
+				rootRef: PR2138,
+				parentDelegateId: "g-settle",
+			});
+			const ownJobs = await client.request("evener/thread/jobs/list", { ref: PR2138 });
+			expect(ownJobs.jobs.map((job) => job.command)).toEqual(["go build ./..."]);
+			expect(ownJobs.jobs[0]).toMatchObject({
+				ownerRef: PR2138,
+				ownerSessionId: demoSessionId("s-pr2138"),
+				transcriptRef: PR2138,
+			});
+			const jobs = await client.request("evener/thread/jobs/list", { ref: PR2138, scope: "subtree", limit: 200 });
+			expect(jobs.jobs.length).toBeGreaterThan(ownJobs.jobs.length);
+			const failed = jobs.jobs.find((job) => job.status === "command_exited_nonzero");
+			if (!failed) throw new Error("missing failed shell fixture");
+			expect(failed.ownerRef).not.toBe(PR2138);
+			await expect(
+				client.request("evener/jobs/output", { ref: failed.ownerRef, jobId: failed.jobId }),
+			).resolves.toHaveProperty("data");
+			const watches = await client.request("evener/thread/watches/list", { ref: parent.childRef });
+			expect(watches).toMatchObject({
+				context: selected.context,
+				scope: "session",
+				watches: [],
+				page: { complete: true, issues: [] },
+			});
+		});
+	});
+
+	it("loads the typed demo through the shared observed store and projects all pages", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const store = new SessionActivityStore(client, PR2138, { scope: "subtree" });
+			store.start();
+			const releases = [store.observe("delegates"), store.observe("jobs"), store.observe("watches")];
+			try {
+				await Promise.all([
+					store.refresh("summary"),
+					store.load("delegates"),
+					store.load("jobs"),
+					store.load("watches"),
+				]);
+				expect(store.getSnapshot().summary?.delegates.total).toBe(55);
+				expect(store.getSnapshot().delegates.rows).toHaveLength(50);
+				expect(store.getSnapshot().delegates.hasMore).toBe(true);
+				await store.loadMore("delegates");
+				const snapshot = store.getSnapshot();
+				expect(snapshot.delegates.rows).toHaveLength(55);
+				expect(snapshot.delegates.complete).toBe(true);
+				for (const resource of [snapshot.summaryState, snapshot.delegates, snapshot.jobs, snapshot.watches])
+					expect(resource.error).toBeNull();
+				const presentation = projectSessionActivity(snapshot);
+				expect(presentation.complete).toBe(true);
+				expect(presentation.tree?.root.ref).toBe(PR2138);
+				expect(presentation.tree?.root.entries.filter((entry) => entry.kind === "delegate")).toHaveLength(54);
+			} finally {
+				for (const release of releases) release();
+				store.dispose();
+			}
+		});
+	});
+
+	it("keeps a coordinator's running job consistent with its compact navigation summary", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const ref = `local:${demoSessionId("s-tasklist")}`;
+			const summary = await client.request("evener/thread/activity/read", { ref });
+			const jobs = await client.request("evener/thread/jobs/list", { ref });
+			expect(summary.jobs).toMatchObject({ known: true, total: 1, active: 1 });
+			expect(jobs.jobs).toHaveLength(1);
+			expect(jobs.jobs[0]).toMatchObject({
+				ownerRef: ref,
+				transcriptRef: ref,
+				command: "go test ./cmd/evener-hub/...",
+				terminal: false,
+			});
+		});
+	});
+
+	it("binds cursors to the selected resource, scope and ref without changing page membership", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const first = await client.request("evener/thread/delegates/list", { ref: PR2138, scope: "subtree", limit: 1 });
+			const cursor = first.page.nextCursor;
+			if (!cursor) throw new Error("missing demo continuation");
+			const rest = await client.request("evener/thread/delegates/list", {
+				ref: PR2138,
+				scope: "subtree",
+				cursor,
+				limit: 200,
+			});
+			expect(rest.delegates).toHaveLength(54);
+			expect(rest.page.complete).toBe(true);
+			expect(new Set([...first.delegates, ...rest.delegates].map((row) => row.delegateId)).size).toBe(55);
+			const invalid = { code: -32602, data: { evenerErrorInfo: "invalidParams" } };
+			await expect(
+				client.request("evener/thread/jobs/list", { ref: PR2138, scope: "subtree", cursor }),
+			).rejects.toMatchObject(invalid);
+			await expect(client.request("evener/thread/delegates/list", { ref: PR2138, cursor })).rejects.toMatchObject(
+				invalid,
+			);
+			await expect(
+				client.request("evener/thread/delegates/list", {
+					ref: first.delegates[0]?.childRef ?? "",
+					scope: "subtree",
+					cursor,
+				}),
+			).rejects.toMatchObject(invalid);
+			await expect(
+				client.request("evener/thread/delegates/list", { ref: PR2138, cursor: "malformed" }),
+			).rejects.toMatchObject(invalid);
+			await expect(client.request("evener/thread/delegates/list", { ref: PR2138, limit: -1 })).rejects.toMatchObject(
+				invalid,
+			);
+			await expect(client.request("evener/thread/activity/read", { ref: "local:missing" })).rejects.toMatchObject({
+				code: -32602,
+				data: { evenerErrorInfo: "resourceNotFound" },
+			});
+		});
+	});
+
+	it("preserves remote selected identities and retained availability", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const ref = fleetSessionRef("s-wasm");
+			expect(ref).not.toBe(`local:${demoSessionId("s-wasm")}`);
+			const summary = await client.request("evener/thread/activity/read", { ref, scope: "subtree" });
+			const jobs = await client.request("evener/thread/jobs/list", { ref, scope: "subtree" });
+			expect(summary.context).toMatchObject({
+				ref,
+				rootRef: ref,
+				sessionId: demoSessionId("s-wasm"),
+				ancestryKnown: true,
+			});
+			expect(
+				jobs.jobs.some((job) => job.ownerRef === ref && job.transcriptRef === ref && job.command === "make test-wasm"),
+			).toBe(true);
+			const retained = fleetSessionRef("s-roster");
+			await expect(client.request("evener/thread/activity/read", { ref: retained })).resolves.toMatchObject({
+				context: { ref: retained, rootRef: retained, availability: "retained", ancestryKnown: true },
+				delegates: { known: true, total: 0 },
+			});
+		});
+	});
 
 	it("lists Get PR 2138 Test Clean's 55 subagents over a real socket", async () => {
 		await withFleetHub(async (_hub, client) => {
@@ -429,7 +629,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			expect(handshake.features.transcriptDisplaySettings).toBe(false);
 			await expect(
 				client.request("evener/navigation/read", {
-					representationVersion: 2,
+					representationVersion: 3,
 					resource: "manifest",
 				}),
 			).rejects.toThrow();
@@ -450,11 +650,11 @@ describe("native demonstration hub's redesign fleet", () => {
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			const handshake = await client.connect();
-			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [2] });
+			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [3] });
 			expect(handshake.features.auth).toBe(true);
 			expect(handshake.features.transcriptDisplaySettings).toBe(true);
 			const manifest = await client.request("evener/navigation/read", {
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "manifest",
 			});
 			expect(manifest.status).toBe("ok");
@@ -558,7 +758,7 @@ describe("native demonstration hub's redesign fleet", () => {
 		try {
 			await client.connect();
 			const manifest = await client.request("evener/navigation/read", {
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "manifest",
 			});
 			const snapshot = manifest.data as {
@@ -594,7 +794,7 @@ describe("native demonstration hub's redesign fleet", () => {
 				]),
 			);
 			const needsYou = await client.request("evener/navigation/read", {
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "section",
 				section: "needs_you",
 			});
@@ -938,7 +1138,7 @@ describe("native demonstration hub's fleet sessions", () => {
 				// The hub has built its fleet; the rest runs on the real clock.
 				now.mockRestore();
 				const live = await client.request("evener/navigation/read", {
-					representationVersion: 2,
+					representationVersion: 3,
 					resource: "section",
 					section: "live",
 				});
@@ -1092,7 +1292,7 @@ describe("native demonstration hub's fleet sessions", () => {
 			const ref = fleetSessionRef("s-pr2138");
 			const rowState = async (resource: { resource: string; section?: string; sectionId?: string }) => {
 				const read = await client.request("evener/navigation/read", {
-					representationVersion: 2,
+					representationVersion: 3,
 					...resource,
 				} as NavigationReadParams);
 				const entities = (read.data as { entities: { value: { session_id?: string; state?: string } }[] }).entities;

@@ -1,3 +1,4 @@
+import { findEntityView } from "@evener/appwire-client";
 import { EntityRef } from "../../panes/session/transcript/EntityRef";
 import {
   delegateView,
@@ -13,7 +14,7 @@ import styles from "./tooltip.module.css";
 // tests actually pin. Resolved once at module scope (the fixtures are
 // constant); triggerOnly keeps the demo a pure hover target - no Open button
 // wiring a click into the workspace store from inside the gallery.
-const jobDemo = summaryEntityView().get(SUMMARY_ENTITY_JOB);
+const jobDemo = findEntityView(summaryEntityView(), "job", SUMMARY_ENTITY_JOB, "local:s");
 if (!jobDemo) throw new Error("gallery: shared job fixture did not resolve");
 const delegateDemo = delegateView("dlg_gallery_demo", {}, { task: "Review the hover card pass", runningForMs: 42_000 });
 

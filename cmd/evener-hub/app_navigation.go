@@ -35,10 +35,10 @@ func navigationReadWithFields(ctx context.Context, server *appserver.Server, nav
 	if err := ctx.Err(); err != nil {
 		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
-	if params.RepresentationVersion != 2 {
+	if params.RepresentationVersion != 3 {
 		return appwire.NavigationReadResponse{}, appwire.InvalidParams(navigationInvalidParamsMessage)
 	}
-	result, err := navigation.readV2(ctx, key, params.Base)
+	result, err := navigation.readV3(ctx, key, params.Base)
 	if err != nil {
 		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}

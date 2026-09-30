@@ -1,3 +1,4 @@
+import { activityNodeID } from "./activityData";
 // @vitest-environment node
 
 import { afterEach, expect, test, vi } from "vitest";
@@ -307,7 +308,7 @@ test("refresh notification runs before a queued pagination request and retains t
   await boundary.waitForRequest(0);
 
   boundary.notify();
-  const more = list.loadMore("delegate:delegate", "old-page");
+  const more = list.loadMore(activityNodeID(delegateEntry("delegate")), "old-page");
   boundary.resolveFirst(current);
   await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   await more;
@@ -335,7 +336,7 @@ test("retries a page after notification invalidates its in-flight continuation",
   await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   await initial;
 
-  const more = list.loadMore("delegate:delegate", "old-page");
+  const more = list.loadMore(activityNodeID(delegateEntry("delegate")), "old-page");
   await boundary.waitForRequest(2);
   boundary.notify();
   boundary.resolve(2, page);
@@ -359,8 +360,8 @@ test("queues separate valid pagination requests instead of overwriting the first
   const refresh = list.refresh();
   await boundary.waitForRequest(0);
 
-  const first = list.loadMore("delegate:first", "first-page");
-  const second = list.loadMore("delegate:second", "second-page");
+  const first = list.loadMore(activityNodeID(delegateEntry("first")), "first-page");
+  const second = list.loadMore(activityNodeID(delegateEntry("second")), "second-page");
   boundary.resolveFirst(current);
   await Promise.all([refresh, first, second]);
 
@@ -379,7 +380,7 @@ test("does not issue a queued continuation after refresh removes that branch", a
   const refresh = list.refresh();
   await boundary.waitForRequest(0);
 
-  const more = list.loadMore("delegate:delegate", "stale-page");
+  const more = list.loadMore(activityNodeID(delegateEntry("delegate")), "stale-page");
   boundary.resolveFirst(fresh);
   await Promise.all([refresh, more]);
 
@@ -407,7 +408,7 @@ test.each([
   };
   const list = new ActivityList(client, "local:session", "session", current);
   const refresh = list.refresh();
-  const more = list.loadMore("delegate:delegate", "old-page");
+  const more = list.loadMore(activityNodeID(delegateEntry("delegate")), "old-page");
   rejectRefresh(failure);
   await refresh;
   await more;
@@ -420,7 +421,7 @@ test.each([
   expect(list.getSnapshot().unsupported).toBe(kind === "unsupported");
   expect(list.getSnapshot().ended).toBe(kind === "ended");
 
-  await list.loadMore("delegate:delegate", "old-page");
+  await list.loadMore(activityNodeID(delegateEntry("delegate")), "old-page");
   expect(requests).toBe(kind === "transient" ? 2 : 1);
 });
 
@@ -434,8 +435,8 @@ test("a queued page that succeeds clears the error left by an earlier failed pag
 
   // Both pages are requested while the opening refresh is in flight, so they
   // run back to back inside one load: the first fails, the second succeeds.
-  const first = list.loadMore("delegate:first", "page-1");
-  const second = list.loadMore("delegate:second", "page-2");
+  const first = list.loadMore(activityNodeID(delegateEntry("first")), "page-1");
+  const second = list.loadMore(activityNodeID(delegateEntry("second")), "page-2");
   boundary.resolveFirst(current);
   await boundary.waitForRequest(1);
   boundary.resolve(1, {} as unknown as ActivityTree);

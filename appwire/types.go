@@ -74,6 +74,10 @@ const (
 	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
 	MethodEvenerThreadNameSet            = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
+	MethodEvenerThreadActivityRead       = "evener/thread/activity/read"
+	MethodEvenerThreadDelegatesList      = "evener/thread/delegates/list"
+	MethodEvenerThreadJobsList           = "evener/thread/jobs/list"
+	MethodEvenerThreadWatchesList        = "evener/thread/watches/list"
 	MethodEvenerSubagentPreview          = "evener/subagentPreview"
 	MethodEvenerPathsComplete            = "evener/paths/complete"
 	MethodEvenerDirsCreate               = "evener/dirs/create"
@@ -279,6 +283,7 @@ const (
 	NotifyEvenerContextPressure       = "evener/thread/contextPressure/updated"
 	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
 	NotifyEvenerThreadResync          = "evener/thread/resync"
+	NotifyEvenerThreadActivityChanged = "evener/thread/activity/changed"
 	NotifyEvenerTaskUpdated           = "evener/task/updated"
 	NotifyEvenerGoalUpdated           = "evener/goal/updated"
 	NotifyEvenerNotesUpdated          = "evener/notes/updated"
@@ -412,11 +417,11 @@ func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
 			return errors.New("invalid navigation base")
 		}
 	}
-	if decoded.RepresentationVersion != 2 {
-		return errors.New("representationVersion must be 2")
+	if decoded.RepresentationVersion != 3 {
+		return errors.New("representationVersion must be 3")
 	}
 	if _, present := fields["etag"]; present {
-		return errors.New("etag is not a v2 field")
+		return errors.New("etag is not a navigation field")
 	}
 	*params = NavigationReadParams(decoded)
 	return nil

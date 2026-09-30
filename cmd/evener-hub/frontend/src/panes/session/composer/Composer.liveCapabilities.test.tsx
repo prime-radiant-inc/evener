@@ -471,6 +471,7 @@ test("a session that shuts down mid-turn keeps a way to reply", async () => {
     });
   });
 
+  await settleActivityDiscovery(REF);
   const model = threadsStore.getState().threads.get(REF);
   expect({ status: model?.status.type, send: model?.capabilities.send }).toEqual({ status: "closed", send: true });
   expect(screen.queryByTestId("composer-input-card")).not.toBeNull();

@@ -14,6 +14,9 @@
 // far its content escapes its own content box, plus the deepest elements
 // responsible - which is the answer the fix has to be aimed at.
 import { createRoot } from "react-dom/client";
+import { MotionProvider } from "../motion";
+import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
+import { activityContext, activitySummary } from "../stores/sessionActivityTestUtils";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
 import { COMPOSER_PHONE_MAX_WIDTH } from "../panes/session/composer/narrowComposer";
@@ -415,7 +418,44 @@ fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListRe
     ],
   };
 });
-fake.on("evener/tasks/list", () => ({ data: [] }));
+fake.on("thread/unsubscribe", () => ({}));
+fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+  ...activitySummary(ref),
+  context: { ...activityContext(ref), sessionId: activeSnapshot.thread.sessionId },
+  scope: scope ?? "session",
+  delegates: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
+  jobs: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
+}));
+fake.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+  context: { ...activityContext(ref), sessionId: activeSnapshot.thread.sessionId },
+  scope: scope ?? "session",
+  delegates: [],
+  page: { complete: true, issues: [] },
+}));
+fake.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+  context: { ...activityContext(ref), sessionId: activeSnapshot.thread.sessionId },
+  scope: scope ?? "session",
+  jobs: [],
+  page: { complete: true, issues: [] },
+}));
+fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
+  context: { ...activityContext(ref), sessionId: activeSnapshot.thread.sessionId },
+  scope: scope ?? "session",
+  watches: [],
+  page: { complete: true, issues: [] },
+}));
+fake.on("evener/tasks/list", () => ({
+  data: [
+    {
+      id: 1,
+      type: "verify",
+      description:
+        "Prove that the focused session task and disclosure stay inside the activity sidebar at a constrained main pane width",
+      prompt: "Retain Tasks overflow and collapse behavior in the actual sidebar.",
+      status: "in_progress",
+    },
+  ],
+}));
 connectionStore.getState().connect(fake);
 // putThreadModel keeps the routing index in step with the seeded map
 // entry (the store's membership path for threads).
@@ -464,7 +504,7 @@ const location: NavigationSessionLocation = {
   },
 };
 navigationStore.setState({
-  mode: "v2",
+  mode: "v3",
   clientGenerationID: location.generation_id,
   resources: new Map([
     [
@@ -520,9 +560,14 @@ if (settingsMode) {
   workspaceStore.getState().openPane("session", { ref: REF });
   createRoot(rootEl).render(
     <ClientProvider client={fake}>
-      <div id="oh-pane" style={{ width, height: 900 }}>
-        <DockHost />
-      </div>
+      <MotionProvider>
+        <div id="oh-pane" style={{ width, height: 900, display: "flex" }}>
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+            <DockHost />
+          </div>
+          <ActivitySidebar />
+        </div>
+      </MotionProvider>
     </ClientProvider>,
   );
 } else {

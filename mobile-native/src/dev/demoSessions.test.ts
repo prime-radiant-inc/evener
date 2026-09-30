@@ -121,7 +121,14 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		const { model, rows } = open("s-pr2138");
 		expect(model.name).toBe("Get PR 2138 Test Clean");
 		expect(sessionStateLine(model, NOW).text).toMatch(/^Working · \d+[smh]/);
-		expect(contextChips(model, true).map(({ label, failed }) => ({ label, failed }))).toEqual([
+		expect(
+			contextChips(
+				model,
+				true,
+				undefined,
+				createDemoFleet({ now: NOW }).answerActivityRead({ ref: model.ref, scope: "subtree" }).delegates,
+			).map(({ label, failed }) => ({ label, failed })),
+		).toEqual([
 			{ label: "Subagents 55", failed: "2 failed" },
 			{ label: "Tasks 3/7", failed: undefined },
 			{ label: "Goal", failed: undefined },

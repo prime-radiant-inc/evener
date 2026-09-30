@@ -39,6 +39,7 @@ import {
   activitySidebarStore,
   closeSessionActivityPanes,
   useActivitySidebarOpenFor,
+  useActivitySidebarStore,
 } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
@@ -47,10 +48,10 @@ import { navigate, paneToURL } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
-import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
+import { useSessionActivity } from "../../../stores/sessionActivity";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { topNotesStore, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Cadence, useToasts } from "../../../widgets";
@@ -118,14 +119,17 @@ export function SessionChrome({
   const [verbosityOpen, setVerbosityOpen] = useState(false);
   const toasts = useToasts();
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
-  const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
+  const tasksPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   // The Activity menu item's checked state is the sidebar open ON THIS
   // SESSION (the shared predicate hook); on mobile the item opens the Sheet
   // and is never "checked".
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
   const activityOpen = !isMobile && sidebarOpenHere;
+  const sidebarTab = useActivitySidebarStore((state) => state.tab);
+  const tasksOpen = tasksPaneOpen || (activityOpen && sidebarTab === "tasks");
   const notesOpen = useTopNotesExpanded(sessionRef);
-  const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
+  const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
+  const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
   // no project is expanded merely to decide menu eligibility.
@@ -184,9 +188,6 @@ export function SessionChrome({
       ref={activityRef}
       sessionRef={sessionRef}
       model={model}
-      watches={fallbackSession?.watches}
-      omittedWatches={fallbackSession?.omitted_watches}
-      omittedArmedWatches={fallbackSession?.omitted_armed_watches}
       hideTrigger
       refreshWhenHidden
       discoverWhenHidden={discoverActivity || discoveryOnly}
@@ -217,9 +218,13 @@ export function SessionChrome({
     else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
   };
   const openTasks = () => {
+    // Desktop: the activity sidebar, preselected to its Tasks tab (the same
+    // retarget the rail row and the composer's current-task button share).
+    // Mobile: the per-session Sheet, unchanged. An idempotent open - the
+    // chrome navigates, it does not toggle.
     if (onOpenTasks) onOpenTasks();
     else if (isMobile) tasksRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef });
+    else activitySidebarStore.getState().openWith("tasks");
   };
   const openActivity = () => {
     // Desktop: the activity sidebar (the zoom system's triage surface).
@@ -239,7 +244,10 @@ export function SessionChrome({
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
     topNotesStore.getState().toggleAndFocus(sessionRef);
   };
-  const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
+  const activityLabel =
+    activitySummary?.delegates.known && activitySummary.jobs.known
+      ? `Activity · ${activitySummary.delegates.active + activitySummary.jobs.active}`
+      : "Activity";
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:

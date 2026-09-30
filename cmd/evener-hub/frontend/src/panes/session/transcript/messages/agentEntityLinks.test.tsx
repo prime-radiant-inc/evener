@@ -98,7 +98,7 @@ const turn = { id: "turn", status: "completed" as const, items: [] };
 
 function agentMessage(markdown: string, resolved: ReadonlyMap<string, EntityView> = entities, live = false) {
   return (
-    <TranscriptRenderProvider thread={thread} entities={resolved}>
+    <TranscriptRenderProvider sessionRef={thread.ref} thread={thread} entities={resolved}>
       <AgentMessageItem
         item={{ id: "agent", turnId: turn.id, type: "agentMessage", text: markdown, pendingText: [markdown] }}
         turn={turn}
@@ -147,7 +147,7 @@ function DiagramExclusionHarness() {
 
 function userMessage(text: string) {
   return (
-    <TranscriptRenderProvider thread={thread} entities={entities}>
+    <TranscriptRenderProvider sessionRef={thread.ref} thread={thread} entities={entities}>
       <UserMessageItem
         item={{ id: "user", turnId: turn.id, type: "userMessage", text }}
         turn={turn}
@@ -270,7 +270,7 @@ test("an unresolved id gains one affordance without changing surrounding text", 
 
 test("a pre-existing entity host subtree is not wrapped", () => {
   render(
-    <TranscriptRenderProvider thread={thread} entities={entities}>
+    <TranscriptRenderProvider sessionRef={thread.ref} thread={thread} entities={entities}>
       <ExistingEntityHostHarness />
     </TranscriptRenderProvider>,
   );
@@ -286,7 +286,7 @@ test("a pre-existing entity host subtree is not wrapped", () => {
 
 test("never enhances entity ids inside a diagram", () => {
   render(
-    <TranscriptRenderProvider thread={thread} entities={entities}>
+    <TranscriptRenderProvider sessionRef={thread.ref} thread={thread} entities={entities}>
       <DiagramExclusionHarness />
     </TranscriptRenderProvider>,
   );

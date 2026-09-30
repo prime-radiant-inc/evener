@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { readSessionDeletion } from "./sessionDeletionNavigation";
@@ -37,7 +37,7 @@ function fixture() {
 					},
 				};
 			}
-			return wireV2(
+			return wireSnapshot(
 				params as never,
 				params.resource === "manifest" ? manifest() : { pin_sections: [], remaining: 0 },
 				'"fresh"',

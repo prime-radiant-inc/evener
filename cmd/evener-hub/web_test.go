@@ -1121,3 +1121,19 @@ func TestWeb_WorkspaceData_NoObserversWhenUnwatched(t *testing.T) {
 		t.Fatalf("un-watched worker must have no observers; got %v", wd.ObserverRouteIDs)
 	}
 }
+
+func (s *scriptedAppSource) ThreadActivityRead(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+	return appwire.SessionActivitySummary{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *scriptedAppSource) ThreadDelegatesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+	return appwire.SessionDelegatesResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *scriptedAppSource) ThreadJobsList(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+	return appwire.SessionJobsResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *scriptedAppSource) ThreadWatchesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+	return appwire.SessionWatchesResponse{}, appwire.Unavailable("test source does not read session activity")
+}

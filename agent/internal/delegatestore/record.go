@@ -128,6 +128,8 @@ type SandboxSnapshot struct {
 }
 
 type Aggregate struct {
+	// CreatedAt is immutable membership order, independent of later run updates.
+	CreatedAt          time.Time         `json:"created_at,omitzero"`
 	DelegateID         string            `json:"delegate_id"`
 	Descriptor         Descriptor        `json:"descriptor"`
 	Generation         uint64            `json:"generation"`

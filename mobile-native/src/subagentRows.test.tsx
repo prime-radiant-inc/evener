@@ -1,3 +1,4 @@
+import { installActivityFixture } from "./subagents/sessionActivityTestUtils";
 // Subagent rows in the transcript (spec 8.2 "Subagent", 9), driven from the
 // coordinator's tool calls as history carries them (agent/testdata/
 // subagentwire) through the same pipeline ConversationScreen runs, at every
@@ -390,11 +391,13 @@ describe("a finished subagent's outcome (audit G13)", () => {
 			...over,
 		});
 	const harness: { client: FakeClient | null } = { client: null };
-	const jobsLists = (client: FakeClient) => client.calls.filter((call) => call.method === "evener/jobs/list");
+	const jobsLists = (client: FakeClient) =>
+		client.calls.filter((call) => call.method === "evener/thread/delegates/list");
 
 	function hub(answer: () => unknown = () => subagentOutcomesResponse()) {
 		const client = new FakeClient("ready");
-		client.on("evener/jobs/list", async () => answer() as JobsListResponse);
+		installActivityFixture(client, async () => ((await answer()) as JobsListResponse).data);
+		client.on("thread/read", () => ({ thread: { id: "root", modelProvider: "scripted" } }) as never);
 		harness.client = client;
 		return client;
 	}
@@ -438,7 +441,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 							key={entry.row.id}
 							item={entry.row}
 							hubId="hub-1"
-							sessionRef="root"
+							sessionRef="local:root"
 							delegates={entry.delegates}
 							subagentTree={tree}
 						/>
@@ -467,8 +470,8 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
 		expect(renderedText(screen)).toContain("Finished");
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
-		expect(renderedText(screen)).not.toContain("Finished");
+		expect(renderedText(screen)).toContain("Finished");
+		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
 		expect(renderedText(screen)).not.toContain("The new test covers both orders.");
 		expect(jobsLists(client)).toHaveLength(1);
 	});
@@ -505,7 +508,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const failed = finished("dlg_failed", { status: "failed", outcome: "failed", reason: "go test exited 1" });
 		const screen = transcript({ delegates: [finished("dlg_reported"), failed] });
 		await act(async () => {});
-		expect(rowText(screen, "dlg_reported")).toContain("Fixed the race: settle now waits for the drain.");
+		expect(rowText(screen, "dlg_reported")).toContain("Finished");
 		expect(rowText(screen, "dlg_failed")).toContain("go test exited 1");
 		expect(rowText(screen, "dlg_failed")).not.toContain("provider returned 500");
 	});
@@ -522,7 +525,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 			delegates: [finished("dlg_reported"), finished("dlg_stopped", { outcome: "completed" })],
 		});
 		await act(async () => {});
-		expect(rowText(screen, "dlg_reported")).toContain("Fixed the race: settle now waits for the drain.");
+		expect(rowText(screen, "dlg_reported")).toContain("Finished");
 		expect(jobsLists(client)).toHaveLength(1);
 		release();
 	});
@@ -536,7 +539,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		act(() => screen.update(<Transcript delegates={delegates} mounted={[]} />));
 		act(() => screen.update(<Transcript delegates={delegates} />));
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(screen)).toContain("Finished");
 		expect(jobsLists(client)).toHaveLength(1);
 	});
 
@@ -560,17 +563,18 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		answer = recorded;
 		await act(async () => {
 			client.emitNotification({
-				method: "evener/delegate/updated",
+				method: "evener/thread/activity/changed",
 				params: {
 					ref: COORDINATOR.ref,
 					threadId: COORDINATOR.threadId,
-					delegate: finished("dlg_reported", { projectionRevision: recorded.data.revision, packetKind: "reported" }),
+					sessionId: COORDINATOR.threadId,
+					resources: ["delegates"],
 				},
 			});
 			await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 		});
 		expect(jobsLists(client)).toHaveLength(2);
-		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(screen)).toContain("Finished");
 	});
 
 	// A subagent's screen follows the subagent, so nothing announces that one

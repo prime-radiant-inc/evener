@@ -191,6 +191,7 @@ func applyCreated(state State, event Event) error {
 		return fmt.Errorf("delegate_created: parent %q does not exist", descriptor.ParentDelegateID)
 	}
 	state[event.DelegateID] = &Aggregate{
+		CreatedAt:  event.TS,
 		DelegateID: event.DelegateID,
 		Descriptor: descriptor,
 		Phase:      PhaseIdle,

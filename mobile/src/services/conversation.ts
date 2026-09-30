@@ -18,6 +18,8 @@
 import type {
 	AnyNotification,
 	AppwireClient,
+	AppwireClientLike,
+	ThreadSubscriptionLease,
 	InputItem,
 	MethodName,
 	MethodTypes,
@@ -36,7 +38,7 @@ import type {
 	TurnDrainAsSteerResponse,
 	TurnPromoteQueuedAsSteerResponse,
 } from "@evener/appwire-client";
-import { hydrateThread, isStaleCursorError } from "@evener/appwire-client";
+import { acquireThreadSubscription, hydrateThread, isStaleCursorError } from "@evener/appwire-client";
 import type { MobileConversation } from "../../../mobile-native/src/projectedRows";
 import { projectConversation } from "../../../mobile-native/src/projectedRows";
 import type { ActivityView } from "./activity";
@@ -70,7 +72,7 @@ function forkEntrySourceItemKey(transcriptEntryIndex: number): string {
 // The narrow client surface the service depends on. Structurally compatible
 // with AppwireClient and FakeClient, so tests inject a FakeClient without
 // pulling the real class's reconnect/heartbeat machinery.
-export interface ConversationClientLike {
+export interface ConversationClientLike extends Pick<AppwireClientLike, "state" | "onReady" | "onStateChange"> {
 	request<M extends MethodName>(
 		method: M,
 		params: MethodTypes[M]["params"],
@@ -525,6 +527,14 @@ export function createConversationService<ReadLease = unknown>(
 	// null, so requireRef-only operations (setReasoningEffort, cancelQueued,
 	// loadOlder) also fail before any wire call.
 	let ref: string | null = null;
+	let subscription: { ref: string; lease: ThreadSubscriptionLease } | null = null;
+	const subscribedRead = (threadRef: string) => {
+		if (subscription?.ref !== threadRef) {
+			subscription?.lease.release();
+			subscription = { ref: threadRef, lease: acquireThreadSubscription(client, threadRef) };
+		}
+		return subscription.lease;
+	};
 	let modelScope: ModelListParams | null = null;
 	// Retain the instance shown by the full read; a capability-only refresh
 	// must not redirect a draft to a replacement session.
@@ -640,12 +650,7 @@ export function createConversationService<ReadLease = unknown>(
 			const expectedThreadId = threadId ?? undefined;
 			const epoch = beginOpen(threadRef);
 			const readLease = options.onReadStart?.(threadRef, expectedThreadId);
-			const response: ThreadReadResponse = await client.request("thread/read", {
-				ref: threadRef,
-				includeTurns: true,
-				subscribe: true,
-				replaceSubscription: true,
-			});
+			const response: ThreadReadResponse = await subscribedRead(threadRef).read({ includeTurns: true });
 			// Compute ALL response-derived projection work BEFORE committing the
 			// pair — a throw here leaves ref+capabilities null/fail-closed. Only
 			// commit the pair after projection succeeds and the epoch is still
@@ -686,11 +691,8 @@ export function createConversationService<ReadLease = unknown>(
 			const expectedThreadId = threadId ?? undefined;
 			const epoch = beginOpen(threadRef);
 			const readLease = options.onReadStart?.(threadRef, expectedThreadId);
-			const read = client.request("thread/read", {
-				ref: threadRef,
+			const read = subscribedRead(threadRef).read({
 				includeTurns: true,
-				subscribe: true,
-				replaceSubscription: true,
 				itemsView: "fragment",
 				itemLimit: READ_ITEM_LIMIT,
 			});
@@ -1097,6 +1099,8 @@ export function createConversationService<ReadLease = unknown>(
 		},
 
 		close() {
+			subscription?.lease.release();
+			subscription = null;
 			pendingProjection = null;
 			if (notificationUnsub !== null) {
 				notificationUnsub();
