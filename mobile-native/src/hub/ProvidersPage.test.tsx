@@ -1554,9 +1554,25 @@ it("clears an unsaved-edit notice when Add opens", async () => {
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
 });
 
-// Only an edit its provider left behind says it wasn't saved: a cancelled
-// edit and a saved one say nothing of the kind.
-it("says nothing of an unsaved edit after a Cancel or a save", async () => {
+// Only an edit its provider left behind says it wasn't saved: a cancelled or
+// saved edit holds no draft, so the provider leaving afterwards has nothing
+// unsaved to report.
+it("says nothing of an unsaved edit when the provider leaves after a Cancel", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	press(tree, (label) => label === "Cancel");
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	await workLeavesList(fake);
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toBeNull();
+});
+
+it("says nothing of an unsaved edit when the provider leaves after a save", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
 	fake.on("evener/instance/edit", () => ({
 		instances: [instance({ authModes: ["apiKey"], hasStoredFile: true })],
@@ -1567,17 +1583,16 @@ it("says nothing of an unsaved edit after a Cancel or a save", async () => {
 	await openWork(tree);
 	press(tree, (label) => label === "Edit");
 	await act(async () => {});
-	press(tree, (label) => label === "Cancel");
-	await act(async () => {});
-	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
-	press(tree, (label) => label === "Edit");
-	await act(async () => {});
 	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
 	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain("Base URL");
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toMatchObject({ name: "work" });
+	await workLeavesList(fake);
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toBeNull();
 });
 
 // Discarding through Back discards the draft for good: the page's close,
