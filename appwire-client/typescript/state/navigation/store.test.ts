@@ -2732,3 +2732,12 @@ test("a store reset mid-boot fences the fan-out its manifest would have started"
   expect(store.getState().manifest).toBeNull();
   expect(store.getState().resources.size).toBe(0);
 });
+
+test("navigation reads require the advertised version 3 representation", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams) => wireV2(params, emptyManifest()));
+  store.init(client, { ...capability(), readVersions: [3] });
+  await flush();
+  expect(store.getState().protocolError).toBeNull();
+  expect(client.calls[0]?.params).toMatchObject({ representationVersion: 3 });
+});

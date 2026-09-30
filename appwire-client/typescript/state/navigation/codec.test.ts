@@ -1698,3 +1698,25 @@ test("an archived list rejects more nested nodes than a navigation session may h
     "navigation protocol: invalid archived list",
   );
 });
+
+test("compact activity counts survive decoding and reject impossible armed totals", () => {
+  const snapshot = liveSnapshot();
+  const value = snapshot.entities[0].value as Record<string, unknown>;
+  Object.assign(value, {
+    running_job_count: 7,
+    running_job_command: "command-sentinel",
+    watch_count: 9,
+    armed_watch_count: 4,
+  });
+  const decoded = decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot));
+  expect(decoded.status).toBe("snapshot");
+  if (decoded.status !== "snapshot") throw new Error("snapshot expected");
+  expect(decoded.snapshot.entities[0].value).toMatchObject({
+    running_job_count: 7,
+    running_job_command: "command-sentinel",
+    watch_count: 9,
+    armed_watch_count: 4,
+  });
+  value.armed_watch_count = 10;
+  expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot))).toThrow();
+});
