@@ -143,11 +143,14 @@ func runLocalFilesystemOperationProgram(t *testing.T, program []byte) localFiles
 	if _, err := env.WriteFile("", "unused"); err == nil || !strings.Contains(err.Error(), "empty path") {
 		t.Fatalf("WriteFile empty path error = %v", err)
 	}
-	if _, err := env.WriteFile(outside, "unsafe"); err == nil || !strings.Contains(err.Error(), "outside working directory") {
-		t.Fatalf("WriteFile outside path error = %v", err)
+	if _, err := env.WriteFile(outside, "old"); err != nil {
+		t.Fatalf("WriteFile outside path: %v", err)
 	}
-	if _, err := env.EditFile(outside, "old", "new", false); err == nil || !strings.Contains(err.Error(), "outside working directory") {
-		t.Fatalf("EditFile outside path error = %v", err)
+	if _, err := env.EditFile(outside, "old", "new", false); err != nil {
+		t.Fatalf("EditFile outside path: %v", err)
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "new" {
+		t.Fatalf("outside file = %q, %v", got, err)
 	}
 
 	trace.Exists = append(trace.Exists,
