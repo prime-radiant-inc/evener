@@ -5425,7 +5425,7 @@ cacheChannelEnsure();
 
 /** The deletion response's cache hook (spec, "The write seam"): keyed on the
  * response, not the caller — any deletion response that reports removed
- * thread ids reaches here through closePanesForDeletedSessions, whichever
+ * thread ids reaches here through markDeletedSessionCaches, whichever
  * action produced it (session delete from the Rail or the chrome menu,
  * project delete). Joins deletedRefs (the immediate arm), cancels each
  * pending write, deletes each record, and propagates one message per action. */

@@ -8,7 +8,7 @@
 import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -17,7 +17,13 @@ import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { SessionCacheIndexedDB } from "../../../stores/sessionCacheIndexedDB";
+import {
+  resetThreadsStoreForTests,
+  setCacheChannelFactoryForTests,
+  setSessionCacheAdapterForTests,
+  threadsStore,
+} from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../../sessionPanels";
@@ -367,6 +373,59 @@ test("archive toggle failure toasts an error", async () => {
 });
 
 // --- onDelete error (lines 221-222) ---
+
+test.each(["resolve", "reject"])(
+  "chrome fences deletion before held navigation can %s",
+  { timeout: 3_000 },
+  async (outcome) => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const ref = "local:chrome-delete";
+    fake.on("thread/read", () => readResponse(ref, { name: "Delete target" }));
+    await threadsStore.getState().ensureThread(ref);
+    setLocation(ref);
+    let finish: (() => void) | undefined;
+    const convergence = new Promise<void>((resolve, reject) => {
+      finish = () => (outcome === "reject" ? reject(new Error("navigation unavailable")) : resolve());
+    });
+    const applyNavigationMutation = vi.fn(() => convergence);
+    navigationStore.setState({ applyNavigationMutation });
+    const adapter = new SessionCacheIndexedDB();
+    const deleteRecords = vi.spyOn(adapter, "deleteRecords").mockResolvedValue(true);
+    setSessionCacheAdapterForTests(adapter);
+    const postMessage = vi.fn();
+    setCacheChannelFactoryForTests(
+      () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
+    );
+    fake.on("evener/session/delete", () => ({
+      deleted: ["chrome-delete", ref],
+      skipped: [],
+      navigation: { generation_id: "generation_test", targets: [] },
+    }));
+    renderWithToast(<SessionChrome ref={ref} />);
+    try {
+      await user.click(screen.getByRole("button", { name: /session actions/i }));
+      await user.click(screen.getByRole("menuitem", { name: /Delete/ }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+      expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
+      expect(threadsStore.getState().deletedRefs.has(ref)).toBe(true);
+      expect(deleteRecords).toHaveBeenCalledExactlyOnceWith([ref]);
+      expect(postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "deletion", refs: [ref] }));
+      await act(async () => {
+        finish?.();
+      });
+      expect(deleteRecords).toHaveBeenCalledTimes(1);
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      if (outcome === "reject")
+        expect(screen.getByText('Couldn\'t delete "Delete target": navigation unavailable')).toBeTruthy();
+    } finally {
+      await act(async () => {
+        finish?.();
+      });
+      adapter.close();
+    }
+  },
+);
 
 test("delete failure toasts an error", async () => {
   const user = userEvent.setup();

@@ -1909,7 +1909,7 @@ describe("deletion", () => {
       }));
       const gone = (await deleteSession(fake, "local:thr_1")).deleted;
       const refs = gone.map((id) => (id.includes(":") ? id : `local:${id}`));
-      markCacheSessionsDeleted(refs); // what closePanesForDeletedSessions now calls
+      markCacheSessionsDeleted(refs); // the response-time markDeletedSessionCaches hook
       expect(threadsStore.getState().deletedRefs.has("local:thr_1")).toBe(true);
       expect(await cacheRecord("local:thr_1")).toBeUndefined();
     } finally {

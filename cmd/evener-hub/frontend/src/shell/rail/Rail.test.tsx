@@ -33,7 +33,13 @@ import {
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
+import {
+  resetThreadsStoreForTests,
+  setCacheChannelFactoryForTests,
+  setSessionCacheAdapterForTests,
+  threadsStore,
+} from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -2169,6 +2175,68 @@ describe("resource-backed Rail", () => {
       params: { key: "p", workingDir: "/local/proj" },
     });
   });
+
+  test.each([
+    ["session", "resolve"],
+    ["session", "reject"],
+    ["project", "resolve"],
+    ["project", "reject"],
+  ])("fences a deleted %s before held navigation can %s", { timeout: 3_000 }, async (kind, outcome) => {
+    resetThreadsStoreForTests();
+    const convergence = deferred<void>();
+    const applyNavigationMutation = vi.fn(() => convergence.promise);
+    const adapter = new SessionCacheIndexedDB();
+    const deleteRecords = vi.spyOn(adapter, "deleteRecords").mockResolvedValue(true);
+    setSessionCacheAdapterForTests(adapter);
+    const postMessage = vi.fn();
+    setCacheChannelFactoryForTests(
+      () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
+    );
+    installState(
+      kind === "session"
+        ? [sectionResource("live", [summary({ title: "Delete target" })])]
+        : [catalogResource([{ key: "p", name: "Delete target", session_count: 1, sources: ["local"] }])],
+    );
+    navigationStore.setState({ applyNavigationMutation });
+    const response = {
+      deleted: ["a", "local:a", "local:b"],
+      skipped: [{ id: "c", reason: "busy" }],
+      navigation: { generation_id: "g1", targets: [] },
+    };
+    const client = new FakeClient();
+    client.on("evener/session/delete", () => response);
+    client.on("evener/project/delete", () => response);
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: /actions for delete target/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: kind === "session" ? "Delete…" : "Delete project…" }));
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+      await act(async () => undefined);
+      expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
+      expect([...threadsStore.getState().deletedRefs]).toEqual(["local:a", "local:b"]);
+      expect(deleteRecords).toHaveBeenCalledExactlyOnceWith(["local:a", "local:b"]);
+      expect(postMessage).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ kind: "deletion", refs: ["local:a", "local:b"] }),
+      );
+      await act(async () => {
+        if (outcome === "reject") convergence.reject(new Error("navigation unavailable"));
+        else convergence.resolve();
+      });
+      expect([...threadsStore.getState().deletedRefs]).toEqual(["local:a", "local:b"]);
+      expect(deleteRecords).toHaveBeenCalledTimes(1);
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      if (outcome === "reject")
+        expect(getToasts().some((toast) => toast.text.includes("navigation unavailable"))).toBe(true);
+    } finally {
+      await act(async () => {
+        convergence.resolve();
+      });
+      adapter.close();
+      resetThreadsStoreForTests();
+    }
+  });
+
   test("routes unpin and delete through rendered session dialogs and receipt convergence", async () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
     const row = summary({ title: "Pinned delete" });

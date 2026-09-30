@@ -41,7 +41,7 @@ import {
   useActivitySidebarOpenFor,
 } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
-import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
+import { closePanesForDeletedSessions, markDeletedSessionCaches } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
 import { navigate, paneToURL } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
@@ -312,6 +312,7 @@ export function SessionChrome({
   const deleteAction = async () => {
     try {
       const result = await deleteSession(client, sessionRef);
+      markDeletedSessionCaches(result.deleted);
       if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
       closePanesForDeletedSessions(result.deleted);
       if (result.skipped.length > 0) {

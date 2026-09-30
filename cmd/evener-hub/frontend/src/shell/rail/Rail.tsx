@@ -71,7 +71,7 @@ import { Menu } from "../../widgets/menu";
 import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, closeSessionActivityPanes } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
-import { closePanesForDeletedSessions } from "../deletedSessionPanes";
+import { closePanesForDeletedSessions, markDeletedSessionCaches } from "../deletedSessionPanes";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
@@ -1670,6 +1670,7 @@ function NavigationRail({
         setPending((ops) => [...ops, optimistic]);
         try {
           const result = await deleteSession(client, session.ref);
+          markDeletedSessionCaches(result.deleted);
           mutationCompleted = true;
           await convergeMutation(result);
           converged = true;
@@ -1753,6 +1754,7 @@ function NavigationRail({
     setPending((ops) => [...ops, optimistic]);
     try {
       const result = await deleteProject(target.key, target.working_dir ?? "", target.sources);
+      markDeletedSessionCaches(result.deleted);
       mutationCompleted = true;
       await convergeMutation(result);
       converged = true;
