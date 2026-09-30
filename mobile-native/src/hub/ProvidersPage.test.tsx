@@ -1569,6 +1569,7 @@ it("says nothing of an unsaved edit when the provider leaves after a Cancel", as
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
 	await workLeavesList(fake);
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toBeNull();
 });
 
 it("says nothing of an unsaved edit when the provider leaves after a save", async () => {
@@ -1588,8 +1589,10 @@ it("says nothing of an unsaved edit when the provider leaves after a save", asyn
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain("Base URL");
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toMatchObject({ name: "work" });
 	await workLeavesList(fake);
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toBeNull();
 });
 
 // Discarding through Back discards the draft for good: the page's close,
