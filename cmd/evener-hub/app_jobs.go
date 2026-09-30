@@ -84,3 +84,32 @@ func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	}
 	return appwire.JobsOutputResponse{Data: tail}, nil
 }
+
+// hubJobsGet answers evener/jobs/get with the same live-first /
+// dead-session-fallback split as hubJobsOutput. A job id absent from the
+// persisted store is invalid params — the caller guessed.
+func hubJobsGet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, "")
+	var resp appwire.JobsGetResponse
+	if err == nil {
+		resp, err = source.JobGet(ctx, params)
+	}
+	if err == nil {
+		return resp, nil
+	}
+	if !isDeadSessionError(err) {
+		return appwire.JobsGetResponse{}, err
+	}
+	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref})
+	if !ok {
+		return appwire.JobsGetResponse{}, err
+	}
+	job, found, getErr := agent.LoadSessionJobGet(entry.StateDir, entry.Meta.ID, params.JobID)
+	if getErr != nil {
+		return appwire.JobsGetResponse{}, getErr
+	}
+	if !found {
+		return appwire.JobsGetResponse{}, appwire.InvalidParams("job not found: " + params.JobID)
+	}
+	return appwire.JobsGetResponse{Data: job}, nil
+}

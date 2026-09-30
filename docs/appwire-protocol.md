@@ -116,6 +116,7 @@ no router (reserved).
 | `evener/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `evener/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
 | `evener/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
+| `evener/jobs/get` | both | `JobsGetParams` | `JobsGetResponse` | Reads one job's metadata (the activity-tree job shape, including the untruncated command). Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
 | `evener/daemon/list` | hub | `DaemonListParams` | `DaemonListResponse` | Lists resident daemons with lifecycle and exact ownership identity, including archived, incompatible, and unresolved discovered processes. |
 | `evener/daemon/retire` | both | `DaemonRetireParams` | `DaemonRetireResponse` | Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle. |
 | `evener/daemon/status` | daemon | `DaemonStatusParams` | `DaemonStatusResponse` | Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility. |
@@ -1573,6 +1574,21 @@ _(no fields)_
 | `headSha` | `string` |  |  |
 | `ahead` | `int` |  |  |
 | `dirty` | `bool` |  |  |
+
+
+### `JobsGetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` | yes |  |
+| `jobId` | `string` |  |  |
+
+
+### `JobsGetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | `interface {}` |  |  |
 
 
 ### `JobsListParams`

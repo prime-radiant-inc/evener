@@ -1319,9 +1319,10 @@ type jobOutputWindow struct {
 // offset beforeBytes (exclusive); beforeBytes <= 0 reads the tail. It backs
 // evener/jobs/output paging for both the live output store and terminal logs.
 func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64) (jobOutputWindow, error) {
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	jm.mu.Unlock()
+	run, rec, err := jm.recordForRead(jobID)
+	if err != nil {
+		return jobOutputWindow{}, err
+	}
 	if run != nil {
 		buf, start, end, total, err := run.output.Window(beforeBytes, int(maxBytes))
 		if err != nil {
@@ -1336,11 +1337,6 @@ func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64
 		}, nil
 	}
 
-	recs, err := jm.store.Load()
-	if err != nil {
-		return jobOutputWindow{}, err
-	}
-	rec := recs[jobID]
 	if rec == nil {
 		return jobOutputWindow{}, errJobNotFound(jobID)
 	}
@@ -1354,6 +1350,29 @@ func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64
 		return jobOutputWindow{}, err
 	}
 	return jobOutputWindow{content: content, start: start, end: end, total: total, earliest: earliest}, nil
+}
+
+// recordForRead resolves jobID's record with the live-first order both
+// readOutputWindow and Session.JobGet depend on: the running record when the
+// job is live, else the store's folded record. run is non-nil only when a live
+// job owns jobID (readOutputWindow reads the live output buffer through it);
+// rec is that live record when present, else the store's, and nil when neither
+// holds the job.
+func (jm *jobManager) recordForRead(jobID string) (run *runningJob, rec *jobstore.JobRecord, err error) {
+	if jm == nil {
+		return nil, nil, nil
+	}
+	jm.mu.Lock()
+	run = jm.running[jobID]
+	jm.mu.Unlock()
+	if run != nil {
+		return run, run.rec, nil
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, recs[jobID], nil
 }
 
 //nolint:unused // retained for tagged job-runtime output recovery fuzz owners.

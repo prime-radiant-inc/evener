@@ -42,6 +42,7 @@ type Source interface {
 	ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error)
 	ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error)
 	JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error)
+	JobGet(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error)
 	SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error)
 }
 

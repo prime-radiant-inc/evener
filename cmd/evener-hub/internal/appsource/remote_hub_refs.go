@@ -573,6 +573,8 @@ func (s *RemoteHubSource) translateOut(out any) error {
 		}
 	case *appwire.JobsListResponse:
 		response.Data = s.translateActivityRefs(response.Data)
+	case *appwire.JobsGetResponse:
+		s.translateActivityJob(response.Data)
 	}
 	return nil
 }
