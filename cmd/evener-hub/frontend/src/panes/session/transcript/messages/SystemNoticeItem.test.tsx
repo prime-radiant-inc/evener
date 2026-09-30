@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { formatCharCount, makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { formatCharCount, makeTranscriptDisplayConfig, WarningCodeMCPReconnected } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
@@ -515,4 +515,18 @@ test("a daemon warning among lifecycle notices is never folded into their collap
   renderTurnTools(turnWith([item("a"), item("b"), warning, item("c"), item("d")]));
   expect(screen.getByTestId("warning-item")).toBeTruthy();
   expect(screen.queryByTestId("system-notice-group")).toBeNull();
+});
+
+test("MCP recovery overlay stays quiet at full detail", () => {
+  renderTurnFull(
+    turnWith([
+      item("recovery", {
+        eventKind: "warning",
+        text: "connection-1",
+        raw: { warning: { code: WarningCodeMCPReconnected } },
+      }),
+    ]),
+  );
+  expect(screen.getByTestId("system-notice-line")).toBeTruthy();
+  expect(screen.queryByTestId("warning-item")).toBeNull();
 });

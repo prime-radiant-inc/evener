@@ -40,7 +40,6 @@ type residualServeServer struct {
 	urlsRemove     func(outerID, id string) (bool, error)
 	drain          func() error
 	drainInput     func(string, []server.ImageAttachment) error
-	promote        func(int, string) error
 	cancel         func(int, string) (string, int, error)
 	envelopeSource server.ThreadEnvelopeSource
 	meta           func() schema.SessionMeta
@@ -82,9 +81,6 @@ func (s *residualServeServer) SetUrlsRemoveFunc(f func(outerID, id string) (bool
 func (s *residualServeServer) SetDrainAsSteerFunc(f func() error) { s.drain = f }
 func (s *residualServeServer) SetDrainAsSteerWithInputFunc(f func(string, []server.ImageAttachment) error) {
 	s.drainInput = f
-}
-func (s *residualServeServer) SetPromoteQueuedAsSteerFunc(f func(int, string) error) {
-	s.promote = f
 }
 func (s *residualServeServer) SetCancelQueuedFunc(f func(int, string) (string, int, error)) {
 	s.cancel = f
@@ -130,7 +126,6 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_, _ = s.urlsRemove("outer-1", "u1")
 	_ = s.drain()
 	_ = s.drainInput("x", nil)
-	_ = s.promote(0, "q_1_x")
 	// Every envelope facet now enters the daemon through one seam. Exercising
 	// each method keeps the residual sweep's coverage of the live producers.
 	_ = s.envelopeSource.ContextPressure()

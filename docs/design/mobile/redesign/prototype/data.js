@@ -70,11 +70,7 @@
   ];
   const defaultPlugins = plugins.filter((p) => p.on).map((p) => p.id);
 
-  const recipes = [
-    { id: "coordinator", name: "Evener coordinator", host: "magic-kingdom", project: "evener", model: "deepseek-4.1-flash", effort: "xhigh", plugins: defaultPlugins, access: "Workspace write", branch: "Current branch" },
-    { id: "quick", name: "Quick question", host: "magic-kingdom", project: "home", model: "glm-5.3-flash", effort: "medium", plugins: ["superpowers", "elements-of-style"], access: "Read-only", branch: "Current branch" },
-    { id: "mac", name: "Mac build", host: "paradise-park", project: "evener", model: "glm-5.3-vision", effort: "high", plugins: ["superpowers", "go", "go-release", "go-spec-reviewer"], access: "Workspace write", branch: "New worktree branch" },
-  ];
+  const lastUsed = { host: "magic-kingdom", project: "evener", model: "deepseek-4.1-flash", effort: "xhigh", plugins: defaultPlugins, access: "Workspace write", branch: "Current branch" };
 
   const projects = [
     { id: "evener", path: "git/prime-radiant-inc/evener", pinned: true },
@@ -629,5 +625,5 @@ draw();parent.postMessage({type:'ready'},'*');
 
   // Finished runs in the fixtures take about 40 seconds a step.
   for (const tr of Object.values(T)) tr.forEach((it) => { if (it.t === "act" && !it.live && it.dur == null) it.dur = 30 + it.steps.length * 40; });
-  window.EV_DATA = { hosts, providers, models, marketplaces, plugins, recipes, projects, categories, sessions, subagents, transcripts: T, asks: ASKS, approvals: APPROVALS, docs, artifacts, search, defaultPlugins, archivedTotal: 271 };
+  window.EV_DATA = { hosts, providers, models, marketplaces, plugins, lastUsed, projects, categories, sessions, subagents, transcripts: T, asks: ASKS, approvals: APPROVALS, docs, artifacts, search, defaultPlugins, archivedTotal: 271 };
 })();

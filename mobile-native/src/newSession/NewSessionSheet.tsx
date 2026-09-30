@@ -64,7 +64,7 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	useEffect(() => {
 		if (opened.current || !storageLoaded) return;
 		opened.current = true;
-		stopOpening.current = openForm(store, memory.history(), like);
+		stopOpening.current = openForm(store, memory.lastSetup(), like);
 	}, [store, memory, like, storageLoaded]);
 	useEffect(() => () => stopOpening.current(), []);
 

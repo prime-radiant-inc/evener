@@ -993,7 +993,7 @@ it("dims a category while its change is on its way, and hides every ⋯ until it
 	act(() => tree.unmount());
 });
 
-it("never shows the journal's error, and hides ⋯ while a change can't be confirmed", async () => {
+it("never shows the journal's error, dims the category and hides ⋯ while a change can't be confirmed", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	const fake = hub(fleet, undefined, undefined, { refuse: true });
@@ -1005,7 +1005,9 @@ it("never shows the journal's error, and hides ⋯ while a change can't be confi
 	expect(fake.mutations).toHaveLength(1);
 	expect(menuLabels(tree)).toEqual([]);
 	expect(renderedText(tree)).not.toMatch(/Refresh|trying again|Could not confirm/);
-	expect(opacity(tree, "Mine")).toBe(1);
+	// An unresolved change dims its category as a pending one does (the unified
+	// journal gate: pending or uncertain).
+	expect(opacity(tree, "Mine")).toBe(0.5);
 	act(() => tree.unmount());
 });
 

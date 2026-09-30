@@ -170,7 +170,7 @@ var Methods = []MethodSpec{
 	{MethodTurnInterrupt, TurnInterruptParams{}, TurnInterruptResponse{}, ScopeBoth, "Cancels whatever turn the session is running; the receipt names the turn actually cancelled."},
 	{MethodTurnQueue, TurnQueueParams{}, TurnQueueResponse{}, ScopeBoth, "Queues a user message for after the active turn completes."},
 	{MethodTurnDrainAsSteer, TurnDrainAsSteerParams{}, TurnDrainAsSteerResponse{}, ScopeBoth, "Drains the input queue and injects it as a single steering message."},
-	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, TurnPromoteQueuedAsSteerResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn."},
+	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, TurnPromoteQueuedAsSteerResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn (or the next turn when none is running)."},
 	{MethodTurnCancelQueued, TurnCancelQueuedParams{}, TurnCancelQueuedResponse{}, ScopeBoth, "Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose)."},
 	{MethodGoalSet, GoalSetParams{}, GoalSetResponse{}, ScopeBoth, "Sets or clears the session's /goal objective."},
 	{MethodNotesHumanSet, NotesHumanSetParams{}, NotesHumanSetResponse{}, ScopeBoth, "Atomically accepts the human whiteboard and a notification; returns the canonical note and mutation receipt."},

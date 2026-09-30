@@ -1,13 +1,18 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 // A start or restore that fails for a transient reason (the target was busy,
@@ -223,11 +228,7 @@ func TestGivingUpOnAMissingTranscriptParksInsteadOfDropping(t *testing.T) {
 	for range 2 {
 		root.drivePendingStableDelegateAttention()
 	}
-	c := root.delegateController
-	c.mu.Lock()
-	_, parked := c.attentionParked[fenced.grandchildDelegateID]
-	_, stillOwed := c.attentionWakeIDs[fenced.grandchildDelegateID][fenced.attentionID]
-	c.mu.Unlock()
+	stillOwed, parked := fenced.owedAndParked()
 	root.Close()
 	if !parked || !stillOwed {
 		t.Fatalf("after giving up on a missing transcript: parked=%t owed=%t, want the attention kept and the delegate parked", parked, stillOwed)
@@ -284,36 +285,163 @@ func TestANilRestoreErrorIsNotCounted(t *testing.T) {
 	}
 }
 
-// A parked delegate stays out of the fenced escalation too: its hand-over
-// already failed once, and the lenient fenced read would treat a missing
-// transcript as empty and forget the attention. It stays owed and parked
-// until new attention unparks it (the PR's known limit).
-func TestAParkedDelegateIsNotEscalatedWhenItsAncestorCloses(t *testing.T) {
-	fenced := newFencedGrandchildAttention(t)
-	root, fixture := fenced.root, fenced.fixture
-	c := root.delegateController
-	c.parkDelegateAttention(fenced.grandchildDelegateID)
-	plans, err := c.CloseResumability(rootDelegateActor(root.ID()), fixture.delegateID, "turn_budget_exhausted")
-	if err != nil {
-		t.Fatalf("close parent resumability: %v", err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatalf("publish parent closure: %v", err)
+// A park stops the drive's cold restores; it does not strand attention a
+// closed ancestor has fenced off for good. The fenced scan escalates a parked
+// delegate too, and reads its transcript strictly: present, the message goes
+// to the root and the park ends with the attention; gone, nothing is
+// forgotten as never durable, and the delegate stays parked and owed.
+func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
+	parkedUnderClosedParent := func(t *testing.T) fencedGrandchildAttention {
+		t.Helper()
+		fenced := newFencedGrandchildAttention(t)
+		fenced.root.delegateController.parkDelegateAttention(fenced.grandchildDelegateID)
+		fenced.closeParent(t)
+		return fenced
 	}
 
-	root.drivePendingStableDelegateAttention()
+	t.Run("transcript present: handed to the root", func(t *testing.T) {
+		fenced := parkedUnderClosedParent(t)
 
-	rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
-	if err != nil {
-		t.Fatalf("read root attention fold: %v", err)
+		fenced.root.drivePendingStableDelegateAttention()
+
+		rootFold, err := readDelegateAttentionFold(transcriptPath(fenced.fixture.stateDir, fenced.fixture.meta.ID), fenced.fixture.meta.ID)
+		if err != nil {
+			t.Fatalf("read root attention fold: %v", err)
+		}
+		if got := rootFold.content[fenced.attentionID].Text(); got != "undelivered grandchild message" {
+			t.Fatalf("root attention content = %q, want the parked delegate's message escalated", got)
+		}
+		if owed, parked := fenced.owedAndParked(); owed || parked {
+			t.Fatalf("after escalation: owed=%t parked=%t, want neither", owed, parked)
+		}
+	})
+
+	// Not parallel: it swaps the default slog handler to capture the
+	// escalation's warning, which names the missing transcript.
+	t.Run("transcript gone: stays parked and owed, and the retry stands down", func(t *testing.T) {
+		var logged bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		fenced := parkedUnderClosedParent(t)
+		if err := os.Remove(transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)); err != nil {
+			t.Fatalf("remove grandchild transcript: %v", err)
+		}
+
+		fenced.root.drivePendingStableDelegateAttention()
+
+		if owed, parked := fenced.owedAndParked(); !owed || !parked {
+			t.Fatalf("after a failed strict escalation: owed=%t parked=%t, want the attention kept and parked", owed, parked)
+		}
+		// The delegate already said it is undeliverable; its failed
+		// escalation must not re-arm the retry, or the drive re-runs it
+		// every backoff tick forever.
+		fenced.root.attentionMu.Lock()
+		retryArmed := fenced.root.stableAttentionRetry.active
+		fenced.root.attentionMu.Unlock()
+		if retryArmed {
+			t.Fatal("a parked delegate's failed escalation armed the stable attention retry")
+		}
+		if got := logged.String(); !strings.Contains(got, "delegate attention failed") || !strings.Contains(got, "no such file or directory") {
+			t.Fatalf("daemon log = %q, want the escalation's failure naming the missing transcript", got)
+		}
+	})
+
+	// A failure the retry may outlast keeps the retry, and each failed pass
+	// backs it off further, so a persistent failure does not re-run the
+	// escalation at the initial delay forever.
+	t.Run("transcript unreadable: the retry backs off", func(t *testing.T) {
+		t.Parallel()
+		fenced := parkedUnderClosedParent(t)
+		clk := agenttest.NewFakeClock()
+		fenced.root.clock = clk
+		grandchildTranscript := transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)
+		if err := os.Remove(grandchildTranscript); err != nil {
+			t.Fatalf("remove grandchild transcript: %v", err)
+		}
+		// A directory in the transcript's place stats fine and fails the read.
+		if err := os.Mkdir(grandchildTranscript, 0o755); err != nil {
+			t.Fatalf("put a directory in place of the grandchild transcript: %v", err)
+		}
+
+		fenced.root.drivePendingStableDelegateAttention()
+		retryDelay := func() (time.Duration, bool) {
+			fenced.root.attentionMu.Lock()
+			defer fenced.root.attentionMu.Unlock()
+			return fenced.root.stableAttentionRetry.delay, fenced.root.stableAttentionRetry.active
+		}
+		if _, active := retryDelay(); !active {
+			t.Fatal("a parked delegate's escalation failing on an unreadable transcript did not arm the retry")
+		}
+		clk.Advance(jobNotificationRetryInitialDelay)
+		clk.Drain()
+		if delay, _ := retryDelay(); delay != 2*jobNotificationRetryInitialDelay {
+			t.Fatalf("retry delay after one failed pass = %v, want it backed off to %v", delay, 2*jobNotificationRetryInitialDelay)
+		}
+	})
+}
+
+// A park stops the drive's cold restores of a delegate whose runtime could
+// not be restored or handed over. Once the delegate has a live runtime again
+// (the user steered it, say), nothing about that failure stands in the way:
+// its own runtime can take the owed attention, so the park must not refuse
+// the reservation.
+func TestAParkedDelegateWithALiveRuntimeCanReserveItsAttention(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateControllerIdle(t, c, "dlg_parked", "")
+	const attentionID = "delegate:owed-before-the-park"
+	if !c.noteDelegateAttention("dlg_parked", attentionID) {
+		t.Fatal("note attention")
 	}
-	if _, handed := rootFold.content[fenced.attentionID]; handed {
-		t.Fatal("a parked delegate's attention was escalated")
-	}
+	c.parkDelegateAttention("dlg_parked")
+	runtime := &Session{}
 	c.mu.Lock()
-	_, owed := c.attentionWakeIDs[fenced.grandchildDelegateID][fenced.attentionID]
+	c.live["dlg_parked"] = &delegateLiveState{runtime: runtime}
 	c.mu.Unlock()
-	if !owed {
-		t.Fatal("a parked delegate's attention was forgotten")
+
+	if _, err := c.ReserveAttention(runtime, attentionID); err != nil {
+		t.Fatalf("ReserveAttention for a parked delegate that is resident again = %v, want the reservation", err)
+	}
+}
+
+// A parked delegate that nothing fences is not the cold-restore drive's
+// work, so it neither reads as runnable nor wakes the drive.
+func TestAParkedUnfencedDelegateIsNotRunnable(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateControllerIdle(t, c, "dlg_parked", "")
+	if !c.noteDelegateAttention("dlg_parked", "delegate:dlg_parked") {
+		t.Fatal("note attention")
+	}
+	if !c.hasRunnableDelegateAttention() {
+		t.Fatal("this test is not in the state it means to be: the unparked delegate is not runnable")
+	}
+	c.parkDelegateAttention("dlg_parked")
+	if c.hasRunnableDelegateAttention() {
+		t.Fatal("a parked, unfenced delegate reads as runnable")
+	}
+}
+
+// Only a missing transcript lets a parked delegate's failed escalation stand
+// down: nothing can bring that transcript back. Any other failure (appending
+// the hand-over to the root, resolving the source) may clear, so it keeps
+// the retry.
+func TestOnlyAMissingTranscriptStandsAParkedEscalationDown(t *testing.T) {
+	t.Parallel()
+	missing := fmt.Errorf("%w: %w", errDelegateAttentionSourceMissing, os.ErrNotExist)
+	if !parkedEscalationStandsDown(missing) {
+		t.Errorf("a missing transcript (%v) kept the retry", missing)
+	}
+	for _, err := range []error{
+		errors.New("append delegate attention to root: disk full"),
+		// Only the source transcript's absence stands down: a missing file
+		// anywhere else in the hand-over is not the delegate's transcript.
+		fmt.Errorf("append delegate attention to root: %w", os.ErrNotExist),
+		fmt.Errorf("resolve delegate attention: %w", errDelegateTargetBusy),
+	} {
+		if parkedEscalationStandsDown(err) {
+			t.Errorf("a transient hand-over failure (%v) stood the retry down", err)
+		}
 	}
 }

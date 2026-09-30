@@ -4,25 +4,14 @@ import {
 	accessOf,
 	knownAccess,
 	effortLabel,
-	type LaunchSetup,
 	modelFromId,
 	moveToHost,
 	networkApplies,
-	newestSetup,
 	ownedOverrides,
 	projectName,
 	setupOf,
 	withOwnedOverrides,
 } from "./launchSetup";
-
-const setup = (over: Partial<LaunchSetup> = {}): LaunchSetup => ({
-	host: "local",
-	cwd: "/home/jesse/git/evener",
-	model: { provider: "lunaroute", model: "glm-5.3-vision" },
-	effort: "xhigh",
-	overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "workspace-write" },
-	...over,
-});
 
 describe("the overrides the sheet owns", () => {
 	it("picks only the owned fields, copying lists", () => {
@@ -45,21 +34,6 @@ describe("the overrides the sheet owns", () => {
 			sandbox: "read-only",
 			env: { A: "1" },
 		});
-	});
-});
-
-describe("the newest remembered start (spec 11)", () => {
-	it("opens a new sheet on the newest start", () => {
-		const history = [
-			{ setup: setup({ effort: "high" }), at: 1 },
-			{ setup: setup({ cwd: "/home/jesse/git/docs", effort: "max" }), at: 3 },
-			{ setup: setup({ effort: "xhigh" }), at: 2 },
-		];
-		expect(newestSetup(history)?.cwd).toBe("/home/jesse/git/docs");
-	});
-
-	it("is nothing when nothing was ever started from this phone", () => {
-		expect(newestSetup([])).toBeNull();
 	});
 });
 

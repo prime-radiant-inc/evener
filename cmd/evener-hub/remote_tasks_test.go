@@ -3,75 +3,18 @@ package hub
 import (
 	"reflect"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/fuzz/reflectfill"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/rendezvous"
 )
 
-// fillEveryFieldNonZero reflectively sets every exported field of v (an
-// addressable struct) to a representative non-zero value, recursing through
-// pointers, slices, maps and nested structs. time.Time is filled directly
-// (its own fields are unexported, so reflection can't reach them).
-//
-// A test that copies only SOME of a source struct's fields into a derived
-// value, then compares the derived value against an explicit "want", cannot
-// tell "this field was correctly left out" from "this field happened to be
-// the zero value on both sides" unless every field starts non-zero. Filling
-// every field first is what lets TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields's
-// single whole-struct comparison stand in for a field-by-field
-// "only on the root" test for every current AND future field, with no
-// fixture update required when a new field is added to hubcore.LiveEntry.
-func fillEveryFieldNonZero(t *testing.T, v reflect.Value) {
-	t.Helper()
-	if v.Type() == reflect.TypeFor[time.Time]() {
-		v.Set(reflect.ValueOf(time.UnixMilli(1_700_000_000_000)))
-		return
-	}
-	switch v.Kind() {
-	case reflect.String:
-		v.SetString("x")
-	case reflect.Bool:
-		v.SetBool(true)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		v.SetInt(1)
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		v.SetUint(1)
-	case reflect.Float32, reflect.Float64:
-		v.SetFloat(1)
-	case reflect.Slice:
-		elem := reflect.New(v.Type().Elem()).Elem()
-		fillEveryFieldNonZero(t, elem)
-		v.Set(reflect.Append(reflect.MakeSlice(v.Type(), 0, 1), elem))
-	case reflect.Map:
-		key := reflect.New(v.Type().Key()).Elem()
-		fillEveryFieldNonZero(t, key)
-		val := reflect.New(v.Type().Elem()).Elem()
-		fillEveryFieldNonZero(t, val)
-		m := reflect.MakeMap(v.Type())
-		m.SetMapIndex(key, val)
-		v.Set(m)
-	case reflect.Pointer:
-		p := reflect.New(v.Type().Elem())
-		fillEveryFieldNonZero(t, p.Elem())
-		v.Set(p)
-	case reflect.Struct:
-		for _, field := range v.Fields() {
-			if field.CanSet() {
-				fillEveryFieldNonZero(t, field)
-			}
-		}
-	default:
-		t.Fatalf("fillEveryFieldNonZero: unhandled kind %v (type %v) — teach it this shape", v.Kind(), v.Type())
-	}
-}
-
 // The hub's own list rows carry a root's task progress, pending question and
 // failure summary, and an in-process subagent alias carries only the fields
-// it owns. Every field of live starts non-zero (fillEveryFieldNonZero), so
+// it owns. Every field of live starts non-zero (reflectfill.Fill), so
 // comparing the WHOLE alias entry against an explicit "want" of only the
 // fields the alias is meant to carry means a field added to the root later (a
 // last message) needs no field-specific "only on the root" test of its own,
@@ -81,7 +24,7 @@ func fillEveryFieldNonZero(t *testing.T, v reflect.Value) {
 // and S1b; fixes #2589).
 func TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields(t *testing.T) {
 	var live hubcore.LiveEntry
-	fillEveryFieldNonZero(t, reflect.ValueOf(&live).Elem())
+	reflectfill.Fill(t, reflect.ValueOf(&live).Elem(), "hubcore.LiveEntry")
 	// Fields that drive the alias's construction, rather than being carried
 	// or withheld verbatim, need specific, mutually consistent values instead
 	// of the filler's arbitrary ones.

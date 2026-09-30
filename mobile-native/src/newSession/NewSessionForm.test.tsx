@@ -369,7 +369,7 @@ it("starts on another host, remembers the start, and replaces the sheet with the
 		model: "glm-5.3-vision",
 		modelProvider: "lunaroute",
 	});
-	expect(form.memory.history()[0]?.setup).toEqual({
+	expect(form.memory.lastSetup()).toEqual({
 		host: "paradise-park",
 		cwd: "/Users/jesse/git/evener",
 		model: { provider: "lunaroute", model: "glm-5.3-vision" },
@@ -396,7 +396,7 @@ it("stays open with the hub's reason when the hub refuses the start", async () =
 	expect(form.parent.dispatch).not.toHaveBeenCalled();
 	expect(form.text()).toContain("the hub is shutting down");
 	expect(form.prompt().props.value).toBe("go");
-	expect(form.memory.history()).toEqual([]);
+	expect(form.memory.lastSetup()).toBeNull();
 	form.dispose();
 });
 
@@ -466,7 +466,7 @@ it("opens nothing when the form lost focus while the start was on its way", asyn
 	expect(form.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
 	expect(form.parent.dispatch).not.toHaveBeenCalled();
 	// The session exists: the start is remembered and the form is empty for next time.
-	expect(form.memory.history()).toHaveLength(1);
+	expect(form.memory.lastSetup()).not.toBeNull();
 	expect(form.store.getState().prompt).toBe("");
 	// So it isn't started twice, a banner says so and opens it (#3048).
 	const banner = form.alerts.getSnapshot().banner;
@@ -486,7 +486,7 @@ it("says Session started when the sheet was swiped away while the start was on i
 	await act(async () => form.releaseStart());
 	await settle();
 	expect(form.parent.dispatch).not.toHaveBeenCalled();
-	expect(form.memory.history()).toHaveLength(1);
+	expect(form.memory.lastSetup()).not.toBeNull();
 	expect(form.alerts.getSnapshot().banner?.alerts).toEqual([
 		{ kind: "started", ref: expect.any(String), title: expect.any(String), why: null },
 	]);
@@ -500,7 +500,7 @@ it("opens nothing when another connection took over while the start was on its w
 	await settle();
 	expect(form.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
 	expect(form.parent.dispatch).not.toHaveBeenCalled();
-	expect(form.memory.history()).toHaveLength(1);
+	expect(form.memory.lastSetup()).not.toBeNull();
 	expect(form.alerts.getSnapshot().banner?.alerts[0]).toMatchObject({ kind: "started" });
 	form.dispose();
 });
@@ -571,7 +571,7 @@ it("remembers the model and effort a per-launch setting started the session with
 		model: "lunaroute/glm-5.3-vision",
 		reasoningEffort: "high",
 	});
-	expect(form.memory.history()[0]?.setup).toMatchObject({
+	expect(form.memory.lastSetup()).toMatchObject({
 		model: { provider: "lunaroute", model: "glm-5.3-vision" },
 		effort: "high",
 	});

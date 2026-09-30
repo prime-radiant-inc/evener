@@ -2524,14 +2524,16 @@ type TurnDrainAsSteerResponse struct {
 // turn/promoteQueuedAsSteer (issue #22 per-message promote). Index selects
 // one entry of the session's FIFO input queue (matching the position shown
 // in the queue preview); the daemon removes just that entry and injects it
-// as a user-sourced steering message into the in-flight turn, leaving the
+// as a user-sourced steering message into the in-flight turn — or, when no
+// turn is running, as pending steering the next turn delivers — leaving the
 // other queued messages in place. ExpectedEntryID, when non-empty, must
 // match the id the daemon minted for that entry (surfaced via
 // QueueState.IDs): the queue head can be consumed mid-turn, so a bare index
 // from an older snapshot may point at a different message — a mismatch is a
 // Conflict, not a wrong-message promote (review F1). The daemon returns
-// Conflict when no turn is in flight, the index is out of range, or the
-// expected id no longer matches.
+// Conflict when the index is out of range or the expected id no longer
+// matches. Unlike turn/steer, no turn needs to be in flight: a queue a Stop
+// parked is promoteable as the queue strip's "run this now".
 type TurnPromoteQueuedAsSteerParams struct {
 	Ref                string `json:"ref"`
 	Index              int    `json:"index"`
@@ -3066,7 +3068,14 @@ type AuthStatusResponse struct {
 	WorkspaceID    string `json:"workspaceId,omitempty"`
 	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
 	NeedsLogin     bool   `json:"needsLogin,omitempty"`
-	Error          string `json:"error,omitempty"`
+	// RefreshRejected is true when the issuer permanently refused this
+	// instance's stored refresh token (authopenai.RefreshRejected, #2479):
+	// the access token may still be valid, but the session needs a fresh
+	// sign-in before its next refresh. It is why NeedsLogin can be true for a
+	// record whose access token has not expired, so a client must not read
+	// NeedsLogin alone as "the access token expired".
+	RefreshRejected bool   `json:"refreshRejected,omitempty"`
+	Error           string `json:"error,omitempty"`
 	// ConfigRevision is this instance's effective credential-configuration
 	// revision: a stable, keyed MAC the host re-resolves from the same state a
 	// credential write lands in (cmd/evener-hub/app_auth.go +

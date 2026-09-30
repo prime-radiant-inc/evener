@@ -661,6 +661,18 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("delegate did not finish after callback restoration")
 	}
+	// The finalize tail re-arms any attention still owed before it closes
+	// done, so the re-armed drive's turn (the fresh notification above) can
+	// still be settling when done fires. A resume sent into that window is
+	// refused as target_busy — the send's finalization wait covers only the
+	// finalizing refusal, not a drive in flight — so wait for the child to
+	// let everything go before asserting the resume starts.
+	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "quiescent child after post-finalization attention", func() bool {
+		fixture.child.mu.Lock()
+		defer fixture.child.mu.Unlock()
+		return !fixture.child.startBlockedLocked()
+	})
 	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
 		cfg.subagentAfterFinalStatePublish = nil
 	})
@@ -805,6 +817,14 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	if requests := adapter.Requests(); len(requests) != 2 {
 		t.Fatalf("provider requests after refused automatic drive = %d, want 2", len(requests))
 	}
+	// The tail's post-done machinery can still hold the child when done has
+	// fired; the resume this asserts is the one that machinery has let go.
+	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "quiescent child after fatal-run finalize", func() bool {
+		child.mu.Lock()
+		defer child.mu.Unlock()
+		return !child.startBlockedLocked()
+	})
 	explicitResume := (delegateRuntime{owner: parent}).send(context.Background(), result.DelegateID, "resume after fatal run", 0).result
 	if explicitResume.Err != nil || explicitResume.Action != "started" {
 		t.Fatalf("explicit child resume = %+v, want started", explicitResume)

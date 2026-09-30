@@ -365,3 +365,50 @@ func TestLaunchController_ResolveLayerValueWinsOverRuntimeDefault(t *testing.T) 
 		t.Errorf("Sandbox = %q, want builtin off", got.Effective.Sandbox)
 	}
 }
+
+// TestLaunchController_SetLayer_RefusesUnavailableRoot pins that a save under
+// an empty config root refuses with a clear error instead of writing a temp
+// file in the process working directory - what SaveLayer("") would do once
+// hubLaunchConfigRoot can return "".
+func TestLaunchController_SetLayer_RefusesUnavailableRoot(t *testing.T) {
+	cwd := canonicalTempDir(t)
+	c := newHubLaunchControllerWithEnv("", func(string) string { return "" }, false)
+	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+		CWD:    cwd,
+		Layer:  "global",
+		Config: appwire.LaunchConfigLayer{Model: "openai/gpt-5"},
+	})
+	if !errors.Is(err, errNoLaunchConfigRoot) {
+		t.Fatalf("SetLayer error = %v, want errNoLaunchConfigRoot", err)
+	}
+	// Nothing may land in cwd: a relative or empty root must never write there.
+	if entries, readErr := os.ReadDir(cwd); readErr != nil {
+		t.Fatal(readErr)
+	} else if len(entries) != 0 {
+		t.Fatalf("SetLayer wrote into cwd: %v", entries)
+	}
+}
+
+// TestLaunchController_TrustRepo_RefusesUnavailableRoot pins the trust half:
+// with no user root there is nowhere to record the trust decision, so it
+// refuses before SaveMeta("") fails against the process working directory.
+func TestLaunchController_TrustRepo_RefusesUnavailableRoot(t *testing.T) {
+	cwd := canonicalTempDir(t)
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`model = "from-repo"`)
+	if err := os.WriteFile(repoPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := launchconfig.CanonicalHashTOML(contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newHubLaunchControllerWithEnv("", func(string) string { return "" }, false)
+	_, err = c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash})
+	if !errors.Is(err, errNoLaunchConfigRoot) {
+		t.Fatalf("TrustRepo error = %v, want errNoLaunchConfigRoot", err)
+	}
+}

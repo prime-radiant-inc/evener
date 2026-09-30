@@ -30,3 +30,15 @@ it("keeps an instance that is falsy, making it once", () => {
 	expect(each.get("hub-a")).toBe(0);
 	expect(made).toBe(1);
 });
+
+it("can look up an existing hub without allocating memory for an uncommitted reader", () => {
+	let made = 0;
+	const each = perHub(() => ++made);
+	expect(each.peek("hub-a")).toBeUndefined();
+	expect(made).toBe(0);
+	expect(each.get("hub-a")).toBe(1);
+	expect(each.peek("hub-a")).toBe(1);
+	each.forget("hub-a");
+	expect(each.peek("hub-a")).toBeUndefined();
+	expect(made).toBe(1);
+});

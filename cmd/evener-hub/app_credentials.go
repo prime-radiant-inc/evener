@@ -54,8 +54,8 @@ func credentialTestKey(name, asserted string) string {
 }
 
 // loadCredentialTestClient builds the probe client the child would get: the
-// user layer at path while the hub is reading it, and none at all when there
-// is no user layer or the file does not load (spec §10). Probing a client the
+// selected usable user layer at path, or none when explicitly disabled or no
+// usable user file has loaded (spec §10). Probing a client the
 // child will never build answers about a different session.
 func loadCredentialTestClient(path string, noUserLayer bool) (credentialProbeClient, error) {
 	if noUserLayer {
@@ -186,7 +186,12 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 	if required && inst.CredentialSource == "none" {
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage), nil
 	}
-	client, err := loader(c.providersConfigPath, childNoUserLayer(c.noUserLayer, c.reg))
+	childConfig, err := prepareChildProviderConfig(c.providersConfigPath, c.noUserLayer, c.reg, nil)
+	if err != nil {
+		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage), nil
+	}
+	defer childConfig.cleanup()
+	client, err := loader(childConfig.path, childConfig.noUserLayer)
 	if err != nil || client == nil {
 		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage), nil
 	}

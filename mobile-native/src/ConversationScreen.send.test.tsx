@@ -1218,11 +1218,11 @@ it("waits for the bottom bar to lay out before restoring a reading position", as
 // land, move and land again.
 describe("opening a session", () => {
 	const opacity = (tree: ReactTestRenderer) => transcriptList(tree).props.style?.opacity;
-	const layOutViewport = (tree: ReactTestRenderer) => {
+	const layOutViewport = (tree: ReactTestRenderer, contentHeight = 20_000) => {
 		act(() =>
 			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
 		);
-		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+		act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
 	};
 	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
 		harness.kv.set(
@@ -1433,6 +1433,63 @@ describe("opening a session", () => {
 			} finally {
 				vi.useRealTimers();
 			}
+		});
+	});
+
+	// The list's content grows in stages as it renders the rows below a saved
+	// position, so the first restore can fall short of it (clamped). Showing
+	// the list there would show it land short and then move.
+	describe("when the list can't reach the saved position yet", () => {
+		const offsets = () =>
+			flatListCalls
+				.filter((call) => call.method === "scrollToOffset")
+				.map((call) => (call.args as { offset: number }).offset);
+
+		it("shows it only once the restore reaches the row", async () => {
+			savePosition("ref-open-clamped", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped"));
+			flatListCalls.length = 0;
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			// It moves as far as the list reaches, out of sight.
+			expect(offsets().at(-1)).toBeLessThan(9_523);
+			expect(opacity(tree)).toBe(0);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+			layOutRow(tree, 3, 19_000);
+			await settle();
+			expect(offsets().at(-1)).toBe(9_523);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("shows it short of the row once the last row has measured", async () => {
+			savePosition("ref-open-near-end", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-near-end"));
+			flatListCalls.length = 0;
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 2_800);
+			layOutRow(tree, 3, 2_900);
+			await settle();
+			// The content is whole, so as far as the list reaches is where it rests.
+			expect(offsets().at(-1)).toBeLessThan(2_800);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("keeps it hidden when the restore runs again short of the row, until the last row measures", async () => {
+			savePosition("ref-open-clamped-again", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped-again"));
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			expect(opacity(tree)).toBe(0);
+			// A row between measures: the restore runs again, already as far as
+			// the list reaches, and the rows below are still estimates.
+			layOutRow(tree, 2, 9_700);
+			await settle();
+			expect(opacity(tree)).toBe(0);
+			layOutRow(tree, 3, 9_900);
+			await settle();
+			expect(opacity(tree)).toBe(1);
 		});
 	});
 

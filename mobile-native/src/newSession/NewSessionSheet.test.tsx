@@ -118,10 +118,13 @@ it("names the hub's own machine after the hub (ruling 3)", async () => {
 });
 
 it("opens on the newest remembered start and reads that host's models", async () => {
-	(harness.memory as LaunchMemory).recordStart(
-		{ host: "paradise-park", cwd: "/Users/jesse/git/evener", model: null, effort: "", overrides: {} },
-		1,
-	);
+	(harness.memory as LaunchMemory).recordStart({
+		host: "paradise-park",
+		cwd: "/Users/jesse/git/evener",
+		model: null,
+		effort: "",
+		overrides: {},
+	});
 	const sheet = await mount();
 	expect(sheet.context().store.getState()).toMatchObject({ source: "paradise-park", cwd: "/Users/jesse/git/evener" });
 	expect(harness.requests).toContainEqual({
