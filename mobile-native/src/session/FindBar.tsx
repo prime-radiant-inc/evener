@@ -13,6 +13,7 @@ export function FindBar({
 	query,
 	label,
 	searchingOlder,
+	error,
 	settled,
 	onQuery,
 	onStep,
@@ -22,8 +23,10 @@ export function FindBar({
 	query: string;
 	/** Where you are among the matches: "2 of 3", "No matches". */
 	label: string;
-	/** An older page is loading to look for a match in it. */
+	/** Older history is still being searched, including retry waits. */
 	searchingOlder: boolean;
+	/** History could not be searched; this is not a no-match answer. */
+	error?: string;
 	/** The label is the search's answer, not a step on the way to it. */
 	settled: boolean;
 	onQuery(query: string): void;
@@ -34,18 +37,20 @@ export function FindBar({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const canStep = query.trim() !== "" && !searchingOlder;
-	const shown = searchingOlder ? "Searching older messages…" : label;
+	const canStep = query.trim() !== "" && !searchingOlder && !error;
+	let shown = label;
+	if (error) shown = `Search incomplete: ${error}`;
+	else if (searchingOlder) shown = "Searching older messages…";
 	// VoiceOver hears where you are once a step or search settles, and that
 	// older messages are loading while they do; what the label passes through
 	// on the way stays quiet. An announcement, since iOS ignores
 	// accessibilityLiveRegion, which only Android reads.
 	const announced = useRef("");
 	useEffect(() => {
-		if (!shown || shown === announced.current || !(settled || searchingOlder)) return;
+		if (!shown || shown === announced.current || !(settled || searchingOlder || error)) return;
 		announced.current = shown;
 		AccessibilityInfo.announceForAccessibility(shown);
-	}, [shown, settled, searchingOlder]);
+	}, [shown, settled, searchingOlder, error]);
 	return (
 		<View
 			style={{

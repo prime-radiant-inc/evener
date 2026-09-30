@@ -16,7 +16,7 @@ import (
 // dir only if the link target is the share binary -- the bin dir itself
 // must map back to the prefix.
 func TestInstallDirsFromExecutableResolvesBinSymlink(t *testing.T) {
-	root := t.TempDir()
+	root := symlinkResolvedTempDir(t)
 	shareBin := filepath.Join(root, "share", "evener", "bin")
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestInstallDirsFromExecutableResolvesBinSymlink(t *testing.T) {
 // via a hardlink or copy sitting straight in <prefix>/bin: no symlink to
 // resolve, but the bin layout must still map back to the prefix.
 func TestInstallDirsFromExecutableAcceptsBinDirDirectly(t *testing.T) {
-	root := t.TempDir()
+	root := symlinkResolvedTempDir(t)
 	binDir := filepath.Join(root, "bin")
 	if err := os.MkdirAll(filepath.Join(root, "share", "evener", "bin"), 0o755); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestInstallDirsFromExecutableAcceptsBinDirDirectly(t *testing.T) {
 // share path on systems where both exist): resolution must land on the
 // share layout, not fail on the link's own directory.
 func TestInstallDirsFromExecutableResolvesShareSymlink(t *testing.T) {
-	root := t.TempDir()
+	root := symlinkResolvedTempDir(t)
 	shareBin := filepath.Join(root, "share", "evener", "bin")
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {
 		t.Fatal(err)

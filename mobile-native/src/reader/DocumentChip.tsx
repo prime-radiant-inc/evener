@@ -101,14 +101,13 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 					{title}
 				</Text>
 			</View>
-			{secondary === null && facts.length === 0 ? null : (
-				<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...small, fontVariant: ["tabular-nums"] }}>
-					{secondary === null ? null : (
-						<Text style={{ fontFamily: fonts.mono, fontSize: 12 * scale }}>{secondary}</Text>
-					)}
-					{details}
-				</Text>
-			)}
+			{/* The second line is always there, held by a no-break space until its
+			    summary or age lands, so the chip never grows and moves the rows
+			    below it. */}
+			<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...small, fontVariant: ["tabular-nums"] }}>
+				{secondary === null ? null : <Text style={{ fontFamily: fonts.mono, fontSize: 12 * scale }}>{secondary}</Text>}
+				{secondary === null && facts.length === 0 ? "\u00a0" : details}
+			</Text>
 		</Pressable>
 	);
 }

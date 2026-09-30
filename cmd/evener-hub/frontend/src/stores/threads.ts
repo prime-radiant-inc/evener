@@ -634,6 +634,8 @@ function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId
     .discardCanceledOfInstance(targetRef, supersededThreadId)
     .then(() => {
       if (!isCurrentMutationRuntime(runtime)) return;
+      // Rows left the outbox: in-flight reads for the ref are stale.
+      noteMutationStateChange(targetRef);
       // Every successful cleanup notifies AND refreshes pins, zero included -
       // the local discard path's own rule. Zero says what THIS tab's write
       // removed, never what another tab removed from under this tab's cached
@@ -742,22 +744,67 @@ let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
 const dispatchableMutationRefs = new Set<string>();
-// Refs whose outbox holds at least one non-canceled row: work the ref's FIFO
-// could still deliver. Deliberately NOT pinnedMutationRefs - that is a
+// Per ref, the clientMutationIds of that ref's durably committed rows this tab
+// has not yet proven handled. The fallback's ordering guard asks exactly one
+// question - does this ref have a committed row that has not been delivered? -
+// and this map answers it with the rows themselves rather than a boolean that
+// has to be guessed at. Deliberately NOT pinnedMutationRefs: that is a
 // retention pin, and a canceled row (which leaves only on an explicit Retry or
-// the thread going away) keeps a ref pinned with nothing left to deliver. The
-// fallback's ordering guard reads this set instead, so a Stop's canceled queued
-// row cannot refuse a later send. Maintained from the records the pin refreshes
-// already read (refreshMutationPins / refreshMutationPinAfterRemoval) and on a
-// commit whose row is not born-canceled.
-const undeliveredMutationRefs = new Set<string>();
-// Per-ref generation bumped by every durable outbox commit. A refresh records
-// it before its outbox read and discards its result if it moved under the read,
-// so a read that began before a commit cannot land after it and clear the
-// commit's own markers (undeliveredMutationRefs / the dispatch arm) from an
-// empty snapshot - which would let a later storage-timeout fallback send
-// directly while the committed row is still queued.
-const mutationCommitGenerations = new Map<string, number>();
+// the thread going away) keeps a ref pinned with nothing left to deliver.
+//   - a commit whose row is not born-canceled adds that row's id (every writer
+//     can name its row: the send funnel from the record, the recovery writes
+//     from the record they create or the id they reopen);
+//   - a settle that proves delivery (settleReceipt / settleApplied) removes it;
+//   - a successful read replaces the ref's ids with the non-canceled rows it
+//     observed - also how a persisted row this tab never committed (a reload,
+//     another tab) enters the set;
+//   - a cancel path that cannot name its rows leaves them until that next
+//     successful read;
+//   - a failed read changes nothing: guessing "nothing is undelivered" while
+//     storage is unreadable is precisely the reorder this guard exists to
+//     prevent.
+const undeliveredMutationIds = new Map<string, Set<string>>();
+// Whether the guard's question is answered yes for a ref, for the places that
+// want a bool (the fallback admission, disarmQuiescedMutationArm).
+function hasUndeliveredMutation(ref: string): boolean {
+  return (undeliveredMutationIds.get(ref)?.size ?? 0) > 0;
+}
+function noteUndeliveredMutation(ref: string, clientMutationId: string): void {
+  const ids = undeliveredMutationIds.get(ref) ?? new Set<string>();
+  ids.add(clientMutationId);
+  undeliveredMutationIds.set(ref, ids);
+}
+// A proven delivery, from the two settle writes (see the runtime's storage
+// wiring). This is what clears a settled row - no read required, so a settle
+// whose clearing refresh fails cannot leave the guard armed forever. Only the
+// id removal lives here; the read invalidation is separate and unconditional
+// (see noteMutationStateChange), because a settle for a row this tab never
+// registered still changed the ref's outbox.
+function noteHandledMutation(clientMutationId: string): void {
+  for (const [ref, ids] of undeliveredMutationIds) {
+    if (!ids.delete(clientMutationId)) continue;
+    if (ids.size === 0) undeliveredMutationIds.delete(ref);
+  }
+}
+// A successful read is the authoritative snapshot of the ref: its ids are
+// exactly the rows that read observed as non-canceled work.
+function replaceUndeliveredMutations(ref: string, clientMutationIds: Iterable<string>): void {
+  const ids = new Set(clientMutationIds);
+  if (ids.size === 0) undeliveredMutationIds.delete(ref);
+  else undeliveredMutationIds.set(ref, ids);
+}
+// The rule, in one place: ANY change to a ref's durable outbox state advances
+// that ref's generation of read invalidation, so a read that began before the
+// change discards its snapshot instead of restoring what the change resolved
+// (or dropping what it added). Whoever performs the change names the ref: a
+// commit, a settle (the storage reports the settled record's own ref), a cancel
+// or a removal. A read's own reconciliation does not advance: reads are what
+// the generation is compared against, and advancing there would let a newer
+// read's snapshot be discarded by an older one.
+const mutationStateGenerations = new Map<string, number>();
+function noteMutationStateChange(ref: string): void {
+  mutationStateGenerations.set(ref, (mutationStateGenerations.get(ref) ?? 0) + 1);
+}
 // Per-ref count of durable enqueues whose write is still in flight (from the
 // click until enqueueDurableMutation settles). dispatchableMutationRefs cannot
 // serve this: a background pin refresh clears a ref's arm when the outbox reads
@@ -857,8 +904,8 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
 // that set for its own sake, and the clause's absence only means "the client is
 // current and the ref is not fenced" - the admission the fallback needs. The
 // refs that DO hold durable work are covered separately, by the fallback's own
-// ordering guard: undeliveredMutationRefs (the ref's outbox holding a
-// non-canceled row) plus inflightDurableEnqueues (a durable enqueue for the ref
+// ordering guard: undeliveredMutationIds (the committed rows this tab has not
+// proven delivered) plus inflightDurableEnqueues (a durable enqueue for the ref
 // still in flight).
 function currentDispatchClient(targetRef?: string, method?: string, requireArmed = true): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
@@ -926,31 +973,38 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
   if (!isCurrentMutationRuntime(runtime)) return;
   for (const targetRef of targetRefs) {
     if (!isCurrentMutationRuntime(runtime)) return;
-    const generation = mutationCommitGenerations.get(targetRef) ?? 0;
+    const generation = mutationStateGenerations.get(targetRef) ?? 0;
+    // A failed read proves nothing, so it changes nothing: guessing "nothing is
+    // undelivered" here is what let a later storage-timeout send dispatch ahead
+    // of a committed row whose delivery no one had proven. The rejection still
+    // propagates, so a caller that relied on it (the hydration reconciliation
+    // aborts on it) keeps that flow.
     const [outbox, optimistic] = await Promise.all([
       runtime.storage.listOutbox(targetRef),
       runtime.storage.listOptimistic(targetRef),
     ]);
     if (!isCurrentMutationRuntime(runtime)) return;
     // A durable commit for this ref since the read began means this snapshot
-    // predates it: discard rather than clobber the commit's own markers.
-    if ((mutationCommitGenerations.get(targetRef) ?? 0) !== generation) continue;
-    const hasUndeliveredWork = outbox.some((record) => record.state !== "canceled");
+    // predates it: discard rather than replace the commit's own ids.
+    if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) continue;
+    // A successful read is the authoritative snapshot: the ref's ids are
+    // exactly the non-canceled rows this read observed.
+    replaceUndeliveredMutations(
+      targetRef,
+      outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+    );
     if (outbox.length > 0) {
       pinnedMutationRefs.add(targetRef);
-      if (hasUndeliveredWork) undeliveredMutationRefs.add(targetRef);
-      else undeliveredMutationRefs.delete(targetRef);
       continue;
     }
     if (optimistic.length > 0) {
       pinnedMutationRefs.add(targetRef);
-      // An optimistic row is accepted (settled), never undelivered work.
-      undeliveredMutationRefs.delete(targetRef);
+      // An optimistic row is accepted (settled), never undelivered work - the
+      // empty outbox above already says so in the ids.
       dispatchableMutationRefs.delete(targetRef);
       continue;
     }
     pinnedMutationRefs.delete(targetRef);
-    undeliveredMutationRefs.delete(targetRef);
     dispatchableMutationRefs.delete(targetRef);
     dropUnpinnedModel(targetRef);
   }
@@ -968,16 +1022,20 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
 // turn on the next discovery; a dispatch killed here costs the user's save.
 async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRef: string): Promise<void> {
   if (!isCurrentMutationRuntime(runtime)) return;
-  const generation = mutationCommitGenerations.get(targetRef) ?? 0;
+  const generation = mutationStateGenerations.get(targetRef) ?? 0;
+  // As in refreshMutationPins: a failed read proves nothing and changes
+  // nothing, so nothing here catches it.
   const [outbox, optimistic] = await Promise.all([
     runtime.storage.listOutbox(targetRef),
     runtime.storage.listOptimistic(targetRef),
   ]);
   if (!isCurrentMutationRuntime(runtime)) return;
   // As in refreshMutationPins: a commit since the read began outranks it.
-  if ((mutationCommitGenerations.get(targetRef) ?? 0) !== generation) return;
-  if (outbox.some((record) => record.state !== "canceled")) undeliveredMutationRefs.add(targetRef);
-  else undeliveredMutationRefs.delete(targetRef);
+  if ((mutationStateGenerations.get(targetRef) ?? 0) !== generation) return;
+  replaceUndeliveredMutations(
+    targetRef,
+    outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
+  );
   if (outbox.length > 0 || optimistic.length > 0) {
     pinnedMutationRefs.add(targetRef);
     return;
@@ -1066,6 +1124,27 @@ function getMutationRuntime(): MutationRuntime | null {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
       },
     });
+  // A proven delivery is what resolves a committed row's id: the two settle
+  // writes are the only place this tab learns that a committed row reached the
+  // daemon. `settleReceipt` is the dispatcher's receipt commit and
+  // `settleApplied` the live-submission reconciliation. This is what clears a
+  // settled row: no read has to succeed for the guard to stand down. The
+  // invalidation is unconditional and comes with the settled record's own ref,
+  // so a settle for a row this tab never registered still invalidates that
+  // ref's in-flight reads (see noteMutationStateChange).
+  const settleReceipt = storage.settleReceipt.bind(storage);
+  storage.settleReceipt = async (clientMutationId, projectionState) => {
+    const settled = await settleReceipt(clientMutationId, projectionState);
+    if (settled) noteHandledMutation(clientMutationId);
+    return settled;
+  };
+  const settleApplied = storage.settleApplied.bind(storage);
+  storage.settleApplied = async (clientMutationId) => {
+    const settled = await settleApplied(clientMutationId);
+    if (settled) noteHandledMutation(clientMutationId);
+    return settled;
+  };
+  storage.setSettledListener((targetRef) => noteMutationStateChange(targetRef));
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
   // that spawned it has already notified — the dispatcher's post-settlement
   // refresh may have completed before the cleanup's write does, and a
@@ -1091,6 +1170,10 @@ function getMutationRuntime(): MutationRuntime | null {
   const dispatcher = new MutationDispatcher(storage, {
     getClient,
     onStorageChange: (targetRefs) => {
+      // The dispatcher's own state changes - a settle, a recovery transfer, a
+      // blocked reclassification - invalidate in-flight reads for every ref it
+      // names, on the rule noteMutationStateChange states.
+      for (const targetRef of targetRefs) noteMutationStateChange(targetRef);
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
     },
     onBlockedMutation: (targetRef, client) => {
@@ -1448,7 +1531,9 @@ export async function retryBlockedMutation(
     const released = await trackOutboxWrite(
       record.targetRef,
       () => runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }),
-      (didRelease) => didRelease,
+      // The released row keeps the id it is reopened under, and is undelivered
+      // work: it is reopened for a fresh dispatch.
+      (didRelease) => (didRelease ? { clientMutationId, undelivered: true } : undefined),
     );
     if (!released) return false;
     notifyMutationPersistence([record.targetRef]);
@@ -1500,7 +1585,14 @@ export async function discardRecoveryMutation(
   const runtime = requireMutationRuntime();
   await runtime.start;
   const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
-  if (discarded) notifyMutationPersistence([targetRef]);
+  if (discarded) {
+    // A row left the outbox: in-flight reads for the ref are stale.
+    noteMutationStateChange(targetRef);
+    // The removed row's id is resolved: a later settle of a replacement, or
+    // unreadable storage, must not keep blocking fallback sends behind it.
+    noteHandledMutation(clientMutationId);
+    notifyMutationPersistence([targetRef]);
+  }
   return discarded;
 }
 
@@ -1520,9 +1612,18 @@ export async function resendRecoveryMutation(
   const record = await trackOutboxWrite(
     targetRef,
     () => runtime.storage.resendRecovery(clientMutationId, intent),
-    (resent) => resent !== undefined && resent.state !== "canceled",
+    // A resend mints its own row, so the id comes from the record it returns.
+    (resent) =>
+      resent === undefined
+        ? undefined
+        : { clientMutationId: resent.clientMutationId, undelivered: resent.state !== "canceled" },
   );
   if (!record) return undefined;
+  // The resend mints a new row and removes the recovery row it came from, so
+  // the old id is resolved: keep the new one (trackOutboxWrite registered it)
+  // and drop the old, so a later settle of the new row or unreadable storage
+  // does not strand the guard on a row that no longer exists.
+  noteHandledMutation(clientMutationId);
   pinnedMutationRefs.add(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
@@ -1805,6 +1906,9 @@ function discardCanceledMutations(targetRef: string): Promise<void> {
     .discardCanceled(targetRef)
     .then(() => {
       if (!isCurrentMutationRuntime(runtime)) return;
+      // Rows left the outbox: in-flight reads for the ref are stale, whether or
+      // not any of their ids was registered here.
+      noteMutationStateChange(targetRef);
       // Every successful discard notifies, a zero count included: zero says
       // what THIS tab's write removed, never what another tab may have
       // removed from under this tab's cached projection - and the notify is
@@ -1832,7 +1936,15 @@ async function cancelUnattemptedMutations(ref: string): Promise<void> {
   const runtime = getMutationRuntime();
   if (!runtime) return;
   await runtime.start;
-  await runtime.storage.cancelUnattempted(ref);
+  const canceled = await runtime.storage.cancelUnattempted(ref);
+  // Rows were canceled in the outbox: in-flight reads for the ref are stale,
+  // whether or not their ids were registered here.
+  noteMutationStateChange(ref);
+  // The write named the ids it canceled, so they are provably undelivered no
+  // more: leaving them would fail a later send closed for a row that never
+  // reached the daemon. Only a cancel path that cannot name its rows may leave
+  // them for the next successful read.
+  for (const clientMutationId of canceled) noteHandledMutation(clientMutationId);
   // Notify on every successful write, zero canceled rows included: zero is
   // exactly what this tab sees when a sibling tab's Stop already canceled the
   // rows, and cancelUnattempted is a raw storage write — it announces nothing
@@ -2277,22 +2389,27 @@ function releaseInflightDurableEnqueue(ref: string): void {
 // marked as holding undelivered work when the write commits a row that is not
 // canceled. Without this the guard's in-memory state stays stale-empty until an
 // async refresh reads the row back - and if storage wedges first, a fallback
-// send jumps the row that was just written. (Writes that only REMOVE or cancel
-// rows - discardRecovery, updateRecoveryInput, discardCanceled,
+// send jumps the row that was just written. Every caller names the row it
+// wrote: a reopened recovery row keeps its id and a resend returns the new
+// record, so the settle that proves delivery can resolve it. (Writes that only
+// REMOVE or cancel rows - discardRecovery, updateRecoveryInput, discardCanceled,
 // discardCanceledOfInstance, cancelUnattempted - need no registration: they
 // never create undelivered work, and the next refresh/hydration recomputes the
-// set from the records when it can read them.)
+// ids from the records when it can read them.)
 async function trackOutboxWrite<T>(
   ref: string,
   write: () => Promise<T>,
-  committedUndelivered: (result: T) => boolean,
+  committedRow: (result: T) => { clientMutationId: string; undelivered: boolean } | undefined,
 ): Promise<T> {
   inflightDurableEnqueues.set(ref, (inflightDurableEnqueues.get(ref) ?? 0) + 1);
   try {
     const result = await write();
-    if (committedUndelivered(result)) {
-      undeliveredMutationRefs.add(ref);
-      noteMutationCommit(ref);
+    const committed = committedRow(result);
+    if (committed !== undefined) {
+      // The write changed this ref's outbox, so in-flight reads are stale
+      // whether or not the row it touched is undelivered work.
+      noteMutationStateChange(ref);
+      if (committed.undelivered) noteUndeliveredMutation(ref, committed.clientMutationId);
     }
     return result;
   } finally {
@@ -2311,15 +2428,9 @@ async function trackOutboxWrite<T>(
 // whose only row is canceled (which leaves only on an explicit Retry or the
 // thread going away) stays pinned forever.
 function disarmQuiescedMutationArm(ref: string): void {
-  if (!undeliveredMutationRefs.has(ref) && (inflightDurableEnqueues.get(ref) ?? 0) === 0) {
+  if (!hasUndeliveredMutation(ref) && (inflightDurableEnqueues.get(ref) ?? 0) === 0) {
     dispatchableMutationRefs.delete(ref);
   }
-}
-
-// Note a durable outbox commit for the ref: refreshes that began their read
-// before it discard their (now-stale) snapshot - see mutationCommitGenerations.
-function noteMutationCommit(ref: string): void {
-  mutationCommitGenerations.set(ref, (mutationCommitGenerations.get(ref) ?? 0) + 1);
 }
 
 // The hydrated-replay gate: a matching pending hydration for the ref keeps
@@ -2445,8 +2556,8 @@ async function enqueueMutationIntent(
     // ordering guard is not the dispatcher's arm but the two checks below.
     //
     // A fallback send must not jump an earlier durable send for the ref, and
-    // two in-memory facts cover what this tab can see. undeliveredMutationRefs
-    // is the ref's outbox holding a NON-CANCELED row - undelivered work. (Not
+    // two in-memory facts cover what this tab can see. undeliveredMutationIds
+    // holds the ref's committed rows this tab has not proven delivered. (Not
     // pinnedMutationRefs: that is a retention pin, and a canceled row keeps a
     // ref pinned with nothing left to deliver, so reading it would refuse the
     // fallback for a ref whose only row a Stop already canceled.) And
@@ -2461,7 +2572,7 @@ async function enqueueMutationIntent(
     // reorder.
     const dispatchClient = currentDispatchClient(ref, intent.method, false);
     const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
-    if (dispatchClient === null || undeliveredMutationRefs.has(ref) || concurrentEnqueueOutstanding) {
+    if (dispatchClient === null || hasUndeliveredMutation(ref) || concurrentEnqueueOutstanding) {
       disarmQuiescedMutationArm(ref);
       throw error;
     }
@@ -2492,12 +2603,12 @@ async function enqueueMutationIntent(
   // Every commit bumps the generation refreshes check against: a born-canceled
   // row's pin must survive a stale refresh just as an undelivered row's markers
   // must.
-  noteMutationCommit(ref);
+  noteMutationStateChange(ref);
   pinnedMutationRefs.add(ref);
   // A committed row is undelivered work unless the stop barrier committed it
   // born-canceled.
   const committedUndelivered = record.state !== "canceled";
-  if (committedUndelivered) undeliveredMutationRefs.add(ref);
+  if (committedUndelivered) noteUndeliveredMutation(ref, record.clientMutationId);
   // A background pin refresh can clear the ref's arm while this write was in
   // flight (it reads the outbox empty before the commit), so re-arm on a
   // successful non-canceled commit rather than wait for the next hydration's
@@ -2550,17 +2661,79 @@ function isStorageUnavailable(error: unknown): boolean {
   return error instanceof MutationStorageTimeoutError;
 }
 
+// The fallback send's RPC is its only transport, so a failure on the wire is
+// retried rather than surfaced. Only a transport failure earns the second
+// attempt: a settled WireError is the daemon's own answer (a conflict or a
+// malformed request cannot succeed on an identical retry), while a timeout or a
+// dropped connection leaves the outcome unknown. The clientMutationId is minted
+// ONCE, before the ladder, and every attempt reuses it - the daemon dedups by
+// clientMutationId, so a reply lost after the mutation applied replays as a
+// no-op on the retry instead of applying twice.
+const MUTATION_FALLBACK_SEND_ATTEMPTS = 2;
+// A dropped connection leaves the client "reconnecting", where a retry fired
+// now only meets the client's own synchronous not-ready rejection. Wait for a
+// ready client before the second attempt, bounded so a wedged hub cannot hang
+// the send: 10s is the durable-write watchdog's own scale, which the composer
+// already tolerates. The read paths never wait like this for a mutation because
+// a blind retry could land twice - but every attempt here reuses one
+// clientMutationId, so the daemon dedups them.
+const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
+
 // The imperative transport for a mutation whose durable write could not be
-// made: the same plain RPC the non-durable operations issue. The client mints
-// the clientMutationId exactly as those operations do, so the daemon still
-// dedups a replay; a rejection maps a conflict the same way they do.
+// made: the same plain RPC the non-durable operations issue. Delivery here is
+// at-least-once, not deduplicated: the id is freshly minted and NOTHING durable
+// holds it, so if this RPC lands but its response is lost, a retry of the same
+// action mints a different id and the daemon cannot recognise the duplicate
+// (the same gap Jesse's ruling documents in issue #3313). A rejection maps a
+// conflict the same way the non-durable operations do.
 async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
   const clientMutationId = createSecureUUID();
-  try {
-    const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
-    await request.call(client, intent.method, { ...intent.payload, clientMutationId });
-  } catch (err) {
-    throw mapConflict(err);
+  let target = client;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      // Resolve the transport from the CURRENT target: a retry may run against
+      // a rewired or waited-ready client, so the first client's request must
+      // not be reused.
+      const request = target.request as unknown as (
+        method: string,
+        params: Record<string, unknown>,
+      ) => Promise<unknown>;
+      await request.call(target, intent.method, { ...intent.payload, clientMutationId });
+      return;
+    } catch (err) {
+      if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
+      // A failed client that has closed for good can never become ready again,
+      // but a manual retry (ConnectionBanner) may already have wired a
+      // replacement - which can itself still be connecting. Retry against it
+      // once it is ready (bounded); surface at once only when no replacement
+      // has been wired at all, rather than waiting out the bound for a failed
+      // client that can never recover. requireClient() is rewire-aware, so it
+      // reads the current client, not the failed one.
+      if (target.state === "closed" || target.terminalReason !== null) {
+        let replacement: AppwireClientLike | null = null;
+        try {
+          const current = requireClient();
+          if (current !== target) replacement = current;
+        } catch {
+          replacement = null;
+        }
+        if (replacement === null) throw mapConflict(err);
+        if (replacement.state !== "ready") {
+          try {
+            replacement = await requireReadyClient(MUTATION_FALLBACK_SEND_READY_WAIT_MS);
+          } catch {
+            throw mapConflict(err);
+          }
+        }
+        target = replacement;
+        continue;
+      }
+      try {
+        target = await requireReadyClient(MUTATION_FALLBACK_SEND_READY_WAIT_MS);
+      } catch {
+        throw mapConflict(err);
+      }
+    }
   }
 }
 
@@ -3935,7 +4108,11 @@ function waitForReadyOrRewire(client: AppwireClientLike, timeoutMs: number): Pro
 // enqueueMutationIntent gate) deliberately do NOT call this - they keep
 // AppwireClient's synchronous rejection, so a caller retrying a mutation
 // whose first attempt may already be executing server-side can never have
-// both attempts land.
+// both attempts land. The one mutation that does wait here is
+// enqueueMutationIntent's storage-unavailable fallback send
+// (dispatchMutationDirectly): it reuses ONE clientMutationId across its
+// attempts, so the daemon dedups a replay and the double-land reason above
+// does not hold.
 //
 // Loops rather than waiting once: a rewire mid-wait can land on a client
 // that is ALSO not yet ready (a fresh client still mid-handshake), so this
@@ -4821,8 +4998,8 @@ export function resetThreadsStoreForTests(): void {
   retireAllOwnedHydrations();
   pinnedMutationRefs.clear();
   inflightDurableEnqueues.clear();
-  undeliveredMutationRefs.clear();
-  mutationCommitGenerations.clear();
+  undeliveredMutationIds.clear();
+  mutationStateGenerations.clear();
   dispatchableMutationRefs.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;

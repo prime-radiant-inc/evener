@@ -656,6 +656,15 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		}
 	}
 	if len(ids) == 0 {
+		// The transcript holds no unresolved attention, but the controller may
+		// still owe a wake whose resolution outran its run (a durable accept
+		// followed by a declined commit). Reconcile the projection so the last
+		// journal event is not left at needs_attention:true forever. This
+		// reconciliation launches no run, so it never claims the wake: return
+		// false and let the notification drive proceed as it did before.
+		if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
+			s.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", err))
+		}
 		return false
 	}
 	// Claim the child for the WHOLE start, not just for this check. Everything
@@ -1028,7 +1037,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 	owned := exact
 	conflict := live != nil && (live.binding != nil && live.binding.runtime == start.sub.sess || live.runtime == start.sub.sess) && !owned && live.binding != nil
 	if !owned && !conflict && live != nil && live.binding == nil && live.runtime == start.sub.sess {
-		live.runtime = nil
+		c.setResidentRuntimeLocked(live, nil)
 	}
 	c.mu.Unlock()
 	var persistErr error
@@ -1041,7 +1050,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 				live.binding.runtime = nil
 			}
 			if live.runtime == start.sub.sess {
-				live.runtime = nil
+				c.setResidentRuntimeLocked(live, nil)
 			}
 		}
 		c.mu.Unlock()
@@ -1070,7 +1079,7 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 func (s *Session) escalateUnreachableDelegateAttention() bool {
 	progressed, failed := false, false
 	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
-		if err := s.escalateOneUnreachableDelegateAttention(plan); err != nil {
+		if err := s.escalateOneUnreachableDelegateAttention(plan, readDelegateAttentionFold); err != nil {
 			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
 			failed = true
 			continue
@@ -1084,12 +1093,14 @@ func (s *Session) escalateUnreachableDelegateAttention() bool {
 	return progressed
 }
 
-func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAttentionEscalation) error {
+// escalateOneUnreachableDelegateAttention transfers plan's attention to the
+// root, reading the source transcript's fold with readFold.
+func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAttentionEscalation, readFold func(path, expectedSessionID string) (delegateAttentionFold, error)) error {
 	sourcePath, sourceSessionID, err := delegateTranscriptPathFromRef(s.delegateController.stateDir, plan.transcriptRef)
 	if err != nil {
 		return err
 	}
-	fold, err := readDelegateAttentionFold(sourcePath, sourceSessionID)
+	fold, err := readFold(sourcePath, sourceSessionID)
 	if err != nil {
 		return err
 	}
@@ -1178,6 +1189,69 @@ func (s *Session) forgetSettledDelegateAttentionWarnings() {
 	}
 }
 
+// maxDelegateAttentionRestoreFailures is how many consecutive restores of a
+// delegate's cold runtime may fail, for a reason that is not transient,
+// before the drive stops retrying. It counts attempts, not time: at the
+// retry's 5s cap it is about five minutes, but every pass counts, and a
+// busy root (deliveries, job events) drives passes sooner, so it can come
+// earlier.
+const maxDelegateAttentionRestoreFailures = 64
+
+// countDelegateAttentionRestoreFailure records a failed restore of
+// delegateID's cold runtime and gives up on it at the limit. A transient
+// failure (isTransientStartFailure) clears on its own and is not counted.
+func (s *Session) countDelegateAttentionRestoreFailure(delegateID string, err error) {
+	if err == nil || isTransientStartFailure(err) {
+		return
+	}
+	if s.delegateController.recordDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
+		s.giveUpDelegateAttention(delegateID, err)
+	}
+}
+
+func (s *Session) delegateAttentionGiveUpAfter() int {
+	if n := s.cfg.testOnly.delegateAttentionGiveUpAfter; n > 0 {
+		return n
+	}
+	return maxDelegateAttentionRestoreFailures
+}
+
+// giveUpDelegateAttention stops retrying delegateID's restore and hands its
+// owed attention to the root, the way attention a closed ancestor fences off
+// is escalated: the root receives each message under its original identity
+// and the source is resolved, so nothing is dropped. When the hand-over
+// fails too, the delegate is parked, out of the drive until new attention
+// arrives or the daemon restarts, and the session says so once at every
+// level and in the daemon log.
+func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
+	plan, ok := s.delegateController.giveUpAttentionPlan(delegateID)
+	if !ok {
+		return
+	}
+	// The fenced escalation's lenient read treats a missing transcript as
+	// empty (attention never made durable) and forgets the ids, which here
+	// would drop owed attention as though delivered. A delegate whose
+	// transcript is gone has nothing to hand over, so the hand-over reads it
+	// strictly and a missing transcript fails it, in the same read the
+	// transfer uses.
+	escalateErr := s.escalateOneUnreachableDelegateAttention(plan, readExistingDelegateAttentionFold)
+	if escalateErr == nil {
+		s.delegateController.delegateAttentionRestored(delegateID)
+		s.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, delegateID)
+		slog.Warn("delegate attention handed to the root after repeated restore failures", "session", s.ID(), "delegate", delegateID, "error", restoreErr.Error())
+		return
+	}
+	// Overlapping passes may both give up; only the one that parks says so.
+	if !s.delegateController.parkDelegateAttention(delegateID) {
+		return
+	}
+	slog.Warn("delegate attention undeliverable", "session", s.ID(), "delegate", delegateID, "restore_cause", restoreErr.Error(), "handover_cause", escalateErr.Error())
+	data := warningDataFromError("Evener stopped trying to deliver a subagent's message until the subagent has something new or Evener restarts: it could not be restored or handed to this session", escalateErr)
+	data.Code = events.WarningCodeDelegateAttentionUndeliverable
+	data.DelegateID = delegateID
+	s.emit(events.EventWarning, data)
+}
+
 func (s *Session) drivePendingStableDelegateAttention() bool {
 	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
 		return false
@@ -1197,9 +1271,11 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
 		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
+		s.countDelegateAttentionRestoreFailure(delegateID, err)
 		s.scheduleStableDelegateAttentionRetry()
 		return true
 	}
+	s.delegateController.delegateAttentionRestored(delegateID)
 	s.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, delegateID)
 	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
 		hook(delegateID, sub)
@@ -1237,6 +1313,111 @@ func delegateInputWasPreseeded(ctx context.Context, sessionID, input string) boo
 
 func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
 	return (delegateRuntime{owner: s}).create(ctx, args)
+}
+
+// childStartBlocked reports whether the resident child session childID is
+// busy in a way that stops it taking a new generation. A child with no
+// resident runtime isn't blocked: the send restores it.
+func (s *Session) childStartBlocked(childID string) bool {
+	if childID == "" {
+		return false
+	}
+	sub := s.subagentForChild(childID)
+	if sub == nil {
+		return false
+	}
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	return sub.startBlockedLocked()
+}
+
+// delegateFinalizationWaitCeiling bounds how long a send waits for a finished
+// generation's finalize tail to release the delegate.
+//
+// TRIPWIRE: a hang guard only. The release is the tail's last local step
+// (announce the result, then release), so it follows within milliseconds;
+// this fires only when a tail never releases, and the send then refuses
+// cleanly with target_busy.
+const delegateFinalizationWaitCeiling = 10 * time.Second
+
+// reserveStartAfterFinalization reserves a start for delegateID. A delegate
+// whose finished generation is still finalizing is announced idle only as
+// its finalize tail's last step, so while ReserveStart refuses for that
+// reason alone the send waits for the release and reserves again, until it
+// reserves, is refused for another reason, its context ends (the context's
+// error), or delegateFinalizationWaitCeiling passes over the whole attempt
+// (target_busy). A release that is ready wins over a context or ceiling that
+// is ready at the same moment. This waits for admission, not for the
+// delegate's reply, so max_wait_ms (which bounds the reply wait) doesn't
+// govern it: a finalize tail releases within milliseconds.
+func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor delegateActor, delegateID string) (*delegateStartReservation, error) {
+	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
+	finalizing, ok := errors.AsType[delegateFinalizingError](err)
+	if !ok {
+		return reservation, err
+	}
+	ceiling := delegateFinalizationWaitCeiling
+	if override := s.cfg.testOnly.delegateFinalizationWaitCeiling; override != nil {
+		ceiling = *override
+	}
+	timer := s.sclock().NewTimer(ceiling)
+	defer timer.Stop()
+	expired := false
+	for ok {
+		if !channelClosed(finalizing.released) {
+			if expired {
+				return nil, errDelegateTargetBusy
+			}
+			if observe := s.cfg.testOnly.delegateSendAwaitingFinalization; observe != nil {
+				observe()
+			}
+			select {
+			case <-finalizing.released:
+			case <-ctx.Done():
+				if !channelClosed(finalizing.released) {
+					return nil, ctx.Err()
+				}
+			case <-timer.C():
+				// The ceiling covers the whole attempt: it fires once.
+				expired = true
+				if !channelClosed(finalizing.released) {
+					return nil, errDelegateTargetBusy
+				}
+			}
+		}
+		reservation, err = s.delegateController.ReserveStart(actor, delegateID)
+		finalizing, ok = errors.AsType[delegateFinalizingError](err)
+	}
+	return reservation, err
+}
+
+// channelClosed reports whether ch is closed, without blocking. A nil channel
+// is never closed.
+func channelClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// finishUnlaunchedGeneration fails a generation whose input was admitted but
+// whose run never launched (launch_failed). No run finalizes its runtime, so
+// the caller must release it (releaseFinishedGeneration) once the returned
+// plans (which carry the generation's idle snapshot and result) have been
+// executed, whether or not that failed, or the delegate stays refused as
+// still finalizing.
+func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, cause error) (delegateMutationPlans, error) {
+	return c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
+}
+
+// releaseFinishedGeneration releases runtime's finished generation so the
+// delegate takes its next start, warning if the report fails.
+func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Session) {
+	if err := s.delegateController.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", err))
+	}
 }
 
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) stableDelegateSendOutcome {
@@ -1292,7 +1473,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			return failed(steerErr)
 		}
 	}
-	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
+	reservation, err := s.reserveStartAfterFinalization(ctx, actor, delegateID)
 	if err != nil {
 		return failed(err)
 	}
@@ -1339,6 +1520,15 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
 		observer(committedChildID)
+	}
+	// A resident child still busy (a drive in flight, a finalizer the
+	// controller has heard is quiesced but that hasn't let go) can't take this
+	// generation. Refuse before the commit, so nothing is written: with the
+	// send-start claim held no new drive can begin, so this sees the child as
+	// the commit would. The post-commit check below stays as the backstop.
+	if s.childStartBlocked(committedChildID) {
+		_ = s.delegateController.AbortStart(reservation)
+		return failed(errDelegateTargetBusy)
 	}
 	var waiter *delegateInlineWaiter
 	if maxWaitMS > 0 {
@@ -1422,7 +1612,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// otherwise pass this guard, set driving, and start a run concurrently with
 	// the in-flight finalizer (or the disposer that owns disposeGated). Read
 	// both under the same sub.mu hold as running/driving.
-	blocked := sub.running || sub.driving || sub.finalizing || sub.disposeGated
+	blocked := sub.startBlockedLocked()
 	if !blocked {
 		sub.driving = true
 	}
@@ -1479,11 +1669,11 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		s.sendersWG.Done()
-		failurePlans, finishErr := s.delegateController.FinishGeneration(started.lease, delegatePermanentStartFailure(err, "launch_failed"))
-		if finishErr != nil {
-			finishErr = errors.Join(finishErr, s.delegateController.ReportFinalizationQuiesced(started.lease, sub.sess))
-		}
-		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr))
+		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, err)
+		// The release runs once the failure is announced, whatever that did.
+		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr), func() {
+			s.releaseFinishedGeneration(started.lease, sub.sess)
+		})
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)

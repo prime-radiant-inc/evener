@@ -149,10 +149,16 @@ func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSett
 
 // ReportFinalizationQuiesced releases only the process-local runner fence for
 // the exact generation and resident runtime. Durable recovery authority remains
-// latched until reconciliation closes or repairs that generation.
+// latched until reconciliation closes or repairs that generation. It is also
+// the finalization's release: the delegate takes its next start from here.
 func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease, runtime *Session) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The finished generation's lease is no longer exact here, so the
+	// finalizing runtime is released by identity before the lease check.
+	if live := c.live[lease.delegateID]; live != nil && live.finalizing != nil && live.finalizing.runtime == runtime && live.finalizing.generation == lease.generation {
+		c.releaseFinalizationLocked(live)
+	}
 	decision := c.reduceReportQuiescedIntent(finishIntent{lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
 	return decision.err
 }
@@ -242,13 +248,93 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 	return false
 }
 
+// setResidentRuntimeLocked makes runtime live's resident runtime. A finished
+// generation still finalizing on the runtime it replaces no longer holds the
+// delegate (see finalizingLocked), so its finalization is released here and
+// a send waiting on it tries again at once. The caller holds c.mu.
+func (c *delegateTreeController) setResidentRuntimeLocked(live *delegateLiveState, runtime *Session) {
+	if live.finalizing != nil && live.finalizing.runtime != runtime {
+		c.releaseFinalizationLocked(live)
+	}
+	live.runtime = runtime
+}
+
+// stillFinalizing reports whether delegateID's finished generation is still
+// finalizing on its resident runtime: the delegate isn't released, and its
+// result may not be announced yet.
+func (c *delegateTreeController) stillFinalizing(delegateID string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.finalizingLocked(delegateID) != nil
+}
+
+// releaseFinalizationLocked releases live's finalization, if any, waking
+// every send waiting on it. The root's attention drive skips a delegate
+// while it finalizes, and nothing else wakes the drive for attention it
+// skipped, so a release that leaves attention owed to the delegate wakes the
+// drive here. The caller holds c.mu, and the drive re-enters the controller,
+// so the wake runs on its own goroutine.
+func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveState) {
+	finalizing := live.finalizing
+	if finalizing == nil {
+		return
+	}
+	close(finalizing.released)
+	live.finalizing = nil
+	if root := c.rootRuntime; root != nil && len(c.attentionWakeIDs[finalizing.delegateID]) != 0 {
+		go root.notify()
+	}
+}
+
+// finalizingLocked is delegateID's finished generation still finalizing on
+// its resident runtime, which holds the delegate from any new generation
+// until the finalize tail releases it; nil otherwise. A finalizing runtime a
+// restore replaced, or that was released as idle, no longer holds it. The
+// caller holds c.mu.
+func (c *delegateTreeController) finalizingLocked(delegateID string) *delegateFinalization {
+	live := c.live[delegateID]
+	if live == nil || live.finalizing == nil || live.finalizing.runtime != live.runtime {
+		return nil
+	}
+	return live.finalizing
+}
+
+// finishGenerationLocked executes a generation finish and, when it finished
+// the generation, marks that generation's runtime as finalizing until its
+// finalize tail (or, for a generation no run finalizes, its caller) reports
+// quiescence for that runtime and generation. A finalization it replaces is
+// released first, so nothing waits on it forever. The caller holds c.mu.
+func (c *delegateTreeController) finishGenerationLocked(intent finishIntent) (delegateMutationPlans, context.CancelFunc, error) {
+	var runtime *Session
+	if live := c.live[intent.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == intent.lease {
+		runtime = live.binding.runtime
+	}
+	decision := c.reduceGenerationFinishIntent(intent)
+	plans, cancel, err := c.executeFinishDecisionLocked(decision)
+	if err == nil && runtime != nil && decision.releaseGeneration && decision.events != nil {
+		if live := c.live[intent.lease.delegateID]; live != nil {
+			c.releaseFinalizationLocked(live)
+			live.finalizing = &delegateFinalization{
+				delegateID: intent.lease.delegateID,
+				runtime:    runtime,
+				generation: intent.lease.generation,
+				released:   make(chan struct{}),
+			}
+		}
+	}
+	return plans, cancel, err
+}
+
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+	plans, cancel, err := c.finishGenerationLocked(finishIntent{
 		lease:       lease,
 		finish:      finish,
 		stalePolicy: finishStaleSuppress,
-	}))
+	})
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -266,11 +352,11 @@ func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) 
 		c.mu.Unlock()
 		return delegateMutationPlans{}, noAction.err
 	}
-	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+	plans, cancel, err := c.finishGenerationLocked(finishIntent{
 		lease:              claim.lease,
 		finish:             noAction.finish,
 		authorizedNoAction: true,
-	}))
+	})
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()

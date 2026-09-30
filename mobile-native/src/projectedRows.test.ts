@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hydrateThread, makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { hydrateThread, makeTranscriptDisplayConfig, WarningCodeMCPReconnected } from "@evener/appwire-client";
 import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import type {
 	AskQuestionRef,
@@ -90,6 +90,46 @@ function asksFor(callId: string): ReadonlyMap<string, AskQuestionRef[]> {
 }
 
 describe("projectedRow — item entries", () => {
+	it.each(["warning", "systemMessage"])("MCP recovery through %s is quiet full-detail history", (type) => {
+		const warning = { code: WarningCodeMCPReconnected };
+		const model = {
+			turns: [
+				{
+					id: "t1",
+					status: "completed",
+					items: [
+						item({ id: "recovery", type, eventKind: "warning", text: "connection-1", warning, raw: { warning } }),
+						item({
+							id: "retry",
+							type: "commandExecution",
+							toolName: "server__probe",
+							status: "failed",
+							description: "probe-1",
+							error: "failure-1",
+						}),
+						item({ id: "signin", type: "warning", text: "signin-1", warning: { source: "mcp" } }),
+						item({
+							id: "interruption",
+							type: "systemMessage",
+							eventKind: "error",
+							text: "interruption-1",
+							raw: { warning },
+						}),
+					],
+				},
+			],
+		} as unknown as ThreadModel;
+		for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+			const rows = projectTimeline(model, new Map(), makeTranscriptDisplayConfig({ kind: "preset", level }));
+			const recovery = rows.find((row) => row.id === "recovery");
+			if (level === "full") expect(recovery).toMatchObject({ kind: "notice", tone: "system", text: "connection-1" });
+			else expect(recovery).toBeUndefined();
+			expect(rows.find((row) => row.id === "signin")).toMatchObject({ kind: "failure", attention: true });
+			expect(rows.find((row) => row.id === "interruption")).toMatchObject({ kind: "notice", tone: "warning" });
+			expect(rows.some((row) => row.kind === "activity" && row.id === "retry" && row.state === "failed")).toBe(true);
+		}
+	});
+
 	it("maps a user message to the user row, carrying its transcript entry index", () => {
 		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi", transcriptEntryIndex: 7 }), true));
 		expect(row).toEqual<MobileTimelineItem>({
@@ -376,7 +416,105 @@ describe("projectedRow — item entries", () => {
 			id: "i1",
 			title: "Space",
 			detail: "disk low — free some",
+			attention: true,
 			turnId: "t1",
+		});
+	});
+
+	// A daemon warning (#3387): a systemMessage with eventKind "warning". One a
+	// human should see reads in the attention tone, amber per spec, with its
+	// hint as a quiet second line; an informational one stays a quiet system
+	// line; loop_detection, turn_limit and error stay the red warning tone.
+	it("reads an uncoded daemon warning in the attention tone, with its hint", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					eventKind: "warning",
+					text: "inspect delegate attention: permission denied",
+					raw: { warning: { title: "Evener error", hint: "Check the state directory." } },
+				}),
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			family: "warning",
+			tone: "attention",
+			text: "inspect delegate attention: permission denied",
+			hint: "Check the state directory.",
+		});
+	});
+
+	// The phone draws no title chip (Jesse's ruling), so a warning's message
+	// is its row's words; one with no message reads its hint, then its title
+	// (the package's warningWords, which the web reads too).
+	it("reads a daemon warning's message over its title, and the title when it has no message", () => {
+		const warning = (text: string | undefined, fields: Record<string, unknown>) =>
+			projectedRow(itemEntry(item({ type: "systemMessage", eventKind: "warning", text, raw: { warning: fields } })));
+		expect(warning("disk full", { title: "Evener error" })).toMatchObject({ tone: "attention", text: "disk full" });
+		expect(warning(" ", { title: "Evener error" })).toMatchObject({ tone: "attention", text: "Evener error" });
+		const hintOnly = warning(undefined, { hint: "Check the state directory." });
+		expect(hintOnly).toMatchObject({ tone: "attention", text: "Check the state directory." });
+		expect(hintOnly).not.toHaveProperty("hint");
+		expect(warning(undefined, { title: "Evener error", hint: "Check the state directory." })).toMatchObject({
+			text: "Check the state directory.",
+		});
+	});
+
+	it("draws a daemon warning's hint once when it repeats the message", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					eventKind: "warning",
+					text: "disk full",
+					raw: { warning: { hint: "disk full" } },
+				}),
+			),
+		);
+		expect(row).toMatchObject({ tone: "attention", text: "disk full" });
+		expect(row).not.toHaveProperty("hint");
+	});
+
+	// A warning item's row has a title of its own, so a title-only one reads
+	// as the web's does: the generic title, and the title as its words.
+	it("reads a title-only warning item's title as its words, under the generic title", () => {
+		const row = projectedRow(itemEntry(item({ type: "warning", text: "", warning: { title: "Heads up" } })));
+		expect(row).toMatchObject({ kind: "failure", title: "Warning", detail: "Heads up", attention: true });
+	});
+
+	it("keeps an informational daemon warning a quiet system line", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					eventKind: "warning",
+					text: "Output clamped",
+					raw: { warning: { title: "Context budget", code: "context_budget" } },
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "notice", family: "unknown-system", tone: "system" });
+	});
+
+	// An informational warning item (a coded "no action needed" notice) is a
+	// quiet line, as the web draws it, never the amber attention row (#3387).
+	it("reads an informational warning item as a quiet line", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "warning",
+					text: "Output clamped to fit the context window",
+					warning: { title: "Context budget", code: "context_budget" },
+				}),
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			tone: "system",
+			text: "Output clamped to fit the context window",
 		});
 	});
 
@@ -700,6 +838,7 @@ describe("projectedRow — critical entries", () => {
 			id: "i1",
 			title: "Title",
 			detail: "msg",
+			attention: true,
 			turnId: "t1",
 		});
 	});
@@ -1314,7 +1453,14 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		detail: { output: "auditing quietly" },
 		turnId: "t1",
 	},
-	{ kind: "failure", id: "w1", title: "Low disk", detail: "disk almost full — clean up", turnId: "t1" },
+	{
+		kind: "failure",
+		id: "w1",
+		title: "Low disk",
+		detail: "disk almost full — clean up",
+		attention: true,
+		turnId: "t1",
+	},
 	{
 		kind: "activity",
 		id: "unk1",

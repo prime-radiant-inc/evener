@@ -203,8 +203,9 @@ export function locationForRoute(
 		};
 		return pinned(destination) ? { hubId, pinned: destination } : null;
 	}
-	// A subagent's session reopens as its coordinator's (ruling 21).
-	if (route.name === "Subagent") {
+	// A subagent's session, and a shell job's detail, reopen as their
+	// coordinator's session (ruling 21).
+	if (route.name === "Subagent" || route.name === "ShellJob") {
 		if (!isPlainObject(route.params) || route.params.hubId !== hubId || !isPlainObject(route.params.coordinator))
 			return null;
 		const session = { ref: route.params.coordinator.ref, title: route.params.coordinator.title };

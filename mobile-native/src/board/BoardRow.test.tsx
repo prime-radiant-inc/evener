@@ -1,8 +1,11 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
+import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
+import { DisplayProvider } from "../display/displayContext";
+import { DisplayPreferences } from "../display/displayPreferences";
 import { render } from "../renderNative.testkit";
+import { memoryStorage } from "../syncStringStorageTestUtils";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { BoardRow, type BoardRowProps, sessionSubagentChip } from "./BoardRow";
 import { PulseMeter } from "./PulseMeter";
@@ -35,7 +38,9 @@ const item = (state: BoardState, over: Partial<NavigationSessionSummary> = {}): 
 	state,
 });
 
-function mount(over: Partial<BoardRowProps> = {}): ReactTestRenderer {
+/** Mounts a row; `prefs` provides this phone's display choices, as the app's
+ * root does. */
+function mount(over: Partial<BoardRowProps> = {}, prefs?: DisplayPreferences): ReactTestRenderer {
 	const props: BoardRowProps = {
 		item: item("failed"),
 		variant: "signal",
@@ -49,7 +54,8 @@ function mount(over: Partial<BoardRowProps> = {}): ReactTestRenderer {
 		onOpen: () => {},
 		...over,
 	};
-	return render(<BoardRow {...props} />);
+	const row = <BoardRow {...props} />;
+	return render(prefs ? <DisplayProvider value={prefs}>{row}</DisplayProvider> : row);
 }
 
 type Style = Record<string, unknown>;
@@ -188,6 +194,20 @@ describe("a Board row (spec 7.2)", () => {
 			}),
 		});
 		expect(symbols(tree).slice(-3)).toEqual(["checklist", "folder", "server.rack"]);
+	});
+
+	// "Show model on Board rows" (spec 7.2, 12): the model's name ends the
+	// last line, in the line's ink, only while the setting is on.
+	it("ends the last line with the model's name when Show model on Board rows is on", () => {
+		const prefs = new DisplayPreferences(memoryStorage());
+		const tree = mount({ item: item("failed", { host_id: "studio", model_name: "GLM 5.3 Vision" }) }, prefs);
+		expect(textWith(tree, "GLM 5.3 Vision")).toHaveLength(0);
+		act(() => prefs.set({ showModel: true }));
+		const model = textWith(tree, "GLM 5.3 Vision")[0];
+		expect(styleOf(model)).toMatchObject({ fontSize: 13, color: palette.inkLow });
+		// Last on the line: after the host.
+		const lastLine = tree.root.findAll((node) => node.type === ("Text" as never) && node.props.numberOfLines === 1);
+		expect(lastLine.map((node) => node.props.children).slice(-2)).toEqual(["Studio Mac", "GLM 5.3 Vision"]);
 	});
 
 	it("moves a working row in Live with the pulse meter, and shows a still dot elsewhere", () => {

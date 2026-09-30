@@ -993,7 +993,7 @@ it("dims a category while its change is on its way, and hides every ⋯ until it
 	act(() => tree.unmount());
 });
 
-it("never shows the journal's error, and hides ⋯ while a change can't be confirmed", async () => {
+it("never shows the journal's error, dims the category and hides ⋯ while a change can't be confirmed", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	const fake = hub(fleet, undefined, undefined, { refuse: true });
@@ -1005,7 +1005,9 @@ it("never shows the journal's error, and hides ⋯ while a change can't be confi
 	expect(fake.mutations).toHaveLength(1);
 	expect(menuLabels(tree)).toEqual([]);
 	expect(renderedText(tree)).not.toMatch(/Refresh|trying again|Could not confirm/);
-	expect(opacity(tree, "Mine")).toBe(1);
+	// An unresolved change dims its category as a pending one does (the unified
+	// journal gate: pending or uncertain).
+	expect(opacity(tree, "Mine")).toBe(0.5);
 	act(() => tree.unmount());
 });
 
@@ -1868,6 +1870,27 @@ it("puts the hub's name on the left, opening the Hub, and search on the right", 
 	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", { screen: "HubHome", params: { hubId: id } });
 	act(() => offline.unmount());
 	expect(options.unstable_headerRightItems({})).toEqual([expect.objectContaining({ label: "Search" })]);
+	act(() => tree.unmount());
+});
+
+it("stops the hub button's label growing at xxxLarge and offers the full name in the Large Content Viewer (#3364)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// Accessibility XXXL: Body is 53pt, about 3.1 times its 17pt default. The
+	// navigation bar's height is fixed, so a name that big would clip.
+	harness.fontScale = 53 / 17;
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const hubButton = render(headerOptions(nav).unstable_headerLeftItems({})[0].element);
+	const label = hubButton.root.findByType("Text" as never);
+	// Body's xxxLarge size, the largest before the accessibility sizes.
+	expect(label.props.style.fontSize).toBe(23);
+	// Text that stops growing offers the whole name in the Large Content Viewer.
+	const press = hubButton.root.findByType("Pressable" as never);
+	expect(press.props.accessibilityShowsLargeContentViewer).toBe(true);
+	expect(press.props.accessibilityLargeContentTitle).toBe("Work hub");
+	act(() => hubButton.unmount());
 	act(() => tree.unmount());
 });
 

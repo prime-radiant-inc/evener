@@ -10,14 +10,24 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
-// testMutator returns an off-mode (unsandboxed) FileMutator rooted at dir: a
-// LocalExecutionEnvironment with a nil Sandbox policy, which confines writes to
-// dir exactly as the real off path does. The apply_patch suite drives real files
-// on disk through it (no mocks).
+// testMutator exercises an unrestricted off environment against real files.
 func testMutator(dir string) execenv.FileMutator {
 	return execenv.NewLocalExecutionEnvironment(dir)
+}
+
+// confinedPatchMutator contains untrusted patch paths inside the test fixture.
+func confinedPatchMutator(t *testing.T, dir string) execenv.FileMutator {
+	t.Helper()
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+	env.Sandbox = &sandbox.ResolvedPolicy{
+		Mode:     sandbox.ModeRestricted,
+		FileTool: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{dir}, WriteRoots: []string{dir}},
+	}
+	return env
 }
 
 func TestApplyPatch_AddUpdateMoveDelete(t *testing.T) {
@@ -443,7 +453,7 @@ func TestApplyPatch_DeleteMismatchReportsFullBlockCandidate(t *testing.T) {
 	}
 }
 
-func TestApplyPatch_RejectsPathTraversalAndAbsolutePaths(t *testing.T) {
+func TestApplyPatch_ConfinedRejectsPathTraversalAndAbsolutePaths(t *testing.T) {
 	dir := t.TempDir()
 	cases := []string{
 		`*** Begin Patch
@@ -458,7 +468,7 @@ func TestApplyPatch_RejectsPathTraversalAndAbsolutePaths(t *testing.T) {
 `,
 	}
 	for _, p := range cases {
-		if _, err := ApplyPatch(testMutator(dir), p); err == nil {
+		if _, err := ApplyPatch(confinedPatchMutator(t, dir), p); err == nil {
 			t.Fatalf("expected error for patch:\n%s", p)
 		}
 	}
@@ -490,7 +500,7 @@ func TestApplyPatch_AbsolutePathUnderRootDir(t *testing.T) {
 	}
 }
 
-func TestApplyPatch_AbsolutePathOutsideRootDir(t *testing.T) {
+func TestApplyPatch_ConfinedAbsolutePathOutsideRootDir(t *testing.T) {
 	dir := t.TempDir()
 	// An absolute path that is NOT under rootDir — should still be rejected.
 	patch := `*** Begin Patch
@@ -498,7 +508,41 @@ func TestApplyPatch_AbsolutePathOutsideRootDir(t *testing.T) {
 +nope
 *** End Patch
 `
-	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
+	if _, err := ApplyPatch(confinedPatchMutator(t, dir), patch); err == nil {
 		t.Fatal("absolute path outside rootDir should be rejected")
+	}
+}
+
+func TestApplyPatch_SandboxOffOutsideWorkingDirectory(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(base, "source.txt")
+	target := filepath.Join(base, "target.txt")
+	fm := testMutator(root)
+	patches := []string{
+		"*** Begin Patch\n*** Add File: ../source.txt\n+original\n*** End Patch\n",
+		fmt.Sprintf("*** Begin Patch\n*** Update File: %s\n*** Move to: %s\n@@\n-original\n+updated\n*** End Patch\n", source, target),
+	}
+	for _, patch := range patches {
+		if _, err := ApplyPatch(fm, patch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != "updated\n" {
+		t.Fatalf("patched file = %q, %v", got, err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("moved source = %v", err)
+	}
+	if _, err := ApplyPatch(fm, fmt.Sprintf("*** Begin Patch\n*** Delete File: %s\n*** End Patch\n", target)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("deleted target = %v", err)
 	}
 }

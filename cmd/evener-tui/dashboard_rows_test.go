@@ -54,3 +54,21 @@ func TestDashboardRowLess_AskPendingBandsAboveYourMove(t *testing.T) {
 		t.Fatal("an ask-pending row must sort above a your-move row even though it is older")
 	}
 }
+
+// TestDashboardRowLess_ProjectRollupOrdering: issue #2569. A project row's
+// state and its sort order must agree. A project row is a rollup decision
+// (hubapi.RollupRank: warning above active); a session row is a live-row sort
+// decision (hubapi.AttentionRank: active above warning).
+func TestDashboardRowLess_ProjectRollupOrdering(t *testing.T) {
+	warnProject := hubRow{kind: hubRowProject, state: "warning"}
+	activeProject := hubRow{kind: hubRowProject, state: "active"}
+	if !dashboardRowLess(warnProject, activeProject) || dashboardRowLess(activeProject, warnProject) {
+		t.Fatal("a warning project row must sort above an active project row (RollupRank)")
+	}
+
+	activeSession := hubRow{kind: hubRowSession, state: "active"}
+	warnSession := hubRow{kind: hubRowSession, state: "warning"}
+	if !dashboardRowLess(activeSession, warnSession) || dashboardRowLess(warnSession, activeSession) {
+		t.Fatal("an active session row must still sort above a warning session row (AttentionRank)")
+	}
+}

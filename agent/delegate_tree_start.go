@@ -394,7 +394,7 @@ func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Ses
 	if err != nil || ownerID != "" && ownerID != lease.delegateID {
 		return errDelegateTargetBusy
 	}
-	live.runtime = runtime
+	c.setResidentRuntimeLocked(live, runtime)
 	live.binding.runtime = runtime
 	c.evidenceVersion++
 	return nil
@@ -616,6 +616,12 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
+	// Idle but still finalizing: the finished generation's runtime has not
+	// reported quiescence, so it can't take another generation yet. Refusing
+	// here, under the lock the start commits under, leaves nothing written.
+	if finalizing := c.finalizingLocked(delegateID); finalizing != nil {
+		return nil, delegateFinalizingError{released: finalizing.released}
+	}
 	for _, existing := range c.reservations {
 		if existing.delegateID == delegateID {
 			return nil, errDelegateTargetBusy
@@ -829,7 +835,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		c.replaceDelegateAttentionLocked(record.delegateID, record.attentionPendingIDs)
 	}
 	if record.runtime != nil {
-		live.runtime = record.runtime
+		c.setResidentRuntimeLocked(live, record.runtime)
 	}
 	if record.waiter != nil {
 		if live.waiters == nil {
@@ -866,7 +872,7 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 	}
 	c.dropRuntimeClaimsForMembersLocked(map[string]struct{}{lease.delegateID: {}})
 	if live.binding.runtime != nil {
-		live.runtime = live.binding.runtime
+		c.setResidentRuntimeLocked(live, live.binding.runtime)
 	}
 	live.binding = nil
 	// A steer accepted under the covering stop outlives the generation it was

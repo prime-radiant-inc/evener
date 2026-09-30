@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -195,14 +196,197 @@ func execFindSessionTranscripts(deps *toolDeps, args map[string]any) (any, error
 	query := strings.TrimSpace(stringArg(args, "query"))
 	childrenOf := strings.TrimSpace(stringArg(args, "children_of"))
 	limit := clampFindLimit(optionalIntArg(args, "limit"))
+	// Filters are parsed (and validated) before the children_of branch so they
+	// compose with it: children_of is a filter, not a separate mode.
+	filters, err := parseFindFilters(args)
+	if err != nil {
+		return nil, err
+	}
 	if childrenOf != "" {
-		return execFindChildren(deps, childrenOf, limit) // precedes query per spec
+		return execFindChildren(deps, childrenOf, limit, filters) // precedes query per spec
 	}
 	scope := strings.TrimSpace(stringArg(args, "scope"))
 	if scope == "" {
 		scope = scopeCurrentProject
 	}
-	return execFindAcrossSessions(deps, query, scope, limit)
+	return execFindAcrossSessions(deps, query, scope, limit, filters)
+}
+
+// findFilters holds the optional metadata-only narrowing arguments to
+// find_session_transcripts. A zero value applies no filter.
+type findFilters struct {
+	kind          string
+	hasChildren   *bool
+	minTurns      *int
+	maxTurns      *int
+	updatedAfter  *time.Time
+	updatedBefore *time.Time
+}
+
+// parseFindFilters reads the typed metadata filters and validates them. An
+// out-of-order range, an unknown kind, or an unparsable timestamp is an error
+// rather than a silently ignored argument.
+func parseFindFilters(args map[string]any) (findFilters, error) {
+	var f findFilters
+	kind, err := optionalStringArg(args, "kind")
+	if err != nil {
+		return findFilters{}, err
+	}
+	kind = strings.TrimSpace(kind)
+	switch kind {
+	case "", "any":
+	case kindRoot, kindSubagent, kindFork:
+		f.kind = kind
+	default:
+		return findFilters{}, fmt.Errorf("invalid_request: unknown kind %q: use root, subagent, fork, or any", kind)
+	}
+
+	hasChildren, err := optionalBoolArg(args, "has_children")
+	if err != nil {
+		return findFilters{}, err
+	}
+	f.hasChildren = hasChildren
+	minTurns, err := optionalWholeIntArg(args, "min_turns")
+	if err != nil {
+		return findFilters{}, err
+	}
+	maxTurns, err := optionalWholeIntArg(args, "max_turns")
+	if err != nil {
+		return findFilters{}, err
+	}
+	f.minTurns, f.maxTurns = minTurns, maxTurns
+	if f.minTurns != nil && f.maxTurns != nil && *f.minTurns > *f.maxTurns {
+		return findFilters{}, fmt.Errorf("invalid_request: min_turns %d is greater than max_turns %d", *f.minTurns, *f.maxTurns)
+	}
+
+	after, err := optionalTimeArg(args, "updated_after")
+	if err != nil {
+		return findFilters{}, err
+	}
+	before, err := optionalTimeArg(args, "updated_before")
+	if err != nil {
+		return findFilters{}, err
+	}
+	if after != nil && before != nil && after.After(*before) {
+		return findFilters{}, fmt.Errorf("invalid_request: updated_after %s is after updated_before %s",
+			after.Format(time.RFC3339), before.Format(time.RFC3339))
+	}
+	f.updatedAfter, f.updatedBefore = after, before
+	return f, nil
+}
+
+// optionalStringArg extracts an optional string argument, rejecting a
+// present-but-wrong-type value rather than silently ignoring it.
+func optionalStringArg(args map[string]any, key string) (string, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return "", nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid_request: %s must be a string, got %T", key, v)
+	}
+	return s, nil
+}
+
+// optionalBoolArg extracts an optional boolean argument, rejecting a
+// present-but-wrong-type value rather than silently ignoring it.
+func optionalBoolArg(args map[string]any, key string) (*bool, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return nil, fmt.Errorf("invalid_request: %s must be a boolean, got %T", key, v)
+	}
+	return &b, nil
+}
+
+// optionalWholeIntArg extracts an optional non-negative integer argument,
+// rejecting a fractional, negative, out-of-range, or wrong-typed value with
+// invalid_request rather than silently reshaping or ignoring it.
+func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	n, ok := v.(float64)
+	if !ok {
+		return nil, fmt.Errorf("invalid_request: %s must be a whole number, got %T", key, v)
+	}
+	if n != math.Trunc(n) || n < 0 || n >= math.MaxInt {
+		return nil, fmt.Errorf("invalid_request: %s must be a non-negative whole number, got %v", key, n)
+	}
+	i := int(n)
+	return &i, nil
+}
+
+// optionalTimeArg extracts an optional RFC3339 timestamp from tool arguments.
+func optionalTimeArg(args map[string]any, key string) (*time.Time, error) {
+	raw, err := optionalStringArg(args, key)
+	if err != nil {
+		return nil, err
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	// RFC3339Nano also accepts a plain RFC3339 timestamp, so this admits both
+	// whole-second and fractional-second bounds.
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid_request: %s must be an RFC3339 timestamp: %w", key, err)
+	}
+	return &t, nil
+}
+
+// filterCandidates applies the metadata-only filters before any transcript is
+// opened. has_children is computed over the whole candidate set: a candidate is
+// a parent when some other candidate names it as its ParentSessionID.
+func filterCandidates(candidates []findCandidate, f findFilters, currentID string, currentMeta func() schema.SessionMeta) []findCandidate {
+	if f.kind == "" && f.hasChildren == nil && f.minTurns == nil && f.maxTurns == nil &&
+		f.updatedAfter == nil && f.updatedBefore == nil {
+		return candidates
+	}
+	// The parent set is only needed to answer has_children, so build it only
+	// when that filter is set.
+	var parents map[string]struct{}
+	if f.hasChildren != nil {
+		parents = make(map[string]struct{}, len(candidates))
+		for _, c := range candidates {
+			if c.meta.ParentSessionID != "" {
+				parents[c.meta.ParentSessionID] = struct{}{}
+			}
+		}
+	}
+	out := candidates[:0:0]
+	for _, c := range candidates {
+		if f.kind != "" && sessionKind(c.meta) != f.kind {
+			continue
+		}
+		if f.hasChildren != nil {
+			_, has := parents[c.meta.ID]
+			if has != *f.hasChildren {
+				continue
+			}
+		}
+		turns, updated := candidateFreshness(c, currentID, currentMeta)
+		if f.minTurns != nil && turns < *f.minTurns {
+			continue
+		}
+		if f.maxTurns != nil && turns > *f.maxTurns {
+			continue
+		}
+		if f.updatedAfter != nil && updated.Before(*f.updatedAfter) {
+			continue
+		}
+		if f.updatedBefore != nil && updated.After(*f.updatedBefore) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // clampFindLimit applies the default (10) and hard max (50) to the caller-supplied
@@ -227,13 +411,7 @@ func clampFindLimit(p *int) int {
 // mid-run (its turn count and updated-at are only flushed at turn boundaries),
 // so those freshness fields are overlaid from memory.
 func buildSessionRecord(c findCandidate, snips []snippet, currentID string, currentMeta func() schema.SessionMeta) sessionRecord {
-	turnCount := c.meta.TurnCount
-	updatedAt := c.meta.UpdatedAt
-	if currentMeta != nil && c.projectID == "" && c.meta.ID == currentID {
-		live := currentMeta()
-		turnCount = live.TurnCount
-		updatedAt = live.UpdatedAt
-	}
+	turnCount, updatedAt := candidateFreshness(c, currentID, currentMeta)
 	parentRef := ""
 	if c.meta.ParentSessionID != "" {
 		parentRef = refFor(c.projectID, c.meta.ParentSessionID)
@@ -250,6 +428,20 @@ func buildSessionRecord(c findCandidate, snips []snippet, currentID string, curr
 		Snippets:      snips,
 		SessionID:     c.meta.ID,
 	}
+}
+
+// candidateFreshness resolves a candidate's effective turn count and updated-at
+// time. The current session's on-disk meta is stale mid-run (its turn count and
+// updated-at are only flushed at turn boundaries), so when currentMeta is
+// non-nil and the candidate is the live session those freshness fields are
+// overlaid from memory. Both buildSessionRecord and the metadata filters use
+// this, so a filtered field and a reported field always agree.
+func candidateFreshness(c findCandidate, currentID string, currentMeta func() schema.SessionMeta) (int, time.Time) {
+	if currentMeta != nil && c.projectID == "" && c.meta.ID == currentID {
+		live := currentMeta()
+		return live.TurnCount, live.UpdatedAt
+	}
+	return c.meta.TurnCount, c.meta.UpdatedAt
 }
 
 // sortCandidatesNewestFirst sorts candidates by UpdatedAt descending, ID ascending as
@@ -291,7 +483,7 @@ func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []sn
 // present) over all buckets in scope. With no query: metadata-only, newest-first,
 // current last, no scan metrics. With a query: metadata match first (cheap, no
 // file open); on miss, bounded raw content scan tracking scanned/scanTruncated.
-func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int) (any, error) {
+func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int, filters findFilters) (any, error) {
 	buckets, scopeApplied, err := findBuckets(deps.stateDir, scope)
 	if err != nil {
 		return nil, err
@@ -299,6 +491,9 @@ func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int) (any
 	currentID := deps.sessionID
 
 	candidates := collectCandidates(buckets, deps.stateDir)
+	// Metadata-only filters run before any transcript is opened, so a filtered
+	// candidate never consumes the content-scan budget.
+	candidates = filterCandidates(candidates, filters, currentID, deps.currentMeta)
 	sortCandidatesNewestFirst(candidates, currentID)
 
 	var records []sessionRecord
@@ -338,8 +533,9 @@ func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int) (any
 
 // execFindChildren resolves the parent ref (metadata only — no transcript open),
 // then lists all candidates in the parent's bucket and returns those whose
-// ParentSessionID matches the parent.
-func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
+// ParentSessionID matches the parent. The metadata filters apply here too, over
+// the whole bucket so a has_children filter still sees the parent relation.
+func execFindChildren(deps *toolDeps, ref string, limit int, filters findFilters) (any, error) {
 	bucketDir, parentID, scopeApplied, err := parentBucketAndID(ref, deps.stateDir, deps.sessionID)
 	if err != nil {
 		return nil, err
@@ -347,6 +543,7 @@ func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
 	currentID := deps.sessionID
 
 	candidates := collectCandidates([]string{bucketDir}, deps.stateDir)
+	candidates = filterCandidates(candidates, filters, currentID, deps.currentMeta)
 
 	// Keep only direct children of parentID.
 	var children []findCandidate
@@ -485,7 +682,7 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 // is absent does not consume the budget.
 func matchCandidate(c findCandidate, query, needle string, scanned *int, scanTruncated *bool) ([]snippet, bool) {
 	if metaMatches(c.meta, needle) {
-		return nil, true
+		return metadataSnippets(c.meta, query, needle), true
 	}
 	// Content scan is bounded: once maxContentScan transcripts have been opened,
 	// stop scanning further candidates and flag the partial coverage.
@@ -501,6 +698,31 @@ func matchCandidate(c findCandidate, query, needle string, scanned *int, scanTru
 		return nil, false
 	}
 	return snips, true
+}
+
+// metadataSnippetSeq marks a metadata-only snippet's seq as not a turn address.
+// The metadata-only fast path deliberately opens no transcript, and a subagent
+// or fork can carry inherited context ahead of its own assignment, so the
+// matching text need not live at turn 0 — a metadata snippet cannot name a real
+// turn. The sentinel is negative so no caller can mistake it for one.
+const metadataSnippetSeq = -1
+
+// metadataSnippets renders a bounded evidence snippet for a metadata-only match
+// so the record is not context-free. The initial prompt is the strongest
+// evidence (it is what the user asked); the title is the fallback. A match on
+// another metadata field (id, model, parent, working dir) yields no snippet.
+// The seq is metadataSnippetSeq, not a turn address.
+func metadataSnippets(m schema.SessionMeta, query, needle string) []snippet {
+	if m.OriginalPrompt != "" && strings.Contains(strings.ToLower(m.OriginalPrompt), needle) {
+		return []snippet{{Seq: metadataSnippetSeq, Role: "user", Snippet: makeSnippet(m.OriginalPrompt, query, snippetWidth)}}
+	}
+	// Only the generated name, not SessionDisplayName: that falls back to the
+	// prompt (handled above) and then the session ID, and an ID match should not
+	// be mislabelled as a title.
+	if title := strings.TrimSpace(m.Name); title != "" && strings.Contains(strings.ToLower(title), needle) {
+		return []snippet{{Seq: metadataSnippetSeq, Role: "title", Snippet: makeSnippet(title, query, snippetWidth)}}
+	}
+	return nil
 }
 
 // metaMatches reports whether the cheap SessionMeta fields contain the needle
@@ -565,7 +787,33 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 			Snippet: makeSnippet(text, query, snippetWidth),
 		})
 	}
-	return collector.out, true
+	// Rank within the session: the matching user message is the evidence a
+	// reader wants first, then the assistant, then tool output; sequence is the
+	// stable tie-break within a rank.
+	out := collector.out
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := snippetRoleRank(out[i].Role), snippetRoleRank(out[j].Role)
+		if ri != rj {
+			return ri < rj
+		}
+		return out[i].Seq < out[j].Seq
+	})
+	return out, true
+}
+
+// snippetRoleRank orders snippet roles by evidence value: a matching user
+// message, then the assistant, then tool output, then everything else.
+func snippetRoleRank(role string) int {
+	switch role {
+	case "user":
+		return 0
+	case "assistant":
+		return 1
+	case "tool_result":
+		return 2
+	default:
+		return 3
+	}
 }
 
 // transcriptExists is a cheap stat of the transcript JSONL file (no parse).

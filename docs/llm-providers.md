@@ -354,6 +354,20 @@ a level the ladder does not list sends no effort name at all.
 
 ## `providers.toml`
 
+The hub observes external edits on its five-second notice interval. A valid
+repair is adopted automatically and updates open provider settings and launch
+forms. While an edit cannot load, the hub retains its active configuration,
+shows the specific load error, and refuses instance writes to preserve the
+edited bytes. New launches, model lists and credential checks use a private
+copy of the last successfully loaded user file until the source is repaired;
+new children then return to the source file. Copies are kept beside the source
+so they retain its directory visibility, and are removed after the owning child
+or probe exits. Creating a copy needs a writable config directory; if the hub
+exits before its detached child, the copy can remain. An invalid file at startup
+uses implicit instances until repaired. A launch before the next notice tick
+can still encounter the edited source before the hub observes its invalidity.
+
+
 ```toml
 default = "groq"
 

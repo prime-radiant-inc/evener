@@ -120,6 +120,22 @@ it("shows no age for a file the session only named", async () => {
 	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, Fix the settle/drain race, settle-race.md, 142 lines");
 });
 
+// A chip that grew when its summary landed would move every row below it,
+// and the rows above the reader must keep their height.
+it("keeps its two lines from the start, so it never grows when its summary lands", async () => {
+	const lines = (tree: ReactTestRenderer) =>
+		button(tree)?.findAll((node) => String(node.type) === "Text" && node.props.numberOfLines === 1);
+	const tree = chip();
+	// Only the file name is known: the second line is held empty.
+	expect(lines(tree)).toHaveLength(2);
+	const held = lines(tree)?.[1];
+	await settle();
+	// The summary fills the line that was held, rather than adding one.
+	const filled = lines(tree)?.[1];
+	expect(filled).toBe(held);
+	expect(filled?.children.filter((child) => typeof child === "string").join("")).toContain("142 lines");
+});
+
 it("opens when pressed", async () => {
 	const onOpen = vi.fn();
 	const tree = chip({ onOpen });

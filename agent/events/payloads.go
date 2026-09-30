@@ -589,6 +589,10 @@ const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 // these warnings by this stable code, never by matching their prose.
 const WarningCodeContextBudget = "context_budget"
 
+// WarningCodeMCPReconnected identifies a restored MCP connection. Clients show
+// it as quiet detail; the retried tool call reports its own outcome separately.
+const WarningCodeMCPReconnected = "mcp_reconnected"
+
 // WarningCodeDelegateAttentionRestore identifies a failed attempt to get a
 // delegate's owed attention where it belongs: restoring its cold runtime to
 // deliver it, or escalating it to the root when a closed ancestor fences it
@@ -596,6 +600,18 @@ const WarningCodeContextBudget = "context_budget"
 // clients show this warning only at their most detailed level, by this stable
 // code.
 const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
+
+// WarningCodeDelegateAttentionUndeliverable identifies the notice that a
+// delegate's owed attention could be neither delivered nor handed to the
+// root, so Evener stopped trying until new attention arrives or the daemon
+// restarts. Clients show it at every level.
+const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undeliverable"
+
+// WarningCodeAttentionPaused identifies the notice that a permanent provider
+// failure (a dead credential, a spent quota) has paused delivering background
+// updates to a session until something changes. Unlike the informational
+// codes, clients show it at every level: it is news the user must act on.
+const WarningCodeAttentionPaused = "attention_paused"
 
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {

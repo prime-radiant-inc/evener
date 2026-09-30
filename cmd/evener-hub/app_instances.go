@@ -41,6 +41,8 @@ type hubInstancesController struct {
 	// of another. Every controller lock is taken in the order mu then
 	// auth.credMu, List included, so the read side adds no ordering.
 	mu sync.RWMutex
+	// providerFileSignature is the last external file observation, guarded by mu.
+	providerFileSignature string
 	// beforeCredentialLock, when set, runs after a removal's pre-lock work and
 	// just before it takes auth.credMu. A race test uses it as a barrier: the
 	// test holds the credential lock, waits for this signal, and only then
@@ -61,11 +63,18 @@ func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
 }
 
 func (c *hubInstancesController) write(l *registry.Layer) error {
-	err := registry.WriteConfigFile(c.providersConfigPath, l)
+	raw, err := registry.MarshalConfig(l)
+	if err != nil {
+		return err
+	}
+	err = registry.WriteConfigFile(c.providersConfigPath, l)
 	if err == nil {
 		// The primitive itself records the write the instant it lands; the
 		// mutation's rollback clears it again when it puts the prior file back.
 		c.applied.markApplied()
+		// The RPC announces local writes. Acknowledge exactly
+		// the writer's canonical bytes so the watcher only adopts later edits.
+		c.providerFileSignature = providerConfigSignature(raw)
 	}
 	return err
 }

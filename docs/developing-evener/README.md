@@ -4,6 +4,10 @@ Dev-facing docs for working on this repo: setup, environment, worktrees,
 performance, naming, and the agent-run scenario harness, plus the `make`
 gates themselves — building, testing, linting, coverage, and fuzzing.
 
+For product intent and cross-component ownership, start with the
+[product guide](../product/README.md) and [subsystem map](../product/subsystems.md).
+Keep those references current when changing the behavior they describe.
+
 - **[building.md](building.md)** — build, distribution, and install targets,
   and the frontend install prerequisite they share with the frontend test
   gates.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ActivityDelegate, ActivityTree } from "@evener/appwire-client";
 import { subagentListItems, subagentListKey } from "./subagentList";
-import { flattenSubagents } from "./subagentModel";
+import { flattenActivity, flattenSubagents } from "./subagentModel";
 
 const d = (id: string, over: Partial<ActivityDelegate> = {}): ActivityDelegate => ({
 	delegateId: id,
@@ -102,5 +102,60 @@ describe("what couldn't be listed", () => {
 			missing: ["Run tests", "Run tests"],
 		});
 		expect(items).toEqual([{ kind: "missing", title: "Run tests" }]);
+	});
+});
+
+// Shell jobs join the list by state beside the subagents, and the chips and
+// search filter both kinds (Jesse's ruling on shell jobs).
+describe("shell jobs in the list", () => {
+	const withJobs: ActivityTree = {
+		...tree,
+		root: {
+			...tree.root,
+			entries: [
+				...tree.root.entries,
+				{
+					kind: "shell",
+					job: {
+						jobId: "job-docs",
+						ownerSessionId: "coord",
+						ownerRef: "local:coord",
+						type: "shell",
+						status: "running",
+						terminal: false,
+						background: true,
+						hasOutput: true,
+						description: "Serving the docs",
+						command: "npm run docs",
+						startedAt: new Date(0).toISOString(),
+						outputBytes: 0,
+					},
+				},
+			],
+		},
+	};
+	const { subagents, jobs } = flattenActivity(withJobs);
+	const all = [...subagents, ...jobs];
+
+	it("lists a running job in the running section, and filters and finds it", () => {
+		const view = { query: "", doneOpen: false, missing: [] as string[] };
+		expect(shape(subagentListItems(all, { ...view, filter: "running" }))).toEqual([
+			"running:3",
+			// Newest first by when each started; the subagents carry no start.
+			"Serving the docs",
+			"Check drain ordering",
+			"Run linux -race",
+		]);
+		expect(shape(subagentListItems(all, { ...view, filter: "all", query: "npm" }))).toEqual([
+			"running:1",
+			"Serving the docs",
+		]);
+	});
+
+	it("keys a job apart from any subagent", () => {
+		const keys = subagentListItems(all, { filter: "running", query: "", doneOpen: false, missing: [] }).map(
+			subagentListKey,
+		);
+		expect(keys).toContain("job:job-docs");
 	});
 });

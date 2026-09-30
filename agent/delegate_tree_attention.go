@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -253,6 +254,77 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 	return added, nil, plan, openEvent != nil, nil
 }
 
+// clearResolvedDelegateAttention lowers a delegate's lingering NeedsAttention
+// projection once its transcript holds no unresolved attention. A resolution
+// can outrun the committed attention run that would otherwise emit the clearing
+// event (acceptDelegateAttention makes the marker durable first, and a
+// later-declined CommitStart leaves the journal's last event at true), and the
+// transcript-driven drive is the only witness of that state, so it reconciles
+// the projection itself rather than waiting for the next bootstrap. An empty
+// fold is authoritative: a wake ID is only ever noted beside a durable
+// transcript entry, so no entry means the attention resolved. A missing
+// transcript is not an empty one: the fold is read strictly (as the bootstrap
+// reconcile does) so an unreadable child keeps its flag and retries instead of
+// having attention silently discarded. The fold read runs outside the
+// controller lock, so the update revalidates the transcript reference and the
+// evidence version it started from: an attention opened or a transcript
+// rotated during the read keeps its flag and wake, and the next pass retries.
+func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID string) error {
+	if c == nil || delegateID == "" {
+		return nil
+	}
+	c.mu.Lock()
+	aggregate := c.durable[delegateID]
+	stateDir := c.stateDir
+	if aggregate == nil || !aggregate.NeedsAttention {
+		c.mu.Unlock()
+		return nil
+	}
+	transcriptRef := aggregate.Descriptor.TranscriptRef
+	evidenceVersion := c.evidenceVersion
+	c.mu.Unlock()
+
+	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
+	if err != nil {
+		return err
+	}
+	fold, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return err
+	}
+	if len(fold.pendingIDs()) != 0 {
+		return nil
+	}
+
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
+	c.mu.Lock()
+	aggregate = c.durable[delegateID]
+	if aggregate == nil || !aggregate.NeedsAttention || aggregate.Descriptor.TranscriptRef != transcriptRef || c.evidenceVersion != evidenceVersion {
+		c.mu.Unlock()
+		return nil
+	}
+	if _, err := c.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateAttentionChanged,
+		DelegateID: delegateID,
+		AttentionChanged: &delegatestore.DelegateAttentionChanged{
+			NeedsAttention: false,
+		},
+	}); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	c.replaceDelegateAttentionLocked(delegateID, nil)
+	c.evidenceVersion++
+	plan := c.capturedPlanLocked(delegateID)
+	c.mu.Unlock()
+	c.emitDelegateUpdate(plan)
+	return nil
+}
+
 func (c *delegateTreeController) delegateAttentionOpenEventLocked(delegateID string) (*delegatestore.Event, error) {
 	aggregate := c.durable[delegateID]
 	if aggregate == nil {
@@ -288,6 +360,9 @@ func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attenti
 		return false
 	}
 	ids[attentionID] = struct{}{}
+	// New attention is a new chance: a delegate the drive gave up on gets
+	// another round of attempts.
+	c.resetDelegateAttentionAttemptsLocked(delegateID)
 	return true
 }
 
@@ -295,23 +370,107 @@ func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, atten
 	ids := c.attentionWakeIDs[delegateID]
 	delete(ids, attentionID)
 	if len(ids) == 0 {
-		delete(c.attentionWakeIDs, delegateID)
+		c.dropDelegateAttentionLocked(delegateID)
+	}
+}
+
+// resetDelegateAttentionAttemptsLocked starts delegateID's delivery attempts
+// over: no counted restore failures, and not parked.
+func (c *delegateTreeController) resetDelegateAttentionAttemptsLocked(delegateID string) {
+	delete(c.attentionParked, delegateID)
+	delete(c.attentionRestoreFailures, delegateID)
+}
+
+// dropDelegateAttentionLocked clears the drive's state for a delegate that
+// owes no attention, which takes it out of the drive's line.
+func (c *delegateTreeController) dropDelegateAttentionLocked(delegateID string) {
+	delete(c.attentionWakeIDs, delegateID)
+	delete(c.attentionDriveTurns, delegateID)
+	c.resetDelegateAttentionAttemptsLocked(delegateID)
+}
+
+// recordDelegateAttentionRestoreFailure records one more counted restore
+// failure for delegateID and returns the consecutive count.
+func (c *delegateTreeController) recordDelegateAttentionRestoreFailure(delegateID string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.attentionRestoreFailures == nil {
+		c.attentionRestoreFailures = make(map[string]int)
+	}
+	c.attentionRestoreFailures[delegateID]++
+	return c.attentionRestoreFailures[delegateID]
+}
+
+// delegateAttentionRestored ends delegateID's run of counted failures.
+func (c *delegateTreeController) delegateAttentionRestored(delegateID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.attentionRestoreFailures, delegateID)
+}
+
+// parkDelegateAttention takes delegateID out of the drive until new attention
+// arrives for it (noteDelegateAttentionLocked) or the daemon restarts. It
+// reports whether this call parked it, so overlapping passes say so once.
+func (c *delegateTreeController) parkDelegateAttention(delegateID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.attentionRestoreFailures, delegateID)
+	if _, parked := c.attentionParked[delegateID]; parked {
+		return false
+	}
+	if c.attentionParked == nil {
+		c.attentionParked = make(map[string]struct{})
+	}
+	c.attentionParked[delegateID] = struct{}{}
+	return true
+}
+
+// giveUpAttentionPlan is the hand-over of delegateID's owed attention to the
+// root, in the shape fenced attention escalates in, or false when it owes
+// none.
+func (c *delegateTreeController) giveUpAttentionPlan(delegateID string) (delegateFencedAttentionEscalation, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[delegateID]
+	ids := c.attentionWakeIDs[delegateID]
+	if aggregate == nil || len(ids) == 0 {
+		return delegateFencedAttentionEscalation{}, false
+	}
+	return c.escalationPlanLocked(delegateID, aggregate, ids), true
+}
+
+// escalationPlanLocked is the transfer of delegateID's owed attention ids to
+// the root, in id order.
+func (c *delegateTreeController) escalationPlanLocked(delegateID string, aggregate *delegatestore.Aggregate, ids map[string]struct{}) delegateFencedAttentionEscalation {
+	attentionIDs := make([]string, 0, len(ids))
+	for attentionID := range ids {
+		attentionIDs = append(attentionIDs, attentionID)
+	}
+	sort.Strings(attentionIDs)
+	var runtime *Session
+	if live := c.live[delegateID]; live != nil {
+		runtime = live.runtime
+	}
+	return delegateFencedAttentionEscalation{
+		delegateID:    delegateID,
+		transcriptRef: aggregate.Descriptor.TranscriptRef,
+		attentionIDs:  attentionIDs,
+		runtime:       runtime,
 	}
 }
 
 func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID string, attentionIDs []string) {
-	if delegateID == "" || len(attentionIDs) == 0 {
-		delete(c.attentionWakeIDs, delegateID)
-		return
-	}
+	// A replacement is the transcript fold's word on what is owed: it starts
+	// the delegate's attempts over, as new attention does.
+	c.resetDelegateAttentionAttemptsLocked(delegateID)
 	ids := make(map[string]struct{}, len(attentionIDs))
 	for _, attentionID := range attentionIDs {
 		if attentionID != "" {
 			ids[attentionID] = struct{}{}
 		}
 	}
-	if len(ids) == 0 {
-		delete(c.attentionWakeIDs, delegateID)
+	if delegateID == "" || len(ids) == 0 {
+		c.dropDelegateAttentionLocked(delegateID)
 		return
 	}
 	c.attentionWakeIDs[delegateID] = ids
@@ -335,6 +494,9 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for delegateID, ids := range c.attentionWakeIDs {
+		if _, parked := c.attentionParked[delegateID]; parked {
+			continue
+		}
 		aggregate := c.durable[delegateID]
 		if len(ids) != 0 && aggregate != nil && aggregate.Resumable && aggregate.PendingStopSeq == 0 && aggregate.Phase != delegatestore.PhaseClosed {
 			return true
@@ -349,11 +511,20 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 // every wake-cache scan, so the driver, the retry loop, and the escalation
 // collector cannot disagree about the same delegate.
 func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID string) bool {
-	aggregate := c.durable[delegateID]
-	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
+	if !c.idleRestorableLocked(delegateID) {
+		return false
+	}
+	if _, parked := c.attentionParked[delegateID]; parked {
 		return false
 	}
 	if live := c.live[delegateID]; live != nil && (live.binding != nil || live.recoveryRequired) {
+		return false
+	}
+	// A finished generation still finalizing hasn't announced its result: an
+	// attention successor waits for the release, as a send does, so it can't
+	// start ahead of that result. Every release wakes the root's drive for
+	// attention it skipped here (releaseFinalizationLocked).
+	if c.finalizingLocked(delegateID) != nil {
 		return false
 	}
 	for _, record := range c.reservations {
@@ -367,7 +538,8 @@ func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID 
 // hasRunnableDelegateAttention reports whether the root driver has actionable
 // attention work: a wake it may commit, or attention it must escalate because
 // a permanently closed ancestor fences the wake off forever. Attention parked
-// under a transient ancestor stop is pending, not runnable.
+// under a transient ancestor stop, or under an ancestor chain its restore
+// cannot make resident yet, is pending, not runnable.
 func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 	if c == nil {
 		return false
@@ -378,8 +550,7 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		blocked, closedAncestorID := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID)
-		if !blocked || closedAncestorID != "" {
+		if ready, closedAncestorID := c.attentionWakeAncestorGateLocked(delegateID); ready || closedAncestorID != "" {
 			return true
 		}
 	}
@@ -422,8 +593,45 @@ func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, 
 	if !pending {
 		return "", "", false
 	}
+	// Taking its turn sends the delegate to the back of the line, whatever
+	// this pass then does with it.
+	if c.attentionDriveTurns == nil {
+		c.attentionDriveTurns = make(map[string]uint64)
+	}
+	c.attentionDriveSeq++
+	c.attentionDriveTurns[delegateID] = c.attentionDriveSeq
 	c.holdAttentionRestoreLocked(delegateID)
 	return delegateID, attentionID, true
+}
+
+// attentionWakeAncestorGateLocked is the ancestor side of an attention wake,
+// shared by every wake-cache scan so the runnable check, selection, and
+// escalation cannot disagree. ready means no ancestor fences the wake and the
+// cold restore can make the owner chain resident; closedAncestorID names a
+// permanently closed ancestor, whose fence escalates rather than waits.
+func (c *delegateTreeController) attentionWakeAncestorGateLocked(delegateID string) (ready bool, closedAncestorID string) {
+	parentID := c.durable[delegateID].Descriptor.ParentDelegateID
+	blocked, closedAncestorID := c.ancestorFenceLocked(parentID)
+	return !blocked && c.ancestorChainRestorableLocked(parentID), closedAncestorID
+}
+
+// ancestorChainRestorableLocked reports whether a child's cold restore can
+// make its owner chain resident: walking up from parentID, each ancestor is
+// either resident already or idle and restorable, the two conditions the
+// restore itself applies (restoreColdDelegateOwnerRuntime). A running
+// ancestor with no resident runtime (after a restart, until its generation
+// is recovered) fails every restore beneath it target_busy, so its
+// descendants wait rather than being selected pass after pass.
+func (c *delegateTreeController) ancestorChainRestorableLocked(parentID string) bool {
+	for ancestorID := parentID; ancestorID != ""; ancestorID = c.durable[ancestorID].Descriptor.ParentDelegateID {
+		if c.residentDelegateRuntimeLocked(ancestorID) != nil {
+			return true
+		}
+		if !c.idleRestorableLocked(ancestorID) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, string, bool) {
@@ -432,7 +640,7 @@ func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, stri
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		if blocked, _ := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID); blocked {
+		if ready, _ := c.attentionWakeAncestorGateLocked(delegateID); !ready {
 			continue
 		}
 		delegateIDs = append(delegateIDs, delegateID)
@@ -440,8 +648,12 @@ func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, stri
 	if len(delegateIDs) == 0 {
 		return "", "", false
 	}
-	sort.Strings(delegateIDs)
-	delegateID := delegateIDs[0]
+	// Turns: a delegate the drive has not picked yet first, in id order,
+	// then the one it picked longest ago. One delegate that can't be restored,
+	// or whose drive keeps declining, must not hold every sibling back.
+	delegateID := slices.MinFunc(delegateIDs, func(left, right string) int {
+		return cmp.Or(cmp.Compare(c.attentionDriveTurns[left], c.attentionDriveTurns[right]), cmp.Compare(left, right))
+	})
 	attentionIDs := make([]string, 0, len(c.attentionWakeIDs[delegateID]))
 	for attentionID := range c.attentionWakeIDs[delegateID] {
 		attentionIDs = append(attentionIDs, attentionID)
@@ -477,26 +689,11 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		aggregate := c.durable[delegateID]
-		blocked, closedAncestorID := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID)
-		if !blocked || closedAncestorID == "" {
+		if _, closedAncestorID := c.attentionWakeAncestorGateLocked(delegateID); closedAncestorID == "" {
 			continue
 		}
-		attentionIDs := make([]string, 0, len(ids))
-		for attentionID := range ids {
-			attentionIDs = append(attentionIDs, attentionID)
-		}
-		sort.Strings(attentionIDs)
-		var runtime *Session
-		if live := c.live[delegateID]; live != nil {
-			runtime = live.runtime
-		}
-		plans = append(plans, delegateFencedAttentionEscalation{
-			delegateID:    delegateID,
-			transcriptRef: aggregate.Descriptor.TranscriptRef,
-			attentionIDs:  attentionIDs,
-			runtime:       runtime,
-		})
+		aggregate := c.durable[delegateID]
+		plans = append(plans, c.escalationPlanLocked(delegateID, aggregate, ids))
 	}
 	sort.Slice(plans, func(i, j int) bool { return plans[i].delegateID < plans[j].delegateID })
 	return plans
@@ -621,10 +818,10 @@ func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (d
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	aggregate := c.durable[delegateID]
-	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
+	if !c.idleRestorableLocked(delegateID) {
 		return delegateStartCommit{}, "", errDelegateTargetBusy
 	}
+	aggregate := c.durable[delegateID]
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
@@ -645,12 +842,26 @@ func (c *delegateTreeController) residentDelegateRuntime(delegateID string) *Ses
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.residentDelegateRuntimeLocked(delegateID)
+}
+
+// residentDelegateRuntimeLocked is delegateID's live runtime when it is
+// resident and neither closed nor stopping, else nil.
+func (c *delegateTreeController) residentDelegateRuntimeLocked(delegateID string) *Session {
 	aggregate := c.durable[delegateID]
 	live := c.live[delegateID]
 	if aggregate == nil || aggregate.Phase == delegatestore.PhaseClosed || aggregate.PendingStopSeq != 0 || live == nil {
 		return nil
 	}
 	return live.runtime
+}
+
+// idleRestorableLocked reports whether delegateID can be restored cold for
+// an attention wake: idle, resumable, not stopping, not being reclaimed, on
+// a controller that is not closing.
+func (c *delegateTreeController) idleRestorableLocked(delegateID string) bool {
+	aggregate := c.durable[delegateID]
+	return !c.closing && aggregate != nil && aggregate.Phase == delegatestore.PhaseIdle && aggregate.Resumable && aggregate.PendingStopSeq == 0 && !c.reclamationCoversLocked(delegateID)
 }
 
 // AttachIdleRuntime installs only the exact lazily restored runtime identity.
@@ -706,7 +917,7 @@ func (installation *delegateIdleRuntimeInstallation) attach(runtime *Session) er
 	if err != nil || owner != nil && owner != live || ownerID != "" && ownerID != delegateID {
 		return errDelegateTargetBusy
 	}
-	live.runtime = runtime
+	c.setResidentRuntimeLocked(live, runtime)
 	c.evidenceVersion++
 	return nil
 }

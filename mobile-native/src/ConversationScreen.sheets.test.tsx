@@ -14,14 +14,15 @@ import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { createElement } from "react";
 import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
-import { beforeEach, expect, it, vi } from "vitest";
-import type { Thread } from "@evener/appwire-client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { type Thread, WireError } from "@evener/appwire-client";
 import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
+import { readerKey } from "./readerPosition";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 import { sheetKey } from "./sheet/sheetHosts";
 
@@ -37,6 +38,8 @@ const stack = vi.hoisted(() => ({
 
 // Every scrollToOffset the screen asks of its list, oldest first.
 const listScrolls = vi.hoisted(() => [] as { offset: number; animated?: boolean }[]);
+const endScrolls = vi.hoisted(() => vi.fn());
+const appStateListeners = vi.hoisted(() => new Set<(state: string) => void>());
 
 // One sqlite double per database name, keyed the way the singletons open them.
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
@@ -52,14 +55,17 @@ vi.mock("react-native", async () => {
 			useImperativeHandle(props.ref as never, () => ({
 				scrollToOffset: (options: { offset: number; animated?: boolean }) => listScrolls.push(options),
 				scrollToIndex: () => {},
-				getScrollResponder: () => ({ scrollToEnd: () => {} }),
+				getScrollResponder: () => ({ scrollToEnd: endScrolls }),
 			}));
 			return mock.FlatList(props);
 		},
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
-			addEventListener: () => ({ remove: () => {} }),
+			addEventListener: (event: string, listener: (state: string) => void) => {
+				if (event === "change") appStateListeners.add(listener);
+				return { remove: () => appStateListeners.delete(listener) };
+			},
 		},
 		Image: "Image",
 		Linking: { openURL: vi.fn() },
@@ -232,13 +238,13 @@ function sessionClient(read: Thread, answers: Answers) {
 		onStateChange: () => () => {},
 		request: async (method: string, params?: unknown) => {
 			requests.push({ method, params });
-			if (method === "thread/read") return { thread: read };
 			if (method in answers) {
 				const answer = answers[method];
 				if (typeof answer === "function") return answer(params);
 				if (answer instanceof Error) throw answer;
 				return answer;
 			}
+			if (method === "thread/read") return { thread: read };
 			return new Promise<never>(() => {});
 		},
 		onNotification: () => () => {},
@@ -321,6 +327,24 @@ function levelAction(label: string): NativeStackHeaderItemMenuAction {
 const withCapabilities = (capabilities: Partial<Thread["evener"]["capabilities"]>): Thread => ({
 	...thread,
 	evener: { ...thread.evener, capabilities: { ...thread.evener.capabilities, ...capabilities } },
+});
+
+// A session with shell jobs and no subagents has an Activity list too, and
+// the session can't tell from its read whether it has jobs, so the menu
+// offers Activity whenever it's connected, as it offers Tasks.
+it("offers Activity from the header menu with no subagents", async () => {
+	const { tree } = mount();
+	await flush();
+
+	act(() => menuAction("Activity").onPress());
+
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+	});
+	tree.unmount();
 });
 
 it("opens Tasks from the header menu as the TasksSheet route", async () => {
@@ -928,7 +952,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		title: "Session",
 	});
 	vi.mocked(navigation.navigate).mockClear();
-	act(() => menuAction("Subagents").onPress());
+	act(() => menuAction("Activity").onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
 		hubId: "hub-1",
 		ref,
@@ -1231,4 +1255,274 @@ it("marks its session seen through the read's turn end once it has loaded in fro
 		{ method: "evener/session/seen/set", params: { sessions: [{ ref, seenThrough: endedAt }] } },
 	]);
 	tree.unmount();
+});
+
+afterEach(() => vi.useRealTimers());
+
+function olderHistoryAnswers(page: () => unknown, source: Thread = busy): Answers {
+	return {
+		"thread/read": {
+			thread: {
+				...source,
+				turns: [
+					{
+						id: "current-turn",
+						status: "completed",
+						itemsView: "full",
+						items: [
+							{
+								id: "current-message",
+								turnId: "current-turn",
+								type: "userMessage",
+								status: "completed",
+								text: "loaded current message",
+							},
+						],
+					},
+				],
+			},
+			olderCursor: "older-page",
+		},
+		"thread/turns/list": page,
+	};
+}
+
+function olderHistoryPage(text: string) {
+	return {
+		data: [
+			{
+				id: "older-turn",
+				status: "completed",
+				itemsView: "full",
+				items: [{ id: "older-message", turnId: "older-turn", type: "userMessage", status: "completed", text }],
+			},
+		],
+		nextCursor: null,
+	};
+}
+
+async function advanceHistory(ms: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ms);
+	});
+}
+
+function openFind(tree: ReturnType<typeof render>, query: string) {
+	act(() => menuAction("Find in session").onPress());
+	const field = tree.root.find(
+		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+	);
+	act(() => field.props.onChangeText(query));
+}
+
+it("recovers prolonged older-history demand without a second scroll and keeps the reader away from live", async () => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 12) throw new Error("temporary history failure");
+			return olderHistoryPage("older sought message");
+		}),
+	);
+	await flush();
+	const reader = sessionList(tree);
+	const loaded = reader.list().props.data;
+	expect(loaded.length).toBeGreaterThan(0);
+	vi.useFakeTimers();
+	endScrolls.mockClear();
+	reader.drag(100);
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	expect(reader.list().props.data).toEqual(loaded);
+	await advanceHistory(999);
+	expect(attempts).toBe(1);
+	await advanceHistory(300_000);
+	expect(attempts).toBe(13);
+	expect(renderedText(tree)).toContain("older sought message");
+	expect(reader.list().props.data.length).toBeGreaterThan(loaded.length);
+	const keys = reader.list().props.data.map(readerKey);
+	expect(new Set(keys).size).toBe(keys.length);
+	const loadedKeys = loaded.map(readerKey);
+	expect(keys.filter((key: string) => loadedKeys.includes(key))).toEqual(loadedKeys);
+	expect(endScrolls).not.toHaveBeenCalled();
+	act(() => tree.unmount());
+});
+
+it("keeps Find incomplete through failure and an inactive screen, then finds the healed page on return", async () => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 2) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	await flush();
+	vi.useFakeTimers();
+	openFind(tree, "unique search needle");
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	expect(renderedText(tree)).not.toContain("No matches");
+	expect(renderedText(tree)).toContain("Searching older messages");
+	act(() => {
+		for (const listener of appStateListeners) listener("background");
+	});
+	await advanceHistory(60_000);
+	expect(attempts).toBe(1);
+	act(() => {
+		for (const listener of appStateListeners) listener("active");
+	});
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await advanceHistory(60_000);
+	expect(attempts).toBe(1);
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await advanceHistory(10_000);
+	expect(attempts).toBe(3);
+	expect(renderedText(tree)).toContain("unique search needle");
+	expect(renderedText(tree)).toContain("1 of 1");
+	expect(renderedText(tree)).not.toContain("No matches");
+	act(() => tree.unmount());
+});
+
+it("explains a proven permanent older-history failure without claiming Find has no matches", async () => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			throw new WireError("Update this client to read history.", -32000, { evenerErrorInfo: "upgradeRequired" });
+		}),
+	);
+	await flush();
+	vi.useFakeTimers();
+	openFind(tree, "unknown needle");
+	await advanceHistory(0);
+	expect(renderedText(tree)).toContain("Search incomplete");
+	expect(renderedText(tree)).toContain("Update this client to read history.");
+	expect(renderedText(tree)).not.toContain("No matches");
+	await advanceHistory(300_000);
+	expect(attempts).toBe(1);
+	act(() => tree.unmount());
+});
+
+it.each([false, true])("closing Find cancels only its demand (browse waiting: %s)", async (browse) => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 1) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	await flush();
+	vi.useFakeTimers();
+	if (browse) {
+		sessionList(tree).drag(100);
+		await advanceHistory(0);
+	}
+	openFind(tree, "unique search needle");
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	const bar = tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+	act(() => bar.props.onDone());
+	await advanceHistory(60_000);
+	expect(attempts).toBe(browse ? 2 : 1);
+	expect(renderedText(tree).includes("unique search needle")).toBe(browse);
+	act(() => tree.unmount());
+});
+
+it.each([false, true])("jumping live cancels browse demand and preserves Find (Find waiting: %s)", async (find) => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 1) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	await flush();
+	vi.useFakeTimers();
+	sessionList(tree).drag(100);
+	await advanceHistory(0);
+	if (find) {
+		openFind(tree, "unique search needle");
+		await advanceHistory(0);
+	}
+	const composer = tree.root.findAll((node) => typeof node.props.onJumpToLive === "function")[0];
+	expect(composer).toBeDefined();
+	act(() => composer.props.onJumpToLive());
+	await advanceHistory(60_000);
+	expect(attempts).toBe(find ? 2 : 1);
+	expect(renderedText(tree).includes("unique search needle")).toBe(find);
+	act(() => tree.unmount());
+});
+
+it.each(["closed", "ended"] as const)("Find reads older history for a %s session", async (status) => {
+	let attempts = 0;
+	const source = { ...busy, status: { type: status } };
+	const { tree } = mount(
+		source,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("temporary");
+			return olderHistoryPage("finished session needle");
+		}, source),
+	);
+	await flush();
+	vi.useFakeTimers();
+	openFind(tree, "finished session needle");
+	await advanceHistory(10_000);
+	expect(attempts).toBe(2);
+	expect(renderedText(tree)).toContain("1 of 1");
+	act(() => tree.unmount());
+});
+
+it.each([
+	[false, false],
+	[true, false],
+	[false, true],
+])("handles pending history through a replacement connection (Find: %s, new binding: %s)", async (find, newBinding) => {
+	let attempts = 0;
+	const page = () => {
+		attempts += 1;
+		if (attempts === 1) throw new Error("temporary history failure");
+		return olderHistoryPage("replacement search needle");
+	};
+	const answers = olderHistoryAnswers(page);
+	const { tree } = mount(busy, answers);
+	await flush();
+	vi.useFakeTimers();
+	if (find) openFind(tree, "replacement search needle");
+	else sessionList(tree).drag(100);
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	let finishRead: ((value: unknown) => void) | undefined;
+	const read = new Promise((resolve) => {
+		finishRead = resolve;
+	});
+	const replacement = sessionClient(busy, { ...answers, "thread/read": () => read });
+	harness.connection = { ...screenConnection(replacement.client, "ready"), error: null, disconnect: () => {} };
+	act(() => tree.update(screen()));
+	await advanceHistory(0);
+	if (find) expect(renderedText(tree)).not.toContain("No matches");
+	await act(async () => {
+		finishRead?.(
+			newBinding
+				? olderHistoryAnswers(page, { ...busy, evener: { ...busy.evener, instanceId: "replacement-instance" } })[
+						"thread/read"
+					]
+				: answers["thread/read"],
+		);
+	});
+	await advanceHistory(10_000);
+	expect(attempts).toBe(newBinding ? 1 : 2);
+	expect(renderedText(tree).includes("replacement search needle")).toBe(!newBinding);
+	if (find) expect(renderedText(tree)).toContain("1 of 1");
+	act(() => tree.unmount());
 });

@@ -192,7 +192,7 @@ export interface ConversationStoreOptions {
 
 export type LoadOlderResult =
 	| { readonly status: "loaded"; readonly itemKeys: readonly string[] }
-	| { readonly status: "failed" }
+	| { readonly status: "failed"; readonly error: unknown }
 	| { readonly status: "ignored" };
 
 interface DrainScheduler {
@@ -2678,7 +2678,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							// only settle loadingOlder.
 							set({ loadingOlder: false });
 						}
-						return { status: "failed" };
+						return { status: "failed", error: err };
 					}
 					return { status: "ignored" };
 				}

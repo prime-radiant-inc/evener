@@ -47,6 +47,7 @@ import { useReduceMotion } from "../accessibilitySettings";
 import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
 import { ChipStrip } from "../design/ChipStrip";
 import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "../design/systemGlass";
+import { useHeaderTextScale } from "../headerText";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -132,7 +133,7 @@ import { SearchResults } from "./SearchResults";
 import { SelectBar } from "./SelectBar";
 import { selectionActions, toggleSelected } from "./selection";
 import { listScrollHandlers } from "./settledList";
-import { organizationOpen } from "./organizationCheck";
+import { journalOperation, organizationOpen } from "./organizationCheck";
 import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
@@ -1389,7 +1390,10 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 			{ text: "Cancel", style: "cancel" },
 		]);
 	};
-	const operation = organization.state?.pending ? organization.state.recovery?.operation : undefined;
+	// One gate with the other readers (organizationCheck.journalOperation): a
+	// change in flight or one the hub couldn't confirm holds the category, so it
+	// stays dimmed until the journal settles.
+	const operation = journalOperation(organization.state);
 	return {
 		menuFor: (section: NavigationPinSectionDescriptor) => (organization.ready ? () => open(section) : null),
 		changing: (sectionId: string) =>
@@ -1828,16 +1832,20 @@ function useHeader(
  * opening the Hub sheet (spec 12). A native bar item given both a label and an
  * icon draws only the icon, so this is a custom header view. The Hub opens
  * while the hub is out of reach too: it keeps its last data and says why its
- * controls wait. */
+ * controls wait. Its text follows Dynamic Type up to xxxLarge only, since the
+ * bar's height is fixed, so a long press shows the whole name in the Large
+ * Content Viewer, as Apple asks of text that stops growing. */
 function HubButton({ hubName, onOpen }: { hubName: string; onOpen: () => void }) {
 	const { palette } = useColors();
-	const scale = useTextScale();
+	const scale = useHeaderTextScale();
 	const { width } = useWindowDimensions();
 	return (
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={hubName}
 			accessibilityHint="Opens the Hub"
+			accessibilityShowsLargeContentViewer
+			accessibilityLargeContentTitle={hubName}
 			onPress={onOpen}
 			style={{
 				// A custom header view sizes itself, so a long hub name needs a

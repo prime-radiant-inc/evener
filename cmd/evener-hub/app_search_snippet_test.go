@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 func snippetText(parts []appwire.SearchSnippetPart) string {
@@ -70,10 +71,10 @@ func TestSearchSnippetOfEmptyTextIsNeverNil(t *testing.T) {
 // A query word containing an underscore (e.g. "settle_race") must mark a
 // message that holds its parts as separate words, the way the messages
 // index's unicode61 tokenizer actually matched it: it treats "_" as a
-// separator, so the index stored "settle" and "race" as distinct tokens and
-// matched this message on both, never on the joined identifier.
+// separator, so the query rule (hubcore.SearchTokens) splits it into "settle"
+// and "race" and the snippet marks both, never the joined identifier.
 func TestSearchSnippetMarksWordsAnUnderscoreTokenSplitInTheIndex(t *testing.T) {
-	got := searchSnippet("the settle race pass", []string{"settle_race"})
+	got := searchSnippet("the settle race pass", hubcore.SearchTokens("settle_race"))
 	want := []appwire.SearchSnippetPart{
 		{Text: "the "}, {Text: "settle", Match: true}, {Text: " "}, {Text: "race", Match: true}, {Text: " pass"},
 	}

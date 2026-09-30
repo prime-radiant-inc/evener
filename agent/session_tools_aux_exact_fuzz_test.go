@@ -339,8 +339,8 @@ func auxFindExact(t *testing.T) {
 	_, _ = matchCandidate(findCandidate{meta: schema.SessionMeta{ID: "needle"}}, "needle", "needle", &scanned, &truncated)
 	_, _ = contentSnippets(good, "session", "absent", "absent")
 	_, _ = contentSnippets(good, "missing", "x", "x")
-	_, _ = execFindAcrossSessions(&toolDeps{stateDir: good}, "query", scopeCurrentProject, 0)
-	_, _ = execFindAcrossSessions(&toolDeps{stateDir: good}, "query", scopeCurrentProject, 1)
+	_, _ = execFindAcrossSessions(&toolDeps{stateDir: good}, "query", scopeCurrentProject, 0, findFilters{})
+	_, _ = execFindAcrossSessions(&toolDeps{stateDir: good}, "query", scopeCurrentProject, 1, findFilters{})
 
 	deps := &toolDeps{stateDir: good, sessionID: "session"}
 	registered := findSessionTranscriptsTool(deps)

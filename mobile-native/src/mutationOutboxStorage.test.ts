@@ -348,6 +348,60 @@ test("enqueueIntent's sequence allocation never collides when enqueue operations
 	});
 });
 
+// #1937: the native outbox opens one connection per process (nativeMutationRuntime's
+// memoized handle), so the single-writer wiring is the contract and no busy policy
+// is warranted. These tests use real, separate connections over the real engine to
+// pin it: serialized handles share one gap-free sequence, and a handle that cannot
+// take SQLite's write lock fails with "database is locked" and leaves nothing
+// behind rather than duplicating a sequence.
+test("two separate SQLite connections to one outbox file continue the target sequence gap-free", async () => {
+	const second = openSqliteSyncDouble(join(directory, "outbox.sqlite"));
+	try {
+		const secondStorage = new MutationOutboxSQLite(second.port, {
+			createMutationId: () => "handle-b",
+			now: () => 5678,
+		});
+		const first = await storage.enqueueIntent(intent("handle A"));
+		const fromSecond = await secondStorage.enqueueIntent(intent("handle B"));
+		expect([first.intentSequence, fromSecond.intentSequence]).toEqual([1, 2]);
+		expect(
+			database.prepare("SELECT last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET),
+		).toMatchObject({ last_sequence: 2 });
+	} finally {
+		second.database.close();
+	}
+});
+
+test("a second connection's enqueue against a held write transaction surfaces SQLite's lock error and leaves nothing behind", async () => {
+	const second = openSqliteSyncDouble(join(directory, "outbox.sqlite"));
+	try {
+		const secondStorage = new MutationOutboxSQLite(second.port, {
+			createMutationId: () => "handle-b",
+			now: () => 5678,
+		});
+		// The first handle holds a real write transaction: the lock a second
+		// connection cannot take.
+		database.exec("BEGIN IMMEDIATE");
+		try {
+			await expect(secondStorage.enqueueIntent(intent("handle B", "local:contended"))).rejects.toThrow(
+				/database is locked/,
+			);
+			// The rejected savepoint rolled back: no record row, no sequence row.
+			expect(database.prepare("SELECT * FROM mutation_outbox WHERE target_ref = ?").all("local:contended")).toEqual([]);
+			expect(
+				database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:contended"),
+			).toBeUndefined();
+		} finally {
+			database.exec("ROLLBACK");
+		}
+		// The lock gone, the same second handle allocates normally.
+		const record = await secondStorage.enqueueIntent(intent("handle B after release", "local:contended"));
+		expect(record.intentSequence).toBe(1);
+	} finally {
+		second.database.close();
+	}
+});
+
 test("enqueueIntent rolls back when target sequence uniqueness rejects a duplicate", async () => {
 	const first = await storage.enqueueIntent(intent("keep the first sequence"));
 	database.prepare("UPDATE mutation_sequence SET last_sequence = 0 WHERE target_ref = ?").run(TARGET);

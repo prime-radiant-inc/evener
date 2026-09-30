@@ -5,7 +5,7 @@
 // ensureSystemRun/coalesceSystemRun "adjacency-only" run continuation
 // (parity-m4-transcript.md #9: any other item type in between forces a new
 // run) without needing a stateful accumulator.
-import { type ItemModel, isErrorEvent } from "@evener/appwire-client";
+import { attentionWarningNotice, type ItemModel, isErrorEvent } from "@evener/appwire-client";
 
 export interface SystemRun {
   items: ItemModel[];
@@ -37,9 +37,10 @@ function isSystemMessage(item: ItemModel): boolean {
 // churn from reading as a wall of dividers; folding a failure into one buys a
 // row of quiet at the cost of hiding the row a reader came for - behind a
 // summary that names the run's FIRST member, which need not be the failure at
-// all. So a failure both stays out of its neighbours' run and breaks it.
+// all. So a failure both stays out of its neighbours' run and breaks it, and
+// so does a daemon warning a human should see (attentionWarningNotice).
 function joinsRun(item: ItemModel): boolean {
-  return isSystemMessage(item) && !isErrorEvent(item);
+  return isSystemMessage(item) && !isErrorEvent(item) && attentionWarningNotice(item) === null;
 }
 
 // systemRunFor finds the contiguous run of systemMessage items in
@@ -51,10 +52,10 @@ export function systemRunFor(turnItems: ItemModel[], itemId: string): SystemRun 
   const index = turnItems.findIndex((it) => it.id === itemId);
   const item = turnItems[index];
   if (!item || !isSystemMessage(item)) return undefined;
-  // A run of one, always first, so the failure always renders itself. Returning
-  // undefined here would be the opposite of the point: SystemNoticeItem reads
-  // that as "not mine" and renders nothing at all.
-  if (isErrorEvent(item)) return { items: [item], isFirst: true };
+  // A run of one, always first, so a failure or a daemon warning always renders
+  // itself. Returning undefined here would be the opposite of the point:
+  // SystemNoticeItem reads that as "not mine" and renders nothing at all.
+  if (!joinsRun(item)) return { items: [item], isFirst: true };
 
   let start = index;
   while (start > 0) {

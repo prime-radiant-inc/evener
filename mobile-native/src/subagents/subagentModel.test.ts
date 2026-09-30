@@ -9,9 +9,12 @@ import type {
 import {
 	countLabel,
 	endedInStop,
+	flattenActivity,
 	flattenSubagents,
 	matchesSearch,
 	sameModel,
+	shellJobLabel,
+	shellJobMeta,
 	type SubagentRow,
 	subagentLastLine,
 	subagentSections,
@@ -331,4 +334,102 @@ it("filters by title, ignoring case and surrounding space", () => {
 	expect(matchesSearch(row, "  DRAIN ")).toBe(true);
 	expect(matchesSearch(row, "settle")).toBe(false);
 	expect(matchesSearch(row, "")).toBe(true);
+});
+
+// Shell jobs join the Activity list (Jesse's ruling on shell jobs): each is a
+// row with its state, its description, and the session or subagent that
+// started it, in the same flat list by state as the subagents.
+describe("shell jobs in the Activity list", () => {
+	const shell = (j: ActivityJob): ActivityEntry => ({ kind: "shell", job: j });
+	const activityTree = (): ActivityTree => ({
+		revision: 1,
+		root: session("local:coord", [
+			shell(job(false, { jobId: "j-root", description: "Serving the docs", command: "npm run docs" })),
+			entry(
+				done("Fix race in tree settle", {
+					child: session("local:fix", [
+						shell(
+							job(true, {
+								jobId: "j-child",
+								description: "",
+								command: "go test ./agent/...\n# second line",
+								status: "command_exited_nonzero",
+								outcome: "failure",
+								exitCode: 1,
+								endedAt: ago(MIN),
+							}),
+						),
+					]),
+				}),
+			),
+		]),
+	});
+
+	it("lists every shell job with its state, its title and who started it", () => {
+		const { jobs, subagents } = flattenActivity(activityTree());
+		expect(subagents.map((row) => row.title)).toEqual(["Fix race in tree settle"]);
+		expect(jobs.map((row) => [row.id, row.state, row.title, row.owner])).toEqual([
+			["j-root", "running", "Serving the docs", "local:coord"],
+			["j-child", "failed", "go test ./agent/...", "Fix race in tree settle"],
+		]);
+		// The subagent-only views are unchanged.
+		expect(flattenSubagents(activityTree())).toEqual(subagents);
+	});
+
+	// A job id and a delegate id are different namespaces: one can't hide
+	// the other (subagentListKey keys them apart the same way).
+	it("keeps a job and a subagent that share an id", () => {
+		const tree: ActivityTree = {
+			revision: 1,
+			root: session("local:coord", [shell(job(false, { jobId: "same" })), entry(done("same"))]),
+		};
+		const { jobs, subagents } = flattenActivity(tree);
+		expect(jobs.map((row) => row.id)).toEqual(["same"]);
+		expect(subagents.map((row) => row.id)).toEqual(["same"]);
+	});
+
+	it("sorts jobs among subagents by state, and finds them by title, command or owner", () => {
+		const { jobs, subagents } = flattenActivity(activityTree());
+		const all = [...subagents, ...jobs];
+		const sections = subagentSections(all);
+		expect(sections.failed.map((row) => row.id)).toEqual(["j-child"]);
+		expect(sections.running.map((row) => row.id)).toEqual(["j-root"]);
+		expect(sections.done.map((row) => row.id)).toEqual(["Fix race in tree settle"]);
+		expect(all.filter((row) => matchesSearch(row, "npm run")).map((row) => row.id)).toEqual(["j-root"]);
+		expect(all.filter((row) => matchesSearch(row, "tree settle")).map((row) => row.id)).toEqual([
+			"Fix race in tree settle",
+			"j-child",
+		]);
+	});
+
+	it("says a running job's status and quiet age, and a finished one's duration, in words", () => {
+		const { jobs } = flattenActivity(activityTree());
+		const [running, finished] = jobs;
+		if (!running || !finished) throw new Error("no jobs");
+		expect(shellJobMeta(running, NOW)).toBe("running · 2m");
+		expect(shellJobMeta(finished, NOW)).toBe("Command failed · 1m");
+	});
+
+	// VoiceOver hears every ending, the clean one the meta leaves out included,
+	// and its durations in words, as a subagent row's.
+	it("reads a job to VoiceOver with how it ended, even a clean finish", () => {
+		const { jobs } = flattenActivity(activityTree());
+		const [running, finished] = jobs;
+		if (!running || !finished) throw new Error("no jobs");
+		expect(shellJobLabel(running, NOW)).toBe("Shell job, Serving the docs, running, 2 minutes, under local:coord");
+		expect(shellJobLabel(finished, NOW)).toBe(
+			"Shell job, go test ./agent/..., Command failed, 1 minute, under Fix race in tree settle",
+		);
+		const clean = {
+			...finished,
+			state: "done" as const,
+			job: { ...finished.job, status: "completed", outcome: "success" },
+		};
+		expect(shellJobLabel(clean, NOW)).toBe(
+			"Shell job, go test ./agent/..., Done, 1 minute, under Fix race in tree settle",
+		);
+		const untimed = { ...clean, job: { ...clean.job, endedAt: undefined } };
+		expect(shellJobMeta(untimed, NOW)).toBe("Done");
+		expect(shellJobLabel(untimed, NOW)).toBe("Shell job, go test ./agent/..., Done, under Fix race in tree settle");
+	});
 });

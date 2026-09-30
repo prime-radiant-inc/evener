@@ -74,12 +74,16 @@ type ArgvExecutor interface {
 	ExecArgv(ctx context.Context, name string, args []string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error)
 }
 
-// RootBoundary is an optional execution-environment capability: validating
-// that an already-resolved absolute path stays under the environment's
-// sandbox root. It is separate from ExecutionEnvironment, like
-// StreamingExecutor, so other implementers (incl. test fakes) are unaffected;
-// the shell tool type-asserts for it to validate a model-chosen `cwd` before
-// spawning a process there.
+// CommandWorkingDirectoryBoundary is an optional execution-environment capability
+// for checking a resolved command cwd against its active sandbox policy. Off
+// sessions permit any cwd; confined sessions retain their workspace boundary.
+type CommandWorkingDirectoryBoundary interface {
+	EnsureCommandWorkingDirectory(abs string) error
+}
+
+// RootBoundary checks that an already-resolved absolute path stays under the
+// working root regardless of sandbox mode. It serves callers with a narrower
+// path contract, such as session URL attachments.
 type RootBoundary interface {
 	// EnsureUnderRoot rejects abs if it escapes the sandbox root. abs must
 	// already be absolute and filepath.Clean'ed by the caller.
@@ -92,11 +96,11 @@ type RootBoundary interface {
 // tools. Like StreamingExecutor it is separate from ExecutionEnvironment so other
 // implementers are unaffected; apply_patch type-asserts for it.
 //
-// When the environment carries an ENFORCED sandbox policy, each method resolves
+// When the environment carries a file-tool-confined policy, each method resolves
 // its path through the race-safe fd-anchored layer (symlink-refusing,
-// root/denylist-checked; writes are atomic temp+renameat). Otherwise it confines
-// to the working root exactly as the other off-mode file tools do. Paths may be
-// relative to the working directory or absolute under it.
+// root/denylist-checked; writes are atomic temp+renameat). Unrestricted off
+// sessions impose no workspace boundary. Paths may be relative to the working
+// directory or absolute.
 type FileMutator interface {
 	// ReadFileRaw returns the raw bytes of path.
 	ReadFileRaw(path string) ([]byte, error)
