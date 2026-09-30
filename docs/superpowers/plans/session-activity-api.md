@@ -119,9 +119,9 @@ event type/payload after its first commit.
 
 ### Task 4: Shared recovering activity client
 
-**Files:** Create `appwire-client/typescript/sessionActivity.ts` and `sessionActivity.test.ts`; modify package exports/build configuration and README as required. Do not edit browser or native components or generated types.
+**Files:** Create `appwire-client/typescript/sessionActivityStore.ts` and `sessionActivityStore.test.ts`; modify package exports/build configuration and README as required. Preserve the existing `sessionActivity.ts` metrics decoder. Do not edit browser or native components or generated types.
 
-**Interfaces:** Implement and export `SessionActivity` exactly as the spec describes, including `observe(resource): () => void` for view-owned collection demand. `getSnapshot()` returns typed `context`, `summary`, and collection states keyed by delegates/jobs/watches, each exposing rows, loading, complete, error/unavailable state, and whether additional pages exist. Export the snapshot/state types and a narrow `SessionActivityClient` interface. Use shared subscription ownership if already available; isolate any new lease helper in this package. Coordinate the final names of snapshot properties in the report before Tasks 5/6 start.
+**Interfaces:** Implement and export `SessionActivityStore` exactly as the spec describes, including `observe(resource): () => void` for view-owned collection demand. `getSnapshot()` returns typed `context`, `summary`, and collection states keyed by delegates/jobs/watches, each exposing rows, loading, complete, error/unavailable state, and whether additional pages exist. Export the snapshot/state types and a narrow `SessionActivityClient` interface. Use shared subscription ownership if already available; isolate any new lease helper in this package. Coordinate the final names of snapshot properties in the report before Tasks 5/6 start.
 
 - [ ] Write fake-transport/fake-clock behavior tests for start-summary-only, opening one collection, coalescing notifications, resource-specific refresh, pagination, and truthful counts before page completion.
 - [ ] Write recovery tests for pre-ready mounts, transient retries through the 30-second cap, disposal, reconnect, stale cursor, scope replacement, and late old-client results. Assert requests and retained state transitions instead of timer implementation details.

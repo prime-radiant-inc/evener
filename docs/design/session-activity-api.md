@@ -183,11 +183,11 @@ receiver's view. An event is a scoped invalidation, not a second lifecycle fold.
 Existing delegate/job events may also be consumed, with coalescing. Subscription
 gaps and reconnects revalidate only observed session resources.
 
-The shared TypeScript owner is `SessionActivity`, exported from
+The shared TypeScript owner is `SessionActivityStore`, exported from
 `@evener/appwire-client`. It is framework-free. Its public surface is:
 
 ```ts
-new SessionActivity(client, ref, { scope?, clock? })
+new SessionActivityStore(client, ref, { scope?, clock? })
 activity.getSnapshot()
 activity.subscribe(listener)
 activity.start()
