@@ -57,7 +57,7 @@ interface ActivityPage {
 }
 interface RefreshWalk {
   advance: boolean;
-  rows: readonly ActivityRow[];
+  rows: Map<string, ActivityRow>;
   issues: readonly SessionActivityIssue[];
 }
 interface ResourceRead {
@@ -337,7 +337,7 @@ export class SessionActivityStore {
         // A stale cursor/reconnect restarts the fresh walk, not its original
         // displayed boundary: provisional rows must not extend that boundary.
         read.boundary ??= last ? rowIdentity(resource, last) : undefined;
-        read.refresh = read.boundary ? { advance: false, rows: [], issues: [] } : null;
+        read.refresh = read.boundary ? { advance: false, rows: new Map(), issues: [] } : null;
       }
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
@@ -375,26 +375,37 @@ export class SessionActivityStore {
           }
           const current = this.state[resource];
           const walk = read.refresh;
+          let reachedBoundary = false;
           if (walk) {
-            walk.rows = mergeRows(resource, walk.rows, page.rows);
-            walk.issues = [...walk.issues, ...page.page.issues];
+            reachedBoundary = page.page.complete;
+            for (const row of page.rows) {
+              const identity = rowIdentity(resource, row);
+              walk.rows.set(identity, row);
+              if (identity === read.boundary) reachedBoundary = true;
+            }
+            walk.issues = mergeIssues(walk.issues, page.page.issues);
           }
-          const reachedBoundary =
-            walk && (page.page.complete || walk.rows.some((row) => rowIdentity(resource, row) === read.boundary));
-          const issues = walk?.issues ?? page.page.issues;
+          const freshIssues = walk?.issues ?? page.page.issues;
           // Only a fresh walk through the displayed boundary (or the whole
           // collection) proves membership absent. Partial source issues never
           // prove removal, and an opaque epoch change is not session replacement.
-          const rows = walk
-            ? reachedBoundary && issues.length === 0
-              ? walk.rows
-              : mergeRows(resource, current.rows, page.rows)
-            : root && issues.length === 0
-              ? page.rows
-              : mergeRows(resource, current.rows, page.rows);
+          let rows: readonly ActivityRow[];
+          let reconciled = false;
+          if (walk && reachedBoundary && freshIssues.length === 0) {
+            rows = [...walk.rows.values()];
+            reconciled = true;
+          } else if (!walk && root && freshIssues.length === 0) {
+            rows = page.rows;
+            reconciled = true;
+          } else {
+            rows = mergeRows(resource, current.rows, page.rows);
+          }
+          // A clean continuation cannot acknowledge an unresolved root scan.
+          // Retain its issues and root recovery demand until fresh reconciliation.
+          const issues = reconciled ? [] : mergeIssues(current.issues, freshIssues);
           if (reachedBoundary) {
             read.refresh = null;
-            if (issues.length === 0) read.boundary = undefined;
+            if (reconciled) read.boundary = undefined;
           }
           read.cursor = page.page.nextCursor;
           read.epoch = page.context.epoch;
@@ -625,6 +636,14 @@ function mergeRows(
   const rows = new Map(existing.map((row) => [rowIdentity(resource, row), row]));
   for (const row of incoming) rows.set(rowIdentity(resource, row), row);
   return [...rows.values()];
+}
+function mergeIssues(
+  existing: readonly SessionActivityIssue[],
+  incoming: readonly SessionActivityIssue[],
+): SessionActivityIssue[] {
+  const issues = new Map(existing.map((issue) => [JSON.stringify([issue.ref, issue.code]), issue]));
+  for (const issue of incoming) issues.set(JSON.stringify([issue.ref, issue.code]), issue);
+  return [...issues.values()];
 }
 function unavailableError(error: unknown): boolean {
   return (

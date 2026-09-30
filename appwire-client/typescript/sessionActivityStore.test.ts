@@ -1168,3 +1168,70 @@ test("reconnect fences an interrupted refresh and rebuilds its displayed extent 
   ]);
   expect(store.getSnapshot().jobs.context?.epoch).toBe("epoch-3");
 });
+
+test("explicit paging retains unresolved root issues and rearms authoritative reconciliation", async () => {
+  const client = activityClient(),
+    store = owner(client);
+  client.on("evener/thread/jobs/list", () => jobsFixture([jobFixture("deleted"), jobFixture("boundary")], "old-rest"));
+  store.observe("jobs");
+  await activityState(store, () => !store.getSnapshot().jobs.loading && store.getSnapshot().jobs.hasMore);
+  const issue = { ref: "remote:child", code: "sourceUnavailable" };
+  client.on("evener/thread/jobs/list", ({ cursor }) =>
+    cursor
+      ? jobsFixture([jobFixture("later")])
+      : {
+          ...jobsFixture([jobFixture("boundary")], "fresh-rest"),
+          page: { complete: false, nextCursor: "fresh-rest", issues: [issue] },
+        },
+  );
+  await store.refresh("jobs");
+  expect(store.getSnapshot().jobs).toMatchObject({ complete: false, pending: true, issues: [issue] });
+  await store.loadMore("jobs");
+  expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["deleted", "boundary", "later"]);
+  expect(store.getSnapshot().jobs).toMatchObject({ complete: false, pending: true, issues: [issue] });
+  const before = callsTo(client, "evener/thread/jobs/list");
+  client.on("evener/thread/jobs/list", () =>
+    jobsFixture([jobFixture("boundary", "completed"), jobFixture("later", "completed")]),
+  );
+  await vi.advanceTimersByTimeAsync(999);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(before);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(before + 1);
+  expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["boundary", "later"]);
+  expect(store.getSnapshot().jobs).toMatchObject({ complete: true, pending: false, issues: [] });
+});
+
+test("fresh accumulator replaces duplicate rows in their original order without clearing unresolved issues early", async () => {
+  const client = activityClient(),
+    store = owner(client);
+  client.on("evener/thread/jobs/list", () =>
+    jobsFixture([jobFixture("deleted"), jobFixture("newer"), jobFixture("boundary")], "old-rest"),
+  );
+  store.observe("jobs");
+  await activityState(store, () => !store.getSnapshot().jobs.loading && store.getSnapshot().jobs.hasMore);
+  const issue = { ref: "remote:child", code: "sourceUnavailable" };
+  client.on("evener/thread/jobs/list", () => ({
+    ...jobsFixture([jobFixture("boundary")], "fresh-rest"),
+    page: { complete: false, nextCursor: "fresh-rest", issues: [issue] },
+  }));
+  await store.refresh("jobs");
+  const next = deferred<SessionJobsResponse>(),
+    entered = deferred<void>();
+  client.on("evener/thread/jobs/list", ({ cursor }) => {
+    if (!cursor) return jobsFixture([jobFixture("newer")], "fresh-second");
+    entered.resolve();
+    return next.promise;
+  });
+  const refresh = store.refresh("jobs");
+  await vi.advanceTimersByTimeAsync(100);
+  await entered.promise;
+  expect(store.getSnapshot().jobs.issues).toEqual([issue]);
+  expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["deleted", "newer", "boundary"]);
+  next.resolve(jobsFixture([jobFixture("newer", "completed"), jobFixture("boundary", "completed")], "fresh-rest"));
+  await refresh;
+  expect(store.getSnapshot().jobs.rows.map((row) => [row.jobId, row.status])).toEqual([
+    ["newer", "completed"],
+    ["boundary", "completed"],
+  ]);
+  expect(store.getSnapshot().jobs.issues).toEqual([]);
+});
