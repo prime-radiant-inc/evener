@@ -10,11 +10,31 @@ import { backGuard } from "./backGuardTestUtils";
 import type { HubRoutes } from "./hubSheetContext";
 import { ProviderDetailPage } from "./ProviderDetailPage";
 import { ProvidersPage } from "./ProvidersPage";
-import { ProvidersScreenSlotProvider } from "./providersScreenSlot";
+import { ProvidersScreenSlotProvider, useProviderDetailSlot } from "./providersScreenSlot";
 
 type DetailParams = HubRoutes["ProviderDetail"];
 
-const stack: { close: (() => void) | null; params: DetailParams | null } = { close: null, params: null };
+const stack: {
+	close: (() => void) | null;
+	params: DetailParams | null;
+	firstSeen: string | null | undefined;
+} = { close: null, params: null, firstSeen: undefined };
+
+/** The provider the slot named when the latest pushed detail first rendered:
+ * a detail pushed before its page has published it renders blank at first. */
+export function detailFirstSeen(): string | null | undefined {
+	return stack.firstSeen;
+}
+
+/** The pushed detail page, noting what the slot held at its first render. */
+function Pushed(props: ComponentProps<typeof ProviderDetailPage>) {
+	const slot = useProviderDetailSlot();
+	const [seen] = useState(() => slot?.name ?? null);
+	useEffect(() => {
+		stack.firstSeen = seen;
+	}, [seen]);
+	return <ProviderDetailPage {...props} />;
+}
 
 /** The detail's route params, or null while no detail is pushed. */
 export function detailParams(): DetailParams | null {
@@ -86,7 +106,8 @@ export function ProvidersStack(props: ComponentProps<typeof ProvidersPage>) {
 		<ProvidersScreenSlotProvider>
 			<ProvidersPage {...props} route={{ ...props.route, params: applied }} navigation={navigation} />
 			{detail ? (
-				<ProviderDetailPage
+				<Pushed
+					key={detail.name}
 					navigation={detailNavigation}
 					route={{ key: "detail", name: "ProviderDetail", params: detail }}
 				/>

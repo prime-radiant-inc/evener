@@ -26,7 +26,7 @@ import { ProviderEditor } from "../ProviderEditor";
 import { SwitchRow, Tag } from "../sheet/Grouped";
 import { MODELS_NOT_CHECKED, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
 import { ProviderDetailPage } from "./ProviderDetailPage";
-import { back, detailParams, ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
+import { back, detailFirstSeen, detailParams, ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
 import {
 	alertRequests,
 	dropped,
@@ -480,6 +480,17 @@ it("opens a provider's editor from inside its pushed detail", async () => {
 	const detail = tree.root.findByType(ProviderDetailPage);
 	expect(detail.findAllByType(ProviderEditor)).toHaveLength(1);
 	expect(tree.root.findAllByType(ProviderEditor)).toHaveLength(1);
+});
+
+// The page publishes a provider's detail before it pushes it, so the pushed
+// page's first render already has it: no blank frame as it slides in.
+it("pushes a provider's detail only once its detail is published", async () => {
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	expect(detailParams()).toMatchObject({ name: "work" });
+	expect(detailFirstSeen()).toBe("work");
 });
 
 it("goes back to the provider's detail when its edit is cancelled", async () => {
