@@ -1,6 +1,6 @@
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
-import { uiType } from "../design/tokens";
+import { scaledType, uiType } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
 import { FirstLoad, SheetStatus } from "./SheetStatus";
 
@@ -16,6 +16,10 @@ vi.mock("react-native", async () => ({
 	useWindowDimensions: () => ({ fontScale: screen.fontScale, scale: 2, width: 390, height: 844 }),
 }));
 
+beforeEach(() => {
+	screen.fontScale = 1;
+});
+
 it("shows nothing while live, and the line with no button while not", () => {
 	status.state = "ready";
 	status.line = null;
@@ -27,32 +31,17 @@ it("shows nothing while live, and the line with no button while not", () => {
 	expect(tree.root.findAllByProps({ accessibilityRole: "button" })).toHaveLength(0);
 });
 
-// The sheet's status line and a first load's sentence set in spec 16.2's
-// roles: Footnote and Subheadline (settings audit Lev5).
-it("sets its line in the Footnote role and a first load's sentence in Subheadline", () => {
-	status.state = "reconnecting";
-	status.line = "Reconnecting…";
-	const line = render(<SheetStatus />).root.findByType("Text" as never);
-	expect(line.props.style).toMatchObject(uiType.footnote);
-	status.line = null;
+it.each([1, 1.5])("sets its line in Footnote and a first load's sentence in Subheadline, at text scale %s (settings audit Lev5)", (fontScale) => {
+	screen.fontScale = fontScale;
 	status.fatal = false;
-	status.state = "connecting";
-	const first = render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />).root.findByType("Text" as never);
-	expect(first.props.style).toMatchObject(uiType.subheadline);
-});
-
-// Dynamic Type grows both roles, line height with the size.
-it("scales both roles with the text size", () => {
-	screen.fontScale = 1.5;
 	status.state = "reconnecting";
 	status.line = "Reconnecting…";
 	const line = render(<SheetStatus />).root.findByType("Text" as never);
-	expect(line.props.style).toMatchObject({ fontSize: 19.5, lineHeight: 27 });
+	expect(line.props.style).toMatchObject(scaledType(uiType.footnote, fontScale));
 	status.line = null;
 	status.state = "connecting";
 	const first = render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />).root.findByType("Text" as never);
-	expect(first.props.style).toMatchObject({ fontSize: 22.5, lineHeight: 30 });
-	screen.fontScale = 1;
+	expect(first.props.style).toMatchObject(scaledType(uiType.subheadline, fontScale));
 });
 
 it.each(["connecting", "reconnecting"])("says a never-loaded page is connecting while %s", (state) => {
