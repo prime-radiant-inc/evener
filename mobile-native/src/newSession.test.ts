@@ -310,10 +310,12 @@ it("leaves a form that is starting alone when a refreshed list lands", async () 
 	const reads = calls.filter((call) => call.method === "model/list").length;
 	await store.getState().refreshModels();
 	expect(calls.filter((call) => call.method === "model/list")).toHaveLength(reads);
-	calls.find((call) => call.method === "thread/start")?.response.resolve({
-		thread: { id: "t", evener: { ref: "canonical/t" } },
-		turn: {},
-	});
+	calls
+		.find((call) => call.method === "thread/start")
+		?.response.resolve({
+			thread: { id: "t", evener: { ref: "canonical/t" } },
+			turn: {},
+		});
 	await start;
 });
 
