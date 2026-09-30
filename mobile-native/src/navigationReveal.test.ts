@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -13,7 +14,7 @@ it.each([
 	[{ tier: "needs_you" }, { resource: "section", section: "needs_you" }],
 	[{ tier: "live" }, { resource: "section", section: "live" }],
 ])("locates the actual session container: %j", async (fields, params) => {
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (method: string, args: unknown) => {
 			expect(method).toBe("evener/navigation/read");
 			expect(args).toEqual({
@@ -37,7 +38,7 @@ it.each([
 				},
 			};
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	expect(await locateSession(client, "child")).toMatchObject({
 		params,
 		ref: "child",
@@ -45,7 +46,7 @@ it.each([
 	});
 });
 const locationClient = (fields: Record<string, unknown>, session: Record<string, unknown> = {}) =>
-	({
+	Object.assign(new FakeClient("ready"), {
 		request: async () => {
 			const snapshot = wireSnapshot({ representationVersion: 3, resource: "location", ref: "child" } as never, {
 				ref: "child",
@@ -61,7 +62,7 @@ const locationClient = (fields: Record<string, unknown>, session: Record<string,
 			};
 		},
 		onNotification: () => () => {},
-	}) as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 it.each([
 	["its root", { top_level: false, top_level_ref: "root", project_key: "p", tier: "current" }, "root"],
 	[
@@ -87,10 +88,10 @@ it("reveals a nested fork original's own row, not its parent (it has one)", asyn
 it.each(["local:orphan", "host:remote-subagent"])(
 	"shows the existing could-not-be-located message for a gone ref: %s",
 	async (ref) => {
-		const client = {
+		const client = Object.assign(new FakeClient("ready"), {
 			request: async () => ({ status: "gone", generationId: "g", revision: 1, etag: '"one"' }),
 			onNotification: () => () => {},
-		} as ConversationClientLike;
+		} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 		await expect(locateSession(client, ref)).rejects.toThrow("This session could not be located. Try again.");
 	},
 );
@@ -99,10 +100,10 @@ it.each([
 	{ status: "ok", data: { ref: "other", session: { ref: "other" } } },
 	{ status: "ok", data: { ref: "child" } },
 ])("rejects missing or mismatched locations", async (response) => {
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async () => response,
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	await expect(locateSession(client, "child")).rejects.toThrow();
 });
 interface Row {
@@ -117,10 +118,10 @@ function pages(
 		sectionId?: string;
 	} = { resource: "section", section: "live" },
 ) {
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (_method: string, p: { offset: number }) => read(p.offset),
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	return new NavigationPages<Row>(client, params, "sessions", (r) => r.ref, 1);
 }
 const response = (
@@ -204,13 +205,13 @@ it.each([
 	],
 ] as const)("invalidates the located container when its revision changes", async (params, target) => {
 	let notify: Parameters<ConversationClientLike["onNotification"]>[0] = () => {};
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async () => response([{ ref: "child" }], 0, 1, 0, params.resource),
 		onNotification: (listener: typeof notify) => {
 			notify = listener;
 			return () => {};
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const list = new NavigationPages<Row>(client, params, "sessions", (r) => r.ref);
 	list.watch();
 	await list.refresh();
@@ -226,13 +227,13 @@ it.each([
 });
 it("rejects a delayed location after its screen was left", async () => {
 	let release!: (value: unknown) => void;
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: () =>
 			new Promise<unknown>((resolve) => {
 				release = resolve;
 			}),
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const request = new AbortController();
 	const lookup = locateSession(client, "child", request.signal);
 	request.abort();

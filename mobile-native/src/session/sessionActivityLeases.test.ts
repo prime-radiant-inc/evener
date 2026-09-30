@@ -42,7 +42,14 @@ function hub() {
 	}));
 	return client;
 }
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+function unsubscribeAdmission(client: FakeClient): Promise<void> {
+	return new Promise((resolve) =>
+		client.on("thread/unsubscribe", () => {
+			resolve();
+			return {};
+		}),
+	);
+}
 test.each(["activity", "transcript"] as const)("last owner alone unsubscribes when %s leaves first", async (first) => {
 	const client = hub();
 	const service = createConversationService(client);
@@ -65,14 +72,13 @@ test.each(["activity", "transcript"] as const)("last owner alone unsubscribes wh
 	expect(reads.slice(1).every((p) => (p as { subscribe: boolean }).subscribe === false)).toBe(true);
 	if (first === "activity") await tree.setClient(null);
 	else service.close();
-	await tick();
 	expect(client.calls.filter((c) => c.method === "thread/unsubscribe")).toHaveLength(0);
 	followed.dispose();
-	await tick();
 	expect(client.calls.filter((c) => c.method === "thread/unsubscribe")).toHaveLength(0);
+	const unsubscribed = unsubscribeAdmission(client);
 	if (first === "activity") service.close();
 	else await tree.setClient(null);
-	await tick();
+	await unsubscribed;
 	expect(client.calls.filter((c) => c.method === "thread/unsubscribe").map((c) => c.params)).toEqual([{ ref }]);
 });
 
@@ -113,8 +119,9 @@ test("a rich transcript read joining pending activity acquisition keeps its proj
 		subscribe: false,
 		replaceSubscription: false,
 	});
+	const unsubscribed = unsubscribeAdmission(client);
 	service.close();
 	await tree.setClient(null);
-	await tick();
+	await unsubscribed;
 	expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
 });

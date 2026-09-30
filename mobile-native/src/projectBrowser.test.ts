@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it } from "vitest";
 import type {
 	AnyNotification,
@@ -16,7 +17,7 @@ function boundary() {
 		reject: (error: Error) => void;
 	}> = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (_method, params) =>
 			new Promise((resolve, reject) => {
 				requests.push({
@@ -29,7 +30,7 @@ function boundary() {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	return { client, requests, listeners };
 }
 type Pending = ReturnType<typeof boundary>["requests"][number];

@@ -7,7 +7,8 @@ import type {
 	ActivityTree,
 } from "@evener/appwire-client";
 import {
-	countLabel,
+	subagentOutcome,
+	summaryTally,
 	endedInStop,
 	flattenActivity,
 	flattenJobs,
@@ -26,7 +27,6 @@ import {
 	stripSegments,
 	subtreeStopped,
 	subtreeStops,
-	tallyActivity,
 	timeInState,
 } from "./subagentModel";
 
@@ -203,12 +203,17 @@ describe("one flat list", () => {
 	});
 });
 
-describe("tallies and counts (S3's fallback)", () => {
-	it("counts the loaded subagents by state, and says when some couldn't be listed", () => {
-		const rows = flattenSubagents(tree(running("a"), running("b"), failed("c"), done("d")));
-		expect(tallyActivity(rows)).toEqual({ total: 4, running: 2, failed: 1, done: 1 });
-		expect(countLabel(55, false)).toBe("55");
-		expect(countLabel(55, true)).toBe("55+");
+describe("authoritative summary tallies", () => {
+	it("adds known resource counts while keeping any unknown resource unknown", () => {
+		const counts = { known: true, total: 501, active: 400, failed: 20, completed: 81 };
+		expect(summaryTally(counts, { known: true, total: 2, active: 1, failed: 1, completed: 0 })).toEqual({
+			total: 503,
+			running: 401,
+			failed: 21,
+			done: 81,
+		});
+		expect(summaryTally(counts, { ...counts, known: false })).toBeNull();
+		expect(summaryTally(undefined)).toBeNull();
 	});
 });
 
@@ -465,5 +470,43 @@ describe("shell jobs in the Activity list", () => {
 		if (!row) throw new Error("no job");
 		expect(row.state).toBe("failed");
 		expect(shellJobMeta(row, NOW)).toBe("completed · 1m");
+	});
+});
+
+describe("qualified activity evidence", () => {
+	it("keeps colliding logical IDs under distinct owners and resolves outcomes by transcript owner", () => {
+		const left = done("same", { childRef: "local:child-a", ownerRef: "local:parent-a", message: "left" });
+		const right = done("same", { childRef: "local:child-b", ownerRef: "local:parent-b", message: "right" });
+		const t: ActivityTree = {
+			revision: 1,
+			root: session("local:coord", [
+				entry(
+					running("parent-a", {
+						child: session("local:parent-a", [
+							entry(left),
+							{ kind: "shell", job: job(false, { jobId: "same", ownerRef: "local:parent-a" }) },
+						]),
+					}),
+				),
+				entry(
+					running("parent-b", {
+						child: session("local:parent-b", [
+							entry(right),
+							{ kind: "shell", job: job(false, { jobId: "same", ownerRef: "local:parent-b" }) },
+						]),
+					}),
+				),
+			]),
+		};
+		expect(flattenActivity(t)).toHaveLength(6);
+		expect(subagentOutcome(t, "same", NOW, "local:parent-a")).toBe("left");
+		expect(subagentOutcome(t, "same", NOW, "local:parent-b")).toBe("right");
+		expect(subagentOutcome(t, "same", NOW, "local:unrelated")).toBeUndefined();
+	});
+	it("does not invent a total when only an input usage counter is present", () => {
+		expect(subagentLastLine(rowOf(done("one", { usage: { inputTokens: 1200 } })), null, (x) => x)?.tokens).toBe(
+			"1.2K input tokens",
+		);
+		expect(subagentLastLine(rowOf(done("none", { usage: {} })), null, (x) => x)?.tokens).toBeUndefined();
 	});
 });

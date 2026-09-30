@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it } from "vitest";
 import type {
 	AnyNotification,
@@ -69,7 +70,7 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 	}[] = [];
 	const arrivals = new Map<number, () => void>();
 	let notify: (event: AnyNotification) => void = () => {};
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (_method, params) =>
 			new Promise((resolve) => {
 				requests.push({ params: params as NavigationReadParams, resolve });
@@ -81,7 +82,7 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 				notify = () => {};
 			};
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	return {
 		requests,
 		requested: (count: number) =>
@@ -923,7 +924,7 @@ it("keeps every loaded page when a conditional refresh finds the list unchanged"
 it("re-reads the pin catalog when a section changes and does not spin on an older hub revision", async () => {
 	const requests: NavigationReadParams[] = [];
 	let notify: (event: AnyNotification) => void = () => {};
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		onNotification: (listener) => {
 			notify = listener;
 			return () => {};
@@ -949,7 +950,7 @@ it("re-reads the pin catalog when a section changes and does not spin on an olde
 				"hub-generation",
 			) as never;
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	const pages = new NavigationPages<{
 		id: string;
 		name: string;

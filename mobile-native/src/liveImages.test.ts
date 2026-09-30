@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import type { AnyNotification, Thread, ThreadItem } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
@@ -47,21 +48,23 @@ async function setup(initialItems: ThreadItem[] = []) {
 	};
 	let reads = 0;
 	let holdRead: (() => Promise<void>) | undefined;
-	const service = createConversationService({
-		request: async (method: string) => {
-			if (method === "thread/turns/list") return { data: thread.turns, nextCursor: null };
-			if (method !== "thread/read") throw new Error(`Unexpected ${method}`);
-			reads++;
-			await holdRead?.();
-			// A v6-shaped read (carrying `snapshot`) establishes the model's
-			// versioned history at hydrate — the read-model's own bootstrap rule
-			// (reducer.ts's classifySignal): a live history/updated can only merge
-			// once an authoritative read has first established an incarnation to
-			// merge against, never bootstrap history from nothing on its own.
-			return { thread, olderCursor: "older", snapshot: { incarnation: "inc-1", length: 1 } };
-		},
-		onNotification: () => () => {},
-	} as ConversationClientLike);
+	const service = createConversationService(
+		Object.assign(new FakeClient("ready"), {
+			request: async (method: string) => {
+				if (method === "thread/turns/list") return { data: thread.turns, nextCursor: null };
+				if (method !== "thread/read") throw new Error(`Unexpected ${method}`);
+				reads++;
+				await holdRead?.();
+				// A v6-shaped read (carrying `snapshot`) establishes the model's
+				// versioned history at hydrate — the read-model's own bootstrap rule
+				// (reducer.ts's classifySignal): a live history/updated can only merge
+				// once an authoritative read has first established an incarnation to
+				// merge against, never bootstrap history from nothing on its own.
+				return { thread, olderCursor: "older", snapshot: { incarnation: "inc-1", length: 1 } };
+			},
+			onNotification: () => () => {},
+		} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
+	);
 	const store = createConversationStore();
 	const sink = createActivityStore().getState();
 	await store.getState().openProjected(service, sink, "local:thread");

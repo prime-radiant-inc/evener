@@ -31,6 +31,8 @@ export class SubagentTree {
 	private followLease: ThreadSubscriptionLease | null = null;
 	private presentation: SessionActivityPresentation | null = null;
 	private coordinatorModel: string | null = null;
+	private modelGeneration = 0;
+	private observedSessionID: string | null = null;
 	private activityObservers = 0;
 	private stopActivity: (() => void)[] = [];
 	private snapshot: SubagentTreeSnapshot;
@@ -69,8 +71,14 @@ export class SubagentTree {
 		this.detachStore = store.subscribe(() => {
 			const state = store.getSnapshot();
 			const next = projectSessionActivity(state);
-			if (next.context && this.presentation?.context && next.context.sessionId !== this.presentation.context.sessionId)
-				this.presentation = null;
+			if (next.context) {
+				if (this.observedSessionID && next.context.sessionId !== this.observedSessionID) {
+					this.presentation = null;
+					this.coordinatorModel = null;
+					this.modelGeneration += 1;
+				}
+				this.observedSessionID = next.context.sessionId;
+			}
 			// Context can land before collections. Keep the retained rows until the
 			// replacement supplies membership evidence, including a proven empty set.
 			if (next.tree && (state.delegates.rows.length > 0 || state.jobs.rows.length > 0 || next.complete))
@@ -103,15 +111,22 @@ export class SubagentTree {
 	}
 	async follow(): Promise<void> {
 		const client = this.client;
+		const modelGeneration = this.modelGeneration;
 		if (!client) return;
 		this.followLease ??= acquireThreadSubscription(client, this.ref);
 		try {
 			const response = await this.followLease.read({ includeTurns: false });
-			if (client === this.client) this.coordinatorModel = response.thread.modelProvider || null;
+			if (
+				client === this.client &&
+				modelGeneration === this.modelGeneration &&
+				(!this.observedSessionID || response.thread.id === this.observedSessionID)
+			) {
+				this.coordinatorModel = response.thread.modelProvider || null;
+				this.publish();
+			}
 		} catch {
 			/* The shared activity owner retains and recovers its own reads. */
 		}
-		if (client === this.client) await this.reload();
 	}
 	reload(): Promise<void> {
 		return this.store?.refresh() ?? Promise.resolve();
@@ -127,12 +142,12 @@ export class SubagentTree {
 		const current = state ? projectSessionActivity(state) : this.presentation;
 		const tree = this.presentation?.tree ?? null;
 		const errors = state ? [state.summaryState, state.delegates, state.jobs] : [];
-		const missing = current?.issues.map((issue) => issue.ref) ?? [];
+		const missing = [...new Set((current ?? this.presentation)?.issues.map((issue) => issue.ref) ?? [])];
 		return {
 			tree,
 			summary: state?.summary ?? this.presentation?.summary ?? null,
 			loading: tree === null && this.client !== null && errors.some((read) => read.loading || read.pending),
-			failed: tree === null && errors.some((read) => read.error !== null),
+			failed: tree === null && errors.some((read) => read.error !== null && !read.permanent),
 			unsupported: errors.some((read) => read.permanent),
 			ended: false,
 			partial:

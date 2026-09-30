@@ -1,3 +1,5 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { activityFixture } from "./subagents/sessionActivityTestUtils";
 // The Session's one Send and the tray's Stop, on the real ConversationScreen:
 // what a person presses, and which requests reach the hub through the durable
 // runtime. Only native edges are mocked, as in
@@ -364,9 +366,7 @@ function hubClient(
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
-	const client = {
-		state: "ready",
-		onStateChange: () => () => {},
+	const client = Object.assign(new FakeClient("ready") as Pick<FakeClient, "state" | "onReady" | "onStateChange">, {
 		onNotification: (listener: (notification: AnyNotification) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -429,13 +429,27 @@ function hubClient(
 						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
-			if (method === "evener/jobs/list" && coordinatorHub.tree) return { data: coordinatorHub.tree };
+			if (method.startsWith("evener/thread/") && coordinatorHub.tree) {
+				const f = activityFixture(coordinatorHub.tree, {
+					ref: String(params.ref),
+					scope: params.scope as "session" | "subtree",
+				});
+				if (method === "evener/thread/activity/read") return f.summary;
+				const page = {
+					complete: !f.continuation,
+					issues: f.issues,
+					...(f.continuation ? { nextCursor: f.continuation } : {}),
+				};
+				if (method === "evener/thread/delegates/list")
+					return { context: f.context, scope: f.scope, delegates: f.delegates, page };
+				if (method === "evener/thread/jobs/list") return { context: f.context, scope: f.scope, jobs: f.jobs, page };
+			}
 			if (method === "evener/delegate/stop") return coordinatorHub.stop(params);
 			if (method === "evener/session/seen/set")
 				return { ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } };
 			return answerFleetRead(fleet, method, params) ?? {};
 		},
-	};
+	});
 	return {
 		client,
 		mutations: () => requests.filter((request) => request.method.startsWith("turn/")).map((request) => request.method),
@@ -4104,7 +4118,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	}
 
 	const jobReads = (hub: ReturnType<typeof hubClient>) =>
-		hub.requests.filter((request) => request.method === "evener/jobs/list").length;
+		hub.requests.filter((request) => request.method === "evener/thread/delegates/list").length;
 
 	beforeEach(() => {
 		vi.mocked(navigation.navigate).mockClear();
@@ -4390,8 +4404,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const before = jobReads(hub);
 		act(() =>
 			hub.notify({
-				method: "thread/status/changed",
-				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+				method: "evener/thread/activity/changed",
+				params: {
+					threadId: COORDINATOR.threadId,
+					sessionId: "fix",
+					ref: COORDINATOR.ref,
+					resources: ["summary", "delegates", "jobs"],
+				},
 			} as AnyNotification),
 		);
 		await settle();
@@ -4516,7 +4535,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 		const { tree } = await mount(served);
 		await settle();
-		expect(renderedText(tree)).toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(tree)).toContain("Finished");
+		expect(renderedText(tree)).not.toContain("Fixed the race: settle now waits for the drain.");
 	});
 
 	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {
@@ -4643,8 +4663,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		);
 		act(() =>
 			hub.notify({
-				method: "thread/status/changed",
-				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+				method: "evener/thread/activity/changed",
+				params: {
+					threadId: COORDINATOR.threadId,
+					sessionId: "fix",
+					ref: COORDINATOR.ref,
+					resources: ["summary", "delegates", "jobs"],
+				},
 			} as AnyNotification),
 		);
 		await settle();

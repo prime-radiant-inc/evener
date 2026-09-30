@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // The Session's own read of the fleet (ruling 33), against the real Board
 // controller and the real seen markers.
 import type { AnyNotification } from "@evener/appwire-client";
@@ -37,7 +38,7 @@ function hub({ failOnce = [] as string[], shape = fleet } = {}) {
 	const listeners = new Set<(event: AnyNotification) => void>();
 	// Every subscription a binding makes: a rebind subscribes afresh.
 	let subscriptions = 0;
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (method, params) => {
 			methods.push(method);
 			const section = (params as { section?: string }).section;
@@ -49,7 +50,7 @@ function hub({ failOnce = [] as string[], shape = fleet } = {}) {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	/** The hub says Needs you changed, at the shape's revision. */
 	const invalidateNeedsYou = (sequence: number) => {
 		for (const listener of [...listeners])

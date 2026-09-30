@@ -1,3 +1,4 @@
+import { activityNodeID } from "@evener/appwire-client";
 import {
 	type ActivityListRow,
 	matchesSearch,
@@ -47,7 +48,9 @@ export function activityListKey(item: ActivityListItem): string {
 			return `section:${item.state}`;
 		case "row":
 			// A job's id is a job id; a subagent's is its delegate id.
-			return item.row.kind === "job" ? `job:${item.row.id}` : item.row.id;
+			return item.row.kind === "job"
+				? activityNodeID({ kind: "shell", ...item.row.job })
+				: activityNodeID({ kind: "delegate", ...item.row.delegate });
 		case "doneFold":
 			return "done-fold";
 		case "missing":

@@ -17,6 +17,7 @@ const delegate = (id: string, ownerRef = "remote:root"): SessionDelegate => ({
 	rootRef: context.rootRef,
 	childRef: `remote:${id}`,
 	type: "delegate",
+	task: id,
 	description: id,
 	lifecycle: "running",
 	phase: "running",
@@ -115,8 +116,14 @@ test("summary-only holder never scans, and detail release leaves the badge subsc
 	detail();
 	await tree.reload();
 	expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+	const unsubscribed = new Promise<void>((resolve) =>
+		client.on("thread/unsubscribe", () => {
+			resolve();
+			return {};
+		}),
+	);
 	badge();
-	await new Promise((resolve) => setTimeout(resolve, 0));
+	await unsubscribed;
 	expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
 	forgetSubagentTrees("summary-hub");
 });
@@ -160,5 +167,68 @@ test("retained rows retire when the routing alias proves a replacement session",
 	await waiting;
 	await changed;
 	expect(tree.getSnapshot().tree).toBeNull();
+	await tree.setClient(null);
+});
+
+test("alias replacement retires the model and fences a pending same-client follow reply", async () => {
+	const client = hub();
+	const tree = new SubagentTree(context.ref, "root");
+	tree.observeActivity();
+	await tree.setClient(client);
+	await tree.follow();
+	expect(tree.getSnapshot().coordinatorModel).toBe("scripted");
+	let admit = () => {};
+	const admitted = new Promise<void>((resolve) => {
+		admit = resolve;
+	});
+	let answer: (result: unknown) => void = () => {};
+	client.on("thread/read", () => {
+		admit();
+		return new Promise((resolve) => {
+			answer = resolve;
+		}) as never;
+	});
+	const pending = tree.follow();
+	await admitted;
+	const replacement = {
+		...context,
+		sessionId: "replacement",
+		ref: "remote:replacement",
+		rootRef: "remote:replacement",
+		epoch: "two",
+	};
+	client.on("evener/thread/activity/read", ({ scope }) => ({
+		context: replacement,
+		scope: scope ?? "session",
+		delegates: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
+		jobs: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
+		watches: { known: true, total: 0, active: 0, failed: 0, completed: 0 },
+	}));
+	client.on("evener/thread/delegates/list", ({ scope }) => ({
+		context: replacement,
+		scope: scope ?? "session",
+		delegates: [],
+		page: { complete: true, issues: [] },
+	}));
+	client.on("evener/thread/jobs/list", ({ scope }) => ({
+		context: replacement,
+		scope: scope ?? "session",
+		jobs: [],
+		page: { complete: true, issues: [] },
+	}));
+	const changed = new Promise<void>((resolve) => {
+		const stop = tree.subscribe(() => {
+			if (tree.getSnapshot().summary?.context.sessionId === "replacement") {
+				stop();
+				resolve();
+			}
+		});
+	});
+	client.emitNotification({ method: "evener/thread/resync", params: { ref: context.ref, threadId: "replacement" } });
+	await changed;
+	expect(tree.getSnapshot().coordinatorModel).toBeNull();
+	answer({ thread: { id: "root", modelProvider: "obsolete" } });
+	await pending;
+	expect(tree.getSnapshot().coordinatorModel).toBeNull();
 	await tree.setClient(null);
 });

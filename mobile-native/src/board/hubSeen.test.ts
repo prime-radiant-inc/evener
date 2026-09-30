@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // The hub's seen marker on the phone (S4): which path decides a row, the
 // pending marks that show at once, and the one-at-a-time seen/set calls, all
 // against a fake client that records every call and answers when told.
@@ -35,7 +36,7 @@ interface Call {
 }
 /** A client whose seen/set calls wait until the test answers each one. */
 function fakeClient(name: string, calls: Call[]): ConversationClientLike {
-	return {
+	return Object.assign(new FakeClient("ready"), {
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
 				if (method !== "evener/session/seen/set") throw new Error(`unexpected ${method}`);
@@ -48,7 +49,7 @@ function fakeClient(name: string, calls: Call[]): ConversationClientLike {
 				});
 			}),
 		onNotification: () => () => {},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 }
 async function settle() {
 	for (let step = 0; step < 20; step++) await Promise.resolve();

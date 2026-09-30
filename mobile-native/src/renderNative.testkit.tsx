@@ -149,6 +149,7 @@ export function nativeModuleMock() {
 		renderSectionHeader?: (info: { section: { title: string } }) => ReactNode;
 		ListHeaderComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
+		onEndReached?: (info: { distanceFromEnd: number }) => void;
 		ListFooterComponent?: ReactNode;
 	}) =>
 		createElement(
@@ -190,6 +191,7 @@ export function nativeModuleMock() {
 		ListHeaderComponent?: ReactNode;
 		ListFooterComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
+		onEndReached?: (info: { distanceFromEnd: number }) => void;
 		onScrollToIndexFailed?: (info: {
 			index: number;
 			highestMeasuredFrameIndex: number;
@@ -219,7 +221,7 @@ export function nativeModuleMock() {
 		);
 		return createElement(
 			"FlatList",
-			null,
+			{ onEndReached: props.onEndReached },
 			props.ListHeaderComponent ?? null,
 			...(props.data ?? []).map((item, index) =>
 				createElement(
