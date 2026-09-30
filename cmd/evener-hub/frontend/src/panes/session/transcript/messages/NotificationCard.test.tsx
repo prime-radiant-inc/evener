@@ -479,6 +479,28 @@ test("a validated non-record result renders through the value grammar", () => {
   expect(screen.getByTestId("notification-structured-json").textContent).toContain("alpha, beta");
 });
 
+// A schema key can be as long as its author likes; the label cell stays
+// bounded as a value cell is, with an ellipsis past the bound.
+test("a very long result key renders a bounded label", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        tone: "success",
+        name: "long-key",
+        secondary: "long-key",
+        delegateId: "dlg_l",
+        structuredResult: { ["k".repeat(3000)]: "value" },
+        structuredResultValid: true,
+      })}
+    />,
+  );
+  const label = document.querySelector('[data-testid="notification-structured-result"] th')?.textContent ?? "";
+  expect(label.length).toBe(2001);
+  expect(label.endsWith("…")).toBe(true);
+});
+
 // A validated explicit null result is present: the card says "(none)" through
 // the value grammar rather than rendering nothing.
 test("a validated null result renders as none", () => {

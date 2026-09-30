@@ -380,9 +380,11 @@ function parsePacketEnvelope(text: string): { message: string; data?: unknown } 
   const parsed = tryParseJsonRecord(text);
   if (parsed === null || typeof parsed.message !== "string") return null;
   // artifacts is a []string on the wire (nodeOutput.Artifacts); data always
-  // rides the envelope. JSON whose artifacts key holds anything else is the
-  // subagent's own text, not a wire envelope.
+  // rides the envelope. JSON whose artifacts key holds anything else - a
+  // non-array, or an array holding non-strings - is the subagent's own text,
+  // not a wire envelope.
   if (!("data" in parsed) || !Array.isArray(parsed.artifacts)) return null;
+  if (!parsed.artifacts.every((item) => typeof item === "string")) return null;
   if (!Object.keys(parsed).every((key) => CANONICAL_ENVELOPE_KEYS.has(key))) return null;
   return { message: parsed.message.trim(), data: parsed.data };
 }
@@ -476,12 +478,15 @@ function delegatePacketNotification(
   // validation verdict behind whatever structured-result fields or
   // envelope-shaped data it happens to hold (a provider error, a report the
   // run managed before failing). Its message field still reads as content;
-  // nothing else becomes rows. Within the reported kind, a result the daemon
-  // refused to capture or validate never rides the packet's structured_result
-  // field, and its copy inside the envelope must not render as an
-  // authoritative table either - only a valid verdict's data does, from
-  // whichever copy the frame carries, and a no-schema delegate's
-  // default-envelope capture unwraps to its data (isDefaultEnvelopeCopy).
+  // nothing else becomes rows. Within the reported kind, a capture failure, an
+  // oversized result, or a missing one leaves the packet's structured_result
+  // field unset - but a result that fails SCHEMA validation still rides the
+  // field, marked valid=false (agent/subagents.go stores the marshaled result
+  // before validating it). The structuredResultValid !== false check below,
+  // not field absence, is what suppresses both the raw invalid result and its
+  // envelope copy: only a valid verdict's data renders, from whichever copy
+  // the frame carries, and a no-schema delegate's default-envelope capture
+  // unwraps to its data (isDefaultEnvelopeCopy).
   // A result with no record shape (a top-level array or scalar schema, or an
   // explicit null) passes through as-is for the card's value grammar.
   const reported = packet.kind === "reported";

@@ -1648,6 +1648,24 @@ test("a schema result whose artifacts are not strings stays whole", () => {
   expect(n?.structuredResult).toEqual(whole);
 });
 
+// The canonical envelope's artifacts is a string array on the wire
+// (nodeOutput.Artifacts []string): a plain JSON report whose artifacts key
+// holds other values is the subagent's own text and stays whole, the same as
+// the non-array case.
+test("a plain JSON report with non-string artifacts stays whole", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "done", data: { rows: 1 }, artifacts: [1] }),
+        metadata: { outcome: "completed", name: "task13-artifacts" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe(JSON.stringify({ message: "done", data: { rows: 1 }, artifacts: [1] }));
+  expect(n?.structuredResult).toBeUndefined();
+});
+
 // A legacy attribute frame's raw reason code never reaches the head: the
 // secondary carries identity only, so an unlabeled frame's static head has
 // no code to render and a labeled one's head composes the ending words.

@@ -248,7 +248,8 @@ const STRUCTURED_RESULT_NOTES: Record<string, string> = {
   schema_capture_failed: "Structured result could not be captured.",
 };
 
-// A schema row's key in words (finding_verdict → "Finding verdict"); the raw
+// A schema row's key in words (finding_verdict → "Finding verdict"), bounded
+// as a value is - a schema key can be as long as its author likes; the raw
 // keys stay in the daemon's frame, which is the verbatim record.
 function structuredRowLabel(key: string): string {
   const words = key.replaceAll("_", " ");
@@ -308,7 +309,7 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
         {shown.map(([key, value]) => (
           <tr key={key}>
             <th scope="row" className={CLASS.resultKey}>
-              {structuredRowLabel(key)}
+              {boundedValue(structuredRowLabel(key))}
             </th>
             <td className={CLASS.resultValue}>{structuredRowValue(value)}</td>
           </tr>
