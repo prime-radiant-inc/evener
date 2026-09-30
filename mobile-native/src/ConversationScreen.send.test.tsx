@@ -1488,7 +1488,7 @@ describe("opening a session", () => {
 			flatListCalls.length = 0;
 			layOutRow(tree, 2, 9_700);
 			await settle();
-			expect(offsets()).toEqual([]);
+			expect(flatListCalls).toEqual([]);
 			expect(opacity(tree)).toBe(0);
 			layOutRow(tree, 3, 9_900);
 			await settle();
@@ -1510,9 +1510,9 @@ describe("opening a session", () => {
 				await advance(0);
 				// The restore fell short and the rows below never measure.
 				expect(offsets().at(-1)).toBeLessThan(9_523);
-				await advance(998);
+				await advance(999);
 				expect(opacity(tree)).toBe(0);
-				await advance(2);
+				await advance(1);
 				expect(opacity(tree)).toBe(1);
 			} finally {
 				vi.useRealTimers();
