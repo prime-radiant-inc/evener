@@ -243,12 +243,23 @@ image rejection discard-only. `MutationRecoveryPanel.test.tsx` pins the behavior
 Other native draft flows already preserve media; browser attachment parity is
 not established by this case.
 
-**Discuss.** Transfer text and attachments together into a durable editable
-draft, retaining the recovery record until that transfer commits. Decide how to
-represent a genuinely unavailable image without losing the rest of the message.
+**Decision.** Make a genuinely rejected message recoverable as a complete
+editable draft: preserve its text, images, attachment order and references to
+images in the text. Preserve any newer draft independently. Keep the original
+recovery record until the restored draft is durably saved, so interruption
+during restoration cannot lose the composition. If an image is genuinely
+unavailable, retain everything else and identify the missing attachment so the
+user can replace or remove it. Do not silently omit it. Transient failures and
+uncertain delivery follow C05's automatic reconciliation; this editing path is
+for a confirmed rejection that requires correction. Implementation remains
+pending.
 
 **Acceptance.** Reject input containing text and two images, correct the cause,
 and restore it. The exact composition survives restart and can be sent once.
+Interrupt restoration before the durable draft save: the original remains
+recoverable. Restore while a newer draft exists: both compositions survive.
+Make one image unavailable: the rest remains editable and the missing image is
+represented until the user replaces or removes it.
 
 ### C07 Model discovery and default launch
 
