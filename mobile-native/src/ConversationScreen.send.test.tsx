@@ -1174,6 +1174,239 @@ it("waits for the bottom bar to lay out before restoring a reading position", as
 	]);
 });
 
+// Opening lands once (spec 7.3): the list stays hidden while it travels to
+// where the session opens, and shows only once it is there, so no one sees it
+// land, move and land again.
+describe("opening a session", () => {
+	const opacity = (tree: ReactTestRenderer) => transcriptList(tree).props.style?.opacity;
+	const layOutViewport = (tree: ReactTestRenderer) => {
+		act(() =>
+			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+		);
+		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+	};
+	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
+		harness.kv.set(
+			"evener.reader-positions",
+			JSON.stringify({
+				[`hub-1\u0000${ref}`]: {
+					hubId: "hub-1",
+					sessionRef: ref,
+					itemKey,
+					withinItemOffset: 0,
+					touchedAt: 1,
+					turnsSeen,
+				},
+			}),
+		);
+
+	it("shows the live end only once its last row is measured and the list is pinned there", async () => {
+		const { tree } = await mount(twoTurns("ref-open-live"));
+		layOutViewport(tree);
+		await settle();
+		// The list has laid out, but the rows at its end haven't: it would show
+		// at the top and then jump.
+		expect(opacity(tree)).toBe(0);
+		layOutRow(tree, 0, 16);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		flatListCalls.length = 0;
+		layOutRow(tree, 3, 19_000);
+		await settle();
+		// Pinned to the end after the last row measured, then shown.
+		expect(flatListCalls.map((call) => call.method)).toEqual(["scrollToEnd"]);
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows a saved reading position only once the exact restore has landed", async () => {
+		savePosition("ref-open-anchor");
+		flatListCalls.length = 0;
+		const { tree } = await mount(twoTurns("ref-open-anchor"));
+		layOutViewport(tree);
+		await settle();
+		// The approximate jump toward the unmeasured row happens out of sight.
+		expect(flatListCalls.map((call) => call.method)).toContain("scrollToIndex");
+		expect(flatListCalls.map((call) => call.method)).not.toContain("scrollToOffset");
+		expect(opacity(tree)).toBe(0);
+		layOutRow(tree, 3, 9_523);
+		await settle();
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToOffset", args: { offset: 9_523, animated: false } });
+		expect(opacity(tree)).toBe(1);
+		// Later reflows restore in view: the opening has landed.
+		layOutRow(tree, 3, 9_523);
+		await settle();
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows a reading position restored before the viewport's first layout without moving it again", async () => {
+		savePosition("ref-open-early");
+		const { tree } = await mount(twoTurns("ref-open-early"));
+		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+		// The row measures before the list's own layout: the restore lands, but
+		// the list can't show until its viewport has laid out.
+		layOutRow(tree, 3, 19_500);
+		await settle();
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToOffset", args: { offset: 19_500, animated: false } });
+		expect(opacity(tree)).toBe(0);
+		flatListCalls.length = 0;
+		act(() =>
+			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+		);
+		await settle();
+		// The viewport arriving shows the list where it landed, with no second restore.
+		expect(flatListCalls).toEqual([]);
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows the start of an unread reply only once the restore to it has landed", async () => {
+		savePosition("ref-open-unread", "u-turn_1", "turn_1");
+		const { tree } = await mount(twoTurns("ref-open-unread"));
+		layOutViewport(tree);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		// turn_2's reply, row 3, finished since you last read to the end.
+		layOutRow(tree, 3, 9_523);
+		await settle();
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToOffset", args: { offset: 9_523, animated: false } });
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows the list at once when you touch it while it opens", async () => {
+		savePosition("ref-open-touch");
+		const { tree } = await mount(twoTurns("ref-open-touch"));
+		layOutViewport(tree);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		act(() => transcriptList(tree).props.onScrollBeginDrag({ nativeEvent: { contentOffset: { y: 4_000 } } }));
+		await settle();
+		expect(opacity(tree)).toBe(1);
+	});
+
+	it("shows the list after a second even when the opening never lands", async () => {
+		savePosition("ref-open-cap");
+		const { tree } = await mount(twoTurns("ref-open-cap"));
+		vi.useFakeTimers();
+		try {
+			layOutViewport(tree);
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(999);
+			});
+			// The anchor's row never measures: without a cap the list would
+			// stay hidden.
+			expect(opacity(tree)).toBe(0);
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1);
+			});
+			expect(opacity(tree)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("gives a session the screen switches to its own full second to land", async () => {
+		savePosition("ref-open-first");
+		const { tree, route } = await mount(twoTurns("ref-open-first"));
+		const next = "ref-open-second";
+		otherThreads.set(next, twoTurns(next));
+		vi.useFakeTimers();
+		try {
+			layOutViewport(tree);
+			const advance = async (ms: number) => {
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(ms);
+				});
+			};
+			await advance(600);
+			expect(opacity(tree)).toBe(0);
+			const moved = { ...route, params: { ...route.params, ref: next } };
+			navigationState.state = { index: 0, routes: [moved] };
+			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			await advance(0);
+			// The first session's cap has 400ms left; the second's starts afresh.
+			await advance(999);
+			expect(opacity(tree)).toBe(0);
+			await advance(1);
+			expect(opacity(tree)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// Jesse, 2026-09-29: a saved spot that hasn't loaded within the cap opens
+	// at the live end instead, and the spot is dropped; never the top and then
+	// a jump, and never a blank wait.
+	describe("when the saved spot hasn't loaded within the cap", () => {
+		const mountWaitingOnOlderPage = async (ref: string) => {
+			savePosition(ref, "a-turn_0", "turn_0");
+			let deliver = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				deliver = resolve;
+			});
+			const mounted = await mount(twoTurns(ref), {
+				olderCursor: "cursor-1",
+				olderTurns: [askReplyTurn("turn_0")],
+				olderPage,
+			});
+			return { ...mounted, deliver };
+		};
+		const advance = async (ms: number) => {
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(ms);
+			});
+		};
+
+		it("opens at the live end and forgets the spot", async () => {
+			const { tree, deliver } = await mountWaitingOnOlderPage("ref-open-unloaded");
+			vi.useFakeTimers();
+			try {
+				layOutViewport(tree);
+				await advance(999);
+				expect(opacity(tree)).toBe(0);
+				flatListCalls.length = 0;
+				await advance(1);
+				// It heads for the end, still out of sight until the end's last row measures.
+				expect(flatListCalls.map((call) => call.method)).toContain("scrollToEnd");
+				expect(opacity(tree)).toBe(0);
+				layOutRow(tree, 3, 19_000);
+				await advance(0);
+				expect(opacity(tree)).toBe(1);
+				// The older page landing later doesn't pull the list back to the spot.
+				flatListCalls.length = 0;
+				deliver();
+				await advance(0);
+				expect(flatListCalls.filter((call) => call.method !== "scrollToEnd")).toEqual([]);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("shows the live end a second later even if its last row never measures", async () => {
+			const { tree } = await mountWaitingOnOlderPage("ref-open-unloaded-cap");
+			vi.useFakeTimers();
+			try {
+				layOutViewport(tree);
+				await advance(1000);
+				expect(opacity(tree)).toBe(0);
+				await advance(999);
+				expect(opacity(tree)).toBe(0);
+				await advance(1);
+				expect(opacity(tree)).toBe(1);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
+	it("shows a session with no rows at once", async () => {
+		const served = thread("ref-open-empty", "idle");
+		(served as unknown as { turns: unknown[] }).turns = [];
+		const { tree } = await mount(served);
+		layOutViewport(tree);
+		await settle();
+		expect(opacity(tree)).toBe(1);
+	});
+});
+
 it("reads the session again on its own after a read fails", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-retry"), { failedReads: 1 });
 	expect(hub.requests.filter((request) => request.method === "thread/read")).toHaveLength(2);
@@ -1243,6 +1476,16 @@ function transcriptList(tree: ReactTestRenderer) {
 		(node) =>
 			typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
 	)[0];
+}
+
+// Lays out the transcript's row at index at y. twoTurns' rows are ask/reply
+// for turn_1, then turn_2.
+function layOutRow(tree: ReactTestRenderer, index: number, y: number) {
+	const cell = transcriptList(tree)
+		.findAll((node) => String(node.type) === "Item")
+		[index]?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+	if (!cell) throw new Error(`no cell at row ${index}`);
+	act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height: 150 } } }));
 }
 
 function scrollTo(tree: ReactTestRenderer, y: number) {
@@ -1647,6 +1890,10 @@ it("rests a short transcript's end just above the composer", async () => {
 	expect(opacity()).toBe(0);
 	const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
 	act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 450, width: 390, height: 150 } } }));
+	await settle();
+	// And once its last row has measured, so it lands at its end once.
+	expect(opacity()).toBe(0);
+	layOutRow(tree, 3, 300);
 	await settle();
 	expect(opacity()).toBe(1);
 	expect(transcriptList(tree).props.contentContainerStyle).toMatchObject({

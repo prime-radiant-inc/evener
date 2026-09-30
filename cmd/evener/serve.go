@@ -1817,7 +1817,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			close(runnerDone)
 			clearMutationRunner(runnerDone)
 			if processErr != nil {
-				serveLogf(os.Stderr, sess.ID(), "error: %v", processErr)
+				serveLogf(os.Stderr, sess.ID(), "error: %s", turnFailureSummary(processErr))
 			}
 			_ = result
 			return processed

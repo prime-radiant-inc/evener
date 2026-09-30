@@ -1232,6 +1232,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		roster:  cfg.Roster,
 		remote:  cfg.RemoteThreadCache,
 	}
+	if instancesController != nil {
+		notices.refreshProviders = instancesController.refreshProviderFile
+	}
 	registerNoticesHandler(server, notices)
 	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })
 	registerDaemonHandlers(server, cfg, sources)
