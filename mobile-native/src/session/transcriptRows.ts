@@ -306,10 +306,9 @@ export function stepWords(step: Pick<RunStep, "label" | "detail">): string {
 interface Group {
 	key: string;
 	family: ToolFamily;
-	/** What an MCP part or a tool part names: the server, or the tool, in words. */
-	name: string;
-	/** What a housekeeping tool's part says it did, in place of its name. */
-	action?: string;
+	/** What a tool part says it did: a housekeeping tool's action, any other
+	 * "used" and its name in words. Empty for every other family. */
+	phrase: string;
 	count: number;
 	failed: number;
 	/** The programs a shell part's commands ran, or the skills a skill part
@@ -333,14 +332,13 @@ function programOf(command: string | undefined): string | undefined {
 // housekeeping tool says what it did ("updated its note once", the package's
 // housekeepingAction, as its step line does), and any other its name ("used
 // reindex workspace once"). MCP tools share one part.
-function partOf(label: string): { key: string; family: ToolFamily; name: string; action?: string } {
+function partOf(label: string): { key: string; family: ToolFamily; phrase: string } {
 	const family = toolFamily(label);
 	if (family === "tool") {
 		const name = words(label) || "a tool";
-		const action = housekeepingAction(label);
-		return { key: `tool:${name}`, family, name, ...(action === undefined ? {} : { action }) };
+		return { key: `tool:${name}`, family, phrase: housekeepingAction(label) ?? `used ${name}` };
 	}
-	return { key: family, family, name: "" };
+	return { key: family, family, phrase: "" };
 }
 
 // What a step contributes to its part's words: the program a shell command
@@ -393,7 +391,7 @@ function partText(group: Group): string {
 			// One server reads by name; several read as how many MCP tools ran.
 			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;
 		case "tool":
-			return group.action ? `${group.action} ${times}` : `used ${group.name} ${times}`;
+			return `${group.phrase} ${times}`;
 	}
 }
 
