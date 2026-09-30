@@ -25,4 +25,20 @@ describe("SessionMenu", () => {
 		const [sheet] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
 		expect(sheet?.props.edges).toContain("bottom");
 	});
+
+	it("lays its actions out as grouped rows", () => {
+		const tree = render(
+			<SessionMenu title="Session" hubName="Hub" connected deletionAvailable close={() => {}} choose={() => {}} />,
+		);
+		// The legacy Action list drew bare buttons with nothing between them; the
+		// new design groups them, and a Group divides its rows with hairlines
+		// (seven rows -> six).
+		expect(tree.root.findAll((node) => node.props.testID === "hairline")).toHaveLength(6);
+		// And each action is a Row, not the legacy Action: Action marked every
+		// button `expanded`, which a Row does not.
+		const [find] = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Find in session",
+		);
+		expect(find?.props.accessibilityState).toEqual({ disabled: false });
+	});
 });
