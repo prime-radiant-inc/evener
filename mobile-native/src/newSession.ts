@@ -148,6 +148,14 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 	let catalog = 0;
 	let refreshingModels = false;
 	let loadedContext: string | null = null;
+	// An announcement of a refreshed model list arrived while a load or a
+	// start was out (refreshModels), to be read once it settles.
+	let refreshAfterSettle = false;
+	function refreshIfAnnounced() {
+		if (!refreshAfterSettle) return;
+		refreshAfterSettle = false;
+		void store.getState().refreshModels();
+	}
 	let creationRequested = false;
 	let saving = false;
 	let lastSaved = "";
@@ -389,20 +397,28 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 				if (generation === catalog) {
 					refreshingModels = false;
 					set({ loadingModels: false });
+					refreshIfAnnounced();
 				}
 			}
 		},
 		async refreshModels() {
 			const current = service;
 			const { cwd, source } = get();
-			// Only a list on screen for the form's host and project can be kept
-			// up; a load in flight is already reading, and a start takes the form
-			// as it was sent, the way every other list change waits for it.
-			if (!current || loadedContext !== modelContext(source, cwd) || get().loadingModels || get().submitting) return;
+			// A load or a start in flight: a load may have read the list before
+			// the hub refreshed it, and a start takes the form as it was sent, so
+			// the list is read again once either settles rather than dropped.
+			if (get().loadingModels || get().submitting) {
+				refreshAfterSettle = true;
+				return;
+			}
+			// Only a list on screen for the form's host and project can be kept up.
+			if (!current || loadedContext !== modelContext(source, cwd)) return;
 			const generation = ++catalog;
 			try {
 				const result = await readModels(current, source, cwd);
-				if (generation === catalog && !get().submitting) listModels(result, get().model, get().reasoning);
+				if (generation !== catalog) return;
+				if (get().submitting) refreshAfterSettle = true;
+				else listModels(result, get().model, get().reasoning);
 			} catch {
 				// A failed refresh keeps the list the hub last served.
 			}
@@ -531,7 +547,10 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 				});
 				return { status: "failed" };
 			} finally {
-				if (generation === connection) set({ submitting: false });
+				if (generation === connection) {
+					set({ submitting: false });
+					refreshIfAnnounced();
+				}
 			}
 		},
 		async changeHost(host, hostLabel) {
