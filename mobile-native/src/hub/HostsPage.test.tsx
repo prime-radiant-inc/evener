@@ -55,11 +55,12 @@ async function mount(fleet: ScriptedFleet, options: { ready?: boolean; focus?: s
 		live,
 	};
 	const navigation = { navigate: vi.fn(), setParams: vi.fn() };
+	let focus = options.focus;
 	const page = () => (
 		<HubSheetProvider value={context}>
 			<HostsPage
 				navigation={navigation as unknown as NativeStackScreenProps<HubRoutes, "Hosts">["navigation"]}
-				route={{ key: "Hosts", name: "Hosts", params: { hubId: "hub-1", focus: options.focus } }}
+				route={{ key: "Hosts", name: "Hosts", params: { hubId: "hub-1", focus } }}
 			/>
 		</HubSheetProvider>
 	);
@@ -78,7 +79,15 @@ async function mount(fleet: ScriptedFleet, options: { ready?: boolean; focus?: s
 		tree.root.findAll(
 			(node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith(label),
 		)[0] ?? null;
-	return { tree, navigation, hosts, live, row, setReady, dispose: () => (hosts.dispose(), live.dispose()) };
+	// A link's focus arriving, as the stack hands it to the mounted page.
+	const setFocus = async (next: string | undefined) => {
+		focus = next;
+		await act(async () => {
+			tree.update(page());
+			await settle();
+		});
+	};
+	return { tree, navigation, hosts, live, row, setReady, setFocus, dispose: () => (hosts.dispose(), live.dispose()) };
 }
 
 beforeEach(() => {
@@ -150,6 +159,18 @@ it("opens a host's detail", async () => {
 	const page = await mount(scriptedFleet([hostRow("paradise-park")]));
 	act(() => page.row("paradise-park")?.props.onPress());
 	expect(page.navigation.navigate).toHaveBeenCalledWith("HostDetail", { hubId: "hub-1", name: "paradise-park" });
+	page.dispose();
+});
+
+// The page clears a link's focus once it acts, so the same host named again
+// by a later link opens again.
+it("opens a host again when a later link names it again", async () => {
+	const page = await mount(scriptedFleet([hostRow("paradise-park")]), { focus: "paradise-park" });
+	expect(page.navigation.navigate).toHaveBeenCalledTimes(1);
+	await page.setFocus(undefined);
+	await page.setFocus("paradise-park");
+	expect(page.navigation.navigate).toHaveBeenCalledTimes(2);
+	expect(page.navigation.navigate).toHaveBeenLastCalledWith("HostDetail", { hubId: "hub-1", name: "paradise-park" });
 	page.dispose();
 });
 

@@ -2516,7 +2516,6 @@ it("opens sign-in from an error that says a sign-in failed", async () => {
 		screen: "Providers",
 		params: { hubId: "hub-1" },
 		initial: false,
-		pop: true,
 	});
 });
 
