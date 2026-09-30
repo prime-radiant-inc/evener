@@ -6,7 +6,9 @@ import { toolStepSummary, toolStepWords } from "./toolSummaries";
 
 // The recorded delegate and delegate_send calls (agent/testdata/subagentwire),
 // worded as the web words them: a delegate by its intent, a send by the
-// delegate it messaged and the status its footer reports.
+// delegate it messaged and the status its footer reports. The first send
+// steered the running delegate; the second waited for its reply, so its
+// footer reports the generation completed.
 test("words the recorded delegate and delegate_send calls as the web does", () => {
   const delegate = subagentWireStep("call_delegate_1");
   expect(toolStepWords(delegate)).toEqual({ verb: "Fix race in tree settle" });
@@ -18,6 +20,13 @@ test("words the recorded delegate and delegate_send calls as the web does", () =
     detail: "running",
   });
   expect(toolStepSummary(send)).toBe("Sent a message to delegate dlg_02wMz5TxvSettleRace001 · running");
+  const waited = subagentWireStep("call_send_2");
+  expect(toolStepWords(waited)).toEqual({
+    verb: "Sent a message to delegate",
+    target: "dlg_02wMz5TxvSettleRace001",
+    detail: "completed",
+  });
+  expect(toolStepSummary(waited)).toBe("Sent a message to delegate dlg_02wMz5TxvSettleRace001 · completed");
 });
 
 // A send's status is the footer's own status field: a delivered or
