@@ -471,6 +471,28 @@ func delegateStoppedTerminalPacket() delegatestore.TerminalPacket {
 	return packet
 }
 
+// delegateStoppedRunPacket is the packet a parent's stop settles over a run
+// that reported before the stop landed. The report — its message, structured
+// result, warnings and evidence metadata — is kept; only the outcome and
+// reason are restamped as stopped, so the owner's frame reads the stop instead
+// of the report's own "completed". The kind becomes terminal_error to match
+// the stop finish's disposition, which also stops the fold (applyRunFinished)
+// from replacing it with its bare stop literal (#3114). A packet the run
+// already ended as is cloned untouched.
+func delegateStoppedRunPacket(packet delegatestore.TerminalPacket) delegatestore.TerminalPacket {
+	stopped := cloneDelegateTerminalPacket(packet)
+	if stopped.Kind != delegatestore.PacketReported {
+		return stopped
+	}
+	stopped.Kind = delegatestore.PacketTerminalError
+	var metadata delegateTerminalPacketMetadata
+	_ = json.Unmarshal(stopped.Metadata, &metadata)
+	metadata.Outcome = delegatestore.OutcomeStopped
+	metadata.Reason = delegatestore.ReasonStoppedByParent
+	stopped.Metadata, _ = json.Marshal(metadata)
+	return stopped
+}
+
 func delegateIsMissingTerminalPacket(packet delegatestore.TerminalPacket) bool {
 	want := delegateMissingTerminalPacket()
 	return packet.Kind == want.Kind &&

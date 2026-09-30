@@ -78,6 +78,116 @@ func TestDelegateStoppedTerminalPacket(t *testing.T) {
 	}
 }
 
+// TestStoppedGenerationFinishOverReportedRunReadsStopped covers the fold's
+// bare-literal hole (#3114): a parent's stop that lands after the run already
+// reported must still reach its owner reading "stopped", and must keep the
+// report and its evidence rather than replacing them with the bare stop
+// literal. The fold delivers the packet the stop finish records, so the
+// recorded packet is what both the live frame and a replay read.
+func TestStoppedGenerationFinishOverReportedRunReadsStopped(t *testing.T) {
+	t.Parallel()
+	reported := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:       "the settle pass now waits for the drain",
+		communicated: true,
+		descriptor:   notificationWireDescriptor("Fix race in tree settle"),
+		startedAt:    time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC),
+		endedAt:      time.Date(2026, 9, 1, 10, 2, 0, 0, time.UTC),
+	}).packet
+	if reported.Kind != delegatestore.PacketReported {
+		t.Fatalf("run packet kind = %q, want reported", reported.Kind)
+	}
+	event, deliveryID := stoppedGenerationFinishEvent(
+		delegateLease{delegateID: "dlg_stop_report", generation: 1},
+		reported,
+		time.Date(2026, 9, 1, 10, 3, 0, 0, time.UTC),
+	)
+	if deliveryID != "dlg_stop_report/delivery/1" {
+		t.Fatalf("delivery id = %q, want dlg_stop_report/delivery/1", deliveryID)
+	}
+	packet := event.RunFinished.Packet
+	if packet == nil {
+		t.Fatal("stopped-reported finish carries no packet")
+	}
+	var metadata delegateTerminalPacketMetadata
+	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+		t.Fatalf("packet metadata: %v (%s)", err, packet.Metadata)
+	}
+	if metadata.Outcome != delegatestore.OutcomeStopped || metadata.Reason != delegatestore.ReasonStoppedByParent {
+		t.Fatalf("recorded packet metadata = %+v, want outcome stopped, reason stopped_by_parent", metadata)
+	}
+	var message string
+	if err := json.Unmarshal(packet.Message, &message); err != nil {
+		t.Fatalf("packet message: %v", err)
+	}
+	if message != "the settle pass now waits for the drain" {
+		t.Fatalf("recorded packet lost the report: message = %q", message)
+	}
+	if metadata.Name != "Fix race in tree settle" || metadata.Task == "" {
+		t.Fatalf("recorded packet lost the run's evidence: %+v", metadata)
+	}
+
+	state := foldedStopAfterReport(t, event)
+	deliveries := state["dlg_stop_report"].PendingDeliveries
+	if len(deliveries) != 1 {
+		t.Fatalf("deliveries = %#v, want the stopped report queued once", deliveries)
+	}
+	var delivered delegateTerminalPacketMetadata
+	if err := json.Unmarshal(deliveries[0].Packet.Metadata, &delivered); err != nil {
+		t.Fatalf("delivered packet metadata: %v", err)
+	}
+	if delivered.Outcome != delegatestore.OutcomeStopped {
+		t.Fatalf("delivered packet = %+v, want outcome stopped", delivered)
+	}
+}
+
+// foldedStopAfterReport folds the one sequence the hole needs: a root delegate
+// that reported, then a subtree stop rooted at itself (its owner is outside
+// the stop), then its stopped finish.
+func foldedStopAfterReport(t *testing.T, finish delegatestore.Event) delegatestore.State {
+	t.Helper()
+	finish.Seq = 4
+	events := []delegatestore.Event{
+		{
+			Kind:       delegatestore.EventDelegateCreated,
+			Seq:        1,
+			DelegateID: "dlg_stop_report",
+			Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+				ChildSessionID:  "session_dlg_stop_report",
+				TranscriptRef:   "transcript:dlg_stop_report",
+				OwnerSessionID:  "root_session",
+				Task:            "fix the race in tree settle",
+				AgentType:       "worker",
+				ToolNameCeiling: []string{"communicate"},
+				Resumable:       true,
+			}},
+		},
+		{
+			Kind:       delegatestore.EventDelegateRunStarted,
+			Seq:        2,
+			DelegateID: "dlg_stop_report",
+			RunStarted: &delegatestore.RunStarted{
+				Generation: 1,
+				Trigger:    delegatestore.TriggerInitial,
+				StartedAt:  time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC),
+			},
+		},
+		{
+			Kind:       delegatestore.EventDelegateSubtreeStopRequested,
+			Seq:        3,
+			DelegateID: "dlg_stop_report",
+			SubtreeStopRequested: &delegatestore.SubtreeStopRequested{
+				TargetDelegateID: "dlg_stop_report",
+			},
+		},
+		finish,
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		t.Fatalf("Fold stop-after-report: %v", err)
+	}
+	return state
+}
+
 // ---------------------------------------------------------------------------
 // delegateIsMissingTerminalPacket
 // ---------------------------------------------------------------------------
