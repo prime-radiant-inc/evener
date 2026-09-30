@@ -1143,18 +1143,27 @@ option, and preserve the original meaning of existing single-use decisions.
 Later turns reusing the named access until revocation is an accepted tradeoff.
 Implementation remains pending.
 
-**Discuss — tool coverage and delegation.** Define usable batch and browse paths,
-how other tools honor the same grant, and how a delegate routes an unmet access
-need through its owning chat. Resolve unattended delivery without assuming that
-an absent subscriber means the user rejected the request. Preserve the scope the
-user actually approved and the delegate's assigned role.
+**Decision — delegation.** Route a delegate's unmet access request through its
+owning chat. Reuse an existing grant when its resource, access level and the
+delegate's assigned role permit the operation. Otherwise, present the necessary
+approval in the owning chat and automatically continue the delegate when access
+is granted. Preserve the child's assignment: a parent's edit grant does not
+implicitly authorize a read-only child to edit. Implementation remains pending.
+
+**Discuss — tool coverage and unattended delivery.** Define usable batch and
+browse paths and how other tools honor the same grant. Resolve unattended
+delivery without assuming that an absent subscriber means the user rejected the
+request. Preserve the scope the user actually approved.
 
 **Acceptance.** A grant with clearly presented scope permits the intended
 read/edit/read sequence without repeated prompts, including after reconnect or
 resume of the same chat. Revocation ends subsequent use. Access outside the
 named resource or beyond the approved operation is not implicitly granted. A
-single-use approval still applies only to its original invocation. Batch and
-delegate acceptance criteria depend on the remaining product decisions.
+single-use approval still applies only to its original invocation. A delegate
+reuses applicable access without another prompt, routes a genuinely new request
+to its owning chat and resumes automatically after approval. A read-only child
+retains that constraint even when its parent can edit. Batch and unattended
+acceptance criteria depend on the remaining product decisions.
 
 ### U01 TUI uncertain submission
 
