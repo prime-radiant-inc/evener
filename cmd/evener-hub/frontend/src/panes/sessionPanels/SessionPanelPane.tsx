@@ -9,6 +9,7 @@ import {
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { useThreadModel } from "../../stores/useThreadModel";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { ActivityPanelBody } from "../session/chrome/ActivityPanel";
 import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
@@ -34,7 +35,7 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
     throw new Error("SessionPanelPane: params.ref must be a non-empty string");
   }
   const { ref } = params;
-  const model = useThreadsStore((state) => state.threads.get(ref));
+  const model = useThreadModel(ref);
   // The standalone Activity pane reads the same navigation-fed watches the
   // pane footer's chrome does. It deliberately installs no clock of its own:
   // watch detail falls back to the activity tree's own live tick, which
@@ -49,24 +50,6 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
   const watches = useNavigationStore((state) => selectSessionWatches(ref, state));
   const omittedWatches = useNavigationStore((state) => selectSessionOmittedWatches(ref, state));
   const omittedArmedWatches = useNavigationStore((state) => selectSessionOmittedArmedWatches(ref, state));
-
-  useEffect(() => {
-    let started = false;
-    const tryStart = () => {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      threadsStore
-        .getState()
-        .ensureThread(ref)
-        .catch(() => {});
-    };
-    tryStart();
-    const unsubscribe = connectionStore.subscribe(tryStart);
-    return () => {
-      unsubscribe();
-      if (started) threadsStore.getState().releaseThread(ref);
-    };
-  }, [ref]);
 
   const title = sessionPanelTitle(kind, ref, model?.name);
 
