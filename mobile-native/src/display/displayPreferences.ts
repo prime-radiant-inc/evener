@@ -74,10 +74,10 @@ export class DisplayPreferences {
 	 * the choice has applied, so the page can say it won't survive a restart. */
 	set(change: Partial<DisplayChoices>): void {
 		const next = { ...this.choices, ...change };
-		const unchanged =
-			next.appearance === this.choices.appearance &&
-			next.readingFont === this.choices.readingFont &&
-			next.showModel === this.choices.showModel;
+		// Every choice is a primitive, so comparing each field is the whole check.
+		const unchanged = (Object.keys(DEFAULT_DISPLAY) as (keyof DisplayChoices)[]).every(
+			(key) => next[key] === this.choices[key],
+		);
 		// The same choice again still stores it when the last store failed.
 		if (unchanged && this.stored) return;
 		// Marked unstored before anything that can throw: a listener or the
