@@ -27,6 +27,7 @@ import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
 import { connectionStore } from "../stores/connection";
 import { credentialsStore } from "../stores/credentials";
 import {
@@ -428,6 +429,11 @@ beforeEach(() => {
   // visit picks the next test's bare-/settings landing section.
   resetPrefsStoreForTests();
   resetSettingsHostForTests();
+  // The credential statuses store is a module singleton too: once a test's
+  // Providers & credentials section has read it, it re-reads on every later
+  // connect, so the next test's client would see an evener/auth/list it never
+  // caused.
+  resetAuthStatusesStoreForTests();
 });
 
 afterEach(() => {
