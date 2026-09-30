@@ -12,8 +12,8 @@ import (
 
 // A start or restore that fails for a transient reason (the target was busy,
 // retirement closed admission) is retried as it stands; any other failure is
-// permanent for the purposes of giving up. One predicate, shared by the
-// attention give-up and the owed-start abandon path, so the two agree.
+// permanent for the purposes of giving up. The attention give-up is its one
+// caller today.
 func TestIsTransientStartFailure(t *testing.T) {
 	t.Parallel()
 	for _, err := range []error{errDelegateTargetBusy, ErrRetirementUnavailable, fmt.Errorf("restore: %w", errDelegateTargetBusy)} {
@@ -129,6 +129,10 @@ func TestUndeliverableDelegateAttentionParksUntilNewAttention(t *testing.T) {
 	}
 	if len(parked) != 1 {
 		t.Fatalf("undeliverable warnings = %+v, want exactly one", parked)
+	}
+	// With several subagents stuck, each warning must say which one.
+	if parked[0].DelegateID != fenced.grandchildDelegateID {
+		t.Fatalf("undeliverable warning names delegate %q, want %q", parked[0].DelegateID, fenced.grandchildDelegateID)
 	}
 }
 

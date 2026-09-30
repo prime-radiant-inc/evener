@@ -1232,9 +1232,10 @@ func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	if !s.delegateController.parkDelegateAttention(delegateID) {
 		return
 	}
-	slog.Warn("delegate attention undeliverable", "session", s.ID(), "delegate", delegateID, "restore_error", restoreErr.Error(), "handover_error", escalateErr.Error())
+	slog.Warn("delegate attention undeliverable", "session", s.ID(), "delegate", delegateID, "restore_cause", restoreErr.Error(), "handover_cause", escalateErr.Error())
 	data := warningDataFromError("Evener stopped trying to deliver a subagent's message until the subagent has something new or Evener restarts: it could not be restored or handed to this session", escalateErr)
 	data.Code = events.WarningCodeDelegateAttentionUndeliverable
+	data.DelegateID = delegateID
 	s.emit(events.EventWarning, data)
 }
 
