@@ -50,6 +50,9 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsOutput, func(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		return appwire.JobsOutputResponse{}, nil
 	})
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsGet, func(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+		return appwire.JobsGetResponse{}, nil
+	})
 	server := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	t.Cleanup(server.Close)
 	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(server.URL, "http"), SourceID: "local", ThreadID: "thread", SessionID: "session", WorkspaceRef: "local:thread", InstanceID: "session"}
@@ -114,6 +117,9 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	if _, err := source.JobOutput(ctx, appwire.JobsOutputParams{Ref: ref, JobID: "job_1"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := source.JobGet(ctx, appwire.JobsGetParams{Ref: ref, JobID: "job_1"}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func emptyHandler[T any](context.Context, T) (appwire.EmptyResponse, error) {
@@ -176,6 +182,10 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 		"jobs":  func() error { _, err := s.ListJobs(ctx, appwire.JobsListParams{Ref: ref}); return err },
 		"jobOutput": func() error {
 			_, err := s.JobOutput(ctx, appwire.JobsOutputParams{Ref: ref, JobID: "job_1"})
+			return err
+		},
+		"jobGet": func() error {
+			_, err := s.JobGet(ctx, appwire.JobsGetParams{Ref: ref, JobID: "job_1"})
 			return err
 		},
 		"subscribe": func() error { _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },

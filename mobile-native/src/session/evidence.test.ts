@@ -1,3 +1,4 @@
+import { subagentWireStep } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { type ToolWireCall, toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import { describe, expect, it } from "vitest";
 import { activityDetail } from "../projectedRows";
@@ -269,19 +270,71 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
-	// A message to a subagent shows what was sent (its arguments) and what came
-	// back, as any other tool's JSON does.
-	it("shows a message to a subagent as its arguments and result", () => {
+	// A message to a subagent shows the exchange: what was sent, and the
+	// delegate's reply when the send waited for one, as the web's
+	// DelegateSendBody shows them. A steer that didn't wait has no reply.
+	it("shows a message to a subagent as the message it sent", () => {
+		const steer = subagentWireStep("call_send_1");
+		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(steer) })).toEqual([
+			{ kind: "markdown", title: "Message", markdown: "Also check drain ordering." },
+		]);
+	});
+
+	it("shows a send that waited as its message and the delegate's reply", () => {
+		const waited = subagentWireStep("call_send_2");
+		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(waited) })).toEqual([
+			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
+			{
+				kind: "markdown",
+				title: "Reply",
+				markdown: "Yes: tree settle now waits for the drain, and a test pins the order.",
+			},
+		]);
+	});
+
+	// A wait the send couldn't honour says why, from its footer, and a
+	// message's images read as their alt text, as a skill's do.
+	it("says why a send's wait was ignored, and shows its images as words", () => {
+		const ignored = {
+			...subagentWireStep("call_send_1"),
+			raw: undefined,
+			argumentsJSON: '{"to":"dlg_x","message":"See ![the plot](https://example.com/p.png)","max_wait_ms":60000}',
+			output:
+				"[delegate_id dlg_x · steered · running · running in background · wait ignored: delegate is already running]",
+		};
+		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(ignored) })).toEqual([
+			{ kind: "markdown", title: "Message", markdown: "See the plot" },
+			{ kind: "note", text: "Wait ignored: delegate is already running" },
+		]);
+	});
+
+	// The delegate's reply is its author's markdown too, so its images read
+	// as their alt text.
+	it("shows the images in a delegate's reply as words", () => {
+		const replied = {
+			...subagentWireStep("call_send_2"),
+			raw: undefined,
+			output: "Here: ![the trace](https://example.com/t.png)\n[delegate_id dlg_x · completed · completed]",
+		};
+		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(replied) })).toEqual([
+			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
+			{ kind: "markdown", title: "Reply", markdown: "Here: the trace" },
+		]);
+	});
+
+	// A send whose call carries no message and got no reply (a malformed call)
+	// shows its arguments and result, as any other tool's JSON does.
+	it("shows a send with nothing exchanged as its arguments and result", () => {
 		expect(
 			stepEvidence({
 				label: "delegate_send",
 				detail: {
-					arguments: '{"to":"dlg_x","message":"Also check drain ordering."}',
+					arguments: '{"to":"dlg_x"}',
 					output: "[delegate_id dlg_x · steered · running · running in background]",
 				},
 			}),
 		).toEqual([
-			{ kind: "json", label: "Arguments", text: '{\n  "to": "dlg_x",\n  "message": "Also check drain ordering."\n}' },
+			{ kind: "json", label: "Arguments", text: '{\n  "to": "dlg_x"\n}' },
 			{ kind: "output", text: "[delegate_id dlg_x · steered · running · running in background]", lines: 1 },
 		]);
 	});

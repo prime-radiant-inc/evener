@@ -36,30 +36,6 @@ export function ProvidersStack(props: ComponentProps<typeof ProvidersPage>) {
 		stack.params = detail;
 		stack.close = () => setDetail(null);
 	});
-	// A link to a provider (a notice, or a sign-in error) navigates to Providers
-	// with `pop` (BoardNotices.tsx's openNotice): it removes a detail pushed
-	// over the page, which the detail's leave guard may hold, and only then
-	// hands the page its new focus, with the list in front. A new focus here
-	// does the same: the page keeps its last applied params until the pop goes.
-	const next = props.route.params as HubRoutes["Providers"];
-	const [applied, setApplied] = useState(next);
-	const nextKey = JSON.stringify(next);
-	const appliedKey = JSON.stringify(applied);
-	useEffect(() => {
-		if (nextKey === appliedKey) return;
-		const params = JSON.parse(nextKey) as HubRoutes["Providers"];
-		if (params.focus === undefined || !stack.params) {
-			setApplied(params);
-			return;
-		}
-		const go = () => {
-			setDetail(null);
-			setApplied(params);
-		};
-		const guard = backGuard.current;
-		if (guard?.prevent) guard.onPrevent({ data: { action: { type: "NAVIGATE", go } } });
-		else go();
-	}, [nextKey, appliedKey]);
 	const given = props.navigation as unknown as Record<string, unknown> | undefined;
 	const navigation = useMemo(
 		() =>
@@ -76,15 +52,13 @@ export function ProvidersStack(props: ComponentProps<typeof ProvidersPage>) {
 			({
 				canGoBack: () => true,
 				goBack: () => setDetail(null),
-				// The action a held leave dispatches: a link's pop carries its own
-				// step; Back's only removes the detail.
-				dispatch: (action: { go?: () => void }) => (action.go ? action.go() : setDetail(null)),
+				dispatch: () => setDetail(null),
 			}) as unknown as NativeStackScreenProps<HubRoutes, "ProviderDetail">["navigation"],
 		[],
 	);
 	return (
 		<ProvidersScreenSlotProvider>
-			<ProvidersPage {...props} route={{ ...props.route, params: applied }} navigation={navigation} />
+			<ProvidersPage {...props} navigation={navigation} />
 			{detail ? (
 				<ProviderDetailPage
 					navigation={detailNavigation}

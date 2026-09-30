@@ -1554,9 +1554,26 @@ it("clears an unsaved-edit notice when Add opens", async () => {
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
 });
 
-// Only an edit its provider left behind says it wasn't saved: a cancelled
-// edit and a saved one say nothing of the kind.
-it("says nothing of an unsaved edit after a Cancel or a save", async () => {
+// Only an edit its provider left behind says it wasn't saved: a cancelled or
+// saved edit holds no draft, so the provider leaving afterwards has nothing
+// unsaved to report.
+it("says nothing of an unsaved edit when the provider leaves after a Cancel", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	press(tree, (label) => label === "Cancel");
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toMatchObject({ name: "work" });
+	await workLeavesList(fake);
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toBeNull();
+});
+
+it("says nothing of an unsaved edit when the provider leaves after a save", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
 	fake.on("evener/instance/edit", () => ({
 		instances: [instance({ authModes: ["apiKey"], hasStoredFile: true })],
@@ -1567,17 +1584,16 @@ it("says nothing of an unsaved edit after a Cancel or a save", async () => {
 	await openWork(tree);
 	press(tree, (label) => label === "Edit");
 	await act(async () => {});
-	press(tree, (label) => label === "Cancel");
-	await act(async () => {});
-	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
-	press(tree, (label) => label === "Edit");
-	await act(async () => {});
 	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
 	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain("Base URL");
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toMatchObject({ name: "work" });
+	await workLeavesList(fake);
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toBeNull();
 });
 
 // Discarding through Back discards the draft for good: the page's close,
@@ -1602,35 +1618,6 @@ it("reopens a provider with no paste sheet or key after Back discarded them", as
 	back();
 	expect(alertRequests).toHaveLength(0);
 	expect(detailParams()).toBeNull();
-});
-
-// A link while a key is pasted pops the detail through the same guard as
-// Back (spec 6): it asks first, and Keep editing keeps the key and the
-// provider; Discard lets the link open its provider.
-it("asks before a link pops a detail holding a pasted key", async () => {
-	alertRequests.length = 0;
-	providersHub([
-		instance({ authModes: ["apiKey"], hasStoredFile: true }),
-		instance({ name: "home", isDefault: false, authModes: ["apiKey"], hasStoredFile: true }),
-	]);
-	const { tree, relink } = linkedPage("work");
-	await act(async () => {});
-	await act(async () => {});
-	expect(detailParams()).toMatchObject({ name: "work" });
-	press(tree, (label) => label === "Replace key");
-	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
-	await relink("home");
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
-	choose("Keep editing");
-	await act(async () => {});
-	expect(detailParams()).toMatchObject({ name: "work" });
-	expect(control(tree, "API key").props.value).toBe("sk-fixture");
-	await relink("home");
-	choose("Discard");
-	await act(async () => {});
-	await act(async () => {});
-	expect(detailParams()).toMatchObject({ name: "home" });
-	expect(hasControl(tree, "API key")).toBe(false);
 });
 
 it("holds a swipe down while a pasted key is being saved, without asking", async () => {
@@ -2247,7 +2234,11 @@ function linkedPage(focus: string) {
 			typeof ProvidersPage
 		>;
 	const tree = render(<ProvidersPage {...page({ focus })} />);
+	// A link reaches this page only with its list in front: a link while a
+	// detail is pushed stacks a new Providers page instead (openNotice names
+	// no `pop`, #3524). So a relink goes back to the list first.
 	const relink = async (next: string) => {
+		if (detailParams()) back();
 		await act(async () => tree.update(<ProvidersPage {...page({})} />));
 		await act(async () => tree.update(<ProvidersPage {...page({ focus: next })} />));
 	};
@@ -2270,10 +2261,10 @@ function heldChecks(fake: FakeClient) {
 	return pending;
 }
 
-// A link pops the pushed detail before it reopens the provider, so the
-// visit that started the check has closed, as Back closes it: a failure
-// landing after the link isn't reported on the new visit.
-it("drops a check's failure that lands after a link popped and reopened the provider", async () => {
+// A link reaches the page with its list in front, so the visit that started
+// the check has closed, as Back closes it: a failure landing after the link
+// isn't reported on the new visit.
+it("drops a check's failure that lands after a link reopened the provider", async () => {
 	const fake = providersHub([withModels()]);
 	const checks = heldChecks(fake);
 	const { tree, relink } = linkedPage("work");
@@ -2328,8 +2319,8 @@ it("checks two providers back to back: only the newer check ends its Checking st
 });
 
 // A failed check's copy stays with its own provider's visit: a link that
-// opens another provider pops that visit, and a link back to it opens a new
-// one, with no copy from the closed visit.
+// opens another provider arrives after that visit closed, and a link back to
+// it opens a new one, with no copy from the closed visit.
 it("keeps a failed check's copy on its own provider's visit, which a link closes", async () => {
 	const fake = providersHub([withModels(), { ...withModels(), name: "home", isDefault: false }]);
 	const checks = heldChecks(fake);

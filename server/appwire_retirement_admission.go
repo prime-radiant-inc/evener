@@ -23,6 +23,7 @@ var daemonRetirementAccessKinds = map[string]string{
 	appwire.MethodEvenerThreadWatchesList:   "read",
 
 	appwire.MethodEvenerJobsOutput:               "read",
+	appwire.MethodEvenerJobsGet:                  "read",
 	appwire.MethodModelList:                      "read",
 	appwire.MethodThreadClear:                    "mutation",
 	appwire.MethodThreadModelSet:                 "mutation",
