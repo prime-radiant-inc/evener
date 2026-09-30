@@ -129,7 +129,10 @@ function OutputNote({ output }: { output: ShellJobOutput }) {
 					: null;
 	if (note === null) return null;
 	return (
-		<Text allowFontScaling={allowFontScaling} style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}>
+		<Text
+			allowFontScaling={allowFontScaling}
+			style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+		>
 			{note}
 		</Text>
 	);

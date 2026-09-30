@@ -317,7 +317,9 @@ it("opens a shell job's detail over the list", async () => {
 	client = hub(() => treeWithJobs());
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	act(() => pressable(tree, `Shell job, npm run lint, Command failed · 2m, under ${COORDINATOR.title}`)?.props.onPress());
+	act(() =>
+		pressable(tree, `Shell job, npm run lint, Command failed · 2m, under ${COORDINATOR.title}`)?.props.onPress(),
+	);
 	expect(navigation.push).toHaveBeenCalledWith("ShellJob", {
 		hubId: "hub-1",
 		jobId: "j-lint",

@@ -112,10 +112,7 @@ async function settle() {
 async function mount() {
 	const params = { hubId: "hub-1", jobId: "j-test", title: "go test ./agent/...", coordinator: COORDINATOR };
 	const screen = render(
-		<ShellJobScreen
-			route={{ key: "job", name: "ShellJob", params } as never}
-			navigation={navigation as never}
-		/>,
+		<ShellJobScreen route={{ key: "job", name: "ShellJob", params } as never} navigation={navigation as never} />,
 	);
 	mounted.push(screen);
 	await settle();
@@ -159,7 +156,13 @@ it("shows the job's command, how it ended, its exit code and who started it, ove
 
 it("names no exit code for a job that is running or exited cleanly", async () => {
 	tree = treeWith(
-		shellJob("j-test", { status: "running", outcome: undefined, terminal: false, exitCode: undefined, endedAt: undefined }),
+		shellJob("j-test", {
+			status: "running",
+			outcome: undefined,
+			terminal: false,
+			exitCode: undefined,
+			endedAt: undefined,
+		}),
 	);
 	expect(renderedText(await mount())).not.toContain("Exited");
 	forgetSubagentTrees("hub-1");
@@ -169,7 +172,13 @@ it("names no exit code for a job that is running or exited cleanly", async () =>
 
 it("reads the output again when the job writes more or ends, and not when the tree changes elsewhere", async () => {
 	tree = treeWith(
-		shellJob("j-test", { status: "running", outcome: undefined, terminal: false, exitCode: undefined, endedAt: undefined }),
+		shellJob("j-test", {
+			status: "running",
+			outcome: undefined,
+			terminal: false,
+			exitCode: undefined,
+			endedAt: undefined,
+		}),
 	);
 	const screen = await mount();
 	expect(outputCalls()).toHaveLength(1);
@@ -197,7 +206,11 @@ it("reads the output again when the job writes more or ends, and not when the tr
 	await treeChanges({
 		...treeWith(shellJob("j-test", { outputBytes: 45 }), 4),
 		root: session("local:coord", "Renamed coordinator", [
-			delegate("fix", "Fix race in tree settle", session("local:fix", "Fix race in tree settle", [shellJob("j-test", { outputBytes: 45 })])),
+			delegate(
+				"fix",
+				"Fix race in tree settle",
+				session("local:fix", "Fix race in tree settle", [shellJob("j-test", { outputBytes: 45 })]),
+			),
 		]),
 	});
 	expect(outputCalls()).toHaveLength(3);

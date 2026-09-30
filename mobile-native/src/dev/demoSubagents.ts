@@ -225,9 +225,12 @@ export function demoJobOutput(tree: unknown, jobId: string): { data: unknown } |
 				].join("\n")
 			: job.terminal
 				? ""
-				: ["=== RUN   TestRetirement", "--- PASS: TestRetirement (0.08s)", "=== RUN   TestRetirementTreeSettle", ""].join(
-						"\n",
-					);
+				: [
+						"=== RUN   TestRetirement",
+						"--- PASS: TestRetirement (0.08s)",
+						"=== RUN   TestRetirementTreeSettle",
+						"",
+					].join("\n");
 	const totalBytes = new TextEncoder().encode(tail).length;
 	return { data: { tail, totalBytes, retainedStart: 0 } };
 }

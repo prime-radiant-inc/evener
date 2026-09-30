@@ -44,7 +44,9 @@ const glyphColor = (tree: ReturnType<typeof render>) =>
 
 describe("a shell job's row", () => {
 	it("says what it is, who started it, and how long it has been quiet while it runs", () => {
-		const tree = render(<ShellJobRowView row={row("running", { lastOutputAt: ago(90_000) })} now={NOW} onOpen={() => {}} />);
+		const tree = render(
+			<ShellJobRowView row={row("running", { lastOutputAt: ago(90_000) })} now={NOW} onOpen={() => {}} />,
+		);
 		expect(renderedText(tree)).toContain("Serving the docs");
 		expect(renderedText(tree)).toContain("under Fix race in tree settle");
 		expect(renderedText(tree)).toContain("running · 1m");
@@ -86,8 +88,6 @@ describe("a shell job's row", () => {
 
 	it("reads to VoiceOver as one sentence", () => {
 		const tree = render(<ShellJobRowView row={row("running")} now={NOW} onOpen={() => {}} />);
-		expect(label(tree)).toBe(
-			"Shell job, Serving the docs, running · 4m, under Fix race in tree settle",
-		);
+		expect(label(tree)).toBe("Shell job, Serving the docs, running · 4m, under Fix race in tree settle");
 	});
 });
