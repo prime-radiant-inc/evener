@@ -331,7 +331,11 @@ Three events invalidate rather than write:
   latency, the clear epoch stays the only durable generation, a deleted
   session's pane releases on close, and a re-open of a deleted session
   fails its read through the existing fence, which keeps the record
-  gone. An earlier draft of this spec refuted a per-ref tombstone as
+  gone. A record delete whose transaction aborts leaves the stale
+  record to that same fence — the deleted session's own re-open
+  triggers it — or to the 14-day expiry; the durable fact is the
+  server-side deletion, and the fence is the cache's correction, so
+  the deletion never depends on the cache transaction succeeding. An earlier draft of this spec refuted a per-ref tombstone as
   over-building and claimed the sibling "learns of the deletion through
   the fence on its next read" — that retraction is recorded because it
   was wrong: a sibling tab holding the session open receives
@@ -344,7 +348,10 @@ Three events invalidate rather than write:
   publishes the same per-ref propagation — out-of-band deletions (another
   machine, a project delete) must reach the tab that holds the session
   open just as UI deletions do, and the `deletedRefs` gate above makes
-  every later fire-time write refuse the ref. Records for sessions no tab
+  every later fire-time write refuse the ref. A record delete whose
+  transaction aborted retries on the fence's next firing — the ref is
+  already in `deletedRefs`, so the retry is idempotent and costs at
+  most one stale shell on a re-open. Records for sessions no tab
   ever reads again are removed by the 14-day expiry; that residual is
   stated here rather than papered over.
 
@@ -510,8 +517,10 @@ involved.
 
 Settings gains a storage row with one action, "Clear cached session
 content". The row renders a state, not an estimate: **empty**,
-**unavailable** (a failed open, with a retry — never shown as empty, so
-the privacy remedy cannot silently claim to have worked), or **cleared**.
+**unavailable** (a failed open or an aborted clear transaction, with a
+retry — never shown as empty, so the privacy remedy cannot silently
+claim to have worked), or **cleared** — which shows only when the
+clear's transaction committed.
 The clear is durable against racing writers, in the only order that
 works, since in-memory timer state cannot commit transactionally:
 first, synchronously and in memory, bump the local epoch view, arm the
@@ -547,9 +556,20 @@ establishes a fresh cache lease and caches again — that is the feature
 working, not the remedy failing — while the durable epoch still kills
 anything scheduled before the
 clear. Deletion is the storage adapter's own operation so a wedged
-open degrades to the unavailable state rather than a failed button. No
-per-session management and no cap slider; both are YAGNI until someone
-asks.
+open degrades to the unavailable state rather than a failed button.
+An aborted clear transaction is a clean no-op, because IndexedDB
+commits the deletions and the epoch increment as one unit: nothing
+changed, so the row returns to **unavailable** with its retry and the
+clear action reverts what it did optimistically in memory — the epoch
+bump restores the durable value and the suppression it armed disarms,
+so open refs resume caching at their next publication (a cancelled
+debounce timer simply re-arms on the next write-scheduled
+publication). The cache never claimed the content was gone, so
+nothing it did not claim can resurrect. What the row called
+**cleared** is a committed fact, and a per-record cache epoch would
+add nothing: an atomic transaction leaves no state in which the epoch
+advanced while a record survived. No per-session management
+and no cap slider; both are YAGNI until someone asks.
 
 ### Failure and degradation
 
@@ -642,7 +662,10 @@ Adapter (new `stores/sessionCacheIndexedDB.ts`):
    transaction; the reserved epoch row survives both enumerations when
    every record expires around it; a forced write during quota failure
    drops silently.
-4. Clear: deletes every record and resets the accounting.
+4. Clear: deletes every record and resets the accounting; an aborted
+   clear transaction changes nothing — every record and the epoch
+   remain, the row reads **unavailable**, the suppression disarms, and
+   a reload serves the content again: the honest no-op.
 
 Store integration (`stores/threads.test.ts` additions and a new
 `stores/threads.sessionCache.test.ts`):
@@ -731,7 +754,9 @@ Store integration (`stores/threads.test.ts` additions and a new
     tab, a debounce callback whose task was already queued when the
     action's success handler ran is refused by its own `deletedRefs`
     arming, and a write whose transaction was already open commits
-    first only for the deletion serialized after it to remove it.
+    first only for the deletion serialized after it to remove it; a
+    record delete whose transaction aborted is retried by the fence's
+    next firing and costs at most one stale shell on a re-open.
 15. Write gating: `failed` history writes nothing; an invalidated
     history — `invalidatedAtGeneration` set, with `awaited`,
     `pendingIncarnation`, and a deferred page present — writes nothing
