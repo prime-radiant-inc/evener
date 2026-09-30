@@ -971,9 +971,6 @@ export interface DemoFleet extends FleetAnswers {
 	// ref), another host's by its ref. Returns the reply and the
 	// evener/navigation/invalidated payload a real hub sends for it.
 	archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload };
-	// Answers evener/jobs/list: a coordinator's subagent tree, and an empty
-	// root for any other fleet session (demoSubagents.ts).
-	answerJobsList(params: { ref?: string; continuation?: string }): { data: unknown };
 	// Answers evener/jobs/output: a listed shell job's tail (demoSubagents.ts),
 	// only for the session that owns it (its ownerRef), as a hub answers.
 	answerJobsOutput(params: { ref?: string; jobId: string }): { data: unknown };
@@ -1130,7 +1127,6 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerDelegatesList: activity.delegates,
 		answerSessionJobsList: activity.jobs,
 		answerWatchesList: activity.watches,
-		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
 		answerJobsOutput: (params) => {
 			// Read back as the phone reads the tree, so the job answered is the
 			// one the Activity list shows, and only for the session that owns

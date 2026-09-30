@@ -1,6 +1,6 @@
 // The demo fleet's subagents and documents, as the hub serves them: the
-// activity tree behind the Subagents list (evener/jobs/list) and the
-// documents the Reader opens (/doc/file). Built from the same raw swarm the
+// activity tree the typed activity reads project (demoSessionActivity.ts) for
+// the Activity list, and the documents the Reader opens (/doc/file). Built from the same raw swarm the
 // Board's navigation rows come from (demoFleet.ts, after the prototype's
 // data.js), so the Board, the list and the transcript agree (spec Appendix
 // B). Each subagent's own session (thread/read) is demoSessions.ts's.
@@ -89,7 +89,8 @@ function session(sessionId: string, ref: string, label: string, entries: unknown
 	return { kind: "session", sessionId, ref, label, aggregate, counts, entries, branch: {} };
 }
 
-/** evener/jobs/list's answer for a coordinator: its subagents, nested as they were started. */
+/** A coordinator's activity tree: its subagents, nested as they were started,
+ * and their shell jobs. The typed activity reads project it. */
 export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number): { data: unknown } {
 	const toEntry = (sub: DemoSubagent, ownerSessionId: string): { entry: unknown; counts: Counts } => {
 		const ref = coordinator.subagentRef(sub.id);
