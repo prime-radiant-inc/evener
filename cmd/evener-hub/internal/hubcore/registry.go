@@ -24,7 +24,7 @@ type RegistryLoader func(extra ...registry.Option) (*registry.Registry, *credent
 // ProviderRegistry is the hub's live view of the provider registry: the
 // current instance set, reloaded after every providers.toml write, and the
 // diagnostics the web UI shows (spec §11.3). When the user layer fails to
-// load (an old-schema file) it holds an implicit-only registry, keeps the
+// load it keeps the previous registry (implicit-only at startup), keeps the
 // error for the diagnostics, and refuses writes until a reload succeeds
 // (spec §10, §14.1).
 
@@ -113,8 +113,8 @@ func NewProviderRegistry(load RegistryLoader) *ProviderRegistry {
 }
 
 // Reload re-reads the registry and returns the load error, if any. A failing
-// user layer leaves the holder on an implicit-only registry so sessions still
-// launch, and the error is what refuses instance writes until the file is
+// user layer retains the previous usable registry, or loads an implicit-only
+// registry at startup. The error refuses instance writes until the file is
 // fixed. Cached live listings carry over to the fresh object either way, so
 // an instance write never wipes what background prefetch and manual
 // refreshes already fetched.
@@ -130,6 +130,12 @@ func (h *ProviderRegistry) Reload() error {
 	oldIDs := instanceIdentities(old)
 	r, _, err := h.load()
 	if err != nil {
+		if old != nil {
+			h.mu.Lock()
+			h.loadErr = err
+			h.mu.Unlock()
+			return err
+		}
 		fallback, _, ferr := h.load(registry.WithNoUserLayer())
 		var fallbackIDs map[string]string
 		if ferr == nil {
@@ -695,7 +701,7 @@ func (h *ProviderRegistry) Diagnostics() []string {
 	defer h.mu.RUnlock()
 	var out []string
 	if h.loadErr != nil {
-		out = append(out, "providers.toml: "+h.loadErr.Error()+" (instance writes are refused until the file is fixed)")
+		out = append(out, "providers.toml: "+h.loadErr.Error()+" (instance writes are refused until the file is fixed; the active configuration is retained while this edit is invalid)")
 	}
 	if h.current != nil {
 		out = append(out, h.current.UserLayerNote())
