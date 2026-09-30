@@ -231,9 +231,7 @@ func TestDelegateSendToABusyChildTheControllerCantSeeIsARefusal(t *testing.T) {
 		t.Fatal("the held delegate's child was never published")
 	}
 	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation}
-	if err := held.s.delegateController.ReportFinalizationQuiesced(lease, held.child.sess); err != nil {
-		t.Fatalf("report quiescence: %v", err)
-	}
+	reportFinalizeTailDone(t, held.s.delegateController, lease, held.child.sess)
 	// The controller no longer holds the delegate, so a refusal can only
 	// come from the send's own look at the child.
 	assertStartAdmitted(t, held.s.delegateController, held.delegateID, "once the controller has released the finalization")
@@ -310,9 +308,7 @@ func assertStartAdmitted(t *testing.T, c *delegateTreeController, delegateID, wh
 func TestDelegateControllerRefusesAStartUntilTheFinishedRuntimeQuiesces(t *testing.T) {
 	c, lease, runtime := finishedDelegateStillFinalizing(t)
 	assertStartRefused(t, c, "dlg_target", "while the finished runtime finalizes")
-	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, runtime)
 	assertStartAdmitted(t, c, "dlg_target", "once the finished runtime has quiesced")
 }
 
@@ -320,9 +316,7 @@ func TestDelegateControllerRefusesAStartUntilTheFinishedRuntimeQuiesces(t *testi
 // is still finalizing on the same runtime.
 func TestDelegateControllerIgnoresAnEarlierGenerationsQuiescence(t *testing.T) {
 	c, first, runtime := finishedDelegateStillFinalizing(t)
-	if err := c.ReportFinalizationQuiesced(first, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced first: %v", err)
-	}
+	reportFinalizeTailDone(t, c, first, runtime)
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
 	if err != nil {
 		t.Fatalf("ReserveStart second: %v", err)
@@ -340,13 +334,9 @@ func TestDelegateControllerIgnoresAnEarlierGenerationsQuiescence(t *testing.T) {
 	if _, err := c.FinishGeneration(second.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
 		t.Fatalf("FinishGeneration second: %v", err)
 	}
-	if err := c.ReportFinalizationQuiesced(first, runtime); err != nil {
-		t.Fatalf("late ReportFinalizationQuiesced first: %v", err)
-	}
+	reportFinalizeTailDone(t, c, first, runtime)
 	assertStartRefused(t, c, "dlg_target", "after only the earlier generation's report")
-	if err := c.ReportFinalizationQuiesced(second.lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced second: %v", err)
-	}
+	reportFinalizeTailDone(t, c, second.lease, runtime)
 	assertStartAdmitted(t, c, "dlg_target", "once the later generation has quiesced")
 }
 
@@ -380,9 +370,7 @@ func TestDelegateControllerAUnlaunchedGenerationLeavesTheDelegateStartable(t *te
 		t.Fatal("the unlaunched generation's plans carry no idle snapshot to announce")
 	}
 	assertStartRefused(t, c, "dlg_target", "before the unlaunched generation is released")
-	if err := c.ReportFinalizationQuiesced(started.lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, started.lease, runtime)
 	if got := delegateAggregateSnapshot(t, c, "dlg_target"); got.LatestOutcome == nil || got.LatestOutcome.Reason != "launch_failed" {
 		t.Fatalf("latest outcome = %+v, want launch_failed", got.LatestOutcome)
 	}
@@ -419,9 +407,7 @@ func TestDelegateControllerRefusesAnAttentionWakeWhileFinalizing(t *testing.T) {
 	if eligible() {
 		t.Fatal("an attention wake was eligible while the finished generation finalized")
 	}
-	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, runtime)
 	if !eligible() {
 		t.Fatal("an attention wake was still refused after the release")
 	}
@@ -603,9 +589,7 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 		release func(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session)
 	}{
 		{"the finished runtime reports quiescence", func(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session) {
-			if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-				t.Fatalf("ReportFinalizationQuiesced: %v", err)
-			}
+			reportFinalizeTailDone(t, c, lease, runtime)
 		}},
 		{"another runtime becomes resident", func(_ *testing.T, c *delegateTreeController, _ delegateLease, _ *Session) {
 			c.mu.Lock()

@@ -387,9 +387,7 @@ func TestDelegateControllerTerminalPreparedAppendFailureKeepsRunning(t *testing.
 	c.mu.Lock()
 	runtime := c.live[lease.delegateID].binding.runtime
 	c.mu.Unlock()
-	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, runtime)
 	c.mu.Lock()
 	claimRetained = c.hasSettlementClaimLocked(lease)
 	c.mu.Unlock()
@@ -914,4 +912,14 @@ func latestDelegateControllerRunFinished(t *testing.T, c *delegateTreeController
 	}
 	t.Fatalf("no run-finished event for %s", delegateID)
 	return delegatestore.RunFinished{}
+}
+
+// reportFinalizeTailDone reports lease's finished runtime quiesced, as the
+// child's finalize tail does when it is done, releasing the delegate for its
+// next start.
+func reportFinalizeTailDone(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session) {
+	t.Helper()
+	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced: %v", err)
+	}
 }
