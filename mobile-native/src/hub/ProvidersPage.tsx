@@ -759,9 +759,7 @@ function Providers({
 											sub={sub}
 											value={
 												status?.tone === "attention" || status?.tone === "danger" ? (
-													<RowValue
-														tag={{ text: status.word, tone: status.tone === "danger" ? "red" : "amber" }}
-													/>
+													<RowValue tag={{ text: status.word, tone: status.tone === "danger" ? "red" : "amber" }} />
 												) : (
 													status?.word
 												)

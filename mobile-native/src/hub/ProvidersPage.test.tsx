@@ -1190,7 +1190,15 @@ it("says each provider's sign-in state, with only an expired sign-in in amber", 
 it("shows a rejected credential as Error, and says why on the detail", async () => {
 	const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
 	providersHub(
-		[instance({ name: "lunaroute", providerId: "openai", isDefault: false, activeSource: "store", authModes: ["apiKey"] })],
+		[
+			instance({
+				name: "lunaroute",
+				providerId: "openai",
+				isDefault: false,
+				activeSource: "store",
+				authModes: ["apiKey"],
+			}),
+		],
 		[{ provider: "lunaroute", error } as AuthStatusResponse],
 	);
 	const { tree } = mountPage();
