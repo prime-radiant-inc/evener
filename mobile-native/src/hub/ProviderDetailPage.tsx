@@ -36,15 +36,9 @@ export function ProviderDetailPage({ navigation, route }: NativeStackScreenProps
 
 	// Leaving hands the selection back, so the Providers page drops whatever
 	// the detail had open (a draft key, a check's failure).
-	const latest = useRef({ slot, hubId, name });
-	latest.current = { slot, hubId, name };
-	useEffect(
-		() => () => {
-			const { slot: last, hubId: leavingHub, name: leaving } = latest.current;
-			if (last && last.hubId === leavingHub && last.name === leaving) last.onGone();
-		},
-		[],
-	);
+	const latest = useRef(current);
+	latest.current = current;
+	useEffect(() => () => latest.current?.onGone(), []);
 
 	return current ? current.detail : null;
 }
