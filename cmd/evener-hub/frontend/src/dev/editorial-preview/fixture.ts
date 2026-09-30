@@ -102,7 +102,9 @@ export function createEditorialClient(): EditorialClient {
         return wrap({
           key: "editorial",
           current: {
-            sessions: [sessionTree(parent), summaries.find((row) => row.ref === QUESTION)],
+            // Flat rows, like the real wire: the tree arrives through the
+            // subagents case below, never nested into a list resource.
+            sessions: [parent, summaries.find((row) => row.ref === QUESTION)].map((row) => ({ ...row, children: [] })),
             remaining: 0,
           },
           recent: { sessions: [], remaining: 0 },
@@ -126,6 +128,19 @@ export function createEditorialClient(): EditorialClient {
         const data = response.data as { metadata: Record<string, unknown> };
         data.metadata.top_level = params.ref === owner;
         return response;
+      }
+      case "subagents": {
+        // The per-session tree API: the ref's direct children, paged, each
+        // keeping its own nested subtree (sessionTree's recursion).
+        const offset = params.offset ?? 0;
+        const limit = params.limit ?? 50;
+        const children = summaries.filter((row) => parentRefs[row.ref] === params.ref);
+        const page = children.slice(offset, offset + limit);
+        return wrap({
+          sessions: page.map(sessionTree),
+          remaining: children.length - offset - page.length,
+          truncated: false,
+        });
       }
       default:
         throw new Error(`Unexpected fixture navigation: ${JSON.stringify(params)}`);
