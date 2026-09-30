@@ -1600,8 +1600,11 @@ export function ConversationScreen({
 	useEffect(() => {
 		if (!focused) setFind(null);
 	}, [focused]);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
-	useEffect(() => {
+	// Moves the list to the reading position once what it needs has laid out.
+	// It runs when what it reads changes: the effect below for the screen's
+	// state, and each cell's layout and the list's content size directly, since
+	// those it reads from refs, so a layout never re-renders the screen.
+	function restoreReadingPosition() {
 		const anchor = readerAnchor.current;
 		if (
 			!anchor ||
@@ -1679,7 +1682,14 @@ export function ConversationScreen({
 			});
 			landOpening();
 		}
-	}, [
+	}
+	// The cells and the list call the latest restore, with this render's rows.
+	const restoreReadingPositionNow = useRef(restoreReadingPosition);
+	useLayoutEffect(() => {
+		restoreReadingPositionNow.current = restoreReadingPosition;
+	});
+	// biome-ignore lint/correctness/useExhaustiveDependencies: a layout revision (the viewport, a drag settling, focus) retriggers restoration too.
+	useEffect(() => restoreReadingPosition(), [
 		bindingInstance,
 		layoutRevision,
 		snapshot.status,
@@ -2679,7 +2689,7 @@ export function ConversationScreen({
 							if (!openingLandedNow.current && key === lastRowKey() && follow.state.current.following) {
 								pinOpeningToEnd();
 							}
-							setLayoutRevision((revision) => revision + 1);
+							restoreReadingPositionNow.current();
 						}}
 					>
 						{children}
@@ -2835,7 +2845,7 @@ export function ConversationScreen({
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
 								readerContentHeight.current = height;
-								setLayoutRevision((revision) => revision + 1);
+								restoreReadingPositionNow.current();
 								if (follow.state.current.following)
 									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 							}}
