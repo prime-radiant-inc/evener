@@ -282,20 +282,24 @@ that does not establish a warm first project picker. The native form's
 [chosen-model test](../../mobile-native/src/newSession/NewSessionForm.test.tsx#L545)
 pins the requirement to change to Hub default after a listing failure.
 
-**Discuss.** Let a valid default or already-chosen model launch proceed without
+**Decision.** Let a valid default or already-chosen model launch proceed without
 requiring a successful catalog lookup first; the hub still resolves and
 validates the requested launch configuration. Retain usable catalogs during
 refresh and keep retrying failed discovery while the picker needs it, with
 backoff and no attempt limit. Preserve an explicitly selected provider/model;
 discovery failure must not substitute the default. Keep cached choices scoped
-to the selected host and project configuration. Reuse existing discovery work
-before adding prefetch work for other project contexts.
+to the selected host and project configuration. Use existing caches rather than
+adding a broad prefetch loop across projects; retire failure recovery after a
+successful lookup. A genuine launch rejection preserves the draft and selected
+configuration for correction. Implementation remains pending.
 
 **Acceptance.** Delay model listing: Hub default still launches promptly. Fail
 listing with a specific model already chosen: submit that same configuration
 without switching models. Keep the picker open through an outage: retained
 choices stay usable and discovery recovers automatically. Host/project changes
-never reuse another context's default or configuration.
+never reuse another context's default or configuration. An actual launch
+rejection leaves the draft and model choice intact, and successful discovery
+retires the failure retry timer.
 
 ### C08 Remote provider setup at launch
 
