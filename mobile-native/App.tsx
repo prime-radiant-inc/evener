@@ -55,6 +55,7 @@ import { OutlineSheet } from "./src/reader/OutlineSheet";
 import { ReviewSheet } from "./src/reader/ReviewSheet";
 import { StopSubagentSheet } from "./src/subagents/StopSubagentSheet";
 import { SubagentScreen } from "./src/subagents/SubagentScreen";
+import { ShellJobScreen } from "./src/subagents/ShellJobScreen";
 import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { replaceAnimation } from "./src/session/titleSwipe";
@@ -244,6 +245,11 @@ function Navigation() {
 						name="Subagent"
 						component={SubagentScreen}
 						options={({ route }) => ({ title: route.params.title || "Subagent" })}
+					/>
+					<Stack.Screen
+						name="ShellJob"
+						component={ShellJobScreen}
+						options={({ route }) => ({ title: route.params.title || "Shell job" })}
 					/>
 					<Stack.Group
 						screenOptions={{
