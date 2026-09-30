@@ -176,7 +176,9 @@ shares it with the connection's established thread ownership. Do not unsubscribe
 another mounted transcript or replace its subscription to follow activity.
 
 Add `evener/thread/activity/changed`, with `SessionActivityChangedParams { ref,
-sessionId, resources }`; resources is a typed list of `summary`, `delegates`,
+threadId, sessionId, resources }`; `threadId` preserves the existing subscription
+routing identity, while `sessionId` identifies the resolved session. Resources
+is a typed list of `summary`, `delegates`,
 `jobs`, or `watches`. Feed it from real domain changes and the existing event
 bridge. Watch registration, clearing, delivery, and ending must refresh the
 receiver's view. An event is a scoped invalidation, not a second lifecycle fold.
