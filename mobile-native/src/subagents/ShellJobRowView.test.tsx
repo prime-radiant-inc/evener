@@ -53,6 +53,14 @@ describe("a shell job's row", () => {
 		expect(glyphColor(tree)).toBe(palette.aliveInk);
 	});
 
+	// A job whose subagent's row isn't loaded can't name who started it yet.
+	it("says its subagent isn't listed when it has no owner to name", () => {
+		const { owner: _owner, ...unowned } = row("running");
+		const tree = render(<ShellJobRowView row={unowned} now={NOW} onOpen={() => {}} />);
+		expect(renderedText(tree)).toContain("under a subagent that isn't listed");
+		expect(label(tree)).toContain(", under a subagent that isn't listed");
+	});
+
 	// An ended job says how it ended in words as well as in its hue, so a
 	// failed, killed, stopped and finished job never read the same.
 	it("says how a finished one ended and how long it ran, its hue carrying the outcome too", () => {

@@ -305,9 +305,9 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 });
 
 // A job whose subagent's row is on a later page sits at the top of the tree
-// until that page loads. It says its subagent isn't listed yet rather than
+// until that page loads. It says its subagent isn't listed rather than
 // naming the coordinator, then names the subagent once its row arrives.
-it("says a job's subagent isn't listed yet until that subagent's page loads, then names it", async () => {
+it("says a job's subagent isn't listed until that subagent's page loads, then names it", async () => {
 	client = hub((continuation) =>
 		continuation === "page-2"
 			? { revision: 1, root: session("local:coord", COORDINATOR.title, [runningOne("later", "Later one")]) }
@@ -329,8 +329,8 @@ it("says a job's subagent isn't listed yet until that subagent's page loads, the
 	const jobLabel = () =>
 		screen.root.find((node) => String(node.props.accessibilityLabel).startsWith("Shell job, Serving the docs"))
 			.props.accessibilityLabel;
-	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under a subagent that isn't listed yet");
-	expect(text(screen)).toContain("under a subagent that isn't listed yet");
+	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under a subagent that isn't listed");
+	expect(text(screen)).toContain("under a subagent that isn't listed");
 	expect(text(screen)).not.toContain(`under ${COORDINATOR.title}`);
 	await act(async () => {
 		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });

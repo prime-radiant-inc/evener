@@ -464,14 +464,14 @@ describe("shell jobs in the Activity list", () => {
 	// subagent's row isn't loaded yet (it's on a later page). Its owner can't be
 	// named until that row loads, so it says so rather than naming the
 	// coordinator.
-	it("says a job's subagent isn't listed yet while that subagent's row isn't loaded", () => {
+	it("says a job's subagent isn't listed while that subagent's row isn't loaded", () => {
 		const hoisted = job(false, { jobId: "j-later", ownerRef: "local:later", description: "Serving the docs" });
 		const [row] = flattenJobs({ revision: 1, root: session("local:coord", [shell(hoisted)]) }, COORDINATOR);
 		if (!row) throw new Error("no job");
 		expect(row.owner).toBeUndefined();
-		expect(shellJobOwner(row)).toBe("under a subagent that isn't listed yet");
+		expect(shellJobOwner(row)).toBe("under a subagent that isn't listed");
 		expect(shellJobLabel(row, NOW)).toBe(
-			"Shell job, Serving the docs, running, 2 minutes, under a subagent that isn't listed yet",
+			"Shell job, Serving the docs, running, 2 minutes, under a subagent that isn't listed",
 		);
 		expect(matchesSearch(row, "docs")).toBe(true);
 		expect(matchesSearch(row, COORDINATOR)).toBe(false);

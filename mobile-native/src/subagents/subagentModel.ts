@@ -175,11 +175,15 @@ export function flattenActivity(tree: ActivityTree, coordinatorTitle: string): A
 				if (seen.has(key)) continue;
 				seen.add(key);
 				const job = entry.job;
+				// At the top of the tree, only the coordinator's own job has an
+				// owner to name; any other sits there because its subagent's row
+				// isn't loaded.
+				const owner = parentTitle ?? (job.ownerRef === tree.root.ref ? coordinatorTitle : undefined);
 				rows.push({
 					kind: "job",
 					id: job.jobId,
 					title: job.description.trim() || firstLine(job.command ?? "", 80) || job.jobId,
-					owner: parentTitle ?? (job.ownerRef === tree.root.ref ? coordinatorTitle : undefined),
+					...(owner === undefined ? {} : { owner }),
 					state: shellJobState(job),
 					job,
 					order: order++,
@@ -471,10 +475,10 @@ function shellJobStatus(row: ShellJobRow, now: number): { words: string; clean: 
 }
 
 /** Who started a shell job, as its row, its spoken label and its detail say
- * it: "under" its session's or subagent's title, or that its subagent isn't
- * listed yet. */
+ * it: "under" its session's or subagent's title, or, while that subagent's
+ * row isn't loaded, that its subagent isn't listed. */
 export function shellJobOwner(row: ShellJobRow): string {
-	return `under ${row.owner ?? "a subagent that isn't listed yet"}`;
+	return `under ${row.owner ?? "a subagent that isn't listed"}`;
 }
 
 /** A shell job's trailing words (the web's ActivityTree meta): "running ·
