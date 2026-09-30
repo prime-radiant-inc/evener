@@ -520,13 +520,31 @@ Root daemon sessions with continuation and notification wiring already exempt
 waiting for dependents that can guarantee a wake. Child and one-shot sessions
 do not share that exemption.
 
-**Discuss.** Define credible progress for research, review, planning and coding
-goals, including completed evidence gathering and meaningful dependent results.
-Retain loop/cost control without making writes a proxy for accomplishment.
+**Decision.** Useful investigation, reasoning, planning and review qualify as
+progress toward the user's objective. An agent does not need to change files to
+keep a goal running, and attempting a mutation does not establish progress by
+itself. Suspected loops prompt reassessment of the evidence, obstacle and
+available approaches before a decision to block the goal. A blocked outcome
+identifies a concrete impediment the agent cannot resolve. Preserve explicit
+resource limits and cancellation. Implementation remains pending.
+
+**Discuss — progress evaluator.** A side LLM call that reviews recent turns and
+returns a structured assessment is a candidate for evaluating useful progress.
+The evaluator needs the current objective and relevant instructions as well as
+observed actions and results; a short transcript window alone can omit what the
+work is meant to accomplish. Existing [auxiliary call
+routing](../../agent/internal/cheapmodel/caller.go#L60) and [schema-validated
+output](../../llm/generate_object.go#L31) provide implementation references.
+Context selection, evaluation cadence, model choice and the assessment's
+authority over continuation remain open design questions. In particular,
+distinguish feedback that helps the working agent recover from an evaluator
+that can directly end the goal.
 
 **Acceptance.** A read-only investigation producing useful evidence can finish
 without false no-progress blocking. Repeated ineffective or failed mutating
-calls do not keep an unproductive goal alive indefinitely.
+calls prompt reassessment rather than resetting progress solely because of the
+tool category. A blocked outcome explains the unresolved impediment; explicit
+resource limits and cancellation still take effect.
 
 ### R07 Restored goals without a wake
 
