@@ -126,13 +126,7 @@ describe("projectedRow — item entries", () => {
 			else expect(recovery).toBeUndefined();
 			expect(rows.find((row) => row.id === "signin")).toMatchObject({ kind: "failure", attention: true });
 			expect(rows.find((row) => row.id === "interruption")).toMatchObject({ kind: "notice", tone: "warning" });
-			expect(
-				rows.some(
-					(row) =>
-						(row.kind === "activity" && row.id === "retry" && row.state === "failed") ||
-						(row.kind === "cluster" && row.steps.some((step) => step.id === "retry" && step.state === "failed")),
-				),
-			).toBe(true);
+			expect(rows.some((row) => row.kind === "activity" && row.id === "retry" && row.state === "failed")).toBe(true);
 		}
 	});
 
