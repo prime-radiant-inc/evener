@@ -113,11 +113,13 @@ export function useTranscript(ref: string, viewId = ref): UseTranscriptResult {
     model,
     loadOlder,
     cancelOlder,
-    loadingOlder: state.loading,
+    loadingOlder: state.loading || (state.pending && state.error === null),
     loadOlderReportingError: () => {
-      void committedPaging()
-        .retryNow(viewId)
-        .catch(() => {});
+      const owner = committedPaging();
+      // Geometry can repeat quiet demand; only the error row's explicit Retry
+      // should bypass pacing after a rejected read.
+      const request = owner.getSnapshot().error === null ? owner.request : owner.retryNow;
+      void request(viewId).catch(() => {});
     },
     olderError: state.error === null ? null : sessionActionError("Couldn't load older turns", state.error),
   };

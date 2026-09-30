@@ -113,6 +113,9 @@ Pass a view or Find consumer identity to `request()`/`retryNow()`; `cancel()` wi
 that identity drops only its demand. Inactivity releases the reader, preserving
 pending demand; explicitly leaving history cancels it. An in-flight page can still
 merge, but a late failure cannot revive cancelled demand.
+A fulfilled read without cursor progress remains pending without an error; only
+a rejected read publishes its failure. Repeated error-free demand respects the
+existing backoff; explicit retry after a failure can start immediately.
 The supplied page key is an opaque cursor (including any trim boundary), `null`
 for confirmed history end, or `undefined` while history is unavailable. Adapters
 translate their store's end marker: the browser's loaded model has an absent
