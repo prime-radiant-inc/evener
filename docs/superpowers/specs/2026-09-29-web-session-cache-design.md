@@ -134,9 +134,14 @@ one cache lookup before arming the hydration. Two properties are load-bearing:
 - **The lookup is bounded by its own short deadline** (250 ms,
   `Promise.race`), not the outbox adapter's 10-second storage timeout
   (`STORAGE_WAIT_MS = 10_000`). It captures the current clear epoch when
-  it starts and compares it before publishing: a lookup that began before
-  a clear and resolves after it discards its result, so a cleared cache
-  cannot resurrect a shell. On deadline, open failure, miss, or an epoch
+  it starts — the durable epoch row read in the lookup's own transaction,
+  never the in-memory view, which a tab that has not yet received the
+  clear's channel message cannot trust — and compares it before
+  publishing: a lookup that began before a clear and resolves after it
+  discards its result, so a cleared cache cannot resurrect a shell. The
+  same captured value is the lease's epoch: the arming records it, and
+  the clear's suppression uses it to tell a lease that predates a
+  clear from one opened after it (the clear section). On deadline, open failure, miss, or an epoch
   change, the
   hydration proceeds exactly as today, with `beginThreadHydration` receiving
   `undefined` as its model. No pane ever waits on storage longer than 250 ms.
@@ -292,19 +297,32 @@ Three events invalidate rather than write:
   closed by deletion, so closing a deleted session's pane cannot
   re-persist it. Deletion also propagates cross-tab: one BroadcastChannel
   message per deleted ref, the same channel and the same shape the clear
-  uses, and each sibling tab adds the ref to its suppression set and
-  re-checks it at write-fire time. An earlier draft of this spec refuted
-  a per-ref tombstone as over-building and claimed the sibling "learns of
-  the deletion through the fence on its next read" — that retraction is
-  recorded because it was wrong: a sibling tab holding the session open
-  receives `history/updated` pushes, not a rejected read, so the fence
-  never fires there and its continuously scheduled writes would resurrect
-  the record indefinitely, which is not the one-time residual the draft
-  claimed. The propagation is deliberately the clear's existing mechanism
-  scoped to one ref, not a new durable tombstone table: the clear epoch
-  stays the only durable generation, a deleted session's pane releases
-  on close, and a re-open of a deleted session fails its read through
-  the existing fence, which keeps the record gone.
+  uses. On receiving it a sibling does two things, not one: it adds the
+  ref to its suppression set — re-checked at write-fire time — and it
+  deletes the ref's record from storage, idempotently. That second step
+  heals the one interleaving that can beat the message: a sibling write
+  that started after the deleting tab's removal but before the message
+  arrives still passes its gates and re-creates the record, and the
+  message's arrival deletes that resurrection in the same step that
+  arms the suppression. The remaining residual is a sibling that dies
+  between its racing write and the message's arrival: nothing is left
+  to hear the message, and the record it re-created waits for the
+  14-day expiry or the next fenced read of the ref — the same stated
+  residual class as sessions no tab ever reads again. That bounded
+  window is the argument against the durable per-ref tombstone a
+  reviewer proposes: a durable per-ref generation checked inside every
+  write transaction is machinery for a window measured in channel
+  latency, the clear epoch stays the only durable generation, a deleted
+  session's pane releases on close, and a re-open of a deleted session
+  fails its read through the existing fence, which keeps the record
+  gone. An earlier draft of this spec refuted a per-ref tombstone as
+  over-building and claimed the sibling "learns of the deletion through
+  the fence on its next read" — that retraction is recorded because it
+  was wrong: a sibling tab holding the session open receives
+  `history/updated` pushes, not a rejected read, so the fence never
+  fires there and its continuously scheduled writes would resurrect the
+  record indefinitely, which is not the one-time residual the draft
+  claimed.
 - **The deletion fence** (`markThreadDeletedIfFenced` setting `deletedRefs`):
   deletes the ref's record, cancels its pending debounce timer, and
   publishes the same per-ref propagation — out-of-band deletions (another
@@ -458,6 +476,11 @@ involved.
   channel message that carries the epoch to sibling tabs is a latency
   optimization, not the guard — delivery can lag arbitrarily, and the
   in-transaction read is what makes a pre-clear write harmless.
+  A write transaction that observes a newer durable epoch also updates
+  the tab's in-memory epoch view, so a tab that has not yet received
+  the channel message learns the new epoch from storage on its next
+  aborted write and its next scheduled write carries the right one:
+  the message speeds the view up, but no lease waits on it.
 - Cross-tab: last write wins per ref. A tab holding only the window can
   replace a sibling's deeper record; the dropped pages simply re-fetch on
   a later reload. This design deliberately rejects a no-shrink comparison
@@ -491,15 +514,22 @@ mechanism), so a sibling tab's write that started before the clear cannot
 commit a record after it. The BroadcastChannel message (the crossTabSync
 pattern the tree already uses) carries the epoch so their scheduled
 writes drop the same way, and arms each sibling tab's suppression set
-for the refs it holds open — the same per-ref arming the deletion path
-uses — so a sibling still receiving `history/updated` pushes cannot
-re-persist its pre-clear pages under the new epoch either. The
-suppression is the fire-time gate above, not a UI state. It attaches to
-the
-refs open at clear time and ends with each one's final release: a ref
-deliberately re-opened afterwards establishes a fresh cache lease and
-caches again — that is the feature working, not the remedy failing —
-while the durable epoch still kills anything scheduled before the
+for the leases whose captured epoch predates the clear — the same
+per-ref arming the deletion path uses. A lease records the durable
+epoch its arming lookup observed (the load seam's capture), so the
+arming is exact: a ref still open across the clear captured an older
+epoch and is suppressed — a sibling still receiving `history/updated`
+pushes cannot re-persist its pre-clear pages under the new epoch
+either — while a ref closed before the clear and re-opened after its
+transaction committed captured the clear's own epoch and is a fresh
+lease by construction, not suppressed, so the re-open starts caching
+again even if the message has not arrived yet. The suppression is the
+fire-time gate above, not a UI state. It attaches to the leases a
+clear found open — those whose captured epoch is older — and ends with
+each one's final release: a ref deliberately re-opened afterwards
+establishes a fresh cache lease and caches again — that is the feature
+working, not the remedy failing — while the durable epoch still kills
+anything scheduled before the
 clear. Deletion is the storage adapter's own operation so a wedged
 open degrades to the unavailable state rather than a failed button. No
 per-session management and no cap slider; both are YAGNI until someone
@@ -544,8 +574,11 @@ output. Three facts bound the exposure:
   localStorage (`draftStorage.ts`), which is also unencrypted browser-local
   storage.
 - The cap bounds the footprint; a session deleted from this UI removes its
-  record on the spot; the deletion fence removes records a read proves
-  deleted; and the setting clears everything in one action.
+  record on the spot, and the per-ref propagation deletes a racing
+  sibling's resurrection the moment its message lands (a sibling that
+  dies in that window leaves the stated 14-day residual); the deletion
+  fence removes records a read proves deleted; and the setting clears
+  everything in one action.
 
 What the cache deliberately never holds: credentials (auth lives in the hub
 and the outbox's own rows), attachments, drafts, and the human-client
@@ -673,7 +706,12 @@ Store integration (`stores/threads.test.ts` additions and a new
     suppression gate; a write whose transaction runs after the clear's
     aborts itself on the in-transaction epoch read; a sibling tab armed
     by the clear's channel message refuses its next scheduled
-    `history/updated` write without a reload.
+    `history/updated` write without a reload, while a ref the sibling
+    closed before the clear and re-opened after its transaction
+    committed is not suppressed — its lease captured the clear's epoch —
+    and caches again; a deletion message received by a sibling holding
+    the ref open both suppresses its writes and deletes the record a
+    racing write re-created before the message arrived.
 15. Write gating: `failed` history writes nothing; an invalidated
     history — `invalidatedAtGeneration` set, with `awaited`,
     `pendingIncarnation`, and a deferred page present — writes nothing
