@@ -139,16 +139,18 @@ Native open-session rehydration also retains open status on failure, outside its
 initial-read retry loop. The server can repair a projection on a later read.
 
 **Evidence.** Browser
-[hydrateAndSubscribe](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1678),
-native [rehydrate](../../mobile/src/state/conversation.ts#L2372) and
+[hydrateAndSubscribe](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1818),
+native [rehydrate](../../mobile/src/state/conversation.ts#L2017) and
 [useReadRetry](../../mobile-native/src/session/useReadRetry.ts#L46), and server
-[recoverForRead](../../server/history_read.go#L85) expose the ownership gap.
+[recoverForRead](../../server/thread_history.go#L355) expose the ownership gap.
 Shared `reducer.history.test.ts` specifies that a later success clears history failure.
 
-**Discuss.** Keep the retained transcript and anchor while bounded safe rereads
-remain owned by the visible/needed session. Classify persistent damage separately
-and avoid expensive rebuild loops; preserving diagnostics need not prohibit a
-later health check.
+**Discuss.** Keep the retained transcript and anchor while paced automatic
+rereads remain owned by the visible/needed session. A server read can rebuild a
+failed projection, so deduplicate concurrent recovery and pace expensive rebuilds
+as well as network retries. Classify persistent source damage separately;
+preserving its diagnostic need not prohibit a later health check or justify
+discarding the recorded history.
 
 **Acceptance.** Fail an already-open transcript read, repair its backing
 condition, and leave the session idle. Content recovers without reopening or
