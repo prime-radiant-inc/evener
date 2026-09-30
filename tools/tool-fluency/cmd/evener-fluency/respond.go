@@ -17,22 +17,19 @@ import (
 // respondSystemPromptTemplate instructs the model to play the person the
 // task's person: block describes, from the brief alone, in their own voice.
 // Answer every question: a real eval run once saw the model reply to only
-// the first of two pending questions, so the instruction spells out the
-// numbered-reply shape explicitly and ties it to the numbering
-// renderQuestionsForRespond gives each question in the user turn.
+// the first of two pending questions, so the instruction asks for one entry
+// in answers per numbered question, in order; runRespond checks the count.
 const respondSystemPromptTemplate = `You are playing a specific person who a coding agent is asking questions. Answer only using the facts in the brief below, speaking in the person's own voice. Keep answers short -- a sentence or two per question.
 
-The user turn below lists every question, numbered. Answer every question, in that same order, as one short numbered answer per question matching its number exactly (for example: "1. ...\n2. ..."). Never skip a question or answer only the first one. If the brief does not cover what a question asks, answer that question's number with "I don't know."
+The user turn below lists every question, numbered. Answer every question: put one answer per question in the answers list, in the same order as the numbers, so the list has exactly as many entries as there are questions. Never skip a question or answer only the first one. If the brief does not cover what a question asks, that question's answer is "I don't know."
 
 Brief:
 %s`
 
 // askExchange is one logged question/answer pair (--log's JSON-lines
 // shape), read back by the harness into probeResult.Asks (readAskLog).
-// Answer is the person's whole reply to the round the question came in:
-// when one ask_user call carries several questions the reply answers them
-// all, numbered, and is not split, because cutting a model's reply at its
-// numbers is a guess.
+// Answer is the person's answer to that question alone: the model returns
+// one answer per question (respondAnswerSchema).
 type askExchange struct {
 	Question string `json:"question"`
 	Answer   string `json:"answer"`
@@ -42,7 +39,7 @@ type askExchange struct {
 // ask_user questions as JSON from stdin (the same shape evener run's
 // --ask-responder writes: {"questions": [agent.AskUserQuestion, ...]}),
 // answers them with one model call playing the person described by
-// --brief-file, prints the answer, and — when --log is given — appends one
+// --brief-file, prints the answers numbered, and — when --log is given — appends one
 // JSON line per question, pairing it with the answer, so the harness can
 // record every question/answer pair in the run's result.json.
 func runRespond(args []string) error {
@@ -79,29 +76,40 @@ func runRespond(args []string) error {
 
 	system := fmt.Sprintf(respondSystemPromptTemplate, strings.TrimSpace(string(brief)))
 	user := renderQuestionsForRespond(payload.Questions)
-	answer, err := respondModelCall(context.Background(), *model, system, user)
+	answers, err := respondModelCall(context.Background(), *model, system, user)
 	if err != nil {
 		return fmt.Errorf("respond: %w", err)
 	}
-	answer = strings.TrimSpace(answer)
-	if answer == "" {
-		return errors.New("respond: model returned an empty answer")
+	if len(answers) != len(payload.Questions) {
+		return fmt.Errorf("respond: model returned %d answers for %d questions", len(answers), len(payload.Questions))
+	}
+	var reply strings.Builder
+	for i, a := range answers {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			return fmt.Errorf("respond: model returned an empty answer to question %d", i+1)
+		}
+		answers[i] = a
+		if i > 0 {
+			reply.WriteByte('\n')
+		}
+		fmt.Fprintf(&reply, "%d. %s", i+1, a)
 	}
 
 	if strings.TrimSpace(*logFile) != "" {
-		if err := appendAskLog(*logFile, payload.Questions, answer); err != nil {
+		if err := appendAskLog(*logFile, payload.Questions, answers); err != nil {
 			return fmt.Errorf("respond: log question/answer: %w", err)
 		}
 	}
-	fmt.Println(answer)
+	fmt.Println(reply.String())
 	return nil
 }
 
 // renderQuestionsForRespond renders the pending questions as plain text for
-// the model's user turn, numbered "1.", "2.", ... unambiguously — the same
-// numbers the system prompt tells the model to echo back, one answer per
-// question, so a multi-question round can't collapse into an answer for
-// only the first one.
+// the model's user turn, numbered "1.", "2.", ... unambiguously — the order
+// the system prompt tells the model to follow in its answers list, one
+// answer per question, so a multi-question round can't collapse into an
+// answer for only the first one.
 func renderQuestionsForRespond(questions []agent.AskUserQuestion) string {
 	var b strings.Builder
 	for i, q := range questions {
@@ -125,14 +133,14 @@ func renderQuestionsForRespond(questions []agent.AskUserQuestion) string {
 // appendAskLog appends one JSON line per question in questions, each paired
 // with the same answer (respond makes one model call per invocation,
 // covering every question that round posted).
-func appendAskLog(path string, questions []agent.AskUserQuestion, answer string) error {
+func appendAskLog(path string, questions []agent.AskUserQuestion, answers []string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close() //nolint:errcheck
-	for _, q := range questions {
-		line, err := json.Marshal(askExchange{Question: q.Question, Answer: answer})
+	for i, q := range questions {
+		line, err := json.Marshal(askExchange{Question: q.Question, Answer: answers[i]})
 		if err != nil {
 			return err
 		}
@@ -173,9 +181,9 @@ func respondAnswerSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"answer": map[string]any{"type": "string"},
+			"answers": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		},
-		"required": []string{"answer"},
+		"required": []string{"answers"},
 	}
 }
 
@@ -189,14 +197,14 @@ var respondModelCall = callRespondModel
 // does (splitModelRef) and asks it, through the harness's own client
 // loader (runnerLoadClient — never a key on the command line), for a single
 // JSON {"answer": "..."} object.
-func callRespondModel(ctx context.Context, modelRef, systemPrompt, userPrompt string) (string, error) {
+func callRespondModel(ctx context.Context, modelRef, systemPrompt, userPrompt string) ([]string, error) {
 	providerName, modelName, err := splitModelRef(modelRef)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	client, err := runnerLoadClient("")
 	if err != nil {
-		return "", fmt.Errorf("LLM client setup: %w", err)
+		return nil, fmt.Errorf("LLM client setup: %w", err)
 	}
 	system := systemPrompt
 	user := userPrompt
@@ -209,9 +217,14 @@ func callRespondModel(ctx context.Context, modelRef, systemPrompt, userPrompt st
 		Schema:   respondAnswerSchema(),
 	})
 	if err != nil {
-		return "", fmt.Errorf("model call: %w", err)
+		return nil, fmt.Errorf("model call: %w", err)
 	}
+	// The schema validated the shape: answers is an array of strings.
 	obj, _ := res.Output.(map[string]any)
-	answer, _ := obj["answer"].(string)
-	return answer, nil
+	raw, _ := obj["answers"].([]any)
+	answers := make([]string, len(raw))
+	for i, a := range raw {
+		answers[i], _ = a.(string)
+	}
+	return answers, nil
 }

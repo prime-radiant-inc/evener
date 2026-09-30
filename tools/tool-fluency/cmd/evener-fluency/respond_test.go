@@ -13,13 +13,13 @@ import (
 )
 
 // respondFakeAdapter is a minimal llm.ProviderAdapter that answers every
-// Complete call with a fixed JSON {"answer": ...} object, matching
+// Complete call with a fixed JSON {"answers": [...]} object, matching
 // respondAnswerSchema, so callRespondModel's real GenerateObject call runs
 // against a fake only at the LLM boundary (AGENTS.md's testing-boundary
 // rule), never a live request.
 type respondFakeAdapter struct {
-	name   string
-	answer string
+	name    string
+	answers []string
 	// requests records every request this adapter completed, so a test can
 	// assert on what respond actually sent the model.
 	requests []llm.Request
@@ -29,7 +29,7 @@ func (a *respondFakeAdapter) Name() string { return a.name }
 
 func (a *respondFakeAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
 	a.requests = append(a.requests, req)
-	body, _ := json.Marshal(map[string]string{"answer": a.answer})
+	body, _ := json.Marshal(map[string][]string{"answers": a.answers})
 	return llm.Response{
 		Message: llm.Assistant(string(body)),
 		Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
@@ -53,10 +53,10 @@ func installRespondFakeAdapter(t *testing.T, adapter *respondFakeAdapter) {
 }
 
 // TestRunRespondAnswersFromBriefWithFakeModel: respond reads the brief file
-// and the questions JSON on stdin, calls the model once, prints its answer,
-// and logs the question/answer pair to --log.
+// and the questions JSON on stdin, calls the model once, prints its answer
+// numbered, and logs the question/answer pair to --log.
 func TestRunRespondAnswersFromBriefWithFakeModel(t *testing.T) {
-	adapter := &respondFakeAdapter{name: "fakeprovider", answer: "The launch date is fixed at March 3rd."}
+	adapter := &respondFakeAdapter{name: "fakeprovider", answers: []string{"The launch date is fixed at March 3rd."}}
 	installRespondFakeAdapter(t, adapter)
 
 	dir := t.TempDir()
@@ -83,7 +83,7 @@ func TestRunRespondAnswersFromBriefWithFakeModel(t *testing.T) {
 	stdout := captureStdout(t, func() error {
 		return run([]string{"respond", "--brief-file", briefPath, "--model", "fakeprovider/fake-model", "--log", logPath})
 	})
-	if got := strings.TrimSpace(stdout); got != "The launch date is fixed at March 3rd." {
+	if got := strings.TrimSpace(stdout); got != "1. The launch date is fixed at March 3rd." {
 		t.Fatalf("stdout = %q, want the model's answer", got)
 	}
 
@@ -126,12 +126,13 @@ func TestRunRespondAnswersFromBriefWithFakeModel(t *testing.T) {
 // the model to answer every one of them, in order, one numbered answer
 // per question — a real eval run saw the model answer only the first of
 // two questions ("What is the new name?" / "Which records should carry
-// the new name?"), replying with just the new name. The logged
-// question/answer pairs still map every question to the model's one full
-// reply (respond makes a single call covering the whole round).
+// the new name?"), replying with just the new name. The model returns one
+// answer per question; the reply is those answers numbered, and each logged
+// pair carries its own question's answer.
 func TestRunRespondPromptListsAllQuestionsNumbered(t *testing.T) {
+	answers := []string{"Acme Robotics Ltd", "Leave invoices unchanged, per the brief."}
 	const fullReply = "1. Acme Robotics Ltd\n2. Leave invoices unchanged, per the brief."
-	adapter := &respondFakeAdapter{name: "fakeprovider", answer: fullReply}
+	adapter := &respondFakeAdapter{name: "fakeprovider", answers: answers}
 	installRespondFakeAdapter(t, adapter)
 
 	dir := t.TempDir()
@@ -205,9 +206,45 @@ func TestRunRespondPromptListsAllQuestionsNumbered(t *testing.T) {
 		if logged.Question != wantQuestions[i] {
 			t.Errorf("log line %d question = %q, want %q", i, logged.Question, wantQuestions[i])
 		}
-		if logged.Answer != fullReply {
-			t.Errorf("log line %d answer = %q, want the full reply %q", i, logged.Answer, fullReply)
+		if logged.Answer != answers[i] {
+			t.Errorf("log line %d answer = %q, want %q", i, logged.Answer, answers[i])
 		}
+	}
+}
+
+// TestRunRespondRefusesWrongAnswerCount: a model that returns fewer answers
+// than questions has skipped one, so respond fails loudly instead of
+// replying with a partial answer or logging a question as answered.
+func TestRunRespondRefusesWrongAnswerCount(t *testing.T) {
+	adapter := &respondFakeAdapter{name: "fakeprovider", answers: []string{"Acme Robotics Ltd"}}
+	installRespondFakeAdapter(t, adapter)
+
+	dir := t.TempDir()
+	briefPath := filepath.Join(dir, "brief.txt")
+	if err := os.WriteFile(briefPath, []byte("You are Alex."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "asks.jsonl")
+	stdin := `{"questions":[{"question":"What is the new name?"},{"question":"Which records change?"}]}`
+
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	go func() {
+		defer w.Close()
+		w.WriteString(stdin)
+	}()
+
+	err = run([]string{"respond", "--brief-file", briefPath, "--model", "fakeprovider/fake-model", "--log", logPath})
+	if err == nil || !strings.Contains(err.Error(), "1 answers for 2 questions") {
+		t.Fatalf("err = %v, want a refusal naming 1 answers for 2 questions", err)
+	}
+	if _, statErr := os.Stat(logPath); statErr == nil {
+		t.Fatal("a refused round wrote the ask log")
 	}
 }
 
