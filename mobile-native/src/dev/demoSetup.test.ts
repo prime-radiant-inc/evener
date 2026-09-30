@@ -125,6 +125,11 @@ describe("providers", () => {
 		expect(statuses.find((status) => status.provider === "codex-jesse-fsck.com")?.needsLogin).toBe(true);
 		expect(statuses.filter((status) => status.needsLogin)).toHaveLength(1);
 	});
+
+	it("names the account a signed-in provider uses", () => {
+		const statuses = setup().answer("evener/auth/list", {}).providers;
+		expect(statuses.find((status) => status.provider === "codex-jesse-at-pr")?.email).toBe("jesse@example.com");
+	});
 });
 
 // The hub's notices (S11), as cmd/evener-hub/app_notices.go derives them: a

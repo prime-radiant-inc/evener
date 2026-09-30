@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
-import { authByProvider, providerStatus, signInKind, statusOf } from "./providerStatus";
+import { authByProvider, providerStatus, signedInAccount, signInKind, statusOf } from "./providerStatus";
 
 type Facts = Pick<InstanceEntry, "activeSource" | "authModes" | "credentialRequired">;
 const instance = (over: Partial<Facts>): Facts => ({
@@ -55,4 +55,14 @@ it("says nothing of an account sign-in until the hub's statuses have been read",
 	// A key's state is on the row itself.
 	const key = { ...instance({ activeSource: "store", authModes: ["apiKey"] }), name: "lunaroute" };
 	expect(statusOf(key, null)).toEqual({ word: "Key set", tone: "ink" });
+});
+
+// The account a provider signs in with (settings audit M5): the hub's live
+// status first, then the account its stored sign-in names.
+it("names the signed-in account, from the live status first, then the stored sign-in", () => {
+	expect(signedInAccount({}, { email: "jesse@example.com", storedEmail: "old@example.com" })).toBe("jesse@example.com");
+	expect(signedInAccount({}, { storedEmail: "old@example.com" })).toBe("old@example.com");
+	expect(signedInAccount({ storedEmail: "row@example.com" }, undefined)).toBe("row@example.com");
+	expect(signedInAccount({ storedEmail: " " }, { email: "" })).toBeNull();
+	expect(signedInAccount({}, undefined)).toBeNull();
 });

@@ -1282,6 +1282,26 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	expect(hasControl(tree, "Status, No key")).toBe(true);
 });
 
+// The account an account sign-in uses (settings audit M5): the hub's status
+// names it; a key has none, so no row.
+it("names the account a provider is signed in with", async () => {
+	providersHub(
+		[
+			instance({ name: "codex", activeSource: "oauth", authModes: ["oauth"], hasStoredOAuth: true }),
+			instance({ name: "lunaroute", isDefault: false, authModes: ["apiKey"], hasStoredFile: true }),
+		],
+		[{ provider: "codex", email: "jesse@example.com", signedIn: true } as AuthStatusResponse],
+	);
+	const { tree } = mountPage();
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("codex,"));
+	await act(async () => {});
+	expect(hasControl(tree, "Account, jesse@example.com")).toBe(true);
+	press(tree, (label) => label.startsWith("lunaroute,"));
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Account");
+});
+
 it("replaces a key in place, saving it against the endpoint the row was read from", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
 	fake.on("evener/auth/apiKey/set", () => ({ provider: "work", activeSource: "store" }) as never);
