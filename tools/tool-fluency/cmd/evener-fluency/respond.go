@@ -94,8 +94,6 @@ func runRespond(args []string) error {
 }
 
 // renderQuestionsForRespond renders the pending questions as plain text for
-// the model's user turn, options and details included.
-// renderQuestionsForRespond renders the pending questions as plain text for
 // the model's user turn, numbered "1.", "2.", ... unambiguously — the same
 // numbers the system prompt tells the model to echo back, one answer per
 // question, so a multi-question round can't collapse into an answer for

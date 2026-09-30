@@ -391,9 +391,9 @@ type AskUserQuestion struct {
 	Options  []AskUserOption `json:"options,omitempty"`
 }
 
-// ParseAskUserCallArguments parses one ask_user tool call's raw arguments —
-// exactly as events.ToolCallStartData.ArgumentsJSON captures them, before
-// any repair or normalization — into its full questions, including each
+// ParseAskUserCallArguments parses one ask_user call's arguments, as the
+// session records them for PendingAskArguments (already normalized; parsing
+// them again is a no-op), into its full questions, including each
 // option's detail text. It accepts both the batch ("questions") and
 // shorthand ("question"+"options") forms via normalizeAskArgs, the same
 // normalization the live tool call goes through, and applies

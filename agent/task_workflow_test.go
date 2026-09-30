@@ -359,6 +359,40 @@ func TestTaskWorkflow_RootSessionPopulatesTasks(t *testing.T) {
 	}
 }
 
+func TestTaskWorkflow_OneShotRunWithAskResponderPopulatesTasks(t *testing.T) {
+	t.Parallel()
+	// `evener run --ask-responder` is interactive (ask_user is registered) but
+	// still a one-shot run, so the agent's default tasks must be populated
+	// exactly as they are for the same run without a responder.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
+		AgentName:       "coordinator",
+		NonInteractive:  false,
+		TurnEndsProcess: true,
+		StateDir:        dir,
+	}))
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	tasks := sess.getOrCreateTaskStore().View()
+	if len(tasks) == 0 {
+		t.Fatal("one-shot run with an ask responder should have tasks populated")
+	}
+	if tasks[0].Description != "Plan" {
+		t.Errorf("first task = %q, want Plan", tasks[0].Description)
+	}
+}
+
 func TestTaskWorkflow_DefaultRootSessionDoesNotPopulateTasks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

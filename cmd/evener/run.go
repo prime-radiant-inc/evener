@@ -342,7 +342,8 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	// --ask-responder is the only thing that makes a one-shot `evener run`
 	// interactive: with no responder there is nobody to answer, so ask_user
-	// stays unregistered and behavior is exactly as before this flag existed.
+	// stays unregistered. The session still counts as a one-shot run
+	// (TurnEndsProcess), so an agent's default tasks populate either way.
 	if cfg.askResponder != "" {
 		baseSessionCfg.NonInteractive = false
 	}
