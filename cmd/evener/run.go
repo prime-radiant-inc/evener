@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/syncio"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/plugins"
@@ -61,6 +62,7 @@ type runConfig struct {
 	sandboxMode                 string        // --sandbox mode name (default "off")
 	sandboxNet                  string        // --sandbox-net on|off
 	apiLog                      string        // --api-log on|off (default off)
+	askResponder                string        // --ask-responder command; non-empty makes the session interactive
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -101,6 +103,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
 		return err
 	}
+	if err := rejectAskResponderWithResume(cfg.askResponder, cfg.resume, cfg.resumeWith, cfg.resumeLast); err != nil {
+		return err
+	}
 	if cfg.runTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, cfg.runTimeout)
@@ -113,6 +118,13 @@ func run(ctx context.Context, cfg runConfig) error {
 	if cfg.stderr == nil {
 		cfg.stderr = os.Stderr
 	}
+	// Wrapped once here, before anything can write to it: the event-drain
+	// goroutine (drainEventsHuman/drainEventsVerbose, started below) and the
+	// --ask-responder loop's own stderr logging (runAskResponderLoop) both
+	// write to cfg.stderr from different goroutines. Every read of
+	// cfg.stderr after this point — including the closures captured
+	// below — sees the synchronized writer.
+	cfg.stderr = syncio.NewWriter(cfg.stderr)
 	if cfg.workDir == "" {
 		wd, err := runGetwd()
 		if err != nil {
@@ -328,6 +340,13 @@ func run(ctx context.Context, cfg runConfig) error {
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
+	// --ask-responder is the only thing that makes a one-shot `evener run`
+	// interactive: with no responder there is nobody to answer, so ask_user
+	// stays unregistered. The session still counts as a one-shot run
+	// (TurnEndsProcess), so an agent's default tasks populate either way.
+	if cfg.askResponder != "" {
+		baseSessionCfg.NonInteractive = false
+	}
 	if cfg.maxSubagentDepth >= 0 {
 		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
 	}
@@ -429,6 +448,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 
 	result, err := runProcessInput(sess, ctx, prompt)
+	if err == nil && cfg.askResponder != "" {
+		result, err = runAskResponderLoop(ctx, sess, cfg, result)
+	}
 	if err == nil {
 		// Drain every session-owned managed job before Close() SIGKILLs it: keep
 		// re-driving the coordinator on job completions until the job tree is

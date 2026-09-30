@@ -9,6 +9,8 @@ used by Evener's root, agent, and LLM modules:
 - `orphanpipe` handles subprocess pipe-drain results, with test fixtures in
   `orphanpipe/orphanpipetest`.
 - `shellquote` renders POSIX shell words.
+- `syncio` wraps an io.Writer so concurrent writes from different goroutines
+  serialize onto it instead of racing.
 
 The module depends only on the standard library and `golang.org/x/sync`. It
 does not import application packages, `agent`, `llm`, `envvars`, AppWire, or
