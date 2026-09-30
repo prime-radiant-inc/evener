@@ -106,6 +106,12 @@ type MessageSearch struct {
 	// captures the session's generation before the read and apply refuses to
 	// write unless the generation is still the one it captured, so a
 	// concurrent Forget is never undone by a read that started before it.
+	// An entry stays for the hub's lifetime, one per forgotten session. That
+	// growth is accepted rather than pruned: pruning an entry is safe only
+	// once no in-flight read can still hold its old generation, which would
+	// mean tracking every read in flight, and each entry is one session ID
+	// and an int64. The count is bounded by the sessions the hub has ever
+	// forgotten.
 	forgetGen map[string]int64
 }
 
