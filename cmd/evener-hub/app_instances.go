@@ -2262,7 +2262,7 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 	if _, ok := reg.Instance(name); !ok {
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	return fetchInstanceLive(ctx, c.reg, name)
+	return fetchInstanceLive(ctx, c.reg, c.auth, name)
 }
 
 // writeAndReload persists a mutated layer and reloads the registry: the

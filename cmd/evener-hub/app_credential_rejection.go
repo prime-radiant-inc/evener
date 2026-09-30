@@ -14,7 +14,8 @@ import (
 // credential itself: an HTTP 401 or 403, or an llm authentication or
 // access-denied failure. It is the one rule for what "rejected" means: the
 // credential test's classifier uses it, and so does settleCredentialProbe,
-// through which every probe outcome is recorded. Rate
+// through which every probe outcome is recorded (Test connection, and the
+// hub's own model listings). Rate
 // limits and quota (429), server errors, timeouts, network failures, a missing
 // endpoint and local configuration errors are not rejections: they say nothing
 // about whether the credential is good. status is the HTTP status when one is
@@ -100,10 +101,16 @@ type credentialProbeStart struct {
 	writes   uint64
 }
 
-// beginCredentialProbe captures name's probe start. It resolves the
-// configuration revision, so the caller must not hold credMu
-// (currentCredentialRevision).
+// beginCredentialProbe captures name's probe start. A probe begins before
+// anything reads the credential it sends (the client is built after), so a
+// write that lands in between voids it. It resolves the configuration
+// revision, so the caller must not hold credMu (currentCredentialRevision).
+// A nil controller begins a probe that settles to nothing, for a caller with
+// no hub credential state to feed.
 func (c *hubAuthController) beginCredentialProbe(name string) credentialProbeStart {
+	if c == nil {
+		return credentialProbeStart{}
+	}
 	revision := c.currentCredentialRevision(name)
 	c.rejections.mu.Lock()
 	defer c.rejections.mu.Unlock()
@@ -143,6 +150,9 @@ func (c *hubAuthController) currentCredentialRevision(name string) string {
 // credential, or the hub could not resolve its fingerprint key and the
 // rejection could not tell the configuration it was about from any other.
 func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) {
+	if c == nil {
+		return
+	}
 	status, rejected := credentialRejectionStatus(err)
 	verified := err == nil && listing.Live
 	if (!rejected && !verified) || start.revision == "" {
