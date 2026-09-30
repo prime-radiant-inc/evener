@@ -133,6 +133,9 @@ test("shell jobs attach to their actual owner and preserve output/action targets
     [activityRef, undefined, `job:${JSON.stringify([activityRef, "same"])}`],
   ]);
   expect(projected.tree.root.entries[0]).toMatchObject({ delegate: { child: { sessionId: "child-id" } } });
+  expect(projected.tree.root.entries[0]).toMatchObject({
+    delegate: { ownerSessionId: "session", rootSessionId: "session", childSessionId: "child-id" },
+  });
 });
 test("retained unavailable runtime preserves optional failure/model/usage/worktree facts", () => {
   const row = {

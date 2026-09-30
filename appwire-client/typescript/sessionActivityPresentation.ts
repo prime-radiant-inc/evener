@@ -108,17 +108,19 @@ export function projectSessionActivity(snapshot: SessionActivitySnapshot): Sessi
           ? session(row.ownerRef)
           : root;
     if (owner === root && row.ownerRef !== context.ref) orphaned = true;
-    if (owner.ref === row.ownerRef) owner.sessionId = row.ownerSessionId;
+    if (owner.ref === row.ownerRef && !owner.sessionId) owner.sessionId = row.ownerSessionId;
     owner.entries.push({ kind: "shell", job: { ...row } });
   }
   for (const row of delegates.rows) {
+    const delegate = projected.get(row);
+    if (!delegate) continue;
+    const ownerSessionId = nodes.get(row.ownerRef)?.sessionId;
+    if (ownerSessionId) delegate.ownerSessionId = ownerSessionId;
+    if (row.rootRef === context.ref) delegate.rootSessionId = context.sessionId;
     const child = nodes.get(row.childRef);
     if (child && child !== root && child.entries.length > 0 && !cyclic(row)) {
-      const delegate = projected.get(row);
-      if (delegate) {
-        delegate.child = child;
-        if (child.sessionId) delegate.childSessionId = child.sessionId;
-      }
+      delegate.child = child;
+      if (child.sessionId) delegate.childSessionId = child.sessionId;
     }
   }
   result.complete &&= !orphaned && context.ancestryKnown;
