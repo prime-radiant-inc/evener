@@ -117,6 +117,13 @@ func run(ctx context.Context, cfg runConfig) error {
 	if cfg.stderr == nil {
 		cfg.stderr = os.Stderr
 	}
+	// Wrapped once here, before anything can write to it: the event-drain
+	// goroutine (drainEventsHuman/drainEventsVerbose, started below) and the
+	// --ask-responder loop's own stderr logging (runAskResponderLoop) both
+	// write to cfg.stderr from different goroutines. Every read of
+	// cfg.stderr after this point — including the closures captured
+	// below — sees the synchronized writer.
+	cfg.stderr = newSyncWriter(cfg.stderr)
 	if cfg.workDir == "" {
 		wd, err := runGetwd()
 		if err != nil {
