@@ -43,7 +43,7 @@ export class SessionControls {
 	private disposed = false;
 	// Counts catalog reads (a refresh or a load), so a refresh publishes only
 	// when no newer read has started.
-	private refreshes = 0;
+	private catalogReads = 0;
 	constructor(
 		private service: Pick<ConversationService, Exclude<Operation, "forceStop" | "resume">> &
 			ConversationRecoveryActions &
@@ -114,7 +114,7 @@ export class SessionControls {
 	async loadModels() {
 		if (this.disposed || !this.isCurrent() || this.state.loadingModels || this.state.pending) return;
 		// A load is the newest read: a refresh still out answers older.
-		this.refreshes++;
+		this.catalogReads++;
 		this.publish({ loadingModels: true, modelError: null });
 		try {
 			const catalog = await this.service.models();
@@ -141,10 +141,10 @@ export class SessionControls {
 	 * newest read's catalog is the one that stays. */
 	async refreshModels() {
 		if (this.disposed || !this.isCurrent() || !this.state.catalog || this.state.loadingModels) return;
-		const read = ++this.refreshes;
+		const read = ++this.catalogReads;
 		try {
 			const catalog = await this.service.models();
-			if (!this.disposed && read === this.refreshes && this.isCurrent()) this.publish({ catalog });
+			if (!this.disposed && read === this.catalogReads && this.isCurrent()) this.publish({ catalog });
 		} catch {
 			// A failed refresh keeps the catalog on screen.
 		}

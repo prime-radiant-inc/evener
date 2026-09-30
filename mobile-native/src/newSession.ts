@@ -127,6 +127,11 @@ export function startedSetup(form: {
 	return setupOf({ ...form, model, reasoning });
 }
 
+/** Reads the model list for a host, scoped to the project when one is named. */
+function readModels(service: NewSessionService, source: string, cwd: string) {
+	return service.models(cwd.trim() ? { cwd: cwd.trim() } : {}, source);
+}
+
 /** The per-launch overrides without a model or effort of their own: the
  * form's model and effort are the choice, so a stale override can never
  * quietly outrank one the person just made or applied. */
@@ -370,7 +375,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			});
 			if (!current) return;
 			try {
-				const result = await current.models(cwd.trim() ? { cwd: cwd.trim() } : {}, source);
+				const result = await readModels(current, source, cwd);
 				if (generation === catalog) {
 					loadedContext = context;
 					listModels(result, selection, reasoning);
@@ -396,7 +401,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			if (!current || loadedContext !== modelContext(source, cwd) || get().loadingModels || get().submitting) return;
 			const generation = ++catalog;
 			try {
-				const result = await current.models(cwd.trim() ? { cwd: cwd.trim() } : {}, source);
+				const result = await readModels(current, source, cwd);
 				if (generation === catalog && !get().submitting) listModels(result, get().model, get().reasoning);
 			} catch {
 				// A failed refresh keeps the list the hub last served.
