@@ -62,7 +62,9 @@ async function hubOpenAt(pages: string[]) {
 	);
 	await act(async () => {});
 	const [first, ...rest] = pages;
-	await act(async () => navigation.current?.navigate("Hub", { screen: first, params: { hubId: "hub-1" }, initial: false }));
+	await act(async () =>
+		navigation.current?.navigate("Hub", { screen: first, params: { hubId: "hub-1" }, initial: false }),
+	);
 	for (const page of rest) {
 		await act(async () => navigation.current?.navigate("Hub", { screen: page, params: { name: "x" } }));
 	}
