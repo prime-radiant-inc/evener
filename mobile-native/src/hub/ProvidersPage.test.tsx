@@ -1567,6 +1567,7 @@ it("says nothing of an unsaved edit when the provider leaves after a Cancel", as
 	press(tree, (label) => label === "Cancel");
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(detailParams()).toMatchObject({ name: "work" });
 	await workLeavesList(fake);
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
 	expect(detailParams()).toBeNull();
