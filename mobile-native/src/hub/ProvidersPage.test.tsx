@@ -1554,10 +1554,9 @@ it("clears an unsaved-edit notice when Add opens", async () => {
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
 });
 
-// Only an edit its provider left behind says it wasn't saved: a cancelled
-// edit and a saved one say nothing of the kind.
-// A closed edit holds no draft, so the provider leaving afterwards has
-// nothing unsaved to report.
+// Only an edit its provider left behind says it wasn't saved: a cancelled or
+// saved edit holds no draft, so the provider leaving afterwards has nothing
+// unsaved to report.
 it("says nothing of an unsaved edit when the provider leaves after a Cancel", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
 	const { tree } = mountPage();
