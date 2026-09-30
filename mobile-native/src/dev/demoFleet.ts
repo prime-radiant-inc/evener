@@ -1020,7 +1020,7 @@ export interface DemoFleet extends FleetAnswers {
 	// root for any other fleet session (demoSubagents.ts).
 	answerJobsList(params: { ref?: string; continuation?: string }): { data: unknown };
 	// Answers evener/jobs/output: a listed shell job's tail (demoSubagents.ts),
-	// found in whichever fleet session's tree holds it.
+	// only for the session that owns it (its ownerRef), as a hub answers.
 	answerJobsOutput(params: { ref?: string; jobId: string }): { data: unknown };
 }
 
