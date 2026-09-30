@@ -94,7 +94,6 @@ interface CachedSessionRecord {
   imageSessionId?: string;   // sha-addressed image fallbacks rebuild from it
   olderCursor?: string;      // where scroll-back continues from
   savedAt: number;
-  bytes: number;             // serialized encoded length, for the cap
   history: {
     bootGeneration: string;
     epoch: number;
@@ -247,6 +246,20 @@ it fires. The gates:
 - the ref's shell flag is clear (the shell skip, above),
 - the ref is not in `deletedRefs` (the deletion fence, re-checked at fire
   time),
+- the ref is not in the clear-suppression set (a ref a clear suppressed:
+  re-checked at fire time, ended only by the ref's final release, so a
+  pane still open across a clear cannot re-persist its pre-clear content
+  under the new epoch — a deliberate re-open establishes the fresh lease
+  the clear section defines),
+- the history is live: `invalidatedAtGeneration` is unset, the one marker
+  whose presence means the next latest-window response replaces rather
+  than merges (the same single-field test the reducer's own liveness
+  check makes). The markers travel together — the reducer's invalidation
+  entry sets `invalidatedAtGeneration`, `awaited`, and `pendingIncarnation`
+  as one unit, and its deferred pages accumulate only inside that state —
+  so an invalidated, reconnect-resyncing, or identity-awaiting history is
+  never persisted until the resync read settles it. A settled-but-stale
+  pair is ordinary cache content; a mid-transition one is not,
 - `history.failed` is unset.
 
 The subscription sees every publication, so a `history/updated` that grows
@@ -313,6 +326,15 @@ where the last session left off: the pages the user already read are never
 requested again, on reload or after a reconnect re-read. A cursor the server
 no longer honors answers with `TranscriptItemCursorStale`; the existing
 refresh path replaces the window and the cursor with it.
+
+The shell qualifies that with one rule: while the shell flag is set — the
+first authoritative read still pending — `loadOlderTurns` is disabled.
+Paging below a shell the gap rule is about to replace races that
+replacement, and the reconciled window owns the cursor afterwards: a
+merge keeps the deepest held cursor by the existing rule above, a
+replacement takes the response's. Scroll-back therefore waits for
+whichever window wins and never fetches against a cursor that is about
+to be discarded.
 
 ### The two serving paths, the live gap, and its rule
 
@@ -395,8 +417,11 @@ involved.
   page-boundary metadata — machinery for a rare case whose accepted cost
   is one session keeping today's behavior. Without this rule a
   monster record would evict every neighbor forever and still not fit.
-  `bytes` is the serialized record's encoded length — the exact length
-  the write stores, and what the cap counts. The cap bounds payload
+  The meta row's `bytes` is the encoded length of the stored record, and
+  the record body carries no `bytes` field of its own: a length stored
+  inside the body it measures cannot be exact, because its own digits
+  change the body's length. The cap and the oversize rule both count the
+  meta row's value, exact by construction. The cap bounds payload
   bytes; IndexedDB's structural overhead rides above it and is bounded,
   finally, by the browser quota and the clear action.
 - Records expire `SESSION_CACHE_TTL_DAYS = 14` after their last write
@@ -413,13 +438,26 @@ involved.
   anyway.
 - Every removal — a delete, an expiry, an eviction, an oversize skip —
   removes the `records` row and its `meta` row in the same transaction, so
-  accounting never leaks a deleted record's bytes, and the cap's
-  enumeration skips the reserved epoch key so the epoch row is never
-  evicted or double-counted.
-- The cap is enforced atomically per write: the enumeration of the `meta`
-  store's rows, the insert, and any evictions run in one read-write
-  IndexedDB transaction, which the database serializes across tabs, so no
-  writer evicts against a stale total.
+  accounting never leaks a deleted record's bytes, and both the cap's
+  and the expiry's enumerations skip the reserved epoch key. That row is
+  not a record's meta row and carries no `savedAt`, so the epoch is
+  exempt from expiry by construction: a 14-day-old clear still kills
+  writes scheduled before it, and the epoch is never evicted or
+  double-counted.
+- The cap is enforced atomically per write, and the clear epoch is
+  verified in the same transaction: the durable epoch read, the expiry
+  deletions, the enumeration of the `meta` store's rows, the insert, and
+  any evictions run in one read-write IndexedDB transaction. A write
+  carries the epoch it was scheduled under and aborts — writing nothing —
+  when that transaction observes a newer one. IndexedDB serializes
+  read-write transactions on the same stores, so the interleaving has
+  exactly two orders: a write transaction that runs after the clear's
+  reads the incremented epoch and aborts, and one that runs before it has
+  its records deleted by the clear's own sweep. No scheduled write can
+  commit a record after the clear, whatever the in-memory timing. The
+  channel message that carries the epoch to sibling tabs is a latency
+  optimization, not the guard — delivery can lag arbitrarily, and the
+  in-transaction read is what makes a pre-clear write harmless.
 - Cross-tab: last write wins per ref. A tab holding only the window can
   replace a sibling's deeper record; the dropped pages simply re-fetch on
   a later reload. This design deliberately rejects a no-shrink comparison
@@ -438,15 +476,26 @@ the privacy remedy cannot silently claim to have worked), or **cleared**.
 The clear is durable against racing writers, in the only order that
 works, since in-memory timer state cannot commit transactionally:
 first, synchronously and in memory, bump the local epoch view, arm the
-suppression, and cancel every pending debounce timer — a write scheduled
-after this moment already sees the new epoch and skips; then one
-read-write transaction deletes every record and increments the durable
-clear epoch held in the store's `meta` row. Every write transaction
-carries the epoch it was scheduled under and skips itself when it sees
-a newer one — so a sibling tab's write that started before the clear
-cannot commit a record after it, and the BroadcastChannel message (the
-crossTabSync pattern the tree already uses) carries the epoch so their
-scheduled writes drop the same way. The suppression attaches to the
+suppression, and cancel every pending debounce timer. A write scheduled
+before this moment dies by the timer cancellation if it has not yet
+fired, by the in-transaction epoch check if it fired but its transaction
+is still to run, or by the suppression gate if its callback is racing
+this synchronous step; a write scheduled after it carries the new
+epoch, so the gate that stops it is the suppression one. Then one
+read-write transaction deletes every record — including anything the
+race let slip through and commit — and increments the durable clear
+epoch held in the store's `meta` row. Every write transaction
+carries the epoch it was scheduled under and aborts when its own
+transaction reads a newer one (the eviction section defines the
+mechanism), so a sibling tab's write that started before the clear cannot
+commit a record after it. The BroadcastChannel message (the crossTabSync
+pattern the tree already uses) carries the epoch so their scheduled
+writes drop the same way, and arms each sibling tab's suppression set
+for the refs it holds open — the same per-ref arming the deletion path
+uses — so a sibling still receiving `history/updated` pushes cannot
+re-persist its pre-clear pages under the new epoch either. The
+suppression is the fire-time gate above, not a UI state. It attaches to
+the
 refs open at clear time and ends with each one's final release: a ref
 deliberately re-opened afterwards establishes a fresh cache lease and
 caches again — that is the feature working, not the remedy failing —
@@ -526,7 +575,8 @@ test touches the network or sleeps
 Adapter (new `stores/sessionCacheIndexedDB.ts`):
 
 1. Round-trip: a write is readable with identical history and identity;
-   `bytes`/`savedAt` update; a second write for the same ref replaces.
+   the meta row's `bytes`/`savedAt` update; a second write for the same
+   ref replaces.
 2. Cache miss and bounded open: an absent ref returns nothing; a stalled or
    failed open (timeout, blocked, VersionError) returns nothing and never
    throws; the diagnostic seam records the open failure; a lookup still
@@ -540,7 +590,9 @@ Adapter (new `stores/sessionCacheIndexedDB.ts`):
    either fully seen or fully unseen); a record whose own length exceeds
    the cap is skipped whole and its stored row deleted; a record past
    `SESSION_CACHE_TTL_DAYS` expires at adapter open and inside every write
-   transaction; a forced write during quota failure drops silently.
+   transaction; the reserved epoch row survives both enumerations when
+   every record expires around it; a forced write during quota failure
+   drops silently.
 4. Clear: deletes every record and resets the accounting.
 
 Store integration (`stores/threads.test.ts` additions and a new
@@ -593,7 +645,10 @@ Store integration (`stores/threads.test.ts` additions and a new
     reloaded; the pane renders window plus both pages from the shell;
     `loadOlderTurns` requests only the page before the cached boundary (the
     fake client asserts the cursor it received); the pages already held are
-    never requested again.
+    never requested again. A `loadOlderTurns` issued while the shell is
+    unverified fetches nothing; after the reconcile — merge or
+    replacement — it continues from the settled window's cursor, with no
+    hole or duplication.
 13. Load-seam races: a never-resolving open with a concurrent second
     `ensureThread` (which joins the shared lookup, never double-arms), a
     release during the lookup (publishes nothing), a lookup that lost its
@@ -613,9 +668,18 @@ Store integration (`stores/threads.test.ts` additions and a new
     an older epoch skips itself, including a timer armed before the clear
     and firing after it — the suppression reaches sibling tabs through the
     channel carrying the epoch, ends with the final release of each open
-    ref, and a deliberate re-open of a cleared ref starts caching again.
-15. Write gating: `failed` history writes nothing; a zero-turn record's
-    reload takes the ordinary cold merge (the gap rule's empty case).
+    ref, and a deliberate re-open of a cleared ref starts caching again;
+    an open pane's post-clear notification write is refused by the
+    suppression gate; a write whose transaction runs after the clear's
+    aborts itself on the in-transaction epoch read; a sibling tab armed
+    by the clear's channel message refuses its next scheduled
+    `history/updated` write without a reload.
+15. Write gating: `failed` history writes nothing; an invalidated
+    history — `invalidatedAtGeneration` set, with `awaited`,
+    `pendingIncarnation`, and a deferred page present — writes nothing
+    until the resync read settles it and the settled pair then persists
+    (the delayed-reconciliation case); a zero-turn record's reload takes
+    the ordinary cold merge (the gap rule's empty case).
 16. Flush: `releaseThread` commits a pending debounced write, ordered
     before removal (the gates evaluate on the pre-removal snapshot); the
     pinned drain (`dropUnpinnedModel`) commits it too; a reload after an
@@ -644,7 +708,8 @@ transient invalidation fields are reset and the history identity round-trips.
    instance identity, and escalation cards are never written.
 4. **The cached shell is action-disabled for capability-gated actions until
    the first authoritative read**; non-gated actions still fence on the
-   cached `threadId`.
+   cached `threadId`, and scroll-back waits for that read — its cursor
+   belongs to the window the reconcile settles on.
 5. **Open-pane models only**, enforced by the write seam's threads-map-only
    placement; watched/rail reads never load or write.
 6. **32 MB whole-record LRU cap, one atomic read-write transaction per
