@@ -314,13 +314,27 @@ func (s *sandboxFS) grantedWriteParent(tool, abs string) (int, string, error) {
 	return parentFd, leaf, nil
 }
 
-// readFile reads the whole file at abs through a race-safe fd.
+// readFile reads the whole file at abs through a race-safe fd. The open is
+// nonblocking and the descriptor is confirmed regular before any read: a
+// read-only open of an allowed FIFO would otherwise block until a writer
+// appears, and a never-ending special file would allocate without bound. The
+// admission check and the read share one descriptor, so the type cannot be
+// swapped between the check and the bytes.
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
-	fd, err := s.openRead(tool, abs, unix.O_RDONLY)
+	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(fd), abs) // takes ownership of fd; f.Close closes it
+	info, serr := f.Stat()
+	if serr != nil {
+		_ = f.Close()
+		return nil, serr
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, fmt.Errorf("read %q: not a regular file", abs)
+	}
 	defer func() { _ = f.Close() }()
 	return io.ReadAll(f)
 }
