@@ -105,20 +105,30 @@ draft. Browser reports an error and permits another Start. Neither can identify
 the result by a durable creation request ID. The user must investigate or risk a
 duplicate; editing the draft does not resolve the first attempt.
 
-**Evidence.** [ThreadStartParams](../../appwire/types.go#L2281) has no client
+**Evidence.** [ThreadStartParams](../../appwire/types.go#L2316) has no client
 creation key. The hub
 [detaches creation from peer cancellation](../../cmd/evener-hub/app_threadlifecycle.go#L82).
 Native [submit](../../mobile-native/src/newSession.ts#L429) persists uncertainty;
-browser [creation failure](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx#L2143)
+browser [creation failure](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx#L2257)
 clears the busy state. Native `newSession.test.ts` tests the held unchanged draft.
 
-**Discuss.** Retain a creation identity and reconcile a server receipt before
-retrying or asking the user to find the result. Decide receipt lifetime and when
-an edit expresses a new creation. Preserve the original text and images.
+**Decision.** Treat each Start submission as one durable request. Preserve its
+original prompt and attachments and retain its identity across reconnection and
+retry. Reconcile the authoritative creation outcome: recover the existing chat
+if it was created, or continue trying to complete the request without creating a
+duplicate. Keep the request pending until success, explicit cancellation or a
+specific problem that genuinely requires user input. Editing another draft does
+not discard or silently replace the unresolved submission. A pending state with
+cancellation during an outage is preferable to asking the user to hunt for a
+chat or press Start again. Implementation remains pending.
 
-**Acceptance.** Drop the response after creation commits. Reconnecting locates
-and opens exactly one session with its original input. A creation proven not
-accepted leaves the unchanged draft immediately usable.
+**Acceptance.** Drop the response after creation commits. Reconnecting recovers
+exactly one chat with its original input; repeated attempts retain the same
+identity and do not duplicate the initial turn. Lose a request before acceptance
+and recover automatically when service returns. Preserve the submitted text and
+images independently of any newer draft. Cancellation stops further creation
+attempts and reconciles any already-created result; a genuine input problem
+preserves the request and identifies the needed correction.
 
 ### C03 Transcript repair rereads
 
