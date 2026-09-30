@@ -2383,6 +2383,76 @@ describe("the clear", () => {
       vi.useRealTimers();
     }
   });
+
+  it("13, the same-tab window: a clear committing between the lookup's transaction and its publish discards the result through the in-memory epoch check", async () => {
+    // The gated bed parks the pane's own lookup (the load seam's held
+    // transaction): its transaction already read the pre-clear record and
+    // the pre-clear epoch row, and its publish happens only after a
+    // committed clear moved the in-memory epoch view — the window scenario
+    // 13 names. No fake timers: nothing here rides a debounce window.
+    const { gate, adapter } = cacheTestBed({ gated: true });
+    await seedCache(adapter, "local:sc");
+    const fake = connectFakeClient();
+    fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-2", length: 2 } }));
+    const pending = threadsStore.getState().ensureThread("local:sc");
+    await clearCachedSessions(); // commits while the lookup is held mid-flight: the epoch view is now 1
+    gate.release(); // the lookup resolves with its pre-clear capture (epoch 0)
+    await pending;
+    // The discard, through the epochMatch === false branch (threads.ts:4398-4400):
+    // the capture does not match the clear's epoch view, so the found branch
+    // publishes no shell and arms nothing.
+    expect(threadsStore.getState().cacheShellRefs.has("local:sc")).toBe(false);
+    expect(threadsStore.getState().cacheLeases.has("local:sc")).toBe(false);
+    expect(threadsStore.getState().cacheAnchors.has("local:sc")).toBe(false);
+    expect(threadsStore.getState().cacheSuppressed.has("local:sc")).toBe(false);
+    // The reconcile proceeded as a cold read: the model is the wire's
+    // (inc-2), not the pre-clear record's (the seed's identity is inc-1).
+    expect(threadsStore.getState().threads.get("local:sc")?.history?.incarnation).toBe("inc-2");
+  });
+
+  it("13, the sibling window: the stale shell it publishes never re-persists, and the next read replaces it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, "local:sib");
+      // The sibling's clear committed behind this tab's back: the durable
+      // epoch moved (bumpDurableCacheEpoch, the T6 fixture) while the channel
+      // message never arrives, so the record the lookup returns is stale —
+      // pre-clear content under a post-clear epoch row.
+      await bumpDurableCacheEpoch(3);
+      let resolveRead: ((overrides: ReadResponseOverrides & TestThreadOverrides) => void) | undefined;
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        if (params.ref === undefined) throw new Error("thread/read params must carry a ref");
+        const ref = params.ref;
+        return new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = (overrides) =>
+            resolve(readResponse(ref, { ...overrides, requestGeneration: params.requestGeneration }));
+        });
+      });
+      const pending = threadsStore.getState().ensureThread("local:sib");
+      await nextModelPublished("local:sib");
+      // The stale shell published: the pane paints the pre-clear record
+      // (inc-1) because nothing in this tab observed the sibling's clear.
+      expect(threadsStore.getState().cacheShellRefs.has("local:sib")).toBe(true);
+      expect(threadsStore.getState().threads.get("local:sib")?.history?.incarnation).toBe("inc-1");
+      await vi.advanceTimersByTimeAsync(6_000);
+      // Never re-persists: the debounced write the shell's publication armed
+      // is refused at fire time by the shell gate, so the stored record is
+      // still the seed's, un-rewritten (the shell model's threadId would be
+      // thr_local:sib; the seed's is pinned to thr_1).
+      expect((await cacheRecord("local:sib"))?.threadId).toBe("thr_1");
+      // The next read replaces it: the shell window ends, the final model is
+      // the read's, and no shell flag survives the replacement.
+      if (resolveRead === undefined) throw new Error("the reconciling read must still be pending");
+      resolveRead({ snapshot: { incarnation: "inc-2", length: 2 } });
+      await pending;
+      expect(threadsStore.getState().threads.get("local:sib")?.history?.incarnation).toBe("inc-2");
+      expect(threadsStore.getState().cacheShellRefs.has("local:sib")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // The degradation bed (Task 12; spec, "Failure and degradation", Testing
