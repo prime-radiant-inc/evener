@@ -632,9 +632,11 @@ func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 // before the limit cuts, so the whole match set never lands in the caller's
 // hands: hubSearch uses it so the Past group's scope filter runs over the whole
 // index while the returned page stays bounded to limit entries (#2873). The FTS
-// path still resolves the match id set, as Search does. A nil admit admits
-// everything. admit must be a pure predicate; it runs under the index's read
-// lock and must not call back into the index.
+// path resolves only the FTS match id set (not the substring set, which it
+// re-checks per entry while streaming); fully bounding that last set is the
+// indexed-query design pass #2873 calls for. A nil admit admits everything.
+// admit runs under the index's read lock and must not call back into the index;
+// it may collect its own side effects.
 func (i *PastIndex) SearchAdmitted(q string, limit int, admit func(PastEntry) bool) []PastEntry {
 	if limit <= 0 {
 		return nil
@@ -646,12 +648,10 @@ func (i *PastIndex) SearchAdmitted(q string, limit int, admit func(PastEntry) bo
 	if strings.TrimSpace(q) != "" {
 		i.ensureFTSFresh()
 		if fts, ok := i.searchFTS(q); ok {
-			ids := make(map[string]struct{}, len(fts))
+			lower := strings.ToLower(strings.TrimSpace(q))
+			ftsIDs := make(map[string]struct{}, len(fts))
 			for _, e := range fts {
-				ids[e.ID] = struct{}{}
-			}
-			for _, e := range i.searchMemoryMatches(q) {
-				ids[e.ID] = struct{}{}
+				ftsIDs[e.ID] = struct{}{}
 			}
 			i.mu.RLock()
 			defer i.mu.RUnlock()
@@ -660,7 +660,13 @@ func (i *PastIndex) SearchAdmitted(q string, limit int, admit func(PastEntry) bo
 				if len(out) == limit {
 					break
 				}
-				if _, ok := ids[e.ID]; ok && admit(e) {
+				if _, ok := ftsIDs[e.ID]; ok {
+					if admit(e) {
+						out = append(out, e)
+					}
+					continue
+				}
+				if matches(e, lower) && admit(e) {
 					out = append(out, e)
 				}
 			}
@@ -690,13 +696,13 @@ func (i *PastIndex) searchProbeNotify(limit, offset int) {
 }
 
 // ensureFTSFresh re-publishes the FTS mirror from the current snapshot when it
-// is stale (or was never published). Search and Matches are the mirror's only
-// readers, so both call this before querying it. A stale mirror (a fold's or
-// rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was briefly
-// unwritable) is repaired here so the FTS path serves every indexed id again.
-// While the mirror stays broken every caller re-attempts the full FTS write;
-// the first success flips i.fts and the repair stops. The fingerprint gate keeps
-// the redundant publish from firing onChange.
+// is stale (or was never published). The FTS path's readers (Search,
+// SearchAdmitted, MatchIDs) call this before querying it. A stale mirror (a
+// fold's or rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was
+// briefly unwritable) is repaired here so the FTS path serves every indexed id
+// again. While the mirror stays broken every caller re-attempts the full FTS
+// write; the first success flips i.fts and the repair stops. The fingerprint
+// gate keeps the redundant publish from firing onChange.
 func (i *PastIndex) ensureFTSFresh() {
 	i.mu.RLock()
 	ftsStale := i.dbPath != "" && !i.fts
@@ -1199,9 +1205,11 @@ func (i *PastIndex) MatchIDs(ids []string, q string) map[string]bool {
 }
 
 // ftsMatchIDs returns the ids among ids the FTS mirror holds as matches for q,
-// the same token-prefix rule Search's FTS path applies. One query resolves the
-// whole candidate set, so MatchIDs unions FTS with the substring scan without a
-// query per id.
+// the same token-prefix rule Search's FTS path applies. It chunks the id list
+// the way writeFTSTx chunks deletes, so a large live roster cannot exceed
+// SQLite's bound-parameter ceiling. A read error mid-way returns the ids found
+// so far: they are real matches, and the ids not yet checked are the ones the
+// error costs (their substring scan already failed in MatchIDs).
 func (i *PastIndex) ftsMatchIDs(q string, ids []string) []string {
 	query := ftsQuery(q)
 	if query == "" || len(ids) == 0 {
@@ -1219,28 +1227,34 @@ func (i *PastIndex) ftsMatchIDs(q string, ids []string) []string {
 		return nil
 	}
 	defer func() { _ = db.Close() }()
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, query)
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	// local in-process SQLite query; PastIndex.Search is a context-free API. (noctx)
-	rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? AND id IN (`+placeholders+`)`, args...) //nolint:noctx
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = rows.Close() }()
 	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil
+	for start := 0; start < len(ids); start += ftsDeleteChunk {
+		end := min(start+ftsDeleteChunk, len(ids))
+		chunk := ids[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, query)
+		for _, id := range chunk {
+			args = append(args, id)
 		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil
+		// local in-process SQLite query; PastIndex.Search is a context-free API. (noctx)
+		rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? AND id IN (`+placeholders+`)`, args...) //nolint:noctx
+		if err != nil {
+			return out
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return out
+			}
+			out = append(out, id)
+		}
+		rowErr := rows.Err()
+		_ = rows.Close()
+		if rowErr != nil {
+			return out
+		}
 	}
 	return out
 }

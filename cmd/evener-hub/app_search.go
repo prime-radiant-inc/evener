@@ -116,15 +116,19 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	// own prompt match is answered separately above, so it never depended on this
 	// fetch's width.
 	if cfg.Past != nil {
-		pastMatches := cfg.Past.SearchAdmitted(q, searchPastLimit, func(e hubcore.PastEntry) bool {
+		var past []appwire.SearchResult
+		cfg.Past.SearchAdmitted(q, searchPastLimit, func(e hubcore.PastEntry) bool {
 			if isLive[e.Meta.ID] {
 				return false
 			}
-			return searchScopeAdmits(scope, pastSearchResult(e, decisions, now), false)
+			result := pastSearchResult(e, decisions, now)
+			if !searchScopeAdmits(scope, result, false) {
+				return false
+			}
+			past = append(past, result)
+			return true
 		})
-		for _, e := range pastMatches {
-			resp.Past = append(resp.Past, pastSearchResult(e, decisions, now))
-		}
+		resp.Past = past
 	}
 	resp.InSessions, err = searchInSessions(ctx, cfg, params.Query, scope, live, decisions, now)
 	if err != nil {
