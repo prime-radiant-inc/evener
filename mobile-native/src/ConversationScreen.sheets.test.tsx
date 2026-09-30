@@ -1388,6 +1388,38 @@ it("keeps Find incomplete through failure and an inactive screen, then finds the
 	act(() => tree.unmount());
 });
 
+it.each([false, true])("keeps quiet Find incomplete until history advances or ends (match: %s)", async (withMatch) => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts === 1) return { data: [], nextCursor: "older-page" };
+			return withMatch ? olderHistoryPage("unique search needle") : { data: [], nextCursor: null };
+		}),
+	);
+	await flush();
+	const loaded = sessionList(tree).list().props.data;
+	vi.useFakeTimers();
+	openFind(tree, "unique search needle");
+	await advanceHistory(0);
+	const bar = () => tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+	expect(attempts).toBe(1);
+	expect(bar().props).toMatchObject({ settled: false, searchingOlder: true });
+	expect(renderedText(tree)).not.toContain("No matches");
+	expect(sessionList(tree).list().props.data).toEqual(loaded);
+	await advanceHistory(999);
+	expect(attempts).toBe(1);
+	expect(bar().props).toMatchObject({ settled: false, searchingOlder: true });
+	await advanceHistory(1);
+	expect(attempts).toBe(2);
+	expect(bar().props).toMatchObject({ settled: true, searchingOlder: false });
+	expect(bar().props.label).toBe(withMatch ? "1 of 1" : "No matches");
+	await advanceHistory(60_000);
+	expect(attempts).toBe(2);
+	act(() => tree.unmount());
+});
+
 it("explains a proven permanent older-history failure without claiming Find has no matches", async () => {
 	let attempts = 0;
 	const { tree } = mount(
