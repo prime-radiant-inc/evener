@@ -1523,18 +1523,33 @@ func TestStableDelegateAttentionSuccessorFollowsItsPredecessorsResult(t *testing
 	stream := fixture.parent.Events()
 	stop := make(chan struct{})
 	collected := make(chan struct{})
+	record := func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.DelegateUpdatedData); ok && data.DelegateID == delegateID {
+			mu.Lock()
+			lifecycles = append(lifecycles, data.Lifecycle)
+			mu.Unlock()
+		}
+	}
 	go func() {
 		defer close(collected)
 		for {
 			select {
 			case ev := <-stream:
-				if data, ok := ev.Data.(events.DelegateUpdatedData); ok && data.DelegateID == delegateID {
-					mu.Lock()
-					lifecycles = append(lifecycles, data.Lifecycle)
-					mu.Unlock()
-				}
+				record(ev)
 			case <-stop:
-				return
+				// select picks at random among ready cases, so events
+				// already buffered when stop closes are drained here.
+				for {
+					select {
+					case ev, ok := <-stream:
+						if !ok {
+							return
+						}
+						record(ev)
+					default:
+						return
+					}
+				}
 			}
 		}
 	}()
