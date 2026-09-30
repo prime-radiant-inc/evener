@@ -46,9 +46,12 @@ surface integration target.
 Task 1 establishes the generated contract. Tasks 2 and 3 may start their
 independent implementation/test work from the written interface in parallel,
 then consume Task 1's commit before qualification. Task 4 starts after Task 1.
-Tasks 5 and 6 start after Task 4. Task 7 runs after the integrated functional
-tasks. No two workers edit the same ownership area concurrently. There are at
-most three active workers; a reviewer takes a freed worker slot.
+Task 5's navigation contract/projection/codec slice (5a) may run after Task 1,
+independently of the session read backend and client owner. Its browser consumer
+slice (5b) and Task 6 start after Task 4 and consume the version 3 navigation
+contract. Task 7 runs after the integrated functional tasks. No two workers edit
+the same ownership area concurrently. There are at most three active workers;
+a reviewer takes a freed worker slot.
 
 ## File ownership and interface map
 
@@ -58,8 +61,9 @@ most three active workers; a reviewer takes a freed worker slot.
 | 2 | Agent read projections, bounded derived indexes, domain invalidations | Task 1 types |
 | 3 | Server hooks, serve wiring, hub/appsource routing and notification relay | Tasks 1 and 2 interfaces |
 | 4 | Framework-free SessionActivity client, public exports and tests | Task 1 types |
-| 5 | Browser activity surfaces, navigation cleanup, browser guards | Tasks 3 and 4 |
-| 6 | Native activity adapter and consumer lifecycle | Tasks 3 and 4 |
+| 5a | Navigation contract/projection/shared codec and resource cleanup | Task 1; coordinated generation ownership |
+| 5b | Browser activity surfaces, transcript leases and browser guards | Tasks 3, 4 and 5a |
+| 6 | Native activity adapter, transcript leases and consumer lifecycle | Tasks 3, 4 and 5a |
 | 7 | Integrated qualification, evergreen docs and AGENTS ownership guidance | Tasks 1–6 |
 
 ### Task 1: Typed session activity contract
