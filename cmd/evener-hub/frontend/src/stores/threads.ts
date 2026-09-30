@@ -10,14 +10,17 @@
 import type {
   AnyNotification,
   AppwireClientLike,
+  CachedSessionRecord,
   GoalSetResponse,
   ModelListResponse,
   SnapshotIdentity,
   ThreadClearResponse,
   ThreadForkResponse,
+  ThreadItemPosition,
   ThreadModel,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  TurnModel,
   UrlsRemoveResponse,
 } from "@evener/appwire-client";
 import {
@@ -29,6 +32,7 @@ import {
   ClientNotReadyError,
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
+  comparePositions,
   errorText,
   hydrateThread,
   type InputAttachment,
@@ -41,6 +45,7 @@ import {
   notificationRoutingKey,
   resolvePendingEscalation,
   SHUT_DOWN_STATUSES,
+  threadModelFromCache,
   WireError,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
@@ -65,6 +70,7 @@ import {
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
+import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 
 export type { InputAttachment } from "@evener/appwire-client";
@@ -169,6 +175,20 @@ export interface ThreadsStoreState {
   // markThreadDeletedIfFenced. An ordinary transient rejection is still
   // presumed transport and keeps its retry-forever contract.
   deletedRefs: Set<string>;
+  /** Refs whose current model is an unverified cached shell: capability-gated
+   * actions refuse, loadOlderTurns waits, and the write seam skips them until
+   * the first authoritative read's publish clears the flag (spec, "The load
+   * seam"). */
+  cacheShellRefs: Set<string>;
+  /** Refs whose writes are suppressed: armed by a clear (through the ref's
+   * final release) and by deletion propagation. Re-checked at write-fire
+   * time. */
+  cacheSuppressed: Set<string>;
+  /** The durable epoch each open ref's arming lookup captured (the lease). */
+  cacheLeases: Map<string, number>;
+  /** The gap rule's captured anchor: the newest item position in the record,
+   * fixed at shell-build from pure record data before any live merge. */
+  cacheAnchors: Map<string, ThreadItemPosition>;
   ensureThread(ref: string): Promise<void>;
   // beforePublish, when given, is evaluated synchronously immediately before
   // this refresh publishes its snapshot. A throw cancels the read's result so
@@ -355,6 +375,72 @@ function isFallbackInvalidatingPush(method: string): boolean {
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
+
+// The session-history cache's singleton storage adapter (web session-history
+// cache spec, "The load seam"). One per tab: the lookup, the write seam
+// (Task 6) and the clear (Task 10) all ride currentSessionCache() so tests
+// can swap the whole storage for a wedged or gated instance.
+const sessionCacheAdapter = new SessionCacheIndexedDB();
+let sessionCacheAdapterOverride: SessionCacheIndexedDB | undefined;
+function currentSessionCache(): SessionCacheIndexedDB {
+  return sessionCacheAdapterOverride ?? sessionCacheAdapter;
+}
+/** Tests swap the singleton for a wedged or gated instance; production never calls this. */
+export function setSessionCacheAdapterForTests(adapter: SessionCacheIndexedDB | undefined): void {
+  sessionCacheAdapterOverride = adapter;
+}
+const inflightCacheLookups = new Map<string, Promise<{ record: CachedSessionRecord; epoch: number } | undefined>>();
+// The tab's in-memory view of the durable clear epoch: undefined until the
+// first lookup observes it, adopted (never assumed) from every capture, and
+// bumped synchronously by a same-tab clear (Task 10) so a lookup that
+// captured an older value can never publish a shell across it.
+let tabCacheEpoch: number | undefined;
+
+// One shared bounded lookup per ref. The deadline is the lookup's own
+// Promise.race against SESSION_CACHE_LOOKUP_DEADLINE_MS — never the storage
+// timeout — and a lost race resolves the join as a miss, discarding whatever
+// the adapter answers later.
+function joinCacheLookup(ref: string): Promise<{ record: CachedSessionRecord; epoch: number } | undefined> {
+  const existing = inflightCacheLookups.get(ref);
+  if (existing) return existing;
+  const race = (async () => {
+    try {
+      return await Promise.race([
+        currentSessionCache().get(ref, Date.now()),
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS)),
+      ]);
+    } catch {
+      return undefined; // every failure is a miss
+    }
+  })();
+  // The cleanup is a reaction registered here — before any awaiter's — so it
+  // still runs ahead of every joiner the settlement wakes, exactly as an
+  // inline finally would. (It cannot be an inline finally: the IIFE's own
+  // body would reference its promise before the assignment completes.)
+  const forget = () => {
+    if (inflightCacheLookups.get(ref) === race) inflightCacheLookups.delete(ref);
+  };
+  void race.then(forget, forget);
+  inflightCacheLookups.set(ref, race);
+  return race;
+}
+
+// The gap rule's anchor: the newest item position the record holds, fixed at
+// shell-build from pure record data before any live merge, ordered by
+// comparePositions (turns can interleave, so the newest positioned item wins
+// rather than the last turn's). undefined for a record with no positioned
+// item, which Task 7's predicate treats as the ordinary cold merge.
+function newestItemPosition(turns: TurnModel[]): ThreadItemPosition | undefined {
+  let newest: ThreadItemPosition | undefined;
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.position === undefined) continue;
+      if (newest === undefined || comparePositions(item.position, newest) > 0) newest = item.position;
+    }
+  }
+  return newest;
+}
+
 const trackedHydrationCompletions = new Map<string, Promise<void>>();
 // The identity a pending hydration accepts frames for. Both facts come from an
 // authority, never from the stream: the routing is seeded from the published
@@ -3037,6 +3123,18 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
 
   pendingThreadHydrations.delete(ref);
   putThreadModel(ref, hydrated);
+  // The first authoritative publish ends the cached-shell window: the flag
+  // and the gap rule's anchor live only from the shell's arming until this
+  // read's publish (spec, "The load seam"); the lease (cacheLeases) outlives
+  // them for the clear's suppression (Task 10).
+  threadsStore.setState((s) => {
+    if (!s.cacheShellRefs.has(ref) && !s.cacheAnchors.has(ref)) return s;
+    const cacheShellRefs = new Set(s.cacheShellRefs);
+    cacheShellRefs.delete(ref);
+    const cacheAnchors = new Map(s.cacheAnchors);
+    cacheAnchors.delete(ref);
+    return { cacheShellRefs, cacheAnchors };
+  });
   invalidateGoalResponseFallback(ref);
   invalidateNotesResponseFallback(ref);
   threadsStore.setState((s) => {
@@ -4167,6 +4265,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   hydrations: new Map(),
   watchedThreads: new Map(),
   deletedRefs: new Set(),
+  cacheShellRefs: new Set(),
+  cacheSuppressed: new Set(),
+  cacheLeases: new Map(),
+  cacheAnchors: new Map(),
 
   async ensureThread(ref) {
     let client = requireClient();
@@ -4178,12 +4280,39 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     refCounts.set(ref, count + 1);
     if (threadsStore.getState().threads.has(ref)) return; // already hydrated: no re-read
 
+    // The cached-shell lookup (spec, "The load seam"): serial by necessity —
+    // the held identity must exist before issueLatestWindowRead runs — and
+    // bounded by its own 250 ms deadline. The creator alone publishes and
+    // arms; a joiner sees the shell (threads.has) or the hydration
+    // (inflightHydrates) and joins that instead.
+    let cachedBase: ThreadModel | undefined;
+    if (!threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
+      const found = await joinCacheLookup(ref);
+      const state = threadsStore.getState();
+      const released = (refCounts.get(ref) ?? 0) === 0;
+      if (found !== undefined && !released && !state.deletedRefs.has(ref) && !state.threads.has(ref)) {
+        const captured = found.epoch;
+        const epochMatch = tabCacheEpoch === undefined || tabCacheEpoch === captured;
+        tabCacheEpoch = captured; // adopt: the first observation, or a newer durable epoch, becomes the view
+        if (epochMatch) {
+          const shell = threadModelFromCache(found.record, Date.now());
+          const anchor = newestItemPosition(found.record.history.turns);
+          threadsStore.setState((s) => ({
+            cacheShellRefs: new Set(s.cacheShellRefs).add(ref),
+            cacheLeases: new Map(s.cacheLeases).set(ref, captured),
+            ...(anchor === undefined ? {} : { cacheAnchors: new Map(s.cacheAnchors).set(ref, anchor) }),
+          }));
+          cachedBase = shell;
+        }
+      }
+    }
+
     const startHydration = (hydrationClient: AppwireClientLike): Promise<ThreadModel | null> => {
       const hydrationEpoch = readyEpoch;
       const pending = beginThreadHydration(
         ref,
         hydrationClient,
-        threadsStore.getState().threads.get(ref),
+        cachedBase ?? threadsStore.getState().threads.get(ref),
         hydrationEpoch,
       );
       const hydration = hydrateAndSubscribe(hydrationClient, ref, Date.now(), pending)
@@ -5011,6 +5140,16 @@ export function resetThreadsStoreForTests(): void {
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();
+  // The session cache's module state: a lookup still in flight must not
+  // publish a shell into the fresh state (the map is dropped, not awaited —
+  // its race's own guards recheck everything), the epoch view returns to
+  // unobserved, and the singleton adapter drops its connection so the next
+  // test opens afresh against a database its beforeEach just deleted. An
+  // override a test installed goes with it; tests close their own adapters.
+  inflightCacheLookups.clear();
+  tabCacheEpoch = undefined;
+  setSessionCacheAdapterForTests(undefined);
+  sessionCacheAdapter.close();
   trackedHydrationCompletions.clear();
   pendingThreadHydrations.clear();
   pendingMutationReconciliations.clear();
@@ -5062,6 +5201,10 @@ export function resetThreadsStoreForTests(): void {
       hydrations: new Map(),
       watchedThreads: new Map(),
       deletedRefs: new Set(),
+      cacheShellRefs: new Set(),
+      cacheSuppressed: new Set(),
+      cacheLeases: new Map(),
+      cacheAnchors: new Map(),
     },
     true,
   );
