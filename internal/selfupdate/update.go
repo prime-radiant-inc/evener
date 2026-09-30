@@ -712,10 +712,15 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			tmpName := tmp.Name()
 			_ = os.Chmod(tmpName, 0o755)
 			_, werr := tmp.Write(s.previous)
-			_ = closeFile(tmp)
-			if werr != nil {
+			cerr := closeFile(tmp)
+			if werr != nil || cerr != nil {
 				_ = os.Remove(tmpName)
-				errs = append(errs, fmt.Errorf("restore %s: %w", dst, werr))
+				if werr != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", dst, werr))
+				}
+				if cerr != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", dst, cerr))
+				}
 				continue
 			}
 			if err := os.Rename(tmpName, dst); err != nil {
