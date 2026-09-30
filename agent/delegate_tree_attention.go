@@ -515,24 +515,19 @@ func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, 
 
 // ancestorChainRestorableLocked reports whether a child's cold restore can
 // make its owner chain resident: walking up from parentID, each ancestor is
-// either resident already (residentDelegateRuntime's condition) or idle and
-// restorable (idleDelegateRestoreCommit's condition). A running ancestor
-// with no resident runtime (after a restart, until its generation is
-// recovered) fails every restore beneath it target_busy, so its descendants
-// wait rather than being selected pass after pass.
+// either resident already or idle and restorable, the two conditions the
+// restore itself applies (restoreColdDelegateOwnerRuntime). A running
+// ancestor with no resident runtime (after a restart, until its generation
+// is recovered) fails every restore beneath it target_busy, so its
+// descendants wait rather than being selected pass after pass.
 func (c *delegateTreeController) ancestorChainRestorableLocked(parentID string) bool {
-	for ancestorID := parentID; ancestorID != ""; {
-		aggregate := c.durable[ancestorID]
-		if aggregate == nil {
-			return false
-		}
-		if live := c.live[ancestorID]; live != nil && live.runtime != nil && aggregate.Phase != delegatestore.PhaseClosed && aggregate.PendingStopSeq == 0 {
+	for ancestorID := parentID; ancestorID != ""; ancestorID = c.durable[ancestorID].Descriptor.ParentDelegateID {
+		if c.residentDelegateRuntimeLocked(ancestorID) != nil {
 			return true
 		}
-		if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(ancestorID) {
+		if !c.idleRestorableLocked(ancestorID) {
 			return false
 		}
-		ancestorID = aggregate.Descriptor.ParentDelegateID
 	}
 	return true
 }
@@ -723,10 +718,10 @@ func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (d
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	aggregate := c.durable[delegateID]
-	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
+	if !c.idleRestorableLocked(delegateID) {
 		return delegateStartCommit{}, "", errDelegateTargetBusy
 	}
+	aggregate := c.durable[delegateID]
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
@@ -747,12 +742,26 @@ func (c *delegateTreeController) residentDelegateRuntime(delegateID string) *Ses
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.residentDelegateRuntimeLocked(delegateID)
+}
+
+// residentDelegateRuntimeLocked is delegateID's live runtime when it is
+// resident and neither closed nor stopping, else nil.
+func (c *delegateTreeController) residentDelegateRuntimeLocked(delegateID string) *Session {
 	aggregate := c.durable[delegateID]
 	live := c.live[delegateID]
 	if aggregate == nil || aggregate.Phase == delegatestore.PhaseClosed || aggregate.PendingStopSeq != 0 || live == nil {
 		return nil
 	}
 	return live.runtime
+}
+
+// idleRestorableLocked reports whether delegateID can be restored cold for
+// an attention wake: idle, resumable, not stopping, not being reclaimed, on
+// a controller that is not closing.
+func (c *delegateTreeController) idleRestorableLocked(delegateID string) bool {
+	aggregate := c.durable[delegateID]
+	return !c.closing && aggregate != nil && aggregate.Phase == delegatestore.PhaseIdle && aggregate.Resumable && aggregate.PendingStopSeq == 0 && !c.reclamationCoversLocked(delegateID)
 }
 
 // AttachIdleRuntime installs only the exact lazily restored runtime identity.
