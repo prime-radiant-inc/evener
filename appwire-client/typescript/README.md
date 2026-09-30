@@ -183,7 +183,14 @@ the affected collection. Invalid inputs, deleted resources and unsupported
 methods do not retry automatically. Typed activity invalidations revalidate only
 observed resources; subtree owners accept descendant changes routed to their
 subscription. Collection pages merge stable identities only within the current
-source epoch and root read lifetime.
+source epoch and root read lifetime. A thread resync fences all pre-resync
+replies, including those emitted by the server before a workspace clear. The
+requested routing ref and lease remain stable when an alias resolves to another
+session. A changed resolved session identity retires former summary and
+collection rows, issues, cursors and completeness together; observed demand
+rebuilds only the replacement session. An opaque cache epoch change within the
+same session keeps unrelated useful evidence. A resync retries demanded resources
+against the current target even if its former target was unavailable.
 
 Useful collection progress refreshes an observed unknown summary count at a
 bounded pace, so retained index reconstruction can make its authoritative count
