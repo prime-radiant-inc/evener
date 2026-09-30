@@ -446,19 +446,25 @@ in-flight connection replacement and settled-then-replaced presentation. The
 server's [conditional credential writes](../../cmd/evener-hub/app_host_credentials.go)
 check the remote source and configuration revision before changing an entry.
 
-**Discuss.** Keep completed results available with their actual originating hub
+**Decision.** Keep completed results available with their actual originating hub
 and host identity through transport reconnection. Give genuinely unconfirmed
 transfers a recovery owner that checks authoritative remote state and preserves
-per-entry outcomes. Establish what landed before considering another write;
-respect newer credentials, changed host registration and cancellation. A socket
-replacement alone must not turn known success into an unresolved operation.
-Setup navigation is covered separately by C08.
+the transfer identity and per-entry progress independently of the socket.
+Establish what landed and complete any still-needed part of the original request
+when authoritative state establishes that doing so is appropriate. Respect newer
+credentials, changed host registration and cancellation. A socket replacement
+alone must not turn known success into an unresolved operation. Prioritize
+everyday chat recovery ahead of this narrower workflow. Setup navigation is
+covered separately by C08. Implementation remains pending.
 
 **Acceptance.** Complete a transfer and reconnect to the same hub and host: its
 report remains available. Lose the response after a remote write: recovery
 recognizes the applied result without requiring manual investigation or
-rewriting it. A genuinely changed destination is represented accurately, and
-newer remote credentials are not overwritten by recovery of an older operation.
+rewriting it. A partially applied transfer preserves its completed entries and
+finishes still-needed entries once their outcomes are established. A genuinely
+changed destination is represented accurately, and newer remote credentials are
+not overwritten by recovery of an older operation. Cancellation prevents further
+transfer while retaining the record of what already happened.
 
 ## Runtime and continuing intent
 
