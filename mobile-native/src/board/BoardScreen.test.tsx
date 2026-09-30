@@ -2614,21 +2614,18 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 		screen: "Providers",
 		params: { hubId: id, focus: "openai", signIn: true },
 		initial: false,
-		pop: true,
 	});
 	pressLabel(tree, "Details, Studio Mac is offline · 2\u00a0sessions");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
 		screen: "Hosts",
 		params: { hubId: id, focus: "studio" },
 		initial: false,
-		pop: true,
 	});
 	pressLabel(tree, "Plugins, superpowers is broken");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", {
 		screen: "Plugins",
 		params: { hubId: id, focus: { plugin: "superpowers", marketplace: "evener" } },
 		initial: false,
-		pop: true,
 	});
 	// Update needed comes first.
 	connect(id, null, "closed", { fatal: true });

@@ -82,9 +82,6 @@ it("opens the Hub at that provider's sign-in, the Hub at that host for a host, a
 		screen: "Providers",
 		params: { hubId: "hub-1", focus: "openai", signIn: true },
 		initial: false,
-		// A Providers page already in the Hub's stack takes the link: a pushed
-		// detail over it pops, rather than a second Providers page stacking.
-		pop: true,
 	});
 	act(() => actionButton(tree, "Details, Studio Mac is offline · 3 sessions").props.onPress());
 	// Ruling 25: the Hub opens at that host, with its home under the page.
@@ -92,7 +89,6 @@ it("opens the Hub at that provider's sign-in, the Hub at that host for a host, a
 		screen: "Hosts",
 		params: { hubId: "hub-1", focus: "studio" },
 		initial: false,
-		pop: true,
 	});
 	act(() => actionButton(tree, "Plugins, superpowers is broken").props.onPress());
 	// Ruling 25: the Hub opens at Plugins with that plugin's detail.
@@ -100,7 +96,6 @@ it("opens the Hub at that provider's sign-in, the Hub at that host for a host, a
 		screen: "Plugins",
 		params: { hubId: "hub-1", focus: { plugin: "superpowers", marketplace: "evener" } },
 		initial: false,
-		pop: true,
 	});
 });
 

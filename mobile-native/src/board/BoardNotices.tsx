@@ -12,17 +12,17 @@ export function openNotice(
 	hubId: string,
 	notice: Notice,
 ): void {
-	// Each link names `pop`: with the Hub already open, it hands the link to the
-	// page already in the Hub's stack, popping a detail pushed over it, rather
-	// than stacking a second list page (React Navigation 7 only reuses a route
-	// that is focused or named by `pop`).
+	// No link names `pop`: a nested navigate carrying it skips a pushed page's
+	// leave guard (React Navigation applies it without beforeRemove), which
+	// would drop an unsaved edit silently. Without it, a link while the Hub is
+	// open would stack a second list page, which no one can reach today, since
+	// a notice can't be tapped over the Hub (#3524).
 	if (notice.kind === "signIn")
 		// Ruling 25: the Hub opens at that provider's sign-in, its home kept under the page.
 		navigation.navigate("Hub", {
 			screen: "Providers",
 			params: { hubId, focus: notice.providerId, signIn: true },
 			initial: false,
-			pop: true,
 		});
 	else if (notice.kind === "host")
 		// Ruling 25: the Hub opens at that host, its home kept under the page.
@@ -30,7 +30,6 @@ export function openNotice(
 			screen: "Hosts",
 			params: { hubId, focus: notice.sourceId },
 			initial: false,
-			pop: true,
 		});
 	else {
 		// Ruling 25 again: the Hub opens at Plugins with that plugin's detail.
@@ -38,7 +37,6 @@ export function openNotice(
 			screen: "Plugins",
 			params: { hubId, focus: { plugin: notice.pluginId, marketplace: notice.marketplace } },
 			initial: false,
-			pop: true,
 		});
 	}
 }
