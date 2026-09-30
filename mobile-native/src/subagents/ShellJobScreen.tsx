@@ -5,34 +5,23 @@
 // is the Activity list's own, so the job stays live, and the tail is read
 // again whenever the job writes more or changes state. Like the list, it
 // never offers Refresh, and it offers no Stop.
-import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { FlatList, Text, View } from "react-native";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { parseOutputLines } from "../ansiOutputStyles";
-import { useConnection } from "../ConnectionProvider";
 import { fonts } from "../design/tokens";
-import { liveClientFor } from "../liveClient";
 import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { flattenActivity, type ShellJobRow, shellJobMeta } from "./subagentModel";
 import { type ShellJobOutput, useShellJobOutput } from "./useShellJobOutput";
-import { useSubagentTree } from "./useSubagentTree";
+import { useFollowedSubagentTree } from "./useSubagentTree";
 
 export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJob">) {
 	const { hubId, jobId, coordinator } = route.params;
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const { tree, snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);
-	const client = liveClientFor(useConnection(), hubId);
-	// Following the coordinator keeps its tree notifications coming, as the
-	// Activity list does, so this job's state and output size stay current.
-	useFocusEffect(
-		useCallback(() => {
-			if (client) void tree.follow();
-		}, [tree, client]),
-	);
+	const { snapshot, client } = useFollowedSubagentTree(hubId, coordinator.ref, coordinator.threadId);
 
 	const row = useMemo(
 		() => (snapshot.tree ? flattenActivity(snapshot.tree).jobs.find((job) => job.id === jobId) : undefined),

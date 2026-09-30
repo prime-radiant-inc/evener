@@ -5,7 +5,7 @@
 // first, then what's running, then what's done folded away. It reads again
 // on its own (on focus, on reconnect, on the tree's notifications) and never
 // offers Retry, Refresh or Reconnect.
-import { useFocusEffect, useIsFocused } from "@react-navigation/native";
+import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -36,7 +36,7 @@ import { stopRequests } from "./nativeStopRequests";
 import { ShellJobRowView } from "./ShellJobRowView";
 import { SubagentRowView } from "./SubagentRowView";
 import { SubagentStrip, stateColors } from "./SubagentStrip";
-import { useSubagentTree } from "./useSubagentTree";
+import { useFollowedSubagentTree } from "./useSubagentTree";
 import { haptic } from "../haptics";
 
 export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Subagents">) {
@@ -44,20 +44,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { width } = useWindowDimensions();
-	const { tree, snapshot } = useSubagentTree(hubId, ref, threadId);
-
-	// Following the coordinator each time this screen comes into focus keeps
-	// its tree notifications coming (ruling 9). A new client (a reconnect, or
-	// a hub switch that never leaves ready) has no subscription, so the screen
-	// in front follows again on each one. useSubagentTree's effect, declared
-	// above, has already handed the tree that client.
-	const { state, client, activeProfile } = useConnection();
-	const followed = state === "ready" && activeProfile?.id === hubId ? client : null;
-	useFocusEffect(
-		useCallback(() => {
-			if (followed) void tree.follow();
-		}, [tree, followed]),
-	);
+	const { snapshot } = useFollowedSubagentTree(hubId, ref, threadId);
 
 	const activity = useMemo(
 		() => (snapshot.tree ? flattenActivity(snapshot.tree) : { subagents: [], jobs: [] }),
