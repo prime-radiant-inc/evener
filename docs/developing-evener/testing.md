@@ -963,6 +963,14 @@ for this contract, not a local or CI gate dependency.
 
 ## The Native Gate Bundles the App
 
+Both native npm test commands (`test` and `test:shared`) use
+`scripts/native/run-tests.sh` to size Vitest with the shared load-aware budget.
+The pool is capped at four workers and shrinks to one when spare capacity is
+exhausted. An unavailable machine probe falls back to four. Native uses isolated
+forks, so it can run with one worker without the frontend VM pool's two-worker
+floor. The budget is sampled when each command starts; it does not coordinate
+concurrent gates or change per-test deadlines or file isolation.
+
 `make test-native` starts by bundling the real iOS entry point
 (`make test-native-bundle`, `scripts/native/test-native-bundle.sh`). Nothing
 else in the repository runs Metro, and that is the whole reason the target

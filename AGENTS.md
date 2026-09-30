@@ -5,6 +5,34 @@
 Always create an isolated worktree for feature, bug-fix, and PR work. You have permission.
 Keep unrelated changes in the current checkout out of the worktree and PR.
 
+## Product behavior and evergreen documentation
+
+Read [the product guide](docs/product/README.md) and the relevant row in
+[the subsystem map](docs/product/subsystems.md) before changing product behavior.
+Evener should help the user achieve their aims with minimal friction. Prefer
+automatic recovery, preservation of the user's work, and continued use of healthy
+parts of the product. A banner or a repair button is not a substitute for recovery.
+
+Do not treat "fail closed" or "fully locked down" as a default design goal. Explain
+the concrete user intent or guarantee a restriction serves, the work it prevents,
+and who restores operation when the triggering condition clears. Honor the user's
+chosen boundaries and reconcile uncertain outcomes without losing or duplicating
+their work. Discuss consequential product choices instead of inventing additional
+restrictions or silently changing existing promises.
+
+Keep the product docs evergreen in the same change as the code. Update subsystem
+responsibilities, source-of-truth and recovery ownership, affected client surfaces,
+and linked contracts when they change. Use stable filenames and current behavior;
+keep dated narratives, rollout logs, and PR progress out of these references.
+
+[The friction punchlist](docs/product/friction.md) distinguishes unresolved
+proposals, agreed product outcomes, and deferred work. Keep those states separate
+from implementation plans and verified behavior, and honor recorded deferrals.
+Discuss unresolved choices individually. After an agreed fix is implemented and verified,
+update its owning guide and remove the resolved case from the open list without
+renumbering other cases. Verify recovery and preservation contracts with meaningful
+behavior tests, including the transition back to useful operation.
+
 ## Testing
 
 Before adding or changing tests, read `docs/developing-evener/testing.md`.

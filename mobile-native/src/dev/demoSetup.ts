@@ -105,6 +105,11 @@ const RECENT_MODELS = ["deepseek-4.1-flash", "glm-5.3-vision", "gpt-5.6"];
 export const DEMO_MODEL_PROVIDERS: Readonly<Record<string, string>> = Object.fromEntries(
 	MODELS.map(([model, , provider]) => [model, provider]),
 );
+/** Each catalog model's display name, which a fleet row carries as its
+ * model_name (S17, DemoFleetOptions.modelNames). */
+export const DEMO_MODEL_NAMES: Readonly<Record<string, string>> = Object.fromEntries(
+	MODELS.map(([model, displayName]) => [model, displayName]),
+);
 // What a provider's "Check for new models" finds that its listing lacks.
 const FOUND_ON_CHECK: Record<string, string[]> = { lunaroute: ["glm-5.4"] };
 

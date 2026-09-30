@@ -46,6 +46,7 @@ import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../accessibilitySettings";
 import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
 import { ChipStrip } from "../design/ChipStrip";
+import { scaledType, uiType } from "../design/tokens";
 import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "../design/systemGlass";
 import { useHeaderTextScale } from "../headerText";
 import type { Routes } from "../screens";
@@ -133,7 +134,7 @@ import { SearchResults } from "./SearchResults";
 import { SelectBar } from "./SelectBar";
 import { selectionActions, toggleSelected } from "./selection";
 import { listScrollHandlers } from "./settledList";
-import { organizationOpen } from "./organizationCheck";
+import { journalOperation, organizationOpen } from "./organizationCheck";
 import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
@@ -1390,7 +1391,10 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 			{ text: "Cancel", style: "cancel" },
 		]);
 	};
-	const operation = organization.state?.pending ? organization.state.recovery?.operation : undefined;
+	// One gate with the other readers (organizationCheck.journalOperation): a
+	// change in flight or one the hub couldn't confirm holds the category, so it
+	// stays dimmed until the journal settles.
+	const operation = journalOperation(organization.state);
 	return {
 		menuFor: (section: NavigationPinSectionDescriptor) => (organization.ready ? () => open(section) : null),
 		changing: (sectionId: string) =>
@@ -2008,8 +2012,7 @@ function SummaryLine({
 						<Text
 							allowFontScaling={allowFontScaling}
 							style={{
-								fontSize: 14 * scale,
-								lineHeight: 20 * scale,
+								...scaledType(uiType.statusLine, scale),
 								fontWeight: band === "needsYou" ? "600" : "400",
 								color: band === "needsYou" ? palette.attentionInk : palette.inkMid,
 							}}

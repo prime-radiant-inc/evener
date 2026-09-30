@@ -3,6 +3,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
+		// Keep files isolated even when the load-aware budget permits one worker.
+		pool: "forks",
 		// Fakes for native modules every suite would otherwise mock alike.
 		setupFiles: [fileURLToPath(new URL("./src/vitestSetup.ts", import.meta.url))],
 	},
@@ -33,30 +35,18 @@ export default defineConfig({
 			"@evener/appwire-client/state/connection": fileURLToPath(
 				new URL("../appwire-client/typescript/state/connection/index.ts", import.meta.url),
 			),
-			"@evener/appwire-client/testing": fileURLToPath(
-				new URL("../appwire-client/typescript/testing", import.meta.url),
-			),
-			"@evener/appwire-client": fileURLToPath(
-				new URL("../appwire-client/typescript/index.ts", import.meta.url),
-			),
+			"@evener/appwire-client/testing": fileURLToPath(new URL("../appwire-client/typescript/testing", import.meta.url)),
+			"@evener/appwire-client": fileURLToPath(new URL("../appwire-client/typescript/index.ts", import.meta.url)),
 			// The shared headless sources import react, and a checkout that also
 			// has cmd/evener-hub/frontend/node_modules would resolve it to the
 			// frontend's copy for a frontend source while the suite holds this
 			// app's. Pin it, as Metro does by rewriting a shared source's origin
 			// module path (metro.config.js), so one React serves the whole graph
 			// (issue #3076).
-			react: fileURLToPath(
-				new URL("./node_modules/react", import.meta.url),
-			),
-			zustand: fileURLToPath(
-				new URL("./node_modules/zustand", import.meta.url),
-			),
-			anser: fileURLToPath(
-				new URL("./node_modules/anser/lib/index.js", import.meta.url),
-			),
-			tinykeys: fileURLToPath(
-				new URL("./node_modules/tinykeys/dist/tinykeys.mjs", import.meta.url),
-			),
+			react: fileURLToPath(new URL("./node_modules/react", import.meta.url)),
+			zustand: fileURLToPath(new URL("./node_modules/zustand", import.meta.url)),
+			anser: fileURLToPath(new URL("./node_modules/anser/lib/index.js", import.meta.url)),
+			tinykeys: fileURLToPath(new URL("./node_modules/tinykeys/dist/tinykeys.mjs", import.meta.url)),
 		},
 	},
 });

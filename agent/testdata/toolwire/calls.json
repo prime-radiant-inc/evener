@@ -835,7 +835,7 @@
       "turnId": "turn_1",
       "toolName": "find_session_transcripts",
       "callId": "call_find_sessions",
-      "output": "1. local:02wMz5Txv5aIxgf9yVdd0N — Settle race in the tree\n   root · ~1 turns · updated 2026-09-27 20:00 · project evener\n\n1 match (scope: current_project, scanned 1)",
+      "output": "1. local:02wMz5Txv5aIxgf9yVdd0N — Settle race in the tree\n   root · ~1 turns · updated 2026-09-27 20:00 · project evener\n   seq -1 (title): Settle race in the tree\n\n1 match (scope: current_project, scanned 1)",
       "status": "completed",
       "completedAt": 1790625602000
     },

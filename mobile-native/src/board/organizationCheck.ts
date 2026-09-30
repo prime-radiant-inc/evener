@@ -5,7 +5,7 @@
 // changes (the pin screens' read) alike (ruling 16).
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import type { NavigationActionCheckpoint } from "../navigationActionRepository";
+import type { NavigationActionCheckpoint, NavigationOperation } from "../navigationActionRepository";
 import type { NavigationPages } from "../navigationPages";
 import { readOrganizationNavigation } from "../organizationNavigation";
 import { refreshPinNavigation } from "../pinNavigation";
@@ -42,6 +42,20 @@ export function organizationFree(
 	state: { pending: boolean; uncertain: boolean; storageUnavailable: boolean } | null,
 ): boolean {
 	return !!state && !state.pending && !state.uncertain && !state.storageUnavailable;
+}
+
+/** The organization operation the journal is holding, or null when none is.
+ *
+ * One gate for every reader that holds or dims an item while the journal has
+ * it: an operation counts while its change is pending or unresolved (the
+ * archivingSessionId rule). The three readers that used to restate this gate
+ * independently had drifted, so an unresolved change dimmed sessions but not
+ * categories or projects (issue #2703). */
+export function journalOperation(
+	state: { pending: boolean; uncertain: boolean; recovery: NavigationActionCheckpoint | null } | null,
+): NavigationOperation | null {
+	if (!state || (!state.pending && !state.uncertain)) return null;
+	return state.recovery?.operation ?? null;
 }
 
 /** Whether an organization change can go out now: the binding still holds

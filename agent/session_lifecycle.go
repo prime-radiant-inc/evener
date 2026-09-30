@@ -2183,6 +2183,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.acceptDelegateAttentionInput()
 	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
 		if errors.Is(err, errSteeringCarrierStoodDown) {
+			// A carrier that stood down ran no model turn. Record it so the
+			// claim's caller can report ran=false truthfully (issue #185 item 3).
+			s.markSteeringCarrierStoodDown(queuedIdentity.StableTurnID)
 			return "", false, nil
 		}
 		return "", false, err
@@ -3009,6 +3012,14 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 // next external wake to carry.
 func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queuedClientMutationIdentity) error {
 	turnID := identity.StableTurnID
+	// A steering carrier is a top-level accept path like every sibling
+	// accept*Input: reset active/completed provenance up front so the carrier
+	// turn never inherits the previous turn's lineage. It runs before the
+	// stand-down check too, so a carrier that does not proceed still does not
+	// leave a stale completed set for subagent.followUpProvenance to read
+	// (issue #185 item 2). The drain below re-unions the carried steer's own
+	// provenance, so nothing legitimate is erased.
+	s.replaceActiveProvenance(nil)
 	if !s.hasPendingUserSteering() {
 		s.finishNotificationNoop()
 		return errSteeringCarrierStoodDown

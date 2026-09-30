@@ -3,7 +3,7 @@ import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import type { NavigationActionCheckpoint } from "../navigationActionRepository";
 import { NavigationPages } from "../navigationPages";
 import { organizationHub, SESSION_ID } from "./organizationTestUtils";
-import { checkOrganizationChange, organizationFree } from "./organizationCheck";
+import { checkOrganizationChange, journalOperation, organizationFree } from "./organizationCheck";
 
 function setup(options?: Parameters<typeof organizationHub>[0]) {
 	const hub = organizationHub(options);
@@ -74,4 +74,18 @@ it("is free only with nothing pending, unresolved or unsaved", () => {
 	expect(organizationFree({ ...idle, pending: true })).toBe(false);
 	expect(organizationFree({ ...idle, uncertain: true })).toBe(false);
 	expect(organizationFree({ ...idle, storageUnavailable: true })).toBe(false);
+});
+
+it("holds the journal's operation only while a change is pending or unresolved", () => {
+	const held: NavigationActionCheckpoint = {
+		id: "held",
+		operation: { kind: "favorite", params: { kind: "favorite", id: "evener", favorited: true } },
+		receipt: null,
+	};
+	expect(journalOperation(null)).toBeNull();
+	expect(journalOperation({ pending: false, uncertain: false, recovery: null })).toBeNull();
+	expect(journalOperation({ pending: false, uncertain: false, recovery: held })).toBeNull();
+	expect(journalOperation({ pending: true, uncertain: false, recovery: held })).toEqual(held.operation);
+	expect(journalOperation({ pending: false, uncertain: true, recovery: held })).toEqual(held.operation);
+	expect(journalOperation({ pending: true, uncertain: false, recovery: null })).toBeNull();
 });

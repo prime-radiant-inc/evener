@@ -594,9 +594,11 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 // match the id of the entry currently at index — the queue head can be
 // consumed mid-turn, so a bare index captured from an earlier snapshot may
 // otherwise resolve to the wrong message (review F1). Returns an error —
-// leaving the queue untouched — when the session is closed, no turn is in
-// flight, index is out of range, or the id mismatches, so a failed promote
-// never silently loses or swaps the follow-up.
+// leaving the queue untouched — when the session is closed, index is out of
+// range, or the id mismatches, so a failed promote never silently loses or
+// swaps the follow-up. Unlike steer, no turn in flight is required: a queue
+// a Stop parked still offers the queue strip's "run this now", and the
+// promoted message becomes pending steering for the next turn.
 func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedID string) error {
 	release, admissionErr := s.beginRetirementMutation("input")
 	if admissionErr != nil {
@@ -610,10 +612,6 @@ func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedI
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return errors.New("promote: session is closed")
-	}
-	if s.state != SessionProcessing {
-		s.mu.Unlock()
-		return errors.New("promote: no active turn to steer")
 	}
 	s.mu.Unlock()
 	_, err := s.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{

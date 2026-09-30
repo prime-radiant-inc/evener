@@ -38,6 +38,18 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
   observer auto-open). Point-in-time; the multi-pane one is still named as
   source of truth by its implementation plan.
 
+## Older history demand
+
+The browser [transcript reader](../../cmd/evener-hub/frontend/src/panes/session/transcript/useTranscript.ts)
+retains older-page demand across transient failures, unresolved reads, and
+navigation away from a session. Returning resumes paced recovery without another gesture.
+Jump to live explicitly abandons that reader's demand, including demand from
+its removed predecessor panes. An independently open session or transcript
+keeps its demand even when its tab is inactive. Workspace pane identity and
+session ref determine which readers remain open; replacing a pane record does
+not itself abandon its demand. The thread store owns loaded content and page
+merging, and an already-started read can still merge after cancellation.
+
 ## Directory fields
 
 All directory selection uses the [shared directory-picker contract](design-system.md#directory-selection-one-shared-interaction). Read it before adding or changing a path field; older plans and parity checklists describe retired interactions.

@@ -2,7 +2,7 @@ package server
 
 // Tests for the turn/cancelQueued appwire method (issue #23): the daemon
 // removes the queued follow-up at the requested index so it is never
-// consumed, echoing the removed entry's full text and image count. Unlike
+// consumed, echoing the removed entry's full text and image count. Like
 // turn/promoteQueuedAsSteer, cancel does NOT require an active turn — a
 // queued entry is cancellable whenever it is still queued. Failures are
 // honest: closed → Conflict, negative index → InvalidParams, no callback →

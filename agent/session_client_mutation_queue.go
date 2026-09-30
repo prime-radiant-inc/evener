@@ -329,6 +329,12 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// one atomic group tied to this input's durable identity,
 		// all-or-nothing before any dependent work dispatches.
 		ctx = s.contextWithSelectedSkills(ctx, queued)
+		if queued.SteeringCarrier {
+			// The stand-down set is per-carrier-run: clear anything a previous
+			// run left so this claim's membership test reads only this call's
+			// stand-downs.
+			s.resetSteeringCarrierStoodDown()
+		}
 		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
 		// The pop above is durable and the turn loop's gate can refuse after it,
 		// when poisoning lands in between. Put the message back rather than
@@ -349,7 +355,16 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 				err = errors.Join(err, fmt.Errorf("return queued input: %w", restoreErr))
 			}
 		}
-		return result, true, err
+		// A steering carrier that stood down ran no model turn -- its steer was
+		// already gone, or its skill selection failed and nothing was carried.
+		// Report ran=false so the caller clears the interrupt runner it armed
+		// on the claim instead of leaving it pointed at a turn that never
+		// started (issue #185 item 3).
+		ran := true
+		if queued.SteeringCarrier && s.steeringCarrierStoodDown(queued.StableTurnID) {
+			ran = false
+		}
+		return result, ran, err
 	}
 	return "", false, nil
 }
@@ -503,6 +518,42 @@ func (s *Session) carrierSteerOutcome(identity queuedClientMutationIdentity) car
 		return carrierSteerUndelivered
 	}
 	return carrierSteerDelivered
+}
+
+// markSteeringCarrierStoodDown records that the carrier turn named turnID
+// stood down without running a model turn, so ProcessPendingUserInput can
+// report ran=false truthfully instead of claiming it ran a turn that never
+// started (issue #185 item 3).
+func (s *Session) markSteeringCarrierStoodDown(turnID string) {
+	if turnID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.steeringCarrierStoodDowns == nil {
+		s.steeringCarrierStoodDowns = map[string]struct{}{}
+	}
+	s.steeringCarrierStoodDowns[turnID] = struct{}{}
+	s.mu.Unlock()
+}
+
+// steeringCarrierStoodDown reports whether the carrier turn named turnID stood
+// down. Keyed by turn id so a stand-down of a different carrier drained in the
+// same input cannot false-positive on this one, and stored as a set so an
+// earlier stand-down is not erased by a later one (RoboRev #3437). The caller
+// resets the set at the start of the next carrier run.
+func (s *Session) steeringCarrierStoodDown(turnID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, stoodDown := s.steeringCarrierStoodDowns[turnID]
+	return turnID != "" && stoodDown
+}
+
+// resetSteeringCarrierStoodDown empties the stand-down set so it never grows
+// past the one ProcessPendingUserInput call that observes it.
+func (s *Session) resetSteeringCarrierStoodDown() {
+	s.mu.Lock()
+	s.steeringCarrierStoodDowns = nil
+	s.mu.Unlock()
 }
 
 // AcceptClientMutationQueue durably accepts or replays one client-authored

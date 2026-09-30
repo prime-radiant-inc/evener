@@ -3,6 +3,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { uiType } from "../design/tokens";
 import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
@@ -346,8 +347,7 @@ it("sets its status line as the prototype does: 14pt, 20pt in from the edge (aud
 		(node) => String(node.type) === "Text" && node.props.children === "Connected · evener 0.9.412 · up to date",
 	);
 	expect(line.props.style).toMatchObject({ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 6 });
-	// At the prototype's 14: spec 16.2 names no role for this line.
-	expect(line.props.style).toMatchObject({ fontSize: 14 });
+	expect(line.props.style).toMatchObject(uiType.statusLine);
 });
 
 it("says the hub is up to date, and offers no update", async () => {
