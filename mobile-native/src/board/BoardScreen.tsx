@@ -46,6 +46,7 @@ import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../accessibilitySettings";
 import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
 import { ChipStrip } from "../design/ChipStrip";
+import { scaledType, uiType } from "../design/tokens";
 import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "../design/systemGlass";
 import { useHeaderTextScale } from "../headerText";
 import type { Routes } from "../screens";
@@ -2008,8 +2009,7 @@ function SummaryLine({
 						<Text
 							allowFontScaling={allowFontScaling}
 							style={{
-								fontSize: 14 * scale,
-								lineHeight: 20 * scale,
+								...scaledType(uiType.statusLine, scale),
 								fontWeight: band === "needsYou" ? "600" : "400",
 								color: band === "needsYou" ? palette.attentionInk : palette.inkMid,
 							}}
