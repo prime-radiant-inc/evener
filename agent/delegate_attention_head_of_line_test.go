@@ -59,7 +59,8 @@ func TestAFailedRestoreTakesTheDelegatesTurn(t *testing.T) {
 	root.drivePendingStableDelegateAttention()
 	c := root.delegateController
 	c.mu.Lock()
-	_, taken := c.attentionDriveTurns[fenced.grandchildDelegateID]
+	state := c.attention[fenced.grandchildDelegateID]
+	taken := state != nil && state.driveTurn != 0
 	c.mu.Unlock()
 	if !taken {
 		t.Fatal("a failed restore left the delegate at the front of the line")

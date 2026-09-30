@@ -195,7 +195,7 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 		if a.CurrentRunOpen || a.Phase != delegatestore.PhaseIdle && a.Phase != delegatestore.PhaseClosed || len(a.PendingDeliveries) != 0 || a.PendingStopSeq != 0 || a.NeedsAttention || a.PreparedTerminal != nil {
 			block(id)
 		}
-		if len(c.attentionWakeIDs[id]) != 0 {
+		if state := c.attention[id]; state != nil && len(state.wakeIDs) != 0 {
 			block(id)
 		}
 		if live := c.live[id]; live != nil {

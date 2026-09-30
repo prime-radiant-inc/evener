@@ -616,7 +616,7 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 			}
 			c.mu.Lock()
 			c.rootRuntime = root
-			c.attentionWakeIDs["dlg_target"] = map[string]struct{}{"attention-owed": {}}
+			c.attentionStateLocked("dlg_target").wakeIDs = map[string]struct{}{"attention-owed": {}}
 			c.mu.Unlock()
 			tc.release(t, c, lease, runtime)
 			select {
