@@ -97,6 +97,9 @@ func (f fakeSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.J
 func (f fakeSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 	return appwire.JobsOutputResponse{}, nil
 }
+func (f fakeSource) JobGet(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	return appwire.JobsGetResponse{}, nil
+}
 func (f fakeSource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	return nil, nil
 }

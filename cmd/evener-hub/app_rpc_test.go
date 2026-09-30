@@ -8004,6 +8004,10 @@ func (s *relayLifecycleSource) JobOutput(context.Context, appwire.JobsOutputPara
 	return appwire.JobsOutputResponse{}, appwire.Unavailable("relay lifecycle source does not read job output")
 }
 
+func (s *relayLifecycleSource) JobGet(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	return appwire.JobsGetResponse{}, appwire.Unavailable("relay lifecycle source does not get jobs")
+}
+
 func (s *relayLifecycleSource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	out := make(chan appwire.Notification)
 	go func() {
@@ -12909,6 +12913,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerTasksList,
 		appwire.MethodEvenerJobsList,
 		appwire.MethodEvenerJobsOutput,
+		appwire.MethodEvenerJobsGet,
 		appwire.MethodEvenerThreadTranscriptsList,
 		appwire.MethodEvenerPathsComplete,
 		appwire.MethodEvenerDirsCreate,

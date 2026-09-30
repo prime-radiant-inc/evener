@@ -573,8 +573,37 @@ func (s *RemoteHubSource) translateOut(out any) error {
 		}
 	case *appwire.JobsListResponse:
 		response.Data = s.translateActivityRefs(response.Data)
+	case *appwire.JobsGetResponse:
+		s.translateActivityJobNode(response.Data)
 	}
 	return nil
+}
+
+// translateActivityJobNode rewrites the single job node a jobs/get response
+// carries, under the same declared-field policy the tree walk keeps: only a
+// payload recognized as a JobActivityJob (its non-omitempty identity fields
+// present and typed) is touched, so an unrelated object that happens to carry
+// an ownerRef key reaches the controller untouched.
+func (s *RemoteHubSource) translateActivityJobNode(value any) {
+	job, ok := value.(map[string]any)
+	if !ok || !activityJobRecognized(job) {
+		return
+	}
+	s.translateActivityJob(job)
+}
+
+// activityJobRecognized reports whether a decoded jobs/get object is the
+// activity-tree job-node shape, by the identity fields JobActivityJob declares
+// without omitempty: jobId and ownerSessionId are always written, as strings.
+// Recognition is a cheap discriminator, not a full decode: the fields the walk
+// rewrites are its own declared refs, and everything else survives
+// byte-for-byte either way.
+func activityJobRecognized(node map[string]any) bool {
+	if _, ok := node["jobId"].(string); !ok {
+		return false
+	}
+	_, ok := node["ownerSessionId"].(string)
+	return ok
 }
 
 // translateActivityRefs rewrites the session refs embedded in a remote hub's

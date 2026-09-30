@@ -501,6 +501,10 @@ func (s *scriptedAppSource) JobOutput(context.Context, appwire.JobsOutputParams)
 	return appwire.JobsOutputResponse{}, appwire.Unavailable("scripted source does not read job output")
 }
 
+func (s *scriptedAppSource) JobGet(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	return appwire.JobsGetResponse{}, appwire.Unavailable("scripted source does not get jobs")
+}
+
 func (s *scriptedAppSource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	out := make(chan appwire.Notification, len(s.notifications))
 	for _, notification := range s.notifications {

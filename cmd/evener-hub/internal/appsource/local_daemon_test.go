@@ -463,6 +463,11 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 		outputParams = params
 		return appwire.JobsOutputResponse{Data: map[string]any{"jobId": params.JobID, "output": "hello"}}, nil
 	})
+	var getParams appwire.JobsGetParams
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsGet, func(_ context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+		getParams = params
+		return appwire.JobsGetResponse{Data: map[string]any{"jobId": params.JobID, "command": "make build"}}, nil
+	})
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
 
@@ -503,6 +508,18 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	}
 	if outputParams.JobID != "job_1" || outputParams.MaxBytes != 1024 {
 		t.Fatalf("params forwarded = %+v", outputParams)
+	}
+
+	get, err := source.JobGet(ctx, appwire.JobsGetParams{Ref: "local:th_1", JobID: "job_1"})
+	if err != nil {
+		t.Fatalf("JobGet: %v", err)
+	}
+	job, ok := get.Data.(map[string]any)
+	if !ok || job["jobId"] != "job_1" || job["command"] != "make build" {
+		t.Fatalf("JobGet data = %#v, want the daemon's own job payload", get.Data)
+	}
+	if getParams.Ref != "local:th_1" || getParams.JobID != "job_1" {
+		t.Fatalf("get params forwarded = %+v", getParams)
 	}
 }
 

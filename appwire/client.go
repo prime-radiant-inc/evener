@@ -718,6 +718,12 @@ func (c *Client) JobOutput(ctx context.Context, params JobsOutputParams) (JobsOu
 	return out, err
 }
 
+func (c *Client) JobsGet(ctx context.Context, params JobsGetParams) (JobsGetResponse, error) {
+	var out JobsGetResponse
+	err := c.request(ctx, MethodEvenerJobsGet, params, &out)
+	return out, err
+}
+
 func (c *Client) PathsComplete(ctx context.Context, params PathsCompleteParams) (PathsCompleteResponse, error) {
 	var out PathsCompleteResponse
 	err := c.request(ctx, MethodEvenerPathsComplete, params, &out)

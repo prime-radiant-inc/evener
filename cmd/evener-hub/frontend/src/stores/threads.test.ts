@@ -6591,6 +6591,24 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     },
   };
   const OUTPUT_DATA = { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true };
+  // The single-job read carries the activity-job shape verbatim (appwire/types.go's
+  // JobActivityJob), including the untruncated command.
+  const JOB_DATA = {
+    jobId: "job_1",
+    ownerSessionId: "sess_root",
+    ownerRef: "ref_a",
+    type: "shell",
+    status: "completed",
+    terminal: true,
+    background: false,
+    hasOutput: true,
+    description: "run tests",
+    command: "go test ./... -run Foo -count=1",
+    startedAt: "2026-07-31T12:00:00Z",
+    endedAt: "2026-07-31T12:01:00Z",
+    exitCode: 0,
+    outputBytes: 123,
+  };
 
   test("listJobs sends evener/jobs/list with {ref} and returns the raw data field", async () => {
     const fake = connectFakeClient();
@@ -6640,9 +6658,21 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     expect(calls[1]?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
   });
 
-  test("both throw when no client has been connected yet", async () => {
+  test("jobGet sends evener/jobs/get with {ref, jobId} and returns the raw data field", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/jobs/get", () => ({ data: JOB_DATA }));
+
+    const result = await threadsStore.getState().jobGet("ref_a", "job_1");
+
+    const call = fake.calls.find((c) => c.method === "evener/jobs/get");
+    expect(call?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
+    expect(result).toEqual(JOB_DATA);
+  });
+
+  test("each job read throws when no client has been connected yet", async () => {
     await expect(threadsStore.getState().listJobs("ref_a")).rejects.toThrow(/no client connected/i);
     await expect(threadsStore.getState().jobOutput("ref_a", "job_1")).rejects.toThrow(/no client connected/i);
+    await expect(threadsStore.getState().jobGet("ref_a", "job_1")).rejects.toThrow(/no client connected/i);
   });
 
   // Issue #195's RCA: both are read-only, so they wait out a reconnect (via
