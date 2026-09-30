@@ -3,9 +3,9 @@ package hub
 import (
 	"slices"
 	"strings"
-	"unicode"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 const (
@@ -26,11 +26,11 @@ type searchWord struct {
 // searchSnippet is text as one line around its first word that a search word
 // prefixes, letter case aside, cut to searchSnippetRunes at word breaks, with
 // every such word marked (S14). Both the message's words and the search
-// tokens split on the messages index's own tokenizer boundary (letters and
-// digits; everything else, "_" included, a break) so a mark falls exactly
-// where the index matched, even when a query token like "settle_race" holds
-// an underscore that unicode61 splits into "settle" and "race" in the index.
-// With no such word the snippet is the message's opening.
+// tokens split on the shared index word rule (hubcore.IsIndexWordRune: letters
+// and digits; everything else, "_" included, a break), so a mark falls exactly
+// where the index matched: a query like "settle_race" arrives as "settle" and
+// "race" and marks both. With no such word the snippet is the message's
+// opening.
 func searchSnippet(text string, tokens []string) []appwire.SearchSnippetPart {
 	line := []rune(appwire.Excerpt(text, len(text)))
 	words := searchWords(line, tokens)
@@ -97,47 +97,29 @@ func searchSnippet(text string, tokens []string) []appwire.SearchSnippetPart {
 }
 
 // searchWords splits line into its words, marking each one a query word
-// prefixes. isWord matches the messages index's unicode61 tokenizer, which
-// treats "_" as a separator unlike hubcore.SearchTokens (shared with title
-// and prompt search, where the index never splits on it); splitIndexWords
-// below re-splits the query tokens the same way so both sides agree.
+// prefixes. It splits on the same rule as the search's own tokens
+// (hubcore.IsIndexWordRune, the messages index's unicode61 boundary) so a mark
+// falls on exactly the words the query matched.
 func searchWords(line []rune, tokens []string) []searchWord {
 	var words []searchWord
-	isWord := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
-	matchWords := splitIndexWords(tokens)
 	for i := 0; i < len(line); {
-		if !isWord(line[i]) {
+		if !hubcore.IsIndexWordRune(line[i]) {
 			i++
 			continue
 		}
 		start := i
-		for i < len(line) && isWord(line[i]) {
+		for i < len(line) && hubcore.IsIndexWordRune(line[i]) {
 			i++
 		}
 		lower := strings.ToLower(string(line[start:i]))
 		match := false
-		for _, token := range matchWords {
+		for _, token := range tokens {
 			if strings.HasPrefix(lower, token) {
 				match = true
 				break
 			}
 		}
 		words = append(words, searchWord{start: start, end: i, match: match})
-	}
-	return words
-}
-
-// splitIndexWords re-splits each search token on everything the messages
-// index's unicode61 tokenizer treats as a separator (letters and digits are
-// word characters, "_" included is not), the same way FTS5 re-tokenizes a
-// bareword query term against the index: "settle_race" becomes "settle" and
-// "race", matched independently rather than as one joined word.
-func splitIndexWords(tokens []string) []string {
-	var words []string
-	for _, token := range tokens {
-		words = append(words, strings.FieldsFunc(token, func(r rune) bool {
-			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-		})...)
 	}
 	return words
 }

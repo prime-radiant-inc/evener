@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
@@ -603,10 +602,9 @@ WHERE messages_fts MATCH ?`, ftsQuery(query))
 }
 
 // hasMessageSearchWord reports whether any token holds at least
-// minMessageSearchTokenRunes letters or digits. Only those count: the index's
-// unicode61 tokenizer treats an underscore as a separator, so counting it
-// toward a token's length would let "_a" or "__" (each two runes) reach FTS5
-// as the broad single-letter prefix search the minimum exists to reject.
+// minMessageSearchTokenRunes letters or digits, so a query whose only word is
+// a single letter does not reach FTS5 as the broad single-letter prefix search
+// the minimum exists to reject.
 func hasMessageSearchWord(tokens []string) bool {
 	for _, token := range tokens {
 		if wordRuneCount(token) >= minMessageSearchTokenRunes {
@@ -616,11 +614,11 @@ func hasMessageSearchWord(tokens []string) bool {
 	return false
 }
 
-// wordRuneCount is how many of s's runes are letters or digits.
+// wordRuneCount is how many of s's runes are index word characters.
 func wordRuneCount(s string) int {
 	n := 0
 	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		if IsIndexWordRune(r) {
 			n++
 		}
 	}
