@@ -522,6 +522,26 @@ func TestSystemPromptLoadedSources(t *testing.T) {
 	}
 }
 
+// TestSystemPromptDiagramGuidanceClaimsNoRendering pins the #3455 fix: the
+// diagram guidance must not tell the model that the reader's app renders
+// mermaid, because some clients (cmd/evener-tui and one-shot `evener run`)
+// show the ```mermaid fence as its source. The guidance itself stays, because
+// the web hub and native app do render it.
+func TestSystemPromptDiagramGuidanceClaimsNoRendering(t *testing.T) {
+	t.Parallel()
+	s := buildRootInteractiveAnthropicSession(t)
+	prompt, warning := s.renderSystemPrompt(s.env)
+	if warning != "" {
+		t.Fatalf("render failed: %s", warning)
+	}
+	if strings.Contains(prompt, "which the user's app renders") {
+		t.Errorf("the diagram guidance still claims the reader's app renders mermaid, false on the TUI and one-shot `evener run`:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "```mermaid code block") {
+		t.Errorf("the mermaid diagram guidance is missing from the rendered prompt")
+	}
+}
+
 // drainPromptLoadedLabels reads the buffered startup events without
 // blocking and returns the PROMPT_LOADED labels in emission order.
 func drainPromptLoadedLabels(s *Session) []string {

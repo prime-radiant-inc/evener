@@ -53,6 +53,7 @@ import {
 	FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
 	MODELS_NOT_CHECKED,
 	PROVIDERS_NOT_LOADED,
+	providerGoneWhileEditing,
 	UNCONFIRMED_CHANGE,
 	UNCONFIRMED_CREDENTIAL,
 } from "../providers/providerCopy";
@@ -275,7 +276,12 @@ function Providers({
 			setKey("");
 		}
 		if (!instance) {
-			setConfiguration((value) => (value === "edit" ? null : value));
+			// An edit open on a provider that left the hub had nothing left to be
+			// saved to: say so rather than drop the draft silently.
+			if (configuration === "edit") {
+				if (selected !== null) setActionWarning(providerGoneWhileEditing(selected));
+				setConfiguration(null);
+			}
 			setSelected(null);
 			setEditingCredential(null);
 			setCredentialTarget(null);
@@ -294,7 +300,7 @@ function Providers({
 			setCredentialTarget(null);
 			setKey("");
 		}
-	}, [instance, editingCredential, credentialTarget]);
+	}, [instance, editingCredential, credentialTarget, configuration, selected]);
 	function editCredential(kind: "apiKey" | "credentialJson", target: InstanceEntry) {
 		setActionError(null);
 		setEditingCredential(kind);
@@ -363,6 +369,9 @@ function Providers({
 	function openDetail(name: string) {
 		detailVisitId.current += 1;
 		setActionError(null);
+		// A warning speaks for the list or the provider it came from, not the
+		// one opening now.
+		setActionWarning(null);
 		setSelected(name);
 		onOpenDetail(name);
 	}
@@ -776,6 +785,8 @@ function Providers({
 								disabled={writeHeld}
 								onPress={whenReady(canUseConnection, () => {
 									close();
+									// A warning about another provider doesn't sit above a new form.
+									setActionWarning(null);
 									setConfiguration("create");
 								})}
 							/>
