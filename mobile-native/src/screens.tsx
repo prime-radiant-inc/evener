@@ -1646,24 +1646,33 @@ export function ConversationScreen({
 				readerContentHeight.current,
 				listContentMinHeight(readerViewportHeight.current, listUnderBar),
 			);
-			// Already there: the opening has landed.
+			// Already there: the opening has landed, if the list reaches the row.
 			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) {
-				landOpening();
+				landRestore(appliedReaderRestore.current?.clamped ?? false);
 				return;
 			}
+			const clamped = scrollOffset !== desired;
 			appliedReaderRestore.current = {
 				key: currentKey,
 				height: measurement.height,
 				offset: scrollOffset,
-				clamped: scrollOffset !== desired,
+				clamped,
 			};
 			captureSuppressed.current = true;
 			timeline.current?.scrollToOffset({
 				offset: scrollOffset,
 				animated: false,
 			});
-			landOpening();
+			landRestore(clamped);
 		}
+	}
+	// A restore the list can't reach yet (clamped) lands the opening only once
+	// the last row has measured: before that the rows below the reading position
+	// are estimates, the content grows as they render, and the list would show
+	// short of the row and then move. After it, as far as the list reaches is
+	// where it rests. The opening's cap still shows it if that never happens.
+	function landRestore(clamped: boolean) {
+		if (!clamped || lastRowMeasured()) landOpening();
 	}
 	// The latest restore, with this render's rows, for the layout timer below.
 	const restoreReadingPositionNow = useRef(restoreReadingPosition);
