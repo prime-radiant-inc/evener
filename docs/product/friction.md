@@ -7,8 +7,9 @@ cost and the [subsystem map](subsystems.md) to find the owning code.
 
 Cases with agreed behavior changes remain open until implemented and verified.
 **Decision** records an agreed product outcome; **Discuss** describes an unresolved
-proposal. **Deferred** cases retain their evidence but are not selected for
-behavior changes without material new evidence. None is an implementation plan
+proposal. **Deferred** cases retain their evidence and any agreed direction but
+are not selected for implementation unless their deferral condition changes or
+the user explicitly resumes the work. None is an implementation plan
 or a claim that behavior has changed.
 Discuss cases individually before changing their behavior. Preserve the user's
 work and chosen boundaries while deciding how the product restores capability.
@@ -65,8 +66,8 @@ and should not be presented as reproduced production incidents.
 | [T01](#t01-tool-call-parking) | High | Repeated failure parks an operation even after the dependency heals | S14 |
 | [T02](#t02-mcp-initial-discovery-recovery) | High | An initially unavailable MCP server never contributes tools to the session | S18, S19 |
 | [T03](#t03-unsandboxed-tool-scope) | Medium | Sandbox-off tools disagree about usable filesystem scope | S14 |
-| [T04](#t04-read-only-directory-symlinks) | Medium | A derived read-only delegate cannot browse an allowed target through a symlink | S12, S14 |
-| [T05](#t05-approval-scope-and-lifetime) | Medium | Narrow one-call approval paths repeatedly interrupt authorized work | S12, S14 |
+| [T04](#t04-read-only-directory-symlinks) | Medium (deferred) | A derived read-only delegate cannot browse an allowed target through a symlink | S12, S14 |
+| [T05](#t05-approval-scope-and-lifetime) | Medium (deferred) | Narrow one-call approval paths repeatedly interrupt authorized work | S12, S14 |
 | [U01](#u01-tui-uncertain-submission) | High | A lost send acknowledgement becomes a manual new submission | S04, S05, S11 |
 | [U02](#u02-tui-failed-submission-attachments) | High | Preserving a newer draft discards the older failed submission's images | S04, S11 |
 | [D01](#d01-diagnostic-repair-authority) | Medium | Bundled repair instructions prohibit product fixes and require byte-identical voting | S21 |
@@ -1102,6 +1103,10 @@ their stated boundaries.
 
 ### T04 Read-only directory symlinks
 
+**Deferred.** Restricted-mode and permission refinements are outside the active
+work queue. Everyday use is predominantly unsandboxed, so prioritize recovery and
+usability in that mode. Preserve the agreed direction below for resumed work.
+
 **Current behavior.** An automatically derived read-only delegate refuses
 directory symlink traversal even when the resolved target is inside its allowed
 tree. Browsing can map that refusal to not-exist and omit usable content. The
@@ -1129,6 +1134,11 @@ prohibited destination. A refused or incomplete traversal accurately identifies
 the limitation and does not imply that the unexamined content is absent.
 
 ### T05 Approval scope and lifetime
+
+**Deferred.** Approval-system work is outside the active work queue. Everyday use
+is predominantly unsandboxed, so retain the decisions below without scheduling
+their implementation or further approval-design discussion. T03 remains active
+because it removes unintended restrictions from sandbox-off operation.
 
 **Current behavior.** Sandbox escalation grants one invocation and only supports
 read_file, write_file and edit_file on a root session with an active subscriber.
@@ -1180,12 +1190,17 @@ proceed automatically after approval. If an operation has already partially
 applied, inspect and reconcile its effects before retrying completed work.
 Implementation remains pending.
 
-**Discuss — shell tools and one-shot commands.** Define how shell tools honor
-the same grant and how recovery handles commands that have already partially
-executed before an access denial. Decide how a one-shot command without a channel
-for receiving approval reports an unmet access need. The managed-chat decision
-does not require such a command to wait indefinitely. Preserve the scope the
-user actually approved.
+**Decision — shell tools.** Apply the same named resource and access level to
+subsequent shell commands and their child processes. Request newly needed access
+through the chat. After approval, inspect the command's output and resulting
+state, then continue or repair the operation without blindly repeating completed
+effects. Arbitrary commands may discover their needed paths while running, so
+file-patch permission preflight does not establish safe whole-command replay.
+Implementation is deferred with the rest of this case.
+
+**Discuss when resumed — one-shot commands.** Decide how a one-shot command
+without a channel for receiving approval reports an unmet access need. The
+managed-chat decision does not require such a command to wait indefinitely.
 
 **Acceptance.** A grant with clearly presented scope permits the intended
 read/edit/read sequence without repeated prompts, including after reconnect or
@@ -1201,8 +1216,10 @@ approval resumes the affected work without a new user instruction. Cancellation
 or superseding instructions prevent obsolete work from restarting. Listing,
 search and patches honor the same resource and access level. A batch with missing
 permission requests the necessary access together before making changes; recovery
-does not blindly replay its already-completed edits. Shell and one-shot command
-acceptance criteria depend on the remaining product decisions.
+does not blindly replay its already-completed edits. Shell commands and their
+children receive the stated filesystem access; recovery reconciles partial
+effects before resuming or retrying. One-shot command acceptance criteria depend
+on the remaining product decision.
 
 ### U01 TUI uncertain submission
 
