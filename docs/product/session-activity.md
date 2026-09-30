@@ -70,7 +70,8 @@ and end reasons remain useful, and retained watch history has a bounded lifetime
 
 Rows are ordered by creation time and stable identity. An opaque cursor fixes
 the initial membership boundary for a walk; new creations appear after a fresh
-root read. Status fields reflect the state read for each page, so a job can finish
+root read even when timestamps tie or the clock moves backward. Status fields
+reflect the state read for each page, so a job can finish
 while its collection is being paged. This is not a transaction across the three
 collections.
 
@@ -93,7 +94,8 @@ is decoded one event at a time. One event and its existing atomic fold count as
 one work unit under the journal's record-size limit; cancellation is checked
 between events. These are input and work bounds, not a hard CPU or wall-clock
 deadline. See the [domain behavior tests](../../agent/session_activity_test.go)
-and [journal scanner](../../agent/internal/jobstore/read_page.go).
+and the [job](../../agent/internal/jobstore/read_page.go) and
+[delegate](../../agent/internal/delegatestore/read_page.go) journal scanners.
 
 Local caller cancellation closes the request's owned daemon connection. Remote
 reads use a shared connection: cancellation stops waiting, while an already
@@ -114,6 +116,12 @@ seconds, continuing at that cap while observed. Reconnect and explicit refresh
 can wake recovery. Proven missing resources, invalid requests and unsupported
 methods do not spin. Incomplete ancestry progresses at a paced interval instead
 of using failure backoff. Disposal cancels timers and ignores late results.
+
+A workspace alias can resolve to a replacement session. Resync fences pending
+responses, and a changed resolved session ID retires the former session's summary,
+rows and cursors together before publishing replacement evidence. A changed opaque
+epoch for the same session does not erase useful rows. The requested alias remains
+the routing and subscription key throughout recovery.
 
 The [thread subscription lease](../../appwire-client/typescript/threadSubscription.ts)
 shares membership by actual client object and requested ref. A first transcript

@@ -141,8 +141,10 @@ bounded retained collection, not a promise of an unlimited durable audit log.
 
 Collections use a stable order by creation instant and stable resource ID,
 newest first. Cursors are opaque and bound to resolved session identity, epoch,
-resource, scope, an initial creation-order high-water mark, and the last emitted
-key. They contain no filesystem path supplied by the client. They are not list
+resource, scope, an initial source-admission boundary, and the last emitted
+creation-order key. Admission is separate from wall-clock ordering, so a later
+creation cannot enter an existing walk by carrying an earlier or tied timestamp.
+They contain no filesystem path supplied by the client. They are not list
 offsets and are not invalidated by an ordinary status or output update.
 
 Pagination is a live view over the initial membership high-water mark: fields
