@@ -319,6 +319,61 @@ it("leaves a form that is starting alone when a refreshed list lands", async () 
 	await start;
 });
 
+// An announcement that arrives while a load or a start is out is not
+// dropped: the form's list is read again once it settles (Jesse, 2026-09-30).
+it("reads the list again after a load when an announcement arrived during it", async () => {
+	const { store, calls } = setup();
+	const initial = store.getState().setCwd("/project");
+	calls[0]?.response.resolve({ data: [model] });
+	await initial;
+	const load = store.getState().loadModels(true);
+	await store.getState().refreshModels();
+	const reads = () => calls.filter((call) => call.method === "model/list");
+	expect(reads()).toHaveLength(2);
+	reads()[1]?.response.resolve({ data: [model] });
+	await load;
+	expect(reads()).toHaveLength(3);
+	const added = { provider: "p", model: "b" };
+	reads()[2]?.response.resolve({ data: [model, added] });
+	await flush();
+	expect(store.getState().models).toEqual([model, added]);
+});
+
+it("reads the list again after a start when an announcement arrived during it", async () => {
+	const { store, calls } = setup();
+	const initial = store.getState().setCwd("/project");
+	calls[0]?.response.resolve({ data: [model] });
+	await initial;
+	store.getState().setPrompt("go");
+	const start = store.getState().submit();
+	await store.getState().refreshModels();
+	const reads = () => calls.filter((call) => call.method === "model/list");
+	expect(reads()).toHaveLength(1);
+	calls.find((call) => call.method === "thread/start")?.response.reject(new Error("hub unavailable"));
+	await start;
+	expect(reads()).toHaveLength(2);
+});
+
+// A refreshed list that lands while a start is out is the other way an
+// announcement meets a start: it is read again once the start settles.
+it("reads the list again after a start when a refreshed list landed during it", async () => {
+	const { store, calls } = setup();
+	const initial = store.getState().setCwd("/project");
+	calls[0]?.response.resolve({ data: [model] });
+	await initial;
+	store.getState().setPrompt("go");
+	const refresh = store.getState().refreshModels();
+	const start = store.getState().submit();
+	const reads = () => calls.filter((call) => call.method === "model/list");
+	reads()[1]?.response.resolve({ data: [] });
+	await refresh;
+	expect(reads()).toHaveLength(2);
+	expect(store.getState().models).toEqual([model]);
+	calls.find((call) => call.method === "thread/start")?.response.reject(new Error("hub unavailable"));
+	await start;
+	expect(reads()).toHaveLength(3);
+});
+
 it("refreshes nothing before the form's list is loaded", async () => {
 	const { store, calls } = setup();
 	void store.getState().setCwd("/project");
