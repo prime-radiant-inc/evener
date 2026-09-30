@@ -1,7 +1,7 @@
 // The Hub's Display page (spec 12): this phone's appearance and reading font,
-// and the hub's default detail level, which Default detail level pushes to
-// choose. "Show model on Board rows" waits for S17 (ruling 8), so it isn't
-// here.
+// the hub's default detail level, which Default detail level pushes to
+// choose, and whether Board rows show their model (S17's model name on
+// navigation summaries, ruling 8).
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useState } from "react";
 import { useDisplayChoices, useDisplayPreferences } from "../display/displayContext";
@@ -14,7 +14,7 @@ import {
 } from "../display/displayPreferences";
 import { useNativePreferences } from "../NativePreferencesProvider";
 import { detailLevel } from "../session/detailLevels";
-import { GroupedPage, GroupFooter, GroupLabel, Group, Row, Segmented } from "../sheet/Grouped";
+import { GroupedPage, GroupFooter, GroupLabel, Group, Row, Segmented, SwitchRow } from "../sheet/Grouped";
 import { SheetStatus } from "../sheet/SheetStatus";
 import type { HubRoutes } from "./hubSheetContext";
 
@@ -71,12 +71,8 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 			/>
 			<GroupFooter>For what agents write: messages, plans and documents.</GroupFooter>
 			{unsaved === "readingFont" ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
-			{transcript?.support === "unsupported" ? (
-				<>
-					<GroupLabel>Default detail level</GroupLabel>
-					<GroupFooter>This hub doesn't keep a default detail level.</GroupFooter>
-				</>
-			) : (
+			{/* A hub that keeps no default level shows nothing here (spec 14). */}
+			{transcript?.support === "unsupported" ? null : (
 				<>
 					{/* The row names the setting; a label above would say it twice. */}
 					<Group>
@@ -90,6 +86,14 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 					<GroupFooter>Each session can override this from its menu.</GroupFooter>
 				</>
 			)}
+			<Group>
+				<SwitchRow
+					label="Show model on Board rows"
+					value={choices.showModel}
+					onChange={(showModel) => choose({ showModel }, "showModel")}
+				/>
+			</Group>
+			{unsaved === "showModel" ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
 		</GroupedPage>
 	);
 }

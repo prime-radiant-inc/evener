@@ -383,24 +383,27 @@ export interface LastLine {
 	task?: string;
 	project?: string;
 	host?: string;
+	model?: string;
 }
 
 /** The row's last line (spec 7.2): the task in progress first, then the
- * project and host, each only when it differs from the fleet's usual one.
+ * project and host, each only when it differs from the fleet's usual one,
+ * then the model's display name (S17) when "Show model on Board rows" is on.
  * Subagent failures never appear here; they show only in the session's
- * Subagents chip and list. The model name (the "Show model on Board rows"
- * setting) isn't implemented yet. */
+ * Subagents chip and list. */
 export function lastLine(
 	row: NavigationSessionSummary,
 	usual: Usual,
 	hostLabel: (hostId: string) => string,
+	showModel = false,
 ): LastLine | null {
 	const line: LastLine = {};
 	const task = taskLine(row);
 	if (task) line.task = task;
 	if (row.project && row.project !== usual.project) line.project = row.project;
 	if (row.host_id !== usual.host) line.host = hostLabel(row.host_id);
-	return line.task || line.project || line.host ? line : null;
+	if (showModel && row.model_name) line.model = row.model_name;
+	return line.task || line.project || line.host || line.model ? line : null;
 }
 
 /** Names a host by its manifest source's label. A host the manifest doesn't

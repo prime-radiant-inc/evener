@@ -15,6 +15,7 @@ import { localSessionId } from "../sessionDeletionResult.js";
 import { parseActivityTree } from "@evener/appwire-client";
 import { flattenSubagents, subagentLastLine, tallySubagents } from "../subagents/subagentModel";
 import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId } from "./demoFleet.js";
+import { DEMO_MODEL_NAMES } from "./demoSetup.js";
 
 const STARTUP = Date.parse("2026-09-26T18:00:00.000Z");
 
@@ -58,6 +59,16 @@ describe("the tool families session (EVENER_DEMO_FLEET_TOOLS)", () => {
 		expect(liveRows(createDemoFleet({ now: STARTUP })).map((row) => row.session_id)).not.toContain(
 			demoSessionId("s-tools"),
 		);
+	});
+});
+
+// S17: a summary carries its model's display name, for "Show model on Board
+// rows"; a session data.js gives no model carries none.
+describe("the fleet's model names", () => {
+	it("names a session's model by its catalog display name", () => {
+		const rows = liveRows(createDemoFleet({ now: STARTUP, modelNames: DEMO_MODEL_NAMES }));
+		expect(findRow(rows, "s-pr2138")).toMatchObject({ model_name: "GLM 5.3 Vision" });
+		expect(rows.some((row) => row.model_name === undefined)).toBe(true);
 	});
 });
 

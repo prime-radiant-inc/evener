@@ -481,6 +481,26 @@ describe("the last line prints project and host only when unusual", () => {
 	});
 });
 
+// "Show model on Board rows" (spec 7.2, 12): the model's display name ends
+// the last line when the setting is on and the row carries one (S17).
+describe("the last line's model", () => {
+	const fleet = [row("a", { model_name: "GLM 5.3 Vision" }), row("b"), row("c")];
+	const label = (id: string) => id;
+
+	it("ends the line with the model when the setting is on", () => {
+		const withTask = row("d", { model_name: "GPT-5", tasks: { total: 7, done: 3, current: "Fix it" } });
+		expect(lastLine(withTask, usualPlace(fleet), label, true)).toEqual({ task: "Task 4 of 7 · Fix it", model: "GPT-5" });
+		expect(lastLine(fleet[0] as NavigationSessionSummary, usualPlace(fleet), label, true)).toEqual({
+			model: "GLM 5.3 Vision",
+		});
+	});
+
+	it("leaves the model out when the setting is off or the row has none", () => {
+		expect(lastLine(fleet[0] as NavigationSessionSummary, usualPlace(fleet), label, false)).toBeNull();
+		expect(lastLine(fleet[1] as NavigationSessionSummary, usualPlace(fleet), label, true)).toBeNull();
+	});
+});
+
 describe("host labels from the manifest's sources", () => {
 	const sources = [{ id: "local", label: "Laptop", kind: "local", online: true }];
 

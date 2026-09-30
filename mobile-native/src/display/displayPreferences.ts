@@ -1,5 +1,5 @@
-// This phone's display choices (spec 12's Display): the appearance and the
-// reading font. They belong to the phone, not a hub, so they survive switching
+// This phone's display choices (spec 12's Display): the appearance, the
+// reading font, and whether Board rows show their model. They belong to the phone, not a hub, so they survive switching
 // hubs and aren't cleared when a hub is removed.
 import type { SyncStringStorage } from "../syncStringStorage";
 
@@ -9,6 +9,9 @@ export type ReadingFont = "serif" | "sans";
 export interface DisplayChoices {
 	appearance: AppearanceChoice;
 	readingFont: ReadingFont;
+	/** "Show model on Board rows" (spec 7.2, 12): a row's last line ends with
+	 * its model's display name. */
+	showModel: boolean;
 }
 
 /** The appearances in the order Display offers them. */
@@ -17,7 +20,7 @@ export const APPEARANCE_CHOICES: readonly AppearanceChoice[] = ["system", "light
 /** Each appearance as Display names it. */
 export const APPEARANCE_LABELS: Record<AppearanceChoice, string> = { system: "System", light: "Light", dark: "Dark" };
 
-export const DEFAULT_DISPLAY: DisplayChoices = { appearance: "system", readingFont: "serif" };
+export const DEFAULT_DISPLAY: DisplayChoices = { appearance: "system", readingFont: "serif", showModel: false };
 export const DISPLAY_KEY = "evener.native.display";
 
 export type DisplayStorage = Pick<SyncStringStorage, "getItemSync" | "setItemSync">;
@@ -43,6 +46,7 @@ function read(storage: DisplayStorage): DisplayChoices {
 			typeof record.readingFont === "string" && FONTS.includes(record.readingFont)
 				? (record.readingFont as ReadingFont)
 				: DEFAULT_DISPLAY.readingFont,
+		showModel: typeof record.showModel === "boolean" ? record.showModel : DEFAULT_DISPLAY.showModel,
 	};
 }
 
@@ -69,7 +73,10 @@ export class DisplayPreferences {
 	 * the choice has applied, so the page can say it won't survive a restart. */
 	set(change: Partial<DisplayChoices>): void {
 		const next = { ...this.choices, ...change };
-		const unchanged = next.appearance === this.choices.appearance && next.readingFont === this.choices.readingFont;
+		const unchanged =
+			next.appearance === this.choices.appearance &&
+			next.readingFont === this.choices.readingFont &&
+			next.showModel === this.choices.showModel;
 		// The same choice again still stores it when the last store failed.
 		if (unchanged && this.stored) return;
 		// Marked unstored before anything that can throw: a listener or the
