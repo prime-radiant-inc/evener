@@ -32,6 +32,8 @@ const tree: ActivityTree = {
 };
 const rows = flattenSubagents(tree);
 const coordinator = { ref: "local:coord", title: "Get PR 2138 Test Clean" };
+// The view each test starts from, naming only what it changes.
+const view = { filter: "all" as const, query: "", doneOpen: false, missing: [] as string[], coordinator };
 const shape = (items: ReturnType<typeof activityListItems>) =>
 	items.map((item) =>
 		item.kind === "row"
@@ -45,7 +47,7 @@ const shape = (items: ReturnType<typeof activityListItems>) =>
 
 describe("the list's items", () => {
 	it("lists failed, then running, with done folded under All", () => {
-		expect(shape(activityListItems(rows, { filter: "all", query: "", doneOpen: false, missing: [], coordinator }))).toEqual([
+		expect(shape(activityListItems(rows, view))).toEqual([
 			"failed:1",
 			"Fix race in tree settle",
 			"running:2",
@@ -56,21 +58,17 @@ describe("the list's items", () => {
 	});
 
 	it("opens done in place, and shows a filtered state as its own section", () => {
-		expect(shape(activityListItems(rows, { filter: "all", query: "", doneOpen: true, missing: [], coordinator })).slice(-2)).toEqual(
+		expect(shape(activityListItems(rows, { ...view, doneOpen: true })).slice(-2)).toEqual(
 			["fold:1:true", "Tests pass"],
 		);
-		expect(shape(activityListItems(rows, { filter: "done", query: "", doneOpen: false, missing: [], coordinator }))).toEqual([
+		expect(shape(activityListItems(rows, { ...view, filter: "done" }))).toEqual([
 			"done:1",
 			"Tests pass",
 		]);
 	});
 
 	it("counts what the search matches, drops empty sections, and ends with what couldn't be listed", () => {
-		expect(
-			shape(
-				activityListItems(rows, { filter: "all", query: "RACE", doneOpen: false, missing: ["local:coord"], coordinator }),
-			),
-		).toEqual([
+		expect(shape(activityListItems(rows, { ...view, query: "RACE", missing: ["local:coord"] }))).toEqual([
 			"failed:1",
 			"Fix race in tree settle",
 			"running:1",
@@ -80,11 +78,7 @@ describe("the list's items", () => {
 	});
 
 	it("keys each item stably", () => {
-		expect(
-			activityListItems(rows, { filter: "all", query: "", doneOpen: false, missing: ["local:coord"], coordinator }).map(
-				activityListKey,
-			),
-		).toEqual([
+		expect(activityListItems(rows, { ...view, missing: ["local:coord"] }).map(activityListKey)).toEqual([
 			"section:failed",
 			activityNodeID({ kind: "delegate", delegate: d("Fix race in tree settle") }),
 			"section:running",
@@ -99,7 +93,6 @@ describe("the list's items", () => {
 // A branch is named by whose it is: the coordinator by its title, a subagent
 // by its row's, never by a raw ref.
 describe("what couldn't be listed", () => {
-	const view = { filter: "all" as const, query: "", doneOpen: false, coordinator };
 	const missingOf = (missing: string[], listed = rows) =>
 		activityListItems(listed, { ...view, missing }).filter((item) => item.kind === "missing");
 
@@ -164,7 +157,6 @@ describe("shell jobs in the list", () => {
 	const all = flattenActivity(withJobs, coordinator.title);
 
 	it("lists a running job in the running section, and filters and finds it", () => {
-		const view = { query: "", doneOpen: false, missing: [] as string[], coordinator };
 		expect(shape(activityListItems(all, { ...view, filter: "running" }))).toEqual([
 			"running:3",
 			// Newest first by when each started; the subagents carry no start.
@@ -172,16 +164,14 @@ describe("shell jobs in the list", () => {
 			"Check drain ordering",
 			"Run linux -race",
 		]);
-		expect(shape(activityListItems(all, { ...view, filter: "all", query: "npm" }))).toEqual([
+		expect(shape(activityListItems(all, { ...view, query: "npm" }))).toEqual([
 			"running:1",
 			"Serving the docs",
 		]);
 	});
 
 	it("keys a job apart from any subagent", () => {
-		const keys = activityListItems(all, { filter: "running", query: "", doneOpen: false, missing: [], coordinator }).map(
-			activityListKey,
-		);
+		const keys = activityListItems(all, { ...view, filter: "running" }).map(activityListKey);
 		const jobEntry = withJobs.root.entries.find((entry) => entry.kind === "shell");
 		if (!jobEntry) throw new Error("missing shell fixture");
 		expect(keys).toContain(activityNodeID(jobEntry));
