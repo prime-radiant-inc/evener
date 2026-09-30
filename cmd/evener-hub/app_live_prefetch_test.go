@@ -25,7 +25,7 @@ func TestPrefetchLiveModelsPopulatesHeldRegistry(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	prefetchAllLiveModels(context.Background(), ctl.reg, func() {})
+	prefetchAllLiveModels(context.Background(), ctl.reg, nil, func() {})
 	got := entry(t, ctl.List(), "gw")
 	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" && !m.Disabled }) {
 		t.Fatalf("entry models = %+v, want live gpt-live", got.Models)
@@ -65,7 +65,7 @@ func TestPrefetchSkipsCommandCredentialedInstances(t *testing.T) {
 	if err := ctl.reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	prefetchAllLiveModels(context.Background(), ctl.reg, func() {})
+	prefetchAllLiveModels(context.Background(), ctl.reg, nil, func() {})
 	if runs != 0 {
 		t.Fatalf("the prefetch executed the credential command %d time(s); the hub never runs credential commands", runs)
 	}
@@ -119,7 +119,7 @@ func TestPrefetchLiveModelsBroadcastsOnCapabilityChange(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 	announced := 0
-	prefetchAllLiveModels(context.Background(), ctl.reg, func() { announced++ })
+	prefetchAllLiveModels(context.Background(), ctl.reg, nil, func() { announced++ })
 	if announced != 1 {
 		t.Fatalf("announced = %d, want 1 after initial pass", announced)
 	}
@@ -130,7 +130,7 @@ func TestPrefetchLiveModelsBroadcastsOnCapabilityChange(t *testing.T) {
 	reg := ctl.reg.Get()
 	contextWindow := 100
 	reg.ApplyLive("gw", []registry.Model{{ID: "gpt-live", Caps: registry.Caps{ContextWindow: &contextWindow}}})
-	prefetchAllLiveModels(context.Background(), ctl.reg, func() { announced++ })
+	prefetchAllLiveModels(context.Background(), ctl.reg, nil, func() { announced++ })
 	if announced != 2 {
 		t.Fatalf("announced = %d, want 2 after a capability-only change with identical ids", announced)
 	}
@@ -199,11 +199,11 @@ func TestPrefetchLiveModelsBroadcastsOnlyOnChange(t *testing.T) {
 	}
 
 	announced := 0
-	prefetchAllLiveModels(context.Background(), ctl.reg, func() { announced++ })
+	prefetchAllLiveModels(context.Background(), ctl.reg, nil, func() { announced++ })
 	if announced != 1 {
 		t.Fatalf("announced = %d, want 1 after a pass that adds live ids", announced)
 	}
-	prefetchAllLiveModels(context.Background(), ctl.reg, func() { announced++ })
+	prefetchAllLiveModels(context.Background(), ctl.reg, nil, func() { announced++ })
 	if announced != 1 {
 		t.Fatalf("announced = %d, want still 1 after a pass that changes nothing", announced)
 	}
@@ -226,7 +226,7 @@ func TestPrefetchLiveModelsSurvivesUnreachable(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	prefetchAllLiveModels(context.Background(), ctl.reg, func() {})
+	prefetchAllLiveModels(context.Background(), ctl.reg, nil, func() {})
 	got := entry(t, ctl.List(), "gw")
 	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
 		t.Fatalf("entry models = %+v, want live gpt-live despite dead sibling", got.Models)

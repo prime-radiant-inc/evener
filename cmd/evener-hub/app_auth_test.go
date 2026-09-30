@@ -736,8 +736,10 @@ func TestAuth_Codex_Status_CorruptOAuthIsNoCredential(t *testing.T) {
 // TestAuth_Codex_Status_UnreadableOAuthRecordIsAnErrorRow pins that a Codex
 // instance whose stored OAuth record cannot be read at all (neither absent nor
 // corrupt) is reported as a status row carrying Error, rather than dropped from
-// the answer. AuthStatusResponse.Error has no other source, and this is what
-// lets a client show the redesign spec's "Error" provider status (section 12).
+// the answer. It is one source of AuthStatusResponse.Error, beside a
+// credential the provider rejected (app_credential_rejection.go), and together
+// they let a client show the redesign spec's "Error" provider status
+// (section 12).
 func TestAuth_Codex_Status_UnreadableOAuthRecordIsAnErrorRow(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()

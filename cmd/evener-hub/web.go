@@ -40,6 +40,10 @@ type WebServer struct {
 	hostManage *hubHostManager
 	// notices derives the Board's notices (S11); main.go runs its watcher.
 	notices *hubNotices
+	// auth is the hub's credential controller, for the live listings this
+	// server runs outside an RPC (the picker's, the background prefetch):
+	// they record what a provider said about a credential (#3539).
+	auth *hubAuthController
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -198,8 +202,9 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		web.cfg.LaunchModels = web.fetchLaunchModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}, SubagentParent: web.navigationSubagentParent, Logf: navigationStatsLogfFor(web.cfg)})
-	server, hostAdmin, hostManage, notices := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	server, hostAdmin, hostManage, notices, auth := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
+	web.auth = auth
 	web.hostAdmin = hostAdmin
 	web.hostManage = hostManage
 	web.notices = notices
