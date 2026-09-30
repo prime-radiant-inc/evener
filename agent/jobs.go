@@ -1356,17 +1356,26 @@ func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64
 // readOutputWindow and Session.JobGet depend on: the running record when the
 // job is live, else the store's folded record. run is non-nil only when a live
 // job owns jobID (readOutputWindow reads the live output buffer through it);
-// rec is that live record when present, else the store's, and nil when neither
-// holds the job.
+// rec is a SNAPSHOT of the live record when the job is running, else the
+// store's already-folded record, and nil when neither holds the job.
+//
+// The live record is cloned under jm.mu: the job path mutates it in place
+// there (finalizeJob, stampLastActivityLocked, noteJobActivity), and a caller
+// reads the returned record after the lock is released - the same reason every
+// other live-record reader in this file clones under the lock.
 func (jm *jobManager) recordForRead(jobID string) (run *runningJob, rec *jobstore.JobRecord, err error) {
 	if jm == nil {
 		return nil, nil, nil
 	}
 	jm.mu.Lock()
 	run = jm.running[jobID]
+	var snapshot *jobstore.JobRecord
+	if run != nil {
+		snapshot = cloneJobRecord(run.rec)
+	}
 	jm.mu.Unlock()
 	if run != nil {
-		return run, run.rec, nil
+		return run, snapshot, nil
 	}
 	recs, err := jm.store.Load()
 	if err != nil {

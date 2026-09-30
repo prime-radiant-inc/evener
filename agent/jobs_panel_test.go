@@ -333,3 +333,36 @@ func TestLoadSessionJobGetRejectsUnsafeSessionID(t *testing.T) {
 		t.Errorf("LoadSessionJobGet(%q) found = true, want false", "../escaped")
 	}
 }
+
+// recordForRead hands out a SNAPSHOT of the live record, never the running
+// record itself. Session.JobGet projects that record after the lock is
+// released, while the job path mutates the live one in place under the lock
+// (finalizeJob, stampLastActivityLocked, noteJobActivity), so handing out the
+// live pointer is a data race the -race lane can flag and can yield a torn
+// snapshot. Every other live-record reader in jobs.go clones under the lock
+// (liveJobRecords, cloneJobRecord).
+func TestRecordForReadSnapshotsTheLiveRecord(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "true"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	jm.mu.Lock()
+	live := jm.running[rec.JobID]
+	jm.mu.Unlock()
+	if live == nil {
+		t.Fatal("the job under test is not running")
+	}
+
+	_, got, err := jm.recordForRead(rec.JobID)
+	if err != nil || got == nil {
+		t.Fatalf("recordForRead: rec=%v err=%v", got, err)
+	}
+	if got == live.rec {
+		t.Fatal("recordForRead returned the live record by pointer; its caller reads it after the lock is released")
+	}
+	if got.JobID != rec.JobID {
+		t.Errorf("snapshot JobID = %q, want %q", got.JobID, rec.JobID)
+	}
+}
