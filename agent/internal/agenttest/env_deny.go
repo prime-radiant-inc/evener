@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 // DenyEnv is an execenv.ExecutionEnvironment for fuzzing tool-handler execution
@@ -69,10 +70,7 @@ func (d *DenyEnv) boundedText(h uint64) string {
 }
 
 func boundedDenyResult(s string) string {
-	if len(s) > denyMaxBytes {
-		return s[:denyMaxBytes]
-	}
-	return s
+	return runetrim.Cut(s, denyMaxBytes)
 }
 
 func (d *DenyEnv) ReadFile(path string, _ *int, _ *int) (string, error) {

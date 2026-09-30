@@ -17,7 +17,7 @@ import { parseActivityTree } from "@evener/appwire-client";
 import { readDocFile } from "@evener/appwire-client/docContent";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
 import { nativeDocPort } from "./nativeDocPort";
-import { flattenSubagents } from "./subagents/subagentModel";
+import { flattenActivity, flattenSubagents } from "./subagents/subagentModel";
 
 describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 	const PR2138 = `local:${demoSessionId("s-pr2138")}`;
@@ -44,6 +44,13 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			const tree = parseActivityTree((response as { data: unknown }).data);
 			if (!tree) throw new Error("no tree");
 			expect(flattenSubagents(tree)).toHaveLength(55);
+			// Its Activity list's shell jobs include its own finished build.
+			const jobs = flattenActivity(tree).jobs;
+			expect(jobs.map((row) => [row.title, row.state, row.owner])).toContainEqual([
+				"go build ./...",
+				"done",
+				"Get PR 2138 Test Clean",
+			]);
 		});
 	});
 
