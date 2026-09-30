@@ -265,27 +265,37 @@ represented until the user replaces or removes it.
 
 **Current behavior.** Native includes model loading in the form's busy gate even
 for Hub default, and an open picker has no continuing retry after discovery
-fails. Hub startup warms only the empty-working-directory cache entry, while web
-and native project pickers request their project directory. Those first reads
-can still wait for discovery; later stale entries already refresh in background.
+fails. A previously selected model also cannot start after a listing failure;
+the form tells the user to choose Hub default. Refresh clears the displayed
+catalog before its replacement arrives. Hub startup warms only the
+empty-working-directory cache entry, while web and native project pickers
+request their project directory. Those first reads can still wait for discovery;
+later stale entries already refresh in background.
 
 **Evidence.** Native [form busy state](../../mobile-native/src/newSession/NewSessionForm.tsx#L74),
 [loadModels/submit](../../mobile-native/src/newSession.ts#L321), and
 [ModelPicker](../../mobile-native/src/newSession/ModelPicker.tsx#L23); hub
 [fetchLaunchModels](../../cmd/evener-hub/app_models.go#L136) and
-[warmLaunchModels](../../cmd/evener-hub/app_models.go#L299).
+[warmLaunchModels](../../cmd/evener-hub/app_models.go#L316).
 `app_models_test.go` separately tests directory-scoped caching and startup warmup;
-that does not establish a warm first project picker.
+that does not establish a warm first project picker. The native form's
+[chosen-model test](../../mobile-native/src/newSession/NewSessionForm.test.tsx#L545)
+pins the requirement to change to Hub default after a listing failure.
 
-**Discuss.** Let valid default launch proceed without optional discovery. Retain
-usable catalogs, retry failed reads, and reuse provider inventory or warm likely
-project contexts without mixing project configuration. An explicitly selected
-model must retain its meaning.
+**Discuss.** Let a valid default or already-chosen model launch proceed without
+requiring a successful catalog lookup first; the hub still resolves and
+validates the requested launch configuration. Retain usable catalogs during
+refresh and keep retrying failed discovery while the picker needs it, with
+backoff and no attempt limit. Preserve an explicitly selected provider/model;
+discovery failure must not substitute the default. Keep cached choices scoped
+to the selected host and project configuration. Reuse existing discovery work
+before adding prefetch work for other project contexts.
 
 **Acceptance.** Delay model listing: Hub default still launches promptly. Fail
-listing once with the picker open: choices recover automatically. Opening a
-project after warmup shows useful choices promptly with the correct project
-default and selected host.
+listing with a specific model already chosen: submit that same configuration
+without switching models. Keep the picker open through an outage: retained
+choices stay usable and discovery recovers automatically. Host/project changes
+never reuse another context's default or configuration.
 
 ### C08 Remote provider setup at launch
 
@@ -825,7 +835,8 @@ client settings and model listings automatically. Invalid edits retain the
 previous usable hub registry and preserve the edited bytes. Child launches and
 launch-model discovery still disable the user layer whenever the source file
 cannot load, so they cannot use the explicit providers retained by the hub.
-The watcher also repeats a reload and client invalidation after an in-app write.
+In-app writes acknowledge their persisted bytes, so the watcher does not repeat
+the reload and client invalidation for the same write.
 
 **Evidence.** [refreshProviderFile](../../cmd/evener-hub/app_provider_reload.go#L14)
 owns file observation and retries;
@@ -835,7 +846,9 @@ registry or diagnostic changes.
 retains the previous registry on failure. The remaining launch gap is in
 [childNoUserLayer](../../cmd/evener-hub/spawn.go#L89), which excludes the user
 layer when [WritesRefused](../../cmd/evener-hub/internal/hubcore/registry.go#L695)
-reports a load error. Instance writes do not update the watcher's file signature.
+reports a load error. [Instance writes](../../cmd/evener-hub/app_instances.go#L65)
+update the watcher's signature from the exact persisted representation under
+the same lock used by observation.
 
 **Decision.** Detect provider-configuration changes and automatically adopt a
 valid repair. Clear the stale load error and update open settings and launch
@@ -846,7 +859,7 @@ configuration differs from an invalid edit, then converge as soon as the
 replacement validates. Failed loads retain a recovery owner rather than
 remaining cached indefinitely. Retained configuration must also remain usable
 by child launches and model discovery. Avoid redundant invalidations after
-in-app writes. These remaining gaps keep the case open.
+in-app writes. The remaining child-configuration gap keeps the case open.
 
 **Acceptance.** Start with malformed provider configuration, repair it on disk,
 and keep the same settings/launch surface open. The repaired instances appear
