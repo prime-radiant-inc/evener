@@ -593,7 +593,7 @@ func projectSummary(project hubRow, rows []hubRow) string {
 			continue
 		}
 		contribution := rollupContribution(row.state, row.isSubagent)
-		if attentionRankLabel(contribution) > attentionRankLabel(worstState) {
+		if rollupRankLabel(contribution) > rollupRankLabel(worstState) {
 			worstState = contribution
 			worstAsk = row.askPending
 		}
@@ -610,4 +610,11 @@ func projectSummary(project hubRow, rows []hubRow) string {
 // on ordering (Track A rank consolidation).
 func attentionRankLabel(state string) int {
 	return hubapi.AttentionRank(stateLabel(state))
+}
+
+// rollupRankLabel normalizes state via stateLabel, then delegates to the
+// shared hubapi.RollupRank table — the ordering for a project's rollup dot and
+// summary, where a warning outranks a merely-active child.
+func rollupRankLabel(state string) int {
+	return hubapi.RollupRank(stateLabel(state))
 }

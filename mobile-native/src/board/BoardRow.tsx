@@ -12,6 +12,7 @@ import {
 	View,
 } from "react-native";
 import type { Palette } from "../design/tokens";
+import { useDisplayChoices } from "../display/displayContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
 	bandOf,
@@ -157,7 +158,8 @@ export function BoardRow({
 	const signal = variant === "signal";
 	const needsYou = signal && bandOf(state) === "needsYou";
 	const why = signal ? whyLine(item, activity, msSinceRead ?? 0) : null;
-	const last = signal ? lastLine(row, usual, hostLabel) : null;
+	const { showModel } = useDisplayChoices();
+	const last = signal ? lastLine(row, usual, hostLabel, showModel) : null;
 	const age = relativeAge(row.updated_at, now);
 	const word = stateWord(state);
 	// The chip reads the navigation row's tally (the shared gate the web rail
@@ -279,6 +281,7 @@ export function BoardRow({
 						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} shrink /> : null}
 						{last.project ? <Fact glyph="folder" text={last.project} scale={scale} /> : null}
 						{last.host ? <Fact glyph="server.rack" text={last.host} scale={scale} /> : null}
+						{last.model ? <Fact text={last.model} scale={scale} /> : null}
 					</View>
 				) : null}
 			</View>
@@ -421,7 +424,8 @@ export function Fact({
 	scale,
 	shrink = false,
 }: {
-	glyph: "checklist" | "folder" | "server.rack";
+	/** None for the model's name, which the prototype prints bare. */
+	glyph?: "checklist" | "folder" | "server.rack";
 	text: string;
 	scale: number;
 	shrink?: boolean;
@@ -430,7 +434,7 @@ export function Fact({
 	const flexShrink = shrink ? 1 : 0;
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink }}>
-			<SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} />
+			{glyph ? <SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} /> : null}
 			<Text
 				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
