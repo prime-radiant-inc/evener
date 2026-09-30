@@ -572,13 +572,21 @@ replacement/crash restoration rather than every idle transition.
 [wiring](../../cmd/evener/serve.go#L1268) load and wire without a restore wake.
 Existing goal/ask tests distinguish persisted state from pending-question holds.
 
-**Discuss.** Decide whether restoration should schedule a deduplicated wake for
-an eligible active goal. Keep pending questions, explicit force-stop, budget
-limits and uncertain in-flight execution from becoming accidental restarts.
+**Decision.** Automatically resume an unfinished active goal when its runtime
+finishes restoring and is ready. Schedule one continuation, accounting for work
+already queued or running, without requiring another user message. Preserve a
+legitimate wait for a necessary answer or dependency, and honor cancellation,
+applicable limits and newer instructions. Give the agent restored history and
+actual job outcomes so it can reconcile interrupted work before repeating an
+action and decide what work needs restarting. Restoring the goal continues the
+objective; session-owned shell jobs retain their agreed shutdown lifetime.
+Implementation remains pending.
 
 **Acceptance.** Restore an idle active goal with no queue or external event. It
-continues once under the selected policy; held/stopped goals remain held and an
-already-pending continuation is not duplicated.
+continues once without a user nudge. Necessary answer/dependency waits remain
+intact, canceled and budget-exhausted goals do not resume, and an already-pending
+continuation is not duplicated. The agent receives actual job outcomes and
+reconciles uncertain results before repeating interrupted work.
 
 ### R08 Compaction with a pending question
 
