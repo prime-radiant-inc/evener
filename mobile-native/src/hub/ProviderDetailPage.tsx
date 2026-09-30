@@ -1,6 +1,6 @@
 // A provider's detail, pushed over the Providers page as a host's detail is
 // over Hosts (spec 12; device audit N3). The Providers page underneath builds
-// it and publishes it (providersScreenSlot.tsx); this page shows it while it
+// it and publishes it (hubScreenSlot.tsx); this page shows it while it
 // is the one the route names, asks before Back discards a pasted key, and
 // goes back when the Providers page no longer has the provider selected (it
 // was removed, a write moved it, or its sign-in started).
@@ -8,7 +8,7 @@ import { usePreventRemove } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef } from "react";
 import type { HubRoutes } from "./hubSheetContext";
-import { useProviderDetailSlot } from "./providersScreenSlot";
+import { useProviderDetailSlot } from "./hubScreenSlot";
 
 export function ProviderDetailPage({ navigation, route }: NativeStackScreenProps<HubRoutes, "ProviderDetail">) {
 	const { hubId, name } = route.params;

@@ -8,7 +8,7 @@ import { createElement, type ComponentProps, useMemo, useState } from "react";
 import { MarketplacePage } from "./MarketplacePage";
 import { PluginsPage } from "./PluginsPage";
 import type { HubRoutes } from "./hubSheetContext";
-import { PluginsScreenSlotProvider } from "./pluginsScreenSlot";
+import { PluginsScreenSlotProvider } from "./hubScreenSlot";
 
 type PluginsProps = ComponentProps<typeof PluginsPage>;
 type MarketplaceProps = ComponentProps<typeof MarketplacePage>;

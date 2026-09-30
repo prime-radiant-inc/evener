@@ -1,5 +1,5 @@
 // A provider's detail, pushed over the Providers page that publishes it
-// (providersScreenSlot.tsx): it shows only the detail its route names, for the
+// (hubScreenSlot.tsx): it shows only the detail its route names, for the
 // hub it was opened for, and goes back once that page lets the provider go.
 import { type ReactNode, useLayoutEffect } from "react";
 import { act } from "react-test-renderer";
@@ -11,7 +11,7 @@ import {
 	ProvidersScreenSlotProvider,
 	usePublishProviderDetail,
 	useProviderDetailSlotReader,
-} from "./providersScreenSlot";
+} from "./hubScreenSlot";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 vi.mock("@react-navigation/native", async () => ({
