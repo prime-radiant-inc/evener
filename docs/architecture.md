@@ -146,6 +146,13 @@ lower layer imports a higher one.
   adapters**, so the engine can live in sub-packages without widening `Session`'s
   public method set.
 
+MCP reconnect recovery is connection history: the manager emits the session's
+`mcp_reconnected` informational notice after restoring a dropped connection,
+before the retried tool call returns. Web and native transcripts hide that notice
+at normal detail and render it quietly at Full, whether it arrives as a direct
+warning or an overlay system notice. The retry's actual result remains separate;
+failed calls, interruptions and required sign-in remain visible.
+
 ```mermaid
 flowchart TD
     Session["package agent — Session facade<br/>NewSession · ProcessInput · public API"]

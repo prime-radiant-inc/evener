@@ -7,7 +7,7 @@ import type { NavigationActionCheckpoint } from "../navigationActionRepository";
 import type { NavigationActions } from "../navigationActions";
 import { localSessionId } from "../sessionDeletionResult";
 import type { ClassifiedRow } from "./attention";
-import { organizationFree } from "./organizationCheck";
+import { journalOperation, organizationFree } from "./organizationCheck";
 import type { ProjectMenuAction } from "./projectMenu";
 
 export type RowAction = "pin" | "markRead" | "markUnread" | "stop" | "shutDown" | "archive" | "unarchive" | "rename";
@@ -136,14 +136,8 @@ export function projectRequest(
 export function archivingSessionId(
 	state: { pending: boolean; uncertain: boolean; recovery: NavigationActionCheckpoint | null } | null,
 ): string | null {
-	const operation = state?.recovery?.operation;
-	if (
-		!state ||
-		(!state.pending && !state.uncertain) ||
-		operation?.kind !== "archive" ||
-		operation.params.kind !== "session"
-	)
-		return null;
+	const operation = journalOperation(state);
+	if (operation?.kind !== "archive" || operation.params.kind !== "session") return null;
 	return operation.params.id;
 }
 

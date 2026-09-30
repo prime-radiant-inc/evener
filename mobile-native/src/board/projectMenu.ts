@@ -3,6 +3,7 @@
 // whether the organization journal holds one.
 import type { NavigationProjectSummary } from "@evener/appwire-client";
 import { controllerOwnedProject } from "../organizationNavigation";
+import { journalOperation } from "./organizationCheck";
 import type { BoardOrganization } from "./useBoardOrganization";
 
 export type ProjectMenuAction = "pin" | "unpin" | "archive" | "unarchive";
@@ -28,7 +29,7 @@ export function projectMenuActions(
 
 /** The organization journal holds a change to this project, on its way or unresolved. */
 export function journalHoldsProject(organization: BoardOrganization, projectKey: string): boolean {
-	const operation = organization.state?.recovery?.operation;
+	const operation = journalOperation(organization.state);
 	if (operation?.kind === "favorite") return operation.params.id === projectKey;
 	return operation?.kind === "archive" && operation.params.kind === "project" && operation.params.id === projectKey;
 }

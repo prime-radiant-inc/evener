@@ -72,6 +72,20 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	if cfg.Roster != nil {
 		entries := cfg.Roster.List()
 		sortLiveForSearch(entries, cfg.Past)
+		// A subagent is not a navigation row: the roots-only tree gives one no
+		// top-level row and lets an orphan (its parent not live) vanish (#3082).
+		// The Live group mirrors the Board's Live section, so it omits subagents
+		// too, the same way it omits an archived session. Without this, a
+		// subagent's raw turn-ended "awaiting" state (its normal resting state,
+		// with no real ask_pending) reached the palette as a needs-you dot it
+		// does not need (#2574). A subagent is one its meta marks, or one a live
+		// entry reports as its running child — the same `isSubagent` rule the
+		// tree builds rows by.
+		roots := hubcore.NewRootIndex(nil)
+		if cfg.Past != nil {
+			roots = cfg.Past.RootIndex()
+		}
+		running := hubcore.RunningSubagentIDs(entries)
 		for _, le := range entries {
 			if le.SessionID == "" {
 				continue
@@ -82,6 +96,9 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			// A live session's meta is in the past index too, so a prompt or
 			// working-directory match there lists it here, live.
 			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(result.Title), q) && !pastMatched[le.SessionID] {
+				continue
+			}
+			if roots.IsSubagent(le.SessionID) || running[le.SessionID] {
 				continue
 			}
 			if searchScopeAdmits(scope, result, true) {

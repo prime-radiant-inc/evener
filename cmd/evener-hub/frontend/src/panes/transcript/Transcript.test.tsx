@@ -11,6 +11,7 @@ import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
+import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
 import Transcript from "./Transcript";
 
 // A minimal, test-only "session" pane registration - mirrors
@@ -80,6 +81,7 @@ let offsetHeightDescriptor: PropertyDescriptor | undefined;
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetTranscriptPagingForTests();
   resetSubagentModuleStoreForTests();
   resetWorkspaceStoreForTests();
   offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");

@@ -80,8 +80,8 @@
     "check:scripts": "tsx scripts/check-script-imports.mts",
     "lint": "biome ci src ../mobile/src",
     "format": "biome format --write src ../mobile/src",
-    "test": "vitest run",
-    "test:shared": "vitest run --root .. --config mobile-native/vitest.config.mts mobile/src",
+    "test": "sh ../scripts/native/run-tests.sh",
+    "test:shared": "sh ../scripts/native/run-tests.sh --root .. --config mobile-native/vitest.config.mts mobile/src",
     "postinstall": "patch-package --error-on-fail"
   },
   "private": true

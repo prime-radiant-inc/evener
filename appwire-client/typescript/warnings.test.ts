@@ -14,6 +14,7 @@ import {
   isInformationalWarning,
   WarningCodeContextBudget,
   WarningCodeDelegateAttentionRestore,
+  WarningCodeMCPReconnected,
   warningWords,
 } from "./warnings";
 
@@ -24,7 +25,10 @@ function goWarningCode(name: string): string {
   return goConstantValue(payloadsGo, name, "agent/events/payloads.go");
 }
 
-describe("the informational context-budget code is bound to agent/events/payloads.go", () => {
+describe("the informational codes are bound to agent/events/payloads.go", () => {
+  test("the MCP recovery code is the daemon's own constant", () => {
+    expect(WarningCodeMCPReconnected).toBe(goWarningCode("WarningCodeMCPReconnected"));
+  });
   test("the exported value is the daemon's own constant", () => {
     expect(WarningCodeContextBudget).toBe(goWarningCode("WarningCodeContextBudget"));
   });
@@ -46,6 +50,13 @@ function warningItem(overrides: Partial<ItemModel> = {}): ItemModel {
 }
 
 describe("isInformationalWarning", () => {
+  test.each(["warning", "systemMessage"])("MCP recovery is informational through %s", (type) => {
+    const warning = { code: WarningCodeMCPReconnected };
+    const notice = warningItem({ type, eventKind: "warning", warning, raw: { warning } });
+    expect(isInformationalWarning(notice)).toBe(true);
+    expect(attentionWarningNotice(notice)).toBeNull();
+  });
+
   test("true for a warning item carrying an informational code", () => {
     expect(isInformationalWarning(warningItem({ warning: { code: WarningCodeContextBudget } }))).toBe(true);
   });

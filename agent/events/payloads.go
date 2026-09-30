@@ -589,6 +589,10 @@ const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 // these warnings by this stable code, never by matching their prose.
 const WarningCodeContextBudget = "context_budget"
 
+// WarningCodeMCPReconnected identifies a restored MCP connection. Clients show
+// it as quiet detail; the retried tool call reports its own outcome separately.
+const WarningCodeMCPReconnected = "mcp_reconnected"
+
 // WarningCodeDelegateAttentionRestore identifies a failed attempt to get a
 // delegate's owed attention where it belongs: restoring its cold runtime to
 // deliver it, or escalating it to the root when a closed ancestor fences it

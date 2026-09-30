@@ -751,9 +751,11 @@ func TestMessageSearchRebuildsAnotherSchemaVersion(t *testing.T) {
 }
 
 // SearchTokens is the one word rule the title search, the message search and
-// its highlighting share: lowercased runs of letters, digits and underscores.
+// its highlighting share: lowercased runs of letters and digits. "_" is a
+// separator, like everything else, because the FTS5 unicode61 tokenizer both
+// indexes use splits on it.
 func TestSearchTokensSplitsOnEverythingButWordCharacters(t *testing.T) {
-	if got, want := SearchTokens(`Fix "the" settle_race (NEAR drain*)`), []string{"fix", "the", "settle_race", "near", "drain"}; !reflect.DeepEqual(got, want) {
+	if got, want := SearchTokens(`Fix "the" settle_race (NEAR drain*)`), []string{"fix", "the", "settle", "race", "near", "drain"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("SearchTokens = %q, want %q", got, want)
 	}
 	if got := strings.Join(SearchTokens("!!!"), ","); got != "" {
