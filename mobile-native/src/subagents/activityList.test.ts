@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ActivityDelegate, ActivityTree } from "@evener/appwire-client";
-import { subagentListItems, subagentListKey } from "./subagentList";
+import { activityListItems, activityListKey } from "./activityList";
 import { flattenActivity, flattenSubagents } from "./subagentModel";
 
 const d = (id: string, over: Partial<ActivityDelegate> = {}): ActivityDelegate => ({
@@ -31,7 +31,7 @@ const tree: ActivityTree = {
 	},
 };
 const rows = flattenSubagents(tree);
-const shape = (items: ReturnType<typeof subagentListItems>) =>
+const shape = (items: ReturnType<typeof activityListItems>) =>
 	items.map((item) =>
 		item.kind === "row"
 			? item.row.title
@@ -44,7 +44,7 @@ const shape = (items: ReturnType<typeof subagentListItems>) =>
 
 describe("the list's items", () => {
 	it("lists failed, then running, with done folded under All", () => {
-		expect(shape(subagentListItems(rows, { filter: "all", query: "", doneOpen: false, missing: [] }))).toEqual([
+		expect(shape(activityListItems(rows, { filter: "all", query: "", doneOpen: false, missing: [] }))).toEqual([
 			"failed:1",
 			"Fix race in tree settle",
 			"running:2",
@@ -55,10 +55,10 @@ describe("the list's items", () => {
 	});
 
 	it("opens done in place, and shows a filtered state as its own section", () => {
-		expect(shape(subagentListItems(rows, { filter: "all", query: "", doneOpen: true, missing: [] })).slice(-2)).toEqual(
+		expect(shape(activityListItems(rows, { filter: "all", query: "", doneOpen: true, missing: [] })).slice(-2)).toEqual(
 			["fold:1:true", "Tests pass"],
 		);
-		expect(shape(subagentListItems(rows, { filter: "done", query: "", doneOpen: false, missing: [] }))).toEqual([
+		expect(shape(activityListItems(rows, { filter: "done", query: "", doneOpen: false, missing: [] }))).toEqual([
 			"done:1",
 			"Tests pass",
 		]);
@@ -67,7 +67,7 @@ describe("the list's items", () => {
 	it("counts what the search matches, drops empty sections, and ends with what couldn't be listed", () => {
 		expect(
 			shape(
-				subagentListItems(rows, { filter: "all", query: "RACE", doneOpen: false, missing: ["Get PR 2138 Test Clean"] }),
+				activityListItems(rows, { filter: "all", query: "RACE", doneOpen: false, missing: ["Get PR 2138 Test Clean"] }),
 			),
 		).toEqual([
 			"failed:1",
@@ -80,7 +80,7 @@ describe("the list's items", () => {
 
 	it("keys each item stably", () => {
 		expect(
-			subagentListItems(rows, { filter: "all", query: "", doneOpen: false, missing: ["x"] }).map(subagentListKey),
+			activityListItems(rows, { filter: "all", query: "", doneOpen: false, missing: ["x"] }).map(activityListKey),
 		).toEqual([
 			"section:failed",
 			"Fix race in tree settle",
@@ -95,7 +95,7 @@ describe("the list's items", () => {
 
 describe("what couldn't be listed", () => {
 	it("says so once per title, however many branches share it", () => {
-		const items = subagentListItems([], {
+		const items = activityListItems([], {
 			filter: "all",
 			query: "",
 			doneOpen: false,
@@ -134,27 +134,26 @@ describe("shell jobs in the list", () => {
 			],
 		},
 	};
-	const { subagents, jobs } = flattenActivity(withJobs);
-	const all = [...subagents, ...jobs];
+	const all = flattenActivity(withJobs);
 
 	it("lists a running job in the running section, and filters and finds it", () => {
 		const view = { query: "", doneOpen: false, missing: [] as string[] };
-		expect(shape(subagentListItems(all, { ...view, filter: "running" }))).toEqual([
+		expect(shape(activityListItems(all, { ...view, filter: "running" }))).toEqual([
 			"running:3",
 			// Newest first by when each started; the subagents carry no start.
 			"Serving the docs",
 			"Check drain ordering",
 			"Run linux -race",
 		]);
-		expect(shape(subagentListItems(all, { ...view, filter: "all", query: "npm" }))).toEqual([
+		expect(shape(activityListItems(all, { ...view, filter: "all", query: "npm" }))).toEqual([
 			"running:1",
 			"Serving the docs",
 		]);
 	});
 
 	it("keys a job apart from any subagent", () => {
-		const keys = subagentListItems(all, { filter: "running", query: "", doneOpen: false, missing: [] }).map(
-			subagentListKey,
+		const keys = activityListItems(all, { filter: "running", query: "", doneOpen: false, missing: [] }).map(
+			activityListKey,
 		);
 		expect(keys).toContain("job:job-docs");
 	});

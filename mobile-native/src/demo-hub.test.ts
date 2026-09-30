@@ -17,7 +17,7 @@ import { parseActivityTree, parseJobLogTail } from "@evener/appwire-client";
 import { readDocFile } from "@evener/appwire-client/docContent";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
 import { nativeDocPort } from "./nativeDocPort";
-import { flattenActivity, flattenSubagents } from "./subagents/subagentModel";
+import { flattenJobs, flattenSubagents } from "./subagents/subagentModel";
 
 describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 	const PR2138 = `local:${demoSessionId("s-pr2138")}`;
@@ -45,7 +45,7 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			if (!tree) throw new Error("no tree");
 			expect(flattenSubagents(tree)).toHaveLength(55);
 			// Its Activity list's shell jobs include its own finished build.
-			const jobs = flattenActivity(tree).jobs;
+			const jobs = flattenJobs(tree);
 			expect(jobs.map((row) => [row.title, row.state, row.owner])).toContainEqual([
 				"go build ./...",
 				"done",
@@ -60,7 +60,7 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			const listed = await client.request("evener/jobs/list", { ref: PR2138 });
 			const tree = parseActivityTree((listed as { data: unknown }).data);
 			if (!tree) throw new Error("no tree");
-			const failed = flattenActivity(tree).jobs.find((row) => row.state === "failed");
+			const failed = flattenJobs(tree).find((row) => row.state === "failed");
 			if (!failed) throw new Error("no failed job");
 			const response = await client.request("evener/jobs/output", {
 				ref: failed.job.ownerRef,
