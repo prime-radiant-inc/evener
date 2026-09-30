@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -65,7 +66,7 @@ func (s *Session) activityRead(ctx context.Context, params appwire.SessionActivi
 	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "live"}
 	if controller == nil {
 		read.context.AncestryKnown = true
-		return read, nil
+		return read.withBoundedContext()
 	}
 	controller.mu.Lock()
 	read.context.AncestryKnown = activityContextFromDelegates(&read.context, rootID, controller.durable)
@@ -83,8 +84,20 @@ func (s *Session) activityRead(ctx context.Context, params appwire.SessionActivi
 	if !live {
 		read.context.Availability = "retained"
 	}
+	return read.withBoundedContext()
+}
+
+// Breadcrumb identities stay intact; an unrepresentable context is an explicit
+// source failure rather than an oversized response or a stagnant continuation.
+func (read *sessionActivityRead) withBoundedContext() (*sessionActivityRead, error) {
+	encoded, err := json.Marshal(read.context)
+	if err != nil || len(encoded) > sessionActivityPageBytes-2048 {
+		read.index.release()
+		return nil, appwire.Unavailable("session activity context exceeds response budget")
+	}
 	return read, nil
 }
+
 func retainedActivityRead(ctx context.Context, stateDir, sessionID string, params appwire.SessionActivityReadParams) (*sessionActivityRead, error) {
 	id, scope, _, err := normalizeSessionActivity(params.Ref, params.Scope, 0)
 	if err != nil {
@@ -129,7 +142,7 @@ func retainedActivityRead(ctx context.Context, stateDir, sessionID string, param
 		}
 	}
 
-	return read, nil
+	return read.withBoundedContext()
 }
 
 // ParentDelegateID identifies logical ownership; OwnerSessionID can name the

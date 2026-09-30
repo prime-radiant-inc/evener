@@ -158,6 +158,12 @@ resource because its task or description is large. If the byte limit reduces a
 page, continuation starts after the last emitted item. Every retained row remains
 reachable. Unknown or unavailable branches are represented explicitly.
 
+The same envelope budget covers context and breadcrumb identities. If that
+context cannot fit, return the existing typed unavailable error rather than
+truncate ancestry, exceed the response ceiling, or repeat an empty continuation.
+This is a depth-dependent response-size limitation; ordinary compact prose caps
+do not impose a separate maximum depth or change delegate creation authority.
+
 Cold retained projection work must be cancelable and resumable. Reuse the
 existing bounded journal scanners and incremental fold/index mechanisms. A call
 may process at most 2,000 records/work units and 4 MiB of journal input before

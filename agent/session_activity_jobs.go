@@ -343,6 +343,9 @@ func (read *sessionActivityRead) jobsPage(ctx context.Context, params appwire.Se
 		raw, _ := json.Marshal(result)
 		if len(raw) > sessionActivityPageBytes-2048 {
 			result.Jobs = result.Jobs[:len(result.Jobs)-1]
+			if len(result.Jobs) == 0 {
+				return result, appwire.Unavailable("session activity row exceeds response budget")
+			}
 			break
 		}
 		token.After = key

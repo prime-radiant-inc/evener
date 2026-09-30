@@ -118,6 +118,9 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 		raw, _ := json.Marshal(result)
 		if len(raw) > sessionActivityPageBytes-2048 {
 			result.Watches = result.Watches[:len(result.Watches)-1]
+			if len(result.Watches) == 0 {
+				return result, appwire.Unavailable("session activity row exceeds response budget")
+			}
 			break
 		}
 		token.After = key

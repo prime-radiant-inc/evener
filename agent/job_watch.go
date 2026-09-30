@@ -1664,9 +1664,10 @@ func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow fun
 			}
 		}
 		var clearEvent *jobstore.Event
+		var clearReceiver string
 		if allowDurable {
 			var err error
-			clearEvent, err = jm.durableWatchClearEvent(watchID, endReason)
+			clearEvent, clearReceiver, err = jm.durableWatchClearEvent(watchID, endReason)
 			if err != nil {
 				jm.rollbackWatchConfigsRejecting(detachedCfgs)
 				return watchResult{}, err
@@ -1683,6 +1684,9 @@ func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow fun
 		if err := jm.appendWatchRegistryEvents(events); err != nil {
 			jm.rollbackWatchConfigsRejecting(detachedCfgs)
 			return watchResult{}, err
+		}
+		if clearEvent != nil {
+			jm.noteWatchActivity(clearReceiver)
 		}
 		jm.removeWatchSendTerminalSnapshots(dropped)
 		jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
@@ -1826,14 +1830,14 @@ func watchKeyMatchesClearRequest(candidate, request watchKey) bool {
 	return true
 }
 
-func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobstore.Event, error) {
+func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobstore.Event, string, error) {
 	watches, err := jm.store.LoadWatches()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	w := watches[watchID]
 	if w == nil || !w.Active || w.Generation == "" {
-		return nil, nil
+		return nil, "", nil
 	}
 	return &jobstore.Event{
 		Kind:    jobstore.EventWatchCleared,
@@ -1843,7 +1847,7 @@ func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobsto
 			Generation: w.Generation,
 			EndReason:  endReason,
 		},
-	}, nil
+	}, w.ReceiverSessionID, nil
 }
 
 // tripConditionFireBudgetLocked latches the condition-fire circuit breaker for

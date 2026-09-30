@@ -86,11 +86,15 @@ func TestSessionActivityCanceledFoldResumesWithoutDuplicateCreation(t *testing.T
 
 type sessionActivityCancelDuringFold struct {
 	context.Context
-	index *sessionActivityIndex
-	owner string
+	index     *sessionActivityIndex
+	owner     string
+	delegates bool
 }
 
 func (ctx *sessionActivityCancelDuringFold) Err() error {
+	if ctx.delegates && len(ctx.index.delegates) >= 5 {
+		return context.Canceled
+	}
 	if source := ctx.index.jobs[ctx.owner]; source != nil && len(source.Jobs) >= 5 {
 		return context.Canceled
 	}
@@ -212,6 +216,9 @@ func requireSessionActivityInvalidation(t *testing.T, stream <-chan events.Sessi
 		select {
 		case event := <-stream:
 			if payload, ok := event.Data.(events.SessionActivityChangedData); ok && payload.ThreadID == target && payload.SessionID == owner && slices.Contains(payload.Resources, resource) {
+				if payload.Ref != encodeRef("", target) || event.SessionID == "" {
+					t.Fatalf("invalid bridge routing: %+v", event)
+				}
 				return
 			}
 		default:
@@ -626,5 +633,277 @@ func TestSessionActivitySummaryUsesDelegateTerminalClassifier(t *testing.T) {
 	}
 	if !got.Delegates.Known || got.Delegates.Total != 2 || got.Delegates.Active != 1 || got.Delegates.Failed != 1 || got.Delegates.Completed != 0 {
 		t.Fatalf("terminal classifier drift: %+v", got.Delegates)
+	}
+	page, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range page.Delegates {
+		if row.DelegateID == "dlg_pending" && (row.Terminal || row.Outcome != "") {
+			t.Fatalf("created-only row claimed terminal: %+v", row)
+		}
+		if row.DelegateID == "dlg_exhausted" && (!row.Terminal || activityDelegateOutcome(row.Outcome) != "failure") {
+			t.Fatalf("exhausted row disagrees with count: %+v", row)
+		}
+	}
+}
+
+func TestSessionActivityRetainedAncestryMakesBoundedProgress(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootID := "ancestryroot"
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	dir := jobsDir(stateDir, rootID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := delegatestore.Open(filepath.Join(dir, "delegates.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	batch := make([]delegatestore.Event, 2001)
+	for i := range batch {
+		id := fmt.Sprintf("dlg_ancestry_%04d", i)
+		batch[i] = delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: id, TS: time.Unix(int64(i), 0).UTC(), Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{OwnerSessionID: rootID, VisibleSessionID: rootID, ChildSessionID: "child-" + id, TranscriptRef: "local:child-" + id, ResolvedModel: "gpt-5.2", AgentType: "general", Task: "retained task", Resumable: true, ToolNameCeiling: []string{"communicate"}}}}
+	}
+	if _, _, err = store.AppendBatch(make(delegatestore.State), batch); err != nil {
+		t.Fatal(err)
+	}
+	childID := batch[2000].Created.Descriptor.ChildSessionID
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	params := appwire.SessionActivityReadParams{Ref: encodeRef("", childID)}
+	first, err := LoadSessionActivitySummary(t.Context(), stateDir, childID, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Context.AncestryKnown || first.Context.ParentRef != "" || len(first.Context.Ancestors) != 0 || first.Delegates.Known || first.Context.RootRef != encodeRef("", rootID) {
+		t.Fatalf("pending ancestry implied a root/known collection: %+v", first)
+	}
+	second, err := LoadSessionActivitySummary(t.Context(), stateDir, childID, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Context.AncestryKnown || second.Context.ParentRef != encodeRef("", rootID) || second.Context.DelegateID != batch[2000].DelegateID || second.Context.Epoch != first.Context.Epoch {
+		t.Fatalf("bounded ancestry did not converge: %+v", second)
+	}
+	page, err := LoadSessionActivityDelegates(t.Context(), stateDir, rootID, appwire.SessionActivityListParams{Ref: encodeRef("", rootID), Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Delegates) != 1 || page.Delegates[0].ChildRef != params.Ref {
+		t.Fatalf("retained owner mismatch: %+v", page)
+	}
+}
+
+func TestSessionActivityCorruptRetainedSourceIsUnavailable(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootID := "corruptroot"
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{invalid}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	page, err := LoadSessionActivityDelegates(t.Context(), stateDir, rootID, appwire.SessionActivityListParams{Ref: encodeRef("", rootID)})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || page.Page.Complete {
+		t.Fatalf("corruption claimed empty success: page=%+v error=%v", page, err)
+	}
+	childID := "missinglineage"
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	if _, err = LoadSessionActivitySummary(t.Context(), stateDir, childID, appwire.SessionActivityReadParams{Ref: encodeRef("", childID)}); !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("unavailable ancestry=%v", err)
+	}
+}
+
+func TestSessionActivityCacheLossAndCursorIdentity(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	id := "cacheloss"
+	savePastActivityMeta(t, stateDir, id, "Root")
+	writeJobLogFast(t, stateDir, id, 3)
+	params := appwire.SessionActivityListParams{Ref: encodeRef("", id), Limit: 1}
+	first, err := LoadSessionActivityJobs(t.Context(), stateDir, id, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.Cursor = first.Page.NextCursor
+	otherID := "othercursorowner"
+	savePastActivityMeta(t, stateDir, otherID, "Other")
+	other := params
+	other.Ref = encodeRef("", otherID)
+	_, err = LoadSessionActivityJobs(t.Context(), stateDir, otherID, other)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("cross-session cursor=%v", err)
+	}
+	malformed := params
+	malformed.Cursor = "not-an-authenticated-cursor"
+	if _, err = LoadSessionActivityJobs(t.Context(), stateDir, id, malformed); !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("malformed cursor=%v", err)
+	}
+	// Discard only this fixture's disposable entry, as the bounded LRU does.
+	key := stateDir + "\x00" + id
+	sessionActivityIndexes.Lock()
+	if cached := sessionActivityIndexes.entries[key]; cached != nil {
+		delete(sessionActivityIndexes.entries, key)
+		sessionActivityIndexes.order.Remove(cached.element)
+	}
+	sessionActivityIndexes.Unlock()
+	_, err = LoadSessionActivityJobs(t.Context(), stateDir, id, params)
+	if !errors.As(err, &wire) || wire.Data == nil || wire.Data.(appwire.ErrorData).EvenerErrorInfo != appwire.ErrorSessionActivityCursorStale {
+		t.Fatalf("cache-loss cursor=%v", err)
+	}
+	params.Cursor = ""
+	fresh, err := LoadSessionActivityJobs(t.Context(), stateDir, id, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh.Jobs) != 1 || fresh.Context.Epoch == first.Context.Epoch {
+		t.Fatalf("cache-loss refresh=%+v", fresh)
+	}
+}
+
+func TestSessionActivityDurableWatchClearInvalidatesReceiver(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		name     string
+		rejected bool
+		own      bool
+	}{{name: "receiver"}, {name: "rejected", rejected: true}, {name: "empty-receiver", own: true}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newStableWatchRuntimeBase(t, nil)
+			fixture.source.events = make(chan events.SessionEvent, 64)
+			fixture.sourceJM.retirementOwner = fixture.source
+			target := fixture.root.ID()
+			args := watchArgs{Source: "dlg_source", Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, ReceiverSessionID: target, ReceiverNotify: func(jobNotification) {}}
+			if scenario.own {
+				target = fixture.source.ID()
+				args.ReceiverSessionID = ""
+				args.ReceiverNotify = nil
+			}
+			result, err := fixture.sourceJM.configureWatch(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireSessionActivityInvalidation(t, fixture.source.events, target, target, appwire.SessionActivityResourceWatches)
+			fixture.sourceJM.mu.Lock()
+			for key, cfg := range fixture.sourceJM.watches {
+				if cfg.id == result.WatchID {
+					closeWatchConfig(cfg)
+					delete(fixture.sourceJM.watches, key)
+				}
+			}
+			fixture.sourceJM.mu.Unlock()
+			if scenario.rejected {
+				appendEvents := fixture.sourceJM.appendEvents
+				t.Cleanup(func() { fixture.sourceJM.appendEvents = appendEvents })
+				fixture.sourceJM.appendEvents = func([]jobstore.Event) error { return os.ErrPermission }
+			}
+			_, err = fixture.sourceJM.clearWatchByID(result.WatchID)
+			if !scenario.rejected {
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireSessionActivityInvalidation(t, fixture.source.events, target, target, appwire.SessionActivityResourceWatches)
+				return
+			}
+			if !errors.Is(err, os.ErrPermission) {
+				t.Fatalf("rejected clear=%v", err)
+			}
+			select {
+			case event := <-fixture.source.events:
+				t.Fatalf("rejected clear emitted mutation: %+v", event)
+			default:
+			}
+			watches, err := fixture.sourceJM.store.LoadWatches()
+			if err != nil || watches[result.WatchID] == nil || !watches[result.WatchID].Active {
+				t.Fatalf("rejected clear changed authority: watches=%+v err=%v", watches, err)
+			}
+		})
+	}
+}
+
+func TestSessionActivityDeepContextCannotExceedResponseBudget(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	c := s.delegateController
+	batch := make([]delegatestore.Event, 400)
+	parentID := ""
+	for i := range batch {
+		id := fmt.Sprintf("dlg_deep_%04d", i)
+		descriptor := stableToolDescriptor(s, id, parentID)
+		descriptor.Description = strings.Repeat("界", 200)
+		batch[i] = delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: id, Created: &delegatestore.DelegateCreated{Descriptor: descriptor}}
+		parentID = id
+	}
+	c.mu.Lock()
+	_, err := c.appendLocked(batch...)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := appwire.SessionActivityListParams{Ref: encodeRef("", batch[len(batch)-1].Created.Descriptor.ChildSessionID)}
+	queries := map[string]func() (any, error){
+		"summary": func() (any, error) {
+			return s.ActivitySummary(t.Context(), appwire.SessionActivityReadParams{Ref: params.Ref})
+		},
+		"delegates": func() (any, error) { return s.ListActivityDelegates(t.Context(), params) },
+		"jobs":      func() (any, error) { return s.ListActivityJobs(t.Context(), params) },
+		"watches":   func() (any, error) { return s.ListActivityWatches(t.Context(), params) },
+	}
+	for name, query := range queries {
+		t.Run(name, func(t *testing.T) {
+			page, readErr := query()
+			raw, marshalErr := json.Marshal(page)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			var wire appwire.WireError
+			if !errors.As(readErr, &wire) || wire.Code != appwire.CodeUnavailable || len(raw) > sessionActivityPageBytes {
+				t.Fatalf("oversized context: bytes=%d err=%v", len(raw), readErr)
+			}
+		})
+	}
+}
+
+func TestSessionActivityCanceledDelegateFoldResumesWithoutReplay(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootID := "canceleddelegates"
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	descriptors := make([]delegatestore.Descriptor, 31)
+	for i := range descriptors {
+		descriptors[i] = pastStableDescriptor(rootID, fmt.Sprintf("childcancel_%04d", i), "retained task")
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	index, err := acquireSessionActivityIndex(t.Context(), stateDir+"\x00"+rootID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index.release()
+	ctx := &sessionActivityCancelDuringFold{Context: t.Context(), index: index, delegates: true}
+	params := appwire.SessionActivityListParams{Ref: encodeRef("", rootID)}
+	if _, err = LoadSessionActivityDelegates(ctx, stateDir, rootID, params); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled delegate fold=%v", err)
+	}
+	got, err := LoadSessionActivityDelegates(t.Context(), stateDir, rootID, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Delegates) != 31 || !got.Page.Complete {
+		t.Fatalf("resumed delegate fold lost events: %+v", got)
+	}
+	seen := make(map[string]bool)
+	for _, row := range got.Delegates {
+		if seen[row.DelegateID] {
+			t.Fatalf("replayed Creation %s", row.DelegateID)
+		}
+		seen[row.DelegateID] = true
 	}
 }
