@@ -27,6 +27,7 @@
 // by the uniform tone treatment.
 import {
   entityOpenTarget,
+  isPlainObject,
   isValidTranscriptRef,
   type NotificationTone,
   type ParsedNotification,
@@ -278,8 +279,9 @@ function structuredRowValue(value: unknown): ReactNode {
 // per schema key, headerless - the labels are the keys in words, and the
 // message above already names what the result is about. A result that failed
 // its verdict renders as a quiet note instead, never as rows that failed
-// their schema. The data's presence is the gate - only a delegate packet
-// carries these fields today - so the card needs no type branch here.
+// their schema, and a result with no record shape (a top-level array or
+// scalar schema's output) renders through the value grammar - the same
+// bounded text a table cell gives a value - rather than vanishing.
 function StructuredResult({ notification }: { notification: ParsedNotification }) {
   if (notification.structuredResultValid === false) {
     return (
@@ -288,7 +290,16 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
       </div>
     );
   }
-  const rows = Object.entries(notification.structuredResult ?? {});
+  const result = notification.structuredResult;
+  if (result === undefined) return null;
+  if (!isPlainObject(result)) {
+    return (
+      <div className={CLASS.excerpt} data-testid="notification-structured-json">
+        {structuredRowValue(result)}
+      </div>
+    );
+  }
+  const rows = Object.entries(result);
   if (rows.length === 0) return null;
   const shown = rows.slice(0, RESULT_ROWS_MAX);
   return (
@@ -401,13 +412,20 @@ export function NotificationCard({
   // structured result, concerns; the raw disclosure is delegate-suppressed) -
   // keep them in step. Non-delegate cards always render the raw disclosure, so
   // they always have a body.
+  // A structured result's presence: a record says something by its keys, and
+  // any other validated shape (a top-level array or scalar schema's result)
+  // by existing. An empty record is not a report - the row stays static
+  // rather than expanding to a body whose only block renders nothing.
+  const hasStructuredResult =
+    notification.structuredResult !== undefined &&
+    (!isPlainObject(notification.structuredResult) || Object.keys(notification.structuredResult).length > 0);
   const delegateHasReport =
     notification.type !== "delegate" ||
     Boolean(
       notification.message ||
         notification.prose ||
         notification.excerpt ||
-        Object.keys(notification.structuredResult ?? {}).length > 0 ||
+        hasStructuredResult ||
         notification.structuredResultValid === false ||
         notification.concerns.length > 0,
     );
@@ -513,10 +531,15 @@ export function NotificationCard({
         {showWarningChip && <Chip tone="attention">warning</Chip>}
         <span className={CLASS.headingText}>
           <span className={CLASS.title}>{notification.title}</span>
-          {delegateName !== undefined && (
+          {/* An unlabeled delegate keeps its ending and Open control: the
+              secondary falls back to the parser's own composition (which
+              already carries the ending) when no name/description/id exists,
+              and the Open control renders wherever a transcript_ref does -
+              neither may be gated on the label. */}
+          {(delegateName !== undefined || notification.secondary !== "" || openControl !== null) && (
             <span className={CLASS.secondary}>
-              {delegateName}
-              {delegateEnding ? ` · ${delegateEnding}` : null}
+              {delegateName !== undefined ? delegateName : notification.secondary}
+              {delegateName !== undefined && delegateEnding ? ` · ${delegateEnding}` : null}
               {openControl}
             </span>
           )}

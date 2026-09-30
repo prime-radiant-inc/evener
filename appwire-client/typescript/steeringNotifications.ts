@@ -54,6 +54,11 @@ export interface ParsedNotification {
   description?: string;
   status?: string;
   reason?: string;
+  // How a packet frame's run ended, in words (delegateEndingText): the one
+  // reason-shaped value that is display prose rather than the producer's raw
+  // reason code, so a phone line can say it beneath a headline. Legacy
+  // attribute frames claim none - their `reason` is a raw code.
+  ending?: string;
   outputBytes?: number;
   exitCode?: number;
   transcriptRef?: string;
@@ -62,12 +67,14 @@ export interface ParsedNotification {
   excerpt: string;
   prose?: string; // body text before any excerpt marker (timers: sentence + note), decoded to plain text
   message?: string; // a communicate envelope's message (rendered as markdown)
-  // A reported run's schema-shaped result: the packet's structured_result
-  // field, or the envelope's data for frames recorded before the field existed
-  // (see delegatePacketNotification). Undefined when the run reported no
-  // schema output or the frame is not a reported packet, and suppressed when
-  // the daemon refused to validate it.
-  structuredResult?: Record<string, unknown>;
+  // A reported run's validated result: the packet's structured_result field -
+  // a schema's record, whatever a top-level array or scalar schema produced, or
+  // a no-schema delegate's default-envelope data (see
+  // delegatePacketNotification) - or the envelope's data for frames recorded
+  // before the field existed. Undefined when the run reported no result or the
+  // frame is not a reported packet, and suppressed when the daemon refused to
+  // validate it.
+  structuredResult?: unknown;
   structuredResultValid?: boolean;
   structuredResultReason?: string;
   concerns: string[];
@@ -320,11 +327,13 @@ interface TerminalPacket {
   error: string;
   name: string;
   description: string;
-  // The schema-validated result and its verdict
-  // (agent/subagents.go captureDelegateStructuredResult): the data rides
-  // structured_result, and a capture or validation failure leaves it unset and
-  // names why in structured_result_reason.
-  structuredResult?: Record<string, unknown>;
+  // The validated result and its verdict (agent/subagents.go's
+  // captureDelegateStructuredResult): the result rides structured_result - a
+  // schema's record, whatever a top-level array or scalar schema produced, or
+  // a no-schema delegate's whole default-envelope capture - and a capture or
+  // validation failure leaves it unset and names why in
+  // structured_result_reason.
+  structuredResult?: unknown;
   structuredResultValid?: boolean;
   structuredResultReason?: string;
 }
@@ -345,7 +354,7 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
     error: text(metadata.error),
     name: text(metadata.name),
     description: text(metadata.description),
-    structuredResult: isPlainObject(parsed.structured_result) ? parsed.structured_result : undefined,
+    structuredResult: parsed.structured_result ?? undefined,
     structuredResultValid:
       typeof parsed.structured_result_valid === "boolean" ? parsed.structured_result_valid : undefined,
     structuredResultReason: text(parsed.structured_result_reason) || undefined,
@@ -364,6 +373,30 @@ function parsePacketEnvelope(text: string): { message: string; data?: Record<str
   const parsed = tryParseJsonRecord(text);
   if (parsed === null || typeof parsed.message !== "string") return null;
   return { message: parsed.message.trim(), data: isPlainObject(parsed.data) ? parsed.data : undefined };
+}
+
+// The default communicate output envelope's keys
+// (session_tools_communicate.go's defaultEnvelopeKeys).
+const DEFAULT_ENVELOPE_KEYS = new Set(["message", "data", "artifacts"]);
+
+// isDefaultEnvelopeCopy recognizes a no-schema delegate's capture: without a
+// result schema the child reports through the default output envelope, and
+// the daemon captures that whole envelope as the structured result (the
+// communicate tool hands captureDelegateStructuredResult the raw `output`
+// argument, which with no schema is stored and marked valid without
+// validating, agent/subagents.go). The frame then carries the caller's fields
+// nested inside structured_result.data - one copy of the very envelope the
+// message field already parses - so the exact default shape, its message the
+// same string the message field carries, means the card wants the data, not
+// Message/Data/Artifacts wrapper rows with the message duplicated and the
+// data blob truncated.
+function isDefaultEnvelopeCopy(
+  result: Record<string, unknown>,
+  envelope: { message: string; data?: Record<string, unknown> } | null,
+): boolean {
+  if (envelope === null || typeof result.message !== "string" || result.message !== envelope.message) return false;
+  if (!isPlainObject(result.data) || !Array.isArray(result.artifacts)) return false;
+  return Object.keys(result).every((key) => DEFAULT_ENVELOPE_KEYS.has(key));
 }
 
 // The stub phrases a machinery ending writes as its packet message - fold.go's
@@ -406,10 +439,18 @@ function delegatePacketNotification(
   // refused to capture or validate never rides the packet's structured_result
   // field, and its copy inside the envelope must not render as an
   // authoritative table either - only a valid verdict's data does, from
-  // whichever copy the frame carries.
+  // whichever copy the frame carries, and a no-schema delegate's
+  // default-envelope capture unwraps to its data (isDefaultEnvelopeCopy).
+  // A result with no record shape (a top-level array or scalar schema) passes
+  // through as-is for the card's value grammar.
   const reported = packet.kind === "reported";
+  const captured = packet.structuredResult ?? envelope?.data;
   const structuredResult =
-    reported && packet.structuredResultValid !== false ? (packet.structuredResult ?? envelope?.data) : undefined;
+    reported && packet.structuredResultValid !== false
+      ? isPlainObject(captured) && isDefaultEnvelopeCopy(captured, envelope)
+        ? captured.data
+        : captured
+      : undefined;
   return {
     type: "delegate",
     // In the outcome's own words; an ending this client doesn't know still reported.
@@ -425,6 +466,7 @@ function delegatePacketNotification(
     excerpt: "",
     message: message || undefined,
     structuredResult,
+    ending,
     structuredResultValid: reported ? packet.structuredResultValid : undefined,
     structuredResultReason: reported ? packet.structuredResultReason : undefined,
     concerns: [],

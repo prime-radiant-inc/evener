@@ -435,6 +435,49 @@ test("a machinery stop renders its ending on a static head with nothing to expan
   expect(screen.queryByTestId("notification-card-root")).toBeNull();
 });
 
+// An unlabeled delegate (no name, description, or id) still has an ending and
+// an Open control: the static head's secondary cannot be gated on the label
+// alone, or a frame with a transcript_ref loses both.
+test("an unlabeled static delegate keeps its ending and Open control", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        tone: "warning",
+        title: "Delegate stopped",
+        secondary: "stopped by its coordinator",
+        delegateId: undefined,
+        name: undefined,
+        transcriptRef: "local:child",
+      })}
+    />,
+  );
+  const head = screen.getByTestId("notification-card");
+  expect(head.textContent).toContain("stopped by its coordinator");
+  expect(screen.getByRole("button", { name: "Open subagent" })).toBeTruthy();
+  expect(head.closest("details")).toBeNull();
+});
+
+// A validated result with no record shape (a top-level array or scalar schema)
+// renders through the card's value grammar rather than vanishing.
+test("a validated non-record result renders through the value grammar", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        tone: "success",
+        name: "corpus-sweep",
+        secondary: "corpus-sweep",
+        delegateId: "dlg_a",
+        structuredResult: ["alpha", "beta"],
+        structuredResultValid: true,
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-structured-json").textContent).toContain("alpha, beta");
+});
+
 test("collapses to a single row by default; card chrome appears on expand", () => {
   // At activity level the card auto-expands; use tools level to test the
   // collapsed→expanded→collapsed transition.

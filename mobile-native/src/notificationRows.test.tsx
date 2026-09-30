@@ -169,6 +169,19 @@ The retry loop splits reads from writes; the flaky test needs a fixed seed.
 		expect(renderedText(tree)).not.toContain("exit_nonzero");
 	});
 
+	// A legacy failed frame with nothing beneath the headline says nothing:
+	// its reason attr is a raw producer code (exit_nonzero), never display
+	// prose - only a packet frame's `ending` earns the detail seat.
+	it("never shows a legacy failed frame's raw reason code", () => {
+		const { tree } = showItem({
+			...notificationWireItem("delegate-failed-unnamed"),
+			id: "item_legacy_code_only",
+			text: `<delegate-notification delegate_id="dlg_2" name="Split the retry loop" status="failed" reason="exit_nonzero"></delegate-notification>`,
+		});
+		expect(renderedText(tree)).toContain("Split the retry loop failed");
+		expect(renderedText(tree)).not.toContain("exit_nonzero");
+	});
+
 	it("says a subagent the user stopped was stopped", () => {
 		const { tree } = show("delegate-stopped");
 		expect(renderedText(tree)).toContain("Check drain ordering stopped");

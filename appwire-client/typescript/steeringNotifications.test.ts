@@ -1414,6 +1414,98 @@ test("a terminal_error packet carrying structured-result fields yields neither t
   expect(n?.structuredResultReason).toBeUndefined();
 });
 
+// A delegate with NO result schema reports through the default output envelope
+// (session_tools_communicate.go's default {message, data, artifacts} shape), and
+// the daemon captures that whole envelope as the structured result (the
+// communicate tool hands captureDelegateStructuredResult the raw `output`
+// argument; with no schema it stores it and marks it valid without
+// validating - agent/subagents.go). The frame then carries the caller's fields
+// nested inside structured_result.data - one copy of the very envelope the
+// message field already parses - so the parser reads the data out, not
+// Message/Data/Artifacts wrappers with the message duplicated and the data
+// blob truncated.
+const DEFAULT_CAPTURE_ENVELOPE = JSON.stringify({
+  message: "Rebased the branch cleanly.",
+  data: { rebased: "main", conflicts: "none" },
+  artifacts: [],
+});
+
+test("a no-schema delegate's envelope capture reads the envelope's data", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: DEFAULT_CAPTURE_ENVELOPE,
+        structured_result: {
+          message: "Rebased the branch cleanly.",
+          data: { rebased: "main", conflicts: "none" },
+          artifacts: [],
+        },
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task3-rebase" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Rebased the branch cleanly.");
+  expect(n?.structuredResult).toEqual({ rebased: "main", conflicts: "none" });
+});
+
+// The unwrap fires only on the exact default envelope: a schema whose fields
+// merely neighbor the envelope's (message and data, no artifacts) is the
+// caller's own shape and stays whole.
+test("a schema result that merely neighbors the envelope's keys stays whole", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "Read the fixture.", data: { rows: 3 } }),
+        structured_result: { message: "Read the fixture.", data: { rows: 3 } },
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task3-neighbor" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual({ message: "Read the fixture.", data: { rows: 3 } });
+});
+
+// A result schema may top at an array or a scalar, and the daemon validates
+// and stores such a result as-is (validateStructuredResult compiles the
+// value parses through so the card can render it through its value grammar
+// instead of a validated result silently vanishing.
+test("a validated non-object result parses through", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: "Swept the corpus.",
+        structured_result: ["alpha", "beta"],
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task4-sweep" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(["alpha", "beta"]);
+  expect(n?.structuredResultValid).toBe(true);
+});
+
+// The packet's ending is display prose - the one reason-shaped value a phone
+// line can say beneath a headline. A legacy attribute frame's `reason` is the
+// producer's raw code (exit_nonzero, stopped_by_parent) and never earns that
+// seat, so `ending` is the packet frame's alone.
+test("a packet frame's ending is the words its reason already says", () => {
+  const [n] = wireNotifications("delegate-failed-unnamed");
+  expect(n?.ending).toBe("go test exited 1 three times");
+  expect(n?.reason).toBe(n?.ending);
+});
+
+test("a legacy attribute frame claims no ending", () => {
+  const frame =
+    '<delegate-notification delegate_id="dlg_2" name="Split the retry loop" status="failed" reason="exit_nonzero"></delegate-notification>';
+  const [n] = notificationsOf(parseSteeringNotifications(frame));
+  expect(n?.reason).toBe("exit_nonzero");
+  expect(n?.ending).toBeUndefined();
+});
+
 // The packet's metadata carries the run's cause beside its reason code
 // (#3327); the card says the cause, never the bare code.
 test("an unnamed subagent's failure parses as a failure carrying its message", () => {
