@@ -1,6 +1,9 @@
 // Typed external activity replies for native tests that share the rich row fixtures.
 import {
+	type ActivityDelegate,
+	type ActivityJob,
 	type ActivityTree,
+	type JobActivityJob,
 	type Thread,
 	type SessionActivityContext,
 	type SessionActivityCounts,
@@ -14,6 +17,52 @@ import {
 	isFailedJobOutcome,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+
+// The optional fields a hub's SessionDelegate and JobActivityJob rows carry
+// (appwire-client types.gen.ts). A rich fixture's other fields (a report
+// message, a mandate, a resolved model, timings, origin ids and the like)
+// belong to the retired jobs tree, so the adapter never passes them on and a
+// test can't pass on data the hub doesn't send.
+const DELEGATE_FIELDS = [
+	"outcome",
+	"reason",
+	"error",
+	"notResumableReason",
+	"model",
+	"reasoningEffort",
+	"runStartedAt",
+	"runEndedAt",
+	"latestActivityAt",
+	"usage",
+	"worktree",
+] as const satisfies readonly (keyof ActivityDelegate & keyof SessionDelegate)[];
+const JOB_FIELDS = [
+	"jobId",
+	"ownerSessionId",
+	"ownerRef",
+	"transcriptRef",
+	"type",
+	"status",
+	"outcome",
+	"terminal",
+	"background",
+	"hasOutput",
+	"description",
+	"command",
+	"task",
+	"reason",
+	"startedAt",
+	"endedAt",
+	"exitCode",
+	"outputBytes",
+	"lastOutputAt",
+] as const satisfies readonly (keyof ActivityJob & keyof JobActivityJob)[];
+
+function present<T extends object, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {
+	const picked: Partial<Pick<T, K>> = {};
+	for (const key of keys) if (source[key] !== undefined) picked[key] = source[key];
+	return picked as Pick<T, K>;
+}
 
 export function activityFixture(raw: unknown, params: SessionActivityReadParams) {
 	const parsed = parseActivityTree(raw);
@@ -36,23 +85,24 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 		if (node.branch.error) issues.push({ ref: node.ref, code: "unavailable" });
 		if (node.branch.truncated) continuation ??= node.branch.continuation ?? "remaining";
 		for (const entry of node.entries) {
-			if (entry.kind === "shell") jobs.push({ ...entry.job });
+			if (entry.kind === "shell") jobs.push(present(entry.job, JOB_FIELDS));
 			else {
 				const d = entry.delegate;
-				const { child: _child, branch: _branch, message: _message, turns: _turns, mandate: _mandate, ...facts } = d;
 				delegates.push({
-					...facts,
-					description: d.description ?? "",
+					delegateId: d.delegateId,
 					ownerRef: node.ref,
 					rootRef: tree.root.ref,
-					task: d.task ?? d.mandate ?? d.description ?? "",
+					childRef: d.childRef,
+					...(parentDelegateId ? { parentDelegateId } : {}),
+					description: d.description ?? "",
+					task: d.task ?? d.description ?? "",
 					type: d.type ?? "delegate",
 					lifecycle: d.lifecycle ?? "running",
 					phase: d.phase ?? "running",
 					status: d.status ?? "running",
 					terminal: d.terminal ?? false,
 					resumable: d.resumable ?? false,
-					...(parentDelegateId ? { parentDelegateId } : {}),
+					...present(d, DELEGATE_FIELDS),
 				});
 				if (d.child && params.scope === "subtree") visit(d.child, d.delegateId);
 			}

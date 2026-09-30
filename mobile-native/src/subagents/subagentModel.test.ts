@@ -172,7 +172,7 @@ describe("one flat list", () => {
 	});
 
 	it("titles a row with the short description, else the brief's first line, else the session", () => {
-		expect(subagentTitle(delegate("x", { description: "  ", mandate: "Fix the settle race.\nThen report." }))).toBe(
+		expect(subagentTitle(delegate("x", { description: "  ", task: "Fix the settle race.\nThen report." }))).toBe(
 			"Fix the settle race.",
 		);
 		expect(
@@ -298,13 +298,13 @@ describe("the last line", () => {
 		const rows = flattenSubagents(
 			tree(
 				failed("Fix race in tree settle", {
-					resolvedModel: "glm-5.3-vision",
+					model: "glm-5.3-vision",
 					worktree: { path: "/w/fix", branch: "fix-settle-race", headSha: "abc", ahead: 2, dirty: false },
 					usage: { inputTokens: 1_000_000, outputTokens: 200_000, totalTokens: 1_200_000 },
 					child: session("local:settle", [
 						entry(
 							running("Check drain ordering in tests", {
-								resolvedModel: "deepseek-4.1-flash",
+								model: "deepseek-4.1-flash",
 								usage: { inputTokens: 200_000, outputTokens: 10_000 },
 							}),
 						),
@@ -319,13 +319,22 @@ describe("the last line", () => {
 		expect(subagentLastLine(rows[1] as SubagentRow, coordinatorModel, name)).toEqual({
 			parent: "Fix race in tree settle",
 			model: "DeepSeek 4.1 Flash",
-			tokens: "210K tokens",
 		});
+	});
+
+	// The hub fills a subagent's usage from its finished runs only, so while it
+	// runs the count would be an earlier run's, or nothing. A running row shows
+	// no tokens; a finished or failed one shows its run's.
+	it("shows a finished or failed run's tokens, and none while a subagent runs", () => {
+		const usage = { inputTokens: 200_000, outputTokens: 10_000, totalTokens: 210_000 };
+		expect(subagentLastLine(rowOf(running("r", { usage })), coordinatorModel, name)).toBeNull();
+		expect(subagentLastLine(rowOf(done("d", { usage })), coordinatorModel, name)).toEqual({ tokens: "210K tokens" });
+		expect(subagentLastLine(rowOf(failed("f", { usage })), coordinatorModel, name)).toEqual({ tokens: "210K tokens" });
 	});
 
 	it("has no last line when nothing applies, and hides the model while the coordinator's is unknown", () => {
 		expect(subagentLastLine(rowOf(running("r")), coordinatorModel, name)).toBeNull();
-		expect(subagentLastLine(rowOf(running("r", { resolvedModel: "deepseek-4.1-flash" })), null, name)).toBeNull();
+		expect(subagentLastLine(rowOf(running("r", { model: "deepseek-4.1-flash" })), null, name)).toBeNull();
 	});
 
 	it("knows one model under two spellings", () => {
