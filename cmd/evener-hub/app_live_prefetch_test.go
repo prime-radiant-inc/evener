@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -236,41 +235,36 @@ func TestPrefetchLiveModelsSurvivesUnreachable(t *testing.T) {
 }
 
 // The hub lists providers once at startup and never again on a timer: a
-// provider is polled only when someone asks (Jesse, 2026-09-30). With a
-// synchronous runner the prefetch hands over one pass that returns, having
-// listed the instance once; a loop that polled would never return.
+// provider is polled only when someone asks (Jesse, 2026-09-30).
 func TestLiveModelsPrefetchRunsOnceAtStartup(t *testing.T) {
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
-	}))
-	t.Cleanup(srv.Close)
-	tomlPath := filepath.Join(t.TempDir(), "providers.toml")
-	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key = \"test-key\"\n"
-	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
+	ctl, gw := newListingController(t)
+	gw.status.Store(http.StatusOK)
+	runs := runStartupPrefetch(t, func(startBackground func(func())) {
+		startLiveModelsPrefetch(t.Context(), ctl.reg, ctl.auth, startBackground, func() {})
+	})
+	if runs != 1 {
+		t.Fatalf("the prefetch started %d background runs, want 1", runs)
 	}
-	ctl := newTestInstancesController(t, tomlPath, filepath.Dir(tomlPath), t.TempDir(), nil)
-	if err := ctl.reg.Reload(); err != nil {
-		t.Fatalf("Reload: %v", err)
+	if got := gw.hits.Load(); got != 1 {
+		t.Fatalf("the provider was listed %d times, want once", got)
 	}
+}
+
+// runStartupPrefetch hands start a synchronous background runner and returns
+// how many runs it started. A startup pass returns; a prefetch that polled on
+// a timer would never return, so the wait is bounded.
+func runStartupPrefetch(t *testing.T, start func(startBackground func(func()))) int {
+	t.Helper()
 	runs := 0
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		startLiveModelsPrefetch(t.Context(), ctl.reg, ctl.auth, func(fn func()) { runs++; fn() }, func() {})
+		start(func(fn func()) { runs++; fn() })
 	}()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the prefetch never returned: it is still listing providers after its startup pass")
+		t.Fatal("the prefetch never returned: it is still running after its startup pass")
 	}
-	if runs != 1 {
-		t.Fatalf("the prefetch started %d background runs, want 1", runs)
-	}
-	if got := hits.Load(); got != 1 {
-		t.Fatalf("the provider was listed %d times, want once", got)
-	}
+	return runs
 }

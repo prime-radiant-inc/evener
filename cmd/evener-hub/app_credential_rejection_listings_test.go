@@ -27,9 +27,11 @@ import (
 
 // listingGateway is a provider's /models endpoint: a listing while status is
 // 200, and the provider's refusal (with body text that must never reach a
-// status) otherwise. lastKey is the bearer key the latest request sent.
+// status) otherwise. hits counts the listings it served, and lastKey is the
+// bearer key the latest one sent.
 type listingGateway struct {
 	status  atomic.Int32
+	hits    atomic.Int32
 	lastKey atomic.Value
 }
 
@@ -44,6 +46,7 @@ func newListingController(t *testing.T) (*hubInstancesController, *listingGatewa
 			http.NotFound(w, r)
 			return
 		}
+		gw.hits.Add(1)
 		gw.lastKey.Store(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		w.Header().Set("Content-Type", "application/json")
 		code := int(gw.status.Load())
