@@ -1,4 +1,4 @@
-import { WireError } from "@evener/appwire-client";
+import { isFailedJobOutcome, WireError } from "@evener/appwire-client";
 import type {
 	ActivitySessionNode,
 	ActivityTree,
@@ -166,7 +166,9 @@ export function createDemoSessionActivity(resolve: (ref: string) => ActivityRoot
 				delegates: counts(delegates, (row) =>
 					!row.terminal ? "active" : row.outcome === "failed" ? "failed" : "completed",
 				),
-				jobs: counts(jobs, (row) => (!row.terminal ? "active" : row.outcome === "failure" ? "failed" : "completed")),
+				jobs: counts(jobs, (row) =>
+					!row.terminal ? "active" : isFailedJobOutcome(row.outcome) ? "failed" : "completed",
+				),
 				watches: counts([], () => "completed"),
 			};
 		},

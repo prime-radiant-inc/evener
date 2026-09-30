@@ -1,5 +1,5 @@
 import { type ActivityTree, activityNodeID } from "./activityData";
-import { type ActivityDelegateRow, type ActivityJobRow, indexActivityEntities } from "./activityRows";
+import { type ActivityDelegateRow, type ActivityJobRow, indexActivityEntities, watchRowID } from "./activityRows";
 import type { ItemModel, TurnModel } from "./model";
 import type { EvenerDelegateInfo } from "./types.gen";
 import { compareTranscriptPosition, foldWatchSummaries, type WatchSummary } from "./watchRows";
@@ -132,7 +132,7 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
   }
 
   for (const [id, watch] of foldWatchSummaries(watchItems(sources.turns))) {
-    const qualified = `watch:${JSON.stringify([sources.sessionRef, id])}`;
+    const qualified = watchRowID(sources.sessionRef, id);
     entities.set(qualified, {
       kind: "watch",
       id: qualified,
