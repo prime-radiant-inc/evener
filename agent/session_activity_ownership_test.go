@@ -14,7 +14,7 @@ import (
 
 func TestSessionActivitySubtreeJobsPreserveEqualKeysAcrossOwners(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	owners := make(map[string]bool)
 	for i := range 2 {
@@ -69,7 +69,7 @@ func TestSessionActivitySubtreeJobsPreserveEqualKeysAcrossOwners(t *testing.T) {
 
 func TestSessionActivityWatchesPreserveEqualKeysAcrossReceivers(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	receivers := make(map[string]bool)
 	for i := range 2 {

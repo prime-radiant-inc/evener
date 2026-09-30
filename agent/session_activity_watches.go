@@ -50,12 +50,16 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 	if err != nil {
 		return result, err
 	}
+	result.Page.Issues = append([]appwire.SessionActivityIssue(nil), walk.Issues...)
+	if raw, _ := json.Marshal(result); len(raw) > sessionActivityPageBytes-2048 {
+		return result, appwire.Unavailable("session activity context and issues exceed response budget")
+	}
 	if !complete {
 		result.Page.NextCursor = read.index.encode(token)
 		return result, nil
 	}
 	if !walk.Ready {
-		_, walk.Highwater, _ = read.nextKey(walk.Owners, sessionActivityKey{}, true)
+		_, walk.Highwater, _ = read.nextKey(walk, sessionActivityKey{}, true)
 		walk.Ready = true
 	}
 	controller := read.index.controller
@@ -70,7 +74,7 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		sourceOwner, key, found := read.nextKey(walk.Owners, token.After, true)
+		sourceOwner, key, found := read.nextKey(walk, token.After, true)
 		if !found {
 			result.Page.Complete = true
 			break
@@ -126,12 +130,13 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 		token.After = key
 	}
 	if !result.Page.Complete {
-		if _, _, found := read.nextKey(walk.Owners, token.After, true); !found {
+		if _, _, found := read.nextKey(walk, token.After, true); !found {
 			result.Page.Complete = true
 		} else {
 			result.Page.NextCursor = read.index.encode(token)
 		}
 	}
+	result.Page.Complete = result.Page.Complete && len(result.Page.Issues) == 0
 	return result, nil
 }
 func projectRetainedSessionWatch(owner, receiver string, record *jobstore.WatchRecord, index *sessionActivityJobIndex) appwire.SessionWatch {

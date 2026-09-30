@@ -53,13 +53,15 @@ type sessionActivityToken struct {
 	Progress  uint64
 }
 type sessionActivityWalk struct {
-	Cutoffs        map[string]int64
-	Highwater      sessionActivityKey
-	Admission      uint64
-	Ready          bool
-	Owners         []string
-	SourcesReady   bool
-	SourcePosition int
+	UnavailableSources map[string]bool
+	Issues             []appwire.SessionActivityIssue
+	Cutoffs            map[string]int64
+	Highwater          sessionActivityKey
+	Admission          uint64
+	Ready              bool
+	Owners             []string
+	SourcesReady       bool
+	SourcePosition     int
 }
 type sessionActivitySource struct {
 	Info   os.FileInfo

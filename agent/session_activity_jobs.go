@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -98,7 +99,11 @@ func (read *sessionActivityRead) prepareSources(ctx context.Context, walk *sessi
 			path := filepath.Join(jobsDir(read.stateDir, owner), "jobs.jsonl")
 			info, err := os.Stat(path)
 			if err != nil && !os.IsNotExist(err) {
-				return false, sessionActivitySourceReadError("session job source unavailable", err)
+				sourceErr := sessionActivitySourceReadError("session job source unavailable", err)
+				if !read.excludeUnavailableSource(walk, owner, sourceErr) {
+					return false, sourceErr
+				}
+				continue
 			}
 			if info != nil {
 				walk.Cutoffs[owner] = info.Size()
@@ -113,12 +118,14 @@ func (read *sessionActivityRead) prepareSources(ctx context.Context, walk *sessi
 			return false, err
 		}
 		owner := walk.Owners[walk.SourcePosition]
-		ready, err := read.advanceJobs(ctx, owner)
-		if err != nil {
-			return false, err
-		}
-		if !ready {
-			return false, nil
+		if !walk.UnavailableSources[owner] {
+			ready, err := read.advanceJobs(ctx, owner)
+			if err != nil && !read.excludeUnavailableSource(walk, owner, err) {
+				return false, err
+			}
+			if err == nil && !ready {
+				return false, nil
+			}
 		}
 		walk.SourcePosition++
 		read.index.progress++
@@ -126,6 +133,26 @@ func (read *sessionActivityRead) prepareSources(ctx context.Context, walk *sessi
 	walk.SourcePosition = 0
 	return true, nil
 }
+
+// Independent journals remain readable when a sibling is unavailable. A walk
+// keeps that source excluded; a fresh root read can admit it after recovery.
+// Context cancellation and source-incarnation changes still invalidate the read.
+func (read *sessionActivityRead) excludeUnavailableSource(walk *sessionActivityWalk, owner string, err error) bool {
+	var wire appwire.WireError
+	if len(walk.Owners) < 2 || !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+		return false
+	}
+	if walk.UnavailableSources == nil {
+		walk.UnavailableSources = make(map[string]bool)
+	}
+	walk.UnavailableSources[owner] = true
+	walk.Issues = append(walk.Issues, appwire.SessionActivityIssue{Ref: encodeRef("", owner), Code: "unavailable"})
+	if source := read.index.jobs[owner]; source != nil {
+		source.Complete = false
+	}
+	return true
+}
+
 func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) (bool, error) {
 	index := read.index.jobs[owner]
 	if index == nil {
@@ -161,6 +188,10 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 		read.index.scanCalls++
 		events, complete, scanErr := jobstore.ReadPage(ctx, path, &cursor, read.bytes-128, read.budget)
 		if scanErr != nil {
+			// Failed scans do not publish cursor usage. Reserve the remaining
+			// allowance so another source cannot exceed this request's budget.
+			read.bytes = 0
+			read.budget = 0
 			if ctx.Err() != nil {
 				return false, ctx.Err()
 			}
@@ -275,13 +306,13 @@ func (read *sessionActivityRead) acceptJobPage(path string, index *sessionActivi
 }
 
 // nextKey visits only the next bounded candidates without sorting historical rows.
-func (read *sessionActivityRead) nextKey(owners []string, after sessionActivityKey, watch bool) (string, sessionActivityKey, bool) {
+func (read *sessionActivityRead) nextKey(walk *sessionActivityWalk, after sessionActivityKey, watch bool) (string, sessionActivityKey, bool) {
 	var selected sessionActivityKey
 	selectedOwner := ""
 	found := false
-	for _, owner := range owners {
+	for _, owner := range walk.Owners {
 		source := read.index.jobs[owner]
-		if source == nil {
+		if source == nil || walk.UnavailableSources[owner] {
 			continue
 		}
 		keys := source.JobKeys
@@ -310,19 +341,23 @@ func (read *sessionActivityRead) jobsPage(ctx context.Context, params appwire.Se
 	if err != nil {
 		return result, err
 	}
+	result.Page.Issues = append([]appwire.SessionActivityIssue(nil), walk.Issues...)
+	if raw, _ := json.Marshal(result); len(raw) > sessionActivityPageBytes-2048 {
+		return result, appwire.Unavailable("session activity context and issues exceed response budget")
+	}
 	if !complete {
 		result.Page.NextCursor = read.index.encode(token)
 		return result, nil
 	}
 	if !walk.Ready {
-		_, walk.Highwater, _ = read.nextKey(walk.Owners, sessionActivityKey{}, false)
+		_, walk.Highwater, _ = read.nextKey(walk, sessionActivityKey{}, false)
 		walk.Ready = true
 	}
 	for read.budget > 0 && len(result.Jobs) < params.Limit {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		owner, key, found := read.nextKey(walk.Owners, token.After, false)
+		owner, key, found := read.nextKey(walk, token.After, false)
 		if !found {
 			result.Page.Complete = true
 			break
@@ -364,11 +399,12 @@ func (read *sessionActivityRead) jobsPage(ctx context.Context, params appwire.Se
 		token.After = key
 	}
 	if !result.Page.Complete {
-		if _, _, found := read.nextKey(walk.Owners, token.After, false); !found {
+		if _, _, found := read.nextKey(walk, token.After, false); !found {
 			result.Page.Complete = true
 		} else {
 			result.Page.NextCursor = read.index.encode(token)
 		}
 	}
+	result.Page.Complete = result.Page.Complete && len(result.Page.Issues) == 0
 	return result, nil
 }

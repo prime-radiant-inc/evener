@@ -60,7 +60,11 @@ ancestry may advance the root delegate journal in bounded steps.
 List arrays are always present. An empty array establishes emptiness only when
 the page is complete and has no issues. An incomplete page can contain no rows
 while reconstruction makes progress. Issues identify incomplete or unavailable
-branches without pretending they contain no work.
+branches without pretending they contain no work. When a job or watch read spans
+multiple journals, an unavailable source does not hide healthy siblings. The
+current walk excludes that source and carries its issue; a fresh root read can
+include it after recovery. Counts remain unknown while a required source is
+unavailable. A read with only one source preserves its typed failure.
 
 Watch state is `armed`, `ended` or `unknown`. A retained registration alone does
 not prove that its runtime still has an armed watch. Recorded delivery counts
@@ -96,7 +100,9 @@ units and 4 MiB of newly read journal bytes across their sources. A stored batch
 is decoded one event at a time. One event and its existing atomic fold count as
 one work unit under the journal's record-size limit; cancellation is checked
 between events. These are input and work bounds, not a hard CPU or wall-clock
-deadline. See the [domain behavior tests](../../agent/session_activity_test.go)
+deadline. A failed job-journal scan yields the remaining allowance because no
+accepted cursor reports its attempted usage; other sources continue on the next
+page. Healthy reads do not incur that extra continuation. See the [domain behavior tests](../../agent/session_activity_test.go)
 and the [job](../../agent/internal/jobstore/read_page.go) and
 [delegate](../../agent/internal/delegatestore/read_page.go) journal scanners.
 
