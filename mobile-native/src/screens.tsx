@@ -1651,26 +1651,26 @@ export function ConversationScreen({
 				landRestore(appliedReaderRestore.current?.clamped ?? false);
 				return;
 			}
+			const clamped = scrollOffset !== desired;
 			appliedReaderRestore.current = {
 				key: currentKey,
 				height: measurement.height,
 				offset: scrollOffset,
-				clamped: scrollOffset !== desired,
+				clamped,
 			};
 			captureSuppressed.current = true;
 			timeline.current?.scrollToOffset({
 				offset: scrollOffset,
 				animated: false,
 			});
-			landRestore(scrollOffset !== desired);
+			landRestore(clamped);
 		}
 	}
 	// A restore the list can't reach yet (clamped) lands the opening only once
-	// the last row has measured: until then the rows below the reading position
-	// are still estimates, the content grows as they render, and showing the
-	// list would show it short of the row and then move. With the last row
-	// measured the content is whole, and as far as the list reaches is where it
-	// rests. The opening's cap still shows it if that never happens.
+	// the last row has measured: before that the rows below the reading position
+	// are estimates, the content grows as they render, and the list would show
+	// short of the row and then move. After it, as far as the list reaches is
+	// where it rests. The opening's cap still shows it if that never happens.
 	function landRestore(clamped: boolean) {
 		if (!clamped || lastRowMeasured()) landOpening();
 	}

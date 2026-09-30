@@ -1468,7 +1468,7 @@ describe("opening a session", () => {
 			expect(opacity(tree)).toBe(1);
 		});
 
-		it("shows it short of the row once the rows below it have all measured", async () => {
+		it("shows it short of the row once the last row has measured", async () => {
 			savePosition("ref-open-near-end", "a-turn_1", "turn_2");
 			const { tree } = await mount(twoTurns("ref-open-near-end"));
 			flatListCalls.length = 0;
@@ -1478,6 +1478,23 @@ describe("opening a session", () => {
 			await settle();
 			// The content is whole, so as far as the list reaches is where it rests.
 			expect(offsets().at(-1)).toBeLessThan(2_800);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("keeps it hidden when the restore runs again short of the row, until the last row measures", async () => {
+			savePosition("ref-open-clamped-again", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped-again"));
+			layOutList(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			expect(opacity(tree)).toBe(0);
+			// A row between measures: the restore runs again, already as far as
+			// the list reaches, and the rows below are still estimates.
+			layOutRow(tree, 2, 9_700);
+			await settle();
+			expect(opacity(tree)).toBe(0);
+			layOutRow(tree, 3, 9_900);
+			await settle();
 			expect(opacity(tree)).toBe(1);
 		});
 	});
