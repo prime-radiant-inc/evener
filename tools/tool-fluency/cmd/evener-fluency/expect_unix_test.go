@@ -18,7 +18,9 @@ import (
 func TestRunCheckKillsWhatAHungCheckStarted(t *testing.T) {
 	t.Parallel()
 	work := t.TempDir()
-	if ok, _ := runCheck(work, checkSpec{Name: "hang", Run: "sleep 30 & echo $! > child.pid; wait"}, 200*time.Millisecond); ok {
+	// The deadline must land after the shell has written child.pid; under a
+	// loaded full-suite run, 200ms was sometimes too short for that.
+	if ok, _ := runCheck(work, checkSpec{Name: "hang", Run: "sleep 30 & echo $! > child.pid; wait"}, 2*time.Second); ok {
 		t.Fatal("a hung check passed")
 	}
 	data, err := os.ReadFile(filepath.Join(work, "child.pid"))

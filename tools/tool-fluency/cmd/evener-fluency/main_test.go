@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,25 +10,60 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
 
-// TestHermeticRunEnvReachesSpawnedEvener pins that the harness hides the
-// operator's personal skills from every run: main sets EVENER_NO_USER_SKILLS,
-// and the environment the CLI probe hands a spawned evener (fixtureEnv) carries
-// it, as an in-process live session already inherits it (#3227).
-func TestHermeticRunEnvReachesSpawnedEvener(t *testing.T) {
+// TestConfigureHermeticRunEnvDefaultHidesUserSkills pins that a hermetic run
+// (inheritOperatorEnv=false, today's default) hides the operator's personal
+// skills from every run: it sets EVENER_NO_USER_SKILLS, and the environment
+// the CLI probe hands a spawned evener (fixtureEnv) carries it, as an
+// in-process live session already inherits it (#3227).
+func TestConfigureHermeticRunEnvDefaultHidesUserSkills(t *testing.T) {
 	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
-	hermeticRunEnv()
+	configureHermeticRunEnv(false)
 	if got := envvars.EVENERNoUserSkills.Getenv(); got != "1" {
 		t.Fatalf("%s = %q, want 1", envvars.EVENERNoUserSkills.Name, got)
 	}
 	want := envvars.EVENERNoUserSkills.Assignment("1")
 	if !slices.Contains(fixtureEnv(t.TempDir()), want) {
 		t.Fatalf("fixtureEnv does not carry %q", want)
+	}
+}
+
+// TestCatalogSessionHidesUserSkills pins that every subcommand that builds a
+// session, not only run and matrix, runs hermetic: catalog's session must see
+// EVENER_NO_USER_SKILLS set when it is created (#3227). Not parallel: it
+// replaces runnerNewSession and sets process env.
+func TestCatalogSessionHidesUserSkills(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
+	oldNewSession := runnerNewSession
+	t.Cleanup(func() { runnerNewSession = oldNewSession })
+	var seen string
+	runnerNewSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+		seen = envvars.EVENERNoUserSkills.Getenv()
+		return nil, errors.New("stop after recording the environment")
+	}
+	_ = run([]string{"catalog", "--model", "openai/gpt-5.4-mini"})
+	if seen != "1" {
+		t.Fatalf("catalog session saw %s = %q, want 1", envvars.EVENERNoUserSkills.Name, seen)
+	}
+}
+
+// TestConfigureHermeticRunEnvInheritOperatorEnvRestoresUserSkills pins
+// --inherit-operator-env's debugging escape hatch: it must clear
+// EVENER_NO_USER_SKILLS so a run goes back to seeing the operator's real home
+// and user-config skills, exactly like before #3227.
+func TestConfigureHermeticRunEnvInheritOperatorEnvRestoresUserSkills(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
+	configureHermeticRunEnv(true)
+	if got := envvars.EVENERNoUserSkills.Getenv(); got == "1" {
+		t.Fatalf("%s = %q after --inherit-operator-env, want cleared", envvars.EVENERNoUserSkills.Name, got)
 	}
 }
 
