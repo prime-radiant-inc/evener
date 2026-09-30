@@ -463,6 +463,12 @@ test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
     "a compaction note cleared",
     housekeeping("compact_context", { note_to_self: "" }, "Note cleared. No compaction requested."),
     "Cleared its compaction note",
+    "Clearing its compaction note",
+  ],
+  [
+    "an empty note that reloads skills, which still compacts",
+    housekeeping("compact_context", { note_to_self: "", reload_skills: ["go-testing"] }),
+    "Asked for a context compaction",
     "Asking for a context compaction",
   ],
   [

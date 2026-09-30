@@ -50,6 +50,18 @@ const goalStatus = (step: StepArgs) => {
   return status === "complete" || status === "blocked" ? status : undefined;
 };
 
+// Whether a compact_context call only clears its note, as the tool decides it
+// before it prints anything: an empty note, no compaction instructions, and no
+// reload_skills key at all (its presence alone asks for a compaction).
+const onlyClearsNote = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
+  const args = parseArgs(step.argumentsJSON);
+  return (
+    (str(args, "note_to_self") ?? "") === "" &&
+    (str(args, "compaction_instructions") ?? "") === "" &&
+    !Object.hasOwn(args, "reload_skills")
+  );
+};
+
 const nextPage = (step: StepArgs) => Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
 
 const selectorOf = (step: StepArgs) => str(parseArgs(step.argumentsJSON), "selector")?.trim();
@@ -100,7 +112,7 @@ const HOUSEKEEPING: Record<string, HousekeepingTool> = {
       // starts "Note cleared."
       verb: step.output?.trim() === "Note cleared. No compaction requested." ? "Cleared its compaction note" : did,
     }),
-    progress: () => "Asking for a context compaction",
+    progress: (step) => (onlyClearsNote(step) ? "Clearing its compaction note" : "Asking for a context compaction"),
   },
   model_list: {
     action: "listed the available models",
