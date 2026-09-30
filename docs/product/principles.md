@@ -63,8 +63,8 @@ is not evidence that a capability is permanently unavailable. Review automatic
 restrictions, arbitrary limits, and approval demands against the task the user
 is trying to complete.
 
-The [punchlist](friction.md) holds specific policy choices that need discussion;
-these principles do not resolve those choices by implication.
+The [punchlist](friction.md) records specific policy choices and their decisions;
+these principles do not resolve an undecided choice by implication.
 
 ## Communicate in proportion to the interruption
 

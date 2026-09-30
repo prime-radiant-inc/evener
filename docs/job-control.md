@@ -762,7 +762,7 @@ Rules:
   notice; its pending deliveries still follow the durable-send recovery path.
   Journal durability does not imply that an active watch is rearmed. See
   [watch intent after restart](product/friction.md#r03-watch-intent-after-restart)
-  for the open product decision about reconstructing eligible watch intent.
+  for the agreed recovery outcome that remains to be implemented.
 - Already-fired parent-watch frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the `watch_id`, visible session, configured watch source/target, receiver identity, resolved watched identity, and watch generation.
 - `job_watch(operation="clear", watch_id=...)` is the model-facing unwatch operation; there is no separate unwatch tool.
 - There is at most one active watch configuration per `(watcher_session_id, source identity, receiver identity, condition hash)` unless an implementation documents additive watches. A duplicate call with the same configuration is idempotent. A different call replaces the previous configuration for that key, and the return value must make replacement explicit with `replaced_existing=true`.

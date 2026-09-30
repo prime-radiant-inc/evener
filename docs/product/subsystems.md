@@ -3,7 +3,7 @@
 Use this map to follow a user's action to the component that owns the work, its
 durable state, and its recovery. It describes the implementation, including gaps;
 the [principles](principles.md) describe product intent and the
-[punchlist](friction.md) records proposed changes for discussion.
+[punchlist](friction.md) records open gaps and their product decisions.
 
 Ownership here means code responsibility, not a team or person. A client can show
 a failure while another component owns its cause. Follow both sides before adding

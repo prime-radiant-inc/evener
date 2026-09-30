@@ -12,7 +12,7 @@ install to your first session.**
 
 The [product guide](docs/product/README.md) describes the experience Evener aims
 to provide, maps its subsystems and recovery responsibilities, and tracks open
-friction cases for product discussion.
+friction cases and their product decisions.
 
 Evener uses the LLM's native tool-calling and supports OpenAI, Anthropic,
 Google, and [other providers](docs/llm-providers.md). For how the code is

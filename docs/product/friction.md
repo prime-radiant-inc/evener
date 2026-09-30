@@ -1,6 +1,6 @@
 # Product friction punchlist
 
-This is the open discussion queue for places where Evener makes the user manage
+This is the open product queue for places where Evener makes the user manage
 its machinery, loses the ability to recover, or imposes a restriction that needs
 a product justification. Use the [principles](principles.md) to assess the user
 cost and the [subsystem map](subsystems.md) to find the owning code.
@@ -1483,8 +1483,9 @@ every branch. A gap is not evidence that the subsystem is correct or broken.
 
 Existing deterministic tests cover selected failure contracts and recovery
 controls; no live account, provider, SSH, install, UI or device failure is implied
-by that evidence. The cases remain source-backed product questions until their
-acceptance scenarios are exercised for an approved change.
+by that evidence. Agreed product outcomes remain open gaps until their acceptance
+scenarios are exercised for an implemented change. Unresolved proposals and
+deferred cases retain their separate decision status.
 
 ## Maintaining the punchlist
 

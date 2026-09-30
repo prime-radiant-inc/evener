@@ -25,9 +25,10 @@ responsibilities, source-of-truth and recovery ownership, affected client surfac
 and linked contracts when they change. Use stable filenames and current behavior;
 keep dated narratives, rollout logs, and PR progress out of these references.
 
-[The friction punchlist](docs/product/friction.md) contains cases for individual
-product discussion, not approved implementation instructions. Keep evidence and
-proposed behavior distinct. After an agreed fix is implemented and verified,
+[The friction punchlist](docs/product/friction.md) distinguishes unresolved
+proposals, agreed product outcomes, and deferred work. Keep those states separate
+from implementation plans and verified behavior, and honor recorded deferrals.
+Discuss unresolved choices individually. After an agreed fix is implemented and verified,
 update its owning guide and remove the resolved case from the open list without
 renumbering other cases. Verify recovery and preservation contracts with meaningful
 behavior tests, including the transition back to useful operation.

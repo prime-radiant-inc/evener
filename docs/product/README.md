@@ -11,9 +11,10 @@ changes; keep implementation history in Git and pull requests.
 - [Product principles](principles.md): the experience changes should produce.
 - [Subsystem map](subsystems.md): responsibilities, sources of truth, entry
   points, dependencies, and recovery ownership across the product.
-- [Friction punchlist](friction.md): open, evidence-backed cases to discuss
-  individually before choosing behavior changes. A proposed direction is not an
-  approved design or a statement of implemented behavior.
+- [Friction punchlist](friction.md): open, evidence-backed gaps, with unresolved
+  proposals, agreed outcomes and deferred work identified separately. Discuss
+  unresolved choices individually; an agreed outcome still needs implementation
+  and verification before it describes current behavior.
 - [Code architecture](../architecture.md): module and process structure.
 - [Web design system](../web-ui/design-system.md): shared visual and interaction
   contracts. [Native development](../../mobile-native/README.md) describes the
