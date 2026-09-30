@@ -2238,28 +2238,6 @@ export interface NavigationInvalidationTarget {
   revision?: number;
 }
 
-export interface NavigationJobSummary {
-  job_id: string;
-  job_type: string;
-  status: string;
-  command?: string;
-  task?: string;
-  reason?: string;
-  /**
-   * Intent is the tool call's `intent` argument: why the command is being
-   * run, in the model's own words. Surfaces in the rail row's tooltip.
-   */
-  intent?: string;
-  /**
-   * FullCommand carries the command when it exceeds the label bound
-   * (maxNavigationLabelRunes), so a tooltip can show more of what was
-   * actually executed. Still bounded by maxNavigationFullCommandRunes:
-   * a pathological command cannot dominate the response's byte budget.
-   * Absent when the command fits the label bound (no truncation).
-   */
-  full_command?: string;
-}
-
 export interface NavigationManifest {
   generation_id: string;
   revision: number;
@@ -2494,19 +2472,10 @@ export interface NavigationSessionSummary {
   /**
    * Subagents is a live root's whole-tree subagent tally, counted by its
    * daemon (S3). Present only on a live root row whose tree has a subagent;
-   * it counts subagents the row's children never show (nested, or past the
-   * children cap).
+   * it counts descendants without embedding their detail rows.
    */
   subagents?: NavigationSubagentTally;
   omitted_descendants?: number;
-  /**
-   * NeedsYouSubagents counts the row's subagent descendants (every depth)
-   * waiting on a person - an unanswered question or a blocked approval - as
-   * the hub computes it from the tree at projection time. It is the flat
-   * lists' replacement for the needs-you bubble-up the nested children used
-   * to provide before lists stopped carrying them.
-   */
-  needs_you_subagents?: number;
   /**
    * TurnEndedAt is when a live session's last turn ended, stamped by its
    * daemon (S4). It is present only on a live row whose daemon reported one.
@@ -2521,28 +2490,13 @@ export interface NavigationSessionSummary {
    */
   unseen?: boolean;
   /**
-   * OmittedWatches counts live-watch rows this session's summary does not
-   * carry: rows beyond the projector's per-session cap, rows it could not
-   * represent, and rows the byte-budget fitter shed. It mirrors
-   * OmittedDescendants so the rail and the activity panel can say "+N more"
-   * instead of silently undercounting a session's watches.
+   * Own-session activity counts are captured before navigation fitting.
+   * RunningJobCommand is the first available command, bounded for display.
    */
-  omitted_watches?: number;
-  /**
-   * OmittedArmedWatches is the armed subset of OmittedWatches: of the rows
-   * this summary does not carry, how many were still armed. The retained rows
-   * alone cannot answer that once an armed watch falls past the per-session
-   * cap, so the rail and the activity panel read this to report the true
-   * armed total. It is never greater than OmittedWatches.
-   */
-  omitted_armed_watches?: number;
-  running_jobs?: NavigationJobSummary[];
-  completed_jobs?: NavigationJobSummary[];
-  /**
-   * Watches carries this session's own live watches. Absent on an older
-   * daemon (or a past-index entry) and therefore absent-able for consumers.
-   */
-  watches?: NavigationWatchSummary[];
+  running_job_count?: number;
+  running_job_command?: string;
+  watch_count?: number;
+  armed_watch_count?: number;
   /**
    * Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
    * race"). Absent for a session with no task list or an empty one, and for
@@ -2581,52 +2535,6 @@ export interface NavigationTaskProgress {
 export interface NavigationTier {
   sessions: NavigationSessionSummary[];
   remaining: number;
-}
-
-export interface NavigationWatchCadence {
-  kind: string;
-  seconds?: number;
-  /**
-   * DerivedNextFireAt is the next instant this clock-driven cadence is
-   * expected to fire, derived at the daemon (see appwire.EvenerWatchCadence).
-   * Approximate and able to slide later; consumers word it with a "~". Absent
-   * for output and event cadences, which have no schedule.
-   */
-  derived_next_fire_at?: string;
-  /**
-   * Every is the fire-every-Nth-matching-event throttle on an "events"
-   * cadence; absent (zero) means fire on every matching event. Only the
-   * events kind carries it.
-   */
-  every?: number;
-  /**
-   * Filter is the events-kind watch's event filter in the model-facing
-   * condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
-   * absent when the watch filters nothing. Only the events kind carries it.
-   */
-  filter?: string;
-}
-
-export interface NavigationWatchSummary {
-  id: string;
-  source: string;
-  target?: string;
-  send_to?: string;
-  note?: string;
-  cadence?: NavigationWatchCadence[];
-  output_match?: string;
-  events?: string[];
-  wildcard_events?: boolean;
-  deliveries: number;
-  /**
-   * DeliveryTimes is the bounded, oldest-first ring of this watch's most
-   * recent delivery instants, formatted like CreatedAt. Absent (and so
-   * absent-able, like Watches) when the watch has not delivered.
-   */
-  delivery_times?: string[];
-  created_at: string;
-  active: boolean;
-  end_reason?: string;
 }
 
 export interface NotesHumanSetParams {

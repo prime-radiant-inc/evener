@@ -30,24 +30,10 @@ const (
 	maxNavigationManifestBytes = 256 * 1024
 	maxNavigationCatalogBytes  = 512 * 1024
 
-	maxNavigationTitleRunes = 200
-	maxNavigationLabelRunes = 512
-	// maxNavigationFullCommandRunes bounds FullCommand, the tooltip-sized
-	// untruncated command. Generous rather than label-tight: a tooltip can
-	// wrap, but it must not lie — a cut-off "full" command is worse than a
-	// long one. Still bounded so one pathological command cannot dominate
-	// the response's byte budget (navigationEncodedSize).
-	maxNavigationFullCommandRunes = 4_096
-	maxNavigationIdentityBytes    = 1_024
-	maxNavigationWorkingDirBytes  = 4_096
-	// maxNavigationWatches caps the live-watch rows a single session summary
-	// carries. It mirrors the daemon's watchDeliveryTimeCap of 32: the per-watch
-	// delivery ring is already bounded to 32 instants, so capping the row list to
-	// the same number keeps a watch-heavy session's payload bounded without
-	// needing a second, larger bound. Rows dropped here are counted in
-	// OmittedWatches, and the projector keeps armed rows ahead of inert ones so
-	// the rail's armed count survives the cut.
-	maxNavigationWatches = 32
+	maxNavigationTitleRunes      = 200
+	maxNavigationLabelRunes      = 512
+	maxNavigationIdentityBytes   = 1_024
+	maxNavigationWorkingDirBytes = 4_096
 	// maxNavigationProjectSources bounds a project summary's owning-source
 	// list: the navigation inputs already cap configured sources at 64, and the
 	// controller's own source is the one extra entry a merged project adds.
@@ -67,7 +53,6 @@ const (
 	navigationResourceTestRuns         navigationResourceKind = "test_runs"
 	navigationResourceProject          navigationResourceKind = "project"
 	navigationResourceProjectPage      navigationResourceKind = "project_page"
-	navigationResourceSubagents        navigationResourceKind = "subagents"
 	navigationResourceLocation         navigationResourceKind = "location"
 )
 
@@ -129,9 +114,6 @@ type navigationProjection struct {
 	projects      map[string]hubcore.TreeProject
 	catalogs      map[navigationResourceKind][]hubcore.TreeProject
 	locations     map[string]hubapi.NavigationSessionLocation
-	// nodes indexes every indexed tree node by ref, so the subagents resource
-	// can page any session's direct children without re-walking the tree.
-	nodes map[string]hubcore.TreeNode
 	// alias, when set on a per-request copy, is the location served for a ref
 	// that is not an indexed row. See NavigationService.aliasProjectionLocked.
 	alias *hubapi.NavigationSessionLocation
@@ -165,7 +147,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	if err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), nodes: make(map[string]hubcore.TreeNode), offlineSources: offlineSourceIDs(cloned.Sources)}
+	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources)}
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
 	p.pinCandidates, err = navigationPinCandidatesContext(ctx, p.inputs.Tree)
@@ -747,13 +729,6 @@ func validateNavigationNodesContext(ctx context.Context, rows []hubcore.TreeNode
 		if _, err := navigationNodeRef(node); err != nil {
 			return err
 		}
-		for _, jobs := range [2][]appwire.EvenerJobInfo{node.RunningJobs, node.CompletedJobs} {
-			for _, job := range jobs {
-				if err := validateNavigationIdentity("job ID", job.JobID, false); err != nil {
-					return err
-				}
-			}
-		}
 		if err := validateNavigationNodesContext(ctx, node.Children); err != nil {
 			return err
 		}
@@ -830,29 +805,6 @@ func (p navigationProjection) sectionPage(rows []hubcore.TreeNode, offset uint32
 	resource := hubapi.NavigationSectionResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Sessions: sessions, Remaining: remaining, Truncated: projector.truncated}
 	fitNavigationSection(&resource)
 	return resource
-}
-
-// SubagentsPage is the per-session agents API the flat lists no longer serve:
-// the session's direct children as a paged list (every row reachable through
-// offset pages, Remaining accounting the rest), each child carrying its own
-// nested subtree under the structural caps with MoreSubagents accounting what
-// those caps shed. Unknown refs report not-found, never an empty page.
-func (p navigationProjection) SubagentsPage(ref string, offset uint32, limit int) (hubapi.NavigationSectionResource, bool) {
-	node, ok := p.nodes[ref]
-	if !ok {
-		return hubapi.NavigationSectionResource{}, false
-	}
-	page, sourceRemaining := navigationPage(node.Children, offset, limit, maxNavigationSectionRows)
-	projector := navigationProjector{projection: p}
-	sessions := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], 0, len(page))
-	for _, child := range page {
-		budget := maxNavigationLocationNodes
-		summary, _ := projector.projectLocationSubtree(child, 1, &budget)
-		sessions = append(sessions, summary)
-	}
-	resource := hubapi.NavigationSectionResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Sessions: sessions, Remaining: sourceRemaining + len(page) - len(sessions)}
-	fitNavigationSection(&resource)
-	return resource, true
 }
 
 func (p navigationProjection) PinCatalogPage(offset uint32, limit int) hubapi.NavigationPinSectionCatalog {
@@ -967,9 +919,8 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
+	budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(budget int) int {
 		rows, dropped := limitNavigationSummaries(original, budget)
-		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
@@ -977,7 +928,6 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 		return navigationEncodedSize(candidate)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
-	trimNavigationWatchPayloads(resource.Sessions, trim)
 	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
 	resource.Truncated = true
 }
@@ -989,9 +939,8 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
+	budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(budget int) int {
 		rows, dropped := limitNavigationSummaries(original, budget)
-		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
@@ -999,7 +948,6 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 		return navigationEncodedSize(candidate)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
-	trimNavigationWatchPayloads(resource.Sessions, trim)
 	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
 	resource.Truncated = true
 }
@@ -1011,120 +959,20 @@ func fitNavigationProject(resource *hubapi.NavigationProjectResource) {
 	}
 	original := cloneNavigationProjectResource(*resource)
 	nodes := navigationSummaryNodes(original.Current.Sessions) + navigationSummaryNodes(original.Recent.Sessions) + navigationSummaryNodes(original.Archived.Sessions)
-	trim, budget := navigationFittingChoice(nodes, fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
+	budget := navigationFittingChoice(nodes, fullBytes, func(budget int) int {
 		candidate := limitNavigationProject(original, budget)
-		trimNavigationProjectWatchPayloads(&candidate, trim)
 		return navigationEncodedSize(candidate)
 	})
 	limited := limitNavigationProject(original, budget)
-	trimNavigationProjectWatchPayloads(&limited, trim)
 	*resource = limited
 }
 
-// navigationFittingChoice finds the largest session-row budget whose candidate
-// size fits the response; fullBytes is the untrimmed resource's size. It tries
-// the full payload first. Only when even one untrimmed row cannot fit does it
-// degrade optional watch payloads - delivery instants first, then whole watch
-// rows - so a session whose watches are what overflowed the response is still
-// listed with as much of its payload as fits, instead of being dropped and
-// leaving the page with no rows while data remains (which
-// validateNavigationPageProgress rejects outright). It returns the trim level and budget actually used.
-func navigationFittingChoice(nodes, fullBytes int, size func(navigationWatchPayloadTrim, int) int) (navigationWatchPayloadTrim, int) {
-	budgetAt := func(trim navigationWatchPayloadTrim) int {
-		// The size callback cannot fail, so neither can the search.
-		budget, _ := navigationFittingBudget(nodes, maxNavigationResponseBytes, fullBytes, func(budget int) (int, error) {
-			return size(trim, budget), nil
-		})
-		return budget
-	}
-	full := budgetAt(navigationWatchPayloadFull)
-	if full > 0 || nodes == 0 {
-		return navigationWatchPayloadFull, full
-	}
-	for _, trim := range []navigationWatchPayloadTrim{navigationWatchPayloadNoDeliveryTimes, navigationWatchPayloadNoWatches} {
-		budget := budgetAt(trim)
-		if budget > 0 {
-			return trim, budget
-		}
-	}
-	// No trim level retains a row: the overflow is not in the watch payload
-	// (a job-heavy single row, for example). Report the untrimmed zero-budget
-	// result so the caller keeps its existing irreducible-overflow behavior.
-	return navigationWatchPayloadFull, 0
+// navigationFittingChoice retains the largest deterministic session prefix that fits.
+func navigationFittingChoice(nodes, fullBytes int, size func(int) int) int {
+	budget, _ := navigationFittingBudget(nodes, maxNavigationResponseBytes, fullBytes, func(budget int) (int, error) { return size(budget), nil })
+	return budget
 }
 
-// navigationWatchPayloadTrim is a degradation level for the optional watch
-// payload on session rows. The zero value leaves rows untouched.
-type navigationWatchPayloadTrim int
-
-const (
-	navigationWatchPayloadFull navigationWatchPayloadTrim = iota
-	navigationWatchPayloadNoDeliveryTimes
-	navigationWatchPayloadNoWatches
-)
-
-// trimNavigationWatchPayloads strips optional watch payload from rows in place.
-// The rows are always fitters' clones (limitNavigationSummaries clones every
-// included row), so trimming never reaches the projector's original.
-func trimNavigationWatchPayloads(rows []hubapi.NavigationSessionSummary, trim navigationWatchPayloadTrim) {
-	if trim == navigationWatchPayloadFull {
-		return
-	}
-	for i := range rows {
-		switch trim {
-		case navigationWatchPayloadNoDeliveryTimes:
-			for j := range rows[i].Watches {
-				rows[i].Watches[j].DeliveryTimes = nil
-			}
-		case navigationWatchPayloadNoWatches:
-			// Shedding a whole row is still an omission the UI must be able to
-			// report, so the counts move before the rows go. The armed subset
-			// moves with the total, preserving 0 <= armed <= omitted. A later
-			// trim level that drops no row (NoDeliveryTimes) must leave both
-			// alone.
-			rows[i].OmittedArmedWatches += countArmedNavigationWatches(rows[i].Watches)
-			rows[i].OmittedWatches += len(rows[i].Watches)
-			rows[i].Watches = nil
-		}
-		trimNavigationWatchPayloads(rows[i].Children, trim)
-	}
-}
-
-// countArmedNavigationWatches counts the armed rows in a watch list. Used only
-// when the fitter sheds a list, so the omitted armed count grows by exactly the
-// armed rows that leave.
-func countArmedNavigationWatches(watches hubapi.NavigationArray[hubapi.NavigationWatchSummary]) int {
-	count := 0
-	for _, watch := range watches {
-		if watch.Active {
-			count++
-		}
-	}
-	return count
-}
-
-func trimNavigationProjectWatchPayloads(resource *hubapi.NavigationProjectResource, trim navigationWatchPayloadTrim) {
-	trimNavigationWatchPayloads(resource.Current.Sessions, trim)
-	trimNavigationWatchPayloads(resource.Recent.Sessions, trim)
-	trimNavigationWatchPayloads(resource.Archived.Sessions, trim)
-}
-
-// navigationFittingBudget returns the largest budget in [0, nodes] whose
-// candidate size is at most maxBytes. Budget 0 is known to fit and is never
-// probed. fullBytes, the size of the whole resource, seeds the search.
-//
-// No fitter's candidate gets smaller as its budget grows. One more unit of
-// budget adds a whole row (a session summary, plus its entity record and
-// children container in the normalized snapshot, or a catalog row) or, for a
-// location's single session, changes nothing. The same step can remove only
-// one digit of a remaining count and one parent's omitted_descendants field,
-// less than any row (TestNavigationFittingRowOutweighsTheCountsItShrinks). So
-// every budget up to the answer fits and none past it does: any search that
-// finds that boundary returns exactly what a bisection from zero returns, and
-// it may start anywhere. It starts where a linear size estimate puts the boundary
-// and gallops outward to bracket it. Rows are close to uniform in size, so
-// that takes two or three probes where a bisection from scratch takes
-// log2(nodes).
 func navigationFittingBudget(nodes, maxBytes, fullBytes int, size func(budget int) (int, error)) (int, error) {
 	if nodes <= 0 {
 		return 0, nil
@@ -1443,12 +1291,6 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 		if !ok {
 			err = fmt.Errorf("navigation session %q not found", key.ID)
 		}
-	case navigationResourceSubagents:
-		var ok bool
-		resource, ok = p.SubagentsPage(key.ID, key.Offset, int(key.Limit))
-		if !ok {
-			err = fmt.Errorf("navigation session %q not found", key.ID)
-		}
 	default:
 		err = fmt.Errorf("unknown navigation resource %q", key.Kind)
 	}
@@ -1640,13 +1482,8 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 	if err != nil {
 		return err
 	}
-	if _, exists := p.nodes[ref.String()]; !exists {
-		p.nodes[ref.String()] = node
-	}
 	if _, exists := p.locations[ref.String()]; !exists {
-		// The location stays shallow - status, jobs, watches, tallies - so
-		// fetching one session's detail never pays for its tree. The tree is
-		// the subagents resource's (SubagentsPage over p.nodes).
+		// Deep links carry only the selected session's compact summary.
 		summary := navigationProjector{projection: p}.projectShallow(node)
 		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
 	}
@@ -1698,10 +1535,7 @@ func (p *navigationProjector) projectTier(project hubcore.TreeProject, tier stri
 	return sessions, sourceRemaining + len(page) - len(sessions)
 }
 
-// projectNode projects one list row. Lists carry NO children: subagents and
-// fork originals nest nowhere in the section, pin, and project lists - the
-// per-session location serves that tree instead (projectLocationSubtree), and
-// the row's Subagents tally and NeedsYouSubagents count carry its numbers.
+// projectNode projects one flat list row with its own activity counts and root tally.
 func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hubapi.NavigationSessionSummary, bool) {
 	p.depth = max(p.depth, depth)
 	if p.nodes >= maxNavigationNodes || depth > maxNavigationDepth {
@@ -1711,61 +1545,6 @@ func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hub
 	summary := p.projectShallow(node)
 	p.nodes++
 	return summary, true
-}
-
-// maxNavigationLocationNodes bounds one child's nested subtree inside a
-// subagents page. Direct children page (every row is reachable through
-// offset pages, and the serve-time fitter sheds whole rows into Remaining),
-// so this budget is the only hard stop in the resource - and everything it
-// sheds is accounted in MoreSubagents and OmittedDescendants on the child
-// that owns the shed.
-const maxNavigationLocationNodes = 500
-
-// projectLocationSubtree projects a location's session with its whole child
-// tree: the per-session agents API the flat lists no longer serve. The caps
-// mirror the list projector's (children per level, depth, the per-location
-// node budget); every shed row is accounted - subagent-kind sheds in
-// MoreSubagents, all sheds in OmittedDescendants - so a fold can name the
-// true remainder instead of a fake page control.
-func (p navigationProjector) projectLocationSubtree(node hubcore.TreeNode, depth int, budget *int) (hubapi.NavigationSessionSummary, bool) {
-	if *budget <= 0 || depth > maxNavigationDepth {
-		return hubapi.NavigationSessionSummary{}, false
-	}
-	*budget--
-	summary := p.projectShallow(node)
-	if depth == maxNavigationDepth {
-		summary.OmittedDescendants += countTreeNodes(node.Children)
-		summary.MoreSubagents += countSubagentNodes(node.Children)
-		return summary, true
-	}
-	for index, child := range node.Children {
-		if index >= maxNavigationChildren {
-			summary.OmittedDescendants += countTreeNodes(node.Children[index:])
-			summary.MoreSubagents += countSubagentNodes(node.Children[index:])
-			break
-		}
-		projected, ok := p.projectLocationSubtree(child, depth+1, budget)
-		if !ok {
-			summary.OmittedDescendants += countTreeNodes(node.Children[index:])
-			summary.MoreSubagents += countSubagentNodes(node.Children[index:])
-			break
-		}
-		summary.Children = append(summary.Children, projected)
-	}
-	return summary, true
-}
-
-// countSubagentNodes counts the subagent-kind nodes in a tree (every depth) -
-// the MoreSubagents share of a shed subtree.
-func countSubagentNodes(nodes []hubcore.TreeNode) int {
-	count := 0
-	for _, node := range nodes {
-		if node.Kind == "subagent" {
-			count++
-		}
-		count += countSubagentNodes(node.Children)
-	}
-	return count
 }
 
 // navigationModelName is the name a row shows for a session's model (S17):
@@ -1783,7 +1562,19 @@ func navigationModelName(model string) string {
 func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.NavigationSessionSummary {
 	ref, _ := navigationNodeRef(node)
 	pinned := p.projection.pinSectionIDFor(ref) != ""
-	watches, omittedWatches, omittedArmedWatches := navigationWatches(node.Watches)
+	armedWatchCount := 0
+	for _, watch := range node.Watches {
+		if watch.Active {
+			armedWatchCount++
+		}
+	}
+	runningCommand := ""
+	for _, job := range node.RunningJobs {
+		if job.Command != "" {
+			runningCommand = truncateNavigationRunes(job.Command, maxNavigationLabelRunes)
+			break
+		}
+	}
 	return hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
 		HostID:    ref.HostID,
@@ -1795,61 +1586,36 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		// label helper capped it at 512 runes, which is up to ~2 KiB of multibyte
 		// text -- a summary the codec rejects, failing the whole navigation response.
 		// Bound it in bytes for the same limit.
-		Project:             truncateNavigationBytes(node.Project, maxNavigationIdentityBytes),
-		State:               node.State,
-		Kind:                node.Kind,
-		Branch:              truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
-		Favorite:            !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
-		Rename:              p.projection.renameable(node.ID, ref.String()),
-		Live:                p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
-		AskPending:          node.AskPending,
-		ApprovalPending:     node.ApprovalPending,
-		ApprovalTool:        truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
-		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
-		Question:            navigationQuestion(node.Question),
-		Failure:             navigationFailure(node.Failure),
-		LastMessage:         appwire.Excerpt(node.LastMessage, appwire.MaxMessageExcerptRunes),
-		ModelName:           navigationModelName(node.Model),
-		Dormant:             node.Dormant,
-		Offline:             p.projection.sourceOffline(ref.HostID),
-		UpdatedAt:           optionalTime(node.UpdatedAt),
-		Subagents:           navigationSubagentTally(node.Subagents),
-		TurnEndedAt:         optionalTime(node.TurnEndedAt),
-		Unseen:              p.projection.unseen(ref, node.TurnEndedAt),
-		RunningJobs:         navigationJobs(node.RunningJobs),
-		CompletedJobs:       navigationJobs(node.CompletedJobs),
-		Watches:             watches,
-		OmittedWatches:      omittedWatches,
-		OmittedArmedWatches: omittedArmedWatches,
-		Tasks:               navigationTaskProgress(node.Tasks),
-		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
-		NeedsYouSubagents:   countNeedsYouSubagents(node.Children),
+		Project:           truncateNavigationBytes(node.Project, maxNavigationIdentityBytes),
+		State:             node.State,
+		Kind:              node.Kind,
+		Branch:            truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
+		Favorite:          !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
+		Rename:            p.projection.renameable(node.ID, ref.String()),
+		Live:              p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
+		AskPending:        node.AskPending,
+		ApprovalPending:   node.ApprovalPending,
+		ApprovalTool:      truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
+		ApprovalTarget:    truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
+		Question:          navigationQuestion(node.Question),
+		Failure:           navigationFailure(node.Failure),
+		LastMessage:       appwire.Excerpt(node.LastMessage, appwire.MaxMessageExcerptRunes),
+		ModelName:         navigationModelName(node.Model),
+		Dormant:           node.Dormant,
+		Offline:           p.projection.sourceOffline(ref.HostID),
+		UpdatedAt:         optionalTime(node.UpdatedAt),
+		Subagents:         navigationSubagentTally(node.Subagents),
+		TurnEndedAt:       optionalTime(node.TurnEndedAt),
+		Unseen:            p.projection.unseen(ref, node.TurnEndedAt),
+		RunningJobCount:   len(node.RunningJobs),
+		RunningJobCommand: runningCommand,
+		WatchCount:        len(node.Watches),
+		ArmedWatchCount:   armedWatchCount,
+		Tasks:             navigationTaskProgress(node.Tasks),
+		Children:          hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
 }
 
-// countNeedsYouSubagents counts the subagent-kind descendants waiting on a
-// person: the flat lists' replacement for the needs-you bubble-up the nested
-// children used to give the rail. The predicate is the attention model's own
-// (the display state - an approval folds any non-failure state to awaiting -
-// at the needs-you level), so the count and the NeedsYou tier can never
-// disagree about the same node. Fork originals are not subagents and never
-// count, whatever they wait on.
-func countNeedsYouSubagents(children []hubcore.TreeNode) int {
-	count := 0
-	for _, child := range children {
-		if child.Kind != "subagent" {
-			continue
-		}
-		if hubcore.NeedsYou(hubcore.NormalizeState(child.State), child.ApprovalPending) {
-			count++
-		}
-		count += countNeedsYouSubagents(child.Children)
-	}
-	return count
-}
-
-// optionalTime is t as an optional wire timestamp: nil when t is zero, so the
-// summary omits the key.
 func optionalTime(t time.Time) *time.Time {
 	if t.IsZero() {
 		return nil
@@ -1860,9 +1626,8 @@ func optionalTime(t time.Time) *time.Time {
 // navigationTaskProgress is the row's task line: a session's task-list progress
 // when its list has at least one task, else nil. The current task's
 // description is cut to the label bound. Progress the schema would refuse (a
-// negative count, or more tasks done and cancelled than exist) is dropped, the
-// way navigationWatches drops a watch row: one invalid summary makes the whole
-// resource, every other row included, unreadable.
+// negative count, or more tasks done and cancelled than exist) is dropped:
+// one invalid summary would make every row in the resource unreadable.
 func navigationTaskProgress(tasks *appwire.TaskAggregate) *hubapi.NavigationTaskProgress {
 	if tasks == nil || tasks.Total == 0 {
 		return nil
@@ -1961,185 +1726,6 @@ func (p navigationProjection) sourceOffline(hostID string) bool {
 	return p.offlineSources[hostID]
 }
 
-func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.NavigationJobSummary] {
-	out := make(hubapi.NavigationArray[hubapi.NavigationJobSummary], 0, len(jobs))
-	for _, job := range jobs {
-		summary := hubapi.NavigationJobSummary{
-			// job_type and status are identities to the codec and the hub schema
-			// (identity() at maxNavigationIdentityBytes BYTES), and unlike job_id
-			// they are not guarded by the build's own identity validation. Bound
-			// them in bytes: a value within the limit passes through unchanged, and a
-			// pathological one is cut instead of failing the whole navigation
-			// response. job_id stays raw: it is a key clients address jobs by, and an
-			// over-long one is rejected by validateNavigationNodesContext rather than
-			// silently rewritten to a different id.
-			JobID:   job.JobID,
-			JobType: truncateNavigationBytes(job.JobType, maxNavigationIdentityBytes),
-			Status:  truncateNavigationBytes(job.Status, maxNavigationIdentityBytes),
-			Command: truncateNavigationRunes(job.Command, maxNavigationLabelRunes),
-			Task:    truncateNavigationRunes(job.Task, maxNavigationLabelRunes),
-			Reason:  truncateNavigationRunes(job.Reason, maxNavigationLabelRunes),
-			Intent:  truncateNavigationRunes(job.Intent, maxNavigationLabelRunes),
-		}
-		// Emit FullCommand only when the label bound actually cut the
-		// command, so a short command isn't duplicated and a tooltip never
-		// shows less than the label.
-		if summary.Command != job.Command {
-			summary.FullCommand = truncateNavigationRunes(job.Command, maxNavigationFullCommandRunes)
-		}
-		out = append(out, summary)
-	}
-	return out
-}
-
-// navigationWatches projects a session's own live-watch rows onto the wire
-// summary. Rows are never merged across sessions, so a receiver watch that two
-// daemons report stays on each session's own summary and a rollup over the
-// subtree counts it once per owning row.
-//
-// The list is capped at maxNavigationWatches. Armed (active) rows are ordered
-// ahead of inert ones before the cut, so a session with a lot of stale rows
-// still reports as many armed watches as the cap allows. The second return is
-// the exact number of rows the caller did NOT receive: rows past the cap plus
-// any row dropped because its created_at is not a representable instant. No row
-// leaves this function uncounted.
-//
-// The third return is how many of those omitted rows were still armed. Once a
-// session holds more armed watches than the cap, the retained list alone
-// understates its armed total, so the count is taken from every skipped row
-// rather than inferred from the armed-first order: an unrepresentable armed row
-// can be dropped before the cap fills, and the cap boundary can itself fall
-// inside the armed run.
-func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArray[hubapi.NavigationWatchSummary], int, int) {
-	ordered := append([]appwire.EvenerWatchInfo(nil), watches...)
-	// Stable: armed rows keep their wire order ahead of inert ones, and rows
-	// within each class keep theirs.
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Active && !ordered[j].Active })
-	out := make(hubapi.NavigationArray[hubapi.NavigationWatchSummary], 0, min(len(ordered), maxNavigationWatches))
-	omittedArmed := 0
-	for index, watch := range ordered {
-		if len(out) == maxNavigationWatches {
-			// Every remaining row is omitted wholesale. Count the armed ones
-			// directly: the armed-first order does not make the whole tail inert.
-			for _, skipped := range ordered[index:] {
-				if skipped.Active {
-					omittedArmed++
-				}
-			}
-			break
-		}
-		// created_at is a REQUIRED watch field and the web codec validates it as
-		// strict RFC3339. Truncating a malformed or oversized value (the generic
-		// label cap) produced an ellipsized string the codec rejects, which
-		// silently failed the whole watch-carrying navigation snapshot. A watch
-		// whose created_at cannot be represented is dropped rather than poisoning
-		// every other row in the resource; the omitted count below accounts for it.
-		if !validNavigationTimestamp(watch.CreatedAt) {
-			if watch.Active {
-				omittedArmed++
-			}
-			continue
-		}
-		cadence := make([]hubapi.NavigationWatchCadence, 0, len(watch.Cadence))
-		for _, step := range watch.Cadence {
-			// A derived instant the codec cannot decode is dropped (absent), the
-			// same way an unrepresentable delivery instant is: one missing dot is
-			// honest, a rejected snapshot is not.
-			nextFireAt := ""
-			if validNavigationTimestamp(step.DerivedNextFireAt) {
-				nextFireAt = step.DerivedNextFireAt
-			}
-			cadence = append(cadence, hubapi.NavigationWatchCadence{
-				// kind is an IDENTITY on the wire, not a rendered label: the codec
-				// validates it with identity(value.kind) and the hub schema mirrors
-				// that, both capping it at maxNavigationIdentityBytes BYTES. The
-				// rune-bounded label helper capped it at 512 runes, which is up to
-				// ~2 KiB of multibyte text -- a summary the codec rejects, failing the
-				// whole navigation response. Bound it in bytes for the same limit.
-				Kind:              truncateNavigationBytes(step.Kind, maxNavigationIdentityBytes),
-				Seconds:           step.Seconds,
-				DerivedNextFireAt: nextFireAt,
-				Every:             navigationBoundEvery(step.Every),
-				Filter:            truncateNavigationRunes(step.Filter, maxNavigationLabelRunes),
-			})
-		}
-		events := make([]string, 0, len(watch.Events))
-		for _, event := range watch.Events {
-			events = append(events, truncateNavigationRunes(event, maxNavigationLabelRunes))
-		}
-		deliveryTimes := make([]string, 0, len(watch.DeliveryTimes))
-		for _, at := range watch.DeliveryTimes {
-			// An instant the codec cannot decode is dropped: one missing dot is
-			// honest, a rejected snapshot is not.
-			if validNavigationTimestamp(at) {
-				deliveryTimes = append(deliveryTimes, at)
-			}
-		}
-		// id and source are IDENTITIES to the codec, the hub schema and the rail's
-		// row keys: the rail and the panel key their rows by watch.id. A value over
-		// the identity bound is DROPPED rather than cut, because cutting trades a
-		// missing row for a wrong one -- two distinct long ids that share a prefix
-		// collapse to the same key, and every consumer that keys by it then sees one
-		// row where there were two. Every identity within the bound still passes
-		// through untouched; the omitted count below accounts for the dropped row
-		// exactly like a row whose created_at cannot be represented.
-		if !navigationSchemaIdentity(watch.ID, false) || !navigationSchemaIdentity(watch.Source, false) {
-			if watch.Active {
-				omittedArmed++
-			}
-			continue
-		}
-		row := hubapi.NavigationWatchSummary{
-			ID:             watch.ID,
-			Source:         watch.Source,
-			Target:         truncateNavigationRunes(watch.Target, maxNavigationLabelRunes),
-			SendTo:         truncateNavigationRunes(watch.SendTo, maxNavigationLabelRunes),
-			Note:           truncateNavigationRunes(watch.Note, maxNavigationLabelRunes),
-			Cadence:        cadence,
-			OutputMatch:    truncateNavigationRunes(watch.OutputMatch, maxNavigationLabelRunes),
-			Events:         events,
-			WildcardEvents: watch.WildcardEvents,
-			Deliveries:     watch.Deliveries,
-			DeliveryTimes:  deliveryTimes,
-			CreatedAt:      watch.CreatedAt,
-			Active:         watch.Active,
-			EndReason:      truncateNavigationRunes(watch.EndReason, maxNavigationLabelRunes),
-		}
-		// The bounding above keeps a representable value representable, but it
-		// cannot rescue a value that was never valid (an empty ID or Source, a
-		// negative or over-range deliveries count, a cadence with an empty kind
-		// or negative/non-finite seconds). Carrying one such row makes
-		// navigationSessionValueValid reject the WHOLE session -- and through it
-		// every session in the resource. The schema's own predicate is the
-		// backstop: drop any row it would reject, so the omitted count below
-		// accounts for it exactly like an unrepresentable created_at.
-		if !navigationWatchValueValid(row) {
-			if watch.Active {
-				omittedArmed++
-			}
-			continue
-		}
-		out = append(out, row)
-	}
-	return out, len(watches) - len(out), omittedArmed
-}
-
-// navigationBoundEvery clamps the events cadence's every-Nth throttle to the
-// codec's safe integer range. `every` is caller-supplied and the daemon bounds
-// it only to the platform int range, so on 64-bit it can sit above 2^53-1;
-// projecting it verbatim fails navigationSessionValueValid and makes the whole
-// resource -- every session in it -- unreadable. Clamping rather than dropping
-// is the honest choice: the wire spells an absent/zero every as "no throttle"
-// (the codec reads every > 0 as a throttle), so dropping would misstate a
-// throttled watch as firing on every matching event. A clamped value is still a
-// throttle and still passes the schema.
-func navigationBoundEvery(value int) int {
-	if value > int(maxNavigationSafeInteger) {
-		return int(maxNavigationSafeInteger)
-	}
-	return value
-}
-
 // navigationTimestampPattern matches exactly the grammar the web codec's
 // rfc3339Timestamp accepts: a four-digit year, capital T, seconds, an optional
 // 1-9 digit fraction, and Z or a numeric offset. The offset's hour and minute
@@ -2204,14 +1790,6 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 	clone := summary
 	clone.UpdatedAt = clonePointer(summary.UpdatedAt)
 	clone.TurnEndedAt = clonePointer(summary.TurnEndedAt)
-	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
-	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
-	clone.Watches = append(hubapi.NavigationArray[hubapi.NavigationWatchSummary](nil), summary.Watches...)
-	for index, watch := range summary.Watches {
-		clone.Watches[index].Cadence = append([]hubapi.NavigationWatchCadence(nil), watch.Cadence...)
-		clone.Watches[index].Events = append([]string(nil), watch.Events...)
-		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
-	}
 	clone.Tasks = clonePointer(summary.Tasks)
 	clone.Subagents = clonePointer(summary.Subagents)
 	clone.Failure = clonePointer(summary.Failure)

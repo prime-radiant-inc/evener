@@ -478,7 +478,7 @@ func TestRetirementBrowser(t *testing.T) {
 	// hub tests use — and hand it to the navigation-aware constructor.
 	navigationSource := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	navigation := newTestNavigationService(t, navigationSource)
-	if _, err := navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatalf("build fixture navigation generation: %v", err)
 	}
 	appServer := newHubAppServerWithNavigation(hubcore.WebConfig{

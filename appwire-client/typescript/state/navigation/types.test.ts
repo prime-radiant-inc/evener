@@ -17,42 +17,32 @@ test("an omitted limit is the hub's maximum for that resource family", () => {
     const key = navigationParamsToResourceKey(params);
     return "limit" in key ? key.limit : undefined;
   };
-  expect(limitOf({ representationVersion: 2, resource: "section", section: "live" })).toBe(50);
-  expect(limitOf({ representationVersion: 2, resource: "pin_section", sectionId: "pins" })).toBe(50);
-  expect(limitOf({ representationVersion: 2, resource: "project_page", projectKey: "p", tier: "current" })).toBe(50);
-  expect(limitOf({ representationVersion: 2, resource: "subagents", ref: "local:a" })).toBe(50);
-  expect(limitOf({ representationVersion: 2, resource: "catalog", catalog: "projects" })).toBe(100);
-  expect(limitOf({ representationVersion: 2, resource: "pin_catalog" })).toBe(100);
+  expect(limitOf({ representationVersion: 3, resource: "section", section: "live" })).toBe(50);
+  expect(limitOf({ representationVersion: 3, resource: "pin_section", sectionId: "pins" })).toBe(50);
+  expect(limitOf({ representationVersion: 3, resource: "project_page", projectKey: "p", tier: "current" })).toBe(50);
+  expect(limitOf({ representationVersion: 3, resource: "catalog", catalog: "projects" })).toBe(100);
+  expect(limitOf({ representationVersion: 3, resource: "pin_catalog" })).toBe(100);
 });
 
 test("an explicit page wins over the maximum, and an unpaged resource carries none", () => {
   expect(
     navigationParamsToResourceKey({
-      representationVersion: 2,
+      representationVersion: 3,
       resource: "catalog",
       catalog: "projects",
       offset: 100,
       limit: 25,
     }),
   ).toEqual({ kind: "catalog", catalog: "projects", offset: 100, limit: 25 });
-  expect(navigationParamsToResourceKey({ representationVersion: 2, resource: "manifest" })).toEqual({
+  expect(navigationParamsToResourceKey({ representationVersion: 3, resource: "manifest" })).toEqual({
     kind: "manifest",
   });
-  expect(navigationParamsToResourceKey({ representationVersion: 2, resource: "project", projectKey: "p" })).toEqual({
+  expect(navigationParamsToResourceKey({ representationVersion: 3, resource: "project", projectKey: "p" })).toEqual({
     kind: "project",
     projectKey: "p",
   });
-  expect(navigationParamsToResourceKey({ representationVersion: 2, resource: "location", ref: "local:a" })).toEqual({
+  expect(navigationParamsToResourceKey({ representationVersion: 3, resource: "location", ref: "local:a" })).toEqual({
     kind: "location",
     ref: "local:a",
   });
-  expect(
-    navigationParamsToResourceKey({
-      representationVersion: 2,
-      resource: "subagents",
-      ref: "local:a",
-      offset: 2,
-      limit: 7,
-    }),
-  ).toEqual({ kind: "subagents", ref: "local:a", offset: 2, limit: 7 });
 });

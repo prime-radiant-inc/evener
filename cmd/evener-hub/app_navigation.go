@@ -35,10 +35,10 @@ func navigationReadWithFields(ctx context.Context, server *appserver.Server, nav
 	if err := ctx.Err(); err != nil {
 		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
-	if params.RepresentationVersion != 2 {
+	if params.RepresentationVersion != 3 {
 		return appwire.NavigationReadResponse{}, appwire.InvalidParams(navigationInvalidParamsMessage)
 	}
-	result, err := navigation.readV2(ctx, key, params.Base)
+	result, err := navigation.readV3(ctx, key, params.Base)
 	if err != nil {
 		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
@@ -143,19 +143,6 @@ func navigationReadKeyWithFields(params appwire.NavigationReadParams, fields map
 			return navigationResourceKey{}, err
 		}
 		return navigationResourceKey{Kind: navigationResourceLocation, ID: ref.String()}, nil
-	case "subagents":
-		if err := rejectNavigationReadFields(params, fields, "ref", "offset", "limit"); err != nil {
-			return navigationResourceKey{}, err
-		}
-		ref, err := navigationRef(params.Ref)
-		if err != nil {
-			return navigationResourceKey{}, err
-		}
-		offset, limit, err := navigationReadPage(params, maxNavigationSectionRows)
-		if err != nil {
-			return navigationResourceKey{}, err
-		}
-		return navigationResourceKey{Kind: navigationResourceSubagents, ID: ref.String(), Offset: offset, Limit: limit}, nil
 	default:
 		return navigationResourceKey{}, fmt.Errorf("unknown navigation resource %q", params.Resource)
 	}

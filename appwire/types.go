@@ -416,11 +416,11 @@ func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
 			return errors.New("invalid navigation base")
 		}
 	}
-	if decoded.RepresentationVersion != 2 {
-		return errors.New("representationVersion must be 2")
+	if decoded.RepresentationVersion != 3 {
+		return errors.New("representationVersion must be 3")
 	}
 	if _, present := fields["etag"]; present {
-		return errors.New("etag is not a v2 field")
+		return errors.New("etag is not a navigation field")
 	}
 	*params = NavigationReadParams(decoded)
 	return nil
