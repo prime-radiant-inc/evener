@@ -416,6 +416,8 @@ export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasonin
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type {
+  CachedSessionHistory,
+  CachedSessionRecord,
   NotificationRoutingKey,
   OlderItemPageMerge,
   TurnHistoryFoldDetail,
@@ -426,6 +428,7 @@ export {
   applyNotification,
   applyReadModel,
   applyReadResponse,
+  cachedSessionRecord,
   collectAuthoritativeMutationIds,
   comparePositions,
   copyItemTextPresence,
@@ -450,6 +453,7 @@ export {
   notificationTargetsThread,
   prependOlderTurns,
   resolvePendingEscalation,
+  threadModelFromCache,
 } from "./reducer";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";

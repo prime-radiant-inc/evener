@@ -9,7 +9,9 @@ import {
   boolField,
   buildEntityView,
   buildWatchRows,
+  type CachedSessionRecord,
   type ConditionSpec,
+  cachedSessionRecord,
   conditionSpec,
   type DelegateEntityView,
   delegateRowFields,
@@ -37,6 +39,7 @@ import {
   strField,
   type TranscriptDisplayAdvancedV1,
   type TurnHistoryMergeResult,
+  threadModelFromCache,
   type WatchDisplayState,
   type WatchEntityView,
   type WatchRow,
@@ -220,5 +223,28 @@ describe("protocol package root public exports", () => {
   it("keeps the transcript display default codec pair on the package root", () => {
     expect(typeof packageRoot.fromWireDefault).toBe("function");
     expect(typeof packageRoot.toWireDefault).toBe("function");
+  });
+
+  it("re-exports the session-cache record surface from the package root", () => {
+    const record: CachedSessionRecord = {
+      ref: "local:t",
+      threadId: "t",
+      name: "n",
+      modelProvider: "p",
+      model: "m",
+      savedAt: 1,
+      history: {
+        bootGeneration: "",
+        epoch: 0,
+        incarnation: "i",
+        length: 1,
+        appliedGeneration: 1,
+        issuedGeneration: 1,
+        turns: [],
+      },
+    };
+    expect(threadModelFromCache(record, 1).ref).toBe("local:t");
+    expect(threadModelFromCache(record, 1).capabilities.send).toBe(false);
+    expect(cachedSessionRecord(threadModelFromCache(record, 1), 2)?.history.incarnation).toBe("i");
   });
 });

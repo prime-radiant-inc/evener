@@ -24,6 +24,7 @@ import type {
   OverlayItem,
   SandboxEscalationRequested,
   Thread,
+  ThreadCapabilities,
   ThreadItem,
   ThreadItemPosition,
   ThreadReadResponse,
@@ -1183,6 +1184,127 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     turns: mergeHistory([], fresh),
   };
   return withDisplay({ ...fields, turns: [], ...runningTurn(resp.thread) }, history, overlayRecord(resp.overlay));
+}
+
+// ---------------------------------------------------------------------------
+// Cached session records (web session-history cache spec, "The persist unit").
+// A record is the recorded history plus the display fields a pane needs to
+// render before the socket answers; nothing live is persisted, and the load
+// path resets the transient invalidation fields so a reload starts a clean
+// read. The encoder is the write seam's only input; the constructor is the
+// load seam's. Both are pure so the mobile store can adopt them later.
+// ---------------------------------------------------------------------------
+
+export interface CachedSessionHistory {
+  bootGeneration: string;
+  epoch: number;
+  incarnation?: string;
+  length: number;
+  appliedGeneration: number;
+  issuedGeneration: number;
+  turns: TurnModel[];
+}
+
+export interface CachedSessionRecord {
+  ref: string;
+  threadId: string;
+  name: string;
+  modelProvider: string;
+  model: string;
+  imageSessionId?: string;
+  olderCursor?: string;
+  savedAt: number;
+  history: CachedSessionHistory;
+}
+
+// The shell's admission state is new, not an existing one: capabilities are
+// the empty set (all thirteen required flags false), so every capability-
+// gated action refuses until the authoritative read lands.
+const EMPTY_CAPABILITIES: ThreadCapabilities = {
+  send: false,
+  steer: false,
+  interrupt: false,
+  compact: false,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: false,
+  changeModel: false,
+  changeVisionModel: false,
+  queue: false,
+  goal: false,
+  sharedNotes: false,
+  rename: false,
+};
+
+export function threadModelFromCache(record: CachedSessionRecord, now: number): ThreadModel {
+  const history: HistoryState = {
+    bootGeneration: record.history.bootGeneration,
+    epoch: record.history.epoch,
+    ...(record.history.incarnation === undefined ? {} : { incarnation: record.history.incarnation }),
+    length: record.history.length,
+    appliedGeneration: record.history.appliedGeneration,
+    issuedGeneration: record.history.issuedGeneration,
+    deferredPages: [],
+    turns: record.history.turns,
+  };
+  const base: ThreadModel = {
+    ref: record.ref,
+    threadId: record.threadId,
+    name: record.name,
+    status: { type: "" },
+    modelProvider: record.modelProvider,
+    model: record.model,
+    visionModel: "",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [],
+    queue: null,
+    tasks: null,
+    jobsUpdatedAt: null,
+    jobsTreeRevision: null,
+    ...(record.olderCursor === undefined ? {} : { olderCursor: record.olderCursor }),
+    lastFrameAt: now,
+    capabilities: EMPTY_CAPABILITIES,
+    goal: null,
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
+    contextUsed: 0,
+    contextWindow: 0,
+    contextPressure: 0,
+    usage: null,
+    workMillis: 0,
+    reasoningEffortLevels: [],
+    supportsReasoning: false,
+    cwd: "",
+    ...(record.imageSessionId === undefined ? {} : { imageSessionId: record.imageSessionId }),
+    history,
+  };
+  return withDisplay(base, history, {});
+}
+
+export function cachedSessionRecord(model: ThreadModel, now: number): CachedSessionRecord | undefined {
+  const history = model.history;
+  if (history?.incarnation === undefined) return undefined; // only a completed v6 content-bearing read
+  return {
+    ref: model.ref,
+    threadId: model.threadId,
+    name: model.name,
+    modelProvider: model.modelProvider,
+    model: model.model,
+    ...(model.imageSessionId === undefined ? {} : { imageSessionId: model.imageSessionId }),
+    ...(model.olderCursor === undefined ? {} : { olderCursor: model.olderCursor }),
+    savedAt: now,
+    history: {
+      bootGeneration: history.bootGeneration,
+      epoch: history.epoch,
+      incarnation: history.incarnation,
+      length: history.length,
+      appliedGeneration: history.appliedGeneration,
+      issuedGeneration: history.issuedGeneration,
+      turns: history.turns,
+    },
+  };
 }
 
 // Every field a read sets except the transcript itself (turns, history,
@@ -2770,13 +2892,13 @@ export function applyHistoryReadFailure<M extends ThreadModel>(
   return publicModel<M>({ ...model, history: { ...history, failed: diagnostic } });
 }
 
-type ReadDisposition = "discard" | "replace" | "merge";
+export type ReadDisposition = "discard" | "replace" | "merge";
 
 // The read identity fields readDisposition needs, structurally — satisfied by
 // a wire ThreadReadResponse and, for applyReadModel below (a caller whose own
 // service layer hydrates the wire response before the merge boundary), by a
 // HistoryState the caller already holds.
-interface ReadDispositionSignal {
+export interface ReadDispositionSignal {
   requestGeneration?: number;
   bootGeneration?: string;
   epoch?: number;
@@ -2805,7 +2927,7 @@ function identityDisposition(held: HistoryState, identity: ReadIdentity): ReadDi
 // What a latest-window response does to held history. Request generations
 // decide whether it applies at all; then the generation token, the epoch and
 // the incarnation decide between replacing the whole history and merging.
-function readDisposition(held: HistoryState, resp: ReadDispositionSignal): ReadDisposition {
+export function readDisposition(held: HistoryState, resp: ReadDispositionSignal): ReadDisposition {
   const generation = resp.requestGeneration ?? 0;
   if (generation < held.issuedGeneration) return "discard";
   if (held.invalidatedAtGeneration !== undefined && generation <= held.invalidatedAtGeneration) return "discard";
