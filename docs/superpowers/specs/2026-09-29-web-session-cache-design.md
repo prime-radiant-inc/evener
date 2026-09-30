@@ -510,14 +510,18 @@ involved.
   serialized length exceeds `SESSION_CACHE_MAX_BYTES` is skipped whole,
   never written, and a stored row for the same ref is deleted with it —
   a session that outgrew its cache leaves nothing stale behind and keeps
-  today's behavior. The skip is memoized per ref: a live oversize
-  session would otherwise re-serialize its full record on every
-  debounced fire, a 32 MB encode on the main thread for a guaranteed
-  no-op, plus an idempotent delete per fire. The memo clears whenever
-  the history is replaced (the stale-snapshot retry or the gap rule's
-  `hydrateThread`) — the one path by which an oversize record can
-  shrink back under the cap, since within one identity a merge only
-  adds items. A proposed window-only fallback for oversize records
+  today's behavior. The skip is memoized per ref, and the memo is scoped to the model's
+  lifetime: it clears on a history replacement (the stale-snapshot
+  retry or the gap rule's `hydrateThread` — a merge only adds
+  items, so replacement is the only mid-lifetime shrink) and on the
+  model leaving the map (final release, and the pinned-mutation
+  drain) — a re-open builds a fresh model from the latest window
+  with none of the paged history that made the record oversize, and
+  a memo that survived the release would skip an eligible session
+  indefinitely. A live oversize session would otherwise re-serialize
+  its full record on every debounced fire, a 32 MB encode on the
+  main thread for a guaranteed no-op, plus an idempotent delete per
+  fire. A proposed window-only fallback for oversize records
   was rejected for the same reason as the trimming cut: the model
   carries no window-boundary marker (`mergeOlderItemPage` folds pages
   into one flat turns array), so a "window-only record" needs persisted
@@ -760,7 +764,12 @@ Adapter (new `stores/sessionCacheIndexedDB.ts`):
    rows without touching record bodies, and enumeration, insert, and
    eviction share one transaction (a sibling tab's interleaved write is
    either fully seen or fully unseen); a record whose own length exceeds
-   the cap is skipped whole and its stored row deleted; a record past
+   the cap is skipped whole and its stored row deleted, with the
+   skip memoized for the model's lifetime — repeated debounced
+   updates during an oversize lifetime keep skipping the
+   serialization, and a paged-oversize session released and
+   re-opened with a smaller latest window resumes persisting once
+   its fresh model replaces the memo; a record past
    `SESSION_CACHE_TTL_DAYS` expires at adapter open and inside every write
    transaction; the reserved epoch row survives both enumerations when
    every record expires around it; a forced write during quota failure
