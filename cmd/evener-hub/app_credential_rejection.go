@@ -34,8 +34,9 @@ func credentialRejectionStatus(err error) (status int, rejected bool) {
 		status = llmErr.StatusCode()
 	}
 	if status == 0 {
+		message := err.Error()
 		for _, code := range []int{401, 403} {
-			if strings.Contains(err.Error(), "HTTP "+strconv.Itoa(code)) || strings.Contains(err.Error(), "status="+strconv.Itoa(code)) {
+			if strings.Contains(message, "HTTP "+strconv.Itoa(code)) || strings.Contains(message, "status="+strconv.Itoa(code)) {
 				status = code
 				break
 			}
