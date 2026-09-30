@@ -182,7 +182,7 @@ it("names the coordinator by its title for a job it started itself", async () =>
 });
 
 // A job whose subagent's row is on a later page sits at the top of the tree,
-// so its detail can't name who started it yet and says so.
+// so its detail can't name who started it and says so.
 it("says a job's subagent isn't listed while that subagent's row isn't loaded", async () => {
 	tree = {
 		revision: 1,

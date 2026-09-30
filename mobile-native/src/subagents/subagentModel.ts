@@ -133,7 +133,7 @@ export interface ShellJobRow {
 	/** Its description, else its command's first line. */
 	title: string;
 	/** Who started it: its session's title, or the subagent's. Absent while
-	 * the subagent's row isn't loaded, so it can't be named yet. */
+	 * that subagent's row isn't loaded. */
 	owner?: string;
 	state: SubagentState;
 	job: ActivityJob;
@@ -158,9 +158,7 @@ export function isJobRow(row: ActivityListRow): row is ShellJobRow {
  * order, each once, in one walk-ordered list; a subagent another subagent
  * started names its parent, and a job names the session or subagent that ran
  * it. The coordinator is named by `coordinatorTitle`, since the shared
- * projection labels every session node with its bare ref. The projection sets
- * a job at the top of the tree when its subagent's row isn't loaded yet, so a
- * top-level job the coordinator didn't run names no owner. */
+ * projection labels every session node with its bare ref. */
 export function flattenActivity(tree: ActivityTree, coordinatorTitle: string): ActivityListRow[] {
 	const rows: ActivityListRow[] = [];
 	const seen = new Set<string>();
