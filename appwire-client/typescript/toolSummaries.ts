@@ -5,11 +5,12 @@
 // them, so the two never word a step differently.
 //
 // Every tool no summary covers, an MCP tool among them, still reads as words
-// ("Used github: create issue", "Used compact context"), never its raw name.
+// ("Used github: create issue", "Used reindex workspace"), never its raw name.
 
 import { parseAskUserQuestions } from "./askShared";
 import { delegateSendTarget, delegateSendWords } from "./delegateSteps";
 import { diffStats, editDiffText } from "./editDiff";
+import { housekeepingProgress, housekeepingWords } from "./housekeepingSteps";
 import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
 import { jobWatchWords } from "./jobWatchSteps";
 import type { ItemModel } from "./model";
@@ -363,7 +364,7 @@ export function mcpToolParts(toolName: string): { server: string; tool: string }
 }
 
 /** A tool no summary covers, in words: "Used github: create issue" for an MCP
- * tool, "Used compact context" for any other. Never its raw name. */
+ * tool, "Used reindex workspace" for any other. Never its raw name. */
 export function fallbackToolSummary(step: Pick<ToolStep, "toolName">): string {
   return `Used ${toolInWords(step.toolName ?? "")}`;
 }
@@ -444,8 +445,9 @@ function progressFor(
       return target ? `Sending a message to delegate ${target}` : "Sending a message to a delegate";
     }
     case "mcp":
-    case "tool":
       return `Using ${toolInWords(name)}`;
+    case "tool":
+      return housekeepingProgress(step) ?? `Using ${toolInWords(name)}`;
   }
 }
 
@@ -541,7 +543,10 @@ export function toolFamily(toolName: string): ToolFamily {
  * (the target a client can set apart), and what it found. */
 export function toolStepWords(step: ToolStep, ctx?: ToolSummaryContext): StepWords {
   const entry = entryFor(step.toolName ?? "");
-  return entry ? entry.words(step, ctx) : { verb: fallbackToolSummary(step) };
+  if (entry) return entry.words(step, ctx);
+  // The session's housekeeping tools are plain tool steps, each worded on its
+  // own (housekeepingSteps); any other tool reads by its name.
+  return housekeepingWords(step) ?? { verb: fallbackToolSummary(step) };
 }
 
 /** A step's one-line summary, for any tool: its words composed. */
