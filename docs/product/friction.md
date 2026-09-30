@@ -876,13 +876,23 @@ without retaining the issued result for a persistence retry.
 `TestResolveRuntimeCredentialsSaveFailureAfterRefresh` verifies error
 propagation, not successful continuation after storage repair.
 
-**Discuss.** Represent exchange-complete/persist-pending as a bounded private
-operation. Retry the durable write, accurately describe the remaining step, and
-decide secret lifetime and crash behavior without claiming durable sign-in early.
+**Decision.** Retain successfully issued credentials in memory and make them
+usable while valid, even when the local save fails. Automatically retry saving
+that issued result rather than redeeming the original code or token again.
+Distinguish usable authentication with saving pending from durably saved sign-in.
+A pending save must respect sign-out, account changes and newer credentials;
+it must not restore removed credentials or overwrite their replacement. If the
+holding process exits before persistence succeeds, the unsaved credentials may
+be lost and sign-in may be needed again. That limitation is acceptable.
+Implementation remains pending.
 
-**Acceptance.** A scripted issuer accepts one exchange; first save fails and the
-next succeeds. Storage repair completes that same operation without a second
-redemption or loss of the previous durable record.
+**Acceptance.** A scripted issuer accepts one exchange and the first save fails.
+The issued credentials remain usable while valid; storage repair persists the
+same result without a second redemption. Preserve the previous durable record
+until its replacement is saved atomically. Sign-out, account changes and newer
+credentials prevent a pending older save from restoring or overwriting them.
+Pending persistence is never reported as durably saved, including when the
+holding process exits before saving succeeds.
 
 ### H10 Update outcome after the response
 
