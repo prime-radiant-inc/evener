@@ -96,7 +96,7 @@ func newListingWebServer(ctl *hubInstancesController) *WebServer {
 	})
 }
 
-const gwRejected = "The provider rejected this credential (HTTP 401)."
+const gwRejected = "The provider rejected this credential (HTTP 401). Replace the key or sign in again."
 
 func TestCredentialRejection_RefreshModelsRecordsAndClearsIt(t *testing.T) {
 	ctl, gw := newListingController(t)
@@ -150,7 +150,7 @@ func TestCredentialRejection_TheLivePrefetchRecordsIt(t *testing.T) {
 		announced = append(announced, name)
 	}
 	prefetchAllLiveModels(context.Background(), ctl.reg, ctl.auth, func() {})
-	if got, want := gwError(t, ctl.auth), "The provider rejected this credential (HTTP 403)."; got != want {
+	if got, want := gwError(t, ctl.auth), "The provider rejected this credential (HTTP 403). Replace the key or sign in again."; got != want {
 		t.Fatalf("error after the prefetch = %q, want %q", got, want)
 	}
 	mu.Lock()

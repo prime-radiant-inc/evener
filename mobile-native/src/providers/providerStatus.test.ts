@@ -61,7 +61,7 @@ it("says nothing of an account sign-in until the hub's statuses have been read",
 // (#3539): the row reads "Error" in red, with the hub's sentence for the
 // detail. An expired sign-in still reads as that, since signing in is the fix.
 it("reads a rejected credential as Error", () => {
-	const error = "The provider rejected this credential (HTTP 401).";
+	const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
 	expect(providerStatus(instance({ activeSource: "store", authModes: ["apiKey"] }), { error })).toEqual({
 		word: "Error",
 		tone: "danger",

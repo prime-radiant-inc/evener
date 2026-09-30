@@ -65,12 +65,15 @@ var credentialRejectionText = regexp.MustCompile(`(?:HTTP |status=)(401|403)\b`)
 // credentialRejectedMessage is AuthStatusResponse.Error for a rejected
 // credential: words the hub writes, with the HTTP status when it is known and
 // never anything the provider said, since a provider's error body can carry a
-// key fragment or the user's own request.
+// key fragment or the user's own request. It says what went wrong and what to
+// do (the redesign spec's rule for errors, section 5), so every client shows
+// the same sentence.
 func credentialRejectedMessage(status int) string {
+	const fix = " Replace the key or sign in again."
 	if status == 0 {
-		return "The provider rejected this credential."
+		return "The provider rejected this credential." + fix
 	}
-	return fmt.Sprintf("The provider rejected this credential (HTTP %d).", status)
+	return fmt.Sprintf("The provider rejected this credential (HTTP %d).", status) + fix
 }
 
 // credentialRejections is the hub's in-memory record of the credentials a

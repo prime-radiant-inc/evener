@@ -1188,7 +1188,7 @@ it("says each provider's sign-in state, with only an expired sign-in in amber", 
 // A credential the provider rejected (#3539): the row's status reads "Error"
 // in a red tag, and the detail says what the hub found, in its words.
 it("shows a rejected credential as Error, and says why on the detail", async () => {
-	const error = "The provider rejected this credential (HTTP 401).";
+	const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
 	providersHub(
 		[instance({ name: "lunaroute", providerId: "openai", isDefault: false, activeSource: "store", authModes: ["apiKey"] })],
 		[{ provider: "lunaroute", error } as AuthStatusResponse],
@@ -1200,7 +1200,11 @@ it("shows a rejected credential as Error, and says why on the detail", async () 
 	expect(tree.root.findAllByType(Tag).map((tag) => tag.props)).toEqual([{ text: "Error", tone: "red" }]);
 	await openDetail(tree, "lunaroute");
 	expect(hasControl(tree, "Status, Error")).toBe(true);
-	expect(renderedText(tree)).toContain(error);
+	// The hub's sentence stands in a footer with the danger tone.
+	const footers = tree.root.findAll(
+		(node) => typeof node.type !== "string" && node.props.tone === "danger" && subtreeText(node).includes(error),
+	);
+	expect(footers.length).toBeGreaterThan(0);
 });
 
 it("offers no pull-to-refresh and never asks to reconnect", async () => {

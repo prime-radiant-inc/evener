@@ -147,8 +147,8 @@ func TestCredentialRejection_TestConnectionRecordsARejectedCredential(t *testing
 		err  error
 		want string
 	}{
-		{name: "unauthorized", err: llm.ErrorFromHTTPStatus("gateway", 401, "Incorrect API key provided: "+rejectionSecret, nil, nil), want: "The provider rejected this credential (HTTP 401)."},
-		{name: "forbidden", err: llm.ErrorFromHTTPStatus("gateway", 403, "forbidden for "+rejectionSecret, nil, nil), want: "The provider rejected this credential (HTTP 403)."},
+		{name: "unauthorized", err: llm.ErrorFromHTTPStatus("gateway", 401, "Incorrect API key provided: "+rejectionSecret, nil, nil), want: "The provider rejected this credential (HTTP 401). Replace the key or sign in again."},
+		{name: "forbidden", err: llm.ErrorFromHTTPStatus("gateway", 403, "forbidden for "+rejectionSecret, nil, nil), want: "The provider rejected this credential (HTTP 403). Replace the key or sign in again."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
