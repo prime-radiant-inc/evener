@@ -2231,7 +2231,7 @@ it("checks two providers back to back: only the newer check ends its Checking st
 });
 
 // A failed check's copy stays with its own provider's visit: a link that
-// opens another provider follows the close of that visit, and a link back to
+// opens another provider arrives after that visit closed, and a link back to
 // it opens a new one, with no copy from the closed visit.
 it("keeps a failed check's copy on its own provider's visit, which a link closes", async () => {
 	const fake = providersHub([withModels(), { ...withModels(), name: "home", isDefault: false }]);
