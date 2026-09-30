@@ -277,9 +277,19 @@ it fires. The gates:
   never persisted until the resync read settles it. A settled-but-stale
   pair is ordinary cache content; a mid-transition one is not,
 - `history.failed` is unset.
+- the adapter's connection is open. A write firing while the connection
+  is still opening skips; the next debounced publication retries it.
+  Without this gate a write could pass every check above, await the
+  late open, and hand a deletion the third interleaving the invariant
+  below excludes — its transaction deleting nothing because the record
+  is not yet written, the write then committing the ref back.
 
 Gate evaluation and the transaction's open are one synchronous step — no
-await sits between them — so a deletion (the action's success handler,
+await sits between them — and the connection gate is what makes that a
+fact rather than an assumption: the lookup's 250 ms race already treats
+a still-opening connection as a timeout, and the write side now matches
+it, opening its transaction on an already-open connection or not at
+all. So a deletion (the action's success handler,
 the fence, or a received per-ref message) meets a write in only two
 orders: its task runs before the callback's, and the gates refuse the
 ref, or it runs after the transaction opened, and IndexedDB's
@@ -436,11 +446,22 @@ landing while the read is in flight advances that newest past a
 response cut before it — the captured anchor cannot see it — and a
 replacement whose window ends below folded content would move the
 transcript's newest backward and discard a turn the daemon itself just
-pushed. When the term fails, the window lies inside the folded range
-(its start sits below the model's newest by the window's own
-ordering), so the ordinary merge applies it gaplessly as a version
-refresh and the newest boundary survives; no replay or deferral
-machinery is needed. An earlier draft keyed the anchor on "the newest held item below
+pushed. When the term fails, the fold is newer than the response, and the held
+turns cannot be assumed contiguous from the anchor — a fold pushes
+only its own items and does not fill the gap a window starting above
+the anchor opens — so an ordinary merge could preserve exactly the
+hole this rule exists to prevent, and the first authoritative read's
+publish clears the shell flag, which would let the write seam persist
+that hole. The rule therefore still replaces, then replays: the
+window applies via `hydrateThread`, and the model's items above the
+window's end — the fold tail; they cannot be cached pages, since the
+anchor sits below the window's start — merge onto it. The result is
+contiguous from the window's start through the folded newest; the loss
+below the window's start is the rule's stated re-pageable cost, and a
+gap inside the fold tail itself — a dropped notification between two
+folds — is the live path's ordinary staleness, healed by the next
+read, not a cache regression. The fold is data already in hand, so
+the replay needs no deferral machinery. An earlier draft keyed the anchor on "the newest held item below
 `history.length`"; that was dimensionally wrong — `SnapshotIdentity.length`
 is the transcript's covered byte count (the index's own Window doc:
 "the transcript bytes it covered"), not an entry ordinal, so comparing
@@ -751,9 +772,12 @@ Store integration (`stores/threads.test.ts` additions and a new
    first read and a live `history/updated` folded onto the shell before
    the retry succeeds: the folded items cannot move the captured anchor;
    the retry replaces when its window covers the fold — its response
-   cut after the fold — but merges as a version refresh when the fold
-   is newer than the response, and the newest boundary never regresses
-   and no hole persists either way.
+   cut after the fold — and when the fold is newer than the response
+   it replaces and replays the fold tail onto the fresh window, so the
+   newest boundary never regresses and no hole persists either way;
+   a window starting above the anchor with a fold above the window's
+   end demonstrates the replay — the version-refresh merge an earlier
+   draft allowed here left a hole the write seam could then persist.
 8. Stale identity: the server rejects the held snapshot
    (`TranscriptItemCursorStale`); the store retries without it and history
    is fully replaced; the cached record's turns do not survive the
@@ -841,11 +865,17 @@ Store integration (`stores/threads.test.ts` additions and a new
     history — `invalidatedAtGeneration` set, with `awaited`,
     `pendingIncarnation`, and a deferred page present — writes nothing
     until the resync read settles it and the settled pair then persists
-    (the delayed-reconciliation case); a zero-turn record's reload takes
+    (the delayed-reconciliation case); a write firing while the adapter's
+    connection is still opening skips and retries on the next debounced
+    publication, so a deletion landing during the open window meets no
+    in-flight write — the invariant's precondition; a zero-turn
+    record's reload takes
     the ordinary cold merge (the gap rule's empty case).
 16. Flush: `releaseThread` commits a pending debounced write, ordered
     before removal (the gates evaluate on the pre-removal snapshot); the
-    pinned drain (`dropUnpinnedModel`) commits it too; a reload after an
+    pinned drain (`dropUnpinnedModel`) commits it too; a flush skipped
+    because the connection is not yet open is the crash-loss class —
+    the session re-hydrates on the next open; a reload after an
     unflushed crash still reconciles to the same content.
 17. Degradation: the same replay with an adapter that always fails leaves
     behavior identical to today's reload (full window read, no heldSnapshot,
