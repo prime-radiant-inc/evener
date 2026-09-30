@@ -1866,6 +1866,13 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	if waiter == nil || result.Action == "recovery_required" {
 		return stableDelegateSendOutcome{result: result}
 	}
+	if runtime.owner.delegateController.dropStoppedDelegateWaiter(started.lease) {
+		// The failed start already settled this generation durably, and a
+		// covering stop owns its delivery, so no inline delivery will answer
+		// the wait: answer with the stopped outcome instead of sitting out
+		// max_wait (#3502).
+		return stableDelegateSendOutcome{result: result}
+	}
 	waitCtx := ctx
 	if maxWaitMS > 0 {
 		var cancel context.CancelFunc
