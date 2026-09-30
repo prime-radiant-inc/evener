@@ -813,6 +813,72 @@ describe("cached shell load seam", () => {
       vi.useRealTimers();
     }
   });
+
+  it("a ready transition during a missed lookup claims at the observed epoch and re-arms epoch-current (the Session handshake)", async () => {
+    const { gate } = cacheTestBed({ gated: true }); // no record: the lookup misses
+    const fake = connectFakeClient();
+    let reads = 0;
+    let resolveFirst: ((value: ThreadReadResponse) => void) | undefined;
+    let resolveSecond: ((value: ThreadReadResponse) => void) | undefined;
+    fake.on("thread/read", () => {
+      reads += 1;
+      return reads === 1
+        ? new Promise<ThreadReadResponse>((resolve) => {
+            resolveFirst = resolve;
+          })
+        : new Promise<ThreadReadResponse>((resolve) => {
+            resolveSecond = resolve;
+          });
+    });
+    const pending = threadsStore.getState().ensureThread("local:thr_1");
+    // The ready transition lands while the lookup is parked: the ready pass
+    // sees no pending hydration (the claim is behind the lookup), so the
+    // epoch-current replacement can only come from the claim's own ladder.
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    gate.release();
+    await vi.waitFor(() => {
+      expect(reads).toBe(1);
+    });
+    const firstParams = fake.calls[0]?.params as { heldSnapshot?: unknown };
+    expect(firstParams.heldSnapshot).toBeUndefined(); // the missed lookup armed a cold claim
+    if (resolveFirst === undefined) throw new Error("the claim read must be armed once the lookup settled");
+    resolveFirst(readResponse("local:thr_1")); // its publish is refused: the epoch moved past the claim
+    await vi.waitFor(() => {
+      expect(reads).toBe(2);
+    });
+    if (resolveSecond === undefined) throw new Error("the refused claim must be replaced by an epoch-current read");
+    resolveSecond(readResponse("local:thr_1"));
+    await pending;
+    expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(2);
+    const model = threadsStore.getState().threads.get("local:thr_1");
+    expect(model?.history?.incarnation).toBe("inc-1"); // the epoch-current read published
+    expect(model?.capabilities.send).toBe(true); // not a shell: the cold path's read carries real capabilities
+  });
+
+  it("a ready transition during a hit publishes the shell and arms it epoch-current, one read carrying the held identity", async () => {
+    const { gate, adapter } = cacheTestBed({ gated: true });
+    await seedCache(adapter, "local:thr_1");
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("local:thr_1"));
+    const pending = threadsStore.getState().ensureThread("local:thr_1");
+    fake.emitStateChange("reconnecting");
+    fake.emitReady(); // the ready pass goes by while the lookup is parked and would never replace a stale arming
+    gate.release();
+    await pending;
+    const calls = fake.calls.filter((c) => c.method === "thread/read");
+    expect(calls).toHaveLength(1); // one epoch-current read, not a refused claim plus a replacement
+    const read = calls[0];
+    if (read === undefined) throw new Error("the epoch-current read must have been recorded");
+    expect((read.params as { heldSnapshot?: SnapshotIdentity }).heldSnapshot).toEqual({
+      incarnation: "inc-1",
+      length: 40,
+    }); // the shell published and armed this read with its held identity
+    const model = threadsStore.getState().threads.get("local:thr_1");
+    expect(model?.history?.turns.map((t) => t.id)).toEqual(["turn_1"]); // the recorded page survived the merge
+    expect(model?.capabilities.send).toBe(true); // the authoritative read published over the shell
+    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false); // and closed the shell window
+  });
 });
 
 describe("cached write seam", () => {

@@ -4310,6 +4310,23 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     refCounts.set(ref, count + 1);
     if (threadsStore.getState().threads.has(ref)) return; // already hydrated: no re-read
 
+    // The claim's hydration epoch, observed when the pane claimed the ref —
+    // BEFORE the serial cache lookup, because the lookup widens the
+    // claim-to-arming window by milliseconds and a ready transition inside
+    // it must meet the same contract as one during the claim's read. A
+    // lookup MISS arms at the observed epoch, exactly as the pre-lookup
+    // claim did: the epoch-current replacement then comes from the same
+    // machinery as before the seam (handleReady's refresh of a pending
+    // hydration, or the re-arm loop after the stale epoch's publish is
+    // refused), so only a matching client and epoch may share the pending
+    // hydration — Session's deferred-until-ready handshake pins exactly this
+    // claim-then-replace pair (Session.test.tsx). A lookup HIT publishes a
+    // model — the shell — and the arming that follows serves that model, so
+    // it commits to the CURRENT epoch: the ready pass has already gone by
+    // and nothing would ever replace a stale arming, which would strand the
+    // pane on an unverified shell with no live read behind it.
+    const claimEpoch = readyEpoch;
+
     // The cached-shell lookup (spec, "The load seam"): serial by necessity —
     // the held identity must exist before issueLatestWindowRead runs — and
     // bounded by its own 250 ms deadline. The creator alone publishes and
@@ -4343,8 +4360,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       }
     }
 
-    const startHydration = (hydrationClient: AppwireClientLike): Promise<ThreadModel | null> => {
-      const hydrationEpoch = readyEpoch;
+    const startHydration = (
+      hydrationClient: AppwireClientLike,
+      hydrationEpoch: number,
+    ): Promise<ThreadModel | null> => {
       const pending = beginThreadHydration(
         ref,
         hydrationClient,
@@ -4385,7 +4404,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     };
 
     let inflight = inflightHydrates.get(ref);
-    if (!inflight) inflight = startHydration(client);
+    if (!inflight) inflight = startHydration(client, cachedBase !== undefined ? readyEpoch : claimEpoch);
+    cachedBase = undefined; // the claim's arming consumed the shell; every re-arm reads the current model
     try {
       for (;;) {
         const inflightClient = inflightHydrateClients.get(ref) ?? client;
@@ -4416,7 +4436,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // as both of watchThread's.
             client = await requireReadyClient();
             if (ensureGenerations.get(ref) !== generation || (refCounts.get(ref) ?? 0) <= 0) return;
-            inflight = inflightHydrates.get(ref) ?? startHydration(client);
+            inflight = inflightHydrates.get(ref) ?? startHydration(client, readyEpoch);
             continue;
           }
           // Same client, same ready epoch: the read failed in transport, not
@@ -4442,7 +4462,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         // deleted must not start another read on becoming ready.
         if (threadsStore.getState().deletedRefs.has(ref)) return;
         inflight = inflightHydrates.get(ref);
-        if (!inflight) inflight = startHydration(client);
+        if (!inflight) inflight = startHydration(client, readyEpoch);
       }
     } catch (err) {
       // This call's own claim (the increment above) never landed: undo it
