@@ -77,7 +77,7 @@ describe("a storage that fails", () => {
 		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
 	});
 
-	it("says so when the phone won't let go of a removed hub's starts", () => {
+	it("says so when the phone won't let go of a removed hub's remembered start", () => {
 		const storage = memory();
 		new LaunchMemory(storage, "hub-a").recordStart(setup());
 		storage.removeItemSync = () => {
