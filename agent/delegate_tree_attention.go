@@ -469,10 +469,12 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		// A parked delegate is not the cold-restore drive's work; attention a
-		// closed ancestor fenced off still is, for the escalation.
-		_, parked := c.attentionParked[delegateID]
-		if ready, closedAncestorID := c.attentionWakeAncestorGateLocked(delegateID); closedAncestorID != "" || ready && !parked {
+		// Attention a closed ancestor fenced off is the escalation's work,
+		// parked or not.
+		if _, closedAncestorID := c.attentionWakeAncestorGateLocked(delegateID); closedAncestorID != "" {
+			return true
+		}
+		if c.coldRestoreDriveCandidateLocked(delegateID) {
 			return true
 		}
 	}
@@ -537,6 +539,20 @@ func (c *delegateTreeController) attentionWakeAncestorGateLocked(delegateID stri
 	return !blocked && c.ancestorChainRestorableLocked(parentID), closedAncestorID
 }
 
+// coldRestoreDriveCandidateLocked reports whether the attention drive may
+// cold-restore delegateID to deliver its wake-eligible attention: the drive
+// has not parked it and the ancestor gate is ready. The park stops this
+// drive's cold restores of a delegate that could not be restored or handed
+// over, and only that: its own live runtime can still reserve its attention
+// (ReserveAttention), and the fenced escalation still reaches it.
+func (c *delegateTreeController) coldRestoreDriveCandidateLocked(delegateID string) bool {
+	if _, parked := c.attentionParked[delegateID]; parked {
+		return false
+	}
+	ready, _ := c.attentionWakeAncestorGateLocked(delegateID)
+	return ready
+}
+
 // ancestorChainRestorableLocked reports whether a child's cold restore can
 // make its owner chain resident: walking up from parentID, each ancestor is
 // either resident already or idle and restorable, the two conditions the
@@ -562,14 +578,7 @@ func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, stri
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		// The park stops this drive's cold restores of a delegate that could
-		// not be restored or handed over, and only that: its own live
-		// runtime can still reserve its attention (ReserveAttention), and
-		// the fenced escalation still reaches it.
-		if _, parked := c.attentionParked[delegateID]; parked {
-			continue
-		}
-		if ready, _ := c.attentionWakeAncestorGateLocked(delegateID); !ready {
+		if !c.coldRestoreDriveCandidateLocked(delegateID) {
 			continue
 		}
 		delegateIDs = append(delegateIDs, delegateID)
