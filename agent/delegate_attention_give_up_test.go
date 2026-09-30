@@ -379,6 +379,51 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 			t.Fatalf("retry delay after one failed pass = %v, want it backed off to %v", delay, 2*jobNotificationRetryInitialDelay)
 		}
 	})
+
+	// Once the failing escalation succeeds, its backoff is over: the next,
+	// unrelated failure starts again from the initial delay.
+	t.Run("transcript readable again: the backoff resets", func(t *testing.T) {
+		t.Parallel()
+		fenced := parkedUnderClosedParent(t)
+		clk := agenttest.NewFakeClock()
+		fenced.root.clock = clk
+		grandchildTranscript := transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)
+		setAside := grandchildTranscript + ".aside"
+		if err := os.Rename(grandchildTranscript, setAside); err != nil {
+			t.Fatalf("set the grandchild transcript aside: %v", err)
+		}
+		// A directory in the transcript's place stats fine and fails the read.
+		if err := os.Mkdir(grandchildTranscript, 0o755); err != nil {
+			t.Fatalf("put a directory in place of the grandchild transcript: %v", err)
+		}
+		fenced.root.drivePendingStableDelegateAttention()
+		clk.Advance(jobNotificationRetryInitialDelay)
+		clk.Drain()
+		fenced.root.attentionMu.Lock()
+		backedOff := fenced.root.stableAttentionRetry.delay
+		fenced.root.attentionMu.Unlock()
+		if backedOff != 2*jobNotificationRetryInitialDelay {
+			t.Fatalf("this test is not in the state it means to be: retry delay after one failed pass = %v, want %v", backedOff, 2*jobNotificationRetryInitialDelay)
+		}
+		if err := os.Remove(grandchildTranscript); err != nil {
+			t.Fatalf("remove the directory in the transcript's place: %v", err)
+		}
+		if err := os.Rename(setAside, grandchildTranscript); err != nil {
+			t.Fatalf("restore the grandchild transcript: %v", err)
+		}
+
+		fenced.root.drivePendingStableDelegateAttention()
+
+		if owed, parked := fenced.owedAndParked(); owed || parked {
+			t.Fatalf("after escalation: owed=%t parked=%t, want neither", owed, parked)
+		}
+		fenced.root.attentionMu.Lock()
+		delay := fenced.root.stableAttentionRetry.delay
+		fenced.root.attentionMu.Unlock()
+		if delay != jobNotificationRetryInitialDelay {
+			t.Fatalf("retry delay after the escalation succeeded = %v, want it reset to %v", delay, jobNotificationRetryInitialDelay)
+		}
+	})
 }
 
 // A park stops the drive's cold restores of a delegate whose runtime could

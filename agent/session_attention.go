@@ -1311,6 +1311,15 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 	s.attentionMu.Unlock()
 }
 
+// resetStableDelegateAttentionRetryDelay ends a backoff episode whose work
+// succeeded, so the next failure retries from the initial delay. It leaves an
+// armed retry in place: other delegates' work may still need it.
+func (s *Session) resetStableDelegateAttentionRetryDelay() {
+	s.attentionMu.Lock()
+	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
+	s.attentionMu.Unlock()
+}
+
 // rearmRootDelegateAttentionFromTranscript reconstructs the root wake cache
 // from the only durable attention authority. It performs no provider or Session
 // construction and is called after the root transcript is attached/replayed.
