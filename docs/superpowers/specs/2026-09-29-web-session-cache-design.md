@@ -455,13 +455,18 @@ publish clears the shell flag, which would let the write seam persist
 that hole. The rule therefore still replaces, then replays: the
 window applies via `hydrateThread`, and the model's items above the
 window's end — the fold tail; they cannot be cached pages, since the
-anchor sits below the window's start — merge onto it. The result is
-contiguous from the window's start through the folded newest; the loss
-below the window's start is the rule's stated re-pageable cost, and a
-gap inside the fold tail itself — a dropped notification between two
-folds — is the live path's ordinary staleness, healed by the next
-read, not a cache regression. The fold is data already in hand, so
-the replay needs no deferral machinery. An earlier draft keyed the anchor on "the newest held item below
+anchor sits below the window's start — merge onto it. The replay's result is the window plus exactly the
+folds that arrived: contiguous through the folded newest when the
+notifications came complete, and carrying, when one was dropped, the
+same hole the live path already carries in memory — rendered exactly
+as today renders it, mirrored faithfully by the record, and filled by
+the next authoritative read's merge. No gaplessness is claimed: the
+position model has no predecessor function (the abut cost below
+states the limitation), so contiguity cannot be proven at the
+disposition point, and no delta request is issued for a hole today's
+own live behavior produces. The loss below the window's start is the
+rule's stated re-pageable cost, and the fold is data already in hand,
+so the replay needs no deferral machinery. An earlier draft keyed the anchor on "the newest held item below
 `history.length`"; that was dimensionally wrong — `SnapshotIdentity.length`
 is the transcript's covered byte count (the index's own Window doc:
 "the transcript bytes it covered"), not an entry ordinal, so comparing
@@ -774,10 +779,13 @@ Store integration (`stores/threads.test.ts` additions and a new
    the retry replaces when its window covers the fold — its response
    cut after the fold — and when the fold is newer than the response
    it replaces and replays the fold tail onto the fresh window, so the
-   newest boundary never regresses and no hole persists either way;
-   a window starting above the anchor with a fold above the window's
-   end demonstrates the replay — the version-refresh merge an earlier
-   draft allowed here left a hole the write seam could then persist.
+   newest boundary never regresses; a window starting above the anchor
+   with a fold above the window's end demonstrates the replay — the
+   version-refresh merge an earlier draft allowed here left a hole the
+   write seam could then persist — and a fold arriving with a dropped
+   notification behind it replays what arrived, carrying in the model
+   the same hole today's live path carries, which the next
+   authoritative read's merge fills.
 8. Stale identity: the server rejects the held snapshot
    (`TranscriptItemCursorStale`); the store retries without it and history
    is fully replaced; the cached record's turns do not survive the
