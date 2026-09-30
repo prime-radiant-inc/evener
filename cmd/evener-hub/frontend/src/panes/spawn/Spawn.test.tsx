@@ -4486,6 +4486,79 @@ test("evener/auth/updated drops the pane's model/list cache so the catalog and p
   ).toHaveLength(2);
 });
 
+// The hub announces a refreshed model list on evener/auth/updated (#3539). An
+// open picker updates in place: the list it shows stays up, with no loading
+// state in between, and the new model appears without reopening it.
+test("an open model picker updates in place when the hub announces a refreshed list", async () => {
+  const user = setupUser();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await user.click(modelTrigger());
+  await screen.findByRole("combobox", { name: "Model" });
+  await screen.findByRole("listbox", { name: "Model" });
+
+  // The refreshed list is held back until the test releases it, so the
+  // picker's state while it loads can be seen.
+  let release: () => void = () => {};
+  const refreshed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("model/list", async () => {
+    await refreshed;
+    return {
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+        { provider: "google-vertex", model: "gemini-3.8-flash", displayName: "google-vertex/gemini-3.8-flash" },
+      ],
+    };
+  });
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await act(async () => {});
+  // Still showing the list it had while the refresh loads.
+  expect(screen.queryByRole("listbox", { name: "Model" })).not.toBeNull();
+  await act(async () => release());
+  await screen.findByText("google-vertex/gemini-3.8-flash");
+  expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
+});
+
+// A host switch is a new scope, not newer data: the picker drops the old
+// host's list and loads the new host's from scratch, even though the switch
+// also moves the instance list the in-place reload follows.
+test("switching host under an open model picker reloads it from scratch", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // The remote host's model list waits for the test, so the picker's state
+  // while it loads can be seen.
+  let release: () => void = () => {};
+  const remoteList = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", async (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "model/list") {
+        await remoteList;
+        return { data: [{ provider: "buildbox-llm", model: "local-7b", displayName: "buildbox-llm/local-7b" }] };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+  await user.click(modelTrigger());
+  await screen.findByRole("listbox", { name: "Model" });
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await act(async () => {});
+  expect(screen.queryByRole("listbox", { name: "Model" })).toBeNull();
+  await act(async () => release());
+  await screen.findByText("buildbox-llm/local-7b");
+});
+
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
 //
 // The spawn pane is a dockview singleton (paneRegistry.ts: "focus existing
