@@ -67,8 +67,8 @@ func TestSessionActivityReportPreviewFollowsSettledGeneration(t *testing.T) {
 				t.Fatal(err)
 			}
 			var row struct {
-				ReportPreview string `json:"reportPreview"`
-				RunGeneration uint64 `json:"runGeneration"`
+				ReportPreview string `json:"reportPreview"` //nolint:tagliatelle // AppWire fixture asserts the public camelCase wire contract.
+				RunGeneration uint64 `json:"runGeneration"` //nolint:tagliatelle // AppWire fixture asserts the public camelCase wire contract.
 			}
 			if err = json.Unmarshal(raw, &row); err != nil {
 				t.Fatal(err)
@@ -133,8 +133,8 @@ func TestSessionActivityReportPreviewKeepsBoundedText(t *testing.T) {
 				t.Fatal(err)
 			}
 			var preview struct {
-				Text      string `json:"reportPreview"`
-				Truncated bool   `json:"reportPreviewTruncated"`
+				Text      string `json:"reportPreview"`          //nolint:tagliatelle // AppWire fixture asserts the public camelCase wire contract.
+				Truncated bool   `json:"reportPreviewTruncated"` //nolint:tagliatelle // AppWire fixture asserts the public camelCase wire contract.
 			}
 			if err = json.Unmarshal(raw, &preview); err != nil {
 				t.Fatal(err)

@@ -149,8 +149,8 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	checkWireFixture(t, subagentOutcomeWireFixturePath, struct {
 		Note                     string          `json:"note"`
 		Response                 json.RawMessage `json:"response"`
-		DelegatesResponse        json.RawMessage `json:"delegatesResponse"`
-		ResumedDelegatesResponse json.RawMessage `json:"resumedDelegatesResponse"`
+		DelegatesResponse        json.RawMessage `json:"delegatesResponse"`        //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
+		ResumedDelegatesResponse json.RawMessage `json:"resumedDelegatesResponse"` //nolint:tagliatelle // AppWire corpus key consumed by the typed phone fixture.
 	}{
 		Note:                     "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through stableDelegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
 		Response:                 response,
