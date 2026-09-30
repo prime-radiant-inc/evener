@@ -9,6 +9,12 @@
 // value or crashing: a filler that skips a kind is a coverage test that
 // silently stops covering it.
 //
+// One exception is deliberate: a struct whose fields are all unexported (a
+// mutex, or a defined type over time.Time such as `type Millis time.Time`) is
+// left at its zero value, because only its owner knows what non-zero means and
+// the filler has no exported field to set. time.Time itself is filled directly,
+// since its whole value lives in unexported fields.
+//
 // # Reporter, not *testing.T
 //
 // Fill takes a Reporter — the two-method subset of *testing.T a caller uses —
@@ -52,13 +58,15 @@ var (
 //
 // time.Time is filled directly, because its own fields are unexported and
 // reflection cannot reach them. A shape the filler cannot populate reports
-// through r.Fatalf.
+// through r.Fatalf, except a struct whose fields are all unexported, which is
+// left zero (see the package comment).
 func Fill(r Reporter, v reflect.Value, path string) {
 	r.Helper()
 	fill(r, v, path, 0)
 }
 
 func fill(r Reporter, v reflect.Value, path string, depth int) {
+	r.Helper()
 	if depth > maxDepth {
 		r.Fatalf("%s: nested deeper than %d — likely a recursive type; teach the filler a cycle guard for this shape", path, maxDepth)
 		return
