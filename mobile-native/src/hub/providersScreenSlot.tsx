@@ -9,7 +9,16 @@
 // Unlike that slot, this one is an external store, not React state: the page
 // publishes on every render, and only the pushed page subscribes, so a
 // publication never re-renders the page that made it.
-import { createContext, type ReactNode, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+	createContext,
+	type ReactNode,
+	useContext,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 
 /** The detail the Providers page shows for its selected provider. */
 export interface ProviderDetailSlot {
