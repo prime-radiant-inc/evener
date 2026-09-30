@@ -12,10 +12,6 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// livePrefetchInterval is how often the background loop refreshes every
-// instance's cached live listing: the model picker's own live cache TTL.
-const livePrefetchInterval = liveModelsTTL
-
 // instanceLiveListTimeout bounds one instance's live /models fetch, the
 // same per-instance budget launch-check and the model picker use.
 const instanceLiveListTimeout = 8 * time.Second
@@ -177,33 +173,14 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 	}
 }
 
-// startLiveModelsPrefetch warms the holder's live cache once at startup and
-// refreshes it on livePrefetchInterval, so instance sheets read cached
-// inventory instead of fetching on open. A pass that changes what any
-// client shows announces it once, so every browser refetches; a no-op pass
-// stays silent. Failures are silent — the next tick retries — and
-// cancellation stops the loop.
-func startLiveModelsPrefetch(ctx context.Context, holder *hubcore.ProviderRegistry, auth *hubAuthController, interval time.Duration, startBackground func(func()), changed func()) {
-	startPeriodicPrefetch(ctx, interval, startBackground, func() {
-		prefetchAllLiveModels(ctx, holder, auth, changed)
-	})
-}
-
-// startPeriodicPrefetch runs pass once, then on interval until ctx ends, on the
-// caller's background runner. It is the shared scaffold behind the live-model
-// and launch-model prefetches, which differ only in the pass they run.
-func startPeriodicPrefetch(ctx context.Context, interval time.Duration, startBackground func(func()), pass func()) {
+// startLiveModelsPrefetch warms the holder's live cache once at startup, so
+// instance sheets read cached inventory instead of fetching on open. It runs
+// once and never on a timer: the hub lists a provider only when someone asks
+// (a refresh, the picker) or at startup, never by polling. A pass that changes
+// what any client shows announces it once, so every browser refetches; a
+// no-op pass stays silent. Failures are silent.
+func startLiveModelsPrefetch(ctx context.Context, holder *hubcore.ProviderRegistry, auth *hubAuthController, startBackground func(func()), changed func()) {
 	startBackground(func() {
-		pass()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				pass()
-			}
-		}
+		prefetchAllLiveModels(ctx, holder, auth, changed)
 	})
 }

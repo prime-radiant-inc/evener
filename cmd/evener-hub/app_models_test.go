@@ -796,7 +796,7 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 	}}
 	web := newLaunchModelsTestWeb(t, spawner, true)
 	ctx := t.Context()
-	go startLaunchModelsPrefetch(ctx, web, time.Hour, func(fn func()) { fn() })
+	go startLaunchModelsPrefetch(ctx, web, func(fn func()) { fn() })
 
 	deadline := time.Now().Add(5 * time.Second)
 	for spawner.callCount() == 0 {

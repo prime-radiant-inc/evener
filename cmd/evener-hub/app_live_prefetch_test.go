@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/valueexpr"
@@ -230,5 +232,41 @@ func TestPrefetchLiveModelsSurvivesUnreachable(t *testing.T) {
 	got := entry(t, ctl.List(), "gw")
 	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
 		t.Fatalf("entry models = %+v, want live gpt-live despite dead sibling", got.Models)
+	}
+}
+
+// The hub lists providers once at startup and never again on a timer: a
+// provider is polled only when someone asks (Jesse, 2026-09-30). The startup
+// pass lists each instance once; nothing lists it again while the hub runs.
+func TestLiveModelsPrefetchRunsOnceAtStartup(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	tomlPath := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key = \"test-key\"\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctl := newTestInstancesController(t, tomlPath, filepath.Dir(tomlPath), t.TempDir(), nil)
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	passes := make(chan struct{}, 16)
+	startLiveModelsPrefetch(t.Context(), ctl.reg, nil, func(fn func()) { go fn() }, func() { passes <- struct{}{} })
+
+	// The startup pass changes the listing, so it announces once.
+	select {
+	case <-passes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the startup pass never ran")
+	}
+	startup := hits.Load()
+	time.Sleep(100 * time.Millisecond)
+	if got := hits.Load(); got != startup {
+		t.Fatalf("the provider was listed %d times after the startup pass, want none", got-startup)
 	}
 }
