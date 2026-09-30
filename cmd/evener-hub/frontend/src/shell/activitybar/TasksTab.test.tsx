@@ -5,11 +5,11 @@
 import type { NavigationManifest } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
