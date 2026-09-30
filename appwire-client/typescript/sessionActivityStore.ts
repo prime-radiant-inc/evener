@@ -550,10 +550,11 @@ function unavailableError(error: unknown): boolean {
   return (
     isThreadNotFound(error) ||
     (error instanceof WireError &&
-      ["methodNotFound", "actionUnavailable", "resourceNotFound", "upgradeRequired"].includes(
-        error.evenerErrorInfo ?? "",
-      )) ||
-    mutationErrorData(error)?.mutationOutcome === "targetDeleted"
+      ["methodNotFound", "resourceNotFound", "upgradeRequired"].includes(error.evenerErrorInfo ?? "")) ||
+    mutationErrorData(error)?.mutationOutcome === "targetDeleted" ||
+    (error instanceof WireError &&
+      error.evenerErrorInfo === "actionUnavailable" &&
+      mutationErrorData(error)?.retryDisposition !== "automatic")
   );
 }
 function permanentError(error: unknown): boolean {
