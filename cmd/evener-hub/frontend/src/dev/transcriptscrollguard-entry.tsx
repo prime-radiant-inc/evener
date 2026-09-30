@@ -199,14 +199,21 @@ const fake = new FakeClient("ready");
 const BOOT_GENERATION = "1";
 const EPOCH = 1;
 const INCARNATION = "inc-1";
+// The hub stamps requestGeneration on every read response, and the echo is
+// load-bearing once the session cache is in play: a pane that opens on a
+// cached shell issues its reconciling read with a bumped generation, and a
+// generation-less response is discarded as superseded (readDisposition) —
+// stranding the pane on the cursor-less shell. The suites' echoingReadHandler
+// exists for the same contract.
 fake.on(
   "thread/read",
-  () =>
+  (params) =>
     ({
       thread: THREAD,
       bootGeneration: BOOT_GENERATION,
       epoch: EPOCH,
       snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
+      requestGeneration: params.requestGeneration,
       ...(PAGED ? { olderCursor: OLDER_CURSOR } : {}),
     }) satisfies ThreadReadResponse,
 );
