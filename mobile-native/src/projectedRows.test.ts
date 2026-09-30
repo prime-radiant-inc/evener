@@ -407,7 +407,8 @@ describe("projectedRow — item entries", () => {
 	});
 
 	// The phone draws no title chip (Jesse's ruling), so a warning's message
-	// is its row's words; one with no message reads its title, then its hint.
+	// is its row's words; one with no message reads its hint, then its title
+	// (the package's warningWords, which the web reads too).
 	it("reads a daemon warning's message over its title, and the title when it has no message", () => {
 		const warning = (text: string | undefined, fields: Record<string, unknown>) =>
 			projectedRow(itemEntry(item({ type: "systemMessage", eventKind: "warning", text, raw: { warning: fields } })));
@@ -416,6 +417,24 @@ describe("projectedRow — item entries", () => {
 		const hintOnly = warning(undefined, { hint: "Check the state directory." });
 		expect(hintOnly).toMatchObject({ tone: "attention", text: "Check the state directory." });
 		expect(hintOnly).not.toHaveProperty("hint");
+		expect(warning(undefined, { title: "Evener error", hint: "Check the state directory." })).toMatchObject({
+			text: "Check the state directory.",
+		});
+	});
+
+	it("draws a daemon warning's hint once when it repeats the message", () => {
+		const row = projectedRow(
+			itemEntry(item({ type: "systemMessage", eventKind: "warning", text: "disk full", raw: { warning: { hint: "disk full" } } })),
+		);
+		expect(row).toMatchObject({ tone: "attention", text: "disk full" });
+		expect(row).not.toHaveProperty("hint");
+	});
+
+	// A warning item's row has a title of its own, so a title-only one reads
+	// as the web's does: the generic title, and the title as its words.
+	it("reads a title-only warning item's title as its words, under the generic title", () => {
+		const row = projectedRow(itemEntry(item({ type: "warning", text: "", warning: { title: "Heads up" } })));
+		expect(row).toMatchObject({ kind: "failure", title: "Warning", detail: "Heads up", attention: true });
 	});
 
 	it("keeps an informational daemon warning a quiet system line", () => {

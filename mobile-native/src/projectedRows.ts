@@ -42,7 +42,6 @@ import {
 	ERROR_EVENT_KIND,
 	echoesTurnError,
 	hasItemFailure,
-	hasWarningText,
 	isActiveItem,
 	isInformationalWarning,
 	isSuppressedSteeringKind,
@@ -61,6 +60,7 @@ import {
 	systemEventWords,
 	composeStepWords,
 	toolStepWords,
+	warningWords,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
@@ -167,8 +167,8 @@ export interface ActivityMember {
 // (a loop-detected or provider-failure steer included: the failure it answers
 // shows as the turn's own error), "warning" for the loop_detection, turn_limit
 // and error system events (WARNING_EVENT_KINDS), "attention" for a daemon
-// warning a human should see (attentionWarningNotice: amber, per spec), and
-// "system" for every other system event.
+// warning a human should see (attentionWarningNotice: amber, spec 8.2's
+// Warning), and "system" for every other system event.
 export type NoticeTone = "info" | "warning" | "attention" | "system";
 
 export type NoticeOrigin = "steering" | "system";
@@ -759,21 +759,20 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
 	// A daemon warning a human should see (not an informational one) reads in
-	// the attention tone, with its hint beneath (#3387).
+	// the attention tone, with its hint beneath (#3387). The phone draws no
+	// title chip, so the row's words are the warning's message (warningWords,
+	// which falls back to its hint, then its title).
 	const attention = attentionWarningNotice(it);
 	if (attention) {
-		// The phone draws no title chip, so the row's words are the message,
-		// or the title, or the hint when the warning carries nothing else.
-		const text = [it.text, attention.title, attention.hint].find(hasWarningText) ?? "";
 		return {
 			kind: "notice",
 			id: it.id,
 			origin: "system",
 			family: "warning",
 			tone: "attention",
-			text,
+			text: attention.message,
 			eventKind: "warning",
-			...(attention.hint && attention.hint !== text ? { hint: attention.hint } : {}),
+			...(attention.hint ? { hint: attention.hint } : {}),
 		};
 	}
 	// A system family of "warning" IS the warning tone (systemFamily's own
@@ -797,25 +796,23 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 // line, as the web's WarningItem draws it, never the amber attention row
 // (#3387); null when it carries nothing to show.
 function informationalWarningNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> | null {
-	const text = [it.text, it.warning?.hint, it.warning?.title].find(hasWarningText);
-	if (text === undefined) return null;
-	return { kind: "notice", id: it.id, origin: "system", family: "informational", tone: "system", text };
+	const words = warningWords(it.text, it.warning?.title, it.warning?.hint);
+	if (words === null) return null;
+	return { kind: "notice", id: it.id, origin: "system", family: "informational", tone: "system", text: words.message };
 }
 
 // A warning's attention row, or null when it carries nothing to show (the web
 // renders no row for exactly that case).
 function warningFailure(it: ItemModel): Extract<MobileTimelineItem, { kind: "failure" }> | null {
-	const rawTitle = it.warning?.title;
-	// The blank check is exactly "no titled part AND no body part": a warning
-	// with nothing to show produces no row (the web renders none either). The
-	// body join is computed once and reused.
-	const detail = joinWarningParts([it.text, it.warning?.hint]);
-	if (!hasWarningText(rawTitle) && detail === "") return null;
+	// The web's words (warningWords): its title, or "Warning", over its
+	// message and hint.
+	const words = warningWords(it.text, it.warning?.title, it.warning?.hint);
+	if (words === null) return null;
 	return {
 		kind: "failure",
 		id: it.id,
-		title: hasWarningText(rawTitle) ? rawTitle : "Warning",
-		detail,
+		title: words.title ?? "Warning",
+		detail: joinWarningParts([words.message, words.hint]),
 		attention: true,
 	};
 }

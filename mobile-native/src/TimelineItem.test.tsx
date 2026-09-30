@@ -1,6 +1,7 @@
 import { createElement, type ReactNode } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { paletteFor } from "./design/tokens";
 import type { MobileTimelineItem } from "./projectedRows";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
@@ -756,8 +757,25 @@ describe("a system event", () => {
 	});
 });
 
+const palette = paletteFor("light");
+
+// The colour of the one rule an error or warning row draws down its left edge.
+function ruleColor(tree: ReturnType<typeof render>): unknown {
+	const rules = tree.root.findAll(
+		(node) => typeof node.type === "string" && node.props.style?.borderLeftWidth === 2,
+	);
+	expect(rules).toHaveLength(1);
+	return rules[0]?.props.style.borderLeftColor;
+}
+
+// The label VoiceOver reads for a row's title: a warning and an error differ
+// in more than colour.
+const titleLabels = (tree: ReturnType<typeof render>) =>
+	tree.root
+		.findAll((node) => typeof node.type === "string" && typeof node.props.accessibilityLabel === "string")
+		.map((node) => node.props.accessibilityLabel);
+
 describe("an error", () => {
-	const DANGER_INK = "#C51D23";
 	const failure = (detail: string, turnId = "turn_2"): TimelineRow => ({
 		kind: "failure",
 		id: `failure:${turnId}`,
@@ -788,9 +806,8 @@ describe("an error", () => {
 
 	it("draws a red rule, the title and the detail", () => {
 		const { tree } = show(failure("go test exited 1"));
-		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor).toBe(
-			DANGER_INK,
-		);
+		expect(ruleColor(tree)).toBe(palette.dangerInk);
+		expect(titleLabels(tree)).toContain("Error: The turn failed");
 		expect(texts(tree.root).find((node) => textOf(node) === "The turn failed")?.props.style).toMatchObject({
 			fontWeight: "600",
 			fontSize: 15,
@@ -822,10 +839,6 @@ describe("an error", () => {
 // A warning is amber (spec 8.2 and the state table: amber means a human is
 // needed; red means failed), with its hint as a quiet second line (#3387).
 describe("a warning", () => {
-	const AMBER = "#F59E0B";
-	const DANGER_INK = "#C51D23";
-	const rule = (tree: ReturnType<typeof render>) =>
-		tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor;
 
 	it("draws a daemon warning notice with an amber rule, its text, and its hint", () => {
 		const tree = render(
@@ -847,9 +860,10 @@ describe("a warning", () => {
 				onErrorAction={() => {}}
 			/>,
 		);
-		expect(rule(tree)).toBe(AMBER);
+		expect(ruleColor(tree)).toBe(palette.attention);
 		expect(renderedText(tree)).toContain("inspect delegate attention: permission denied");
 		expect(renderedText(tree)).toContain("Check the state directory.");
+		expect(titleLabels(tree)).toContain("Warning: inspect delegate attention: permission denied");
 		// A warning reports; it offers no Retry or Resume of its own.
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
 	});
@@ -866,7 +880,7 @@ describe("a warning", () => {
 				onErrorAction={() => {}}
 			/>,
 		);
-		expect(rule(tree)).toBe(AMBER);
+		expect(ruleColor(tree)).toBe(palette.attention);
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
 	});
 
@@ -886,6 +900,7 @@ describe("a warning", () => {
 				sessionRef="warning"
 			/>,
 		);
-		expect(rule(tree)).toBe(DANGER_INK);
+		expect(ruleColor(tree)).toBe(palette.dangerInk);
+		expect(titleLabels(tree)).toContain("Error: The agent repeated itself");
 	});
 });

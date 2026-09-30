@@ -158,12 +158,7 @@ export function TimelineItem({
 				<ErrorRow
 					title={item.text}
 					detail={item.hint ?? ""}
-					action={
-						// A daemon warning reports; Retry and Resume answer a failure.
-						item.tone === "attention"
-							? null
-							: (errorActionFor?.({ id: item.id, title: item.text, detail: "", turnId: item.turnId }) ?? null)
-					}
+					action={errorActionFor?.({ id: item.id, title: item.text, detail: "", turnId: item.turnId }) ?? null}
 					onAction={onErrorAction}
 					attention={item.tone === "attention"}
 				/>
@@ -189,8 +184,7 @@ export function TimelineItem({
 				<ErrorRow
 					title={item.title}
 					detail={item.detail}
-					// A warning reports; Retry and Resume answer a failure.
-					action={item.attention ? null : (errorActionFor?.(item) ?? null)}
+					action={errorActionFor?.(item) ?? null}
 					onAction={onErrorAction}
 					attention={item.attention}
 				/>

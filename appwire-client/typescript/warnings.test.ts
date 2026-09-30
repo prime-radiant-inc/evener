@@ -14,6 +14,7 @@ import {
   isInformationalWarning,
   WarningCodeContextBudget,
   WarningCodeDelegateAttentionRestore,
+  warningWords,
 } from "./warnings";
 
 // goWarningCode reads one warning code's value out of agent/events/payloads.go
@@ -108,15 +109,25 @@ describe("isInformationalWarning", () => {
 describe("attentionWarningNotice", () => {
   const notice = (raw: unknown) => warningItem({ type: "systemMessage", eventKind: "warning", text: "disk full", raw });
 
-  test("reads an uncoded warning notice's title and hint", () => {
+  test("reads an uncoded warning notice's message, title and hint", () => {
     expect(
       attentionWarningNotice(notice({ warning: { title: "Evener error", hint: "Free some space, then retry." } })),
-    ).toEqual({ title: "Evener error", hint: "Free some space, then retry." });
+    ).toEqual({ message: "disk full", title: "Evener error", hint: "Free some space, then retry." });
   });
 
   test("leaves out a blank or non-string title and hint", () => {
-    expect(attentionWarningNotice(notice({ warning: { title: "  ", hint: 3 } }))).toEqual({});
-    expect(attentionWarningNotice(notice(undefined))).toEqual({});
+    expect(attentionWarningNotice(notice({ warning: { title: "  ", hint: 3 } }))).toEqual({ message: "disk full" });
+    expect(attentionWarningNotice(notice(undefined))).toEqual({ message: "disk full" });
+  });
+
+  test("reads its hint, then its title, as the message when it has no text", () => {
+    const blank = (raw: unknown) =>
+      attentionWarningNotice(warningItem({ type: "systemMessage", eventKind: "warning", text: " ", raw }));
+    expect(blank({ warning: { title: "Evener error", hint: "Retry." } })).toEqual({
+      message: "Retry.",
+      title: "Evener error",
+    });
+    expect(blank({ warning: { title: "Evener error" } })).toEqual({ message: "Evener error" });
   });
 
   // A warning with nothing to show draws no block: it stays the (empty)
@@ -135,5 +146,32 @@ describe("attentionWarningNotice", () => {
     ).toBeNull();
     expect(attentionWarningNotice(warningItem({ type: "systemMessage", eventKind: "plugin_loaded" }))).toBeNull();
     expect(attentionWarningNotice(warningItem({ warning: { title: "Relay" } }))).toBeNull();
+  });
+});
+
+// Every warning's words, shown once each: both clients render a warning from
+// these, so a title-only or hint-only warning reads the same on both (#3387).
+describe("warningWords", () => {
+  test("keeps the text as the message, with its title and hint beside it", () => {
+    expect(warningWords("disk full", "Evener error", "Retry.")).toEqual({
+      message: "disk full",
+      title: "Evener error",
+      hint: "Retry.",
+    });
+  });
+
+  // The hint before the title: a title is a label ("Context budget"), the
+  // hint a sentence that can stand as the line.
+  test("falls back to the hint, then the title, for a missing or blank message", () => {
+    expect(warningWords(undefined, "Evener error", "Retry.")).toEqual({ message: "Retry.", title: "Evener error" });
+    expect(warningWords("  ", "Evener error", undefined)).toEqual({ message: "Evener error" });
+  });
+
+  test("drops a hint or title that says what the message says", () => {
+    expect(warningWords("disk full", "disk full", "disk full")).toEqual({ message: "disk full" });
+  });
+
+  test("is null when nothing is a non-blank string", () => {
+    expect(warningWords(" ", 3, undefined)).toBeNull();
   });
 });

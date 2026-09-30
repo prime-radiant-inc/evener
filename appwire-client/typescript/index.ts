@@ -423,7 +423,6 @@ export {
   comparePositions,
   copyItemTextPresence,
   foldWarningParams,
-  hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
   invalidateHistory,
@@ -705,13 +704,15 @@ export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
-export type { AttentionWarning } from "./warnings";
+export type { WarningWords } from "./warnings";
 export {
   attentionWarningNotice,
   isInformationalWarning,
   WarningCodeContextBudget,
   WarningCodeDelegateAttentionRestore,
+  warningWords,
 } from "./warnings";
+export { hasWarningText } from "./warningText";
 export {
   filterSummaryPhrase,
   type WatchTriggerPhrases,

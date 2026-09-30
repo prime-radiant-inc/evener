@@ -475,11 +475,21 @@ test("an uncoded daemon warning renders as the warning block, with its title, me
   expect(screen.queryByTestId("system-notice-line")).toBeNull();
 });
 
-test("a daemon warning with only a title draws its chip and no empty message", () => {
+// A warning's words show once each (warningWords): a title-only warning's
+// title is its message, under the generic chip, and a hint that repeats the
+// message draws no second line.
+test("a daemon warning with only a title reads it as its message, under the generic chip", () => {
   const titleOnly = item("t", { eventKind: "warning", text: " ", raw: { warning: { title: "Evener error" } } });
   renderTurnFull(turnWith([titleOnly]));
-  expect(screen.getByTestId("warning-item").textContent).toBe("Evener error");
-  expect(screen.queryByTestId("warning-message")).toBeNull();
+  expect(screen.getByTestId("warning-item").textContent).toBe("WarningEvener error");
+  expect(screen.getByTestId("warning-message").textContent).toBe("Evener error");
+});
+
+test("a daemon warning whose hint repeats its message draws the hint once", () => {
+  const repeated = item("r", { eventKind: "warning", text: "disk full", raw: { warning: { hint: "disk full" } } });
+  renderTurnFull(turnWith([repeated]));
+  expect(screen.getByTestId("warning-message").textContent).toBe("disk full");
+  expect(screen.queryByTestId("warning-hint")).toBeNull();
 });
 
 test("an informational daemon warning keeps the quiet line", () => {

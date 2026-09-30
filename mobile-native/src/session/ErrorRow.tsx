@@ -1,7 +1,9 @@
 // An error in the transcript (spec 8.2, "Error"): a red rule, the hub's words
 // as they are, and at most one action (errorAction). A warning is the same row
 // with an amber rule (attention): amber means a human is needed, red that
-// something failed (#3387).
+// something failed (#3387). A warning reports, so it offers no action: Retry
+// and Resume answer a failure. VoiceOver hears which it is, since the rule's
+// colour alone can't tell it.
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { ErrorAction } from "./errorAction";
@@ -24,6 +26,7 @@ export function ErrorRow({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const body = { fontSize: 15 * scale, lineHeight: 20 * scale };
+	const offered = attention ? null : action;
 	return (
 		<View
 			style={{
@@ -33,7 +36,11 @@ export function ErrorRow({
 				gap: 4,
 			}}
 		>
-			<Text allowFontScaling={allowFontScaling} style={{ ...body, fontWeight: "600", color: palette.inkHi }}>
+			<Text
+				allowFontScaling={allowFontScaling}
+				accessibilityLabel={`${attention ? "Warning" : "Error"}: ${title}`}
+				style={{ ...body, fontWeight: "600", color: palette.inkHi }}
+			>
 				{title}
 			</Text>
 			{detail ? (
@@ -41,16 +48,16 @@ export function ErrorRow({
 					{detail}
 				</Text>
 			) : null}
-			{action && onAction ? (
+			{offered && onAction ? (
 				<Pressable
 					accessibilityRole="button"
-					accessibilityLabel={ACTION_LABELS[action]}
+					accessibilityLabel={ACTION_LABELS[offered]}
 					accessibilityState={{ disabled: false }}
-					onPress={() => onAction(action)}
+					onPress={() => onAction(offered)}
 					style={{ minHeight: 44, justifyContent: "center", alignSelf: "flex-start" }}
 				>
 					<Text allowFontScaling={allowFontScaling} style={{ ...body, color: palette.accentInk }}>
-						{ACTION_LABELS[action]}
+						{ACTION_LABELS[offered]}
 					</Text>
 				</Pressable>
 			) : null}
