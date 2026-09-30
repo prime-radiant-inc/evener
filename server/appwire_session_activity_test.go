@@ -94,3 +94,51 @@ func TestSessionActivityContextAndChildRef(t *testing.T) {
 		t.Fatalf("canceled read = %v", err)
 	}
 }
+
+func TestSessionActivitySubtreeInvalidationPreservesAffectedOwner(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	prepared, err := PrepareAppIdentityForRef("local", "root", "local:workspace", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ReplaceAppIdentity(prepared, nil)
+	for _, target := range []string{"child", "root"} {
+		s.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionActivityChanged, SessionID: "grandchild", Data: events.SessionActivityChangedData{ThreadID: target, Ref: "local:" + target, SessionID: "child", Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, appwire.SessionActivityResourceJobs}}})
+	}
+	for _, target := range []string{"child", "root"} {
+		t.Run(target, func(t *testing.T) {
+			changes := []appwire.SessionActivityChangedParams{}
+			for _, record := range s.AppNotificationsAfter(0, target) {
+				if record.Notification.Method == appwire.NotifyEvenerThreadActivityChanged {
+					var change appwire.SessionActivityChangedParams
+					if err := json.Unmarshal(record.Notification.Params, &change); err != nil {
+						t.Fatal(err)
+					}
+					changes = append(changes, change)
+				}
+			}
+			wantRef := "local:" + target
+			if target == "root" {
+				wantRef = "local:workspace"
+			}
+			if len(changes) != 1 || changes[0].ThreadID != target || changes[0].Ref != wantRef || changes[0].SessionID != "child" {
+				t.Fatalf("%s subtree routing = %+v", target, changes)
+			}
+		})
+	}
+	var cut uint64
+	for _, record := range s.AppNotificationsAfter(0, "root") {
+		cut = max(cut, record.Seq)
+	}
+	prepared, err = PrepareAppIdentityForRef("local", "replacement", "local:workspace", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ReplaceAppIdentity(prepared, nil)
+	s.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionActivityChanged, SessionID: "grandchild", Data: events.SessionActivityChangedData{ThreadID: "root", Ref: "local:root", SessionID: "child", Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceJobs}}})
+	for _, record := range s.AppNotificationsAfter(cut, "replacement") {
+		if record.Notification.Method == appwire.NotifyEvenerThreadActivityChanged {
+			t.Fatal("old subtree event reached replacement workspace")
+		}
+	}
+}

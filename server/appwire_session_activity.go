@@ -121,17 +121,18 @@ func (s *Server) registerSessionActivityHandlers() {
 	appserver.HandleTyped(s.appServer.Router(), appwire.MethodEvenerThreadWatchesList, s.handleThreadWatchesList)
 }
 
-// activityChangeNotificationLocked addresses the logical owner independently
-// of the physical session whose event bridge carried the invalidation.
+// activityChangeNotificationLocked addresses the controller-selected subscriber
+// target while preserving the affected owner independently of the physical
+// session whose event bridge carried the invalidation.
 func (s *Server) activityChangeNotificationLocked(event events.SessionEvent) []pendingAppNotification {
 	if event.Kind != events.EventSessionActivityChanged {
 		return nil
 	}
 	change, ok := event.Data.(events.SessionActivityChangedData)
-	if !ok || change.SessionID == "" || len(change.Resources) == 0 {
+	if !ok || change.ThreadID == "" || change.SessionID == "" || len(change.Resources) == 0 {
 		return nil
 	}
-	threadID := change.SessionID
+	threadID := change.ThreadID
 	ref := appwire.Ref{SourceID: sourceIDForProjection(s.appSourceID), ThreadID: threadID}.String()
 	rootID, rootRef := s.appRootIdentityLocked()
 	if threadID == rootID {
