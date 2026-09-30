@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 // A start or restore that fails for a transient reason (the target was busy,
@@ -344,6 +346,39 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 			t.Fatalf("daemon log = %q, want the escalation's failure naming the missing transcript", got)
 		}
 	})
+
+	// A failure the retry may outlast keeps the retry, and each failed pass
+	// backs it off further, so a persistent failure does not re-run the
+	// escalation at the initial delay forever.
+	t.Run("transcript unreadable: the retry backs off", func(t *testing.T) {
+		t.Parallel()
+		fenced := parkedUnderClosedParent(t)
+		clk := agenttest.NewFakeClock()
+		fenced.root.clock = clk
+		grandchildTranscript := transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)
+		if err := os.Remove(grandchildTranscript); err != nil {
+			t.Fatalf("remove grandchild transcript: %v", err)
+		}
+		// A directory in the transcript's place stats fine and fails the read.
+		if err := os.Mkdir(grandchildTranscript, 0o755); err != nil {
+			t.Fatalf("put a directory in place of the grandchild transcript: %v", err)
+		}
+
+		fenced.root.drivePendingStableDelegateAttention()
+		retryDelay := func() (time.Duration, bool) {
+			fenced.root.attentionMu.Lock()
+			defer fenced.root.attentionMu.Unlock()
+			return fenced.root.stableAttentionRetry.delay, fenced.root.stableAttentionRetry.active
+		}
+		if _, active := retryDelay(); !active {
+			t.Fatal("a parked delegate's escalation failing on an unreadable transcript did not arm the retry")
+		}
+		clk.Advance(jobNotificationRetryInitialDelay)
+		clk.Drain()
+		if delay, _ := retryDelay(); delay != 2*jobNotificationRetryInitialDelay {
+			t.Fatalf("retry delay after one failed pass = %v, want it backed off to %v", delay, 2*jobNotificationRetryInitialDelay)
+		}
+	})
 }
 
 // A park stops the drive's cold restores of a delegate whose runtime could
@@ -394,12 +429,15 @@ func TestAParkedUnfencedDelegateIsNotRunnable(t *testing.T) {
 // the retry.
 func TestOnlyAMissingTranscriptStandsAParkedEscalationDown(t *testing.T) {
 	t.Parallel()
-	missing := fmt.Errorf("stat delegate attention transcript: %w", os.ErrNotExist)
+	missing := fmt.Errorf("%w: %w", errDelegateAttentionSourceMissing, os.ErrNotExist)
 	if !parkedEscalationStandsDown(missing) {
 		t.Errorf("a missing transcript (%v) kept the retry", missing)
 	}
 	for _, err := range []error{
 		errors.New("append delegate attention to root: disk full"),
+		// Only the source transcript's absence stands down: a missing file
+		// anywhere else in the hand-over is not the delegate's transcript.
+		fmt.Errorf("append delegate attention to root: %w", os.ErrNotExist),
 		fmt.Errorf("resolve delegate attention: %w", errDelegateTargetBusy),
 	} {
 		if parkedEscalationStandsDown(err) {

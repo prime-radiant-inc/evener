@@ -1075,8 +1075,11 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 	return errors.Join(err, s.executeDelegateMutationPlans(plans))
 }
 
-// escalateUnreachableDelegateAttention transfers permanently fenced wakes to
-// the root, preserving identity/content and idempotent crash replay.
+// errDelegateAttentionSourceMissing marks an escalation that failed because
+// the delegate's own transcript, the source of the attention it hands over,
+// does not exist.
+var errDelegateAttentionSourceMissing = errors.New("delegate attention source transcript missing")
+
 // parkedEscalationStandsDown reports whether a parked delegate's failed
 // escalation should wait with it (new attention or a restart) instead of
 // re-arming the retry: only when its transcript is gone, which no retry can
@@ -1084,9 +1087,11 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 // failure (appending the hand-over to the root, resolving the source) may
 // clear, so it keeps the retry.
 func parkedEscalationStandsDown(err error) bool {
-	return errors.Is(err, fs.ErrNotExist)
+	return errors.Is(err, errDelegateAttentionSourceMissing)
 }
 
+// escalateUnreachableDelegateAttention transfers permanently fenced wakes to
+// the root, preserving identity/content and idempotent crash replay.
 func (s *Session) escalateUnreachableDelegateAttention() bool {
 	progressed, failed := false, false
 	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
@@ -1116,6 +1121,9 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		return err
 	}
 	fold, err := readFold(sourcePath, sourceSessionID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w", errDelegateAttentionSourceMissing, err)
+	}
 	if err != nil {
 		return err
 	}
