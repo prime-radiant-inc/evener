@@ -428,19 +428,34 @@ describe("a run's one line", () => {
 				step("a", "github__create_issue"),
 				step("b", "github__list_issues"),
 				step("c", "linear_app__list_issues"),
-				step("d", "compact_context"),
-				step("e", "compact_context"),
+				step("d", "reindex_workspace"),
+				step("e", "reindex_workspace"),
 				step("f", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "a" }) } }),
 				step("g", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "b" }) } }),
 			]).parts.map((part) => [part.key, part.text]),
 		).toEqual([
 			["mcp", "used 3 MCP tools"],
-			["tool:compact context", "used compact context 2 times"],
+			["tool:reindex workspace", "used reindex workspace 2 times"],
 			["skill", "used 2 skills"],
 		]);
 		expect(
 			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map((part) => part.text),
 		).toEqual(["used github 2 times"]);
+	});
+
+	// The session's housekeeping tools say what they did in a run's line, in
+	// the same words as their own step lines (the package's housekeeping
+	// words), each tool a part of its own.
+	it("says what each housekeeping tool did", () => {
+		expect(
+			runSummary([
+				step("a", "notes_agent_set"),
+				step("b", "urls_add"),
+				step("c", "urls_add"),
+				step("d", "update_goal"),
+				step("e", "communicate"),
+			]).parts.map((part) => part.text),
+		).toEqual(["updated its note once", "added a link 2 times", "updated the goal once", "reported to its parent once"]);
 	});
 
 	it("says a run updated the task list, or only checked it", () => {

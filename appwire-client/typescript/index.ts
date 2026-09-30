@@ -170,6 +170,7 @@ export {
   delegateSendWaitIgnoredReason,
   isDelegateSendResult,
 } from "./delegateSteps";
+export { housekeepingAction } from "./housekeepingSteps";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";

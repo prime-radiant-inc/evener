@@ -10,6 +10,7 @@
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
+	housekeepingAction,
 	mcpToolParts,
 	parseAskUserQuestions,
 	skillName,
@@ -307,6 +308,8 @@ interface Group {
 	family: ToolFamily;
 	/** What an MCP part or a tool part names: the server, or the tool, in words. */
 	name: string;
+	/** What a housekeeping tool's part says it did, in place of its name. */
+	action?: string;
 	count: number;
 	failed: number;
 	/** The programs a shell part's commands ran, or the skills a skill part
@@ -326,13 +329,16 @@ function programOf(command: string | undefined): string | undefined {
 	return second && /^[a-z][\w-]*$/i.test(second) ? `${first} ${second}` : first;
 }
 
-// A step's part: one per family, except that each tool no summary covers gets
-// its own ("used reindex workspace once"). MCP tools share one part.
-function partOf(label: string): { key: string; family: ToolFamily; name: string } {
+// A step's part: one per family, except that each plain tool gets its own: a
+// housekeeping tool says what it did ("updated its note once", the package's
+// housekeepingAction, as its step line does), and any other its name ("used
+// reindex workspace once"). MCP tools share one part.
+function partOf(label: string): { key: string; family: ToolFamily; name: string; action?: string } {
 	const family = toolFamily(label);
 	if (family === "tool") {
 		const name = words(label) || "a tool";
-		return { key: `tool:${name}`, family, name };
+		const action = housekeepingAction(label);
+		return { key: `tool:${name}`, family, name, ...(action === undefined ? {} : { action }) };
 	}
 	return { key: family, family, name: "" };
 }
@@ -387,7 +393,7 @@ function partText(group: Group): string {
 			// One server reads by name; several read as how many MCP tools ran.
 			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;
 		case "tool":
-			return `used ${group.name} ${times}`;
+			return group.action ? `${group.action} ${times}` : `used ${group.name} ${times}`;
 	}
 }
 

@@ -43,20 +43,43 @@ const goalStatus = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
 const nextPage = (step: Pick<HousekeepingStep, "argumentsJSON">) =>
   Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
 
+// What each tool did, as a run's line says it ("updated its note once"): one
+// phrase per tool, the same whatever the call's arguments. A step's line
+// starts from the same phrase, capitalized, and says more where the call can.
+const ACTIONS = {
+  notes_agent_set: "updated its note",
+  notes_read: "read the session notes",
+  urls_add: "added a link",
+  urls_remove: "removed a link",
+  update_goal: "updated the goal",
+  compact_context: "asked for a context compaction",
+  model_list: "listed the available models",
+  doctor_evener: "checked evener's records",
+  communicate: "reported to its parent",
+} as const;
+
+const sentence = (phrase: string) => phrase.charAt(0).toUpperCase() + phrase.slice(1);
+
+/** What a housekeeping tool did, as a run's line says it ("updated its
+ * note"); undefined for any other tool. */
+export function housekeepingAction(toolName: string): string | undefined {
+  return Object.hasOwn(ACTIONS, toolName) ? ACTIONS[toolName as keyof typeof ACTIONS] : undefined;
+}
+
 /** Each housekeeping tool's words, by tool name. */
-export const HOUSEKEEPING_WORDS: Record<string, HousekeepingWords> = {
+export const HOUSEKEEPING_WORDS: Record<keyof typeof ACTIONS, HousekeepingWords> = {
   notes_agent_set: {
-    words: (step) => ({ verb: noteCleared(step) ? "Cleared its note" : "Updated its note" }),
+    words: (step) => ({ verb: noteCleared(step) ? "Cleared its note" : sentence(ACTIONS.notes_agent_set) }),
     progress: (step) => (noteCleared(step) ? "Clearing its note" : "Updating its note"),
   },
   notes_read: {
-    words: () => ({ verb: "Read the session notes" }),
+    words: () => ({ verb: sentence(ACTIONS.notes_read) }),
     progress: () => "Reading the session notes",
   },
   urls_add: {
     words: (step) => {
       const name = linkName(step);
-      return name ? { verb: "Added link", target: name } : { verb: "Added a link" };
+      return name ? { verb: "Added link", target: name } : { verb: sentence(ACTIONS.urls_add) };
     },
     progress: (step) => {
       const name = linkName(step);
@@ -64,13 +87,13 @@ export const HOUSEKEEPING_WORDS: Record<string, HousekeepingWords> = {
     },
   },
   urls_remove: {
-    words: () => ({ verb: "Removed a link" }),
+    words: () => ({ verb: sentence(ACTIONS.urls_remove) }),
     progress: () => "Removing a link",
   },
   update_goal: {
     words: (step) => {
       const status = goalStatus(step);
-      const verb = status ? `Marked the goal ${status}` : "Updated the goal";
+      const verb = status ? `Marked the goal ${status}` : sentence(ACTIONS.update_goal);
       return step.output?.startsWith("No goal is active") ? { verb, detail: "no goal set" } : { verb };
     },
     progress: (step) => {
@@ -80,12 +103,12 @@ export const HOUSEKEEPING_WORDS: Record<string, HousekeepingWords> = {
   },
   compact_context: {
     words: (step) => ({
-      verb: step.output?.startsWith("Note cleared.") ? "Cleared its compaction note" : "Asked for a context compaction",
+      verb: step.output?.startsWith("Note cleared.") ? "Cleared its compaction note" : sentence(ACTIONS.compact_context),
     }),
     progress: () => "Asking for a context compaction",
   },
   model_list: {
-    words: (step) => ({ verb: nextPage(step) ? "Listed more models" : "Listed the available models" }),
+    words: (step) => ({ verb: nextPage(step) ? "Listed more models" : sentence(ACTIONS.model_list) }),
     progress: (step) => (nextPage(step) ? "Listing more models" : "Listing the available models"),
   },
   doctor_evener: {
@@ -94,7 +117,7 @@ export const HOUSEKEEPING_WORDS: Record<string, HousekeepingWords> = {
       const selector = str(args, "selector")?.trim();
       const command = str(args, "command")?.trim();
       return {
-        verb: "Checked evener's records",
+        verb: sentence(ACTIONS.doctor_evener),
         ...(selector ? { target: selector } : {}),
         ...(command ? { detail: command } : {}),
       };
@@ -107,8 +130,8 @@ export const HOUSEKEEPING_WORDS: Record<string, HousekeepingWords> = {
   communicate: {
     words: (step) =>
       parseArgs(step.argumentsJSON).end_turn === true
-        ? { verb: "Reported to its parent", detail: "done" }
-        : { verb: "Reported to its parent" },
+        ? { verb: sentence(ACTIONS.communicate), detail: "done" }
+        : { verb: sentence(ACTIONS.communicate) },
     progress: () => "Reporting to its parent",
   },
 };
