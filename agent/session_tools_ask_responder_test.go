@@ -37,6 +37,33 @@ func TestParseAskUserCallArgumentsBatchForm(t *testing.T) {
 	}
 }
 
+// TestParseAskUserCallArgumentsCarriesOptionalFields: a responder answers
+// on the user's behalf, so it needs everything the model put in the call:
+// whether several options may be chosen, the model's recommendation, why the
+// answer matters, and the fallback it would take unanswered.
+func TestParseAskUserCallArgumentsCarriesOptionalFields(t *testing.T) {
+	raw := `{"questions":[{"question":"Which regions?","multi_select":true,"why":"Sets where we deploy.","if_unanswered":"Deploy to us-east only.","options":[{"label":"us-east","detail":"Primary","recommended":true},{"label":"eu-west","detail":"Secondary"}]}]}`
+	got, err := ParseAskUserCallArguments([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseAskUserCallArguments: %v", err)
+	}
+	want := []AskUserQuestion{
+		{
+			Question:     "Which regions?",
+			MultiSelect:  true,
+			Why:          "Sets where we deploy.",
+			IfUnanswered: "Deploy to us-east only.",
+			Options: []AskUserOption{
+				{Label: "us-east", Detail: "Primary", Recommended: true},
+				{Label: "eu-west", Detail: "Secondary"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
 // TestParseAskUserCallArgumentsShorthandForm checks that the single-question
 // shorthand (question+options at top level, no "questions" array) is
 // normalized the same way the live tool call is before it parses — a model
