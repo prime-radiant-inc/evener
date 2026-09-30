@@ -65,7 +65,7 @@ it("opens job output using the supplied job transcript ref and raw owner", async
   connectionStore.getState().connect(client);
   const open = vi.spyOn(workspaceStore.getState(), "openPane").mockImplementation(() => "test-pane");
   render(<JobsTab scope={scope()} />);
-  fireEvent.click(await screen.findByRole("button", { name: /go test/ }));
+  fireEvent.click(await screen.findByRole("button", { name: /run checks/ }));
   expect(open).toHaveBeenCalledWith(
     "transcript",
     { ref: "job:authoritative", parentRef: "source:owner" },
@@ -212,7 +212,7 @@ it("closed inactive history does not scan, and disclosed rows page only near the
 
 it.each([
   { resource: "delegates" as const, Body: AgentsTab, text: "inspect" },
-  { resource: "jobs" as const, Body: JobsTab, text: "go test" },
+  { resource: "jobs" as const, Body: JobsTab, text: "run checks" },
   { resource: "watches" as const, Body: WatchesTab, text: "permanent watch" },
 ])(
   "$resource keeps useful rows after permanent refusal without claiming an active retry",

@@ -1,5 +1,6 @@
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
 import { connectionStore } from "../../stores/connection";
@@ -15,6 +16,67 @@ afterEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
+});
+
+test.each(["button", "Escape"])("closing activity with %s restores its keyboard opener", async (gesture) => {
+  const user = userEvent.setup();
+  installFocusedScope("remote:keyboard");
+  connectionStore.getState().connect(activityClient());
+  render(
+    <MotionProvider>
+      <StatusBar />
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+  const opener = await screen.findByRole("button", { name: /Jobs, 2 of 201 running/ });
+  opener.focus();
+  await user.keyboard("{Enter}");
+  const close = await screen.findByRole("button", { name: "Close the activity sidebar" });
+  close.focus();
+  await user.keyboard(gesture === "button" ? "{Enter}" : "{Escape}");
+  expect(activitySidebarStore.getState().open).toBe(false);
+  expect(document.activeElement).toBe(opener);
+});
+
+test("dismissing activity while focus is outside keeps the user's current focus", async () => {
+  const user = userEvent.setup();
+  installFocusedScope("remote:keyboard");
+  connectionStore.getState().connect(activityClient());
+  render(
+    <MotionProvider>
+      <StatusBar />
+      <ActivitySidebar />
+      <input aria-label="Message recipient" />
+    </MotionProvider>,
+  );
+  const opener = await screen.findByRole("button", { name: /Jobs, 2 of 201 running/ });
+  await user.click(opener);
+  const input = screen.getByRole("textbox", { name: "Message recipient" });
+  input.focus();
+  await user.keyboard("{Escape}");
+  expect(activitySidebarStore.getState().open).toBe(false);
+  expect(document.activeElement).toBe(input);
+});
+
+test("closing after a transient opener disappears returns to the selected activity chip", async () => {
+  const user = userEvent.setup();
+  installFocusedScope("remote:keyboard");
+  connectionStore.getState().connect(activityClient());
+  render(
+    <MotionProvider>
+      <StatusBar />
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+  const trigger = render(
+    <button type="button" onClick={() => activitySidebarStore.getState().openWith("jobs")}>
+      Inspect job activity
+    </button>,
+  );
+  await user.click(screen.getByRole("button", { name: "Inspect job activity" }));
+  trigger.unmount();
+  await user.click(await screen.findByRole("button", { name: "Close the activity sidebar" }));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
 });
 
 test("selected child gets authoritative context/counts before its navigation location exists", async () => {

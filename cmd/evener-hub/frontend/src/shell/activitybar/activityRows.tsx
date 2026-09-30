@@ -91,13 +91,17 @@ export function AgentRow({ sub, onDrill }: { sub: SessionDelegate; onDrill?: () 
 }
 
 export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => void }) {
+  const description = job.description?.trim();
+  const label = description || job.command?.trim() || job.jobId;
   const body = (
     <>
       <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job.status)]}`} aria-hidden="true">
         $
       </span>
       <span className={CLASS.rowBody}>
-        <span className={`${CLASS.rowName} ${CLASS.rowMono}`}>{job.command ?? job.jobId}</span>
+        <span className={`${CLASS.rowName}${description ? "" : ` ${CLASS.rowMono}`}`} title={job.command}>
+          {label}
+        </span>
         <span className={CLASS.rowMeta}>{jobStatusDisplay(job.status, job.reason)}</span>
       </span>
     </>

@@ -48,6 +48,7 @@ export function StatusBar() {
           <button
             key={tab.id}
             type="button"
+            data-activity-tab={tab.id}
             className={CLASS.chip}
             title={tab.chipLabel(counts)}
             aria-label={`${tab.chipLabel(counts)} - open the activity sidebar`}

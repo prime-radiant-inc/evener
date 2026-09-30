@@ -25,6 +25,7 @@ test("jobs show supplied terminal status and have no invented transcript action"
     scope: scope ?? "session",
     jobs: [
       activityJob({
+        description: "",
         transcriptRef: undefined,
         command: "real status",
         status: "command_exited_nonzero",
@@ -102,6 +103,7 @@ test("only successful terminal jobs fold, and revealed output retains its author
     scope: scope ?? "session",
     jobs: [
       activityJob({
+        description: "",
         jobId: "ok",
         command: "successful command",
         status: "completed",
@@ -111,6 +113,7 @@ test("only successful terminal jobs fold, and revealed output retains its author
         transcriptRef: "job:raw-output",
       }),
       activityJob({
+        description: "",
         jobId: "ok-no-output",
         command: "successful no output",
         status: "completed",
@@ -120,6 +123,7 @@ test("only successful terminal jobs fold, and revealed output retains its author
       }),
       ...["running", "command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"].map((status) =>
         activityJob({
+          description: "",
           jobId: status,
           command: `command ${status}`,
           status,
@@ -154,7 +158,16 @@ test("job history disclosure survives remount only for its selected session", as
   client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
     context: activityContext(ref),
     scope: scope ?? "session",
-    jobs: [activityJob({ ownerRef: ref, command: ref, terminal: true, outcome: "success", status: "completed" })],
+    jobs: [
+      activityJob({
+        description: "",
+        ownerRef: ref,
+        command: ref,
+        terminal: true,
+        outcome: "success",
+        status: "completed",
+      }),
+    ],
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
@@ -193,8 +206,9 @@ test("closed successful history preserves automatic discovery of older active an
     scope: scope ?? "session",
     jobs: cursor
       ? [
-          activityJob({ jobId: "older-active", command: "older active" }),
+          activityJob({ description: "", jobId: "older-active", command: "older active" }),
           activityJob({
+            description: "",
             jobId: "older-failed",
             command: "older failure",
             status: "command_exited_nonzero",
@@ -204,6 +218,7 @@ test("closed successful history preserves automatic discovery of older active an
         ]
       : [
           activityJob({
+            description: "",
             jobId: "ok",
             command: "hidden success",
             status: "completed",
