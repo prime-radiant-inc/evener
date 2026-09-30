@@ -30,7 +30,7 @@ import {
   spliceSlashCommand,
   withPluginSelection,
 } from "@evener/appwire-client";
-import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
@@ -1052,6 +1052,12 @@ function SpawnForm({
     return tracked;
   }, [client, submittedSource, harness, cwd, providerSetup.instances, credentialsGeneration]);
   const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
+  // What moves the model list without moving its scope: a credential or model
+  // list change (credentialsGeneration) and the instance list it refetches.
+  // The model picker reloads in place on it, keeping its list up while the
+  // new one loads, where a harness, cwd or host change reloads from scratch.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the dependencies are the point; a new object marks each change
+  const modelListRevision = useMemo(() => ({}), [credentialsGeneration, providerSetup.instances]);
   // Every model-valued control in the spawn pane consumes this one scoped
   // response. The same promise is shared with the default-model preview, so
   // opening a picker and resolving the working directory cannot issue
@@ -2564,6 +2570,7 @@ function SpawnForm({
                       }
                       value={model}
                       loadCatalog={loadCatalog}
+                      refreshKey={modelListRevision}
                       onPick={handleModelPickEntry}
                       connectionRequest={modelHandoff}
                       data-testid="spawn-model-trigger"

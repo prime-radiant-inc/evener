@@ -4486,6 +4486,42 @@ test("evener/auth/updated drops the pane's model/list cache so the catalog and p
   ).toHaveLength(2);
 });
 
+// The hub announces a refreshed model list on evener/auth/updated (#3539). An
+// open picker updates in place: the list it shows stays up, with no loading
+// state in between, and the new model appears without reopening it.
+test("an open model picker updates in place when the hub announces a refreshed list", async () => {
+  const user = setupUser();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await user.click(modelTrigger());
+  await screen.findByRole("combobox", { name: "Model" });
+  await screen.findByRole("listbox", { name: "Model" });
+
+  // The refreshed list is held back until the test releases it, so the
+  // picker's state while it loads can be seen.
+  let release: () => void = () => {};
+  const refreshed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("model/list", async () => {
+    await refreshed;
+    return {
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+        { provider: "google-vertex", model: "gemini-3.8-flash", displayName: "google-vertex/gemini-3.8-flash" },
+      ],
+    };
+  });
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await act(async () => {});
+  // Still showing the list it had while the refresh loads.
+  expect(screen.queryByRole("listbox", { name: "Model" })).not.toBeNull();
+  await act(async () => release());
+  await screen.findByText("google-vertex/gemini-3.8-flash");
+  expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
+});
+
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
 //
 // The spawn pane is a dockview singleton (paneRegistry.ts: "focus existing

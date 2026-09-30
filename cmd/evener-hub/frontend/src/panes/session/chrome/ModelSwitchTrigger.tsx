@@ -61,6 +61,13 @@ export interface ModelSwitchTriggerProps {
   onPick: (entry: ModelCatalogEntry) => void;
   /** A new completion opens a fresh catalog scoped to the actual instance. */
   connectionRequest?: { name?: string };
+  /** Changes when the caller learns its model list has newer data for the
+   * same scope (the hub announced a refreshed list on evener/auth/updated).
+   * An open picker then reloads in place: it keeps showing its list while
+   * the new one loads, swaps it in when it lands, and keeps the old one if
+   * the reload fails. A loader change that comes with a new key is the same
+   * kind of reload, not a scope change. */
+  refreshKey?: unknown;
   disabled?: boolean;
   /** Visually-hidden action suffix for the trigger's accessible name. */
   actionLabel?: string;
@@ -86,6 +93,7 @@ export function ModelSwitchTrigger({
   loadCatalog,
   onPick,
   connectionRequest,
+  refreshKey,
   disabled = false,
   actionLabel = "change model",
   "data-testid": testId,
@@ -109,19 +117,38 @@ export function ModelSwitchTrigger({
   // picker is open means a new scope: the effect below restarts the load
   // against it rather than letting the old scope's in-flight request win.
   const loadedLoaderRef = useRef(loadCatalog);
+  // The refreshKey the current list reflects; a new one under an open picker
+  // is newer data for the same scope, reloaded in place.
+  const loadedRefreshKeyRef = useRef(refreshKey);
+  // Whether a list is on screen with no load in flight: only then can a reload
+  // keep it up. Refs, so the effect below reads them without re-running.
+  const catalogRef = useRef<ModelCatalog | null>(null);
+  const loadingRef = useRef(false);
 
   // Stable across renders (refs + setState only), so the scope-change
   // effect below can honestly depend on it without re-running every render.
   const startLoad = useCallback(
-    async (generation: number, loader: ModelSwitchTriggerProps["loadCatalog"], refresh?: boolean): Promise<void> => {
-      setError(null);
-      setLoading(true);
+    async (
+      generation: number,
+      loader: ModelSwitchTriggerProps["loadCatalog"],
+      refresh?: boolean,
+      inPlace = false,
+    ): Promise<void> => {
+      if (!inPlace) {
+        setError(null);
+        setLoading(true);
+        loadingRef.current = true;
+      }
       try {
         const loaded = await loader(refresh);
         if (loadGenerationRef.current !== generation) return;
+        catalogRef.current = loaded;
         setCatalog(loaded);
       } catch (err) {
         if (loadGenerationRef.current !== generation) return;
+        // A reload in place that fails says nothing new: the list on screen
+        // stays.
+        if (inPlace) return;
         // Not sessionActionError: that composes its detail from errorText, which
         // is the RAW rejection text - fine for a WireError (the hub wrote it for
         // a person) but not for AppwireClient's own internal "cannot call ...
@@ -136,7 +163,10 @@ export function ModelSwitchTrigger({
         // A superseded load clears neither the fresh load's spinner nor its
         // result: without this, a dead request landing mid-fresh-load drops
         // the loading state while the panel still has nothing to show.
-        if (loadGenerationRef.current === generation) setLoading(false);
+        if (loadGenerationRef.current === generation) {
+          setLoading(false);
+          loadingRef.current = false;
+        }
       }
     },
     [],
@@ -160,16 +190,26 @@ export function ModelSwitchTrigger({
   // cwd/harness/credential switch): restart the load against it so the old
   // scope's in-flight request can neither populate the panel nor clobber
   // the fresh catalog. Closed, the bump alone invalidates the dead request.
+  // A new refreshKey is newer data for the same scope: an open picker with a
+  // list on screen reloads in place, bypassing the caller's cache.
   useEffect(() => {
-    if (loadCatalog === loadedLoaderRef.current) return;
+    const refreshed = refreshKey !== loadedRefreshKeyRef.current;
+    if (loadCatalog === loadedLoaderRef.current && !refreshed) return;
     loadedLoaderRef.current = loadCatalog;
+    loadedRefreshKeyRef.current = refreshKey;
     loadGenerationRef.current += 1;
-    if (open) void startLoad(loadGenerationRef.current, loadCatalog);
-  }, [loadCatalog, open, startLoad]);
+    if (!open) return;
+    if (refreshed && catalogRef.current !== null && !loadingRef.current) {
+      void startLoad(loadGenerationRef.current, loadCatalog, true, true);
+    } else {
+      void startLoad(loadGenerationRef.current, loadCatalog);
+    }
+  }, [loadCatalog, refreshKey, open, startLoad]);
   useEffect(() => {
     if (!connectionRequest || handledConnection.current === connectionRequest) return;
     handledConnection.current = connectionRequest;
     setProviderFilter(connectionRequest.name);
+    catalogRef.current = null;
     setCatalog(null);
     setOpen(true);
     loadedLoaderRef.current = loadCatalog;
