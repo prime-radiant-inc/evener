@@ -1036,7 +1036,6 @@ func (f *retirementPreservationFixture) assertRestored() *Session {
 			case <-time.After(30 * time.Second): // TRIPWIRE: the run's own completion channel is the mechanism; this only bounds a deadlock in the fixture.
 				f.t.Fatalf("cold-sent delegate %s run did not finish", delegateID)
 			}
-			waitForDelegateQuiesced(f.t, restored.delegateController, delegateID)
 		} else {
 			// A descendant delegate is controllable only by its direct parent, so
 			// it is cold-sent from the already-restored parent's own live turn.
@@ -1100,26 +1099,10 @@ func (f *retirementPreservationFixture) coldSendThroughParent(restored *Session,
 	case <-time.After(30 * time.Second): // TRIPWIRE: the parent turn's own completion channel is the mechanism; this only bounds a deadlock in the fixture.
 		f.t.Fatal("parent delegate turn did not finish")
 	}
-	waitForDelegateQuiesced(f.t, restored.delegateController, parentID)
 	if _, err := restored.ProcessInput(context.Background(), "settle-nested-restore", nil); err != nil {
 		f.t.Fatalf("settle nested restore: %v", err)
 	}
 	restored.client.Register(&retirementDelegateAdapter{name: "openai"})
-}
-
-// waitForDelegateQuiesced waits until delegateID's finished generation has
-// reported its finalize tail done, the point from which the delegate takes
-// its next start. A run's completion channel closes just before that report.
-func waitForDelegateQuiesced(t *testing.T, c *delegateTreeController, delegateID string) {
-	t.Helper()
-	// TRIPWIRE: the finalize tail reports within milliseconds of closing its
-	// completion channel; this only bounds a hang.
-	waitForCondition(t, 30*time.Second, "delegate "+delegateID+" to quiesce", func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		live := c.live[delegateID]
-		return live == nil || live.finalizing == nil
-	})
 }
 
 // nestedSendAdapter is a scripted provider that has exactly one sender child

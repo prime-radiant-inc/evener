@@ -1028,7 +1028,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 	owned := exact
 	conflict := live != nil && (live.binding != nil && live.binding.runtime == start.sub.sess || live.runtime == start.sub.sess) && !owned && live.binding != nil
 	if !owned && !conflict && live != nil && live.binding == nil && live.runtime == start.sub.sess {
-		live.runtime = nil
+		c.setResidentRuntimeLocked(live, nil)
 	}
 	c.mu.Unlock()
 	var persistErr error
@@ -1041,7 +1041,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 				live.binding.runtime = nil
 			}
 			if live.runtime == start.sub.sess {
-				live.runtime = nil
+				c.setResidentRuntimeLocked(live, nil)
 			}
 		}
 		c.mu.Unlock()
@@ -1322,13 +1322,93 @@ func (s *Session) childStartBlocked(childID string) bool {
 	return sub.startBlockedLocked()
 }
 
+// delegateFinalizationWaitCeiling bounds how long a send waits for a finished
+// generation's finalize tail to release the delegate.
+//
+// TRIPWIRE: a hang guard only. The release is the tail's last local step
+// (announce the result, then release), so it follows within milliseconds;
+// this fires only when a tail never releases, and the send then refuses
+// cleanly with target_busy.
+const delegateFinalizationWaitCeiling = 10 * time.Second
+
+// reserveStartAfterFinalization reserves a start for delegateID. A delegate
+// whose finished generation is still finalizing is announced idle only as
+// its finalize tail's last step, so while ReserveStart refuses for that
+// reason alone the send waits for the release and reserves again, until it
+// reserves, is refused for another reason, its context ends (the context's
+// error), or delegateFinalizationWaitCeiling passes over the whole attempt
+// (target_busy). A release that is ready wins over a context or ceiling that
+// is ready at the same moment. This waits for admission, not for the
+// delegate's reply, so max_wait_ms (which bounds the reply wait) doesn't
+// govern it: a finalize tail releases within milliseconds.
+func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor delegateActor, delegateID string) (*delegateStartReservation, error) {
+	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
+	finalizing, ok := errors.AsType[delegateFinalizingError](err)
+	if !ok {
+		return reservation, err
+	}
+	ceiling := delegateFinalizationWaitCeiling
+	if override := s.cfg.testOnly.delegateFinalizationWaitCeiling; override != nil {
+		ceiling = *override
+	}
+	timer := s.sclock().NewTimer(ceiling)
+	defer timer.Stop()
+	expired := false
+	for ok {
+		if !channelClosed(finalizing.released) {
+			if expired {
+				return nil, errDelegateTargetBusy
+			}
+			if observe := s.cfg.testOnly.delegateSendAwaitingFinalization; observe != nil {
+				observe()
+			}
+			select {
+			case <-finalizing.released:
+			case <-ctx.Done():
+				if !channelClosed(finalizing.released) {
+					return nil, ctx.Err()
+				}
+			case <-timer.C():
+				// The ceiling covers the whole attempt: it fires once.
+				expired = true
+				if !channelClosed(finalizing.released) {
+					return nil, errDelegateTargetBusy
+				}
+			}
+		}
+		reservation, err = s.delegateController.ReserveStart(actor, delegateID)
+		finalizing, ok = errors.AsType[delegateFinalizingError](err)
+	}
+	return reservation, err
+}
+
+// channelClosed reports whether ch is closed, without blocking. A nil channel
+// is never closed.
+func channelClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
 // finishUnlaunchedGeneration fails a generation whose input was admitted but
 // whose run never launched (launch_failed). No run finalizes its runtime, so
-// it reports that runtime quiesced itself, whether or not the finish
-// succeeded, or the delegate would stay refused as still finalizing.
-func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, runtime *Session, cause error) (delegateMutationPlans, error) {
-	plans, err := c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
-	return plans, errors.Join(err, c.ReportFinalizationQuiesced(lease, runtime))
+// the caller must release it (releaseFinishedGeneration) once the returned
+// plans (which carry the generation's idle snapshot and result) have been
+// executed, whether or not that failed, or the delegate stays refused as
+// still finalizing.
+func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, cause error) (delegateMutationPlans, error) {
+	return c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
+}
+
+// releaseFinishedGeneration releases runtime's finished generation so the
+// delegate takes its next start, warning if the report fails.
+func (s *Session) releaseFinishedGeneration(lease delegateLease, runtime *Session) {
+	if err := s.delegateController.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", err))
+	}
 }
 
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) stableDelegateSendOutcome {
@@ -1384,7 +1464,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			return failed(steerErr)
 		}
 	}
-	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
+	reservation, err := s.reserveStartAfterFinalization(ctx, actor, delegateID)
 	if err != nil {
 		return failed(err)
 	}
@@ -1580,8 +1660,11 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		s.sendersWG.Done()
-		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, sub.sess, err)
-		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr))
+		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, err)
+		// The release runs once the failure is announced, whatever that did.
+		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr), func() {
+			s.releaseFinishedGeneration(started.lease, sub.sess)
+		})
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)

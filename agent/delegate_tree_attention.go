@@ -449,6 +449,13 @@ func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID 
 	if live := c.live[delegateID]; live != nil && (live.binding != nil || live.recoveryRequired) {
 		return false
 	}
+	// A finished generation still finalizing hasn't announced its result: an
+	// attention successor waits for the release, as a send does, so it can't
+	// start ahead of that result. Every release wakes the root's drive for
+	// attention it skipped here (releaseFinalizationLocked).
+	if c.finalizingLocked(delegateID) != nil {
+		return false
+	}
 	for _, record := range c.reservations {
 		if record.delegateID == delegateID {
 			return record.trigger == delegatestore.TriggerAttention
@@ -839,7 +846,7 @@ func (installation *delegateIdleRuntimeInstallation) attach(runtime *Session) er
 	if err != nil || owner != nil && owner != live || ownerID != "" && ownerID != delegateID {
 		return errDelegateTargetBusy
 	}
-	live.runtime = runtime
+	c.setResidentRuntimeLocked(live, runtime)
 	c.evidenceVersion++
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -1504,5 +1505,98 @@ func waitForOwnedShellFinalized(t *testing.T, jm *jobManager, jobID string) {
 	rec := recs[jobID]
 	if rec == nil || rec.NotifyState != jobstore.NotifyDelivered {
 		t.Fatalf("owned shell %s record = %+v, want NotifyDelivered after finalization", jobID, rec)
+	}
+}
+
+// A generation that finishes with attention still owed hands off to an
+// attention successor only after it has announced its own result: while the
+// tail is about to announce, the delegate is refused an attention wake; the
+// parent then holds the original generation's delivery ahead of the
+// successor's, and sees the original idle before the successor runs.
+func TestStableDelegateAttentionSuccessorFollowsItsPredecessorsResult(t *testing.T) {
+	t.Parallel()
+	fixture := newOwnedJobDrainFixture(t)
+	delegateID := fixture.result.DelegateID
+
+	var mu sync.Mutex
+	var lifecycles []string
+	stream := fixture.parent.Events()
+	stop := make(chan struct{})
+	collected := make(chan struct{})
+	record := func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.DelegateUpdatedData); ok && data.DelegateID == delegateID {
+			mu.Lock()
+			lifecycles = append(lifecycles, data.Lifecycle)
+			mu.Unlock()
+		}
+	}
+	go func() {
+		defer close(collected)
+		for {
+			select {
+			case ev := <-stream:
+				record(ev)
+			case <-stop:
+				// select picks at random among ready cases, so events
+				// already buffered when stop closes are drained here.
+				for {
+					select {
+					case ev, ok := <-stream:
+						if !ok {
+							return
+						}
+						record(ev)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	var wakeEligible []bool
+	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeGenerationAnnounced = func(*subagent) {
+			c := fixture.parent.delegateController
+			c.mu.Lock()
+			eligible := c.delegateAttentionWakeEligibleLocked(delegateID)
+			c.mu.Unlock()
+			mu.Lock()
+			wakeEligible = append(wakeEligible, eligible)
+			mu.Unlock()
+		}
+	})
+
+	fixture.releaseAndWait(t)
+	fixture.requireHandledResult(t, 3, "owned shell handled")
+	close(stop)
+	<-collected
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(wakeEligible) == 0 {
+		t.Fatal("the finalize tail never reached its announcement")
+	}
+	if wakeEligible[0] {
+		t.Fatal("an attention successor was eligible to start before the original generation announced its result")
+	}
+	pending, err := readPendingDelegateAttention(transcriptPath(fixture.parent.stateDir, fixture.parent.id), fixture.parent.id)
+	if err != nil {
+		t.Fatalf("read parent stable attention: %v", err)
+	}
+	if len(pending) != 2 || !strings.HasSuffix(pending[0], "/delivery/1") || !strings.HasSuffix(pending[1], "/delivery/2") {
+		t.Fatalf("parent pending stable attention = %#v, want generation 1's delivery ahead of generation 2's", pending)
+	}
+	firstIdle, secondRun := -1, -1
+	for i, lifecycle := range lifecycles {
+		if lifecycle == string(delegateLifecycleIdle) && firstIdle < 0 {
+			firstIdle = i
+		}
+		if lifecycle == string(delegateLifecycleRunning) && firstIdle >= 0 && secondRun < 0 {
+			secondRun = i
+		}
+	}
+	if firstIdle < 0 || secondRun < 0 {
+		t.Fatalf("delegate lifecycles seen = %v, want the original's idle and then the successor running", lifecycles)
 	}
 }
