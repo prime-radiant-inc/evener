@@ -1332,6 +1332,71 @@ describe("opening a session", () => {
 		}
 	});
 
+	// Jesse, 2026-09-29: a saved spot that hasn't loaded within the cap opens
+	// at the live end instead, and the spot is dropped; never the top and then
+	// a jump, and never a blank wait.
+	describe("when the saved spot hasn't loaded within the cap", () => {
+		const mountWaitingOnOlderPage = async (ref: string) => {
+			savePosition(ref, "a-turn_0", "turn_0");
+			let deliver = () => {};
+			const olderPage = new Promise<void>((resolve) => {
+				deliver = resolve;
+			});
+			const mounted = await mount(twoTurns(ref), {
+				olderCursor: "cursor-1",
+				olderTurns: [askReplyTurn("turn_0")],
+				olderPage,
+			});
+			return { ...mounted, deliver };
+		};
+		const advance = async (ms: number) => {
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(ms);
+			});
+		};
+
+		it("opens at the live end and forgets the spot", async () => {
+			const { tree, deliver } = await mountWaitingOnOlderPage("ref-open-unloaded");
+			vi.useFakeTimers();
+			try {
+				layOutViewport(tree);
+				await advance(999);
+				expect(opacity(tree)).toBe(0);
+				flatListCalls.length = 0;
+				await advance(1);
+				// It heads for the end, still out of sight until the end's last row measures.
+				expect(flatListCalls.map((call) => call.method)).toContain("scrollToEnd");
+				expect(opacity(tree)).toBe(0);
+				layOutRow(tree, 3, 19_000);
+				await advance(0);
+				expect(opacity(tree)).toBe(1);
+				// The older page landing later doesn't pull the list back to the spot.
+				flatListCalls.length = 0;
+				deliver();
+				await advance(0);
+				expect(flatListCalls.filter((call) => call.method !== "scrollToEnd")).toEqual([]);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("shows the live end a second later even if its last row never measures", async () => {
+			const { tree } = await mountWaitingOnOlderPage("ref-open-unloaded-cap");
+			vi.useFakeTimers();
+			try {
+				layOutViewport(tree);
+				await advance(1000);
+				expect(opacity(tree)).toBe(0);
+				await advance(999);
+				expect(opacity(tree)).toBe(0);
+				await advance(1);
+				expect(opacity(tree)).toBe(1);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
 	it("shows a session with no rows at once", async () => {
 		const served = thread("ref-open-empty", "idle");
 		(served as unknown as { turns: unknown[] }).turns = [];

@@ -464,7 +464,11 @@ export function ConversationScreen({
 	// watches it land, move and land again as rows measure.
 	const [openingLanded, setOpeningLanded] = useState(false);
 	const openingLandedNow = useRef(false);
-	const lastRowKey = useRef<string | null>(null);
+	// This render's rows, for what runs outside a render (the cap's timer and
+	// the list's cells).
+	const rowsNow = useRef<readonly TimelineRow[]>([]);
+	// A fresh cap, once the opening turns to the live end at the first.
+	const [openingCapRound, setOpeningCapRound] = useState(0);
 	function landOpening() {
 		if (openingLandedNow.current) return;
 		openingLandedNow.current = true;
@@ -1380,13 +1384,18 @@ export function ConversationScreen({
 		openingLandedNow.current = false;
 		setOpeningLanded(false);
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
-	// Declared before the opening effect below so it reads this render's last
-	// row: effects run in declaration order.
+	// Declared before the opening effect below so it reads this render's rows:
+	// effects run in declaration order.
 	useEffect(() => {
-		lastRowKey.current = timelineRows.length > 0 ? readerKey(timelineRows[timelineRows.length - 1]) : null;
+		rowsNow.current = timelineRows;
 	});
+	function lastRowKey() {
+		const rows = rowsNow.current;
+		return rows.length > 0 ? readerKey(rows[rows.length - 1]) : null;
+	}
 	function lastRowMeasured() {
-		return lastRowKey.current !== null && readerMeasurements.current.has(lastRowKey.current);
+		const key = lastRowKey();
+		return key !== null && readerMeasurements.current.has(key);
 	}
 	// Follows the live end while opening: pins the list there, and lands the
 	// opening once the last row has measured (until then the cell's own layout
@@ -1438,15 +1447,30 @@ export function ConversationScreen({
 	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
 	// A session with no rows has nowhere to travel. One with rows shows after
 	// OPENING_REVEAL_CAP_MS however far it got, so an opening that can't land
-	// (its reading position never measures, or offline paging stalls) never
-	// leaves the transcript hidden.
+	// (its reading position never measures) never leaves the transcript hidden.
 	const openingHidden = !openingLanded && timelineRows.length > 0;
-	// biome-ignore lint/correctness/useExhaustiveDependencies: the cap starts once per hidden, laid-out opening.
+	// A reading position that hasn't loaded by the cap (its older page is slow,
+	// or offline) gives way to the live end, and the position is dropped
+	// (Jesse, 2026-09-29): showing the top and then jumping, or a blank wait,
+	// is worse. The end's last row lands it, with a fresh cap behind that.
+	function capOpening() {
+		const anchor = readerAnchor.current;
+		if (anchor && resolveReaderAnchor(anchor, rowsNow.current) === null) {
+			readerAnchor.current = null;
+			appliedReaderRestore.current = null;
+			follow.dispatch({ type: "follow" });
+			pinOpeningToEnd();
+			setOpeningCapRound((round) => round + 1);
+			return;
+		}
+		landOpening();
+	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the cap starts once per hidden, laid-out opening, and again when it turns to the live end.
 	useEffect(() => {
 		if (!listLaidOut || !openingHidden) return;
-		const cap = setTimeout(landOpening, OPENING_REVEAL_CAP_MS);
+		const cap = setTimeout(capOpening, OPENING_REVEAL_CAP_MS);
 		return () => clearTimeout(cap);
-	}, [listLaidOut, openingHidden]);
+	}, [listLaidOut, openingHidden, openingCapRound]);
 	// Loads the page above the loaded history once per cursor: a page that
 	// failed, or brought nothing new, stays guarded until the binding or route
 	// resets, so a failing page never loops. Both a reading position restored
@@ -2655,7 +2679,7 @@ export function ConversationScreen({
 							});
 							// Opening at the live end lands once its last row has
 							// measured: pin the end, then show the list.
-							if (!openingLandedNow.current && key === lastRowKey.current && follow.state.current.following) {
+							if (!openingLandedNow.current && key === lastRowKey() && follow.state.current.following) {
 								pinOpeningToEnd();
 							}
 							setLayoutRevision((revision) => revision + 1);
