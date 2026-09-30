@@ -41,19 +41,33 @@ import (
 
 var exitProcess = os.Exit
 
-// hermeticRunEnv hides the operator's personal skills from every run: it sets
-// EVENER_NO_USER_SKILLS so neither an in-process live session nor a spawned
-// evener child advertises the operator's home skills, user config skills, or
-// installed plugins' skills. A round that measures skill use then depends only
-// on the revision under test, not on who runs it (#3227). main calls it once,
-// before any subcommand runs, so concurrent matrix suites share one setting
-// instead of racing on a per-suite set/restore.
-func hermeticRunEnv() {
+// configureHermeticRunEnv hides the operator's personal skills from every
+// run: it sets EVENER_NO_USER_SKILLS so neither an in-process live session
+// nor a spawned evener child advertises the operator's home skills or user
+// config skills. A round that measures skill use then depends only on the
+// revision under test, not on who runs it (#3227). This is only half of
+// hermeticity: the operator's installed, enabled plugins (hooks, agents,
+// commands, and plugin-sourced skills) load in full whenever plugin
+// resolution reaches its default root, which EVENER_NO_USER_SKILLS does not
+// touch; cliProbeArgs closes that gap for the CLI harness by passing
+// --enabled-plugins with an explicit empty selection.
+//
+// inheritOperatorEnv (--inherit-operator-env, default false) restores
+// today's pre-#3227 behavior for debugging: it clears the variable instead
+// of setting it, so a run sees the operator's real skills again.
+//
+// runSuite and runMatrixCommand call this exactly once, right after parsing
+// their own flags and before running any probe, so concurrent matrix cells
+// share one setting instead of racing on a per-cell set/restore.
+func configureHermeticRunEnv(inheritOperatorEnv bool) {
+	if inheritOperatorEnv {
+		_ = envvars.EVENERNoUserSkills.Unsetenv()
+		return
+	}
 	_ = envvars.EVENERNoUserSkills.Setenv("1")
 }
 
 func main() {
-	hermeticRunEnv()
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "evener-fluency:", err)
 		exitProcess(1)
@@ -313,6 +327,7 @@ type runConfig struct {
 	clearOpenAIAPIKey  bool
 	sandbox            string
 	sandboxNet         string
+	inheritOperatorEnv bool // --inherit-operator-env: debugging escape hatch, restores the operator's real skills and plugins (#3227)
 }
 
 // holdsResults reports whether dir exists with anything in it. A run reuses
@@ -339,6 +354,9 @@ func runSuite(args []string) error {
 		return err
 	}
 	cfg.systemPromptAppend = []string(systemPromptAppend)
+	// Decide the process-wide hermetic setting once, right after parsing and
+	// before any probe runs (#3227). See configureHermeticRunEnv.
+	configureHermeticRunEnv(cfg.inheritOperatorEnv)
 	return runSuiteWithConfig(cfg)
 }
 
@@ -360,6 +378,7 @@ func defineRunFlags(fs *flag.FlagSet, cfg *runConfig, systemPromptAppend *cmduti
 	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear "+envvars.OpenAIAPIKey.Name+" for OAuth-backed OpenAI runs")
 	fs.StringVar(&cfg.sandbox, "sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted (applies to both harnesses)")
 	fs.StringVar(&cfg.sandboxNet, "sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	fs.BoolVar(&cfg.inheritOperatorEnv, "inherit-operator-env", false, "debugging only: restore the operator's real skills and plugins instead of running hermetic (#3227)")
 }
 
 func runSuiteWithConfig(cfg runConfig) error {
@@ -530,6 +549,7 @@ type probeResult struct {
 	FastCheapModel      string         `json:"fast_cheap_model,omitempty"`
 	Repetition          int            `json:"repetition"`
 	Status              string         `json:"status"`
+	EnvMode             string         `json:"env_mode"`
 	SessionID           string         `json:"session_id,omitempty"`
 	WorkDir             string         `json:"work_dir"`
 	StateDir            string         `json:"state_dir"`
@@ -798,6 +818,16 @@ type finding struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
+// envModeLabel names, for result.json, which environment mode a probe ran
+// under (#3227): "hermetic" (today's default, operator skills and plugins
+// hidden) or "inherit_operator_env" (--inherit-operator-env, debugging only).
+func envModeLabel(inheritOperatorEnv bool) string {
+	if inheritOperatorEnv {
+		return "inherit_operator_env"
+	}
+	return "hermetic"
+}
+
 func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool, wireNames map[string]string) probeResult {
 	start := time.Now()
 	slug := safeName(probe.ID)
@@ -814,6 +844,7 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 		FastCheapModel:      strings.TrimSpace(cfg.fastCheapModel),
 		Repetition:          rep,
 		Status:              "failed",
+		EnvMode:             envModeLabel(cfg.inheritOperatorEnv),
 		WorkDir:             workDir,
 		StateDir:            stateDir,
 		StdoutPath:          stdoutPath,
@@ -924,6 +955,17 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, er
 			netName = "off"
 		}
 		args = append(args, "--sandbox", mode.String(), "--sandbox-net", netName)
+	}
+	// EVENER_NO_USER_SKILLS (configureHermeticRunEnv) hides only the operator's
+	// home and user-config skills. Their installed, enabled plugins would still
+	// load in full — hooks, agents, commands, and plugin-sourced skills —
+	// because a bare `evener run` resolves plugins against its default root
+	// (internal/plugins.ResolveForLaunch with no explicit selection). An
+	// explicit empty selection makes that resolution pick nothing, whatever the
+	// operator has installed (#3227). --inherit-operator-env restores today's
+	// behavior for debugging by omitting the flag entirely.
+	if !cfg.inheritOperatorEnv {
+		args = append(args, "--enabled-plugins", "")
 	}
 	args = append(args,
 		"--dir", res.WorkDir,

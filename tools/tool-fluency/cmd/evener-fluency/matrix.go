@@ -136,6 +136,11 @@ func runMatrixCommand(args []string) error {
 	if err := checkMatrixCells(cfgs); err != nil {
 		return err
 	}
+	// Decide the process-wide hermetic setting once, right after parsing and
+	// before any cell (goroutine) runs, so concurrent cells share one setting
+	// instead of racing on a per-cell set/restore (#3227). See
+	// configureHermeticRunEnv.
+	configureHermeticRunEnv(base.inheritOperatorEnv)
 	return runMatrix(cfgs, *maxConcurrent)
 }
 

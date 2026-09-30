@@ -359,6 +359,20 @@ alive after the initial noninteractive invocation to drive follow-up
 model fluency and CLI/harness lifecycle gaps. A live-session or hub-backed
 runner is the next step for full `job_watch` callback verification.
 
+### Hermetic by default
+
+A `run` or `matrix` invocation is hermetic by default (#3227): the operator's
+personal skills (`~/.agents/skills`, their user config skills directory) and
+their installed, enabled plugins (skills, hooks, agents, commands) never
+reach a probe's catalog. This runs both harnesses with
+`EVENER_NO_USER_SKILLS=1` and, for the CLI harness, passes
+`--enabled-plugins` with an explicit empty selection so plugin resolution
+selects nothing regardless of what is installed. A round that measures skill
+or tool use then depends only on the Evener revision under test, not on who
+runs it. Pass `--inherit-operator-env` to restore the operator's real skills
+and plugins for debugging; `result.json`'s `env_mode` field
+(`"hermetic"` or `"inherit_operator_env"`) records which mode a run used.
+
 ## Result shape
 
 ```json
@@ -369,6 +383,7 @@ runner is the next step for full `job_watch` callback verification.
   "model": "openai/gpt-5.4-mini",
   "repetition": 1,
   "status": "passed",
+  "env_mode": "hermetic",
   "semantic_verified": true,
   "session_id": "01...",
   "state_dir": "/tmp/evener-fluency-...",

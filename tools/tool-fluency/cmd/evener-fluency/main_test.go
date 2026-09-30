@@ -15,19 +15,32 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestHermeticRunEnvReachesSpawnedEvener pins that the harness hides the
-// operator's personal skills from every run: main sets EVENER_NO_USER_SKILLS,
-// and the environment the CLI probe hands a spawned evener (fixtureEnv) carries
-// it, as an in-process live session already inherits it (#3227).
-func TestHermeticRunEnvReachesSpawnedEvener(t *testing.T) {
+// TestConfigureHermeticRunEnvDefaultHidesUserSkills pins that a hermetic run
+// (inheritOperatorEnv=false, today's default) hides the operator's personal
+// skills from every run: it sets EVENER_NO_USER_SKILLS, and the environment
+// the CLI probe hands a spawned evener (fixtureEnv) carries it, as an
+// in-process live session already inherits it (#3227).
+func TestConfigureHermeticRunEnvDefaultHidesUserSkills(t *testing.T) {
 	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
-	hermeticRunEnv()
+	configureHermeticRunEnv(false)
 	if got := envvars.EVENERNoUserSkills.Getenv(); got != "1" {
 		t.Fatalf("%s = %q, want 1", envvars.EVENERNoUserSkills.Name, got)
 	}
 	want := envvars.EVENERNoUserSkills.Assignment("1")
 	if !slices.Contains(fixtureEnv(t.TempDir()), want) {
 		t.Fatalf("fixtureEnv does not carry %q", want)
+	}
+}
+
+// TestConfigureHermeticRunEnvInheritOperatorEnvRestoresUserSkills pins
+// --inherit-operator-env's debugging escape hatch: it must clear
+// EVENER_NO_USER_SKILLS so a run goes back to seeing the operator's real home
+// and user-config skills, exactly like before #3227.
+func TestConfigureHermeticRunEnvInheritOperatorEnvRestoresUserSkills(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
+	configureHermeticRunEnv(true)
+	if got := envvars.EVENERNoUserSkills.Getenv(); got == "1" {
+		t.Fatalf("%s = %q after --inherit-operator-env, want cleared", envvars.EVENERNoUserSkills.Name, got)
 	}
 }
 
