@@ -1,14 +1,20 @@
 // railNodes.ts is the pure tree-shaping layer between navigation resources
-// data and the widgets/tree Tree widget: it decides row identity, nesting,
-// and (given the caller's own expand-state map) each branch's `expanded`
-// flag. No React, no fetching - Rail.tsx owns the state these functions are
-// pure functions OF (the expand-override map, the lazily-loaded archived
-// project detail map, the manifest's launch sources) and wires the results
-// into <Tree>.
+// data and the widgets/tree Tree widget: it decides row identity, the
+// project/host grouping, and (given the caller's own expand-state map) each
+// branch's `expanded` flag. No React, no fetching - Rail.tsx owns the state
+// these functions are pure functions OF (the expand-override map, the
+// lazily-loaded archived project detail map, the manifest's launch sources)
+// and wires the results into <Tree>.
+//
+// Session rows are FLAT: nothing nests under a session anymore. A session's
+// subagents live in the activity sidebar's Agents tab (the paged subagents
+// resource), its jobs and watches ride the row's own summary figures, and
+// the two counts the nested rows used to make derivable ship on the row:
+// `subagents` (a whole-tree tally) and `needs_you_subagents`. The only branch
+// rows left are projects and host groups.
 
 import {
   approvalWaiting,
-  type NavigationJobSummary,
   type NavigationSessionSummary,
   type NavigationWatchSummary,
   type Source,
@@ -33,12 +39,10 @@ export interface RailSession extends NavigationSessionSummary {
   tier?: string;
   pin_section_id?: string;
   model?: string;
+  // Mirrors the wire field, but the rail's adapter (Rail's summarySession)
+  // always leaves it empty: nested summaries never become rail rows.
   children: RailSession[];
   project_key?: string;
-}
-
-export interface RailJob extends NavigationJobSummary {
-  row_id: string;
 }
 
 export interface RailProject {
@@ -88,15 +92,12 @@ import type { TreeNode as WidgetTreeNode } from "../../widgets";
 export interface SessionRailNode extends WidgetTreeNode {
   kind: "session";
   session: RailSession;
-  // Always a real array (never absent) - an empty array reads as "leaf" to
-  // the Tree widget exactly the same way `undefined` would (see its own
-  // hasChildrenOf), so there's no reason to carry two representations of
-  // the same "nothing to expand" case.
-  //
-  // Its fork originals, running jobs, and own live
-  // watches, followed by a completed-job fold when it has rows (see
-  // splitChildren).
-  children: (SessionRailNode | JobRailNode | WatchRailNode | CompletedJobsFoldRailNode | OverflowRailNode)[];
+  // Always an empty array: a session row is a leaf. The rail's rows no
+  // longer carry nested session children, job rows, or watch rows - the
+  // activity sidebar owns those - so the only thing the row expands into is
+  // nothing. The field stays because the Tree widget reads it for its
+  // leaf/branch call and an empty array is that call's "leaf" answer.
+  children: RailNode[];
   // Set only on the ROOT rows of a flat cross-project tier - the ones
   // sessionNodes builds (Live, Needs-you, Pinned): those rows name their
   // project and suppress the pin star, wherever host grouping nests them.
@@ -104,21 +105,6 @@ export interface SessionRailNode extends WidgetTreeNode {
   // tier roots at depth 1, where project rows sit too, so depth no longer
   // separates the two shapes.
   crossProjectTier?: boolean;
-}
-
-export interface JobRailNode extends WidgetTreeNode {
-  kind: "job";
-  job: RailJob;
-  active: boolean;
-}
-
-/** One of a session's own live watches, as a quiet leaf row in that
- * session's fold-out. Mirrors JobRailNode: it carries no children and no
- * rail-side state of its own - the wire row ("active", cadence, note) is the
- * whole truth RailRow renders. */
-export interface WatchRailNode extends WidgetTreeNode {
-  kind: "watch";
-  watch: NavigationWatchSummary;
 }
 
 export interface ProjectRailNode extends WidgetTreeNode {
@@ -172,12 +158,6 @@ export interface HostRailNode extends WidgetTreeNode {
   children: RailNode[];
 }
 
-export interface CompletedJobsFoldRailNode extends WidgetTreeNode {
-  kind: "completedJobsFold";
-  count: number;
-  children: JobRailNode[];
-}
-
 export interface OverflowPage {
   projectKey?: string;
   tier?: TreeTier;
@@ -190,23 +170,12 @@ export interface OverflowPage {
 
 /** A quiet "+N older" note standing for the rows the server capped away
  * (hubcore's maxSidebarSessionsPerTier, 50 per tier). Project overflow rows
- * carry the tier offsets needed to reveal those rows; synthetic child folds
- * leave pages empty because their omitted children are not project pages.
- *
- * A capped WATCH list reuses this same row shape (see MAX_INLINE_WATCHES) with
- * `suffix` set, so "+N more watches" reads in the rail's one existing overflow
- * grammar instead of inventing a second one. */
+ * carry the tier offsets needed to reveal those rows; a section's overflow
+ * carries its page descriptor the same way. */
 export interface OverflowRailNode extends WidgetTreeNode {
   kind: "overflow";
   count: number;
   pages: OverflowPage[];
-  /** The wording after the count. Absent means the tier cap's "older". */
-  suffix?: string;
-  /** True when the row stands for rows that cannot be revealed by a fetch
-   * (the local watch cap: the wire already carried every row). Such a row is a
-   * count, not a control: nothing activates it. Tier and catalog overflow rows
-   * leave this false and reveal their next page on activation. */
-  passive?: boolean;
 }
 
 export function sectionOverflowNode(
@@ -239,21 +208,8 @@ export function catalogOverflowNode(
   return overflowNode(id, remaining, [{ catalog, offset, limit }]);
 }
 
-export type RailNode =
-  | SessionRailNode
-  | JobRailNode
-  | WatchRailNode
-  | ProjectRailNode
-  | HostRailNode
-  | LoadingRailNode
-  | CompletedJobsFoldRailNode
-  | OverflowRailNode;
+export type RailNode = SessionRailNode | ProjectRailNode | HostRailNode | LoadingRailNode | OverflowRailNode;
 
-type SessionNodeCacheEntry = Readonly<{
-  children: SessionRailNode["children"];
-  expanded: boolean;
-  value: SessionRailNode;
-}>;
 type ProjectNodeCacheEntry = Readonly<{
   children: RailNode[];
   displayName: string | undefined;
@@ -264,11 +220,10 @@ type ProjectNodeCacheEntry = Readonly<{
   canonicalCopy?: boolean;
   value: ProjectRailNode;
 }>;
-const sessionChildrenCache = new WeakMap<object, WeakMap<IsExpanded, SessionRailNode["children"]>>();
-const sessionNodeCache = new WeakMap<object, WeakMap<IsExpanded, SessionNodeCacheEntry>>();
+const sessionNodeCache = new WeakMap<object, SessionRailNode>();
 // The crossProjectTier variant of sessionNodeCache, kept apart so one tier
 // shape's node can never serve the other (see toSessionNode).
-const crossProjectSessionNodeCache = new WeakMap<object, WeakMap<IsExpanded, SessionNodeCacheEntry>>();
+const crossProjectSessionNodeCache = new WeakMap<object, SessionRailNode>();
 const projectChildrenCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, RailNode[]>>>();
 const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, ProjectNodeCacheEntry>>>();
 
@@ -276,14 +231,8 @@ const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, Pro
 // renders: an active project's inline list shows Current+Recent (the archived
 // tier is diverted out of it), the archived sub-branch shows only Archived,
 // and a hydrated archived project shows all three.
-function overflowNode(
-  id: string,
-  count: number,
-  pages: OverflowPage[] = [],
-  suffix?: string,
-  passive = false,
-): OverflowRailNode[] {
-  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages, suffix, passive }] : [];
+function overflowNode(id: string, count: number, pages: OverflowPage[] = []): OverflowRailNode[] {
+  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages }] : [];
 }
 
 function tierOverflow(p: RailProject, tiers: readonly ("current" | "recent" | "archived")[]): number {
@@ -328,43 +277,6 @@ export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpan
   return (id, defaultExpanded) => overrides.get(id) ?? defaultExpanded;
 }
 
-function completedJobsFoldId(parentRowID: string): string {
-  return `completed-jobs:${parentRowID}`;
-}
-
-function toJobNode(parent: RailSession, job: NavigationJobSummary): JobRailNode {
-  const rowID = `job:${parent.row_id}:${job.job_id}`;
-  return {
-    id: rowID,
-    kind: "job",
-    job: { ...job, row_id: rowID },
-    active: false,
-    children: [],
-  };
-}
-
-function activeJobNode(parent: RailSession, job: NavigationJobSummary): JobRailNode {
-  return { ...toJobNode(parent, job), active: true };
-}
-
-/** Watch rows a session renders inline before the rest fold behind one
- * "+N more watches" note. Three keeps a fold-out scannable in the rail's
- * ~280px column; past that the watches are inventory, and the count on the
- * summary line is the honest summary of them. */
-const MAX_INLINE_WATCHES = 3;
-
-// Namespaced off the PARENT's row_id like the job rows are, so two sessions
-// carrying a same-id watch (each the watch's own receiver) still get distinct
-// tree ids.
-function toWatchNode(parent: RailSession, watch: NavigationWatchSummary): WatchRailNode {
-  const rowID = `watch:${parent.row_id}:${watch.id}`;
-  return { id: rowID, kind: "watch", watch, children: [] };
-}
-
-function watchOverflowId(parentRowID: string): string {
-  return `watches:${parentRowID}`;
-}
-
 /** How many of a session's OWN live watches are still armed. Deliberately not
  * a subtree rollup: the hub projects each watch onto exactly the summary of
  * the session that receives it (navigation_projection.go's navigationWatches),
@@ -386,10 +298,10 @@ export function armedWatchCount(watches: readonly NavigationWatchSummary[] | und
 }
 
 /** The session's summary-line watch count. It reports ONE total per session -
- * the retained rows the fold-out lists plus the exact number of rows the
- * projector omitted (a session above its per-session cap, or rows its byte
- * fitter shed) as "+N more" - so the summary and the fold-out hanging under it
- * cannot disagree about how many watches the session holds.
+ * the retained rows the activity sidebar's Watches tab lists plus the exact
+ * number of rows the projector omitted (a session above its per-session cap,
+ * or rows its byte fitter shed) as "+N more" - so the summary line and the
+ * sidebar cannot disagree about how many watches the session holds.
  *
  * When every retained row is armed the base is the armed count, byte-identical
  * to the wording that shipped before the retained/inactive distinction existed
@@ -397,7 +309,7 @@ export function armedWatchCount(watches: readonly NavigationWatchSummary[] | und
  * one-shot whose teardown is still pending projects inactive - the base is the
  * retained total and the armed count stays visible beside it
  * (`5 watches · 2 armed`, `5 watches · 2 armed · +3 more`), because the
- * summary's number must match the fold-out that shows all of them.
+ * summary's number must match the Watches tab that lists all of them.
  *
  * `armed` is the session's TRUE armed total (activeWatchCount), so it already
  * includes armed rows the hub omitted. Whenever rows were omitted the figure is
@@ -451,97 +363,29 @@ export function subagentIsCurrent(child: NavigationSessionSummary): boolean {
   return child.children.some(subagentIsCurrent);
 }
 
-// Builds one parent's children: its nested rows (fork originals)
-// inline in their incoming order, then its running jobs
-// and watches, with completed jobs folded last so live work stays at the top
-// of its own subtree. Subagents have no rows; the root's tally chip counts
-// them.
-function splitChildren(parent: RailSession, isExpanded: IsExpanded): SessionRailNode["children"] {
-  const cached = sessionChildrenCache.get(parent as object)?.get(isExpanded);
-  if (cached) return cached;
-  const children: SessionRailNode["children"] = [
-    ...parent.children.map((child) => toSessionNode(child, isExpanded)),
-    ...(parent.running_jobs ?? []).map((job) => activeJobNode(parent, job)),
-  ];
-  // The session's own live watches, after running work: an armed watch is
-  // pending, not happening, so it reads below the things currently running.
-  // Every row the wire sent stays reachable - the inline cap only hides the
-  // tail behind a count, it never drops it. The count also carries the rows the
-  // hub projector omitted (over the per-session cap, or shed by its byte
-  // fitter), which the summary line already reports as "+N more": a fold-out
-  // that ignored them would contradict the row it hangs under.
-  const watches = parent.watches ?? [];
-  const inlineWatches = watches.slice(0, MAX_INLINE_WATCHES);
-  children.push(...inlineWatches.map((watch) => toWatchNode(parent, watch)));
-  const hiddenWatches = watches.length - inlineWatches.length + (parent.omitted_watches ?? 0);
-  if (hiddenWatches > 0) {
-    children.push(
-      // The cap is local to the rail: the wire already carried every retained
-      // watch, and the omitted rows the hub dropped have no page to fetch
-      // either. The row is an honest count, not a control.
-      ...overflowNode(watchOverflowId(parent.row_id), hiddenWatches, [], "more watches", true),
-    );
-  }
-  const completedJobs = parent.completed_jobs ?? [];
-  if (completedJobs.length > 0) {
-    const id = completedJobsFoldId(parent.row_id);
-    children.push({
-      id,
-      kind: "completedJobsFold",
-      count: completedJobs.length,
-      expanded: isExpanded(id, false),
-      children: completedJobs.map((job) => toJobNode(parent, job)),
-    });
-  }
-  cacheSessionChildren(parent, isExpanded, children);
-  return children;
-}
-
-function cacheSessionChildren(
-  parent: RailSession,
-  isExpanded: IsExpanded,
-  children: SessionRailNode["children"],
-): void {
-  let entries = sessionChildrenCache.get(parent as object);
-  if (!entries) {
-    entries = new WeakMap();
-    sessionChildrenCache.set(parent as object, entries);
-  }
-  entries.set(isExpanded, children);
-}
-
-function toSessionNode(n: RailSession, isExpanded: IsExpanded, crossProjectTier = false): SessionRailNode {
-  const expanded = isExpanded(n.row_id, false);
-  const children = splitChildren(n, isExpanded);
+// One session summary, one leaf row. The row's identity is the session
+// object itself: an unchanged summary keeps its node across renders (RailRow
+// memoizes on node identity), a fresh summary mints a fresh node. No
+// expansion state: there is nothing under the row to expand into.
+function toSessionNode(n: RailSession, crossProjectTier = false): SessionRailNode {
   const cache = crossProjectTier ? crossProjectSessionNodeCache : sessionNodeCache;
-  const cached = cache.get(n as object)?.get(isExpanded);
-  if (cached && cached.expanded === expanded && cached.children === children) return cached.value;
+  const cached = cache.get(n as object);
+  if (cached) return cached;
   const result: SessionRailNode = crossProjectTier
-    ? { id: n.row_id, kind: "session", session: n, expanded, children, crossProjectTier: true }
-    : { id: n.row_id, kind: "session", session: n, expanded, children };
-  let entries = cache.get(n as object);
-  if (!entries) {
-    entries = new WeakMap();
-    cache.set(n as object, entries);
-  }
-  entries.set(isExpanded, { children, expanded, value: result });
+    ? { id: n.row_id, kind: "session", session: n, children: [], crossProjectTier: true }
+    : { id: n.row_id, kind: "session", session: n, children: [] };
+  cache.set(n as object, result);
   return result;
 }
 
-/** Builds rail nodes for a flat, childless-at-this-level session list - the
- * Needs-you, Live, and Pinned tiers, each of which is just TreeNode[] on
- * the wire. A session can still recurse into its own children (subagents),
- * handled by toSessionNode regardless of which tier it's in.
+/** Builds rail nodes for a flat session list - the Needs-you, Live, and
+ * Pinned tiers, each of which is just TreeNode[] on the wire.
  * Every row this returns is the root of a cross-project tier, so each one
  * carries the crossProjectTier mark - host grouping nests these rows under
  * subheaders, and the mark is how RailRow keeps telling a tier root from a
- * nested row once depth stops doing it. */
-export function sessionNodes(nodes: readonly RailSession[], isExpanded: IsExpanded): SessionRailNode[] {
-  return nodes.map((n) => toSessionNode(n, isExpanded, true));
-}
-
-export function pinSectionNodes(section: RailPinSection, isExpanded: IsExpanded): SessionRailNode[] {
-  return sessionNodes(section.sessions, isExpanded);
+ * project-nested row. */
+export function sessionNodes(nodes: readonly RailSession[]): SessionRailNode[] {
+  return nodes.map((n) => toSessionNode(n, true));
 }
 
 export function pinSectionDisclosureID(sectionID: string): string {
@@ -568,18 +412,6 @@ export function displayState(node: Pick<NavigationSessionSummary, "state" | "app
   return node.state;
 }
 
-/** Count of nodes in `node.children` (recursed through the whole subtree,
- * not just direct children) whose own state is needs-you - i.e. how many
- * things under this session need attention, excluding the node itself.
- * Backs both the session row's derived attention Badge (vbh8, §2.2) and
- * the needs-you-first sort below. */
-export function needsYouDescendantCount(node: RailSession): number {
-  return node.children.reduce(
-    (sum, c) => sum + (stateNeedsYou(displayState(c)) ? 1 : 0) + needsYouDescendantCount(c),
-    0,
-  );
-}
-
 export interface ActiveWorkSummary {
   runningJobs: number;
 }
@@ -592,15 +424,12 @@ export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
   return { runningJobs };
 }
 
-export function runningJobCount(node: RailSession): number {
-  return activeWorkSummary(node).runningJobs;
-}
-
 // A session "wants you" either directly (its own state) or transitively (a
-// needs-you descendant) - either way it should sort ahead of a quiet
-// sibling within the same project.
+// needs-you subagent, counted by the hub into needs_you_subagents - the flat
+// lists' replacement for the children walk) - either way it should sort
+// ahead of a quiet sibling within the same project.
 function sessionWantsYou(n: RailSession): boolean {
-  return stateNeedsYou(displayState(n)) || needsYouDescendantCount(n) > 0;
+  return stateNeedsYou(displayState(n)) || (n.needs_you_subagents ?? 0) > 0;
 }
 
 // Namespaced so a project branch's own id can never collide with a
@@ -644,29 +473,6 @@ export function projectDisplayLabels(projects: readonly RailProject[]): Map<stri
   return labels;
 }
 
-// True when `nodes` (a project's session list or a tier) contains a session
-// with `ref`, recursing into nested children.
-function sessionListHasRef(nodes: RailSession[], ref: string): boolean {
-  return nodes.some((n) => n.ref === ref || sessionListHasRef(n.children, ref));
-}
-
-/** The ref of the TOP-LEVEL session `ref` sits under - itself when it is
- * already top-level, or null when it is not in `projects` at all (a tier-only
- * entry, or an archived stub whose sessions have not been hydrated).
- *
- * A subagent opens beside the session that spawned it, and "the session that
- * spawned it" means the top-level row, not the immediate parent: a
- * three-deep subagent still belongs beside the one row that owns the whole
- * task tree. See docs/web-ui/specs/2026-07-26-subagent-opens-beside-main.md
- * §B. */
-export function topLevelAncestorRef(projects: readonly RailProject[], ref: string): string | null {
-  for (const project of projects) {
-    const top = topLevelCarrier(project.sessions, ref);
-    if (top) return top.ref;
-  }
-  return null;
-}
-
 /** Builds rail nodes for the Projects and Test-runs tiers: both are
  * TreeProject[] on the wire, both ship their sessions inline (no lazy
  * load - only archived-project stubs omit sessions; see
@@ -691,7 +497,7 @@ export function projectNodes(
     projects,
     isExpanded,
     sources ? `active:${sourcesSignature(sources)}` : "active",
-    (p, id) => activeChildren(p, id, isExpanded),
+    (p, id) => activeChildren(p, id),
     sources ? (p) => projectLaunchHost(p, sources) : undefined,
     sources !== undefined,
   );
@@ -784,11 +590,11 @@ function projectIsLoading(p: RailProject): boolean {
  * tier uses. `hostId` narrows to one host's rows for the grouped variants;
  * the filter copies before sorting, so the sort never touches the
  * project's own list. */
-function activeSessionNodes(p: RailProject, isExpanded: IsExpanded, hostId?: string): SessionRailNode[] {
+function activeSessionNodes(p: RailProject, hostId?: string): SessionRailNode[] {
   return p.sessions
     .filter((n) => !isArchivedTier(n) && (hostId === undefined || n.host_id === hostId))
     .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
-    .map((n) => toSessionNode(n, isExpanded));
+    .map((n) => toSessionNode(n));
 }
 
 /** The envelope every active-tier children list shares: the loading
@@ -811,8 +617,8 @@ function activeTierChildren(
 
 /** One project's active-tier session rows (optionally one host's) in the
  * shared envelope above. */
-function activeChildren(p: RailProject, id: string, isExpanded: IsExpanded, hostId?: string): RailNode[] {
-  return activeTierChildren(p, id, () => activeSessionNodes(p, isExpanded, hostId));
+function activeChildren(p: RailProject, id: string, hostId?: string): RailNode[] {
+  return activeTierChildren(p, id, () => activeSessionNodes(p, hostId));
 }
 
 // Host grouping - the rail's organize-by setting. Three more projections of
@@ -965,8 +771,8 @@ function hostProjectCopyNode(
   const expanded = isExpanded(id, p.default_expanded ?? false);
   const children = projectChildren(p, isExpanded, variant, () =>
     carryProjectOverflow
-      ? activeChildren(p, id, isExpanded, hostId)
-      : activeTierChildren(p, id, () => activeSessionNodes(p, isExpanded, hostId), []),
+      ? activeChildren(p, id, hostId)
+      : activeTierChildren(p, id, () => activeSessionNodes(p, hostId), []),
   );
   return cachedProjectNode(p, isExpanded, variant, {
     id,
@@ -1041,12 +847,12 @@ function hostBranchNodes(
   isExpanded: IsExpanded,
 ): RailNode[] {
   const branches = orderedHosts(projectHostIds(p), sources).flatMap(({ id: hostId, label, online }): HostRailNode[] => {
-    const rows = activeSessionNodes(p, isExpanded, hostId);
+    const rows = activeSessionNodes(p, hostId);
     if (rows.length === 0) return [];
     const id = hostBranchId(projectId, hostId);
     return [{ id, kind: "host", host: { id: hostId, label, online }, expanded: isExpanded(id, false), children: rows }];
   });
-  if (branches.length <= 1) return activeSessionNodes(p, isExpanded);
+  if (branches.length <= 1) return activeSessionNodes(p);
   return branches;
 }
 
@@ -1072,36 +878,15 @@ export function liveNodesGroupedByHost(
   });
 }
 
-/** The top-level row that visually owns `ref`: itself when `ref` is
- * top-level, the ancestor it nests under otherwise. A grouped branch holds
- * the TOP-LEVEL row's host - a subagent renders under its parent's row
- * wherever that row landed, never under its own host's group. */
-function topLevelCarrier(nodes: readonly RailSession[], ref: string): RailSession | null {
-  for (const n of nodes) {
-    if (n.ref === ref || sessionListHasRef(n.children, ref)) return n;
-  }
-  return null;
-}
-
-/** The session rows between a nested target and its top-level carrier: each
- * ancestor session's row id. A top-level target has no ancestors at all, so
- * the chain for one is empty. */
-function revealAncestorIds(session: RailSession, ref: string): string[] {
-  for (const child of session.children) {
-    if (child.ref === ref) return [session.row_id];
-    const deeper = child.children.length > 0 ? revealAncestorIds(child, ref) : [];
-    if (deeper.length > 0) return [session.row_id, ...deeper];
-  }
-  return [];
-}
-
 /** The expansion chain, outermost first, a deep-link reveal must walk to
  * expose the row `ref` renders at: the project's own node in flat mode, the
  * owning host group then the project's copy in "Host, then project", the
  * project then its per-host branch in "Project, then host", and a Live host
- * subheader for a live row whenever Live groups. A nested target then names
- * every session row between it and its top-level carrier - the carrier's own
- * row is a fold too, and a chain that skips it never renders the target. An archived-tier row
+ * subheader for a live row whenever Live groups. Only TOP-LEVEL rows can be
+ * found here - the lists are flat, so a ref that exists only as a nested
+ * summary (a subagent, a fork original) names no rail row; its reveal
+ * resolves through the location lookup, which names the top-level carrier
+ * (top_level_ref) to land on. An archived-tier row
  * routes to its project's archived-group fold instead - the one tier no
  * grouping mode rewrites - unless `options.rowsUnderProjectNode` says these
  * projects render every row under the project's own node (whole-archived
@@ -1117,36 +902,32 @@ export function revealExpansionIds(
   options?: { rowsUnderProjectNode?: boolean },
 ): string[] {
   for (const p of projects) {
-    const carrier = topLevelCarrier(p.sessions, ref);
+    const carrier = p.sessions.find((n) => n.ref === ref);
     if (!carrier) continue;
     // An archived-tier row renders in the Archived sessions section's
     // archived-group fold (archivedSessionGroups), never under the flat or
     // grouped project branch, whatever mode the rail is in - unless these
     // projects render every row under their own node (whole-archived
     // projects do; see archivedProjectNodes).
-    const ancestors = revealAncestorIds(carrier, ref);
-    if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key), ...ancestors];
+    if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key)];
     const id = projectNodeExpansionKey(p.key);
     const carrierHost = carrier.host_id;
-    if (mode === "host-project") return [hostGroupId(carrierHost), hostProjectCopyId(id, carrierHost), ...ancestors];
+    if (mode === "host-project") return [hostGroupId(carrierHost), hostProjectCopyId(id, carrierHost)];
     if (mode === "project-host") {
       // Branches render only while the project's loaded rows span hosts
       // (hostBranchNodes draws the same line), so a single-host chain stops
       // at the project fold instead of naming a fold that does not exist.
       const rowsHosts = new Set(p.sessions.filter((n) => !isArchivedTier(n)).map((n) => n.host_id));
-      return rowsHosts.size > 1 ? [id, hostBranchId(id, carrierHost), ...ancestors] : [id, ...ancestors];
+      return rowsHosts.size > 1 ? [id, hostBranchId(id, carrierHost)] : [id];
     }
-    return [id, ...ancestors];
+    return [id];
   }
-  const carrier = topLevelCarrier(live, ref);
+  const carrier = live.find((n) => n.ref === ref);
   if (!carrier) return [];
   // Flat mode renders Live ungrouped (Rail wraps it only while grouping),
-  // so a subheader id would name a fold that does not exist - the
-  // carrier rows still apply.
-  const ancestors = revealAncestorIds(carrier, ref);
-  if (mode !== "flat" && new Set(live.map((n) => n.host_id)).size > 1)
-    return [liveHostGroupId(carrier.host_id), ...ancestors];
-  return ancestors;
+  // so a subheader id would name a fold that does not exist.
+  if (mode !== "flat" && new Set(live.map((n) => n.host_id)).size > 1) return [liveHostGroupId(carrier.host_id)];
+  return [];
 }
 
 /** The expansion ids that mean "this project's rows are in view" under the
@@ -1243,7 +1024,7 @@ export function archivedSessionGroups(
     const expanded = isExpanded(id, false);
     const spawnHost = projectLaunchHost(p, sources);
     const children = projectChildren(p, isExpanded, "archived-group", () => [
-      ...archived.map((n) => toSessionNode(n, isExpanded)),
+      ...archived.map((n) => toSessionNode(n)),
       ...projectOverflowNode(id, p, ["archived"]),
     ]);
     // The launch host rides the node cache's key, so a manifest that
@@ -1335,7 +1116,7 @@ export function archivedProjectNodes(
       // The hydrated detail is the authority on both the rows and what was
       // capped away from them - the stub carried neither.
       children = projectChildren(detail, isExpanded, "archived-detail", () => [
-        ...detail.sessions.map((n) => toSessionNode(n, isExpanded)),
+        ...detail.sessions.map((n) => toSessionNode(n)),
         ...projectOverflowNode(id, detail, ["current", "recent", "archived"]),
       ]);
     } else if ((p.session_count ?? 0) > 0) {

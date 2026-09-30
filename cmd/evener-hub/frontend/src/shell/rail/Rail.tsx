@@ -301,16 +301,10 @@ function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: stri
   );
 }
 function isPassiveRailNode(node: RailNode): boolean {
-  return (
-    node.kind === "loading" ||
-    node.kind === "job" ||
-    // A watch row is a leaf with no disclosure of its own: the wire row
-    // (active, cadence, note) is the whole truth, exactly like a job row. An
-    // Enter must not persist an expansion override for a row that cannot
-    // expand.
-    node.kind === "watch" ||
-    (node.kind === "overflow" && node.passive === true)
-  );
+  // The loading placeholder is the rail's one passive row: an Enter or expand
+  // chord on it must not persist an expansion override for a row that cannot
+  // expand.
+  return node.kind === "loading";
 }
 
 /** The catalogs' "+N more projects" row, appended to whatever the section's
@@ -400,7 +394,6 @@ interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes
   section: RailPinSection;
   onRename: () => void;
   onDelete: () => void;
-  isExpanded: ReturnType<typeof overrideLookup>;
   projectRetryCallback: (key: string) => () => void;
 }
 function PinnedRailSection({
@@ -409,7 +402,6 @@ function PinnedRailSection({
   onToggleOpen,
   onRename,
   onDelete,
-  isExpanded,
   onToggle,
   onActivate,
   actions,
@@ -443,7 +435,7 @@ function PinnedRailSection({
       {open && (
         <RailTree
           nodes={[
-            ...sessionNodes(section.sessions ?? [], isExpanded),
+            ...sessionNodes(section.sessions ?? []),
             ...pinSectionOverflowNode(
               `pinsection:${section.id}`,
               section.id,
@@ -519,14 +511,15 @@ function summarySession(
   const context = `${scope}\0${tier ?? ""}\0${pinSectionID ?? ""}\0${projectKey ?? ""}`;
   const cached = sessionModelCache.get(summary as object)?.get(context);
   if (cached) return cached;
-  const children = summary.children.map((child) => summarySession(child, scope, tier, pinSectionID, projectKey));
   const result = {
     ...summary,
     row_id: `navigation:${scope}:${summary.ref}`,
     tier,
     pin_section_id: pinSectionID,
     project_key: projectKey,
-    children,
+    // The rail's lists are flat: a summary's nested children (subagents, fork
+    // originals) are the activity sidebar's data, never rows of their own.
+    children: [],
   };
   let entries = sessionModelCache.get(summary as object);
   if (!entries) {
@@ -1358,6 +1351,35 @@ function NavigationRail({
       consumeReveal();
       return;
     }
+    // A nested ref (a subagent, a fork original) has no row of its own in the
+    // flat rail: its work reads on its top-level carrier's row and in the
+    // activity sidebar. The reveal lands on the carrier the location names -
+    // scrolling to its row when it is already rendered, else opening the
+    // carrier's own fold chain one id per pass, exactly like a direct target.
+    const carrierRef =
+      location.top_level === false && location.top_level_ref && location.top_level_ref !== revealTarget
+        ? location.top_level_ref
+        : null;
+    if (carrierRef !== null) {
+      const carrierRow = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
+        (element) => element.dataset.sessionRef === carrierRef,
+      );
+      if (carrierRow && revealCompletedTarget.current !== revealTarget) {
+        carrierRow.scrollIntoView({ block: "center", behavior: "smooth" });
+        consumeReveal();
+        return;
+      }
+      const carrierChain = [
+        ...revealExpansionIds(resources.projects, resources.live, carrierRef, groupingMode),
+        ...revealExpansionIds(resources.testRuns, [], carrierRef, "flat"),
+        ...revealExpansionIds(resources.archivedProjects, [], carrierRef, "flat", { rowsUnderProjectNode: true }),
+      ];
+      const nextCarrierFold = carrierChain.find((id) => expandedOverrides.get(id) !== true);
+      if (nextCarrierFold) {
+        setExpanded(nextCarrierFold, true);
+        return;
+      }
+    }
     if (location.project_key) {
       const projectState = resourceState(currentState, { kind: "project", projectKey: location.project_key });
       if (isSettledGone(projectState)) {
@@ -1950,8 +1972,8 @@ function NavigationRail({
     // under host subheaders exactly while they span more than one host
     // (liveNodesGroupedByHost keeps a single-host list flat, byte for byte).
     ...(groupingMode !== "flat"
-      ? liveNodesGroupedByHost(sessionNodes(resources.live, isExpanded), displaySources, isExpanded)
-      : sessionNodes(resources.live, isExpanded)),
+      ? liveNodesGroupedByHost(sessionNodes(resources.live), displaySources, isExpanded)
+      : sessionNodes(resources.live)),
     ...sectionOverflowNode(
       "section:live",
       "live",
@@ -2063,7 +2085,6 @@ function NavigationRail({
                   onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
                   onRename={() => openSectionRename(section)}
                   onDelete={() => void requestSectionDelete(section)}
-                  isExpanded={isExpanded}
                   onToggle={handleToggle}
                   onActivate={handleActivate}
                   actions={rowActions}

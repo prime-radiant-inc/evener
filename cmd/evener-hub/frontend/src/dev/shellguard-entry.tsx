@@ -129,6 +129,9 @@ function resourceKey(params: NavigationReadParams): ResourceKey {
     case "location":
       if (!params.ref) throw new Error("location navigation read requires ref");
       return { kind: "location", ref: params.ref };
+    case "subagents":
+      if (!params.ref) throw new Error("subagents navigation read requires ref");
+      return { kind: "subagents", ref: params.ref, offset, limit };
     default:
       throw new Error(`unsupported navigation resource: ${params.resource}`);
   }
@@ -343,6 +346,10 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
     case "project_page":
       return v2(emptySnapshot(key));
     case "location":
+      return v2(emptySnapshot(key));
+    case "subagents":
+      // The StatusBar ensures the scope's subagents page on mount; the
+      // harness's sessions are childless, so an empty page is the truth.
       return v2(emptySnapshot(key));
   }
 }

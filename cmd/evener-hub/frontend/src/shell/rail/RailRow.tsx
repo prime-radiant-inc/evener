@@ -42,16 +42,12 @@ import {
   approvalWaiting,
   canReadSharedNotes,
   humanizeState,
-  isActivityFailure,
-  watchArmedLabel,
   watchCadenceLabel,
   watchDurationLabel,
   watchGloss,
-  watchTitle,
 } from "@evener/appwire-client";
 import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode } from "react";
-import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { LOCAL_HOST } from "../../stores/hostRouting";
 import { relativeAge, selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
@@ -62,7 +58,7 @@ import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../wi
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
-import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
+import { useActivitySidebarOpenFor, useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { useIsMobile } from "../useIsMobile";
@@ -70,19 +66,14 @@ import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
   activeWatchCount,
-  activeWorkSummary,
-  type CompletedJobsFoldRailNode,
   displayState,
   type HostRailNode,
-  type JobRailNode,
-  needsYouDescendantCount,
   type OverflowRailNode,
   type ProjectRailNode,
   type RailNode,
   type RailProject,
   type RailSession,
   type SessionRailNode,
-  type WatchRailNode,
   watchCountLabel,
 } from "./railNodes";
 import { useRailNow } from "./railNow";
@@ -116,7 +107,6 @@ const CLASS = {
   watchCount: requireClass(styles.watchCount, "RailRow.module.css", "watchCount"),
   subagentTally: requireClass(styles.subagentTally, "RailRow.module.css", "subagentTally"),
   subagentFailed: requireClass(styles.subagentFailed, "RailRow.module.css", "subagentFailed"),
-  watchGlyph: requireClass(styles.watchGlyph, "RailRow.module.css", "watchGlyph"),
   srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
 };
 
@@ -252,8 +242,13 @@ function leadsOverWork(session: RailSession): boolean {
 //
 // A state a person must act on (leadsOverWork) leads the line whatever else
 // is running: a job count in its place would read as work in progress.
-export function activityGloss(session: RailSession, activity = activeWorkSummary(session)): string {
-  const jobCount = activity.runningJobs;
+//
+// Every figure is the row's own: the flat rail carries no children to walk,
+// so the job count is the summary's own running_jobs, and the subagent
+// figures beside the gloss come from the row's `subagents` tally chip, never
+// from a subtree.
+export function activityGloss(session: RailSession): string {
+  const jobCount = (session.running_jobs ?? []).length;
   const word = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
   const parts: string[] = [];
   if (leadsOverWork(session) || jobCount === 0 || session.state === "active") parts.push(word);
@@ -262,7 +257,10 @@ export function activityGloss(session: RailSession, activity = activeWorkSummary
   return parts.join(" · ");
 }
 
-export { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchGloss, watchTitle };
+// The rail no longer renders watch rows of its own (the activity sidebar's
+// Watches tab owns them), but its tests and the sidebar's watch rows share
+// the wire's wording through these re-exports.
+export { watchCadenceLabel, watchDurationLabel, watchGloss };
 
 // secondLine is the row's second line in full: activityGloss above, joined
 // with the session's project when the row needs one (kata hxjn). A session
@@ -274,17 +272,12 @@ export { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchGloss, wat
 // is indented under. Project leads the line (state is what's happening,
 // project is where) the same way activityGloss already leads with state
 // before branch.
-function secondLine(
-  session: RailSession,
-  showsGloss: boolean,
-  showsProject: boolean,
-  activity?: ReturnType<typeof activeWorkSummary>,
-): string {
+function secondLine(session: RailSession, showsGloss: boolean, showsProject: boolean): string {
   const parts: string[] = [];
   // An empty project name has nothing to join, so it must not contribute a
   // leading " · " separator with no text before it (UX fix).
   if (showsProject && session.project !== "") parts.push(session.project);
-  if (showsGloss) parts.push(activityGloss(session, activity));
+  if (showsGloss) parts.push(activityGloss(session));
   return parts.join(" · ");
 }
 
@@ -510,13 +503,12 @@ function saysNotStarted(session: RailSession, showsGloss: boolean): boolean {
 // ActionsMenu's own comment, which this replaces for session rows).
 function SessionMenuRow({ session, actions }: { session: RailSession; actions: RailRowActions }) {
   const ref = session.ref;
-  // Four separate boolean selectors, NOT one object-literal selector: a
+  // Separate boolean selectors, NOT one object-literal selector: a
   // fresh { details, tasks, activity, notes } object every call would fail the
   // store's reference-equality check and re-render the row on every
   // workspace change (SessionChrome selects the same four booleans the
   // same way).
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
-  const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
   // The Activity ✓ marks what this row's Activity action opens, per viewport:
   // the desktop sidebar (the predicate is shared with the session chrome so
   // the two menus can never disagree), or the sessionActivity pane the mobile
@@ -527,6 +519,14 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   const activitySidebarOpen = useActivitySidebarOpenFor(ref);
   const activityPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
   const activityOpen = activitySidebarOpen || (isMobile && activityPaneOpen);
+  // The Tasks ✓ follows the Activity check's per-viewport rule: the desktop
+  // Tasks action opens the sidebar's Tasks tab, so the mark is the sidebar
+  // open ON that tab, scoped to this session; the sessionTasks pane it
+  // replaced is a desktop orphan the check never marks, and stays the mobile
+  // half (the tree drawer has no sidebar).
+  const sidebarTab = useActivitySidebarStore((state) => state.tab);
+  const tasksPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
+  const tasksOpen = (activitySidebarOpen && sidebarTab === "tasks") || (isMobile && tasksPaneOpen);
   const notesOpen = useTopNotesExpanded(ref);
   // Navigation summaries do not carry notes capability. Observe only an
   // already-hydrated snapshot; opening the session owns any needed fetch.
@@ -656,7 +656,10 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const hostId = session.host_id;
   const showsHost = hostId !== "" && hostId !== LOCAL_HOST;
   const hostOnline = useHostOnline(hostId);
-  const needsYouCount = needsYouDescendantCount(session);
+  // The wire's count of this row's subagent descendants waiting on a person
+  // (needs_you_subagents) - the flat lists' replacement for the children walk
+  // the nested rows used to make derivable.
+  const needsYouCount = session.needs_you_subagents ?? 0;
   // The state this row PRESENTS (railNodes' displayState): a pending approval
   // presents as needs-you whatever the wire state says. Dot, gloss, tint, and
   // tooltip all read this one value so they can never disagree about a row.
@@ -668,8 +671,9 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // gloss, and with it its second line - which makes signal rows physically
   // taller than quiet ones. That is the point: the rows worth finding are bigger
   // than the rows that aren't, and the list's evenness is worth less than that.
-  const activity = activeWorkSummary(session);
-  const hasRunningJobs = activity.runningJobs > 0;
+  // The row's own running jobs: the flat rail carries no children, so a row's
+  // work is exactly what its summary says.
+  const hasRunningJobs = (session.running_jobs ?? []).length > 0;
   const hasActiveWork = session.state === "active" || hasRunningJobs;
   // Job activity is a working signal for the owning session. A
   // failure, a restart, a question and a pending approval still win over that
@@ -692,13 +696,13 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const showsProject = node.crossProjectTier === true;
   const notStarted = saysNotStarted(session, showsGloss);
   // The session's own armed watches. Not a subtree rollup: the hub keeps each
-  // watch on its receiver's summary, so this is every watch the fold-out below
-  // this row will show - see railNodes' activeWatchCount.
+  // watch on its receiver's summary, so this is every watch the activity
+  // sidebar's Watches tab lists for it - see railNodes' activeWatchCount.
   const watchCount = activeWatchCount(session);
   const omittedWatchCount = session.omitted_watches ?? 0;
-  // The retained total the fold-out lists. The summary line reports this
-  // (with the armed count beside it when they differ) so it matches the rows
-  // hanging under the row even when a retained watch is inactive.
+  // The retained total the Watches tab lists. The summary line reports this
+  // (with the armed count beside it when they differ) so the row and the tab
+  // agree even when a retained watch is inactive.
   const retainedWatchCount = (session.watches ?? []).length;
   // Omitted rows alone still mean the session holds watches the row does not
   // list, so the line must appear (and say "+N more") even with none retained.
@@ -709,14 +713,15 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // this file): without it the count would vanish on exactly the session where
   // a watch is the only thing happening, which is the case this feature exists
   // for.
-  // A live root's whole-tree subagent tally (D1); nested rows show none: running and failed counts
-  // in words. It too can be all a quiet row has to say, so it earns the line.
+  // A live root's whole-tree subagent tally (D1): running and failed counts
+  // in words, straight off the row's `subagents` field. It too can be all a
+  // quiet row has to say, so it earns the line.
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
   const showsActivity = showsGloss || hasRunningJobs || hasWatches || tally !== null;
   // The tinted gloss itself still belongs to a signal row (or to a depth-0
   // row naming its project). A watch-only quiet row's second line is just its
   // watch count; glossing "idle" beside the count would be noise, not a gloss.
-  const gloss = secondLine(session, showsGloss, showsProject, activity);
+  const gloss = secondLine(session, showsGloss, showsProject);
   const showsSecondLine = showsActivity || showsProject;
   // Only a genuine signal row (showsGloss) carries a state to tint - the
   // depth-0-only "just the project name" line (showsProject with no signal)
@@ -731,9 +736,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
     <span className={CLASS.railRow} data-session-ref={session.ref}>
       {/* The text column: the title line (outdented signal dot, title,
           trailing chevron on branch rows), and - on a signal row only - a
-          second line glossing why it wants attention. Row anatomy for the
-          subagent tree's already-existing recursion (toSessionNode/Tree),
-          not new recursion of its own. */}
+          second line glossing why it wants attention. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see below */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see below */}
       <span className={CLASS.textCol} onClick={info.activate}>
@@ -815,14 +818,15 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
         </span>
       )}
       {/* Right slot: ONE shared grid cell (RailRow.module.css's .rightSlot)
-          holding the occupant - the Task-7 needs-you-descendant Badge, or
+          holding the occupant - the needs-you-subagents Badge (the wire's
+          needs_you_subagents count), or
           (when there's nothing to flag) a relative timestamp / "Not
           started", never more than one - plus the hover-revealed actions
           menu, which borrows the occupant's space instead of reserving its
           own beside it and covers the occupant while revealed. The session's
           OWN needs-you already shows via its amber Cadence dot above
-          (cadenceStateFor maps awaiting/warning to "needs-you"), so a leaf
-          needs-you session with no needs-you descendants correctly shows its
+          (cadenceStateFor maps awaiting/warning to "needs-you"), so a
+          needs-you session with no needs-you subagents correctly shows its
           timestamp here, not a redundant "0"/"1" badge. */}
       <span className={CLASS.rightSlot}>
         {needsYouCount > 0 ? (
@@ -986,75 +990,6 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
   );
 }
 
-// A disclosure row (the completed-jobs fold).
-// No signal slot at all, matching Signal's own render-only-when-dotted
-// contract (a group of finished jobs has no state to report). No actions
-// menu either: it stands for rows rather than being one, and the rows it
-// hides carry their own. Its label sits at the same x as every other row at
-// its nesting depth - the trailing chevron after the label is its toggle,
-// the same inline affordance session and project rows use.
-function DisclosureFoldRow({ label, testId, info }: { label: string; testId: string; info: TreeRowInfo }) {
-  return (
-    <span className={CLASS.railRow} data-testid={testId}>
-      <span className={CLASS.textCol}>
-        <span className={CLASS.titleLine}>
-          {/* The label is the accessible activation target; the chevron is a
-              decorative shortcut for the same treeitem toggle. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling */}
-          <span className={CLASS.label} onClick={info.toggle}>
-            {label}
-          </span>
-          <TrailingChevron info={info} />
-        </span>
-      </span>
-    </span>
-  );
-}
-
-function jobLabel(job: JobRailNode["job"]): string {
-  return job.command?.trim() || job.task?.trim() || job.job_type?.trim() || job.job_id;
-}
-
-// jobTitle is the job row's hover tooltip: the full command that actually ran
-// (full_command, untruncated, when the label's command was cut by the wire's
-// label bound) plus the tool call's `intent` — why the model said it is
-// running the command. Status rides along the same way the old single-line
-// title carried it, so a hover still answers "what is this doing" end to end.
-function jobTitle(job: JobRailNode["job"], status: string): string {
-  const command =
-    job.full_command?.trim() || job.command?.trim() || job.task?.trim() || job.job_type?.trim() || job.job_id;
-  const intent = job.intent?.trim();
-  if (intent) {
-    return `${command} · ${intent} · ${status}`;
-  }
-  return `${command} · ${status}`;
-}
-
-function JobRow({ node }: { node: JobRailNode }) {
-  const active = node.active;
-  const status = node.job.status.trim() || (active ? "running" : "completed");
-  const displayStatus = jobStatusDisplay(status, node.job.reason);
-  return (
-    <span className={CLASS.railRow} data-testid="rail-row-job" data-job-id={node.job.job_id}>
-      <span className={CLASS.textCol}>
-        <span className={CLASS.titleLine}>
-          <Signal wireState={active ? "active" : isActivityFailure(undefined, status) ? "errored" : "ended"} />
-          <span className={CLASS.label} title={jobTitle(node.job, displayStatus)}>
-            {jobLabel(node.job)}
-          </span>
-        </span>
-        <span
-          data-testid="rail-row-job-status"
-          className={active ? `${CLASS.activity} ${CLASS.activityAlive}` : CLASS.activity}
-        >
-          {displayStatus}
-        </span>
-      </span>
-    </span>
-  );
-}
-
 // The clock a watch row leads with, DRAWN rather than typed: the app's font
 // ranges stop at U+2215, so a "◷" (or any other clock code point) falls back
 // to a system font - and the rail's accessible name is name-from-content, so a
@@ -1062,7 +997,7 @@ function JobRow({ node }: { node: JobRailNode }) {
 // (see review synthesis §7). aria-hidden because the visually-hidden "Watch:"
 // beside it is the word assistive tech should read.
 //
-// Exported for the session panel's watch rows too: the geometry lives here
+// Exported for the activity sidebar's watch rows: the geometry lives here
 // once, and each caller passes its own module's class and its own test id.
 export function WatchGlyph({ className, testId }: { className: string; testId: string }) {
   return (
@@ -1088,49 +1023,11 @@ function HostGlyph({ className, testId }: { className: string; testId: string })
   );
 }
 
-// A live watch in its receiver session's fold-out. Quieter than a job row by
-// design: pending work is inventory, not attention - neutral ink, no signal
-// dot, no actions menu, nothing to click. The row's accessible name comes from
-// its content, so the drawn clock is aria-hidden and the visually-hidden
-// "Watch:" supplies the word.
-function WatchRow({ node }: { node: WatchRailNode }) {
-  const { watch } = node;
-  return (
-    <span className={CLASS.railRow} data-testid="rail-row-watch" data-watch-id={watch.id}>
-      <span className={CLASS.textCol}>
-        <span className={CLASS.titleLine}>
-          <WatchGlyph className={CLASS.watchGlyph} testId="rail-row-watch-glyph" />
-          <span className={CLASS.srOnly}>Watch:</span>
-          {/* The note ellipsizes, so it carries its own full text as a title
-              tooltip - the same contract every other truncating line here
-              keeps. */}
-          <span className={CLASS.label} title={watchTitle(watch)}>
-            {watchTitle(watch)}
-          </span>
-        </span>
-        <span data-testid="rail-row-watch-status" className={CLASS.activity}>
-          {watchGloss(watch)}
-        </span>
-      </span>
-    </span>
-  );
-}
-
-function CompletedJobsFoldRow({ node, info }: { node: CompletedJobsFoldRailNode; info: TreeRowInfo }) {
-  return (
-    <DisclosureFoldRow label={`Completed jobs (${node.count})`} testId="rail-row-completed-jobs-fold" info={info} />
-  );
-}
-
 // The "+N older" note for rows the server capped away (hubcore's
 // maxSidebarSessionsPerTier). Its text starts at the same x as every other
 // row's, with no dot or chevron of its own. Project overflow rows activate a
-// bounded fetch for the capped-away tier rows; a passive row (node.passive,
-// used by the local watch cap whose rows the wire already carried) is an
-// honest count with nothing to fetch, so it gets no click handler and the
-// Tree's own activation is a no-op for it (see Rail's isPassiveRailNode).
+// bounded fetch for the capped-away tier rows.
 function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
-  const interactive = node.passive !== true;
   return (
     <span className={CLASS.railRow}>
       {/* The treeitem's Enter handler is the keyboard path; this click makes
@@ -1140,8 +1037,8 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
       <span
         data-testid="rail-row-overflow"
         className={CLASS.overflow}
-        onClick={interactive ? info.activate : undefined}
-      >{`+${node.count} ${node.suffix ?? "older"}`}</span>
+        onClick={info.activate}
+      >{`+${node.count} older`}</span>
     </span>
   );
 }
@@ -1196,12 +1093,6 @@ export const RailRow = memo(function RailRow({ node, info, actions, resourceErro
   switch (node.kind) {
     case "loading":
       return LoadingRow();
-    case "job":
-      return <JobRow node={node} />;
-    case "watch":
-      return <WatchRow node={node} />;
-    case "completedJobsFold":
-      return <CompletedJobsFoldRow node={node} info={info} />;
     case "overflow":
       return <OverflowRow node={node} info={info} />;
     case "project":
