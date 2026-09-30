@@ -1565,13 +1565,11 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// drive guard is taken before the commit: a busy child refuses the send
 	// with nothing written. A cold child is restored from the committed start,
 	// which owns the restore, so its guard is taken after the commit below.
-	// guarded holds the guard until the run takes it over (launched); every
-	// other exit releases it here, before the claim's rollback re-drives the
-	// child.
+	// guarded holds the guard until the run takes it over; every other exit
+	// releases it here, before the claim's rollback re-drives the child.
 	var guarded *subagent
-	launched := false
 	defer func() {
-		if guarded != nil && !launched {
+		if guarded != nil {
 			releaseSendDriveGuard(guarded)
 		}
 	}()
@@ -1722,6 +1720,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// reads idle between the committed start and the run that owns it.
 	sub.driving = false
 	sub.mu.Unlock()
+	guarded = nil
 	// running is now true under the same hold, so every drivability read refuses
 	// on the run itself; the id-keyed claim has done its job and is released. The
 	// deferred release sees committedClaimHeld false and does nothing.
@@ -1729,7 +1728,6 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.releaseChildCommittedSendStart(committedChildID)
 		committedClaimHeld = false
 	}
-	launched = true
 	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	result := sendMessageResult{
