@@ -75,11 +75,11 @@ a reviewer takes a freed worker slot.
 
 **Interfaces:** Produce every named wire type and method from the spec. Add `MethodEvenerThreadActivityRead`, `MethodEvenerThreadDelegatesList`, `MethodEvenerThreadJobsList`, `MethodEvenerThreadWatchesList`, and `NotifyEvenerThreadActivityChanged`. Go client methods are `ThreadActivityRead(ctx, SessionActivityReadParams)`, `ThreadDelegatesList(ctx, SessionActivityListParams)`, `ThreadJobsList(ctx, SessionActivityListParams)`, and `ThreadWatchesList(ctx, SessionActivityListParams)`, returning their concrete response and error. Export `SessionActivityResource` and constants for summary, delegates, jobs, and watches. This task owns generated files throughout integration.
 
-- [ ] Add wire-contract tests for typed rows, known-empty arrays, unknown counts, scoped params, and concrete method discovery. Use structured decoding, not large string snapshots.
-- [ ] Run `go test ./appwire -run 'TestSessionActivity|TestProtocol' -count=1`; record the intended failure before implementation.
-- [ ] Implement the contract and Go client methods. Use compact domain resource structs, with no nested delegate tree or `any` payload.
-- [ ] Run `make generate`, then the focused AppWire tests. Record generated file changes and any registration tests that await Task 3 rather than weakening them.
-- [ ] Commit the contract and send its SHA to the controller immediately so other workers can consume it. Continue only contract/generation corrections assigned by the controller.
+- [x] Add wire-contract tests for typed rows, known-empty arrays, unknown counts, scoped params, and concrete method discovery. Use structured decoding, not large string snapshots.
+- [x] Run `go test ./appwire -run 'TestSessionActivity|TestProtocol' -count=1`; record the intended failure before implementation.
+- [x] Implement the contract and Go client methods. Use compact domain resource structs, with no nested delegate tree or `any` payload.
+- [x] Run `make generate`, then the focused AppWire tests. Record generated file changes and any registration tests that await Task 3 rather than weakening them.
+- [x] Commit the contract and send its SHA to the controller immediately so other workers can consume it. Continue only contract/generation corrections assigned by the controller.
 
 ### Task 2: Authoritative, bounded session activity reads
 
@@ -131,12 +131,12 @@ event type/payload after its first commit.
 
 **Interfaces:** Implement and export `SessionActivityStore` exactly as the spec describes, including `observe(resource): () => void` for view-owned collection demand. `getSnapshot()` returns typed `context`, `summary`, and collection states keyed by delegates/jobs/watches, each exposing rows, loading, complete, error/unavailable state, and whether additional pages exist. Export the snapshot/state types and a narrow `SessionActivityClient` interface. Use shared subscription ownership if already available; isolate any new lease helper in this package. Coordinate the final names of snapshot properties in the report before Tasks 5/6 start.
 
-- [ ] Write fake-transport/fake-clock behavior tests for start-summary-only, opening one collection, coalescing notifications, resource-specific refresh, pagination, and truthful counts before page completion.
-- [ ] Write recovery tests for pre-ready mounts, transient retries through the 30-second cap, disposal, reconnect, stale cursor, scope replacement, and late old-client results. Assert requests and retained state transitions instead of timer implementation details.
-- [ ] Write tests with two owners on the same connection proving activity does not replace/unsubscribe a mounted transcript and duplicate collection demand coalesces.
-- [ ] Run the new Vitest file from the frontend test environment and capture red evidence.
-- [ ] Implement the shared owner using generated types and existing AppWire error classification. A stale cursor restarts only that collection; partial source issues retain successful rows and retry while observed. No UI copy or framework code belongs here.
-- [ ] Run focused client tests, package checks/typecheck, and Biome on touched package files. Commit and report the exact exported interface for consumers.
+- [x] Write fake-transport/fake-clock behavior tests for start-summary-only, opening one collection, coalescing notifications, resource-specific refresh, pagination, and truthful counts before page completion.
+- [x] Write recovery tests for pre-ready mounts, transient retries through the 30-second cap, disposal, reconnect, stale cursor, scope replacement, and late old-client results. Assert requests and retained state transitions instead of timer implementation details.
+- [x] Write tests with two owners on the same connection proving activity does not replace/unsubscribe a mounted transcript and duplicate collection demand coalesces.
+- [x] Run the new Vitest file from the frontend test environment and capture red evidence.
+- [x] Implement the shared owner using generated types and existing AppWire error classification. A stale cursor restarts only that collection; partial source issues retain successful rows and retry while observed. No UI copy or framework code belongs here.
+- [x] Run focused client tests, package checks/typecheck, and Biome on touched package files. Commit and report the exact exported interface for consumers.
 
 ### Task 4p: Shared activity presentation
 
@@ -152,10 +152,10 @@ authoritative refs with logical IDs. Entity lookup uses kind, logical ID and
 owning ref; raw action targets remain separate from rendering keys. Partial
 usage and missing logical session IDs remain unknown rather than fabricated.
 
-- [ ] Pin reversed parent/child pages, missing parents, equal logical IDs on separate sources, retained/live reconciliation, original action targets, optional facts, unknown counts and explicit watch states with structured behavior tests.
-- [ ] Project loaded records without networking, retry state, lifecycle folding or a new ordering authority. Keep unresolved descendants visible with incomplete relationship evidence.
-- [ ] Move shared watch presentation to `SessionWatch` and generated domain cadence types. Preserve armed, ended and unknown distinctly.
-- [ ] Run focused shared tests, installed package qualification and the pinned formatter. Enumerate consumer migrations and obtain independent spec and quality review.
+- [x] Pin reversed parent/child pages, missing parents, equal logical IDs on separate sources, retained/live reconciliation, original action targets, optional facts, unknown counts and explicit watch states with structured behavior tests.
+- [x] Project loaded records without networking, retry state, lifecycle folding or a new ordering authority. Keep unresolved descendants visible with incomplete relationship evidence.
+- [x] Move shared watch presentation to `SessionWatch` and generated domain cadence types. Preserve armed, ended and unknown distinctly.
+- [x] Run focused shared tests, installed package qualification and the pinned formatter. Enumerate consumer migrations and obtain independent spec and quality review.
 
 ### Task 5: Browser activity surfaces and navigation boundary
 
