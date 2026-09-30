@@ -1656,7 +1656,9 @@ export function ConversationScreen({
 			restoreFrame.current = null;
 			const currentKey = readerKey(timelineRows[command.index]);
 			const measurement = readerMeasurements.current.get(currentKey);
-			if (!measurement) return;
+			// Until the list reports its content size, how far it can scroll
+			// isn't known, and a restore would clamp short of the row.
+			if (!measurement || readerContentHeight.current === 0) return;
 			const desired = measurement.y - command.viewOffset;
 			// On iOS the bar's inset extends how far the list can scroll.
 			const scrollOffset = reachableReaderOffset(
@@ -1683,7 +1685,7 @@ export function ConversationScreen({
 			landOpening();
 		}
 	}
-	// The cells and the list call the latest restore, with this render's rows.
+	// The latest restore, with this render's rows, for the layout timer below.
 	const restoreReadingPositionNow = useRef(restoreReadingPosition);
 	useLayoutEffect(() => {
 		restoreReadingPositionNow.current = restoreReadingPosition;
