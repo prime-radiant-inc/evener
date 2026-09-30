@@ -1007,13 +1007,24 @@ park. The production bypass is a
 `TestBreakerDispatch_ParkedResultDoesNotUnparkTheNextCall` and
 `TestBreakerDispatch_IdenticalSuccessLoopIsNeverParked` specify those contracts.
 
-**Discuss.** Allow a bounded probe or relevant dependency-change invalidation
-without encouraging tight repeated failure loops. The recovery signal should
-relate to the failed operation; unrelated successful work is not proof of health.
+**Decision.** Retain failure evidence and prompt diagnosis and reassessment when
+equivalent calls repeatedly fail. Pace retries while keeping the still-needed
+operation recoverable. A relevant repair permits another attempt with identical
+inputs; temporary external failures permit later attempts after backoff. Old
+failure history must not require the agent to invent different arguments or ask
+the user to unlock an otherwise authorized operation. Suspected loops follow
+the [goal progress decision](#r06-read-only-goal-progress): allow an opportunity
+to recover and establish a concrete unresolved impediment before declaring work
+blocked. Preserve explicit resource limits and cancellation. Implementation
+remains pending.
 
-**Acceptance.** Fail the same operation twice, heal its dependency, and attempt
-the still-needed operation with identical inputs. It can succeed under a bounded
-attempt policy without inventing arguments to evade the fingerprint.
+**Acceptance.** Fail the same operation twice, heal its dependency, and request
+the still-needed operation with identical inputs. The tool executes and succeeds
+without changed arguments or user intervention. Continued temporary failure
+paces further attempts rather than creating a tight loop or permanently refusing
+the operation; a later attempt can discover recovery. Unrelated successful work
+alone is not proof that the failed dependency healed. Explicit limits and
+cancellation remain effective.
 
 ### T02 MCP initial discovery recovery
 
