@@ -32,6 +32,7 @@ import type {
   Turn,
   WarningParams,
 } from "./types.gen";
+import { hasWarningText } from "./warningText";
 
 function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegateInfo {
   // JSON objects are open at runtime. Explicitly discard the delegate_send
@@ -3261,19 +3262,6 @@ function warningMessage(params: WarningParams): string {
   return "";
 }
 
-// True when value is a non-blank string — the same "is this actually content"
-// reading warningMessage above and WarningItem.tsx's renderer both take for
-// title/hint, so the raw-frame fallback below and the structured fields it
-// would otherwise duplicate never disagree about which one has something to
-// show. A type predicate so a caller narrows `unknown` in one step instead of
-// repeating the typeof/trim check to get the same narrowing. Built on
-// boundedWarningText below, which answers the same "is there content" scan
-// as part of also bounding the value — so a caller that needs both (every
-// foldWarningParams field) pays for one walk, not two.
-export function hasWarningText(value: unknown): value is string {
-  return boundedWarningText(value) !== undefined;
-}
-
 // A frame with no message anywhere is surfaced as the frame itself
 // (appwire/warning.go's DecodeWarningParams: "a malformed warning is visible
 // instead of silent" — cmd/evener-tui/hub_notifications_test.go pins the same
@@ -3407,24 +3395,20 @@ function boundedCodePoints(s: string): string {
 // code points — a message, title, hint, or source with more than that many
 // leading blank code points followed by real content would then be stored as
 // nothing but the blank prefix, rendering as nothing to every consumer.
-// boundedWarningText answers "is there content" and bounds it starting from
-// that content in the same walk: /\S/.exec finds the first non-whitespace
+// boundedWarningText answers "is there content" (hasWarningText) and bounds
+// it starting from that content: value.search finds the first non-whitespace
 // index without copying anything, then boundedPrefix takes its own single,
 // already-bounded slice starting there, so the window kept always contains
 // the actual content instead of the padding in front of it. undefined when
-// value isn't a non-blank string at all — hasWarningText and the fold are both
-// built on this one walk, instead of each asking "is there content" and
-// "bound it" as two separate scans. The fast
-// path only skips leading padding when truncation is actually needed
-// (matching boundedPrefix's own fast path): a short value already within the
-// bound is returned unchanged, leading whitespace included, since nothing
-// about it needs to be bounded away from at all.
+// value isn't a non-blank string at all. The padding is only skipped when
+// truncation is actually needed (matching boundedPrefix's own fast path): a
+// short value already within the bound is returned unchanged, leading
+// whitespace included, since nothing about it needs to be bounded away from
+// at all.
 function boundedWarningText(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const match = /\S/.exec(value);
-  if (match === null) return undefined;
+  if (!hasWarningText(value)) return undefined;
   if (value.length <= RAW_WARNING_FRAME_MAX_CHARS) return value;
-  return boundedPrefix(value, RAW_WARNING_FRAME_MAX_CHARS, match.index);
+  return boundedPrefix(value, RAW_WARNING_FRAME_MAX_CHARS, value.search(/\S/));
 }
 
 function rawWarningFrame(params: WarningParams): string {

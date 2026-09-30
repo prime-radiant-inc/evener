@@ -91,7 +91,11 @@ type Entry =
 	| { notice: string }
 	// An item recorded from a real run (demoToolFamilies.ts), served as it
 	// was, with its own id, on the demo turn and clock.
-	| { recorded: ThreadItem };
+	| { recorded: ThreadItem }
+	// A daemon warning, as the hub's overlay announces one
+	// (internal/appoverlay/notices.go warningAnnouncement): a systemMessage
+	// with eventKind "warning" and its title and hint on raw.warning.
+	| { warning: { text: string; title: string; hint: string } };
 
 // What a frame's session carries beyond its fleet row.
 interface SessionContent {
@@ -400,6 +404,13 @@ const CONTENT: Record<string, SessionContent> = {
 			},
 			{ subagent: "r-1" },
 			{ subagent: "r-2" },
+			{
+				warning: {
+					text: "inspect delegate attention: open delegates.jsonl: permission denied",
+					title: "Evener error",
+					hint: "Check that the session's state directory is writable.",
+				},
+			},
 			{
 				agent:
 					"The loop is in `llm/retry.go`: a 429 resets the attempt counter instead of incrementing it, so it never gives up. The test reproduces it. Now capping retries at 5 with exponential backoff.",
@@ -777,6 +788,17 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		if ("ask" in entry) return askItem(item.id, `${id}-ask`, entry.ask, item.startedAt, at);
 		if ("notice" in entry)
 			return { ...item, type: "steering", text: entry.notice, steeringKind: "notification", status: "completed" };
+		if ("warning" in entry) {
+			const { text, title, hint } = entry.warning;
+			return {
+				...item,
+				type: "systemMessage",
+				eventKind: "warning",
+				text,
+				raw: { warning: { source: "evener", title, hint } },
+				status: "completed",
+			};
+		}
 		if ("recorded" in entry) {
 			const recorded: ThreadItem = { ...entry.recorded, startedAt: item.startedAt, turnId: id };
 			return recorded.status === "inProgress" || !("completedAt" in recorded)
