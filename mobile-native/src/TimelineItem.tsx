@@ -206,7 +206,15 @@ export function TimelineItem({
 				break;
 			}
 			if (item.label === "delegate") {
-				content = <Subagent row={item} delegates={delegates} tree={subagentTree} openSubagent={openSubagent} />;
+				content = (
+					<Subagent
+						ownerRef={sessionRef}
+						row={item}
+						delegates={delegates}
+						tree={subagentTree}
+						openSubagent={openSubagent}
+					/>
+				);
 				break;
 			}
 			if (item.label === "ask_user") {
@@ -404,11 +412,13 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 }
 
 function Subagent({
+	ownerRef,
 	row,
 	delegates,
 	tree,
 	openSubagent,
 }: {
+	ownerRef: string;
 	row: Extract<TimelineRow, { kind: "activity" }>;
 	delegates: readonly EvenerDelegateInfo[] | undefined;
 	tree: ActivityTree | null | undefined;
@@ -421,8 +431,8 @@ function Subagent({
 	// tree shows it done; until then the line says what the roster knows.
 	const finished = line.state === "done" ? line.delegateId : undefined;
 	const outcome = useMemo(
-		() => (tree && finished ? subagentOutcome(tree, finished, now) : undefined),
-		[tree, finished, now],
+		() => (tree && finished ? subagentOutcome(tree, finished, now, ownerRef) : undefined),
+		[tree, finished, now, ownerRef],
 	);
 	return <SubagentRow line={outcome ? { ...line, activity: outcome } : line} onOpen={openSubagent} />;
 }

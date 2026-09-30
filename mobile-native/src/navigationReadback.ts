@@ -8,7 +8,7 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 function resourceFor(target: NavigationInvalidationTarget): NavigationReadParams | null {
-	const base = { representationVersion: 2, resource: target.kind };
+	const base = { representationVersion: 3, resource: target.kind };
 	switch (target.kind) {
 		case "manifest":
 			return base;
@@ -41,12 +41,12 @@ export async function navigationReadback(
 	};
 	let generationId: string | undefined;
 	const read = async (input: Omit<NavigationReadParams, "representationVersion">) => {
-		const params = { ...input, representationVersion: 2 };
+		const params = { ...input, representationVersion: 3 };
 		check();
 		const key = navigationParamsToResourceKey(params);
 		const wire = await client.request("evener/navigation/read", {
 			...params,
-			representationVersion: 2,
+			representationVersion: 3,
 		});
 		check();
 		const decoded = decodeNavigationResponse(key, undefined, wire);

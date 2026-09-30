@@ -1012,3 +1012,18 @@ func TestDeclaresModuleRequiresExactModulePath(t *testing.T) {
 		t.Fatal("declaresModule rejected this module's own go.mod")
 	}
 }
+
+func TestSessionActivityEnumTypes(t *testing.T) {
+	for _, tc := range []struct {
+		typ  reflect.Type
+		name string
+	}{
+		{reflect.TypeFor[appwire.SessionActivityScope](), "SessionActivityScope"},
+		{reflect.TypeFor[appwire.SessionActivityResource](), "SessionActivityResource"},
+		{reflect.TypeFor[appwire.SessionWatchState](), "SessionWatchState"},
+	} {
+		if got := typeExpr(tc.typ); got != tc.name {
+			t.Errorf("typeExpr(%s) = %q, want named union %q", tc.typ, got, tc.name)
+		}
+	}
+}

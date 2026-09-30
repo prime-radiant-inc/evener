@@ -40,6 +40,8 @@ export interface DemoCoordinator {
 	subagents: readonly DemoSubagent[];
 	/** Its own finished shell jobs, listed beside its subagents. */
 	jobs?: readonly DemoShellJob[];
+	/** Its own running command, also summarized by navigation. */
+	runningJob?: { id: string; command: string };
 	/** How the fleet names a subagent's own session (demoFleet.ts hostSessionRef). */
 	subagentRef: (id: string) => string;
 }
@@ -197,6 +199,19 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 			endedAt: iso(ended),
 		});
 	});
+	if (coordinator.runningJob) {
+		counts.active += 1;
+		entries.push(
+			shellEntry(idOf(coordinator.ref), coordinator.ref, {
+				jobId: `job-${coordinator.runningJob.id}`,
+				status: "running",
+				terminal: false,
+				description: coordinator.runningJob.command,
+				command: coordinator.runningJob.command,
+				startedAt: iso(startupMs - 42_000),
+			}),
+		);
+	}
 	for (const sub of coordinator.subagents) {
 		const built = toEntry(sub, idOf(coordinator.ref));
 		addCounts(counts, built.counts);

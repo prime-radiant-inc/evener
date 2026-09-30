@@ -1537,7 +1537,13 @@ func concurrentDispatchMethod(method string) bool {
 		// already serve every connection at once), and the client asks for
 		// one tree at a time and discards a response that is stale or from
 		// another revision, so answer order does not matter.
-		appwire.MethodEvenerJobsList:
+		appwire.MethodEvenerJobsList,
+		// Session activity reads may reconstruct retained journals. They are
+		// read-only and carry request cancellation into bounded reconstruction.
+		appwire.MethodEvenerThreadActivityRead,
+		appwire.MethodEvenerThreadDelegatesList,
+		appwire.MethodEvenerThreadJobsList,
+		appwire.MethodEvenerThreadWatchesList:
 		return true
 	}
 	return false

@@ -114,7 +114,16 @@ func (p navigationProjection) ArchivedList(request navigationArchivedListRequest
 		})
 	}
 	projector := navigationProjector{projection: p}
-	sessions, remaining := projector.projectTier(project, "archived", uint32(start), request.Limit)
+	pageRows, remaining := navigationPage(rows, uint32(start), request.Limit, maxNavigationSectionRows)
+	sessions := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], 0, len(pageRows))
+	for _, row := range pageRows {
+		summary, ok := projector.projectArchivedNode(row, 1)
+		if !ok {
+			break
+		}
+		sessions = append(sessions, summary)
+	}
+	remaining += len(pageRows) - len(sessions)
 	page := hubapi.NavigationProjectPage{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: request.ProjectKey, Tier: "archived", Offset: uint32(start), Sessions: sessions, Remaining: remaining}
 	fitNavigationProjectPage(&page)
 	if len(page.Sessions) == 0 && page.Remaining > 0 {
@@ -125,6 +134,50 @@ func (p navigationProjection) ArchivedList(request navigationArchivedListRequest
 		out.NextCursor = encodeArchivedCursor(request.Catalog, request.ProjectKey, hubcore.TreeNodeOrderKey(rows[start+len(page.Sessions)-1]))
 	}
 	return out, nil
+}
+
+// Archived list rows retain fork originals as inline session children. These
+// are separate conversations, not delegate activity or normalized graph nodes.
+// Reuse the navigation traversal and envelope limits for this inline tree.
+func (p *navigationProjector) projectArchivedNode(node hubcore.TreeNode, depth int) (hubapi.NavigationSessionSummary, bool) {
+	summary, ok := p.projectNode(node, depth)
+	if !ok {
+		return summary, false
+	}
+	for index, child := range node.Children {
+		if child.Kind != "fork" {
+			continue
+		}
+		original, ok := p.projectArchivedNode(child, depth+1)
+		if !ok {
+			summary.OmittedDescendants += countArchivedForkNodes(node.Children[index:])
+			break
+		}
+		summary.Children = append(summary.Children, original)
+	}
+	return summary, true
+}
+
+// Count only the already-built fork branches eligible for archived discovery.
+// Delegate branches, including their own originals, are outside this scope.
+// Iteration keeps counting independent of the rendered tree's depth bound.
+func countArchivedForkNodes(rows []hubcore.TreeNode) int {
+	count := 0
+	pending := [][]hubcore.TreeNode{rows}
+	for len(pending) > 0 {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		for _, node := range current {
+			if node.Kind != "fork" {
+				continue
+			}
+			count++
+			if len(node.Children) > 0 {
+				pending = append(pending, node.Children)
+			}
+		}
+	}
+	return count
 }
 
 // ArchivedList serves evener/archived/list from the current core. It waits

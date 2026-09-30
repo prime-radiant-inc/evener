@@ -2,7 +2,14 @@
 
 import { expect, test } from "vitest";
 import type { ActivityDelegate, ActivityEntry, ActivityJob, ActivityTree } from "./activityData";
-import { buildEntityView, type DelegateEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./entityView";
+import {
+  buildEntityView,
+  type DelegateEntityView,
+  entityOpenTarget,
+  findEntityView,
+  watchFoldKey,
+  watchItems,
+} from "./entityView";
 import type { ItemModel, TurnModel } from "./model";
 import type { EvenerDelegateInfo } from "./types.gen";
 
@@ -119,9 +126,9 @@ test("job uses the row transcriptRef and parentRef", () => {
     stale: false,
     ended: false,
   });
-  const entity = view.get("job_x");
+  const entity = findEntityView(view, "job", "job_x", "local:s");
 
-  expect(entity).toMatchObject({ kind: "job", id: "job_x" });
+  expect(entity).toMatchObject({ kind: "job", logicalId: "job_x" });
   expect(entityOpenTarget(entity!)).toEqual({ ref: "job:job_x", parentRef: "local:s" });
 });
 
@@ -137,7 +144,7 @@ test("a job without a transcriptRef uses its verified row id and parentRef", () 
     turns: [],
     stale: false,
     ended: false,
-  }).get("job_fallback");
+  }).get('job:["local:s","job_fallback"]');
 
   expect(entityOpenTarget(entity!)).toEqual({ ref: "job:job_fallback", parentRef: "local:s" });
 });
@@ -151,10 +158,46 @@ test("live-only delegate cards and navigates from delegates[]", () => {
     stale: false,
     ended: false,
   });
-  const entity = view.get("dlg_x");
+  const entity = findEntityView(view, "delegate", "dlg_x", "local:s");
 
-  expect(entity).toMatchObject({ kind: "delegate", id: "dlg_x", stable });
+  expect(entity).toMatchObject({ kind: "delegate", logicalId: "dlg_x", stable });
   expect(entityOpenTarget(entity!)).toEqual({ ref: "local:child", parentRef: "local:s" });
+});
+
+test("live update and retained row reconcile by qualified identity with one action target", () => {
+  const retained = treeWithDelegate("same", 3);
+  const live = liveDelegate("same", 4, "local:tree-same");
+  const view = buildEntityView({
+    sessionRef: "local:s",
+    tree: retained,
+    delegates: [live],
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  expect(view.size).toBe(1);
+  const entity = view.get('delegate:["local:tree-same","same"]');
+  expect(entity).toMatchObject({ kind: "delegate", logicalId: "same", stable: live });
+  expect(entity && entityOpenTarget(entity)).toEqual({ ref: "local:tree-same", parentRef: "local:s" });
+});
+
+test("transcript lookup selects raw IDs only within their authoritative owner", () => {
+  const first = { ...job("same"), ownerRef: "host-a:s" },
+    second = { ...job("same"), ownerRef: "host-b:s" };
+  const view = buildEntityView({
+    sessionRef: "local:s",
+    tree: treeWithEntries([
+      { kind: "shell", job: first },
+      { kind: "shell", job: second },
+    ]),
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  expect(view.size).toBe(2);
+  expect(findEntityView(view, "job", "same", "host-a:s")?.ownerRef).toBe("host-a:s");
+  expect(findEntityView(view, "job", "same", "host-b:s")?.ownerRef).toBe("host-b:s");
+  expect(findEntityView(view, "job", "same", "local:s")).toBeUndefined();
 });
 
 test.each([
@@ -166,16 +209,16 @@ test.each([
   const entity = buildEntityView({
     sessionRef: "local:s",
     tree: treeWithDelegate("dlg_shared", treeRevision),
-    delegates: [liveDelegate("dlg_shared", liveRevision)],
+    delegates: [liveDelegate("dlg_shared", liveRevision, "local:tree-dlg_shared")],
     turns: [],
     stale: false,
     ended: false,
-  }).get("dlg_shared");
+  }).get('delegate:["local:tree-dlg_shared","dlg_shared"]');
 
   if (entity?.kind !== "delegate") throw new Error("expected delegate entity");
   expect(delegateSource(entity)).toBe(expected);
   expect(entityOpenTarget(entity)).toEqual({
-    ref: expected === "tree" ? "local:tree-dlg_shared" : "local:live-dlg_shared",
+    ref: "local:tree-dlg_shared",
     parentRef: "local:s",
   });
 });
@@ -187,7 +230,7 @@ test("tree delegate remains selected when there is no live record", () => {
     turns: [],
     stale: false,
     ended: false,
-  }).get("dlg_tree");
+  }).get('delegate:["local:tree-dlg_tree","dlg_tree"]');
 
   if (entity?.kind !== "delegate") throw new Error("expected delegate entity");
   expect(delegateSource(entity)).toBe("tree");
@@ -230,9 +273,9 @@ test("watch entities are last-known and have no open target", () => {
     turns: [turn([item()])],
     stale: false,
     ended: false,
-  }).get("watch_x");
+  }).get('watch:["local:s","watch_x"]');
 
-  expect(entity).toMatchObject({ kind: "watch", id: "watch_x", lastKnown: true, stale: true, ended: false });
+  expect(entity).toMatchObject({ kind: "watch", logicalId: "watch_x", lastKnown: true, stale: true, ended: false });
   expect(entityOpenTarget(entity!)).toBeUndefined();
 });
 

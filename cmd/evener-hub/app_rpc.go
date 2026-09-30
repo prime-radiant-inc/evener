@@ -1236,6 +1236,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerArchivedListHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
 	registerActivityReadHandler(server, cfg, sources)
+	registerSessionActivityHandlers(server, cfg, sources)
 	// The notices read the same answers evener/auth/list and evener/plugin/list
 	// give, through the controllers those methods use (S11).
 	notices := &hubNotices{

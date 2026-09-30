@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import type { ModelListResponse, Thread, ThreadClearResponse } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
@@ -71,21 +72,23 @@ function boundary() {
 			return { started: false };
 		},
 	};
-	const service = createConversationService({
-		request: async (method, params) => {
-			if (method === "thread/read") return io.read();
-			if (["turn/steer", "turn/queue", "turn/drainAsSteer", "turn/interrupt"].includes(method))
-				return io.lifecycle(method, params);
-			if (method === "model/list") return io.models();
-			if (method === "thread/fork" || method === "thread/clear") return io.lifecycle(method, params);
-			if (method === "thread/model/set" || method === "thread/reasoning-effort/set")
-				return io.lifecycle(method, params);
-			if (method === "goal/set") return io.set((params as { objective: string }).objective);
-			if (method === "thread/compact/start" || method === "thread/shutdown") return io.lifecycle(method, params);
-			throw new Error(`Unexpected ${method}`);
-		},
-		onNotification: () => () => {},
-	} as ConversationClientLike);
+	const service = createConversationService(
+		Object.assign(new FakeClient("ready"), {
+			request: async (method, params) => {
+				if (method === "thread/read") return io.read();
+				if (["turn/steer", "turn/queue", "turn/drainAsSteer", "turn/interrupt"].includes(method))
+					return io.lifecycle(method, params);
+				if (method === "model/list") return io.models();
+				if (method === "thread/fork" || method === "thread/clear") return io.lifecycle(method, params);
+				if (method === "thread/model/set" || method === "thread/reasoning-effort/set")
+					return io.lifecycle(method, params);
+				if (method === "goal/set") return io.set((params as { objective: string }).objective);
+				if (method === "thread/compact/start" || method === "thread/shutdown") return io.lifecycle(method, params);
+				throw new Error(`Unexpected ${method}`);
+			},
+			onNotification: () => () => {},
+		} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
+	);
 	return { thread, objectives, io, service };
 }
 

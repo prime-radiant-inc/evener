@@ -1,5 +1,5 @@
-import type { ActivityTree } from "./activityData";
-import { type ActivityDelegateRow, type ActivityJobRow, indexActivityEntities } from "./activityRows";
+import { type ActivityTree, activityNodeID } from "./activityData";
+import { type ActivityDelegateRow, type ActivityJobRow, indexActivityEntities, watchRowID } from "./activityRows";
 import type { ItemModel, TurnModel } from "./model";
 import type { EvenerDelegateInfo } from "./types.gen";
 import { compareTranscriptPosition, foldWatchSummaries, type WatchSummary } from "./watchRows";
@@ -11,6 +11,8 @@ export interface OpenTarget {
 
 interface EntityViewState {
   id: string;
+  logicalId: string;
+  ownerRef: string;
   stale: boolean;
   ended: boolean;
 }
@@ -58,7 +60,9 @@ interface EntityViewSources {
 function jobEntity(row: ActivityJobRow, stale: boolean, ended: boolean): JobEntityView {
   return {
     kind: "job",
-    id: row.job.jobId,
+    id: row.id,
+    logicalId: row.job.jobId,
+    ownerRef: row.job.ownerRef,
     row,
     open: {
       ref: row.transcriptRef ?? `job:${row.job.jobId}`,
@@ -72,7 +76,9 @@ function jobEntity(row: ActivityJobRow, stale: boolean, ended: boolean): JobEnti
 function treeDelegateEntity(row: ActivityDelegateRow, stale: boolean, ended: boolean): DelegateEntityView {
   return {
     kind: "delegate",
-    id: row.delegate.delegateId,
+    id: row.id,
+    logicalId: row.delegate.delegateId,
+    ownerRef: row.parentRef,
     row,
     open: { ref: row.transcriptRef, parentRef: row.parentRef },
     stale,
@@ -88,7 +94,9 @@ function liveDelegateEntity(
 ): DelegateEntityView {
   return {
     kind: "delegate",
-    id: stable.delegateId,
+    id: activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef }),
+    logicalId: stable.delegateId,
+    ownerRef: sessionRef,
     stable,
     open: { ref: stable.transcriptRef, parentRef: sessionRef },
     stale,
@@ -110,7 +118,8 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
   }
 
   for (const stable of sources.delegates ?? []) {
-    const existing = entities.get(stable.delegateId);
+    const id = activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef });
+    const existing = entities.get(id);
     if (
       existing?.kind === "delegate" &&
       existing.row !== undefined &&
@@ -119,13 +128,16 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
     ) {
       continue;
     }
-    entities.set(stable.delegateId, liveDelegateEntity(stable, sources.sessionRef, sources.stale, sources.ended));
+    entities.set(id, liveDelegateEntity(stable, sources.sessionRef, sources.stale, sources.ended));
   }
 
   for (const [id, watch] of foldWatchSummaries(watchItems(sources.turns))) {
-    entities.set(id, {
+    const qualified = watchRowID(sources.sessionRef, id);
+    entities.set(qualified, {
       kind: "watch",
-      id,
+      id: qualified,
+      logicalId: id,
+      ownerRef: sources.sessionRef,
       watch,
       lastKnown: true,
       stale: true,
@@ -138,6 +150,23 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
 
 export function entityOpenTarget(view: EntityView): OpenTarget | undefined {
   return view.kind === "watch" ? undefined : view.open;
+}
+
+/** Resolve a transcript's logical ID within its owning session. Ambiguous
+ * loaded evidence cannot select an arbitrary resource or cross a host boundary. */
+export function findEntityView(
+  entities: ReadonlyMap<string, EntityView>,
+  kind: EntityView["kind"],
+  logicalId: string,
+  ownerRef: string,
+): EntityView | undefined {
+  let found: EntityView | undefined;
+  for (const entity of entities.values()) {
+    if (entity.kind !== kind || entity.logicalId !== logicalId || entity.ownerRef !== ownerRef) continue;
+    if (found) return undefined;
+    found = entity;
+  }
+  return found;
 }
 
 export function watchItems(turns: TurnModel[]): ItemModel[] {

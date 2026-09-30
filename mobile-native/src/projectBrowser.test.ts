@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it } from "vitest";
 import type {
 	AnyNotification,
@@ -5,7 +6,7 @@ import type {
 	NavigationReadParams,
 	NavigationReadResponse,
 } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { createProjectBrowserController, type ProjectSessionTier } from "./projectBrowser";
 
@@ -16,7 +17,7 @@ function boundary() {
 		reject: (error: Error) => void;
 	}> = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (_method, params) =>
 			new Promise((resolve, reject) => {
 				requests.push({
@@ -29,15 +30,15 @@ function boundary() {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	return { client, requests, listeners };
 }
 type Pending = ReturnType<typeof boundary>["requests"][number];
 function response(params: NavigationReadParams, data: unknown, revision = 1) {
-	return wireV2(
+	return wireSnapshot(
 		{
 			...params,
-			representationVersion: 2,
+			representationVersion: 3,
 			offset: params.offset ?? 0,
 			limit: params.limit ?? 50,
 		},

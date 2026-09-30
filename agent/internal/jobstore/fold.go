@@ -16,15 +16,7 @@ func Fold(events []Event) map[string]*JobRecord {
 
 	recs := make(map[string]*JobRecord)
 	for _, e := range sorted {
-		if !isJobRecordEventKind(e.Kind) {
-			continue
-		}
-		r := recs[e.JobID]
-		if r == nil {
-			r = &JobRecord{JobID: e.JobID, NotifyState: NotifyNotArmed}
-			recs[e.JobID] = r
-		}
-		applyEvent(r, e)
+		applyJobEvent(recs, e)
 	}
 	return recs
 }
@@ -43,13 +35,10 @@ func FoldOrdered(events []Event) []*JobRecord {
 		if !isJobRecordEventKind(e.Kind) {
 			continue
 		}
-		r := recs[e.JobID]
-		if r == nil {
-			r = &JobRecord{JobID: e.JobID, NotifyState: NotifyNotArmed}
-			recs[e.JobID] = r
+		if recs[e.JobID] == nil {
 			order = append(order, e.JobID)
 		}
-		applyEvent(r, e)
+		applyJobEvent(recs, e)
 	}
 	ordered := make([]*JobRecord, 0, len(order))
 	for _, id := range order {
@@ -78,51 +67,74 @@ func FoldWatches(events []Event) map[string]*WatchRecord {
 
 	watches := make(map[string]*WatchRecord)
 	for _, e := range sorted {
-		if e.WatchID == "" || e.Watch == nil {
-			continue
-		}
-		switch e.Kind {
-		case EventWatchRegistered:
-			if e.Watch.Generation == "" || e.Watch.OwnerSessionID == "" ||
-				e.Watch.VisibleSessionID == "" || e.Watch.Target == "" || e.Watch.ConfigHash == "" {
-				continue
-			}
-			rec := &WatchRecord{
-				WatchID:          e.WatchID,
-				Generation:       e.Watch.Generation,
-				OwnerSessionID:   e.Watch.OwnerSessionID,
-				VisibleSessionID: e.Watch.VisibleSessionID,
-				Target:           e.Watch.Target,
-				SendTo:           e.Watch.SendTo,
-				ConfigHash:       e.Watch.ConfigHash,
-				Condition:        e.Watch.Condition,
-				Deliveries:       e.Watch.Deliveries,
-				Active:           true,
-			}
-			// The receiver rides the config snapshot, which rows written before it
-			// existed do not have; those fold to an empty receiver, not a fold error.
-			if e.Watch.Config != nil {
-				rec.ReceiverSessionID = e.Watch.Config.ReceiverSessionID
-				rec.ReceiverDelegateID = e.Watch.Config.ReceiverDelegateID
-				rec.Source = e.Watch.Config.Source
-				rec.SourceDelegateID = e.Watch.Config.SourceDelegateID
-				rec.SourceDelegateGeneration = e.Watch.Config.SourceDelegateGeneration
-				rec.StableReceiver = e.Watch.Config.StableReceiver
-			}
-			watches[e.WatchID] = rec
-		case EventWatchCleared:
-			if e.Watch.Generation == "" {
-				continue
-			}
-			w := watches[e.WatchID]
-			if w == nil || w.Generation != e.Watch.Generation || !w.Active {
-				continue
-			}
-			w.Active = false
-			w.EndReason = e.Watch.EndReason
-		}
+		applyWatchEvent(watches, e)
 	}
 	return watches
+}
+
+// Apply extends a privately owned read fold by one already ordered journal event.
+// It uses the same terminal and watch-generation authority as the full folds.
+func Apply(jobs map[string]*JobRecord, watches map[string]*WatchRecord, event Event) {
+	applyJobEvent(jobs, event)
+	applyWatchEvent(watches, event)
+}
+
+func applyJobEvent(recs map[string]*JobRecord, event Event) {
+	if !isJobRecordEventKind(event.Kind) {
+		return
+	}
+	record := recs[event.JobID]
+	if record == nil {
+		record = &JobRecord{JobID: event.JobID, NotifyState: NotifyNotArmed}
+		recs[event.JobID] = record
+	}
+	applyEvent(record, event)
+}
+
+func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
+	if e.WatchID == "" || e.Watch == nil {
+		return
+	}
+	switch e.Kind {
+	case EventWatchRegistered:
+		if e.Watch.Generation == "" || e.Watch.OwnerSessionID == "" ||
+			e.Watch.VisibleSessionID == "" || e.Watch.Target == "" || e.Watch.ConfigHash == "" {
+			return
+		}
+		rec := &WatchRecord{
+			WatchID:          e.WatchID,
+			Generation:       e.Watch.Generation,
+			OwnerSessionID:   e.Watch.OwnerSessionID,
+			VisibleSessionID: e.Watch.VisibleSessionID,
+			Target:           e.Watch.Target,
+			SendTo:           e.Watch.SendTo,
+			ConfigHash:       e.Watch.ConfigHash,
+			Condition:        e.Watch.Condition,
+			Deliveries:       e.Watch.Deliveries,
+			Active:           true,
+		}
+		// The receiver rides the config snapshot, which rows written before it
+		// existed do not have; those fold to an empty receiver, not a fold error.
+		if e.Watch.Config != nil {
+			rec.ReceiverSessionID = e.Watch.Config.ReceiverSessionID
+			rec.ReceiverDelegateID = e.Watch.Config.ReceiverDelegateID
+			rec.Source = e.Watch.Config.Source
+			rec.SourceDelegateID = e.Watch.Config.SourceDelegateID
+			rec.SourceDelegateGeneration = e.Watch.Config.SourceDelegateGeneration
+			rec.StableReceiver = e.Watch.Config.StableReceiver
+		}
+		watches[e.WatchID] = rec
+	case EventWatchCleared:
+		if e.Watch.Generation == "" {
+			return
+		}
+		w := watches[e.WatchID]
+		if w == nil || w.Generation != e.Watch.Generation || !w.Active {
+			return
+		}
+		w.Active = false
+		w.EndReason = e.Watch.EndReason
+	}
 }
 
 // FoldWatchSends reconstructs pending watch-send frames from durable events.

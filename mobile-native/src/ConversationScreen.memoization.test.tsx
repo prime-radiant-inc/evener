@@ -7,6 +7,9 @@
 // This mounts the real ConversationScreen (only native edges mocked, as in
 // ConversationScreen.send.test.tsx) and pins both references across a
 // re-render that carries the same route and the same connection.
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { SessionActivityReadParams } from "@evener/appwire-client";
+import { threadActivityFixture } from "./subagents/sessionActivityTestUtils";
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
@@ -228,20 +231,20 @@ function twoTurns(ref: string): Thread {
 // mutation. No frame is pushed, so the conversation stays as read.
 function hubClient(served: Thread) {
 	const listeners = new Set<(notification: AnyNotification) => void>();
-	const client = {
-		state: "ready",
-		onStateChange: () => () => {},
+	const client = Object.assign(new FakeClient("ready"), {
 		onNotification: (listener: (notification: AnyNotification) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
 		resumeThread: async () => {},
-		request: async (method: string) => {
+		request: async (method: string, params?: unknown) => {
 			if (method === "thread/read") return { thread: served };
+			if (method === "evener/thread/activity/read")
+				return threadActivityFixture(served, params as SessionActivityReadParams).summary;
 			if (method === "thread/turns/list") return { data: [] };
 			return {};
 		},
-	};
+	});
 	return client;
 }
 

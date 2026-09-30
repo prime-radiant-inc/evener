@@ -147,8 +147,8 @@ func TestCredentialRejection_TestConnectionRecordsARejectedCredential(t *testing
 		err  error
 		want string
 	}{
-		{name: "unauthorized", err: llm.ErrorFromHTTPStatus("gateway", 401, "Incorrect API key provided: "+rejectionSecret, nil, nil), want: "The provider rejected this credential (HTTP 401)."},
-		{name: "forbidden", err: llm.ErrorFromHTTPStatus("gateway", 403, "forbidden for "+rejectionSecret, nil, nil), want: "The provider rejected this credential (HTTP 403)."},
+		{name: "unauthorized", err: llm.ErrorFromHTTPStatus("gateway", 401, "Incorrect API key provided: "+rejectionSecret, nil, nil), want: "The provider rejected this credential (HTTP 401). Replace the key or sign in again."},
+		{name: "forbidden", err: llm.ErrorFromHTTPStatus("gateway", 403, "forbidden for "+rejectionSecret, nil, nil), want: "The provider rejected this credential (HTTP 403). Replace the key or sign in again."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -639,5 +639,13 @@ func TestCredentialRejection_AStandingRemovalDropsIt(t *testing.T) {
 	f.ctl.auth.rejections.mu.Unlock()
 	if kept {
 		t.Fatal("the standing removal kept the rejection of the credential it deleted")
+	}
+}
+
+// A rejection with no HTTP status (an adapter that reports only the kind)
+// still says what went wrong and what to do, naming no status.
+func TestCredentialRejection_AMessageWithNoStatusStillSaysWhatToDo(t *testing.T) {
+	if got, want := credentialRejectedMessage(0), "The provider rejected this credential. Replace the key or sign in again."; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
 	}
 }

@@ -60,7 +60,6 @@ import "../panes/spawn"; // registers the "spawn" pane type
 import "../panes/doc"; // registers the "doc" pane type
 import "../panes/transcript"; // registers the "transcript" pane type
 import "../panes/sessionPanels"; // registers the session panel pane types
-import { initActivitySummary } from "../stores/activitySummary";
 import { initPrefs } from "../stores/prefs";
 
 // Apply persisted display preferences (theme/density/font-size) during
@@ -72,7 +71,6 @@ initTranscriptDisplay();
 
 // Wires the activity summary store to the activity panel store: the panel
 // requires it before it fetches a continuation page.
-initActivitySummary();
 
 // Start the notifications engine once, at module evaluation, beside initPrefs.
 // Idempotent no-op in T1; T4 fills it (title count / favicon badge / OS
@@ -451,7 +449,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         const refs = needsYouRefs(rows);
         const current = focusedSessionRef();
         if (
-          state.mode === "v2" &&
+          state.mode === "v3" &&
           (refs.length === 0 || (current !== null && refs.indexOf(current) === refs.length - 1))
         ) {
           const page = nextPageFor(state);
@@ -522,7 +520,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       ? null
       : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
   useEffect(() => {
-    if (locationRef === null || navigationMode !== "v2") return;
+    if (locationRef === null || navigationMode !== "v3") return;
     if (locationFailed || locationGone || locationResource?.loading || (locationResource && !locationResource.stale))
       return;
     void navigationStore

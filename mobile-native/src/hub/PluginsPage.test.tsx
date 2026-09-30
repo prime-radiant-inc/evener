@@ -92,7 +92,7 @@ function marketplaceClient(options: {
 }) {
 	const methods: string[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (method: string) => {
 			methods.push(method);
 			if (method === "evener/marketplace/list") return options.list?.() ?? { marketplaces: [marketplace] };
@@ -106,7 +106,7 @@ function marketplaceClient(options: {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const notify = (method: string) => {
 		for (const listener of [...listeners]) listener({ method, params: {} } as AnyNotification);
 	};
@@ -2545,14 +2545,14 @@ it("clears the fence for a re-added marketplace whose registration carries the s
  * whichever surface a test mounts. */
 function pluginsClient(plugins: PluginEntry[]) {
 	const methods: string[] = [];
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (method: string) => {
 			methods.push(method);
 			if (method === "evener/marketplace/list") return { marketplaces: [] };
 			return { plugins };
 		},
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	return { client, methods };
 }
 

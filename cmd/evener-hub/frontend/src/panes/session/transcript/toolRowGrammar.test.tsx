@@ -1834,6 +1834,7 @@ function renderWithEntities(node: ReactElement) {
       config={toolsConfig}
       surface="readOnly"
       disclosureScope="trg:tools"
+      sessionRef="local:s"
       entities={summaryEntityView()}
     >
       {node}

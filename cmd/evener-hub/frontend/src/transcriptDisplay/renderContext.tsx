@@ -244,7 +244,9 @@ export function TranscriptRenderProvider({
 
   return (
     <TranscriptRenderContext.Provider value={context}>
-      <EntityViewsProvider entities={entities}>{children}</EntityViewsProvider>
+      <EntityViewsProvider entities={entities} ownerRef={sessionRef}>
+        {children}
+      </EntityViewsProvider>
     </TranscriptRenderContext.Provider>
   );
 }

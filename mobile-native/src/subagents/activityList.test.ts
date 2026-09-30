@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ActivityDelegate, ActivityTree } from "@evener/appwire-client";
+import { activityNodeID, type ActivityDelegate, type ActivityTree } from "@evener/appwire-client";
 import { activityListItems, activityListKey } from "./activityList";
 import { flattenActivity, flattenSubagents } from "./subagentModel";
 
@@ -83,10 +83,10 @@ describe("the list's items", () => {
 			activityListItems(rows, { filter: "all", query: "", doneOpen: false, missing: ["x"] }).map(activityListKey),
 		).toEqual([
 			"section:failed",
-			"Fix race in tree settle",
+			activityNodeID({ kind: "delegate", delegate: d("Fix race in tree settle") }),
 			"section:running",
-			"Check drain ordering",
-			"Run linux -race",
+			activityNodeID({ kind: "delegate", delegate: d("Check drain ordering") }),
+			activityNodeID({ kind: "delegate", delegate: d("Run linux -race") }),
 			"done-fold",
 			"missing:x",
 		]);
@@ -155,6 +155,8 @@ describe("shell jobs in the list", () => {
 		const keys = activityListItems(all, { filter: "running", query: "", doneOpen: false, missing: [] }).map(
 			activityListKey,
 		);
-		expect(keys).toContain("job:job-docs");
+		const jobEntry = withJobs.root.entries.find((entry) => entry.kind === "shell");
+		if (!jobEntry) throw new Error("missing shell fixture");
+		expect(keys).toContain(activityNodeID(jobEntry));
 	});
 });

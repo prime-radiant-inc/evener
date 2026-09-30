@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // The Board screen mounted with only its native edges mocked: the navigation
 // reads go through the real BoardController to a fake hub that answers by
 // params, and the device memory is the real SeenMarkers over an in-memory
@@ -18,7 +19,7 @@ import type {
 	Thread,
 } from "@evener/appwire-client";
 import { STUCK_AFTER_MS, WireError } from "@evener/appwire-client";
-import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -336,159 +337,165 @@ function hub(
 		}
 		throw new Error(`no Live page at offset ${offset}`);
 	};
-	const client: ConversationClientLike & Pick<AppwireClientLike, "state" | "onStateChange"> = {
-		state: "ready",
-		onStateChange: () => () => {},
-		request: (method, params) =>
-			new Promise((resolve, reject) => {
-				if (method === "thread/read" || method === "turn/interrupt") {
-					threadCalls.push({ method, params });
-					const { ref } = params as { ref: string };
-					if (method === "thread/read") {
-						const row = sessionRows().find((candidate) => candidate.ref === ref);
+	const client: ConversationClientLike & Pick<AppwireClientLike, "state" | "onStateChange"> = Object.assign(
+		new FakeClient("ready"),
+		{
+			request: (method, params) =>
+				new Promise((resolve, reject) => {
+					if (method === "thread/read" || method === "turn/interrupt") {
+						threadCalls.push({ method, params });
+						const { ref } = params as { ref: string };
+						if (method === "thread/read") {
+							const row = sessionRows().find((candidate) => candidate.ref === ref);
+							resolve({
+								thread: threadOf(ref, row?.state === "active" ? "active" : "idle", row?.turn_ended_at),
+							} as never);
+						} else
+							resolve({
+								receipt: {
+									clientMutationId: (params as { clientMutationId: string }).clientMutationId,
+									disposition: "applied",
+									threadId: `thread:${ref}`,
+									projectionState: "pending",
+								},
+							} as never);
+						return;
+					}
+					if (method === "thread/shutdown" || method === "evener/thread/name/set") {
+						mutations.push({ method, params });
+						if (refuse) reject(new Error("session not found"));
+						else resolve({} as never);
+						return;
+					}
+					if (
+						method === "evener/pin-section/rename" ||
+						method === "evener/pin-section/delete" ||
+						method === "evener/favorite/set" ||
+						method === "evener/archive/set" ||
+						method === "evener/session-pin/assign"
+					) {
+						mutations.push({ method, params });
+						const respond = () => {
+							if (refuse) {
+								reject(new Error("request timed out"));
+								return;
+							}
+							if (method === "evener/archive/set") {
+								const change = params as { kind: string; id: string; archived: boolean };
+								if (change.kind === "session") {
+									// This hub's session is named by its bare id, another host's by its ref.
+									const ref = change.id.includes(":") ? change.id : `local:${change.id}`;
+									if (change.archived) archivedRefs.add(ref);
+									else archivedRefs.delete(ref);
+								}
+								for (const catalog of Object.values(shape.catalogs ?? {}))
+									for (const project of catalog ?? [])
+										if (project.key === change.id) project.is_archived = change.archived;
+							}
+							if (method === "evener/session-pin/assign") {
+								// A new category's name makes it, or reuses one that has it.
+								const pin = params as { sessionRef: string; sectionId?: string; sectionName?: string };
+								let sectionId = pin.sectionId;
+								if (!sectionId) {
+									const name = pin.sectionName ?? "";
+									const existing = shape.pins.find((section) => section.name === name);
+									sectionId = existing?.id ?? `made-${name.toLowerCase()}`;
+									if (!existing) shape.pins = [...shape.pins, { id: sectionId, name, count: 0 }];
+								}
+								pinnedRefs.set(pin.sessionRef, sectionId);
+							}
+							if (method === "evener/favorite/set") {
+								const change = params as { id: string; favorited: boolean };
+								for (const catalog of Object.values(shape.catalogs ?? {}))
+									for (const project of catalog ?? [])
+										if (project.key === change.id) project.favorite = change.favorited;
+							}
+							resolve({ ok: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
+						};
+						if (holdChanges) held.push(respond);
+						else respond();
+						return;
+					}
+					if (method === "evener/session/seen/set") {
+						seen.push((params as SessionSeenSetParams).sessions);
 						resolve({
-							thread: threadOf(ref, row?.state === "active" ? "active" : "idle", row?.turn_ended_at),
+							ok: true,
+							changed: true,
+							navigation: { generation_id: "generation-test", targets: [] },
 						} as never);
-					} else
-						resolve({
-							receipt: {
-								clientMutationId: (params as { clientMutationId: string }).clientMutationId,
-								disposition: "applied",
-								threadId: `thread:${ref}`,
-								projectionState: "pending",
-							},
-						} as never);
-					return;
-				}
-				if (method === "thread/shutdown" || method === "evener/thread/name/set") {
-					mutations.push({ method, params });
-					if (refuse) reject(new Error("session not found"));
-					else resolve({} as never);
-					return;
-				}
-				if (
-					method === "evener/pin-section/rename" ||
-					method === "evener/pin-section/delete" ||
-					method === "evener/favorite/set" ||
-					method === "evener/archive/set" ||
-					method === "evener/session-pin/assign"
-				) {
-					mutations.push({ method, params });
-					const respond = () => {
-						if (refuse) {
+						return;
+					}
+					if (method === "evener/search") {
+						// Search matches titles: the Board's sessions are live, and
+						// sessions only search finds are past.
+						const query = ((params as SearchParams).query ?? "").toLowerCase();
+						searches.push(query);
+						if (shape.searchFails) {
 							reject(new Error("request timed out"));
 							return;
 						}
-						if (method === "evener/archive/set") {
-							const change = params as { kind: string; id: string; archived: boolean };
-							if (change.kind === "session") {
-								// This hub's session is named by its bare id, another host's by its ref.
-								const ref = change.id.includes(":") ? change.id : `local:${change.id}`;
-								if (change.archived) archivedRefs.add(ref);
-								else archivedRefs.delete(ref);
-							}
-							for (const catalog of Object.values(shape.catalogs ?? {}))
-								for (const project of catalog ?? [])
-									if (project.key === change.id) project.is_archived = change.archived;
-						}
-						if (method === "evener/session-pin/assign") {
-							// A new category's name makes it, or reuses one that has it.
-							const pin = params as { sessionRef: string; sectionId?: string; sectionName?: string };
-							let sectionId = pin.sectionId;
-							if (!sectionId) {
-								const name = pin.sectionName ?? "";
-								const existing = shape.pins.find((section) => section.name === name);
-								sectionId = existing?.id ?? `made-${name.toLowerCase()}`;
-								if (!existing) shape.pins = [...shape.pins, { id: sectionId, name, count: 0 }];
-							}
-							pinnedRefs.set(pin.sessionRef, sectionId);
-						}
-						if (method === "evener/favorite/set") {
-							const change = params as { id: string; favorited: boolean };
-							for (const catalog of Object.values(shape.catalogs ?? {}))
-								for (const project of catalog ?? []) if (project.key === change.id) project.favorite = change.favorited;
-						}
-						resolve({ ok: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
-					};
-					if (holdChanges) held.push(respond);
-					else respond();
-					return;
-				}
-				if (method === "evener/session/seen/set") {
-					seen.push((params as SessionSeenSetParams).sessions);
-					resolve({ ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
-					return;
-				}
-				if (method === "evener/search") {
-					// Search matches titles: the Board's sessions are live, and
-					// sessions only search finds are past.
-					const query = ((params as SearchParams).query ?? "").toLowerCase();
-					searches.push(query);
-					if (shape.searchFails) {
+						const board = [...shape.live.flat(), ...shape.needsYou].filter(
+							(row, index, all) => all.findIndex((other) => other.ref === row.ref) === index,
+						);
+						const found = (rows: NavigationSessionSummary[], state?: string) =>
+							rows
+								.filter((row) => row.title.toLowerCase().includes(query))
+								.map((row) => ({
+									id: row.session_id,
+									title: row.title,
+									project: row.project,
+									state: state ?? row.state,
+									age: "5m",
+									ref: row.ref,
+									...(row.ask_pending ? { askPending: true } : {}),
+								}));
+						resolve({ live: found(board), past: found(shape.searchOnly ?? [], "ended") } as never);
+						return;
+					}
+					if (method === "evener/notices/list") {
+						noticeReads.push(method);
+						if (shape.noticesFail) reject(new Error("request timed out"));
+						else if (shape.notices) resolve({ notices: shape.notices } as never);
+						else reject(new WireError("no such method", -32601));
+						return;
+					}
+					if (method === "evener/activity/read") {
+						activityReads.push(params);
+						if (shape.activity) resolve({ sessions: shape.activity } as never);
+						else if (shape.activity === null) reject(new Error("request timed out"));
+						else reject(new WireError("no such method", -32601));
+						return;
+					}
+					if (method !== "evener/navigation/read") throw new Error(`unexpected ${method}`);
+					const read = params as NavigationReadParams;
+					requests.push(read);
+					if (fail(read)) {
 						reject(new Error("request timed out"));
 						return;
 					}
-					const board = [...shape.live.flat(), ...shape.needsYou].filter(
-						(row, index, all) => all.findIndex((other) => other.ref === row.ref) === index,
-					);
-					const found = (rows: NavigationSessionSummary[], state?: string) =>
-						rows
-							.filter((row) => row.title.toLowerCase().includes(query))
-							.map((row) => ({
-								id: row.session_id,
-								title: row.title,
-								project: row.project,
-								state: state ?? row.state,
-								age: "5m",
-								ref: row.ref,
-								...(row.ask_pending ? { askPending: true } : {}),
-							}));
-					resolve({ live: found(board), past: found(shape.searchOnly ?? [], "ended") } as never);
-					return;
-				}
-				if (method === "evener/notices/list") {
-					noticeReads.push(method);
-					if (shape.noticesFail) reject(new Error("request timed out"));
-					else if (shape.notices) resolve({ notices: shape.notices } as never);
-					else reject(new WireError("no such method", -32601));
-					return;
-				}
-				if (method === "evener/activity/read") {
-					activityReads.push(params);
-					if (shape.activity) resolve({ sessions: shape.activity } as never);
-					else if (shape.activity === null) reject(new Error("request timed out"));
-					else reject(new WireError("no such method", -32601));
-					return;
-				}
-				if (method !== "evener/navigation/read") throw new Error(`unexpected ${method}`);
-				const read = params as NavigationReadParams;
-				requests.push(read);
-				if (fail(read)) {
-					reject(new Error("request timed out"));
-					return;
-				}
-				const respond = () => {
-					const response = wireV2(
-						{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
-						answer(read),
-						`etag-${read.resource}-${read.offset ?? 0}`,
-						1,
-						"generation-test",
-					);
-					if (read.resource === "location")
-						(response.data as { metadata: Record<string, unknown> }).metadata.tier = archivedRefs.has(read.ref ?? "")
-							? "archived"
-							: "current";
-					resolve(response);
-				};
-				if (hold(read)) held.push(respond);
-				else respond();
-			}),
-		onNotification: (listener) => {
-			listeners.add(listener);
-			return () => listeners.delete(listener);
-		},
-	};
+					const respond = () => {
+						const response = wireSnapshot(
+							{ ...read, representationVersion: 3, offset: read.offset ?? 0, limit: read.limit ?? 50 },
+							answer(read),
+							`etag-${read.resource}-${read.offset ?? 0}`,
+							1,
+							"generation-test",
+						);
+						if (read.resource === "location")
+							(response.data as { metadata: Record<string, unknown> }).metadata.tier = archivedRefs.has(read.ref ?? "")
+								? "archived"
+								: "current";
+						resolve(response);
+					};
+					if (hold(read)) held.push(respond);
+					else respond();
+				}),
+			onNotification: (listener) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+		} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">,
+	);
 	return {
 		client,
 		requests,

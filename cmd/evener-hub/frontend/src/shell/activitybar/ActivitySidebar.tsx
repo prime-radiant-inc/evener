@@ -10,6 +10,7 @@
 import { useEffect, useMemo } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { useSessionActivity } from "../../stores/sessionActivity";
 import { IconButton, SegmentedControl } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useFocusedActivityScopeRef } from "../focusedSession";
@@ -33,13 +34,14 @@ export function ActivitySidebar() {
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
   const ref = useFocusedActivityScopeRef();
+  const { snapshot } = useSessionActivity(open ? ref : null);
   // Closed derives nothing: the sidebar is mounted for the whole desktop
   // session, and a location lookup plus recursive walk per polling update
   // duplicates the StatusBar's own derivation for a surface nothing shows.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
   const scope = useMemo(
-    () => (!open || ref === null ? null : deriveScope(navigationStore.getState(), ref)),
-    [open, resources, ref],
+    () => (!open || ref === null ? null : deriveScope(navigationStore.getState(), ref, snapshot)),
+    [open, resources, ref, snapshot],
   );
   const Body = scope === null ? null : activityTabSpec(tab).Body;
   // Resolved once per mount: spatialTransition reads getComputedStyle (a
@@ -76,6 +78,7 @@ export function ActivitySidebar() {
         >
           <div className={CLASS.head}>
             <ScopeCrumbs path={scope.path} />
+            {!scope.ancestryKnown ? <span>Finding session context…</span> : null}
             <IconButton
               label="Close the activity sidebar"
               icon="×"

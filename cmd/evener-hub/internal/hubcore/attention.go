@@ -34,6 +34,15 @@ func promotedAttentionLevel(normalized string, pendingEscalation bool) string {
 	return attentionLevel(hubapi.AttentionState(normalized, pendingEscalation))
 }
 
+// NeedsYou reports whether a node's own display state sits at the needs-you
+// attention level - the one-function rule behind the needs-you tier, the
+// attention summary, and the navigation projection's per-row
+// needs_you_subagents count, so those three can never disagree about the
+// same node.
+func NeedsYou(normalized string, pendingEscalation bool) bool {
+	return promotedAttentionLevel(normalized, pendingEscalation) == "needs_you"
+}
+
 // tierEligible reports whether a session belongs to the tier-eligible
 // population both DeriveAttention's summary and BuildTree's needs-you tier
 // (tree.go) draw from: top-level — neither a subagent nor a fork-superseded

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"slices"
 	"unicode/utf8"
 
@@ -129,6 +128,10 @@ func validateNavigationResourceSnapshot(
 				return navigationSchemaError("graph")
 			}
 			if !navigationOwnedSlotAllowed(key.Kind, kind, container.Owner.EntityKey == projectAnchor, container.Owner.Slot) {
+				return navigationSchemaError("graph")
+			}
+			// Session summaries are flat; the empty owned slot preserves graph structure.
+			if kind == "session" && len(container.Children) > 0 {
 				return navigationSchemaError("graph")
 			}
 			if kind == "session" && len(container.Children) > maxNavigationChildren || kind == "project" && len(container.Children) > maxNavigationSectionRows {
@@ -428,24 +431,11 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		appwire.Excerpt(value.LastMessage, appwire.MaxMessageExcerptRunes) != value.LastMessage ||
 		utf8.RuneCountInString(value.ModelName) > maxNavigationLabelRunes ||
 		!navigationIntCount(value.MoreSubagents) ||
-		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) ||
-		!navigationIntCount(value.OmittedArmedWatches) || value.OmittedArmedWatches > value.OmittedWatches {
+		!navigationIntCount(value.OmittedDescendants) ||
+		!navigationIntCount(value.RunningJobCount) || !navigationIntCount(value.WatchCount) ||
+		!navigationIntCount(value.ArmedWatchCount) || value.ArmedWatchCount > value.WatchCount ||
+		utf8.RuneCountInString(value.RunningJobCommand) > maxNavigationLabelRunes {
 		return false
-	}
-	for _, jobs := range []hubapi.NavigationArray[hubapi.NavigationJobSummary]{value.RunningJobs, value.CompletedJobs} {
-		for _, job := range jobs {
-			if !navigationSchemaIdentity(job.JobID, false) || !navigationSchemaIdentity(job.JobType, false) ||
-				!navigationSchemaIdentity(job.Status, false) || utf8.RuneCountInString(job.Command) > maxNavigationLabelRunes ||
-				utf8.RuneCountInString(job.Task) > maxNavigationLabelRunes || utf8.RuneCountInString(job.Reason) > maxNavigationLabelRunes ||
-				utf8.RuneCountInString(job.Intent) > maxNavigationLabelRunes || utf8.RuneCountInString(job.FullCommand) > maxNavigationFullCommandRunes {
-				return false
-			}
-		}
-	}
-	for _, watch := range value.Watches {
-		if !navigationWatchValueValid(watch) {
-			return false
-		}
 	}
 	return (value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)) &&
 		(value.Subagents == nil || navigationSubagentTallyValid(*value.Subagents)) &&
@@ -500,58 +490,6 @@ func navigationTaskProgressValid(tasks hubapi.NavigationTaskProgress) bool {
 // refuses rather than failing the whole resource over it.
 func navigationSubagentTallyValid(tally hubapi.NavigationSubagentTally) bool {
 	return navigationIntCount(tally.Running) && navigationIntCount(tally.Failed) && navigationIntCount(tally.Done)
-}
-
-// navigationWatchValueValid mirrors the web codec's watch row validation for one
-// wire watch summary. The codec validates a watch as part of the session entity,
-// so one malformed row fails the whole navigation resource; every producer of a
-// NavigationWatchSummary (the projector included) reads this one predicate
-// rather than an ad-hoc subset.
-func navigationWatchValueValid(watch hubapi.NavigationWatchSummary) bool {
-	if !navigationSchemaIdentity(watch.ID, false) || !navigationSchemaIdentity(watch.Source, false) ||
-		!navigationIntCount(watch.Deliveries) || utf8.RuneCountInString(watch.Target) > maxNavigationLabelRunes ||
-		utf8.RuneCountInString(watch.SendTo) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.Note) > maxNavigationLabelRunes ||
-		utf8.RuneCountInString(watch.OutputMatch) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.CreatedAt) > maxNavigationLabelRunes ||
-		utf8.RuneCountInString(watch.EndReason) > maxNavigationLabelRunes {
-		return false
-	}
-	for _, cadence := range watch.Cadence {
-		// Mirror the web codec's watchCadenceValue: kind is a required,
-		// non-empty identity bounded to maxNavigationIdentityBytes, a present
-		// seconds value must be finite and non-negative, every is a safe
-		// non-negative count, and filter is bounded like every other rendered
-		// label.
-		if !navigationSchemaIdentity(cadence.Kind, false) ||
-			!navigationCadenceSeconds(cadence.Seconds) ||
-			!navigationIntCount(cadence.Every) ||
-			utf8.RuneCountInString(cadence.Filter) > maxNavigationLabelRunes ||
-			(cadence.DerivedNextFireAt != "" && !validNavigationTimestamp(cadence.DerivedNextFireAt)) {
-			return false
-		}
-	}
-	for _, event := range watch.Events {
-		if utf8.RuneCountInString(event) > maxNavigationLabelRunes {
-			return false
-		}
-	}
-	// The codec validates created_at and each delivery_times entry as strict
-	// RFC3339 and fails the whole snapshot on one bad value, so reject it
-	// here before a malformed instant can reach the client.
-	if !validNavigationTimestamp(watch.CreatedAt) {
-		return false
-	}
-	for _, at := range watch.DeliveryTimes {
-		if !validNavigationTimestamp(at) {
-			return false
-		}
-	}
-	return true
-}
-
-// navigationCadenceSeconds mirrors the web codec's cadence seconds rule: an
-// absent value is zero, and a present one must be finite and non-negative.
-func navigationCadenceSeconds(value float64) bool {
-	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
 }
 
 func navigationProjectSummaryValid(value hubapi.NavigationProjectSummary) bool {

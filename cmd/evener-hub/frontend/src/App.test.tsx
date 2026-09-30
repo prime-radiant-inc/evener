@@ -1,7 +1,7 @@
 import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
 import { AppwireClient } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
@@ -72,8 +72,8 @@ const EMPTY_NAV_RESPONSE = {
 };
 
 function navigationReadResponse(generationId: string): NavigationReadResponse {
-  return wireV2(
-    { resource: "manifest", representationVersion: 2 },
+  return wireSnapshot(
+    { resource: "manifest", representationVersion: 3 },
     { ...EMPTY_NAV_RESPONSE, generation_id: generationId },
     '"test"',
     1,
@@ -215,7 +215,7 @@ test("initiates and settles the welcome navigation load without an error", async
     protocolVersion: "evener-appwire-v6",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [3] },
   }));
   const navRead = stubDeferredNavigationRead(client);
   render(<AppShell client={client} />);
@@ -236,7 +236,7 @@ test("AppShell's injected v2 handshake selects navigation through AppWire", asyn
     protocolVersion: "evener-appwire-v6",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "app-generation", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "app-generation", sequence: 0, readVersions: [3] },
   }));
   const calls: NavigationReadParams[] = [];
   client.on("evener/navigation/read", (params) => {
@@ -259,10 +259,10 @@ test("AppShell's injected v2 handshake selects navigation through AppWire", asyn
       if (manifestResult?.type !== "return") throw new Error("AppShell did not start the manifest load");
       await manifestResult.value;
     });
-    await vi.waitFor(() => expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]));
+    await vi.waitFor(() => expect(calls).toEqual([{ resource: "manifest", representationVersion: 3 }]));
 
-    expect(navigationStore.getState().mode).toBe("v2");
-    expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]);
+    expect(navigationStore.getState().mode).toBe("v3");
+    expect(calls).toEqual([{ resource: "manifest", representationVersion: 3 }]);
   } finally {
     connect.mockRestore();
     loadManifest.mockRestore();

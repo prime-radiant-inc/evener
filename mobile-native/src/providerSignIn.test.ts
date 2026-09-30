@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { authCalls, boundary as kit, type RecordedCall, signInClient } from "./providerSignIn.testkit";
+import { authCalls, boundary as kit, type RecordedCall, signInClient } from "./providerSignInTestUtils";
 
 const device = {
 	provider: "work",

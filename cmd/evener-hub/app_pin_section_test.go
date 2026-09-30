@@ -25,7 +25,7 @@ func newPinNavigationAppWireWeb(t *testing.T, withSection bool) (*WebServer, *hu
 	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: store})
 	web.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a"), topLevelMeta("session-b")})
-	if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := web.navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !withSection {
@@ -107,7 +107,7 @@ func TestHubSessionPinAssignAndUnpinPreserveCanonicalIdempotentReceipts(t *testi
 	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: store, PokeAttention: func() { attentionCalls++ }})
 	web.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a"), topLevelMeta("session-b")})
-	if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := web.navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +209,7 @@ func TestHubPinCatalogRetainsDormantAssignmentsAndEmptySections(t *testing.T) {
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: store})
 
-	result, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourcePinCatalog}, nil)
+	result, err := web.navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourcePinCatalog}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestHubPinCatalogRetainsDormantAssignmentsAndEmptySections(t *testing.T) {
 	if pinSections != 2 {
 		t.Fatalf("pin section entities = %d, want 2 (%s and %s)", pinSections, dormant.ID, empty.ID)
 	}
-	emptyResult, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourcePinSection, SectionID: empty.ID}, nil)
+	emptyResult, err := web.navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourcePinSection, SectionID: empty.ID}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

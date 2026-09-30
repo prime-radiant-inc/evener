@@ -1,4 +1,4 @@
-import type { NavigationWatchSummary } from "@evener/appwire-client";
+import type { SessionActivityCounts, SessionWatch } from "@evener/appwire-client";
 import {
   type ActivityDelegate,
   type ActivityDelegateRow,
@@ -54,17 +54,9 @@ export interface ActivityTreeProps {
   tree: ActivityTreeData;
   expandedFoldIDs: string[];
   onToggleFold: (foldID: string) => void;
-  // The session's live watches, absent-able: an old daemon omits the list, and
-  // undefined renders exactly as an empty list does.
-  watches?: NavigationWatchSummary[];
-  // Rows the hub projected away (over the per-session cap, or shed by the byte
-  // fitter). The Watches group header reports them as "+N more" so the panel
-  // never silently undercounts what the session holds.
-  omittedWatches?: number;
-  // The armed subset of those omitted rows. Without it the header's armed count
-  // would report only the retained rows, understating a session whose armed
-  // watches exceed the hub's per-session cap.
-  omittedArmedWatches?: number;
+  watches?: readonly SessionWatch[];
+  // Summary counts cover every page; loaded rows cannot establish an unknown total.
+  watchCounts?: SessionActivityCounts;
   continuationFailures?: Record<string, string | undefined>;
   onContinue?: (targetID: string, continuation: string) => void;
   loadingContinuationID?: string;
@@ -112,7 +104,14 @@ function delegateStatusText(delegate: ActivityDelegate): string {
 }
 
 function delegateName(delegate: ActivityDelegate): string {
-  return delegate.mandate ?? delegate.task ?? delegate.description ?? delegate.child?.label ?? delegate.childSessionId;
+  return (
+    delegate.mandate ??
+    delegate.task ??
+    delegate.description ??
+    delegate.child?.label ??
+    delegate.childSessionId ??
+    delegate.childRef
+  );
 }
 
 // rowStatusText is the one place a dense row's displayed status text is chosen:
@@ -597,21 +596,15 @@ const WatchRowView = memo(function WatchRowView({
 // tick. It reads the tick straight from context, which ActivityTree enables for
 // any session carrying watch rows - exactly as ActivityWatchDetail does for the
 // detail strip.
-function OpenWatchMeta({ watch }: { watch: NavigationWatchSummary }): ReactNode {
+function OpenWatchMeta({ watch }: { watch: SessionWatch }): ReactNode {
   const now = useTreeNow();
   return <span className={CLASS.denseMeta}>{watchMeta(watch, now)}</span>;
 }
 
-// The Watches group title that leads the panel body, with the count of armed
-// watches on its right. No "needs a look" count: the projection tracks no
-// drops, so there is no abnormal count to report.
-//
-// `armed` is the true total: the retained armed rows plus the armed rows the
-// hub omitted. Whenever rows were omitted the figure is labelled `N armed
-// total`, because it covers rows the panel does not list and the label must
-// never understate the session's armed watches.
-function WatchGroupHeader({ armed, omitted }: { armed: number; omitted: number }): ReactNode {
-  const count = omitted > 0 ? `${armed} armed total · +${omitted} more` : `${armed} armed`;
+// The header uses authoritative summary counts when supplied. Pending counts
+// remain unknown while loaded watch rows can already be useful.
+function WatchGroupHeader({ armed }: { armed: number | null }): ReactNode {
+  const count = `${armed === null ? "…" : armed} armed`;
   return (
     <div className={CLASS.watchGroup} data-testid="watch-group">
       <span className={CLASS.watchGroupTitle}>Watches</span>
@@ -811,8 +804,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     expandedFoldIDs,
     onToggleFold,
     watches,
-    omittedWatches = 0,
-    omittedArmedWatches = 0,
+    watchCounts,
     continuationFailures = {},
     onContinue,
     loadingContinuationID,
@@ -830,7 +822,10 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   const activityRows = useMemo(() => buildActivityRows(tree, new Set(expandedFoldIDs)), [tree, expandedFoldIDs]);
   const watchRows = useMemo(() => buildWatchRows(watches), [watches]);
   const rows = useMemo(() => [...watchRows, ...activityRows], [watchRows, activityRows]);
-  const armedWatches = useMemo(() => armedWatchCount(watches) + omittedArmedWatches, [watches, omittedArmedWatches]);
+  const armedWatches = useMemo(
+    () => (watchCounts ? (watchCounts.known ? watchCounts.active : null) : armedWatchCount(watches)),
+    [watches, watchCounts],
+  );
 
   // Stable callbacks so the memoized row views below only re-render when
   // their own row's data, disclosure, or focus actually changes.
@@ -993,8 +988,8 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     // The tree owns that clock outright - TreeNowContext is the only source, no
     // caller passes one in - so a watch-only session must still enable it.
     <TreeTickProvider live={hasLive || watchRows.length > 0}>
-      {(watchRows.length > 0 || omittedWatches > 0) && (
-        <WatchGroupHeader armed={armedWatches} omitted={omittedWatches} />
+      {(watchRows.length > 0 || (watchCounts?.known && watchCounts.total > 0)) && (
+        <WatchGroupHeader armed={armedWatches} />
       )}
       <div ref={treeRef} role="tree" className={CLASS.tree}>
         <RowBlock

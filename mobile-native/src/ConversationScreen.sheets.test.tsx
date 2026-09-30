@@ -4,6 +4,9 @@
 // it out of the front. Its header's title and ⋯ menu open those sheets and
 // act on the session (spec 8.1). On ConversationScreen.recovery.test.tsx's
 // harness.
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { SessionActivityReadParams } from "@evener/appwire-client";
+import { threadActivityFixture } from "./subagents/sessionActivityTestUtils";
 import { CommonActions, StackRouter } from "@react-navigation/routers";
 import type {
 	NativeStackHeaderItemMenu,
@@ -235,9 +238,7 @@ type Answers = Record<string, unknown>;
  * request the screen makes. */
 function sessionClient(read: Thread, answers: Answers) {
 	const requests: { method: string; params: unknown }[] = [];
-	const client = {
-		state: "ready",
-		onStateChange: () => () => {},
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (method: string, params?: unknown) => {
 			requests.push({ method, params });
 			if (method in answers) {
@@ -247,11 +248,13 @@ function sessionClient(read: Thread, answers: Answers) {
 				return answer;
 			}
 			if (method === "thread/read") return { thread: read };
+			if (method === "thread/unsubscribe") return {};
+			if (method === "evener/thread/activity/read")
+				return threadActivityFixture(read, params as SessionActivityReadParams).summary;
 			return new Promise<never>(() => {});
 		},
-		onNotification: () => () => {},
-	};
-	return { client, requests };
+	});
+	return { client, requests, notify: client.emitNotification.bind(client) };
 }
 
 async function flush() {
@@ -265,7 +268,7 @@ const screen = () => (
 );
 
 function mount(read: Thread = thread, answers: Answers = {}, connection: Record<string, unknown> = {}) {
-	const { client, requests } = sessionClient(read, answers);
+	const { client, requests, notify } = sessionClient(read, answers);
 	harness.connection = {
 		...screenConnection(client, "ready"),
 		error: null,
@@ -273,7 +276,7 @@ function mount(read: Thread = thread, answers: Answers = {}, connection: Record<
 		...connection,
 	};
 	const tree = render(screen());
-	return { tree, requests, client };
+	return { tree, requests, client, notify };
 }
 
 function subscribedReads(requests: { method: string; params: unknown }[]) {
@@ -478,6 +481,35 @@ it("keeps naming the model after a screen pushed over it closes, while the catal
 	await flush();
 	expect({ reads: modelReads, label: sessionInfoHost().modelLabel }).toEqual({ reads: 2, label: "DeepSeek 4.1 Flash" });
 	tree.unmount();
+});
+
+// The hub announces a refreshed model list on evener/auth/updated (#3539):
+// the screen reads the catalog again and the model's name follows it, with no
+// reopening.
+it("reads the catalog again when the hub announces a refreshed model list", async () => {
+	let modelReads = 0;
+	const { tree, notify } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				const displayName = modelReads === 1 ? "DeepSeek 4.1 Flash" : "DeepSeek 4.1 Flash (refreshed)";
+				return { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName }] };
+			},
+		},
+	);
+	try {
+		await flush();
+		expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+		act(() => notify({ method: "evener/auth/updated", params: {} }));
+		await flush();
+		expect({ reads: modelReads, label: sessionInfoHost().modelLabel }).toEqual({
+			reads: 2,
+			label: "DeepSeek 4.1 Flash (refreshed)",
+		});
+	} finally {
+		act(() => tree.unmount());
+	}
 });
 
 // The phone switched to another hub while this session stayed open: the

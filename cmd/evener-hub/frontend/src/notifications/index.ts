@@ -67,7 +67,7 @@ function snapshotBaseline(state: ReturnType<typeof navigationStore.getState>): M
 function onNavigationAttention(): void {
   const state = navigationStore.getState();
   applyCounts();
-  if (state.mode !== "v2") return;
+  if (state.mode !== "v3") return;
   if (state.attention.changed.length === 0 && prevNavigationAttention === null) return;
   const next = rebaselinePending
     ? (snapshotBaseline(state) ?? new Map(prevNavigationAttention))
@@ -146,7 +146,7 @@ export function initNotifications(): void {
     navigationStore.subscribe((state, prev) => {
       if (state.attention !== prev.attention) onNavigationAttention();
       if (state.resources !== prev.resources) applyTitleNow();
-      if (prev.mode === "v2" && state.mode !== "v2") prevNavigationAttention = null;
+      if (prev.mode === "v3" && state.mode !== "v3") prevNavigationAttention = null;
     }),
   );
 

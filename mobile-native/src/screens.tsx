@@ -191,6 +191,7 @@ import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
 import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
+import { useHeldSubagentTree } from "./subagents/useHeldSubagentTree";
 import { transcriptTreeTarget, useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
@@ -287,7 +288,7 @@ export type Routes = {
 	/** A subagent's own session, over its coordinator's (ruling 30). */
 	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
 	/** A shell job's detail, over its coordinator's Activity list. */
-	ShellJob: { hubId: string; jobId: string; title: string; coordinator: Coordinator };
+	ShellJob: { hubId: string; jobId: string; ownerRef: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
 	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
 };
@@ -979,8 +980,19 @@ export function ConversationScreen({
 		({ path, updatedAt }) =>
 			documentFreshness(memory.lastRead({ sessionRef: route.params.ref, path }), updatedAt) !== "read",
 	);
+	const badgeActivity = useHeldSubagentTree(
+		route.params.hubId,
+		conversation ? { ref: route.params.ref, threadId: conversation.threadId } : null,
+		chipsConnected ? client : null,
+		{ collections: false },
+	);
 	const chips = conversation
-		? contextChips(conversation, chipsConnected, { count: documents.length, fresh: freshDocuments })
+		? contextChips(
+				conversation,
+				chipsConnected,
+				{ count: documents.length, fresh: freshDocuments },
+				badgeActivity?.snapshot.summary?.delegates ?? null,
+			)
 		: [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
@@ -2162,6 +2174,18 @@ export function ConversationScreen({
 	useEffect(() => {
 		if (controls && hasConversation && sessionOpen) void controls.loadModels();
 	}, [controls, hasConversation, sessionOpen]);
+	// The hub announces a refreshed model list on evener/auth/updated (it
+	// serves a stale list at once and refreshes it behind the request), so a
+	// loaded catalog is read again in place (#3539).
+	useEffect(
+		() =>
+			controls
+				? client?.onNotification((notification) => {
+						if (notification.method === "evener/auth/updated") void controls.refreshModels();
+					})
+				: undefined,
+		[client, controls],
+	);
 	// The screen keeps what the current controls know of the catalog, so the
 	// controls made after a pushed screen closes start from it: a catalog they
 	// read, or none after a failed read cleared it.
