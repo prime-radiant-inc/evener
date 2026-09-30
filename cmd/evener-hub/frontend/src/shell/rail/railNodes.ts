@@ -874,7 +874,7 @@ export function revealExpansionIds(
   options?: { rowsUnderProjectNode?: boolean },
 ): string[] {
   for (const p of projects) {
-    const pathToRef = (row: RailSession): RailSession[] | undefined => {
+    const pathToRef = (row: RailSession): [RailSession, ...RailSession[]] | undefined => {
       if (row.ref === ref) return [row];
       if (!isArchivedTier(row)) return undefined;
       for (const child of row.children) {
