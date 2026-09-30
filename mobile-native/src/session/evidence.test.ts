@@ -476,8 +476,8 @@ describe("each tool's evidence, as the tools print it", () => {
 
 	it("shows an uncovered tool's arguments, and its output as it printed it", () => {
 		expect(real("call_unknown")).toEqual([
-			{ kind: "json", label: "Arguments", text: '{\n  "note_to_self": "Next: run the race detector."\n}' },
-			{ kind: "output", text: "compacted", lines: 1 },
+			{ kind: "json", label: "Arguments", text: '{\n  "scope": "agent"\n}' },
+			{ kind: "output", text: "reindexed 42 files", lines: 1 },
 		]);
 	});
 

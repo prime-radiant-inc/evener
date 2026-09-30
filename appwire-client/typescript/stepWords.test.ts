@@ -60,7 +60,7 @@ const WEB_TEXT: Record<ToolWireCall, string> = {
   call_use_skill: "Activated skill: systematic-debugging",
   call_mcp: "Used github: create issue",
   call_mcp_hyphenated: "Used linear app: list issues",
-  call_unknown: "Used compact context",
+  call_unknown: "Used reindex workspace",
 };
 
 test.each(Object.entries(WEB_TEXT) as [ToolWireCall, string][])(
