@@ -145,14 +145,17 @@ native [rehydrate](../../mobile/src/state/conversation.ts#L2017) and
 [recoverForRead](../../server/thread_history.go#L355) expose the ownership gap.
 Shared `reducer.history.test.ts` specifies that a later success clears history failure.
 
-**Discuss.** Keep the retained transcript and anchor while paced automatic
-rereads remain owned by the visible/needed session. Arm recovery only after a
-failed read and retire it on authoritative success: a healthy chat incurs no
-additional polling, network requests or disk reads for this mechanism. A server
-read can rebuild a failed projection, so deduplicate concurrent recovery and pace
-expensive rebuilds as well as network retries. Classify persistent source damage
-separately; preserving its diagnostic need not prohibit a later health check or
-justify discarding the recorded history.
+**Decision.** Keep the retained transcript, reading position and draft while
+automatic recovery remains owned by the open or otherwise needed chat, including
+after structured history failures and failed refreshes of an already-open chat.
+Retry with backoff without an attempt limit. Arm recovery only after a failed
+read and retire it on authoritative success: a healthy chat incurs no additional
+polling, network requests or disk reads for this mechanism. A server read can
+rebuild a failed projection, so deduplicate concurrent recovery and pace
+expensive rebuilds as well as network retries. Restore missing content and clear
+the error on success. Classify persistent source damage separately; preserving
+its diagnostic need not prohibit a later appropriate health check or justify
+discarding the recorded history. Implementation remains pending.
 
 **Acceptance.** Fail an already-open transcript read, repair its backing
 condition, and leave the session idle. Content recovers without reopening or
