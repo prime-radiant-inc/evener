@@ -141,6 +141,12 @@ That owner coalesces collection demand and reads. Separate store instances
 share wire subscription membership through leases; they do not share a second
 collection cache or RPC registry.
 
+The [session activity guide](../../docs/product/session-activity.md) describes
+current browser and native binding lifetimes, collection demand and navigation
+ownership. Keep those consumers on the same subscription lease as their
+transcripts; importing the activity store alone does not migrate an application's
+existing unsubscribe or replacing-read behavior.
+
 `projectSessionActivity(snapshot)` is a pure projection of loaded activity into
 the shared `ActivityTree` rendering model. It returns `tree`, `context`,
 `summary`, domain `watches`, `complete`, `pending`, and `issues`. Summary known

@@ -153,6 +153,40 @@ See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.
 [presentation tests](../../appwire-client/typescript/sessionActivityPresentation.test.ts)
 for these shared ownership contracts.
 
+## Client lifetimes
+
+The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
+shares a store by actual client object, requested ref and scope. A committed view
+acquires its holder; an abandoned render starts no read. The focused status
+surface observes the summary. Agents, Jobs and Watches tabs observe their own
+session-scoped collection. A visible page boundary supplies further demand,
+while the shared store retains and retries an interrupted continuation.
+
+The [visible transcript](../../cmd/evener-hub/frontend/src/panes/session/transcript/useEntityView.ts)
+observes session-scoped jobs and delegates for inline entity links and controls.
+It shares those reads with other holders of the same binding. If neither
+collection is already observed, mounting the transcript starts up to two bounded
+initial collection reads. Closing it releases that demand. Transcript watch
+references use the transcript's own watch evidence. The
+[recursive activity panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx)
+observes subtree collections while its body is open. These view lifetimes do not
+cause an activity read for every session in the navigation rail.
+
+The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
+subtree activity through the same shared store. Summary holders and collection
+holders acquire demand separately, and client replacement fences old replies.
+Its retained rendering tree does not own a separate network or retry loop.
+[Conversation reads](../../mobile/src/services/conversation.ts) and
+[session links](../../mobile-native/src/session/sessionMessage.ts) use the same
+additive thread lease as activity, preserving another holder when a screen closes.
+
+The [browser ownership tests](../../cmd/evener-hub/frontend/src/stores/sessionActivitySubscriptions.test.ts),
+[visible paging and action tests](../../cmd/evener-hub/frontend/src/shell/activitybar/activityApi.test.tsx),
+[native binding tests](../../mobile-native/src/subagents/sessionActivityBinding.test.ts)
+and [native lease tests](../../mobile-native/src/session/sessionActivityLeases.test.ts)
+exercise these boundaries. Browser geometry and native bundling are separate
+qualification gates; these contracts do not establish a device or provider run.
+
 ## Navigation boundary
 
 Navigation uses representation version 3 independently of connection protocol
