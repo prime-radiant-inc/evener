@@ -60,6 +60,10 @@ type WebServer struct {
 	// picker open does not re-run `evener launch-check --models` (a live
 	// provider listing that takes seconds) every time.
 	launchModels *launchModelsCache
+	// launchModelsChanged, when set, is told that a background refresh of a
+	// cached launch model list landed with a different list, so clients can
+	// update a picker that is already showing the old one.
+	launchModelsChanged func()
 	// launchRefreshes tracks request-triggered launch-model refreshes so the
 	// shutdown path can await them; otherwise their `evener launch-check` child
 	// outlives the hub. launchRefreshesClosed, guarded by launchRefreshMu, is
@@ -204,6 +208,11 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}, SubagentParent: web.navigationSubagentParent, Logf: navigationStatsLogfFor(web.cfg)})
 	server, hostAdmin, hostManage, notices, auth := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
+	// A launch model list a picker was served stale has been refreshed with a
+	// different one. evener/auth/updated's no-data form is the broadcast the
+	// hub sends when a model listing changes what clients show, and every
+	// client re-reads its model list on it.
+	web.launchModelsChanged = func() { notifyInstanceUpdated(server, "") }
 	web.auth = auth
 	web.hostAdmin = hostAdmin
 	web.hostManage = hostManage

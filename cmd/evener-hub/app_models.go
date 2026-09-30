@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -300,11 +301,24 @@ func launchModelsFetchContext(parent context.Context) (context.Context, context.
 // stale entry from. Its parent is the hub's lifetime context, not the request's,
 // so the request returning does not cancel it and shutdown does. A failed
 // refresh leaves the stale entry in place for the next request to retry.
+//
+// A refresh that lands a different list than the one it replaces is announced
+// (launchModelsChanged): the request that triggered it was answered with the
+// stale list, and a picker still showing it updates in place.
 func (s *WebServer) refreshLaunchModels(workingDir string, gen uint64) {
 	defer s.endLaunchModelsRefresh(workingDir)
 	ctx, cancel := launchModelsFetchContext(s.lifetime)
 	defer cancel()
-	_, _ = s.loadLaunchModels(ctx, workingDir, gen)
+	s.launchModels.mu.Lock()
+	stale := s.launchModels.entries[workingDir]
+	s.launchModels.mu.Unlock()
+	fresh, err := s.loadLaunchModels(ctx, workingDir, gen)
+	if err != nil || stale == nil || reflect.DeepEqual(stale.resp, fresh) {
+		return
+	}
+	if s.launchModelsChanged != nil {
+		s.launchModelsChanged()
+	}
 }
 
 // warmLaunchModels loads the unscoped launch model list into the cache, so the
