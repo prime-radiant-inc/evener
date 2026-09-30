@@ -1125,7 +1125,7 @@ func TestSessionActivityTailAccessPreservesProbePairing(t *testing.T) {
 	if data := wire.Data.(appwire.ErrorData); data.RetryDisposition != appwire.RetryDispositionAutomatic {
 		t.Fatalf("tail access parked: %+v", wire)
 	}
-	if source.Offset != 8 || len(source.Tail) != 0 {
+	if source.Offset != 4 || string(source.Tail) != "old!" {
 		t.Fatalf("old tail paired with new offset: %+v", source)
 	}
 	if err := os.Remove(path); err != nil {
@@ -1139,5 +1139,227 @@ func TestSessionActivityTailAccessPreservesProbePairing(t *testing.T) {
 	}
 	if string(source.Tail) != "restored" || index.rawBytes != 8 {
 		t.Fatalf("restored tail=%+v bytes=%d", source, index.rawBytes)
+	}
+}
+
+func TestSessionActivityRejectedTailCapturePublicRecovery(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"jobs", "delegates"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			id := "tailstaging"
+			savePastActivityMeta(t, dir, id, "Root")
+			params := appwire.SessionActivityListParams{Ref: encodeRef("", id)}
+			path := filepath.Join(jobsDir(dir, id), kind+".jsonl")
+			query := func() (int, error) {
+				page, err := LoadSessionActivityJobs(t.Context(), dir, id, params)
+				return len(page.Jobs), err
+			}
+			if kind == "jobs" {
+				writeJobLogFast(t, dir, id, 2)
+			} else {
+				writePastStableDelegates(t, dir, id, pastStableDescriptor(id, "tailchild1", "one"), pastStableDescriptor(id, "tailchild2", "two"))
+				query = func() (int, error) {
+					page, err := LoadSessionActivityDelegates(t.Context(), dir, id, params)
+					return len(page.Delegates), err
+				}
+			}
+			if rows, err := query(); err != nil || rows != 2 {
+				t.Fatalf("initial read rows=%d err=%v", rows, err)
+			}
+			read, err := retainedActivityRead(t.Context(), dir, id, appwire.SessionActivityReadParams{Ref: params.Ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if read.index != nil {
+					read.index.release()
+				}
+			}()
+			at := time.Unix(1_600_000_000, 0).UTC()
+			var source *sessionActivitySource
+			var accept func() error
+			var candidateOffset int64
+			if kind == "jobs" {
+				index := read.index.jobs[id]
+				store, err := jobstore.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_later", Type: jobstore.JobShell, OwnerSessionID: id, TS: at, StartedAt: &at}); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				cursor := index.Cursor
+				pending, complete, err := jobstore.ReadPage(t.Context(), path, &cursor, 4<<20, 2000)
+				if err != nil {
+					t.Fatal(err)
+				}
+				source = &index.Source
+				candidateOffset = cursor.Journal.Offset
+				accept = func() error { return read.acceptJobPage(path, index, cursor, pending, complete) }
+			} else {
+				store, err := delegatestore.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				event := delegateControllerRunStartedEvent("dlg_tailchild1", 1, delegatestore.TriggerInitial, at)
+				event.TS = at
+				if _, _, err := store.AppendBatch(read.index.delegates, []delegatestore.Event{event}); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				cursor := read.index.delegateCursor
+				pending, complete, err := delegatestore.ReadPage(t.Context(), path, &cursor, 4<<20, 2000)
+				if err != nil {
+					t.Fatal(err)
+				}
+				source = &read.index.delegateSource
+				candidateOffset = cursor.Journal.Offset
+				accept = func() error { return read.acceptDelegatePage(cursor, pending, complete) }
+			}
+			originalOffset := source.Offset
+			originalTail := string(source.Tail)
+			if candidateOffset <= originalOffset || originalTail == "" {
+				t.Fatal("invalid scanner candidate")
+			}
+			if err := os.Rename(path, path+".held"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			captureErr := accept()
+			var wire appwire.WireError
+			if !errors.As(captureErr, &wire) || wire.Data.(appwire.ErrorData).RetryDisposition != appwire.RetryDispositionAutomatic {
+				t.Fatalf("capture error=%v", captureErr)
+			}
+			if source.Offset != originalOffset || string(source.Tail) != originalTail {
+				t.Fatalf("rejected source pairing changed: %+v", source)
+			}
+			if kind == "jobs" {
+				index := read.index.jobs[id]
+				if index.Cursor.Journal.Offset != originalOffset || len(index.Pending) != 0 {
+					t.Fatal("rejected job scanner state committed")
+				}
+			} else if read.index.delegateCursor.Journal.Offset != originalOffset || len(read.index.delegatePending) != 0 {
+				t.Fatal("rejected delegate scanner state committed")
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(path+".held", path); err != nil {
+				t.Fatal(err)
+			}
+			read.index.release()
+			read.index = nil
+			wantRows := 3
+			if kind == "delegates" {
+				wantRows = 2
+			}
+			if rows, err := query(); err != nil || rows != wantRows {
+				t.Fatalf("public recovery rows=%d err=%v", rows, err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rewrite := strings.ReplaceAll(string(raw), "12:26:40Z", "12:26:41Z")
+			if rewrite == string(raw) || len(rewrite) != len(raw) {
+				t.Fatal("invalid changed tail")
+			}
+			if err := os.WriteFile(path, []byte(rewrite), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = query()
+			if !errors.As(err, &wire) || wire.Data.(appwire.ErrorData).EvenerErrorInfo != appwire.ErrorSessionActivityCursorStale {
+				t.Fatalf("changed tail accepted after recovery: %v", err)
+			}
+		})
+	}
+}
+
+func TestSessionActivityPausedAppendRemainsRecoverable(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"jobs", "delegates"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			id := "pausedappend"
+			savePastActivityMeta(t, dir, id, "Root")
+			params := appwire.SessionActivityListParams{Ref: encodeRef("", id)}
+			path := filepath.Join(jobsDir(dir, id), kind+".jsonl")
+			var raw []byte
+			at := time.Unix(1_600_000_000, 0).UTC()
+			query := func() (int, string, appwire.SessionActivityPage, error) {
+				page, err := LoadSessionActivityJobs(t.Context(), dir, id, params)
+				status := ""
+				if len(page.Jobs) > 0 {
+					status = page.Jobs[0].Status
+				}
+				return len(page.Jobs), status, page.Page, err
+			}
+			if kind == "jobs" {
+				writeJobLogFast(t, dir, id, 1)
+				raw, _ = json.Marshal(jobstore.Event{Kind: jobstore.EventJobFinished, Seq: 2, JobID: "job_000000", Status: jobstore.StatusCommandExitedNonzero, TerminalGen: "failure", TS: at})
+			} else {
+				writePastStableDelegates(t, dir, id, pastStableDescriptor(id, "childpaused", "one"))
+				event := delegateControllerRunStartedEvent("dlg_paused", 1, delegatestore.TriggerInitial, at)
+				event.Seq = 2
+				event.TS = at
+				raw, _ = json.Marshal(struct {
+					Events []delegatestore.Event `json:"events"`
+				}{[]delegatestore.Event{event}})
+				query = func() (int, string, appwire.SessionActivityPage, error) {
+					page, err := LoadSessionActivityDelegates(t.Context(), dir, id, params)
+					phase := ""
+					if len(page.Delegates) > 0 {
+						phase = page.Delegates[0].Phase
+					}
+					return len(page.Delegates), phase, page.Page, err
+				}
+			}
+			raw = append(raw, '\n')
+			if rows, _, _, err := query(); err != nil || rows != 1 {
+				t.Fatalf("initial admission rows=%d err=%v", rows, err)
+			}
+			appendBytes := func(data []byte) {
+				t.Helper()
+				file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.Write(data); err != nil {
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			half := len(raw) / 2
+			appendBytes(raw[:half])
+			rows, _, progress, err := query()
+			if err != nil || rows != 0 || progress.Complete || progress.NextCursor == "" {
+				t.Fatalf("incomplete prefix published: rows=%d page=%+v err=%v", rows, progress, err)
+			}
+			params.Cursor = progress.NextCursor
+			_, _, _, err = query()
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || wire.Data.(appwire.ErrorData).RetryDisposition != appwire.RetryDispositionAutomatic {
+				t.Fatalf("paused append parked: %v", err)
+			}
+			appendBytes(raw[half:])
+			rows, status, finished, err := query()
+			want := string(jobstore.StatusCommandExitedNonzero)
+			if kind == "delegates" {
+				want = "running"
+			}
+			if err != nil || rows != 1 || status != want || !finished.Complete {
+				t.Fatalf("completed append cannot resume existing admission: rows=%d status=%s page=%+v err=%v", rows, status, finished, err)
+			}
+		})
 	}
 }

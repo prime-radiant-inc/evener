@@ -277,17 +277,11 @@ func (read *sessionActivityRead) advanceDelegates(ctx context.Context) (bool, er
 		read.bytes -= cursor.Journal.ReadBytes + 128
 		read.budget -= max(len(events), cursor.Journal.ReadLines)
 		index.progress += uint64(used) + uint64(len(events))
-		index.delegateCursor = cursor
-		index.delegateComplete = false
-		index.delegatePending = events
-		index.delegatePendingEnds = cursor.EventEnds
-		index.delegatePendingPosition = 0
-		index.delegatePendingComplete = complete
-		if err := read.captureTail(path, &index.delegateSource, cursor.Journal.Offset); err != nil {
+		if err := read.acceptDelegatePage(cursor, events, complete); err != nil {
 			return false, err
 		}
 		if !complete && used == 0 && len(events) == 0 {
-			return false, appwire.Unavailable("retained delegate journal incomplete")
+			return false, sessionActivitySourceUnavailable("retained delegate journal append incomplete")
 		}
 		reserved = true
 	}
@@ -323,6 +317,21 @@ func (read *sessionActivityRead) advanceDelegates(ctx context.Context) (bool, er
 	index.delegatePendingPosition = 0
 	return index.delegateComplete, nil
 }
+func (read *sessionActivityRead) acceptDelegatePage(cursor delegatestore.PageCursor, events []delegatestore.Event, complete bool) error {
+	index := read.index
+	// Capture the candidate fingerprint before accepting its cursor and buffered events.
+	if err := read.captureTail(read.delegatePath(), &index.delegateSource, cursor.Journal.Offset); err != nil {
+		return err
+	}
+	index.delegateCursor = cursor
+	index.delegateComplete = false
+	index.delegatePending = events
+	index.delegatePendingEnds = cursor.EventEnds
+	index.delegatePendingPosition = 0
+	index.delegatePendingComplete = complete
+	return nil
+}
+
 func (read *sessionActivityRead) state() delegatestore.State {
 	if read.index.controller != nil {
 		return read.index.controller.durable

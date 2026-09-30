@@ -275,11 +275,10 @@ func (read *sessionActivityRead) captureTail(path string, source *sessionActivit
 	return sessionActivitySourceReadError("session activity source unavailable", err)
 }
 func captureSessionActivityTail(path string, source *sessionActivitySource, offset int64) (int, error) {
-	source.Offset = offset
-	// The tail must describe this offset, even if access fails while capturing it.
-	source.Tail = nil
 	n := min(offset, 64)
 	if n == 0 {
+		source.Offset = offset
+		source.Tail = nil
 		return 0, nil
 	}
 	file, err := os.Open(path)
@@ -290,6 +289,7 @@ func captureSessionActivityTail(path string, source *sessionActivitySource, offs
 	tail := make([]byte, int(n))
 	count, err := file.ReadAt(tail, offset-n)
 	if err == nil {
+		source.Offset = offset
 		source.Tail = tail
 	}
 	return count, err
