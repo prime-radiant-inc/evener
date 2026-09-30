@@ -62,9 +62,15 @@ const KNOWN_DELEGATE_SEND_STATUSES = new Set([
 
 /** A delegate_send footer: its text inside the brackets, the index of its
  * line in the output, its status field when it has one ("running",
- * "delivered", "not_delivered", …), and whether it says the delegate runs in
- * the background. */
-export type DelegateSendFooterInfo = { text: string; index: number; status?: string; runningInBackground: boolean };
+ * "delivered", "not_delivered", …), whether it says the delegate runs in the
+ * background, and why its wait was ignored when it says so. */
+export type DelegateSendFooterInfo = {
+  text: string;
+  index: number;
+  status?: string;
+  runningInBackground: boolean;
+  waitIgnoredReason?: string;
+};
 
 /** The footer a delegate_send printed, when its output ends in one (after any
  * structured_result and watch lines); undefined when the output has none, or
@@ -119,13 +125,15 @@ export function delegateSendFooter(output: string): DelegateSendFooterInfo | und
   }
 
   const waitIgnoredField = fields[fieldIndex] ?? "";
+  let waitIgnoredReason: string | undefined;
   if (waitIgnoredField.startsWith("wait ignored: ")) {
-    if (waitIgnoredField.slice("wait ignored: ".length).trim() === "") return undefined;
+    waitIgnoredReason = waitIgnoredField.slice("wait ignored: ".length).trim();
+    if (waitIgnoredReason === "") return undefined;
     fieldIndex += 1;
   }
 
   if (fieldIndex !== fields.length) return undefined;
-  return { text: footer, index, status, runningInBackground };
+  return { text: footer, index, status, runningInBackground, waitIgnoredReason };
 }
 
 /** The parts of a delegate_send step its exchange reads: its result's raw
@@ -158,11 +166,7 @@ export function delegateSendWaitIgnoredReason(step: DelegateSendResult): string 
     const reason = step.raw.wait_ignored_reason?.trim();
     if (reason) return reason;
   }
-  const footer = delegateSendFooter(step.output ?? "");
-  if (!footer) return undefined;
-  const field = footer.text.split(" · ").find((part) => part.startsWith("wait ignored: "));
-  const reason = field?.slice("wait ignored: ".length).trim();
-  return reason || undefined;
+  return delegateSendFooter(step.output ?? "")?.waitIgnoredReason;
 }
 
 /** Who a send addressed: `to`, the live argument, or `target`, the retired
