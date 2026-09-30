@@ -70,7 +70,11 @@ export interface ParsedNotification {
   structuredResultValid?: boolean;
   structuredResultReason?: string;
   concerns: string[];
-  rawText: string; // the verbatim block, always kept inspectable
+  // The verbatim block. Job and watch cards keep it inspectable in a raw
+  // disclosure; a delegate packet is fully extracted into the fields above, so
+  // the hub's delegate card renders no raw disclosure for it (the daemon's own
+  // frame remains the verbatim record).
+  rawText: string;
 }
 
 const REF_PART_PATTERN = /^[A-Za-z0-9._~-]+$/;
@@ -132,6 +136,21 @@ function optionalSignedInteger(raw: string | undefined): number | undefined {
   if (!/^-?\d+$/.test(text)) return undefined;
   const value = Number(text);
   return Number.isSafeInteger(value) ? value : undefined;
+}
+
+// The one JSON-body guard every parser in this file shares: a value that
+// trims to a `{`-opening string and parses to a plain object, or null. Each
+// caller applies its own shape semantics on top (the packet's kind, the
+// envelope's message, the communicate envelope's status/concerns).
+function tryParseJsonRecord(text: string): Record<string, unknown> | null {
+  const raw = text.trim();
+  if (!raw.startsWith("{")) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function analyzeJobNotification(
@@ -309,14 +328,8 @@ interface TerminalPacket {
 // escapes <, > and & as \u sequences, so the body is plain JSON with no
 // notification entities to decode.
 function parseTerminalPacket(body: string): TerminalPacket | null {
-  if (!body.startsWith("{")) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return null;
-  }
-  if (!isPlainObject(parsed) || typeof parsed.kind !== "string") return null;
+  const parsed = tryParseJsonRecord(body);
+  if (parsed === null || typeof parsed.kind !== "string") return null;
   const metadata = isPlainObject(parsed.metadata) ? parsed.metadata : {};
   const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
   return {
@@ -342,15 +355,9 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
 // that field existed. JSON that is not an envelope (no string `message`) is
 // the subagent's own text, whatever it looks like, and stays whole.
 function parsePacketEnvelope(text: string): { message: string; data?: Record<string, unknown> } | null {
-  const raw = text.trim();
-  if (!raw.startsWith("{")) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!isPlainObject(parsed) || typeof parsed.message !== "string") return null;
-    return { message: parsed.message.trim(), data: isPlainObject(parsed.data) ? parsed.data : undefined };
-  } catch {
-    return null;
-  }
+  const parsed = tryParseJsonRecord(text);
+  if (parsed === null || typeof parsed.message !== "string") return null;
+  return { message: parsed.message.trim(), data: isPlainObject(parsed.data) ? parsed.data : undefined };
 }
 
 // The stub phrases a machinery ending writes as its packet message - fold.go's
@@ -486,20 +493,14 @@ interface CommunicateEnvelope {
 // (commit_hashes/test_summary/artifacts) the legacy card rendered is a conscious
 // scope-out for this stream (see w8-t3-report).
 function parseCommunicateEnvelope(text: string): CommunicateEnvelope | null {
-  const raw = text.trim();
-  if (!raw.startsWith("{")) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const data = typeof parsed.data === "object" && parsed.data ? parsed.data : {};
-    return {
-      message: String(parsed.message ?? "").trim(),
-      status: String(data.status ?? "").trim(),
-      concerns: compactStringArray(data.concerns),
-    };
-  } catch {
-    return null;
-  }
+  const parsed = tryParseJsonRecord(text);
+  if (parsed === null) return null;
+  const data = isPlainObject(parsed.data) ? parsed.data : {};
+  return {
+    message: String(parsed.message ?? "").trim(),
+    status: String(data.status ?? "").trim(),
+    concerns: compactStringArray(data.concerns),
+  };
 }
 
 function notificationTone(attrs: Record<string, string>, communicate: CommunicateEnvelope | null): NotificationTone {

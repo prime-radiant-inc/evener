@@ -177,9 +177,10 @@
   background: var(--surface-inset);
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
-  font-family: var(--font-sans);
   font-size: var(--font-size-body);
   color: var(--ink-hi);
+  /* The one declaration the Markdown root inside reads for its family; the
+   * bubble holds no other text, so no direct font-family is needed. */
   --markdown-font: var(--font-sans);
   overflow-wrap: anywhere;
 }

@@ -203,14 +203,6 @@ function NotificationMetadata({ notification }: { notification: ParsedNotificati
     return <div className={CLASS.metadata}>{fields}</div>;
   }
   const fields = [
-    notification.delegateId && (
-      <EntityIdField
-        key="delegate-id"
-        label="Delegate id"
-        id={notification.delegateId}
-        testId="notification-field-delegate-id"
-      />
-    ),
     notification.jobId && (
       <EntityIdField key="job-id" label="Job id" id={notification.jobId} testId="notification-field-job-id" />
     ),
@@ -260,9 +252,10 @@ function structuredRowLabel(key: string): string {
 // shape is the caller's own). An absent value says so, quietly - an empty
 // cell reads as a gap.
 function structuredRowValue(value: unknown): ReactNode {
-  if (value === null || value === undefined) return <span className={CLASS.resultNone}>(none)</span>;
+  if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) {
+    return <span className={CLASS.resultNone}>(none)</span>;
+  }
   if (Array.isArray(value)) {
-    if (value.length === 0) return <span className={CLASS.resultNone}>(none)</span>;
     if (value.every((entry) => typeof entry !== "object")) return value.map(String).join(", ");
     return JSON.stringify(value);
   }
@@ -274,8 +267,9 @@ function structuredRowValue(value: unknown): ReactNode {
 // per schema key, headerless - the labels are the keys in words, and the
 // message above already names what the result is about. A result that failed
 // its verdict renders as a quiet note instead, never as rows that failed
-// their schema.
-function DelegateStructuredResult({ notification }: { notification: ParsedNotification }) {
+// their schema. The data's presence is the gate - only a delegate packet
+// carries these fields today - so the card needs no type branch here.
+function StructuredResult({ notification }: { notification: ParsedNotification }) {
   if (notification.structuredResultValid === false) {
     return (
       <div className={CLASS.structuredNote} data-testid="notification-structured-note">
@@ -363,7 +357,6 @@ export function NotificationCard({
   const resolvedRef = delegateView?.kind === "delegate" ? entityOpenTarget(delegateView)?.ref : undefined;
   const transcriptRef =
     notification.type === "delegate" ? [notification.transcriptRef, resolvedRef].find(isValidTranscriptRef) : undefined;
-  const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
   // The delegate head's identity (mockups 24-delegate-complete §A): the name
   // is the shared entity-card trigger, with the ending a failed or stopped run
   // appends riding after it - the same composition the parser's `secondary`
@@ -373,14 +366,36 @@ export function NotificationCard({
   // head text.
   const delegateLabel =
     notification.type === "delegate"
-      ? ([notification.name, notification.description, notification.delegateId].find(
+      ? [notification.name, notification.description, notification.delegateId].find(
           (part) => part !== undefined && part !== "",
-        ) as string | undefined)
+        )
       : undefined;
   const delegateEnding =
     delegateLabel !== undefined && (notification.tone === "error" || notification.tone === "warning")
       ? notification.reason
       : undefined;
+  // A delegate head whose body would render nothing - a machinery stop, a
+  // failure whose whole error is its ending (mockups 24-delegate-complete §C)
+  // - is the whole row: a disclosure that expanded to an empty body would be
+  // an affordance lie, so it renders as a static line. The terms below mirror
+  // the body's blocks one for one (metadata, prose, message-or-excerpt,
+  // structured result, concerns; the raw disclosure is delegate-suppressed) -
+  // keep them in step. Non-delegate cards always render the raw disclosure, so
+  // they always have a body.
+  const delegateHasReport =
+    notification.type !== "delegate" ||
+    Boolean(
+      notification.message ||
+        notification.prose ||
+        notification.excerpt ||
+        notification.structuredResult ||
+        notification.structuredResultValid === false ||
+        notification.concerns.length > 0,
+    );
+  // A delegate head with a label carries its trigger composition in place of
+  // the plain secondary string; every other shape splits that string.
+  const secondaryParts =
+    delegateLabel === undefined && notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
   const delegateTrigger =
     delegateLabel !== undefined && delegateView ? (
       // biome-ignore lint/a11y/noStaticElementInteractions: this span is a click guard, not a control - it only swallows the click so the trigger never toggles the enclosing summary; the interaction is the EntityRef trigger inside, which owns its own focus and hover lifecycle
@@ -398,21 +413,23 @@ export function NotificationCard({
         <EntityRef view={delegateView} id={notification.delegateId ?? ""} display={delegateLabel} triggerOnly />
       </span>
     ) : undefined;
-  // The delegate secondary as the head grammar's two pieces: the leading node
-  // (the trigger, or the plain label when unresolved, plus the ending's lead)
-  // and the trailing word the chevron hugs. A reported run has no ending, so
-  // its tail holds the controls alone.
+  // The unresolved-name fallback (plain text instead of the trigger) and the
+  // delegate secondary as the head grammar's two pieces: the leading node
+  // (trigger or label, plus the ending's lead) and the trailing word the
+  // chevron hugs. A reported run has no ending, so its tail holds the controls
+  // alone.
+  const delegateName = delegateTrigger ?? delegateLabel;
   let delegateLead: ReactNode | undefined;
   let delegateTailWord: string | undefined;
   if (delegateLabel !== undefined) {
     if (delegateEnding === undefined) {
-      delegateLead = delegateTrigger ?? delegateLabel;
+      delegateLead = delegateName;
       delegateTailWord = "";
     } else {
       const [endingLead, endingWord] = splitTrailingWord(delegateEnding);
       delegateLead = (
         <>
-          {delegateTrigger ?? delegateLabel}
+          {delegateName}
           {" · "}
           {endingLead}
         </>
@@ -448,6 +465,13 @@ export function NotificationCard({
       <Chevron />
     </span>
   );
+  // The head's Open control, hoisted like the chevron: every seat renders the
+  // same wrapped control, so the label and wrapper cannot drift between them.
+  const openControl = transcriptRef ? (
+    <span className={CLASS.openTrailing}>
+      <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
+    </span>
+  ) : null;
   // Seated first in the summary, before the chip and title: the glyph rides
   // the transcript's icon rail (see notificationcard.module.css's .statusIcon;
   // error's full-strength variant is .statusIconError). Decorative - the
@@ -463,22 +487,6 @@ export function NotificationCard({
       {seat.glyph}
     </span>
   );
-  // A delegate head whose body would render nothing - a machinery stop, a
-  // failure whose whole error is its ending (mockups 24-delegate-complete §C)
-  // - is the whole row: a disclosure that expanded to an empty body would be
-  // an affordance lie, so it renders as a static line. The Open control stays
-  // when the entity resolves: opening the transcript does not depend on the
-  // row's own body.
-  const delegateHasReport =
-    notification.type !== "delegate" ||
-    Boolean(
-      notification.message ||
-        notification.prose ||
-        notification.excerpt ||
-        notification.structuredResult ||
-        notification.structuredResultValid === false ||
-        notification.concerns.length > 0,
-    );
   if (!delegateHasReport) {
     return (
       <div className={CLASS.staticHead} data-testid="notification-card" data-tone={notification.tone}>
@@ -486,15 +494,11 @@ export function NotificationCard({
         {showWarningChip && <Chip tone="attention">warning</Chip>}
         <span className={CLASS.headingText}>
           <span className={CLASS.title}>{notification.title}</span>
-          {delegateLabel !== undefined && (
+          {delegateName !== undefined && (
             <span className={CLASS.secondary}>
-              {delegateTrigger ?? delegateLabel}
+              {delegateName}
               {delegateEnding ? ` · ${delegateEnding}` : null}
-              {transcriptRef ? (
-                <span className={CLASS.openTrailing}>
-                  <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
-                </span>
-              ) : null}
+              {openControl}
             </span>
           )}
         </span>
@@ -537,9 +541,7 @@ export function NotificationCard({
           ) : (
             <span className={CLASS.secondaryTail}>
               <span className={`${CLASS.title} ${CLASS.secondaryTailText}`}>{notification.title}</span>
-              <span className={CLASS.openTrailing}>
-                <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
-              </span>
+              {openControl}
               {chevron}
             </span>
           )}
@@ -550,13 +552,7 @@ export function NotificationCard({
                   {secondaryLead}
                   <span className={CLASS.secondaryTail}>
                     <span className={CLASS.secondaryTailText}>{secondaryTailWord}</span>
-                    <span className={CLASS.openTrailing}>
-                      <OpenTranscriptButton
-                        transcriptRef={transcriptRef}
-                        parentRef={sessionRef}
-                        label="Open subagent"
-                      />
-                    </span>
+                    {openControl}
                     {chevron}
                   </span>
                 </>
@@ -583,19 +579,19 @@ export function NotificationCard({
               </pre>
             )}
             {notification.message ? (
-              notification.type === "delegate" ? (
-                <div className={CLASS.messageBubble} data-testid="notification-message">
-                  <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
-                </div>
-              ) : (
-                <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
-                  <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
-                </div>
-              )
+              // The message's seat by type, the statusIconSeat idiom: a
+              // delegate's report renders in the sans bubble, every other
+              // lane in the excerpt treatment - one Markdown call either way.
+              <div
+                className={notification.type === "delegate" ? CLASS.messageBubble : CLASS.excerpt}
+                data-testid={notification.type === "delegate" ? "notification-message" : "notification-field-excerpt"}
+              >
+                <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
+              </div>
             ) : (
               <Excerpt text={notification.excerpt} ansi={notification.jobType === "shell"} />
             )}
-            {notification.type === "delegate" && <DelegateStructuredResult notification={notification} />}
+            <StructuredResult notification={notification} />
             {notification.concerns.length > 0 && (
               <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
             )}

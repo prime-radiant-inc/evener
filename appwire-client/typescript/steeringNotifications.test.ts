@@ -1,6 +1,8 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import delegateUserStopGo from "../../agent/delegate_user_stop.go?raw";
+import foldGo from "../../agent/internal/delegatestore/fold.go?raw";
 import {
   type ParsedNotification,
   parseSteeringNotifications,
@@ -1445,6 +1447,36 @@ test("machinery stop stubs do not parse as the subagent's message", () => {
       ),
     );
     expect(n?.message, `stub ${stub}`).toBeUndefined();
+  }
+});
+
+// The stub set above is handwritten on this side of the wire, so a producer
+// rewording its literal would silently regress the suppression - the exact
+// bug the set fixes. The daemon's own literals are pinned in Go source, so
+// read them the way delegateDetails.test.ts reads ending words: extract each
+// literal from the file that owns it and prove the parser still retires it.
+// (context.Canceled's "context canceled" is Go stdlib text with no repo
+// constant to read; the test above pins it as a literal.)
+test("the machinery stub set tracks the daemon's own pinned literals", () => {
+  const literals = [
+    /Message:\s*json\.RawMessage\(`"([^"`]+)"`\)/.exec(foldGo)?.[1],
+    /delegateUserStopMessage\s*=\s*"([^"]+)"/.exec(delegateUserStopGo)?.[1],
+  ].filter((literal): literal is string => literal !== undefined);
+  // The extraction itself is the alarm: a reworded producer no longer matches
+  // its pattern, so these contain checks fail before the behavior check runs.
+  expect(literals).toContain("stopped by parent");
+  expect(literals).toContain("Stopped by the user.");
+  for (const stub of literals) {
+    const [n] = notificationsOf(
+      parseSteeringNotifications(
+        structuredPacketFrame({
+          kind: "terminal_error",
+          message: stub,
+          metadata: { outcome: "stopped", reason: "stopped_by_parent" },
+        }),
+      ),
+    );
+    expect(n?.message, `daemon literal ${stub}`).toBeUndefined();
   }
 });
 
