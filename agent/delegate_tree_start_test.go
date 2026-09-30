@@ -805,8 +805,8 @@ func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t 
 	if aggregate := c.durable["dlg_target"]; aggregate.Generation != 0 || !aggregate.NeedsAttention || aggregate.CurrentRunOpen {
 		t.Fatalf("failed post-consumption append published aggregate: %#v", aggregate)
 	}
-	if len(c.reservations) != 1 || len(c.attentionWakeIDs["dlg_target"]) != 1 || c.live["dlg_target"].binding != nil {
-		t.Fatalf("failed acceptance did not retain narrow retry state: reservations=%#v unresolved=%#v live=%#v", c.reservations, c.attentionWakeIDs["dlg_target"], c.live["dlg_target"])
+	if len(c.reservations) != 1 || len(attentionWakeIDsOf(c, "dlg_target")) != 1 || c.live["dlg_target"].binding != nil {
+		t.Fatalf("failed acceptance did not retain narrow retry state: reservations=%#v unresolved=%#v live=%#v", c.reservations, attentionWakeIDsOf(c, "dlg_target"), c.live["dlg_target"])
 	}
 	reopened, err := delegatestore.Open(storePath)
 	if err != nil {

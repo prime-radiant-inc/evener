@@ -290,6 +290,14 @@ export function jobIsFailed(job: ActivityJob): boolean {
   return job.terminal ? isFailedJobOutcome(job.outcome) : isActivityFailure(job.outcome, job.status);
 }
 
+// A shell job has three states, the three the Activity list sorts by (spec 9):
+// a failed job is "failed", any other ended job "done", and a live one
+// "running". Shared so the web's rows and the phone's list read one rule.
+export function shellJobState(job: ActivityJob): "running" | "failed" | "done" {
+  if (jobIsFailed(job)) return "failed";
+  return job.terminal ? "done" : "running";
+}
+
 // Stable delegates describe one reusable resource; other delegate types are
 // turn containers. Keep this in one place so row visibility, fold failure
 // counts, and the status shown by the row all use the protocol's same truth.

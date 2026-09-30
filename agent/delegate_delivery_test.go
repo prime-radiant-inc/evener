@@ -184,8 +184,8 @@ func TestDelegateControllerInlineCommitReleasesNPlusOneOnlyAfterN(t *testing.T) 
 	if _, err := nestedResolution.commit.Complete(true); err != nil {
 		t.Fatalf("commit nested inline delivery: %v", err)
 	}
-	if nested.durable["dlg_owner"].NeedsAttention || len(nested.attentionWakeIDs["dlg_owner"]) != 0 {
-		t.Fatalf("inline DelegateDeliveryCommit opened owner attention: owner=%#v unresolved=%#v", nested.durable["dlg_owner"], nested.attentionWakeIDs["dlg_owner"])
+	if nested.durable["dlg_owner"].NeedsAttention || len(attentionWakeIDsOf(nested, "dlg_owner")) != 0 {
+		t.Fatalf("inline DelegateDeliveryCommit opened owner attention: owner=%#v unresolved=%#v", nested.durable["dlg_owner"], attentionWakeIDsOf(nested, "dlg_owner"))
 	}
 	events, err := nested.store.Load()
 	if err != nil {
@@ -250,8 +250,8 @@ func TestDelegateControllerInlineReplayAfterReceiverCommitIsIdempotent(t *testin
 	if len(pending) != 0 {
 		t.Fatalf("caller-committed nested replay remained pending: %#v", pending)
 	}
-	if nested.durable["dlg_owner"].NeedsAttention || len(nested.attentionWakeIDs["dlg_owner"]) != 0 {
-		t.Fatalf("caller-committed nested replay opened owner attention: owner=%#v unresolved=%#v", nested.durable["dlg_owner"], nested.attentionWakeIDs["dlg_owner"])
+	if nested.durable["dlg_owner"].NeedsAttention || len(attentionWakeIDsOf(nested, "dlg_owner")) != 0 {
+		t.Fatalf("caller-committed nested replay opened owner attention: owner=%#v unresolved=%#v", nested.durable["dlg_owner"], attentionWakeIDsOf(nested, "dlg_owner"))
 	}
 	events, err := nested.store.Load()
 	if err != nil {
@@ -428,8 +428,8 @@ func TestDelegateControllerCommittedDeliveryCompletionAcknowledgesExactHead(t *t
 	if !owner.NeedsAttention || owner.ProjectionRevision != beforeRevision+1 {
 		t.Fatalf("owner attention projection = needs:%t revision:%d, want true/%d", owner.NeedsAttention, owner.ProjectionRevision, beforeRevision+1)
 	}
-	if _, present := c.attentionWakeIDs["dlg_owner"][attentionID]; !present || len(c.attentionWakeIDs["dlg_owner"]) != 1 {
-		t.Fatalf("published unresolved attention = %#v, want only %q", c.attentionWakeIDs["dlg_owner"], attentionID)
+	if _, present := attentionWakeIDsOf(c, "dlg_owner")[attentionID]; !present || len(attentionWakeIDsOf(c, "dlg_owner")) != 1 {
+		t.Fatalf("published unresolved attention = %#v, want only %q", attentionWakeIDsOf(c, "dlg_owner"), attentionID)
 	}
 	if got := readDelegateControllerFile(t, path); bytes.Count(got, []byte{'\n'}) != bytes.Count(before, []byte{'\n'})+1 {
 		t.Fatalf("attention open and delivery ack did not share one journal batch:\n%s", got)
@@ -479,8 +479,8 @@ func TestDelegateControllerDeliveryAckRemovesOnlyExactID(t *testing.T) {
 		delegateAttentionID(firstPlan.deliveryID):  {},
 		delegateAttentionID(secondPlan.deliveryID): {},
 	}
-	if !reflect.DeepEqual(c.attentionWakeIDs["dlg_owner"], wantIDs) {
-		t.Fatalf("exact unresolved attention = %#v, want %#v", c.attentionWakeIDs["dlg_owner"], wantIDs)
+	if !reflect.DeepEqual(attentionWakeIDsOf(c, "dlg_owner"), wantIDs) {
+		t.Fatalf("exact unresolved attention = %#v, want %#v", attentionWakeIDsOf(c, "dlg_owner"), wantIDs)
 	}
 }
 
@@ -601,8 +601,8 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	if len(plans.deliveries) != 0 || receipt == nil || c.durable["dlg_target"].PendingDeliveries[0].DeliveryID != firstPlan.deliveryID {
 		t.Fatalf("failed ack state plans=%#v receipt=%#v pending=%#v", plans, receipt, c.durable["dlg_target"].PendingDeliveries)
 	}
-	if got := captureDelegateSnapshot(c.durable["dlg_owner"]); got.needsAttention != beforeOwner.needsAttention || got.revision != beforeOwner.revision || len(c.attentionWakeIDs["dlg_owner"]) != 0 {
-		t.Fatalf("failed batch published owner attention: before=%#v after=%#v unresolved=%#v", beforeOwner, got, c.attentionWakeIDs["dlg_owner"])
+	if got := captureDelegateSnapshot(c.durable["dlg_owner"]); got.needsAttention != beforeOwner.needsAttention || got.revision != beforeOwner.revision || len(attentionWakeIDsOf(c, "dlg_owner")) != 0 {
+		t.Fatalf("failed batch published owner attention: before=%#v after=%#v unresolved=%#v", beforeOwner, got, attentionWakeIDsOf(c, "dlg_owner"))
 	}
 	if got := readDelegateControllerFile(t, path); !bytes.Equal(got, before) {
 		t.Fatalf("failed delivery batch changed journal bytes")
@@ -632,8 +632,8 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	if _, err := deliverColdDelegatePacket(replay[0]); err != nil {
 		t.Fatalf("retry through public delivery path: %v", err)
 	}
-	if len(c.durable["dlg_target"].PendingDeliveries) != 1 || !c.durable["dlg_owner"].NeedsAttention || len(c.attentionWakeIDs["dlg_owner"]) != 1 {
-		t.Fatalf("retried delivery did not publish atomically: sender=%#v owner=%#v unresolved=%#v", c.durable["dlg_target"], c.durable["dlg_owner"], c.attentionWakeIDs["dlg_owner"])
+	if len(c.durable["dlg_target"].PendingDeliveries) != 1 || !c.durable["dlg_owner"].NeedsAttention || len(attentionWakeIDsOf(c, "dlg_owner")) != 1 {
+		t.Fatalf("retried delivery did not publish atomically: sender=%#v owner=%#v unresolved=%#v", c.durable["dlg_target"], c.durable["dlg_owner"], attentionWakeIDsOf(c, "dlg_owner"))
 	}
 
 	inline, inlineStorePath := newDelegateControllerTestHarness(t, 2, 1)

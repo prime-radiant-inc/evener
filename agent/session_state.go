@@ -463,8 +463,10 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		// The settlement is atomic with the state publication: a no-op
 		// transition (already settled, or closing) leaves the live pending
 		// set untouched rather than half-settling it against an unchanged
-		// state.
-		s.askPending = pending
+		// state. setAskPendingLocked also clears askPendingCallArgs: pending
+		// is a re-derivation from the transcript, carrying no raw call
+		// arguments of its own to keep in step with it.
+		s.setAskPendingLocked(pending)
 	}
 	release(transitioned, turnMS)
 	if transitioned && isAskRound && len(pending) == 0 {

@@ -53,13 +53,16 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 	const scale = useTextScale();
 	const face = useReadingFace();
 	const { kind, title, name, lines, age, spokenAge, freshness } = useDocumentFacts(hubId, sessionRef, path, updatedAt);
-	// A chip marks only a change (8.2); Files and its chip mark what's new.
-	const changed = freshness === "changed" ? "changed since you last read" : null;
-	const facts = [lines, age, changed].filter((fact) => fact !== null);
+	// A chip marks only a change (8.2); Files and its chip mark what's new. On
+	// screen the change is the blue dot alone; VoiceOver, which can't see the
+	// dot, says it in words.
+	const changed = freshness === "changed";
+	const facts = [lines, age].filter((fact) => fact !== null);
 	// Until its summary lands the title is the file name, so a second copy
 	// would name it twice on screen and in VoiceOver.
 	const secondary = title === name ? null : name;
-	const label = [kind, title, secondary, lines, spokenAge, changed].filter((part) => part !== null).join(", ");
+	const spokenChange = changed ? "changed since you last read" : null;
+	const label = [kind, title, secondary, lines, spokenAge, spokenChange].filter((part) => part !== null).join(", ");
 	const details = secondary === null ? facts.join(" · ") : facts.map((fact) => ` · ${fact}`).join("");
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	return (

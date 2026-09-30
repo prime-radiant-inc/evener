@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/syncio"
 )
 
 // State is a channel lifecycle state. 04a's chain is
@@ -399,7 +400,7 @@ type Manager struct {
 	// child's stderr on its own goroutine, so without a shared lock two hosts'
 	// copies would write to a caller-supplied writer concurrently — a writer like
 	// bytes.Buffer is not safe for that.
-	diagWriter *syncWriter
+	diagWriter *syncio.Writer
 
 	baseCtx context.Context
 	cancel  context.CancelFunc
@@ -511,7 +512,7 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		reg:             reg,
 		opts:            opts,
 		runner:          opts.runner(),
-		diagWriter:      newSyncWriter(opts.stderr()),
+		diagWriter:      syncio.NewWriter(opts.stderr()),
 		baseCtx:         baseCtx,
 		cancel:          cancel,
 		closeDone:       make(chan struct{}),

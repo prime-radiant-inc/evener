@@ -6,9 +6,9 @@ import {
 	subagentSections,
 } from "./subagentModel";
 
-export type SubagentFilter = "all" | SubagentState;
+export type ActivityFilter = "all" | SubagentState;
 
-export type SubagentListItem =
+export type ActivityListItem =
 	| { kind: "section"; state: SubagentState; count: number }
 	| { kind: "row"; row: ActivityListRow }
 	| { kind: "doneFold"; count: number; open: boolean }
@@ -18,12 +18,12 @@ export type SubagentListItem =
  * jobs together, failed, then running, then done, where done is one folded
  * row under All until you open it. Section counts follow the search; the
  * chips and the strip don't (ruling 8). What couldn't be listed comes last. */
-export function subagentListItems(
+export function activityListItems(
 	rows: readonly ActivityListRow[],
-	view: { filter: SubagentFilter; query: string; doneOpen: boolean; missing: readonly string[] },
-): SubagentListItem[] {
+	view: { filter: ActivityFilter; query: string; doneOpen: boolean; missing: readonly string[] },
+): ActivityListItem[] {
 	const sections = subagentSections(rows.filter((row) => matchesSearch(row, view.query)));
-	const items: SubagentListItem[] = [];
+	const items: ActivityListItem[] = [];
 	for (const state of STATE_ORDER) {
 		if (view.filter !== "all" && view.filter !== state) continue;
 		const section = sections[state];
@@ -41,7 +41,7 @@ export function subagentListItems(
 	return items;
 }
 
-export function subagentListKey(item: SubagentListItem): string {
+export function activityListKey(item: ActivityListItem): string {
 	switch (item.kind) {
 		case "section":
 			return `section:${item.state}`;

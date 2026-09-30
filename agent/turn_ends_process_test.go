@@ -67,6 +67,71 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 	}
 }
 
+// TestAskResponderAttachedIsLiveOnly: a responder belongs to the process that
+// attached it, not to the session. The flag offers ask_user in this process,
+// never reaches the snapshot, and leaves the persisted NonInteractive as the
+// session set it, so a resumed session is exactly what a plain run saves.
+func TestAskResponderAttachedIsLiveOnly(t *testing.T) {
+	t.Parallel()
+	cfg := SessionConfig{NonInteractive: true, AskResponderAttached: true}
+	if cfg.noOneToAsk() {
+		t.Error("a session with a responder attached reports nobody to ask")
+	}
+	snap := cfg.toSnapshot()
+	if !snap.NonInteractive {
+		t.Error("attaching a responder changed the persisted NonInteractive")
+	}
+	if configFromSnapshot(snap.Clone()).AskResponderAttached {
+		t.Error("AskResponderAttached survived the snapshot; a resume would think a responder is attached")
+	}
+	if !(SessionConfig{NonInteractive: true}).noOneToAsk() {
+		t.Error("a non-interactive session with no responder reports someone to ask")
+	}
+}
+
+// TestRestoreKeepsPersistedNonInteractive: restore takes NonInteractive from
+// the snapshot whoever restores, so a serve-created interactive session
+// resumed once by one-shot `evener run` is still interactive under serve.
+func TestRestoreKeepsPersistedNonInteractive(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		persisted bool
+		oneShot   bool
+		want      bool
+	}{
+		{name: "one-shot resuming an interactive session", persisted: false, oneShot: true, want: false},
+		{name: "one-shot resuming a non-interactive session", persisted: true, oneShot: true, want: true},
+		{name: "serve resuming an interactive session", persisted: false, oneShot: false, want: false},
+		{name: "serve resuming a non-interactive session", persisted: true, oneShot: false, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{name: "openai"})
+			meta := schema.SessionMeta{
+				ID:        "01KONESHOTNONINTERACTIVE000",
+				ProfileID: "openai",
+				Model:     "gpt-5.2",
+				Config:    schema.ConfigSnapshot{NonInteractive: tt.persisted},
+			}
+			sess, err := RestoreSessionFromMetaWithConfig(
+				client,
+				NewOpenAIProfile("gpt-5.2"),
+				execenv.NewLocalExecutionEnvironment(t.TempDir()),
+				meta,
+				RestoreSessionConfig{StateDir: t.TempDir(), TurnEndsProcess: tt.oneShot},
+			)
+			if err != nil {
+				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+			}
+			t.Cleanup(sess.Close)
+			if got := sess.cfg.NonInteractive; got != tt.want {
+				t.Fatalf("restored NonInteractive = %v, want %v (persisted %v, one-shot restorer %v)", got, tt.want, tt.persisted, tt.oneShot)
+			}
+		})
+	}
+}
+
 // TestFrozenDescriptorTakesTurnEndsProcessFromTheLiveParent pins the third
 // path, which the drain-guidance attempt missed: a stable delegate restarted
 // from its frozen descriptor. The descriptor's snapshot answers "what was this

@@ -14,7 +14,7 @@ import {
 	WireError,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { ProvidersPage } from "./ProvidersPage";
+import { ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
 import { render, renderedText, screenConnection } from "../renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
@@ -38,7 +38,10 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connectio
 // Shown once, as a page that stays in front.
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
-	return { useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]) };
+	return {
+		useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, [effect]),
+		usePreventRemove: (await import("./backGuardTestUtils")).usePreventRemoveMock,
+	};
 });
 
 afterEach(() => {

@@ -83,7 +83,7 @@ Other sources:
   - Existing storage keys don't change.
   - New kv-store keys:
     - `evener.native.display` (device-wide, never cleared with a hub);
-    - `evener.native.launch-history.${hubId}`, removed by `ConnectionProvider.removeHub`.
+    - `evener.native.launch-setup.${hubId}`, removed by `ConnectionProvider.removeHub`.
   - The creation draft gains one optional field, `source` (ruling 28).
 - **Tests** meet the hub at the request boundary: a fake `request`/`onNotification` client, or `scriptedClient` from `src/renderNative.testkit.tsx`.
   - Screens render through `render` and `renderedText` from the same kit, with `react-native` mocked by `nativeModuleMock()` and `expo-symbols` by `{ SymbolView: "SymbolView" }`.
@@ -237,7 +237,7 @@ None open. The coordinator settled question 1 (the Alerts page moves to phase 6:
    - Pinned by Task 27: a source guard fails the build if any production module under `mobile-native/src` renders "Reconnect".
 5. **Removing a hub from inside the Hub sheet.**
    - Removing the hub you're connected to closes the sheet and returns to the first-run screen, with no stale Board.
-   - A removed hub's launch history is forgotten, and no other hub's are.
+   - A removed hub's remembered start is forgotten, and no other hub's is.
    - Pinned by Task 3 (`useClosesOnHubChange` leaves for `Hubs` when no hub is selected), Task 9 (removing the selected hub from its details calls `removeHub` and leaves the navigation to the sheet) and Task 17 (`forgetLaunchMemory` leaves other hubs alone).
 
 ---
@@ -3053,9 +3053,8 @@ PR 8 lands the pure rules, the phone's memory of starts, host-routed reads, and 
 **Interfaces:**
 - Consumes: `basename` and `LaunchConfigLayer` from `@evener/appwire-client`; `LOCAL_HOST` from `cmd/evener-hub/frontend/src/stores/hostRouting.ts`.
 - Produces:
-  - types: `OWNED_FIELDS`, `OwnedOverrides`, `ModelChoice`, `LaunchSetup`, `RememberedSetup`, `SessionSeed`, `HostMove`, `AccessLevel`, and `ACCESS_LEVELS`;
+  - types: `OWNED_FIELDS`, `OwnedOverrides`, `ModelChoice`, `LaunchSetup`, `SessionSeed`, `HostMove`, `AccessLevel`, and `ACCESS_LEVELS`;
   - `ownedOverrides(layer)` and `withOwnedOverrides(layer, owned)`;
-  - `newestSetup(history)`;
   - `moveToHost(cwd, hostLabel, projectExists, recentOnHost)` and `projectName(cwd)`;
   - `effortLabel(level)`, `accessOf(sandbox, hubDefault)` and `networkApplies(access)`;
   - `setupOf(form)`, `hostOfRef(ref)` and `modelFromId(id, models)`.
@@ -3073,7 +3072,6 @@ import {
 	modelFromId,
 	moveToHost,
 	networkApplies,
-	newestSetup,
 	ownedOverrides,
 	projectName,
 	setupOf,
@@ -3108,22 +3106,6 @@ describe("the overrides the sheet owns", () => {
 			sandbox: "read-only",
 			env: { A: "1" },
 		});
-	});
-});
-
-describe("the newest start", () => {
-	const history = [
-		{ setup: setup({ effort: "high" }), at: 1 },
-		{ setup: setup({ cwd: "/home/jesse/git/docs", effort: "max" }), at: 3 },
-		{ setup: setup({ effort: "xhigh" }), at: 2 },
-	];
-
-	it("is nothing when nothing was ever started from this phone", () => {
-		expect(newestSetup([])).toBeNull();
-	});
-
-	it("opens a new sheet on the newest start", () => {
-		expect(newestSetup(history)?.cwd).toBe("/home/jesse/git/docs");
 	});
 });
 
@@ -3271,12 +3253,6 @@ export interface LaunchSetup {
 	overrides: OwnedOverrides;
 }
 
-/** A remembered start: its setup, and when a session started with it (ms). */
-export interface RememberedSetup {
-	setup: LaunchSetup;
-	at: number;
-}
-
 /** What "New session like this" copies from a session (ruling 24). */
 export interface SessionSeed {
 	host: string;
@@ -3303,14 +3279,6 @@ export function withOwnedOverrides(layer: LaunchConfigLayer, owned: OwnedOverrid
 	const next: LaunchConfigLayer = { ...layer };
 	for (const field of OWNED_FIELDS) delete next[field];
 	return { ...next, ...ownedOverrides(owned) };
-}
-
-/** The newest setup started from this phone: where a sheet with nothing in
- * it yet begins. */
-export function newestSetup(history: readonly RememberedSetup[]): LaunchSetup | null {
-	let newest: RememberedSetup | null = null;
-	for (const entry of history) if (!newest || entry.at > newest.at) newest = entry;
-	return newest?.setup ?? null;
 }
 
 export interface HostMove {
@@ -3430,7 +3398,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Commit** (`feat(native): a new session's setup and its rules`).
 
-### Task 17: The phone's memory of starts
+### Task 17: The phone's memory of its last start
 
 **Files:**
 - Create: `mobile-native/src/newSession/launchMemory.ts`, `mobile-native/src/newSession/nativeLaunchMemory.ts`
@@ -3441,8 +3409,8 @@ Expected: PASS.
 - Consumes: Task 16.
 - Produces:
   - `interface LaunchMemoryStorage { getItemSync; setItemSync; removeItemSync }`;
-  - `historyKey(hubId)` and `HISTORY_LIMIT = 50`;
-  - `class LaunchMemory`: constructor `(storage, hubId)`; `history()` and `recordStart(setup, at)`;
+  - `lastSetupKey(hubId)`;
+  - `class LaunchMemory`: constructor `(storage, hubId)`; `lastSetup(): LaunchSetup | null` and `recordStart(setup)`;
   - `forgetLaunchMemory(storage, hubId)`;
   - `launchMemory(hubId): LaunchMemory` (one per hub, on `expo-sqlite/kv-store`) and `forgetLaunchMemoryForHub(hubId)`.
 
@@ -3451,7 +3419,7 @@ Expected: PASS.
 ```ts
 // mobile-native/src/newSession/launchMemory.test.ts
 import { describe, expect, it } from "vitest";
-import { forgetLaunchMemory, HISTORY_LIMIT, historyKey, LaunchMemory } from "./launchMemory";
+import { forgetLaunchMemory, LaunchMemory, lastSetupKey } from "./launchMemory";
 import type { LaunchSetup } from "./launchSetup";
 
 function memory(values = new Map<string, string>()) {
@@ -3475,62 +3443,48 @@ const setup = (over: Partial<LaunchSetup> = {}): LaunchSetup => ({
 	...over,
 });
 
-describe("starts", () => {
-	it("keeps the newest start per host and project, newest first", () => {
-		const starts = new LaunchMemory(memory(), "hub-a");
-		starts.recordStart(setup({ effort: "high" }), 1);
-		starts.recordStart(setup({ cwd: "/home/jesse/git/docs" }), 2);
-		starts.recordStart(setup({ effort: "max" }), 3);
-		expect(starts.history().map((entry) => [entry.setup.cwd, entry.setup.effort, entry.at])).toEqual([
-			["/home/jesse/git/evener", "max", 3],
-			["/home/jesse/git/docs", "xhigh", 2],
-		]);
-	});
-
-	it("forgets the oldest past the limit", () => {
-		const starts = new LaunchMemory(memory(), "hub-a");
-		for (let index = 0; index <= HISTORY_LIMIT; index++) starts.recordStart(setup({ cwd: `/p/${index}` }), index);
-		expect(starts.history()).toHaveLength(HISTORY_LIMIT);
-		expect(starts.history().some((entry) => entry.setup.cwd === "/p/0")).toBe(false);
-	});
-
-	it("leaves itself unchanged when the phone can't store the change", () => {
+describe("the start New session opens on", () => {
+	it("keeps only the newest start, across launches", () => {
 		const storage = memory();
 		const starts = new LaunchMemory(storage, "hub-a");
-		starts.recordStart(setup(), 1);
+		expect(starts.lastSetup()).toBeNull();
+		starts.recordStart(setup({ effort: "high" }));
+		starts.recordStart(setup({ cwd: "/home/jesse/git/docs" }));
+		starts.recordStart(setup({ effort: "max" }));
+		expect(starts.lastSetup()).toEqual(setup({ effort: "max" }));
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toEqual(setup({ effort: "max" }));
+	});
+
+	it("leaves itself unchanged when the phone can't store a start", () => {
+		const storage = memory();
+		const starts = new LaunchMemory(storage, "hub-a");
+		starts.recordStart(setup());
 		storage.setItemSync = () => {
 			throw new Error("disk full");
 		};
-		expect(() => starts.recordStart(setup({ cwd: "/home/jesse/git/docs" }), 2)).toThrow("disk full");
-		expect(starts.history().map((entry) => entry.setup.cwd)).toEqual(["/home/jesse/git/evener"]);
+		expect(() => starts.recordStart(setup({ cwd: "/other" }))).toThrow("disk full");
+		expect(starts.lastSetup()?.cwd).toBe("/home/jesse/git/evener");
 	});
 });
 
 describe("stored values", () => {
-	it("drops entries this build can't read and keeps the rest", () => {
-		const storage = memory(
-			new Map([
-				[
-					historyKey("hub-a"),
-					JSON.stringify([
-						{ setup: { host: 7 }, at: 1 },
-						{ setup: setup(), at: 2 },
-					]),
-				],
-				[historyKey("hub-b"), "{not json"],
-			]),
-		);
-		expect(new LaunchMemory(storage, "hub-a").history().map((entry) => entry.at)).toEqual([2]);
-		expect(new LaunchMemory(storage, "hub-b").history()).toEqual([]);
+	it("reads a setup this build can't read as nothing", () => {
+		const storage = memory(new Map([[lastSetupKey("hub-a"), JSON.stringify({ ...setup(), host: 7 })]]));
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
+	});
+
+	it("reads a value that doesn't parse as nothing", () => {
+		const storage = memory(new Map([[lastSetupKey("hub-a"), "{not json"]]));
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
 	});
 
 	it("forgets one hub and keeps another's (Review Focus 5)", () => {
 		const storage = memory();
-		new LaunchMemory(storage, "hub-a").recordStart(setup(), 1);
-		new LaunchMemory(storage, "hub-b").recordStart(setup(), 2);
+		new LaunchMemory(storage, "hub-a").recordStart(setup());
+		new LaunchMemory(storage, "hub-b").recordStart(setup({ cwd: "/b" }));
 		forgetLaunchMemory(storage, "hub-a");
-		expect(new LaunchMemory(storage, "hub-a").history()).toEqual([]);
-		expect(new LaunchMemory(storage, "hub-b").history().map((entry) => entry.at)).toEqual([2]);
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
+		expect(new LaunchMemory(storage, "hub-b").lastSetup()?.cwd).toBe("/b");
 	});
 });
 ```
@@ -3544,11 +3498,11 @@ Expected: FAIL: the module doesn't exist.
 
 ```ts
 // mobile-native/src/newSession/launchMemory.ts
-// What this phone remembers about starting sessions on one hub: the setups
-// sessions were started with, so New session opens on the newest one (spec
-// 11). It is per hub, because a setup names that hub's hosts and folders.
+// What this phone remembers about starting sessions on one hub: the setup the
+// newest session was started with, so New session opens on it (spec 11). It is
+// per hub, because a setup names that hub's hosts and folders.
 import type { LaunchConfigLayer } from "@evener/appwire-client";
-import { type LaunchSetup, ownedOverrides, type RememberedSetup } from "./launchSetup";
+import { type LaunchSetup, ownedOverrides } from "./launchSetup";
 
 export interface LaunchMemoryStorage {
 	getItemSync(key: string): string | null;
@@ -3556,12 +3510,7 @@ export interface LaunchMemoryStorage {
 	removeItemSync(key: string): void;
 }
 
-export const historyKey = (hubId: string) => `evener.native.launch-history.${hubId}`;
-
-/** Starts remembered per hub: one per host and project, enough for every
- * project in use (the spec's fleet has 14) and small enough to rewrite on
- * every start. */
-export const HISTORY_LIMIT = 50;
+export const lastSetupKey = (hubId: string) => `evener.native.launch-setup.${hubId}`;
 
 function record(value: unknown): Record<string, unknown> | null {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -3602,59 +3551,42 @@ function toSetup(value: unknown): LaunchSetup | null {
 	};
 }
 
-function toRemembered(value: unknown): RememberedSetup | null {
-	const entry = record(value);
-	const setup = toSetup(entry?.setup);
-	return entry && setup && typeof entry.at === "number" ? { setup, at: entry.at } : null;
-}
-
-function parseList<T>(raw: string | null, item: (value: unknown) => T | null): T[] {
-	if (!raw) return [];
-	let value: unknown;
+/** The stored setup, or null when there is none, it doesn't parse, or this
+ * build can't read it. */
+function parseSetup(raw: string | null): LaunchSetup | null {
+	if (!raw) return null;
 	try {
-		value = JSON.parse(raw);
+		return toSetup(JSON.parse(raw));
 	} catch {
-		return [];
+		return null;
 	}
-	if (!Array.isArray(value)) return [];
-	return value.flatMap((entry) => {
-		const parsed = item(entry);
-		return parsed ? [parsed] : [];
-	});
 }
 
 export class LaunchMemory {
-	private historyList: RememberedSetup[];
+	private last: LaunchSetup | null;
 
 	constructor(
 		private readonly storage: LaunchMemoryStorage,
 		private readonly hubId: string,
 	) {
-		this.historyList = parseList(storage.getItemSync(historyKey(hubId)), toRemembered);
+		this.last = parseSetup(storage.getItemSync(lastSetupKey(hubId)));
 	}
 
-	history(): readonly RememberedSetup[] {
-		return this.historyList;
+	/** The setup the newest start used, or null when nothing was started here. */
+	lastSetup(): LaunchSetup | null {
+		return this.last;
 	}
 
-	/** Remembers a start: it replaces older starts for the same host and
-	 * project, and the oldest fall off past the limit. */
-	recordStart(setup: LaunchSetup, at: number): void {
-		const others = this.historyList.filter(
-			(entry) => entry.setup.host !== setup.host || entry.setup.cwd !== setup.cwd,
-		);
-		this.writeHistory([{ setup, at }, ...others].slice(0, HISTORY_LIMIT));
-	}
-
-	/** Stores first, so a failed write leaves this memory as it was. */
-	private writeHistory(next: RememberedSetup[]): void {
-		this.storage.setItemSync(historyKey(this.hubId), JSON.stringify(next));
-		this.historyList = next;
+	/** Remembers a start. Stores first, so a failed write leaves this memory
+	 * as it was. */
+	recordStart(setup: LaunchSetup): void {
+		this.storage.setItemSync(lastSetupKey(this.hubId), JSON.stringify(setup));
+		this.last = setup;
 	}
 }
 
 export function forgetLaunchMemory(storage: LaunchMemoryStorage, hubId: string): void {
-	storage.removeItemSync(historyKey(hubId));
+	storage.removeItemSync(lastSetupKey(hubId));
 }
 ```
 
@@ -4308,7 +4240,7 @@ export function startBlock(input: StartInput): StartBlock | null {
   2. **Opening.** On first mount, with the draft loaded:
      - With `like`: `applySeed(like)` once.
      - Else, with a draft that already has a project or a prompt: the draft stands.
-     - Else, with a remembered start: `applySetup(newestSetup(memory.history()))`.
+     - Else, with a remembered start: `applySetup(memory.lastSetup())`.
      - Else: once the hub's recent projects arrive, the most recent becomes the project.
   3. **The form's header:**
      - "Cancel" on the left;
@@ -4329,7 +4261,7 @@ export function startBlock(input: StartInput): StartBlock | null {
   5. **Start.**
      - Keep `NewSessionScreen.submit`'s guards: ready, the same client, focused.
      - Read `setupOf(form)` before calling `submit()`.
-     - On `created`, call `memory.recordStart(setup, Date.now())`, then replace the sheet with the session: `navigation.getParent()?.dispatch(StackActions.replace("Conversation", { hubId: outcome.hubId, ref: outcome.thread.evener.ref, title: outcome.thread.name || "Conversation" }))`.
+     - On `created`, call `memory.recordStart(setup)`, then replace the sheet with the session: `navigation.getParent()?.dispatch(StackActions.replace("Conversation", { hubId: outcome.hubId, ref: outcome.thread.evener.ref, title: outcome.thread.name || "Conversation" }))`.
      - Otherwise the sheet stays, with the store's error shown (ruling 20).
   6. **Cancel (ruling 18).**
      - With a prompt or an image, it asks `Alert.alert("Delete this draft?", undefined, [{ text: "Keep draft", style: "cancel", onPress: close }, { text: "Delete draft", style: "destructive", onPress: () => { store.getState().discard(); close(); } }])`.

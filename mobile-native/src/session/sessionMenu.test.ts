@@ -160,7 +160,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 
 	it.each([
 		["Find in session", { kind: "find" }],
-		["Activity", { kind: "subagents" }],
+		["Activity", { kind: "activity" }],
 		["Tasks", { kind: "tasks" }],
 		["Notes & links", { kind: "notes" }],
 		["Session info", { kind: "info" }],

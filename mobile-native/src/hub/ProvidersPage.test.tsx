@@ -24,8 +24,9 @@ import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { ProviderEditor } from "../ProviderEditor";
 import { SwitchRow, Tag } from "../sheet/Grouped";
-import { MODELS_NOT_CHECKED, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
-import { ProvidersPage } from "./ProvidersPage";
+import { MODELS_NOT_CHECKED, providerGoneWhileEditing, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
+import { ProviderDetailPage } from "./ProviderDetailPage";
+import { back, detailParams, ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
 import {
 	alertRequests,
 	dropped,
@@ -68,6 +69,7 @@ vi.mock("@react-navigation/native", async () => {
 					focus.effects.delete(effect);
 				};
 			}, [effect]),
+		usePreventRemove: (await import("./backGuardTestUtils")).usePreventRemoveMock,
 	};
 });
 function refocus() {
@@ -150,6 +152,14 @@ function instanceCalls(methods: string[]): string[] {
  * to the Pressable it draws, so the composite and the host both carry it. */
 function control(tree: ReactTestRenderer, name: string): ReactTestInstance {
 	return tree.root.find((node) => typeof node.type === "string" && node.props.accessibilityLabel === name);
+}
+
+/** The pushed detail's edit modal: the editor's frame the detail hosts, the
+ * first modal in its tree (the paste sheet, when open, follows it). */
+function editModal(tree: ReactTestRenderer): ReactTestInstance {
+	const modal = tree.root.findByType(ProviderDetailPage).findAllByType("Modal" as never)[0];
+	if (!modal) throw new Error("no edit modal in the detail");
+	return modal;
 }
 
 /** Whether a control labelled `name` is on screen. */
@@ -277,20 +287,22 @@ it("keeps the list away through a fatal retry until the replacement is ready", a
 	expect(instanceCalls(replacement.methods).every((method) => method === "evener/instance/list")).toBe(true);
 });
 
-it("heads a provider's detail with the shared sheet header: its name, and Done on the right", async () => {
+// A provider's detail pushes over the list, as a host's does (device audit
+// N3): the stack titles it with the provider's name and offers Back.
+it("pushes a provider's detail over the list, and Back returns to it", async () => {
 	providersHub([instance({ name: "lunaroute", authModes: ["apiKey"], hasStoredFile: true })]);
 	const { tree } = mountPage();
 	await act(async () => {});
 	press(tree, (label) => label.startsWith("lunaroute,"));
 	await act(async () => {});
-	const modal = tree.root.findByType("Modal" as never);
-	// The sheet's title comes first; the page's section labels are headers too.
-	expect(modal.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("lunaroute");
-	expect(modal.findAllByProps({ accessibilityRole: "button", accessibilityLabel: "Cancel" })).toHaveLength(0);
-	await act(async () => {
-		modal.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
-	});
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+	expect(detailParams()).toEqual({ hubId: "hub-1", name: "lunaroute" });
+	expect(hasControl(tree, "Sign-in, API key")).toBe(true);
+	// No modal holds it: the stack does.
+	expect(tree.root.findAllByType("Modal" as never).every((modal) => !modal.props.visible)).toBe(true);
+	back();
+	await act(async () => {});
+	expect(detailParams()).toBeNull();
+	expect(hasControl(tree, "Sign-in, API key")).toBe(false);
 });
 
 it("keeps the provider editor draft through a flap, with no Reconnect anywhere", async () => {
@@ -455,6 +467,21 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 	expect(hasControl(tree, "Remove")).toBe(true);
 });
 
+// A covered screen is out of the window, and a React Native modal presents
+// only from one in the window: the edit's modal lives in the pushed detail,
+// not in the Providers page under it (review C1: Edit did nothing on device).
+it("opens a provider's editor from inside its pushed detail", async () => {
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	const detail = tree.root.findByType(ProviderDetailPage);
+	expect(detail.findAllByType(ProviderEditor)).toHaveLength(1);
+	expect(tree.root.findAllByType(ProviderEditor)).toHaveLength(1);
+});
+
 it("goes back to the provider's detail when its edit is cancelled", async () => {
 	const hub = scriptedClient(rows);
 	harness.connection = screenConnection(hub.client, "ready");
@@ -470,7 +497,9 @@ it("goes back to the provider's detail when its edit is cancelled", async () => 
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain("Base URL");
 	expect(hasControl(tree, "Edit")).toBe(true);
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+	// The editor's modal has gone; the detail it was opened from stays pushed.
+	expect(tree.root.findAllByType("Modal" as never).every((modal) => !modal.props.visible)).toBe(true);
+	expect(detailParams()).toMatchObject({ name: "work" });
 });
 
 it("won't let a swipe down drop an edit whose save is still in flight", async () => {
@@ -492,16 +521,16 @@ it("won't let a swipe down drop an edit whose save is still in flight", async ()
 	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {
-		tree.root.findByType("Modal" as never).props.onRequestClose();
+		editModal(tree).props.onRequestClose();
 	});
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+	expect(editModal(tree).props.visible).toBe(true);
 	expect(renderedText(tree)).toContain("Base URL");
 	await act(async () => answer(rows));
 	await act(async () => {});
 	await act(async () => {
-		tree.root.findByType("Modal" as never).props.onRequestClose();
+		editModal(tree).props.onRequestClose();
 	});
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+	expect(editModal(tree).props.visible).toBe(false);
 });
 
 // The editor was opened on one row of the listing, so its save asserts that
@@ -1256,7 +1285,10 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	]);
 	const { tree } = mountPage();
 	await act(async () => {});
+	// Back to the list between providers: the list is covered while a detail
+	// is pushed.
 	const open = async (name: string) => {
+		if (detailParams()) back();
 		press(tree, (label) => label.startsWith(`${name},`));
 		await act(async () => {});
 	};
@@ -1305,6 +1337,32 @@ it("replaces a key in place, saving it against the endpoint the row was read fro
 	expect(hasControl(tree, "Replace key")).toBe(true);
 });
 
+// Saving an edit returns to the same visit of the provider's detail, as it
+// did before the detail pushed (review M3): it neither starts a new visit
+// nor clears what the detail last said.
+it("keeps the detail's last word through an edit's save", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true, isDefault: false })]);
+	fake.on("evener/instance/setDefault", () => Promise.reject(new Error("config write failed")));
+	fake.on("evener/instance/edit", () => ({
+		instances: [instance({ authModes: ["apiKey"], hasStoredFile: true, isDefault: false })],
+		availableProviders: [],
+	}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Make default");
+	await act(async () => {});
+	expect(renderedText(tree)).toContain(UNCONFIRMED_CHANGE);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(renderedText(tree)).toContain(UNCONFIRMED_CHANGE);
+});
+
 it("says a connection test's result under the actions", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"] })]);
 	let status = "success";
@@ -1330,6 +1388,25 @@ async function openWork(tree: ReactTestRenderer) {
 	await act(async () => {});
 }
 
+// Another client removes or renames "work": the listing now holds only
+// "home". The store's refetch waits out its debounce, on a fake clock.
+async function workLeavesList(fake: ReturnType<typeof providersHub>) {
+	fake.on("evener/instance/list", () => ({
+		instances: [instance({ name: "home", authModes: ["apiKey"], hasStoredFile: true })],
+		availableProviders: [],
+	}));
+	vi.useFakeTimers();
+	try {
+		await act(async () => {
+			fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work" } } as never);
+			await vi.advanceTimersByTimeAsync(1_000);
+		});
+	} finally {
+		vi.useRealTimers();
+	}
+	await act(async () => {});
+}
+
 const choose = (text: string) =>
 	act(() =>
 		alertRequests
@@ -1350,7 +1427,7 @@ it("asks before Cancel or a swipe throws away an edited provider (spec 6)", asyn
 	await act(async () => {});
 	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
 	// A swipe down asks; Keep editing keeps the edit and the sheet.
-	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	act(() => editModal(tree).props.onRequestClose());
 	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
 	choose("Keep editing");
 	expect(control(tree, "Base URL").props.value).toBe("https://changed.example");
@@ -1391,6 +1468,171 @@ it("asks before Cancel or a swipe throws away a pasted key (spec 6)", async () =
 	expect(hasControl(tree, "API key")).toBe(false);
 });
 
+// Back from the pushed detail (the header's or the edge swipe) is guarded as
+// the key's own Cancel is: it asks before a pasted key goes (spec 6).
+it("asks before Back from the detail throws away a pasted key", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	back();
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	choose("Keep editing");
+	expect(detailParams()).toMatchObject({ name: "work" });
+	expect(control(tree, "API key").props.value).toBe("sk-fixture");
+	back();
+	choose("Discard");
+	await act(async () => {});
+	expect(detailParams()).toBeNull();
+	expect(hasControl(tree, "API key")).toBe(false);
+});
+
+// A provider renamed or removed elsewhere leaves the list: its pushed detail
+// goes back rather than showing another provider's detail under its name.
+it("goes back from a provider's detail when the provider leaves the list", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	expect(detailParams()).toMatchObject({ name: "work" });
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	// Another client renames it, and the listing follows.
+	await workLeavesList(fake);
+	expect(renderedText(tree)).toContain("home");
+	expect(detailParams()).toBeNull();
+	expect(hasControl(tree, "Replace key")).toBe(false);
+	// No edit was open, so nothing says one wasn't saved.
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	// The key pasted for the provider that left goes with it: the provider now
+	// listed opens with no paste sheet and no key (RoboRev on 972ebb8).
+	press(tree, (label) => label.startsWith("home,"));
+	await act(async () => {});
+	expect(hasControl(tree, "API key")).toBe(false);
+	expect(tree.root.findAll((node) => node.props.value === "sk-fixture")).toHaveLength(0);
+});
+
+// A provider that leaves the list while its editor is open takes the edit
+// with it, since there's nothing left to save it to: the page says so rather
+// than dropping the draft silently (#3510 review M7).
+it("says an open edit wasn't saved when its provider leaves the list", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	// Another client removes it, and the listing follows.
+	await workLeavesList(fake);
+	expect(detailParams()).toBeNull();
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(renderedText(tree)).toContain(providerGoneWhileEditing("work"));
+	// The word belongs to the list: opening another provider clears it.
+	press(tree, (label) => label.startsWith("home,"));
+	await act(async () => {});
+	expect(detailParams()).toMatchObject({ name: "home" });
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+});
+
+// Nor does it sit above a new provider's form: opening Add clears it.
+it("clears an unsaved-edit notice when Add opens", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	await workLeavesList(fake);
+	expect(renderedText(tree)).toContain(providerGoneWhileEditing("work"));
+	press(tree, (label) => label === "Add provider");
+	await act(async () => {});
+	expect(tree.root.findAllByType(ProviderEditor)).toHaveLength(1);
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+});
+
+// Only an edit its provider left behind says it wasn't saved: a cancelled
+// edit and a saved one say nothing of the kind.
+it("says nothing of an unsaved edit after a Cancel or a save", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/instance/edit", () => ({
+		instances: [instance({ authModes: ["apiKey"], hasStoredFile: true })],
+		availableProviders: [],
+	}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	press(tree, (label) => label === "Cancel");
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+});
+
+// Discarding through Back discards the draft for good: the page's close,
+// which the leaving detail runs, clears the paste sheet and its key, so the
+// provider reopens with neither (RoboRev on 972ebb8).
+it("reopens a provider with no paste sheet or key after Back discarded them", async () => {
+	alertRequests.length = 0;
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	back();
+	choose("Discard");
+	await act(async () => {});
+	await openWork(tree);
+	expect(hasControl(tree, "API key")).toBe(false);
+	expect(tree.root.findAll((node) => node.props.value === "sk-fixture")).toHaveLength(0);
+	// Nothing left to lose: Back goes without asking.
+	alertRequests.length = 0;
+	back();
+	expect(alertRequests).toHaveLength(0);
+	expect(detailParams()).toBeNull();
+});
+
+// A link while a key is pasted pops the detail through the same guard as
+// Back (spec 6): it asks first, and Keep editing keeps the key and the
+// provider; Discard lets the link open its provider.
+it("asks before a link pops a detail holding a pasted key", async () => {
+	alertRequests.length = 0;
+	providersHub([
+		instance({ authModes: ["apiKey"], hasStoredFile: true }),
+		instance({ name: "home", isDefault: false, authModes: ["apiKey"], hasStoredFile: true }),
+	]);
+	const { tree, relink } = linkedPage("work");
+	await act(async () => {});
+	await act(async () => {});
+	expect(detailParams()).toMatchObject({ name: "work" });
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	await relink("home");
+	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	choose("Keep editing");
+	await act(async () => {});
+	expect(detailParams()).toMatchObject({ name: "work" });
+	expect(control(tree, "API key").props.value).toBe("sk-fixture");
+	await relink("home");
+	choose("Discard");
+	await act(async () => {});
+	await act(async () => {});
+	expect(detailParams()).toMatchObject({ name: "home" });
+	expect(hasControl(tree, "API key")).toBe(false);
+});
+
 it("holds a swipe down while a pasted key is being saved, without asking", async () => {
 	alertRequests.length = 0;
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
@@ -1410,7 +1652,7 @@ it("holds a swipe down while a pasted key is being saved, without asking", async
 			?.props.onRequestClose(),
 	);
 	expect(alertRequests).toHaveLength(0);
-	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(2);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(3);
 });
 
 it("closes the editor without asking once its save lands", async () => {
@@ -1431,7 +1673,7 @@ it("closes the editor without asking once its save lands", async () => {
 	expect(alertRequests).toHaveLength(0);
 });
 
-it("closes the detail with Done while an unrelated write is in flight, with no key pasted", async () => {
+it("closes the detail with Back while an unrelated write is in flight, with no key pasted", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true, isDefault: false })]);
 	fake.on("evener/instance/setDefault", () => new Promise(() => {}));
 	const { tree } = mountPage();
@@ -1439,8 +1681,8 @@ it("closes the detail with Done while an unrelated write is in flight, with no k
 	await openWork(tree);
 	press(tree, (label) => label === "Make default");
 	await act(async () => {});
-	press(tree, (label) => label === "Done");
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+	back();
+	expect(detailParams()).toBeNull();
 });
 
 async function openDetail(tree: ReactTestRenderer, name: string) {
@@ -1501,9 +1743,9 @@ it("leaves the Type row untagged for a provider that isn't the default, and keep
 	await act(async () => {});
 	await openDetail(tree, "work");
 	expect(hasControl(tree, "Type, anthropic")).toBe(true);
-	const modal = tree.root.findByType("Modal" as never);
-	expect(modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default")).toHaveLength(0);
-	expect(subtreeText(modal)).toContain("The key expires soon.");
+	const page = tree.root;
+	expect(page.findAll((node) => String(node.type) === "Text" && node.props.children === "Default")).toHaveLength(0);
+	expect(subtreeText(page)).toContain("The key expires soon.");
 });
 
 it("keeps a provider's facts in its group: Default as a tag, where it's defined, and each credential", async () => {
@@ -1519,12 +1761,12 @@ it("keeps a provider's facts in its group: Default as a tag, where it's defined,
 	const { tree } = mountPage();
 	await act(async () => {});
 	await openDetail(tree, "work");
-	const modal = tree.root.findByType("Modal" as never);
-	const text = subtreeText(modal);
+	const page = tree.root;
+	const text = subtreeText(page);
 	expect(text).not.toContain("The default provider.");
 	expect(text).not.toContain("From the environment.");
 	expect(text).not.toContain("Shadowed");
-	const tags = modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default");
+	const tags = page.findAll((node) => String(node.type) === "Text" && node.props.children === "Default");
 	expect(tags).not.toHaveLength(0);
 	expect(hasControl(tree, "Defined in, Environment")).toBe(true);
 	expect(hasControl(tree, "Credential, Configured via environment variable (WORK_KEY)")).toBe(true);
@@ -1538,7 +1780,7 @@ it("calls a shadowed environment variable what it is, never a stored credential"
 	await openDetail(tree, "work");
 	const shadowed = "Also in the environment, Configured via environment variable (WORK_KEY), Not used";
 	expect(hasControl(tree, shadowed)).toBe(true);
-	expect(subtreeText(tree.root.findByType("Modal" as never))).not.toContain("Also stored");
+	expect(subtreeText(tree.root)).not.toContain("Also stored");
 });
 
 it("pastes a key in its own sheet: the action as its title, Cancel and Save, and where the key is kept", async () => {
@@ -1547,11 +1789,11 @@ it("pastes a key in its own sheet: the action as its title, Cancel and Save, and
 	const { tree } = mountPage();
 	await act(async () => {});
 	await openDetail(tree, "work");
-	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(2);
 	press(tree, (label) => label === "Replace key");
 	const modals = tree.root.findAllByType("Modal" as never);
-	expect(modals).toHaveLength(2);
-	const sheet = modals[1];
+	expect(modals).toHaveLength(3);
+	const sheet = modals[2];
 	if (!sheet) throw new Error("no key sheet");
 	expect(sheet.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Replace key");
 	expect(subtreeText(sheet)).toContain("The key is stored on the hub, not on this phone.");
@@ -1563,7 +1805,7 @@ it("pastes a key in its own sheet: the action as its title, Cancel and Save, and
 		save().props.onPress();
 	});
 	await act(async () => {});
-	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(2);
 	expect(fake.calls.some((call) => call.method === "evener/auth/apiKey/set")).toBe(true);
 });
 
@@ -1670,7 +1912,7 @@ it("caps a long model list, says how many are hidden, and reaches the rest by se
 	await act(async () => {});
 	await openDetail(tree, "work");
 	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(50);
-	expect(subtreeText(tree.root.findByType("Modal" as never))).toContain("Showing 50 of 60 models — search to narrow.");
+	expect(subtreeText(tree.root)).toContain("Showing 50 of 60 models — search to narrow.");
 	act(() => control(tree, "Search models").props.onChangeText("model-59"));
 	expect(control(tree, "model-59").props.value).toBe(true);
 	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(1);
@@ -1683,7 +1925,7 @@ it("says so when the model search matches nothing", async () => {
 	await openDetail(tree, "work");
 	act(() => control(tree, "Search models").props.onChangeText("zzz"));
 	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(0);
-	expect(subtreeText(tree.root.findByType("Modal" as never))).toContain("No matching models.");
+	expect(subtreeText(tree.root)).toContain("No matching models.");
 });
 
 it("leaves a short model list uncapped, with no search field", async () => {
@@ -1808,7 +2050,7 @@ it("says plainly when it couldn't check for new models", async () => {
 	press(tree, (label) => label === "Check for new models");
 	await act(async () => {});
 	await act(async () => {});
-	const text = subtreeText(tree.root.findByType("Modal" as never));
+	const text = subtreeText(tree.root);
 	expect(text).toContain("The hub couldn't check for new models. Try again in a moment.");
 	expect(text).not.toContain("upstream 502");
 });
@@ -1920,7 +2162,7 @@ it("snaps a switch back and says so when the hub doesn't take the flip", async (
 	await act(async () => control(tree, "gpt-5.6").props.onValueChange(false));
 	await act(async () => {});
 	expect(control(tree, "gpt-5.6").props.value).toBe(true);
-	const text = subtreeText(tree.root.findByType("Modal" as never));
+	const text = subtreeText(tree.root);
 	expect(text).toContain(UNCONFIRMED_CHANGE);
 	expect(text).not.toContain("providers.toml");
 });
@@ -1940,7 +2182,7 @@ it("keeps a check's Checking state across a detail close, and never reports it e
 	await openDetail(tree, "work");
 	press(tree, (label) => label === "Check for new models");
 	await act(async () => {});
-	press(tree, (label) => label === "Done");
+	back();
 	await act(async () => {});
 	await openDetail(tree, "work");
 	// The store owns which instance has a check out, so reopening the detail
@@ -2028,7 +2270,10 @@ function heldChecks(fake: FakeClient) {
 	return pending;
 }
 
-it("says a check failed when it lands after a new link reopened the same provider", async () => {
+// A link pops the pushed detail before it reopens the provider, so the
+// visit that started the check has closed, as Back closes it: a failure
+// landing after the link isn't reported on the new visit.
+it("drops a check's failure that lands after a link popped and reopened the provider", async () => {
 	const fake = providersHub([withModels()]);
 	const checks = heldChecks(fake);
 	const { tree, relink } = linkedPage("work");
@@ -2037,9 +2282,10 @@ it("says a check failed when it lands after a new link reopened the same provide
 	press(tree, (label) => label === "Check for new models");
 	await act(async () => {});
 	await relink("work");
+	expect(detailParams()).toMatchObject({ name: "work" });
 	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
 	await act(async () => {});
-	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
+	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
 });
 
 it("keeps a check's failure off another provider a link opened meanwhile", async () => {
@@ -2064,7 +2310,7 @@ it("checks two providers back to back: only the newer check ends its Checking st
 	await openDetail(tree, "work");
 	press(tree, (label) => label === "Check for new models");
 	await act(async () => {});
-	press(tree, (label) => label === "Done");
+	back();
 	await act(async () => {});
 	await openDetail(tree, "home");
 	press(tree, (label) => label === "Check for new models");
@@ -2081,7 +2327,10 @@ it("checks two providers back to back: only the newer check ends its Checking st
 	expect(hasControl(tree, "Check for new models")).toBe(true);
 });
 
-it("keeps a failed check's copy on its own provider when a link then opens another", async () => {
+// A failed check's copy stays with its own provider's visit: a link that
+// opens another provider pops that visit, and a link back to it opens a new
+// one, with no copy from the closed visit.
+it("keeps a failed check's copy on its own provider's visit, which a link closes", async () => {
 	const fake = providersHub([withModels(), { ...withModels(), name: "home", isDefault: false }]);
 	const checks = heldChecks(fake);
 	const { tree, relink } = linkedPage("work");
@@ -2093,9 +2342,11 @@ it("keeps a failed check's copy on its own provider when a link then opens anoth
 	await act(async () => {});
 	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
 	await relink("home");
+	expect(detailParams()).toMatchObject({ name: "home" });
 	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
 	await relink("work");
-	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
+	expect(detailParams()).toMatchObject({ name: "work" });
+	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
 });
 
 it("points an empty provider list at its one action (audit L6)", async () => {

@@ -1,5 +1,6 @@
 // A system event in the transcript (spec 8.2): a diamond in a 16pt gutter and
-// the event in 13pt ink-low, two lines at most until tapped. A labelled event
+// the event in 13pt ink-low, two lines at most until tapped — its text, and a
+// warning's hint beneath when it has one, two lines each. A labelled event
 // (a steering notice, or the Session details group) shows its label with a
 // chevron and opens to what it says.
 import { SymbolView } from "expo-symbols";
@@ -21,6 +22,7 @@ export function SystemEventMark() {
 export function SystemEvent({
 	label,
 	text,
+	hint,
 	expanded,
 	onToggle,
 	children,
@@ -28,6 +30,8 @@ export function SystemEvent({
 	/** Shown in place of the text until opened. */
 	label?: string;
 	text?: string;
+	/** A warning's what-to-do, a quiet second line under the text. */
+	hint?: string;
 	expanded: boolean;
 	onToggle: () => void;
 	/** What opens under a labelled event, when it isn't plain text. */
@@ -46,15 +50,22 @@ export function SystemEvent({
 			<SymbolView name={expanded ? "chevron.down" : "chevron.right"} tintColor={palette.inkLow} size={10 * scale} />
 		</View>
 	) : (
-		<Text allowFontScaling={allowFontScaling} numberOfLines={expanded ? undefined : 2} style={quiet}>
-			{text}
-		</Text>
+		<>
+			<Text allowFontScaling={allowFontScaling} numberOfLines={expanded ? undefined : 2} style={quiet}>
+				{text}
+			</Text>
+			{hint ? (
+				<Text allowFontScaling={allowFontScaling} numberOfLines={expanded ? undefined : 2} style={quiet}>
+					{hint}
+				</Text>
+			) : null}
+		</>
 	);
 	return (
 		<View>
 			<Pressable
 				accessibilityRole="button"
-				accessibilityLabel={label ?? text}
+				accessibilityLabel={label ?? [text, hint].filter(Boolean).join("\n")}
 				accessibilityState={{ expanded }}
 				onPress={onToggle}
 				style={{ flexDirection: "row", alignItems: "center", minHeight: 44 }}

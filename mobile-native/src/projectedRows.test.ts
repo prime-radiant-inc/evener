@@ -518,6 +518,27 @@ describe("projectedRow — item entries", () => {
 		});
 	});
 
+	// An informational warning's hint is news of its own (the web keeps it as
+	// the hover title and VisuallyHidden text), so the quiet row carries it.
+	it("keeps an informational warning item's hint for its quiet second line", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "warning",
+					text: "Output clamped to fit the context window",
+					warning: { title: "Context budget", hint: "Free some context.", code: "context_budget" },
+				}),
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			tone: "system",
+			text: "Output clamped to fit the context window",
+			hint: "Free some context.",
+		});
+	});
+
 	it("drops a warning whose every part is blank", () => {
 		expect(projectedRow(itemEntry(item({ type: "warning" })))).toBeNull();
 	});
