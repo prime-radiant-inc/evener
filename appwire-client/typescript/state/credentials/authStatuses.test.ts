@@ -110,18 +110,27 @@ describe("following the hub", () => {
   // go at once, before the new hub's are read, so none of its errors are shown
   // against the new hub's providers, even if that read fails.
   test("a replaced client drops the previous hub's statuses and reads the new hub's", async () => {
-    const { fake, store } = storeWithFake();
-    store.connectionChanged(fake, "ready");
-    fake.on(LIST, () => ({ providers: [rejected] }));
+    // The store's port follows the connection, as the web's does: each request
+    // goes to whichever client is current.
+    const previous = new FakeClient("ready");
+    let current = previous;
+    const store = createAuthStatusesStore({
+      request: (method, params) => current.request(method, params),
+      onNotification: (listener) => current.onNotification(listener),
+    });
+    store.connectionChanged(previous, "ready");
+    previous.on(LIST, () => ({ providers: [rejected] }));
     await store.getState().fetchAuthStatuses();
 
-    // The store's port now reaches the new hub, whose read fails.
-    fake.on(LIST, failing("hub unavailable"));
-    store.connectionChanged(new FakeClient("ready"), "ready");
+    const replacement = new FakeClient("ready");
+    replacement.on(LIST, failing("hub unavailable"));
+    current = replacement;
+    store.connectionChanged(replacement, "ready");
     expect(store.getState().authStatuses).toBeNull();
     await vi.advanceTimersByTimeAsync(0);
     // The new hub was read, and its failure keeps nothing of the previous one.
-    expect(fake.calls.filter((call) => call.method === LIST)).toHaveLength(2);
+    expect(previous.calls.filter((call) => call.method === LIST)).toHaveLength(1);
+    expect(replacement.calls.filter((call) => call.method === LIST)).toHaveLength(1);
     expect(store.getState()).toMatchObject({ authStatuses: null, authStatusesError: "hub unavailable" });
   });
 
