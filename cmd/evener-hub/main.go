@@ -767,7 +767,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// subagent appearing/disappearing in the past index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
 	// which never route through PastIndex at all, so they invalidate directly.
 	wirePastNavigation(past, bump, web.navigation)
-	roster.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	// A session whose turn the provider refused makes the hub check that
+	// instance's credential at once (#3539); the watch starts probing once the
+	// background runner exists, below.
+	sessionCredentials := &sessionCredentialWatch{auth: web.auth}
+	observeSessionCredentials := sessionCredentials.observer(roster)
+	roster.SetOnChange(func() {
+		bump()
+		web.navigation.Invalidate(navigationChangeHint{})
+		observeSessionCredentials()
+	})
 	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
@@ -811,6 +820,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startBackground := func(fn func()) {
 		background.Go(fn)
 	}
+	sessionCredentials.start(ctx, startBackground)
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
