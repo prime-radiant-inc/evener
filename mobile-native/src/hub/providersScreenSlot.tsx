@@ -9,7 +9,7 @@
 // Unlike that slot, this one is an external store, not React state: the page
 // publishes on every render, and only the pushed page subscribes, so a
 // publication never re-renders the page that made it.
-import { createContext, type ReactNode, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 
 /** The detail the Providers page shows for its selected provider. */
 export interface ProviderDetailSlot {
@@ -63,11 +63,17 @@ export function useProviderDetailSlot(): ProviderDetailSlot | null {
 }
 
 /** Publishes `slot` after every render of the calling page, and takes it back
- * when the page goes, unless a newer page has published since. */
+ * when the page goes, unless a newer page has published since. It publishes
+ * in a layout effect, before the commit paints: a detail pushed in the commit
+ * that builds it then paints with its content (a passive publish left its
+ * first sliding frame blank), and a controlled field in the detail, the
+ * pasted key, never renders a commit behind the page's state, which drops and
+ * reorders fast keystrokes. The renderer's act() flushes passive effects
+ * before this re-render, so only a device or simulator shows the difference. */
 export function usePublishProviderDetail(slot: ProviderDetailSlot): void {
 	const store = useContext(SlotContext);
 	const published = useRef<ProviderDetailSlot | null>(null);
-	useEffect(() => {
+	useLayoutEffect(() => {
 		published.current = slot;
 		store.set(slot);
 	});

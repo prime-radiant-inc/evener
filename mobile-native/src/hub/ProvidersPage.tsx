@@ -348,12 +348,8 @@ function Providers({
 	// before the text goes (spec 6), whether by its Cancel, Back or the edge swipe.
 	const keyGuard = { busy: !!editingCredential && surface.busy, dirty: !!(editingCredential && key.trim()) };
 	const leaveKey = (leave: () => void) => guardLeave(keyGuard, leave);
-	// The provider whose detail waits to be pushed until this page has published
-	// it (below), so the pushed page's first render already has its detail.
-	const pushPending = useRef<string | null>(null);
 	function close() {
 		detailVisitId.current += 1;
-		pushPending.current = null;
 		setSelected(null);
 		setConfiguration(null);
 		setEditingCredential(null);
@@ -368,7 +364,7 @@ function Providers({
 		detailVisitId.current += 1;
 		setActionError(null);
 		setSelected(name);
-		pushPending.current = name;
+		onOpenDetail(name);
 	}
 	async function act(
 		action: () => Promise<unknown>,
@@ -732,14 +728,6 @@ function Providers({
 		guarded: keyGuard.busy || keyGuard.dirty,
 		leave: leaveKey,
 		onGone: close,
-	});
-	// Pushes a detail openDetail asked for once it is published: this effect
-	// runs after the publication's, in the same commit.
-	useEffect(() => {
-		const name = pushPending.current;
-		if (name === null || instance?.name !== name) return;
-		pushPending.current = null;
-		onOpenDetail(name);
 	});
 	return (
 		<>
