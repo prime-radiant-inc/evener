@@ -20,24 +20,33 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
-// listingGateway serves /models as a provider would: a listing while status
-// is 200, and the provider's refusal (with body text that must never reach a
-// status) otherwise. It returns the providers.toml naming it as instance
-// "gw" and the status to set.
-func listingGateway(t *testing.T) (tomlPath string, status *atomic.Int32) {
+// listingGateway is a provider's /models endpoint: a listing while status is
+// 200, and the provider's refusal (with body text that must never reach a
+// status) otherwise. lastKey is the bearer key the latest request sent.
+type listingGateway struct {
+	status  atomic.Int32
+	lastKey atomic.Value
+}
+
+// newListingController serves a listingGateway as instance "gw", whose key
+// is stored in credentials.toml, so replacing it is a real credential write.
+func newListingController(t *testing.T) (*hubInstancesController, *listingGateway) {
 	t.Helper()
-	status = &atomic.Int32{}
-	status.Store(http.StatusUnauthorized)
+	gw := &listingGateway{}
+	gw.status.Store(http.StatusUnauthorized)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/models") {
 			http.NotFound(w, r)
 			return
 		}
+		gw.lastKey.Store(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		w.Header().Set("Content-Type", "application/json")
-		code := int(status.Load())
+		code := int(gw.status.Load())
 		w.WriteHeader(code)
 		if code != http.StatusOK {
 			_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided: ` + rejectionSecret + `","type":"invalid_request_error"}}`))
@@ -46,22 +55,19 @@ func listingGateway(t *testing.T) (tomlPath string, status *atomic.Int32) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
 	}))
 	t.Cleanup(srv.Close)
-	tomlPath = filepath.Join(t.TempDir(), "providers.toml")
-	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key = \"test-key\"\n"
+	tomlPath := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\n"
 	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return tomlPath, status
-}
-
-func newListingController(t *testing.T) (*hubInstancesController, *atomic.Int32) {
-	t.Helper()
-	tomlPath, status := listingGateway(t)
 	ctl := newTestInstancesController(t, tomlPath, filepath.Dir(tomlPath), t.TempDir(), nil)
+	if err := ctl.auth.creds.Set("gw", "sk-original"); err != nil {
+		t.Fatal(err)
+	}
 	if err := ctl.reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	return ctl, status
+	return ctl, gw
 }
 
 func gwError(t *testing.T, auth *hubAuthController) string {
@@ -90,14 +96,14 @@ func newListingWebServer(ctl *hubInstancesController) *WebServer {
 const gwRejected = "The provider rejected this credential (HTTP 401)."
 
 func TestCredentialRejection_RefreshModelsRecordsAndClearsIt(t *testing.T) {
-	ctl, status := newListingController(t)
+	ctl, gw := newListingController(t)
 	if err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"}); err == nil {
 		t.Fatal("precondition: RefreshModels succeeded against a gateway refusing the key")
 	}
 	if got := gwError(t, ctl.auth); got != gwRejected {
 		t.Fatalf("error after a refused refresh = %q, want %q", got, gwRejected)
 	}
-	status.Store(http.StatusOK)
+	gw.status.Store(http.StatusOK)
 	if err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"}); err != nil {
 		t.Fatalf("RefreshModels: %v", err)
 	}
@@ -112,12 +118,12 @@ func TestCredentialRejection_RefreshModelsRecordsAndClearsIt(t *testing.T) {
 func TestCredentialRejection_ARefreshThatFailsOtherwiseKeepsIt(t *testing.T) {
 	for _, code := range []int32{http.StatusServiceUnavailable, http.StatusNotFound} {
 		t.Run(http.StatusText(int(code)), func(t *testing.T) {
-			ctl, status := newListingController(t)
+			ctl, gw := newListingController(t)
 			_ = ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
 			if gwError(t, ctl.auth) != gwRejected {
 				t.Fatal("precondition: the 401 was not recorded")
 			}
-			status.Store(code)
+			gw.status.Store(code)
 			_ = ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
 			if got := gwError(t, ctl.auth); got != gwRejected {
 				t.Fatalf("error after a %d = %q, want the rejection kept", code, got)
@@ -131,8 +137,8 @@ func TestCredentialRejection_ARefreshThatFailsOtherwiseKeepsIt(t *testing.T) {
 // It is announced from the prefetch's goroutine like any other change, so
 // clients re-read the status.
 func TestCredentialRejection_TheLivePrefetchRecordsIt(t *testing.T) {
-	ctl, status := newListingController(t)
-	status.Store(http.StatusForbidden)
+	ctl, gw := newListingController(t)
+	gw.status.Store(http.StatusForbidden)
 	var mu sync.Mutex
 	var announced []string
 	ctl.auth.credentialRejectionChanged = func(name string) {
@@ -173,19 +179,37 @@ func TestCredentialRejection_ThePickersLiveListingRecordsIt(t *testing.T) {
 // replaced the key the listing sends, so the listing's rejection must not be
 // recorded against the new one: each probe starts before the client exists.
 func TestCredentialRejection_ThePickerVoidsAListingOfAReplacedKey(t *testing.T) {
-	ctl, _ := newListingController(t)
+	ctl, gw := newListingController(t)
 	server := newListingWebServer(ctl)
 	oldLoadClient := liveModelLoadClient
 	liveModelLoadClient = func(string) (*llm.Client, error) {
-		client := LiveRegistryClient(ctl.reg.Get())
-		// The write lands once the client holds the old key.
-		server.auth.forgetCredentialRejection("gw")
-		return client, nil
+		// As the real loader does (cmdutil.LoadRegistry), the picker's client
+		// reads credentials.toml from disk into a store of its own.
+		store, err := credentials.LoadStore(ctl.auth.creds.Path())
+		if err != nil {
+			return nil, err
+		}
+		reg, err := registry.Load(append(
+			testProbeRegistryOptions(ctl.auth.stateDir, store, func(string) (string, bool) { return "", false }),
+			registry.WithConfigPath(ctl.providersConfigPath),
+		)...)
+		if err != nil {
+			return nil, err
+		}
+		// A new key is written, and the hub's registry reloaded, once the
+		// client holds the old one.
+		if _, err := server.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "gw", Value: "sk-replacement"}); err != nil {
+			t.Errorf("ApiKeySet: %v", err)
+		}
+		return LiveRegistryClient(reg), nil
 	}
 	t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
 
 	server.fetchLiveModels(context.Background())
 
+	if sent, _ := gw.lastKey.Load().(string); sent != "sk-original" {
+		t.Fatalf("precondition: the listing sent %q, want the replaced key sk-original", sent)
+	}
 	if got := gwError(t, server.auth); got != "" {
 		t.Fatalf("error = %q: the replaced key's rejection landed on the key written after the client read it", got)
 	}
