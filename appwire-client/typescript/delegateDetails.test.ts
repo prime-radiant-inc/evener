@@ -8,10 +8,17 @@ import delegateTreeRestoreGo from "../../agent/delegate_tree_restore.go?raw";
 import delegateTreeStartGo from "../../agent/delegate_tree_start.go?raw";
 import delegateStoreRecordGo from "../../agent/internal/delegatestore/record.go?raw";
 import sessionBudgetGo from "../../agent/session_budget.go?raw";
+import sessionToolsWorktreeDisposeGo from "../../agent/session_tools_worktree_dispose.go?raw";
 import subagentsGo from "../../agent/subagents.go?raw";
 import type { ActivityDelegate } from "./activityData";
 import { parseActivityTree } from "./activityData";
-import { delegateEndingText, delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+import {
+  delegateEndingText,
+  delegateModel,
+  delegateNotResumableText,
+  delegatePacket,
+  delegateTiming,
+} from "./delegateDetails";
 import { subagentOutcomesResponse } from "./testing/subagentWireFixtures";
 
 function delegate(overrides: Partial<ActivityDelegate> = {}): ActivityDelegate {
@@ -250,6 +257,46 @@ test("never shows a code it doesn't know, but keeps a reason already in words", 
 test("says nothing for a run that ended well", () => {
   expect(delegateEndingText({ outcome: "completed" })).toBeUndefined();
   expect(delegateEndingText({})).toBeUndefined();
+});
+
+// A delegate's resumability closes with its own codes (#3362). The run-ending
+// vocabulary covers most of them; the closure-only codes and an unknown code
+// still say words rather than a raw snake_case code.
+test("says why a delegate isn't resumable in words", () => {
+  expect(delegateNotResumableText("turn_budget_exhausted")).toBe("ran out of turns");
+  expect(delegateNotResumableText("construction_failed")).toBe("couldn't be set up");
+  expect(delegateNotResumableText("missing_delegate_resume_metadata")).toBe("its resume metadata is missing");
+  expect(delegateNotResumableText("parent_linkage_unavailable")).toBe("its parent linkage is unavailable");
+  expect(delegateNotResumableText("missing_child_session_meta")).toBe("its session metadata is missing");
+  expect(delegateNotResumableText("corrupt_child_session_meta")).toBe("its session metadata is corrupt");
+  expect(delegateNotResumableText("missing_child_transcript")).toBe("its transcript is missing");
+  expect(delegateNotResumableText("corrupt_child_transcript")).toBe("its transcript is corrupt");
+  expect(delegateNotResumableText("transcript_session_mismatch")).toBe("its transcript belongs to another session");
+  expect(delegateNotResumableText("working_dir_missing")).toBe("its working directory is missing");
+  expect(delegateNotResumableText("isolation_disposed")).toBe("its isolation was disposed");
+  expect(delegateNotResumableText("some_new_code")).toBe("its resumability was closed");
+  expect(delegateNotResumableText("Delegate was disposed")).toBe("Delegate was disposed");
+  expect(delegateNotResumableText("  ")).toBeUndefined();
+  expect(delegateNotResumableText(undefined)).toBeUndefined();
+});
+
+// The daemon's closure codes, read from its own source: every code the Go side
+// can write to not_resumable_reason has words here, so a new closure code
+// without a mapping fails this test instead of degrading to the generic phrase.
+test("has words for every not-resumable closure code the daemon writes", () => {
+  const sources = [delegateRuntimeGo, sessionToolsWorktreeDisposeGo];
+  const codes = new Set(
+    sources.flatMap((source) =>
+      [...source.matchAll(/(?:notResumable\w*|stableWorktreeDisposalReason)\s*=\s*"([a-z_]+)"/g)].map(
+        (match) => match[1],
+      ),
+    ),
+  );
+  expect(codes.size).toBeGreaterThan(5);
+  const generic = delegateNotResumableText("unknown_closure_code");
+  expect(generic).toBe("its resumability was closed");
+  const unmapped = [...codes].filter((code) => delegateNotResumableText(code) === generic);
+  expect(unmapped).toEqual([]);
 });
 
 // Every consumer shows one line: the helper clamps the cause itself.
