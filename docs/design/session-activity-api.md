@@ -167,11 +167,14 @@ result and transparent client restart, never a destructive journal repair.
 
 The input byte budget counts newly read journal bytes. Decode a stored batch one
 event at a time so a large batch cannot bypass the work budget by allocating all
-of its events before paging them. A single event is an atomic decoding unit,
-bounded by its store's existing record-size limit; cancellation is checked before
-and after that decode. These are input and work bounds, not a hard wall-clock or
-CPU-time guarantee. Large individual events may accumulate across input pages;
-they are not rejected merely because they exceed one page's input budget.
+of its events before paging them. A single event and its existing atomic fold
+count as one work unit, bounded in input size by the store's existing record-size
+limit. Cancellation is checked between events. Preserve the fold's authoritative
+subtree semantics; a wide event may update multiple in-memory members. These are
+input and event-work bounds, not a hard wall-clock or CPU-time guarantee. Large
+individual events may accumulate across input pages; they are not rejected merely
+because they exceed one page's input budget. Reuse incremental fold state rather
+than replaying the entire history or copying all aggregates for each page.
 
 In-memory controller membership inspection is allowed; recursive visits to all
 descendant runtimes and unbounded journal reads are not a summary implementation.
