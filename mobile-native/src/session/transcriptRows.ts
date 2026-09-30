@@ -332,11 +332,16 @@ function programOf(command: string | undefined): string | undefined {
 // housekeeping tool says what it did ("updated its note once", the package's
 // housekeepingAction, as its step line does), and any other its name ("used
 // reindex workspace once"). MCP tools share one part.
-function partOf(label: string): { key: string; family: ToolFamily; phrase: string } {
+function partOf(step: RunStep): { key: string; family: ToolFamily; phrase: string } {
+	const { label } = step;
 	const family = toolFamily(label);
 	if (family === "tool") {
+		// A housekeeping call's phrase follows what the call did, so a call that
+		// cleared a note is a part apart from calls that set one.
+		const action = housekeepingAction(label, { argumentsJSON: step.detail.arguments, output: step.detail.output });
+		if (action !== undefined) return { key: `tool:${action}`, family, phrase: action };
 		const name = words(label) || "a tool";
-		return { key: `tool:${name}`, family, phrase: housekeepingAction(label) ?? `used ${name}` };
+		return { key: `tool:${name}`, family, phrase: `used ${name}` };
 	}
 	return { key: family, family, phrase: "" };
 }
@@ -414,7 +419,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 	const groups = new Map<string, Group>();
 	let failed = 0;
 	for (const step of steps) {
-		const part = partOf(step.label);
+		const part = partOf(step);
 		let group = groups.get(part.key);
 		if (!group) {
 			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false, questions: 0 };

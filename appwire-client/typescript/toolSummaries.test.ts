@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import { housekeepingAction } from "./housekeepingSteps";
 import { type ToolWireCall, toolWireCwd, toolWireStep } from "./testing/toolWireFixtures";
 import { mcpToolParts, toolFamily, toolStepProgress, toolStepSummary, words } from "./toolSummaries";
 
@@ -527,4 +528,27 @@ test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
 ])("words %s", (_, step, summary, progress) => {
   expect(toolStepSummary(step)).toBe(summary);
   expect(toolStepProgress(step)).toBe(progress);
+});
+
+// A run's line says what each call did, in the phrase its step line starts
+// from: a call that only clears a note says so.
+test("phrases a housekeeping call as its step line does", () => {
+  expect(housekeepingAction("notes_agent_set", housekeeping("notes_agent_set", { note: "Drain first." }))).toBe(
+    "updated its note",
+  );
+  expect(housekeepingAction("notes_agent_set", housekeeping("notes_agent_set", { note: "" }))).toBe("cleared its note");
+  expect(
+    housekeepingAction(
+      "compact_context",
+      housekeeping("compact_context", { note_to_self: "" }, "Note cleared. No compaction requested."),
+    ),
+  ).toBe("cleared its compaction note");
+  expect(
+    housekeepingAction(
+      "compact_context",
+      housekeeping("compact_context", { note_to_self: "", compaction_instructions: "Keep it." }),
+    ),
+  ).toBe("asked for a context compaction");
+  expect(housekeepingAction("urls_add", housekeeping("urls_add", { url: "https://x" }))).toBe("added a link");
+  expect(housekeepingAction("shell", housekeeping("shell", {}))).toBeUndefined();
 });

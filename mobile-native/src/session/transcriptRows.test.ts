@@ -449,7 +449,7 @@ describe("a run's one line", () => {
 	it("says what each housekeeping tool did", () => {
 		expect(
 			runSummary([
-				step("a", "notes_agent_set"),
+				step("a", "notes_agent_set", { detail: { arguments: JSON.stringify({ note: "Drain first." }) } }),
 				step("b", "urls_add"),
 				step("c", "urls_add"),
 				step("d", "update_goal"),
@@ -460,6 +460,28 @@ describe("a run's one line", () => {
 			"added a link 2 times",
 			"updated the goal once",
 			"reported to its parent once",
+		]);
+	});
+
+	// A call that only clears a note says so in the run's line, as its own
+	// step line does, apart from calls that set one.
+	it("says a housekeeping call that only cleared a note apart", () => {
+		const note = (id: string, text: string) =>
+			step(id, "notes_agent_set", { detail: { arguments: JSON.stringify({ note: text }) } });
+		expect(
+			runSummary([
+				note("a", "Drain first."),
+				note("b", ""),
+				step("c", "compact_context", {
+					detail: { arguments: JSON.stringify({ note_to_self: "" }), output: "Note cleared. No compaction requested." },
+				}),
+				step("d", "compact_context", { detail: { arguments: JSON.stringify({ note_to_self: "Next: race." }) } }),
+			]).parts.map((part) => part.text),
+		).toEqual([
+			"updated its note once",
+			"cleared its note once",
+			"cleared its compaction note once",
+			"asked for a context compaction once",
 		]);
 	});
 

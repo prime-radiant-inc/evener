@@ -27,11 +27,13 @@ export type HousekeepingStep = Pick<ItemModel, "argumentsJSON" | "output">;
 type StepArgs = Pick<HousekeepingStep, "argumentsJSON">;
 
 // A housekeeping tool's words. Its action is what it did, as a run's line
-// says it ("updated its note once"): one phrase per tool, the same whatever
-// the call's arguments. A step's line starts from the same phrase,
-// capitalized (did), and says more where the call can.
+// says it ("updated its note once"), and actionFor names the one other thing
+// a call can do instead (clear a note). A step's line starts from the same
+// phrase, capitalized (did), and says more where the call can, so a step and
+// its run's line never disagree.
 interface HousekeepingTool {
   action: string;
+  actionFor?: (step: HousekeepingStep) => string | undefined;
   words: (step: HousekeepingStep, did: string) => StepWords;
   progress: (step: StepArgs) => string;
 }
@@ -63,6 +65,16 @@ const onlyClearsNote = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
   );
 };
 
+// Whether a compact_context call only cleared its note: what the tool
+// printed (the start of it: a repeated call gets the registry's repetition
+// note after), else, before it has printed, what its arguments ask for. An
+// empty note that still asks for a compaction also starts "Note cleared.",
+// so the whole first sentence is matched.
+const clearedCompactionNote = (step: HousekeepingStep) => {
+  const output = step.output?.trim();
+  return output ? output.startsWith("Note cleared. No compaction requested.") : onlyClearsNote(step);
+};
+
 const nextPage = (step: StepArgs) => Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
 
 const selectorOf = (step: StepArgs) => str(parseArgs(step.argumentsJSON), "selector")?.trim();
@@ -70,7 +82,8 @@ const selectorOf = (step: StepArgs) => str(parseArgs(step.argumentsJSON), "selec
 const HOUSEKEEPING: Record<string, HousekeepingTool> = {
   notes_agent_set: {
     action: "updated its note",
-    words: (step, did) => ({ verb: noteCleared(step) ? "Cleared its note" : did }),
+    actionFor: (step) => (noteCleared(step) ? "cleared its note" : undefined),
+    words: (_step, did) => ({ verb: did }),
     progress: (step) => (noteCleared(step) ? "Clearing its note" : "Updating its note"),
   },
   notes_read: {
@@ -108,14 +121,8 @@ const HOUSEKEEPING: Record<string, HousekeepingTool> = {
   },
   compact_context: {
     action: "asked for a context compaction",
-    words: (step, did) => ({
-      // The whole first line: an empty note that still asks for a compaction
-      // also starts "Note cleared.", and a repeated call gets the registry's
-      // repetition note after it.
-      verb: step.output?.trim().startsWith("Note cleared. No compaction requested.")
-        ? "Cleared its compaction note"
-        : did,
-    }),
+    actionFor: (step) => (clearedCompactionNote(step) ? "cleared its compaction note" : undefined),
+    words: (_step, did) => ({ verb: did }),
     progress: (step) => (onlyClearsNote(step) ? "Clearing its compaction note" : "Asking for a context compaction"),
   },
   model_list: {
@@ -152,16 +159,23 @@ function housekeepingTool(toolName: string | undefined): HousekeepingTool | unde
   return Object.hasOwn(HOUSEKEEPING, name) ? HOUSEKEEPING[name] : undefined;
 }
 
-/** What a housekeeping tool did, as a run's line says it ("updated its
- * note"); undefined for any other tool. */
-export function housekeepingAction(toolName: string): string | undefined {
-  return housekeepingTool(toolName)?.action;
+// What this call of tool did, in a run's words.
+function actionOf(tool: HousekeepingTool, step: HousekeepingStep | undefined): string {
+  return (step && tool.actionFor?.(step)) ?? tool.action;
+}
+
+/** What a housekeeping call did, as a run's line says it ("updated its
+ * note", or "cleared its note" for a call that cleared it); the tool's usual
+ * phrase without a step. Undefined for any other tool. */
+export function housekeepingAction(toolName: string, step?: HousekeepingStep): string | undefined {
+  const tool = housekeepingTool(toolName);
+  return tool ? actionOf(tool, step) : undefined;
 }
 
 /** A housekeeping step's words; undefined for any other tool. */
 export function housekeepingWords(step: Pick<ItemModel, "toolName"> & HousekeepingStep): StepWords | undefined {
   const tool = housekeepingTool(step.toolName);
-  return tool?.words(step, capitalized(tool.action));
+  return tool?.words(step, capitalized(actionOf(tool, step)));
 }
 
 /** What a running housekeeping step is doing; undefined for any other tool. */
