@@ -546,7 +546,7 @@ test("abandoned first-binding renders cannot retire retained pre-hydration deman
     });
   putModel("uncommitted-thread");
   const never = new Promise<never>(() => {});
-  function AbandonedPane() {
+  function AbandonedPane(): never {
     useTranscript("ref_a");
     throw never;
   }
@@ -586,7 +586,10 @@ test("unavailable history stays pending while a hydrated model with no cursor co
 test("a committed ref change routes automatic demand to that ref with another reader still active", async () => {
   vi.useFakeTimers();
   const fake = connectFakeClient();
-  fake.on("thread/read", (params) => ({ thread: testThread(params.ref), olderCursor: "page-1" }));
+  fake.on("thread/read", (params) => {
+    if (params.ref === undefined) throw new Error("Expected a ref-bound transcript read.");
+    return { thread: testThread(params.ref), olderCursor: "page-1" };
+  });
   fake.on("thread/turns/list", () => ({ data: [], nextCursor: "page-2" }));
   await act(async () => {
     await threadsStore.getState().ensureThread("ref_a");
