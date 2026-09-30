@@ -1171,13 +1171,21 @@ approval. Honor cancellation and newer instructions. Waiting for the user when
 new permission is genuinely needed is an accepted tradeoff. Implementation
 remains pending.
 
-**Discuss — tool coverage and one-shot commands.** Define usable batch and browse
-paths and how other tools honor the same grant. For batch operations, consider
-identifying missing access before writes, requesting it together and reconciling
-any effects before retrying a partially applied operation. Decide how a one-shot
-command without a channel for receiving approval reports an unmet access need.
-The managed-chat decision does not require such a command to wait indefinitely.
-Preserve the scope the user actually approved.
+**Decision — file-tool coverage.** Apply a named file or directory grant
+consistently across file tools, including listing, search and batch patches. A
+read grant supports browsing and searching; a read-and-edit grant supports the
+corresponding mutations within the named resource. Identify a batch patch's
+required access before writes and request missing permissions together, then
+proceed automatically after approval. If an operation has already partially
+applied, inspect and reconcile its effects before retrying completed work.
+Implementation remains pending.
+
+**Discuss — shell tools and one-shot commands.** Define how shell tools honor
+the same grant and how recovery handles commands that have already partially
+executed before an access denial. Decide how a one-shot command without a channel
+for receiving approval reports an unmet access need. The managed-chat decision
+does not require such a command to wait indefinitely. Preserve the scope the
+user actually approved.
 
 **Acceptance.** A grant with clearly presented scope permits the intended
 read/edit/read sequence without repeated prompts, including after reconnect or
@@ -1190,8 +1198,11 @@ retains that constraint even when its parent can edit. An access need first
 encountered without an attached client remains pending, is visible on return and
 survives an ordinary chat resume. Independent permitted work can continue;
 approval resumes the affected work without a new user instruction. Cancellation
-or superseding instructions prevent obsolete work from restarting. Batch and
-one-shot command acceptance criteria depend on the remaining product decisions.
+or superseding instructions prevent obsolete work from restarting. Listing,
+search and patches honor the same resource and access level. A batch with missing
+permission requests the necessary access together before making changes; recovery
+does not blindly replay its already-completed edits. Shell and one-shot command
+acceptance criteria depend on the remaining product decisions.
 
 ### U01 TUI uncertain submission
 
