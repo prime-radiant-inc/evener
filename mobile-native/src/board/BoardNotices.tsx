@@ -12,12 +12,12 @@ export function openNotice(
 	hubId: string,
 	notice: Notice,
 ): void {
+	// Each link names `pop`: with the Hub already open, it hands the link to the
+	// page already in the Hub's stack, popping a detail pushed over it, rather
+	// than stacking a second list page (React Navigation 7 only reuses a route
+	// that is focused or named by `pop`).
 	if (notice.kind === "signIn")
 		// Ruling 25: the Hub opens at that provider's sign-in, its home kept under the page.
-		// With the Hub already open, `pop` hands the link to the Providers page in
-		// its stack, popping a provider's detail pushed over it, rather than
-		// stacking a second Providers page (React Navigation 7 only reuses a route
-		// that is focused or named by `pop`).
 		navigation.navigate("Hub", {
 			screen: "Providers",
 			params: { hubId, focus: notice.providerId, signIn: true },
@@ -26,13 +26,19 @@ export function openNotice(
 		});
 	else if (notice.kind === "host")
 		// Ruling 25: the Hub opens at that host, its home kept under the page.
-		navigation.navigate("Hub", { screen: "Hosts", params: { hubId, focus: notice.sourceId }, initial: false });
+		navigation.navigate("Hub", {
+			screen: "Hosts",
+			params: { hubId, focus: notice.sourceId },
+			initial: false,
+			pop: true,
+		});
 	else {
 		// Ruling 25 again: the Hub opens at Plugins with that plugin's detail.
 		navigation.navigate("Hub", {
 			screen: "Plugins",
 			params: { hubId, focus: { plugin: notice.pluginId, marketplace: notice.marketplace } },
 			initial: false,
+			pop: true,
 		});
 	}
 }
