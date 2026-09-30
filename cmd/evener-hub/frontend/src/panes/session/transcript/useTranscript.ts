@@ -1,18 +1,19 @@
-// useTranscript selects the ThreadModel for `ref` and exposes older-turn
-// paging. It does NOT itself call ensureThread/releaseThread - that
-// lifecycle (exactly once on mount/unmount) is SessionPane's own concern
-// (see its own comment), so this hook stays a plain, side-effect-free
-// selector a caller can use without implicitly acquiring the ref.
+// Selects the transcript and retains older-page demand across failures and
+// inactive panes. SessionPane owns ensureThread/releaseThread; this hook's
+// active readers own only the paging schedule.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { sessionActionError } from "@evener/appwire-client";
-import { useCallback, useRef, useState } from "react";
+import { HistoryPaging, sessionActionError } from "@evener/appwire-client";
+import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
+import { workspaceStore } from "../../../shell/workspace";
+import { useConnectionStore } from "../../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 
 export interface UseTranscriptResult {
   model: ThreadModel | undefined;
   loadOlder(): Promise<void>; // thread/turns/list via olderCursor -> prependOlderTurns
   loadingOlder: boolean;
+  cancelOlder(): void;
   // The fire-and-forget form paging affordances use: same fetch, but the
   // rejection lands in olderError instead of propagating. Both transcript
   // surfaces (the live session pane and the read-only transcript pane) need
@@ -20,48 +21,140 @@ export interface UseTranscriptResult {
   loadOlderReportingError(): void;
   // The last failed older-page fetch's finished sentence, or null when the
   // last attempt succeeded or none has been made. Cleared at the start of
-  // every attempt, so a retry begins from a clean state. The row that renders
-  // it adds no label of its own - see loadOlderReportingError.
+  // every attempt, so a retry begins from a clean state. Retried automatically
+  // while active; the row adds no label of its own.
   olderError: string | null;
 }
 
-export function useTranscript(ref: string): UseTranscriptResult {
+// A browser page serves one hub. Socket replacements retain demand for the
+// same ref and session binding; a new binding owns a separate history window.
+interface TranscriptPaging {
+  ref: string;
+  binding: string | undefined;
+  paging: HistoryPaging;
+  paneConsumers: Map<string, "session" | "transcript">;
+}
+const pagingByRef = new Map<string, TranscriptPaging>();
+
+// Tests reset the thread store between hub fixtures.
+export function resetTranscriptPagingForTests(): void {
+  pagingByRef.clear();
+}
+
+function matchesBinding(entry: TranscriptPaging | undefined, binding: string | undefined): entry is TranscriptPaging {
+  return entry !== undefined && (binding === undefined || entry.binding === undefined || entry.binding === binding);
+}
+
+function createPaging(ref: string, binding: string | undefined): TranscriptPaging {
+  const entry: TranscriptPaging = {
+    ref,
+    binding,
+    paneConsumers: new Map(),
+    paging: new HistoryPaging(
+      () => {
+        const current = threadsStore.getState().threads.get(ref);
+        if (current === undefined || (current.instanceId ?? current.threadId) !== entry.binding) return undefined;
+        // The loaded model's optional wire cursor is absent at history end.
+        // An unavailable model or binding is handled above, not as an end.
+        return current.olderCursor ?? null;
+      },
+      () => threadsStore.getState().loadOlderTurns(ref),
+      () => {
+        if (pagingByRef.get(ref) === entry) pagingByRef.delete(ref);
+      },
+    ),
+  };
+  return entry;
+}
+
+function rememberConsumer(entry: TranscriptPaging, viewId: string): HistoryPaging {
+  // Unresolved reads and permanent failures both retain consumers. Only a
+  // successful settlement or explicit cancellation can retire their ownership.
+  const state = entry.paging.getSnapshot();
+  if (!state.pending && state.error === null) entry.paneConsumers.clear();
+  const pane = workspaceStore.getState().panes.find((pane) => pane.id === viewId);
+  if (pane && (pane.type === "session" || pane.type === "transcript")) entry.paneConsumers.set(viewId, pane.type);
+  return entry.paging;
+}
+
+export function useTranscript(ref: string, viewId = ref): UseTranscriptResult {
   const model = useThreadsStore((s) => s.threads.get(ref));
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [olderError, setOlderError] = useState<string | null>(null);
-  // The re-entrancy guard is a REF, not the loadingOlder state: two callers in
-  // the same tick both read `false` from a state closure and both fire, which
-  // is exactly what happened once paging became automatic - the near-top scroll
-  // trigger and the geometry fill both fired for one scroll and requested the
-  // SAME cursor twice (observed live: cursors 132, 102, 102, 72...). A ref is
-  // updated synchronously, so the second caller sees the first
-  // one's claim. loadingOlder stays as the RENDER signal it always was.
-  const inFlightRef = useRef(false);
+  const { state: connection } = useConnectionStore();
+  const binding = model?.instanceId ?? model?.threadId;
+  const [entry, setEntry] = useState(() => {
+    const retained = pagingByRef.get(ref);
+    return matchesBinding(retained, binding) ? retained : createPaging(ref, binding);
+  });
+  // Only committed readers can install or bind shared demand. A suspended
+  // first render must not retire a waiting reader's unknown binding.
+  useLayoutEffect(() => {
+    const retained = pagingByRef.get(ref);
+    let selected: TranscriptPaging;
+    if (matchesBinding(retained, binding)) selected = retained;
+    else selected = entry.ref === ref && matchesBinding(entry, binding) ? entry : createPaging(ref, binding);
+    if (binding !== undefined) selected.binding = binding;
+    pagingByRef.set(ref, selected);
+    if (selected !== entry) setEntry(selected);
+  }, [entry, ref, binding]);
+  const paging = entry.paging;
+  const state = useSyncExternalStore(paging.subscribe, paging.getSnapshot);
+  // Wait for hydration when a pane returns before resuming its demand.
+  const ready = model !== undefined && connection === "ready";
+  useEffect(() => {
+    if (!ready || pagingByRef.get(ref) !== entry) return;
+    let release: (() => void) | undefined;
+    const sync = () => {
+      if (document.visibilityState === "hidden") {
+        release?.();
+        release = undefined;
+      } else if (!release) release = paging.activate();
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", sync);
+      release?.();
+    };
+  }, [paging, ready, ref, entry]);
 
-  const loadOlder = useCallback(async () => {
-    if (inFlightRef.current) return; // already in flight - the store's own action has no de-dupe of its own
-    inFlightRef.current = true;
-    setLoadingOlder(true);
-    try {
-      // loadOlderTurns itself no-ops (no RPC at all) when the tracked
-      // model has no olderCursor - see stores/threads.ts.
-      await threadsStore.getState().loadOlderTurns(ref);
-    } finally {
-      inFlightRef.current = false;
-      setLoadingOlder(false);
+  // A layout commit can adopt another pane's owner before the state update
+  // renders. Automatic effects must already route to the committed ref.
+  const committedEntry = useCallback(() => pagingByRef.get(ref) ?? entry, [ref, entry]);
+  const loadOlder = useCallback(
+    () => rememberConsumer(committedEntry(), viewId).request(viewId),
+    [committedEntry, viewId],
+  );
+  const cancelOlder = useCallback(() => {
+    const selected = committedEntry();
+    selected.paging.cancel(viewId);
+    selected.paneConsumers.delete(viewId);
+    // Navigation retains demand but creates a fresh pane ID on return. Jump
+    // to live abandons those removed predecessors, while an independently
+    // open pane keeps its demand even when its reader is currently inactive.
+    const panes = workspaceStore.getState().panes;
+    for (const [consumer, type] of selected.paneConsumers) {
+      if (
+        panes.some(
+          (pane) => pane.id === consumer && pane.type === type && (pane.params as { ref?: unknown })?.ref === ref,
+        )
+      )
+        continue;
+      selected.paging.cancel(consumer);
+      selected.paneConsumers.delete(consumer);
     }
-  }, [ref]);
-
-  // Labelled here rather than in the row: paging goes through the hub's
-  // transparent resume like every other session call, and this is the only
-  // side of the seam still holding the rejection - so it is the only side
-  // that can tell a failed page fetch from a session that would not start
-  // (protocol/errors.ts's sessionActionError). The page never arrived either
-  // way, so the resume is free to take the whole sentence.
-  const loadOlderReportingError = useCallback(() => {
-    setOlderError(null);
-    void loadOlder().catch((err) => setOlderError(sessionActionError("Couldn't load older turns", err)));
-  }, [loadOlder]);
-
-  return { model, loadOlder, loadingOlder, loadOlderReportingError, olderError };
+  }, [committedEntry, viewId, ref]);
+  return {
+    model,
+    loadOlder,
+    cancelOlder,
+    loadingOlder: state.loading || (state.pending && state.error === null),
+    loadOlderReportingError: () => {
+      const owner = rememberConsumer(committedEntry(), viewId);
+      // Geometry can repeat quiet demand; only the error row's explicit Retry
+      // should bypass pacing after a rejected read.
+      const request = owner.getSnapshot().error === null ? owner.request : owner.retryNow;
+      void request(viewId).catch(() => {});
+    },
+    olderError: state.error === null ? null : sessionActionError("Couldn't load older turns", state.error),
+  };
 }

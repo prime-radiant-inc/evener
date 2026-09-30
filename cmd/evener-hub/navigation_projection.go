@@ -363,7 +363,29 @@ func navigationMergeProjectBucketsContext(ctx context.Context, buckets navigatio
 	if err != nil {
 		return navigationProjectBucket{}, err
 	}
+	// Merging a Key's groups can raise the merged row's LastActivity above a
+	// later row's instant, while the merge keeps each Key's first-appearance
+	// position. The test-runs bucket is the live shape: it concatenates the
+	// active and archived test-run projects, each LastActivity-ordered on its
+	// own, so an archived test run newer than an active one lifts the merged row
+	// past rows it should precede. Re-sort each bucket by LastActivity desc -
+	// hubcore's own project order - so a merged row's position agrees with its
+	// recency. SliceStable keeps the tree's order as the tiebreak, the way
+	// hubcore's stable project sort does.
+	navigationSortProjectsByLastActivity(active)
+	navigationSortProjectsByLastActivity(archived)
+	navigationSortProjectsByLastActivity(testRuns)
 	return navigationProjectBucket{active: active, archived: archived, testRuns: testRuns}, nil
+}
+
+// navigationSortProjectsByLastActivity orders projects newest-first by
+// LastActivity, matching hubcore's project order (BuildTree's byLastActivityDesc).
+// SliceStable keeps the input order for equal instants, the way hubcore's
+// stable sort does.
+func navigationSortProjectsByLastActivity(projects []hubcore.TreeProject) {
+	sort.SliceStable(projects, func(i, j int) bool {
+		return projects[i].LastActivity.After(projects[j].LastActivity)
+	})
 }
 
 // navigationMergeProjectGroupsContext merges the projects that share a Key
@@ -416,10 +438,14 @@ func navigationMergeProjectGroupsContext(ctx context.Context, projects []hubcore
 // presents first.Key - into first, and returns the single row they collapse to.
 //
 // The first group owns the row's rendered identity - Name, WorkingDir, Key, and
-// the IsArchived / IsTestRun flags, which are uniform inside a bucket because
-// navigationProjectBuckets routes on them - so a merged row keeps one stable
-// label and address. Everything else is combined the way the projection's
-// consumers read the struct:
+// the IsArchived / IsTestRun flags - so a merged row keeps one stable label and
+// address. IsTestRun is uniform inside a bucket because navigationProjectBuckets
+// routes every test-run project to its own bucket. IsArchived is uniform in the
+// active and archived buckets but NOT in the test-runs bucket, which takes both
+// archived and unarchived test runs: a merged test-run row keeps the first
+// group's IsArchived, the same first-group-owns-identity rule that fixes Name
+// and Key. Everything else is combined the way the projection's consumers read
+// the struct:
 //
 //   - Current / Recent / Archived are the union of every group's rows, ordered
 //     the way hubcore orders its own tiers (most recent first: UpdatedAt desc,

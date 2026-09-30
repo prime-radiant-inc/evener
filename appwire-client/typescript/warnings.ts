@@ -29,10 +29,14 @@ export const WarningCodeContextBudget = "context_budget";
  */
 export const WarningCodeDelegateAttentionRestore = "delegate_attention_restore";
 
+/** A restored MCP connection, independent of the pending tool call outcome. */
+export const WarningCodeMCPReconnected = "mcp_reconnected";
+
 // The codes whose warnings show only at Full.
 const INFORMATIONAL_WARNING_CODES: ReadonlySet<unknown> = new Set([
   WarningCodeContextBudget,
   WarningCodeDelegateAttentionRestore,
+  WarningCodeMCPReconnected,
 ]);
 
 /**

@@ -13,6 +13,7 @@ import {
 	flattenSubagents,
 	matchesSearch,
 	sameModel,
+	shellJobLabel,
 	shellJobMeta,
 	type SubagentRow,
 	subagentLastLine,
@@ -375,6 +376,18 @@ describe("shell jobs in the Activity list", () => {
 		expect(flattenSubagents(activityTree())).toEqual(subagents);
 	});
 
+	// A job id and a delegate id are different namespaces: one can't hide
+	// the other (subagentListKey keys them apart the same way).
+	it("keeps a job and a subagent that share an id", () => {
+		const tree: ActivityTree = {
+			revision: 1,
+			root: session("local:coord", [shell(job(false, { jobId: "same" })), entry(done("same"))]),
+		};
+		const { jobs, subagents } = flattenActivity(tree);
+		expect(jobs.map((row) => row.id)).toEqual(["same"]);
+		expect(subagents.map((row) => row.id)).toEqual(["same"]);
+	});
+
 	it("sorts jobs among subagents by state, and finds them by title, command or owner", () => {
 		const { jobs, subagents } = flattenActivity(activityTree());
 		const all = [...subagents, ...jobs];
@@ -395,5 +408,28 @@ describe("shell jobs in the Activity list", () => {
 		if (!running || !finished) throw new Error("no jobs");
 		expect(shellJobMeta(running, NOW)).toBe("running · 2m");
 		expect(shellJobMeta(finished, NOW)).toBe("Command failed · 1m");
+	});
+
+	// VoiceOver hears every ending, the clean one the meta leaves out included,
+	// and its durations in words, as a subagent row's.
+	it("reads a job to VoiceOver with how it ended, even a clean finish", () => {
+		const { jobs } = flattenActivity(activityTree());
+		const [running, finished] = jobs;
+		if (!running || !finished) throw new Error("no jobs");
+		expect(shellJobLabel(running, NOW)).toBe("Shell job, Serving the docs, running, 2 minutes, under local:coord");
+		expect(shellJobLabel(finished, NOW)).toBe(
+			"Shell job, go test ./agent/..., Command failed, 1 minute, under Fix race in tree settle",
+		);
+		const clean = {
+			...finished,
+			state: "done" as const,
+			job: { ...finished.job, status: "completed", outcome: "success" },
+		};
+		expect(shellJobLabel(clean, NOW)).toBe(
+			"Shell job, go test ./agent/..., Done, 1 minute, under Fix race in tree settle",
+		);
+		const untimed = { ...clean, job: { ...clean.job, endedAt: undefined } };
+		expect(shellJobMeta(untimed, NOW)).toBe("Done");
+		expect(shellJobLabel(untimed, NOW)).toBe("Shell job, go test ./agent/..., Done, under Fix race in tree settle");
 	});
 });

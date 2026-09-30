@@ -278,7 +278,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // at the exact spot in the scroll where history stops. LoadOlderRow renders
   // olderError with a Retry beside it - the recovery path, since Jesse ruled out
   // a standing "load more" button and silent failure is not an option.
-  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
+  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
+    ref,
+    paneId,
+  );
 
   // A DELETED ref never hydrates: the hub durably fences every request
   // against a deleted target (cmd/evener-hub/app_sources.go's
@@ -389,6 +392,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     model,
     listRef: virtualListRef,
     loadOlder,
+    cancelOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
     // The transcript's trailing row - the ONE live-edge row the AskDock and

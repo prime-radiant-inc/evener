@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/envvars"
 )
 
 func TestMatrixConfigsExpandsVersionsByModels(t *testing.T) {
@@ -168,5 +170,59 @@ func TestRunMatrixCommandRunsEveryPairOnTheCLIHarness(t *testing.T) {
 		if cfg.harness != "cli" || cfg.evenerBin != "/bin/a" || cfg.repetitions != 3 || !slices.Equal(cfg.systemPromptAppend, []string{"extra.md"}) {
 			t.Errorf("config %+v, want the cli harness, /bin/a, 3 repetitions, and extra.md appended", cfg)
 		}
+	}
+}
+
+// TestRunMatrixCommandInheritOperatorEnvFlowsToEachCell pins that
+// --inherit-operator-env, given once on the matrix invocation, reaches every
+// version/model cell's runConfig (#3227): the flag decides the whole
+// process's hermetic env once, not per cell, but each cell's cliProbeArgs
+// still needs its own copy to decide whether to add --enabled-plugins. Not
+// parallel: it replaces the package's suite runner.
+func TestRunMatrixCommandInheritOperatorEnvFlowsToEachCell(t *testing.T) {
+	// --inherit-operator-env unsets the variable; t.Setenv restores it.
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
+	var mu sync.Mutex
+	var got []runConfig
+	orig := runMatrixSuite
+	t.Cleanup(func() { runMatrixSuite = orig })
+	runMatrixSuite = func(cfg runConfig) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, cfg)
+		return nil
+	}
+	out := t.TempDir()
+	err := runMatrixCommand([]string{"--version", "v1-A=/bin/a", "--models", "m1,m2", "--out", out, "--inherit-operator-env"})
+	if err != nil {
+		t.Fatalf("matrix: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ran %d configurations, want 2", len(got))
+	}
+	for _, cfg := range got {
+		if !cfg.inheritOperatorEnv {
+			t.Errorf("config %+v, want inheritOperatorEnv=true", cfg)
+		}
+	}
+}
+
+// TestRunMatrixCommandConfiguresHermeticEnvOnceBeforeDispatch pins that a
+// matrix invocation decides EVENER_NO_USER_SKILLS from --inherit-operator-env
+// exactly once, before any cell (goroutine) runs, so concurrent cells share
+// one setting instead of racing on a per-cell set/restore (#3227). Not
+// parallel: it replaces the package's suite runner and mutates process
+// environment.
+func TestRunMatrixCommandConfiguresHermeticEnvOnceBeforeDispatch(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
+	orig := runMatrixSuite
+	t.Cleanup(func() { runMatrixSuite = orig })
+	runMatrixSuite = func(cfg runConfig) error { return nil }
+	out := t.TempDir()
+	if err := runMatrixCommand([]string{"--version", "v1=/bin/a", "--models", "m", "--out", out}); err != nil {
+		t.Fatalf("matrix: %v", err)
+	}
+	if got := envvars.EVENERNoUserSkills.Getenv(); got != "1" {
+		t.Fatalf("%s = %q after a default (hermetic) matrix run, want 1", envvars.EVENERNoUserSkills.Name, got)
 	}
 }

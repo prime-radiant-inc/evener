@@ -43,7 +43,7 @@ import {
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
 import { latestPage, pageBefore, withOlderHistory } from "../src/dev/demoOlderHistory.js";
-import { createDemoSetup, DEMO_MODEL_PROVIDERS, demoUpdateCheck } from "../src/dev/demoSetup.js";
+import { createDemoSetup, DEMO_MODEL_NAMES, DEMO_MODEL_PROVIDERS, demoUpdateCheck } from "../src/dev/demoSetup.js";
 
 // The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
 // answers model/list instead.
@@ -113,7 +113,12 @@ export async function createDemoHub(
 	// "ago" from, so a row and its thread agree on when it last changed.
 	const startedAt = fleetOptions?.now ?? Date.now();
 	const demoFleet = fleetOptions
-		? createDemoFleet({ ...fleetOptions, now: startedAt, modelProviders: DEMO_MODEL_PROVIDERS })
+		? createDemoFleet({
+				...fleetOptions,
+				now: startedAt,
+				modelProviders: DEMO_MODEL_PROVIDERS,
+				modelNames: DEMO_MODEL_NAMES,
+			})
 		: null;
 	// With the fleet on, New session and the Hub read the prototype's hosts,
 	// providers, plugins, models and folders (demoSetup.ts).
@@ -820,6 +825,9 @@ export async function createDemoHub(
 						break;
 					case "evener/jobs/list":
 						result = requireFleet().answerJobsList(params);
+						break;
+					case "evener/jobs/output":
+						result = requireFleet().answerJobsOutput(params);
 						break;
 					case "evener/search":
 						result = requireFleet().answerSearch(params);

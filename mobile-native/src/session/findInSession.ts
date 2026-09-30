@@ -5,6 +5,22 @@
 import { composeStepWords, type EvenerDelegateInfo, type SteeringFragment } from "@evener/appwire-client";
 import type { RunStep, TimelineRow } from "../timeline";
 import { notificationLine, notificationText } from "./notificationLine";
+/** Find in session while it's open: what you typed, the current match's
+ * reader key, whether older history is being searched, and whether that
+ * search reached the start of history with nothing older. */
+export interface FindState {
+	query: string;
+	key: string | null;
+	seeking: boolean;
+	exhausted: boolean;
+}
+
+/** A new query starts a new search: no current match yet, and older history
+ * is searched only when there is something to look for. */
+export function newFind(query: string): FindState {
+	return { query, key: null, seeking: query.trim() !== "", exhausted: false };
+}
+
 // A step's intent and its words, which name what it acted on: a file, a
 // command, a fetched page's URL, a search's query. An intent row keeps its
 // words but not their composed summary, and its line shows their target.

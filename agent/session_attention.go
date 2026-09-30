@@ -885,7 +885,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 // failure's kind and status only; the serve loop's own turn-failure line
 // already records the failed turn.
 func (s *Session) announceRootAttentionPaused(turnErr error) {
-	summary := providerFailureSummary(turnErr)
+	summary := llm.ProviderFailureSummary(turnErr)
 	slog.Warn("background updates paused", "session", s.ID(), "failure", summary)
 	s.emit(events.EventWarning, events.WarningData{
 		Message: rootAttentionPausedMessage(turnErr),
@@ -894,20 +894,6 @@ func (s *Session) announceRootAttentionPaused(turnErr error) {
 		Hint:    summary,
 		Code:    events.WarningCodeAttentionPaused,
 	})
-}
-
-// providerFailureSummary is a failure's kind and HTTP status, with no
-// provider text: "HTTP 401 (authentication)", or "sign-in required".
-func providerFailureSummary(err error) string {
-	if errors.Is(err, llm.ErrSignInRequired) {
-		return "sign-in required"
-	}
-	kind := llm.Kind(err).String()
-	var llmErr llm.Error
-	if errors.As(err, &llmErr) && llmErr.StatusCode() != 0 {
-		return fmt.Sprintf("HTTP %d (%s)", llmErr.StatusCode(), kind)
-	}
-	return kind
 }
 
 // rootAttentionPausedMessage names the provider instance that refused (the
@@ -1298,7 +1284,11 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		}
 		pending := s.delegateController != nil && s.delegateController.hasPendingDelegateAttention()
 		s.attentionMu.Lock()
-		if pending {
+		// Runnable work the drive retries (a parked delegate's fenced
+		// escalation is runnable without being pending) backs the next retry
+		// off too: resetting here would re-run a persistent failure at the
+		// initial delay forever.
+		if pending || runnable {
 			s.stableAttentionRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
 		} else {
 			s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay

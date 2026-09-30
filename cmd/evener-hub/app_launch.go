@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -11,6 +12,12 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 )
+
+// errNoLaunchConfigRoot is what a launch settings write answers when no user
+// config root resolves. Saving the global or project layer under a relative or
+// empty root would create the file in, or fail against, the process working
+// directory, so the write refuses outright.
+var errNoLaunchConfigRoot = errors.New("launch config is unavailable: no user config root could be resolved")
 
 // hubLaunchController owns the evener/launch/* RPC handlers.
 type hubLaunchController struct {
@@ -170,6 +177,9 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	default:
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams(fmt.Sprintf("layer %q is not writable", params.Layer))
 	}
+	if path == "" {
+		return appwire.LaunchConfigResolved{}, errNoLaunchConfigRoot
+	}
 	if params.Config.EnabledPlugins != nil {
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("enabledPlugins is per-launch only")
 	}
@@ -213,6 +223,9 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 	paths, err := launchconfig.PathsFor(c.stateRoot, cwd)
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
+	}
+	if paths.Meta == "" {
+		return appwire.LaunchConfigResolved{}, errNoLaunchConfigRoot
 	}
 	meta, _ := launchconfig.LoadMeta(paths.Meta)
 	if meta.Schema == 0 {

@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
@@ -973,13 +975,24 @@ func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appw
 }
 
 // hubLaunchConfigRoot resolves cfg.LaunchConfigRoot, falling back to
-// cmdutil.DefaultConfigRoot() when unset (a zero-value WebConfig built
-// directly, as some tests do).
+// userdirs.DefaultConfigRoot() when unset (a zero-value WebConfig built
+// directly, as some tests do), and returns "" when no absolute root resolves.
+// The root has to be absolute: a relative one - what cmdutil.DefaultConfigRoot
+// substitutes when neither XDG_CONFIG_HOME nor a home directory resolves -
+// would resolve launch.toml against the process working directory, letting a
+// repository control the hub's launch config. An empty result means "no user
+// config root": launchconfig then applies no user-level layers.
 func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
-	if cfg.LaunchConfigRoot != "" {
-		return cfg.LaunchConfigRoot
+	root := cfg.LaunchConfigRoot
+	if root == "" {
+		// userdirs, not cmdutil: this one reports an unresolvable root as
+		// empty instead of substituting a relative path.
+		root = userdirs.DefaultConfigRoot()
 	}
-	return cmdutil.DefaultConfigRoot()
+	if root == "" || !filepath.IsAbs(root) {
+		return ""
+	}
+	return root
 }
 
 // hubAuthStateRoot is where the auth controller keeps OAuth records: the
@@ -1231,6 +1244,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		sources: sources,
 		roster:  cfg.Roster,
 		remote:  cfg.RemoteThreadCache,
+	}
+	if instancesController != nil {
+		notices.refreshProviders = instancesController.refreshProviderFile
 	}
 	registerNoticesHandler(server, notices)
 	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })

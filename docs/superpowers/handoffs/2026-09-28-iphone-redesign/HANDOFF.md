@@ -30,7 +30,7 @@ The plans carry numbered rulings (for example, phase 2 part 3's ruling 21). Wher
 | 4 Subagents and Reader | PRs 1-8 merged (#2767, #2912, #2930, #2762, #2784, #2894, #2866, #2900, #2954). Left: PR 9. |
 | 5 New session and Hub | Plan merged (#2505). PR 1 (the Hub sheet, #2934) merged. PR 8 (#2947) is open. The other PRs haven't started. |
 | 6 Attention and resilience | The plan is merged in three parts (#2511, #2588, #2586). No phone PRs yet. |
-| 7 Server | Merged: PRs 1-19, 22-25, 30-32, 34, 35. Deferred, dropped or not needed: S8, S12, S16, S18 (see the rulings). Left: PR 36 (S17, its plan is merged in #2940). |
+| 7 Server | Merged: PRs 1-19, 22-25, 30-32, 34, 35. Deferred, dropped or not needed: S12, S16, S18 (see the rulings). Left: PR 36 (S17, its plan is merged in #2940). |
 
 A live status board with one row per PR and issue is the tracker artifact in Jesse's claude.ai account: https://claude.ai/artifact/J9GdVqPL6dCZGkFYHqUn86 (private until he shares it).
 
@@ -89,7 +89,6 @@ Handed to an engineer (small, off the critical path): #2664 (server Lows batch 5
 - 2026-09-28: An explicit unread from another device sticks while you watch, until a newer turn ends.
 - 2026-09-28: Phases no longer land in order ("don't hold back. merge."). Ready PRs merge on green CI.
 - 2026-09-28: S12 (scoped approvals) is not needed: approvals don't come up in real use.
-- 2026-09-28: S8 (launch recipes) is deferred entirely. The phone's New session sheet just remembers the latest settings used.
 - 2026-09-28: S18 (starting a session in a new worktree branch) is dropped: an isolated worktree is made by the agent with its own tool, not by the harness at launch. The New session sheet's Branch row shows the current branch as information only.
 - 2026-09-28: The demo hub's playground session reflects queued and steered mutations the way the real hub does, so ghost bubbles clear.
 - 2026-09-28: mobile-native now has a formatter-only Biome config (#2902). Format touched files with `npx biome format --write <files> --vcs-enabled=false --vcs-use-ignore-file=false` from mobile-native; the flags are needed inside worktrees (#2948).

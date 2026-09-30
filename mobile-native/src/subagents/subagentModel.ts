@@ -22,7 +22,7 @@ import {
 	jobStatusDisplay,
 	plainQuoteLine,
 } from "@evener/appwire-client";
-import { compactDuration } from "../session/format";
+import { compactDuration, spokenDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
 export type SubagentState = "running" | "failed" | "done";
@@ -157,17 +157,21 @@ export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[];
 	const jobs: ShellJobRow[] = [];
 	const seen = new Set<string>();
 	let order = 0;
-	const visit = (session: ActivitySessionNode, owner: string, parentTitle: string | undefined) => {
+	// parentTitle is the subagent whose session this is, absent at the root.
+	const visit = (session: ActivitySessionNode, parentTitle: string | undefined) => {
 		for (const entry of session.entries) {
 			if (entry.kind === "shell") {
-				if (seen.has(entry.job.jobId)) continue;
-				seen.add(entry.job.jobId);
+				// Job ids and delegate ids are separate namespaces, keyed apart
+				// as subagentListKey keys their rows.
+				const key = `job:${entry.job.jobId}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
 				const job = entry.job;
 				jobs.push({
 					kind: "job",
 					id: job.jobId,
 					title: job.description.trim() || firstLine(job.command ?? "", 80) || job.jobId,
-					owner,
+					owner: parentTitle ?? tree.root.label,
 					state: shellJobState(job),
 					job,
 					order: order++,
@@ -190,10 +194,10 @@ export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[];
 				delegate,
 				order: order++,
 			});
-			if (delegate.child) visit(delegate.child, title, title);
+			if (delegate.child) visit(delegate.child, title);
 		}
 	};
-	visit(tree.root, tree.root.label, undefined);
+	visit(tree.root, undefined);
 	return { subagents, jobs };
 }
 
@@ -404,21 +408,42 @@ export function shellJobEnding(row: ShellJobRow): string {
 	return subagentStateWord(row.state);
 }
 
-/** A shell job's trailing words (the web's ActivityTree meta): while it runs,
- * its status (jobStatusDisplay) and how long it has been quiet; once it ends,
- * how it ended and how long it ran. A job that finished well shows only how
- * long it ran, since its hue already says done. */
-export function shellJobMeta(row: ShellJobRow, now: number): string {
+/** A shell job's status in parts, which its meta and its spoken label each
+ * word their own way: while it runs, its status (jobStatusDisplay) and how
+ * long it has been quiet; once it ends, how it ended and how long it ran.
+ * `clean` marks a job that finished well, whose ending the meta leaves to
+ * its hue. */
+function shellJobStatus(row: ShellJobRow, now: number): { words: string; clean: boolean; ms: number | null } {
 	const { job } = row;
 	if (!job.terminal) {
-		const status = jobStatusDisplay(job.status, job.reason);
 		const since = time(job.lastOutputAt) ?? time(job.startedAt);
-		return since === null ? status : `${status} · ${compactDuration(Math.max(0, now - since))}`;
+		return {
+			words: jobStatusDisplay(job.status, job.reason),
+			clean: false,
+			ms: since === null ? null : Math.max(0, now - since),
+		};
 	}
-	const ending = shellJobEnding(row);
+	const words = shellJobEnding(row);
 	const started = time(job.startedAt);
 	const ended = time(job.endedAt);
-	if (started === null || ended === null) return ending;
-	const ran = compactDuration(Math.max(0, ended - started));
-	return ending === subagentStateWord("done") ? ran : `${ending} · ${ran}`;
+	return {
+		words,
+		clean: words === subagentStateWord("done"),
+		ms: started === null || ended === null ? null : Math.max(0, ended - started),
+	};
+}
+
+/** A shell job's trailing words (the web's ActivityTree meta): "running ·
+ * 2m", "Command failed · 1m", or for a job that finished well just "1m". */
+export function shellJobMeta(row: ShellJobRow, now: number): string {
+	const { words, clean, ms } = shellJobStatus(row, now);
+	if (ms === null) return words;
+	return clean ? compactDuration(ms) : `${words} · ${compactDuration(ms)}`;
+}
+
+/** A shell job's row as VoiceOver reads it: what it is, how it's doing or
+ * how it ended (a clean finish too), the time in words, and who started it. */
+export function shellJobLabel(row: ShellJobRow, now: number): string {
+	const { words, ms } = shellJobStatus(row, now);
+	return ["Shell job", row.title, words, ...(ms === null ? [] : [spokenDuration(ms)]), `under ${row.owner}`].join(", ");
 }

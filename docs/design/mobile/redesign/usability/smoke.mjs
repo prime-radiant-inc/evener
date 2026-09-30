@@ -130,10 +130,10 @@ async function runChecks(page, scheme) {
   const sheets = [
     ['launch', `EV.openNew('smoke')`], ['launch-plugins', `EV.openNew('smoke'); EV.openSheet('pickPlugins',{})`], ['launch-model', `EV.openNew('smoke'); EV.openSheet('model',{target:'launch'})`],
     ['launch-host', `EV.openNew('smoke'); EV.openSheet('pickHost',{})`], ['launch-project', `EV.openNew('smoke'); EV.openSheet('pickProject',{})`], ['launch-access', `EV.openNew('smoke'); EV.openSheet('pickAccess',{})`],
-    ['launch-branch', `EV.openNew('smoke'); EV.openSheet('pickBranch',{})`], ['launch-more', `EV.openNew('smoke'); EV.openSheet('moreOptions',{})`], ['launch-save', `EV.openNew('smoke'); EV.openSheet('saveRecipe',{})`],
+    ['launch-branch', `EV.openNew('smoke'); EV.openSheet('pickBranch',{})`], ['launch-more', `EV.openNew('smoke'); EV.openSheet('moreOptions',{})`],
     ['hub', `EV.openSheet('hub',{})`], ['hosts', `EV.openSheet('hub',{}); EV.openSheet('hosts',{})`], ['host', `EV.openSheet('host',{hostId:'paradise-park'})`],
     ['providers', `EV.openSheet('providers',{})`], ['provider', `EV.openSheet('provider',{providerId:'codex-jesse-fsck.com'})`], ['signin', `EV.openSheet('signin',{provider:'codex-jesse-fsck.com'})`],
-    ['plugins', `EV.openSheet('plugins',{})`], ['recipes', `EV.openSheet('recipes',{})`], ['display', `EV.openSheet('display',{})`], ['alerts', `EV.openSheet('alerts',{})`], ['hubs', `EV.openSheet('hubs',{})`],
+    ['plugins', `EV.openSheet('plugins',{})`], ['display', `EV.openSheet('display',{})`], ['alerts', `EV.openSheet('alerts',{})`], ['hubs', `EV.openSheet('hubs',{})`],
     ['session-info', `EV.openSession('s-pr2138'); EV.openSheet('session',{sessionId:'s-pr2138'})`], ['model-session', `EV.openSession('s-pr2138'); EV.openSheet('model',{target:'session',sessionId:'s-pr2138'})`],
     ['commands', `EV.openSession('s-pr2138'); EV.openSheet('commands',{sessionId:'s-pr2138'})`], ['tasks', `EV.openSheet('tasks',{sessionId:'s-pr2138'})`], ['goal', `EV.openSheet('goal',{sessionId:'s-pr2138'})`],
     ['notes', `EV.openSession('s-pr2138'); EV.openSheet('notes',{sessionId:'s-pr2138'})`], ['notes-links-only', `EV.openSession('s-hier'); EV.openSheet('notes',{sessionId:'s-hier'})`],

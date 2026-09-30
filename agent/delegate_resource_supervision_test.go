@@ -3320,6 +3320,137 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 	}
 }
 
+// TestStableDelegateAttentionDriveClearsResolvedProjection pins that a
+// delegate whose attention already resolved in its transcript does not stay
+// flagged. A resolution can outrun the committed attention run that would emit
+// the clearing event -- acceptDelegateAttention makes the marker durable, and a
+// later-declined CommitStart leaves the last journal event at
+// needs_attention:true with nothing pending -- and the transcript-driven retry
+// then finds no pending attention and never starts the run that would clear it.
+func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	controller := root.delegateController
+	const attentionID = "delegate:resolved-before-the-run"
+	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "already handled"); err != nil || !appended {
+		t.Fatalf("append stable attention = appended:%t err:%v", appended, err)
+	}
+	if _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+		t.Fatalf("open stable attention: %v", err)
+	}
+	controller.mu.Lock()
+	armedFlag := controller.durable[fixture.delegateID].NeedsAttention
+	wakeIDs := len(controller.attentionWakeIDs[fixture.delegateID])
+	controller.mu.Unlock()
+	if !armedFlag || wakeIDs != 1 {
+		t.Fatalf("armed attention projection = needs:%t wakeIDs:%d, want true/1", armedFlag, wakeIDs)
+	}
+
+	// Unresolved transcript attention is never cleared: the fold still lists a
+	// pending ID, so the projection and its wake must survive untouched.
+	if err := controller.clearResolvedDelegateAttention(fixture.delegateID); err != nil {
+		t.Fatalf("clear with pending attention: %v", err)
+	}
+	controller.mu.Lock()
+	keptFlag := controller.durable[fixture.delegateID].NeedsAttention
+	keptWakeIDs := len(controller.attentionWakeIDs[fixture.delegateID])
+	controller.mu.Unlock()
+	if !keptFlag || keptWakeIDs != 1 {
+		t.Fatalf("pending attention projection = needs:%t wakeIDs:%d, want true/1", keptFlag, keptWakeIDs)
+	}
+
+	// Model the accepted resolution whose committed run never landed: the
+	// marker is durable in the child transcript, so the drive finds nothing
+	// pending while the aggregate still carries the true event.
+	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
+		t.Fatalf("resolve stable attention: %v", err)
+	}
+
+	// An attention opened between the transcript fold and the locked clearing
+	// update must survive: the update revalidates the evidence version, so a
+	// stale empty fold never drops the concurrently opened wake.
+	const racedID = "delegate:opened-during-the-fold"
+	compute := readExistingDelegateAttentionFoldCompute
+	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, int64, error) {
+		fold, consumed, err := compute(path, sessionID)
+		if _, openErr := controller.openDelegateAttention(fixture.delegateID, racedID); openErr != nil {
+			t.Errorf("open raced attention: %v", openErr)
+		}
+		return fold, consumed, err
+	}
+	t.Cleanup(func() { readExistingDelegateAttentionFoldCompute = compute })
+	if err := controller.clearResolvedDelegateAttention(fixture.delegateID); err != nil {
+		t.Fatalf("clear with a racing open: %v", err)
+	}
+	readExistingDelegateAttentionFoldCompute = compute
+	controller.mu.Lock()
+	racedFlag := controller.durable[fixture.delegateID].NeedsAttention
+	_, racedKept := controller.attentionWakeIDs[fixture.delegateID][racedID]
+	controller.mu.Unlock()
+	if !racedFlag || !racedKept {
+		t.Fatalf("racing open projection = needs:%t keptRacedWake:%t, want true/true", racedFlag, racedKept)
+	}
+
+	root.driveStableDelegateAttention(sub)
+
+	controller.mu.Lock()
+	cleared := !controller.durable[fixture.delegateID].NeedsAttention
+	remaining := len(controller.attentionWakeIDs[fixture.delegateID])
+	controller.mu.Unlock()
+	if !cleared || remaining != 0 {
+		t.Fatalf("resolved attention projection = needs:%t wakeIDs:%d, want false/0", !cleared, remaining)
+	}
+	events, err := controller.store.Load()
+	if err != nil {
+		t.Fatalf("load delegate journal: %v", err)
+	}
+	tail := events[len(events)-1]
+	if tail.Kind != delegatestore.EventDelegateAttentionChanged || tail.DelegateID != fixture.delegateID || tail.AttentionChanged == nil || tail.AttentionChanged.NeedsAttention {
+		t.Fatalf("cleared projection tail = %#v", tail)
+	}
+}
+
+// TestClearResolvedDelegateAttentionDefersWhenTranscriptMissing pins that a
+// missing child transcript is not read as an empty one: the projection and its
+// wake stay put for retry instead of the attention being silently discarded.
+func TestClearResolvedDelegateAttentionDefersWhenTranscriptMissing(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	controller := root.delegateController
+	const attentionID = "delegate:transcript-missing"
+	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "still pending"); err != nil || !appended {
+		t.Fatalf("append stable attention = appended:%t err:%v", appended, err)
+	}
+	if _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+		t.Fatalf("open stable attention: %v", err)
+	}
+	if err := os.Remove(sub.sess.TranscriptPath()); err != nil {
+		t.Fatalf("remove child transcript: %v", err)
+	}
+	if err := controller.clearResolvedDelegateAttention(fixture.delegateID); err == nil {
+		t.Fatal("clear with a missing transcript returned no error")
+	}
+	controller.mu.Lock()
+	keptFlag := controller.durable[fixture.delegateID].NeedsAttention
+	keptWakeIDs := len(controller.attentionWakeIDs[fixture.delegateID])
+	controller.mu.Unlock()
+	if !keptFlag || keptWakeIDs != 1 {
+		t.Fatalf("missing-transcript projection = needs:%t wakeIDs:%d, want true/1", keptFlag, keptWakeIDs)
+	}
+}
+
 // warmStableSupervisionDelegate starts the warm run and acknowledges its result.
 // It does NOT wait for that run to quiesce: the run's finalizer outlives the
 // acknowledged result, because `running` goes false at the top of the finalize

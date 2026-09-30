@@ -415,7 +415,6 @@ type Server struct {
 	urlsRemoveFunc           func(outerID, id string) (bool, error)
 	drainSteerFunc           func() error
 	drainSteerInputFunc      func(string, []ImageAttachment) error
-	promoteSteerFunc         func(int, string) error
 	cancelQueuedFunc         func(int, string) (string, int, error)
 	compactFunc              func(context.Context) error
 	clearFunc                func(context.Context, appwire.ThreadClearParams) error
@@ -750,26 +749,13 @@ func (s *Server) SetDrainAsSteerWithInputFunc(fn func(string, []ImageAttachment)
 	s.mu.Unlock()
 }
 
-// SetPromoteQueuedAsSteerFunc sets the function called by appwire
-// turn/promoteQueuedAsSteer (issue #22). The callback should remove the
-// queued message at the given FIFO index and inject it as a user-sourced
-// STEERING message into the in-flight turn, leaving the rest of the queue
-// untouched. A non-empty expectedID must match the queue-entry id minted at
-// enqueue time so a queue that shifted under the client's snapshot is
-// rejected rather than promoting the wrong message (review F1).
-func (s *Server) SetPromoteQueuedAsSteerFunc(fn func(int, string) error) {
-	s.mu.Lock()
-	s.promoteSteerFunc = fn
-	s.mu.Unlock()
-}
-
 // SetCancelQueuedFunc sets the function called by appwire
 // turn/cancelQueued (issue #23). The callback should remove the queued
 // message at the given FIFO index so it is never consumed, returning the
 // removed entry's full text and image count. A non-empty expectedID must
 // match the queue-entry id minted at enqueue time so a queue that shifted
 // under the client's snapshot is rejected rather than removing the wrong
-// message (review F1). Unlike promote, no active turn is required.
+// message (review F1). Like promote, no active turn is required.
 func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) {
 	s.mu.Lock()
 	s.cancelQueuedFunc = fn

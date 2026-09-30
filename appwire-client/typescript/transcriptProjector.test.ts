@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./transcriptDisplayConfig";
 import { entryDisplayKey, projectThread } from "./transcriptProjector";
-import { WarningCodeContextBudget, WarningCodeDelegateAttentionRestore } from "./warnings";
+import { WarningCodeContextBudget, WarningCodeDelegateAttentionRestore, WarningCodeMCPReconnected } from "./warnings";
 
 const BASE_THREAD = {
   ref: "ref:test",
@@ -254,6 +254,35 @@ describe("transcript projector", () => {
   });
 
   describe("informational warnings", () => {
+    test.each(["warning", "systemMessage"])(
+      "MCP recovery through %s hides without hiding a failed retry or sign-in",
+      (type) => {
+        const warning = { code: WarningCodeMCPReconnected };
+        const model = threadWith(
+          item("recovery", type, { eventKind: "warning", text: "connection-1", warning, raw: { warning } }),
+          item("retry", "commandExecution", {
+            status: "failed",
+            toolName: "server__probe",
+            description: "probe-1",
+            text: "failure-1",
+          }),
+          item("signin", "warning", { warning: { source: "mcp" }, text: "signin-1" }),
+          item("interruption", "systemMessage", { eventKind: "error", text: "interruption-1", raw: { warning } }),
+        );
+        for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+          const entries = entriesFor(model, preset(level));
+          expect(entries.some((entry) => entry.id === "recovery")).toBe(level === "full");
+          expect(entries.find((entry) => entry.id === "retry" || entry.id === "intent:retry")).toMatchObject(
+            level === "chat" || level === "intent"
+              ? { kind: "intent", failed: true }
+              : { kind: "item", item: { status: "failed" } },
+          );
+          expect(entries.find((entry) => entry.id === "signin")?.kind).toBe("critical");
+          expect(entries.find((entry) => entry.id === "interruption")?.kind).toBe("critical");
+        }
+      },
+    );
+
     const informational = () =>
       item("budget", "warning", {
         text: "Output allocation reduced for inst/model: requested=100 admitted=50",

@@ -661,6 +661,19 @@ type Session struct {
 	// Guarded by mu, like askPending above.
 	steeringCarrierClaimClientMutationID string
 
+	// steeringCarrierStoodDowns is the set of steering-carrier turn ids that
+	// stood down without running a model turn (processOneInput's swallow of
+	// errSteeringCarrierStoodDown). ProcessPendingUserInput reads it to report
+	// ran=false truthfully for the carrier it claimed -- a stood-down carrier
+	// ran nothing, so the daemon must not keep an interrupt runner armed for it
+	// (issue #185 item 3). A SET, not a single slot: one ProcessPendingUserInput
+	// call can process more than one carrier (the drain ladder may claim an
+	// inline carrier behind the claimed one), so a later stand-down must not
+	// erase an earlier one. Reset at the start of each ProcessPendingUserInput
+	// carrier run; a stand-down marked elsewhere lingers harmlessly until then
+	// (turn ids are unique). Guarded by mu, like askPending above.
+	steeringCarrierStoodDowns map[string]struct{}
+
 	// pendingEscalations holds one waiter per in-flight sandbox-exemption escalation
 	// (M7), keyed by its opaque id — the channel its tool-exec goroutine parks on
 	// plus the redacted card payload. The tool-exec goroutine registers a waiter,

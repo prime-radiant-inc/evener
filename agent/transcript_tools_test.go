@@ -59,6 +59,65 @@ func TestReadTranscriptReadsShellJobRef(t *testing.T) {
 	}
 }
 
+// TestReadTranscriptReadsShellJobRefUnderSymlinkedTemp covers the host layout
+// where the process temp dir is reached through a symlink: macOS's /var →
+// /private/var is the real-world case. The job store lives under the temp dir
+// only when the session has no state dir, and the transcript read path must
+// bound its symlink refusal to that store's own root rather than walking up
+// through the host's symlinked temp prefix and refusing the read.
+func TestReadTranscriptReadsShellJobRefUnderSymlinkedTemp(t *testing.T) {
+	realRoot := t.TempDir()
+	linkRoot := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unsupported on this host: %v", err)
+	}
+	t.Setenv("TMPDIR", linkRoot)
+
+	s := newTestSession(t)
+	jm := s.jobManager
+	rec, err := jm.createShell(createShellOpts{Command: "printf hello"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	// The job store must live under the raw (symlinked) temp dir: the session
+	// has no state dir, so this read exercises localJobTrustedRoot's
+	// no-state-dir branch rather than the state-dir path. Assert it, so the
+	// test cannot silently start covering a different path.
+	if got := s.StateDir(); got != "" {
+		t.Fatalf("session state dir = %q, want empty so the job store uses the temp fallback", got)
+	}
+	owner, err := identifier.JobOwnerSessionID(rec.JobID)
+	if err != nil {
+		t.Fatalf("JobOwnerSessionID: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(os.TempDir(), "evener-jobs", owner, "jobs.jsonl")); statErr != nil {
+		t.Fatalf("job journal is not under the symlinked temp dir %q: %v", os.TempDir(), statErr)
+	}
+
+	run := runningJobByID(t, jm, rec.JobID)
+	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("hello\n")); err != nil {
+		t.Fatalf("appendJobOutput: %v", err)
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "read_transcript",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"transcript_ref":"job:%s"}`, rec.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("read_transcript under symlinked TMPDIR returned error: %s", res.Output)
+	}
+	var out readMarkdownEnvelope
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal read_transcript: %v (output: %s)", err, res.Output)
+	}
+	if !strings.Contains(out.Content, "hello") {
+		t.Fatalf("content missing shell output: %q", out.Content)
+	}
+}
+
 func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
@@ -443,7 +502,8 @@ func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 // --- TestFind_QuerySearch ---
 
 // TestFind_QuerySearch verifies that:
-//   - a query matching session metadata returns that session without snippets
+//   - a query matching session metadata returns that session (metadata hits now
+//     carry a bounded prompt/title snippet)
 //   - a query matching only transcript content returns that session with snippets
 //   - scanned is set when a content scan ran
 func TestFind_QuerySearch(t *testing.T) {

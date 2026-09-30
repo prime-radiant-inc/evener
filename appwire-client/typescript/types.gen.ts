@@ -302,6 +302,15 @@ export interface AuthStatusResponse {
   workspaceId?: string;
   needsRefresh?: boolean;
   needsLogin?: boolean;
+  /**
+   * RefreshRejected is true when the issuer permanently refused this
+   * instance's stored refresh token (authopenai.RefreshRejected, #2479):
+   * the access token may still be valid, but the session needs a fresh
+   * sign-in before its next refresh. It is why NeedsLogin can be true for a
+   * record whose access token has not expired, so a client must not read
+   * NeedsLogin alone as "the access token expired".
+   */
+  refreshRejected?: boolean;
   error?: string;
   /**
    * ConfigRevision is this instance's effective credential-configuration

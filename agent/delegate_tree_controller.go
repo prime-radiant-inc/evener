@@ -82,14 +82,22 @@ type delegateTreeController struct {
 	quietClaims           map[uint64]*delegateQuietAttentionClaim
 	attentionWakeIDs      map[string]map[string]struct{}
 	attentionRestoreHolds map[string]int
+	// attentionDriveTurns records when the attention drive last selected each
+	// delegate (attentionDriveSeq order): the drive picks the delegate it
+	// has not picked yet, else the one picked longest ago, so eligible
+	// delegates take turns and none, failing or not, holds the others back.
+	// Process-local; cleared when the delegate stops owing attention.
+	attentionDriveTurns map[string]uint64
+	attentionDriveSeq   uint64
 	// attentionRestoreFailures counts, per delegate, the consecutive restores
 	// of its cold runtime that failed for a reason that is not transient
 	// (isTransientStartFailure); the drive gives up at
 	// maxDelegateAttentionRestoreFailures. attentionParked holds delegates
 	// whose attention could be neither delivered nor handed to the root: the
-	// drive leaves them alone until new attention arrives or the daemon
-	// restarts. Both are process-local and cleared when the delegate stops
-	// owing attention or its attention is replaced from a transcript fold.
+	// drive stops cold-restoring them until new attention arrives or the
+	// daemon restarts. Both are process-local and cleared when the delegate
+	// stops owing attention or its attention is replaced from a transcript
+	// fold.
 	attentionRestoreFailures map[string]int
 	attentionParked          map[string]struct{}
 	idleReleaseTimers        map[string]idleReleaseTimerHandle
@@ -168,9 +176,23 @@ type delegateRuntimeBinding struct {
 // delegateFinalization is a finished generation whose runtime has not yet
 // reported its finalize tail done.
 type delegateFinalization struct {
+	delegateID string
 	runtime    *Session
 	generation uint64
+	// released closes when the finalization is released, so a send refused
+	// in the meantime can wait for it.
+	released chan struct{}
 }
+
+// delegateFinalizingError refuses a start because the delegate's finished
+// generation hasn't released its finalization yet. It is errDelegateTargetBusy
+// to every caller, and carries the channel that closes on release.
+type delegateFinalizingError struct {
+	released <-chan struct{}
+}
+
+func (delegateFinalizingError) Error() string        { return errDelegateTargetBusy.Error() }
+func (delegateFinalizingError) Is(target error) bool { return target == errDelegateTargetBusy }
 
 type delegateLiveState struct {
 	runtime          *Session

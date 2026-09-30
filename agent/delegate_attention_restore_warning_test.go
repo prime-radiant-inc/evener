@@ -157,13 +157,7 @@ func TestDelegateAttentionWarningEpisodeEndsWhenTheAttentionIsNoLongerOwed(t *te
 func TestFailedEscalationOfFencedAttentionWarnsOncePerEpisode(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	root, fixture := fenced.root, fenced.fixture
-	plans, err := root.delegateController.CloseResumability(rootDelegateActor(root.ID()), fixture.delegateID, "turn_budget_exhausted")
-	if err != nil {
-		t.Fatalf("close parent resumability: %v", err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatalf("publish parent closure: %v", err)
-	}
+	fenced.closeParent(t)
 	// The grandchild's transcript turns into a directory, so every
 	// escalation attempt fails to read the attention it owes.
 	path := transcriptPath(fixture.stateDir, fenced.grandchildSessionID)

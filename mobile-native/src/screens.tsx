@@ -36,6 +36,7 @@ import {
 	type AskBatch,
 	type AskQuestionRef,
 	buildComposerInput,
+	errorText,
 	formatQuoteBlock,
 	mergeDraftText,
 	type ModelListResponse,
@@ -151,7 +152,9 @@ import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
-import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
+import { historyForSession } from "./session/historyMemory";
+import { useOlderHistory } from "./session/useOlderHistory";
+import { type FindState, newFind, findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
 import { outboxFlush } from "./outbox/nativeOutboxFlush";
@@ -200,23 +203,10 @@ const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
 /** The most of its room the Session's bottom bar may take (spec 8.1). */
 const BAR_MAX_SHARE = 0.8;
+// How long an opening session's transcript stays hidden while it travels to
+// where it opens, at most.
+const OPENING_REVEAL_CAP_MS = 1000;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
-
-/** Find in session while it's open: what you typed, the current match's
- * reader key, whether older history is being searched, and whether that
- * search reached the start of history with nothing older. */
-interface FindState {
-	query: string;
-	key: string | null;
-	seeking: boolean;
-	exhausted: boolean;
-}
-
-/** A new query starts a new search: no current match yet, and older history
- * is searched only when there is something to look for. */
-function newFind(query: string): FindState {
-	return { query, key: null, seeking: query.trim() !== "", exhausted: false };
-}
 
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
@@ -295,6 +285,8 @@ export type Routes = {
 	StopSubagentSheet: { hubId: string; coordinator: Coordinator; ref: string };
 	/** A subagent's own session, over its coordinator's (ruling 30). */
 	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
+	/** A shell job's detail, over its coordinator's Activity list. */
+	ShellJob: { hubId: string; jobId: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
 	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
 };
@@ -356,7 +348,9 @@ export function ConversationScreen({
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
 	// remembered by its row's reader key, since older pages prepend rows.
-	const [find, setFind] = useState<FindState | null>(null);
+	const [find, setFind] = useState<FindState | null>(
+		() => historyForSession(route.params.hubId, route.params.ref)?.find ?? null,
+	);
 	const headerHeight = useHeaderHeight();
 	// Where the device has Liquid Glass, the nav bar is the system's glass
 	// over the transcript (spec 16.3): the screen starts under it, and the
@@ -447,7 +441,6 @@ export function ConversationScreen({
 	const readerAnchor = useRef<ReaderAnchor | null>(null);
 	const appliedReaderRestore = useRef<AppliedRestore | null>(null);
 	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
-	const readerPageAttempts = useRef(new Set<string>());
 	const readerHeader = useRef(false);
 	// The latest settled turn while the list sat at its end (ruling 31). Every
 	// anchor carries it, so opening the session later can tell a newer reply
@@ -455,6 +448,22 @@ export function ConversationScreen({
 	const turnsSeen = useRef<string | undefined>(undefined);
 	// Where the session opened is decided once per route (spec 7.3).
 	const openedFor = useRef<string | null>(null);
+	// Opening lands once: the list stays hidden while it travels to where the
+	// session opens (the live end, or a reading position), and shows once it
+	// is there. Scrolls the list takes while hidden are never seen, so no one
+	// watches it land, move and land again as rows measure.
+	const [openingLanded, setOpeningLanded] = useState(false);
+	const openingLandedNow = useRef(false);
+	// This render's rows, for what runs outside a render (the cap's timer and
+	// the list's cells).
+	const rowsNow = useRef<readonly TimelineRow[]>([]);
+	// A fresh cap, once the opening turns to the live end at the first.
+	const [openingCapRound, setOpeningCapRound] = useState(0);
+	function landOpening() {
+		if (openingLandedNow.current) return;
+		openingLandedNow.current = true;
+		setOpeningLanded(true);
+	}
 	// Following the live end, what moves the list, and the rows it held when
 	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
 	// The store trims the 500-row cap only while the reader follows the end.
@@ -1352,13 +1361,35 @@ export function ConversationScreen({
 		restoreFrame.current = null;
 		readerHeader.current = false;
 		captureSuppressed.current = false;
-		readerPageAttempts.current = new Set<string>();
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(route.params.hubId, route.params.ref);
 		follow.dispatch({ type: "reset", following: readerAnchor.current === null });
 		turnsSeen.current = readerAnchor.current?.turnsSeen;
 		openedFor.current = null;
+		openingLandedNow.current = false;
+		setOpeningLanded(false);
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
+	// A layout effect, so a cell's layout or the cap can never read the rows of
+	// the render before (a passive effect leaves a window after the commit),
+	// and it runs before the opening effect below.
+	useLayoutEffect(() => {
+		rowsNow.current = timelineRows;
+	});
+	function lastRowKey() {
+		const rows = rowsNow.current;
+		return rows.length > 0 ? readerKey(rows[rows.length - 1]) : null;
+	}
+	function lastRowMeasured() {
+		const key = lastRowKey();
+		return key !== null && readerMeasurements.current.has(key);
+	}
+	// Follows the live end while opening: pins the list there, and lands the
+	// opening once the last row has measured (until then the cell's own layout
+	// lands it).
+	function pinOpeningToEnd() {
+		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+		if (lastRowMeasured()) landOpening();
+	}
 	// Where the session opens (spec 7.3, ruling 31), decided once per route on
 	// the first layout with rows: the live end while a question or approval
 	// waits, the start of a reply that finished since you last reached the
@@ -1384,7 +1415,7 @@ export function ConversationScreen({
 		if (target.kind === "live") {
 			readerAnchor.current = null;
 			follow.dispatch({ type: "follow" });
-			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+			pinOpeningToEnd();
 		} else if (target.kind === "row") {
 			readerAnchor.current = readerAnchorAt(
 				route.params.hubId,
@@ -1400,28 +1431,49 @@ export function ConversationScreen({
 			readerRestoreAttempts.current.reset();
 		}
 	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
-	// Loads the page above the loaded history once per cursor: a page that
-	// failed, or brought nothing new, stays guarded until the binding or route
-	// resets, so a failing page never loops. Both a reading position restored
-	// above the loaded rows and a scroll near the top ask for it.
-	function loadOlderPage() {
-		// Which page this is, for guarding repeat attempts; the store asks for it
-		// from its own cursor and trim boundary.
-		const pageKey = olderPage;
-		const pageAttempts = readerPageAttempts.current;
-		if (!service || !connected || !pageKey || snapshot.loadingOlder || pageAttempts.has(pageKey)) return;
-		pageAttempts.add(pageKey);
-		void store
-			.getState()
-			.loadOlder(service)
-			.then((result) => {
-				if (result.status === "ignored" || (result.status === "loaded" && result.itemKeys.length > 0))
-					pageAttempts.delete(pageKey);
-			})
-			.catch(() => {
-				// Keep failed page attempts guarded until a binding or route reset.
-			});
+	// A session with no rows has nowhere to travel. One with rows shows after
+	// OPENING_REVEAL_CAP_MS however far it got, so an opening that can't land
+	// (its reading position never measures) never leaves the transcript hidden.
+	const openingHidden = !openingLanded && timelineRows.length > 0;
+	// A reading position that hasn't loaded by the cap (its older page is slow,
+	// or offline) gives way to the live end, and the position is dropped
+	// (Jesse, 2026-09-29): showing the top and then jumping, or a blank wait,
+	// is worse. The end's last row lands it, with a fresh cap behind that.
+	function capOpening() {
+		const anchor = readerAnchor.current;
+		if (anchor && resolveReaderAnchor(anchor, rowsNow.current) === null) {
+			readerAnchor.current = null;
+			appliedReaderRestore.current = null;
+			follow.dispatch({ type: "follow" });
+			pinOpeningToEnd();
+			setOpeningCapRound((round) => round + 1);
+			return;
+		}
+		landOpening();
 	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the cap starts once per hidden, laid-out opening, and again when it turns to the live end.
+	useEffect(() => {
+		if (!listLaidOut || !openingHidden) return;
+		const cap = setTimeout(capOpening, OPENING_REVEAL_CAP_MS);
+		return () => clearTimeout(cap);
+	}, [listLaidOut, openingHidden, openingCapRound]);
+	const {
+		state: olderHistory,
+		isCurrentReader,
+		loadOlder: loadOlderPage,
+		findOlder,
+		cancelFind,
+		cancelReader,
+	} = useOlderHistory({
+		store,
+		service,
+		active: Boolean(service) && connected && focused && snapshot.status === "open",
+		hubId: route.params.hubId,
+		ref: route.params.ref,
+		find,
+		setFind,
+		binding: bindingInstance,
+	});
 	const findQuery = find?.query ?? "";
 	const findHits = useMemo(
 		() => findMatches(timelineRows, findQuery, conversation?.delegates),
@@ -1447,8 +1499,10 @@ export function ConversationScreen({
 	// the newest of all), loading one older page at a time until a match
 	// appears or history ends.
 	useEffect(() => {
-		if (!find?.seeking) return;
-		const next = stepMatch(findHits, findCurrent, -1);
+		if (!isCurrentReader() || !find?.seeking || !focused || snapshot.status !== "open" || !conversation) return;
+		// A resumed search first reloads its saved boundary; newer matches
+		// in the fresh window have already been searched.
+		const next = find.key !== null && findCurrent === null ? null : stepMatch(findHits, findCurrent, -1);
 		if (next !== null) {
 			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
 			return;
@@ -1461,18 +1515,16 @@ export function ConversationScreen({
 			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
 			return;
 		}
-		// Offline, or this page already failed: stop, and the next step asks again.
-		if (!service || !connected || readerPageAttempts.current.has(pageKey)) {
-			setFind({ ...find, seeking: false });
-			return;
-		}
+		// Failure or disconnection leaves the search incomplete. Demand resumes
+		// when this reader is active, without another Find step.
+		if (!service || !connected || olderHistory.permanent) return;
 		// Paging older history reads away from the live end, so new rows stop
 		// pulling the list down while find looks.
 		if (follow.state.current.following) {
 			findLeftTheEnd.current = true;
 			follow.dispatch({ type: "unfollow" });
 		}
-		loadOlderPage();
+		findOlder();
 	});
 	// A search that ends with no match, or find closing, gives the end back to
 	// a list find unfollowed, when the list is still there. A jump to a match
@@ -1528,12 +1580,11 @@ export function ConversationScreen({
 		if (findCurrent !== null) scrollToFindMatch(findCurrent);
 		return cancelFindRetry;
 	}, [findKey]);
-	// Leaving the screen closes find.
-	useEffect(() => {
-		if (!focused) setFind(null);
-	}, [focused]);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
-	useEffect(() => {
+	// Moves the list to the reading position once what it needs has laid out.
+	// It runs when what it reads changes: the effect below for the screen's
+	// state, and after the cells' layouts and the list's content size, which it
+	// reads from refs, so a layout never re-renders the screen.
+	function restoreReadingPosition() {
 		const anchor = readerAnchor.current;
 		if (
 			!anchor ||
@@ -1552,7 +1603,7 @@ export function ConversationScreen({
 			readerAnchor.current = null;
 			appliedReaderRestore.current = null;
 			follow.dispatch({ type: "follow" });
-			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+			pinOpeningToEnd();
 			return;
 		}
 		if (resolveReaderAnchor(anchor, timelineRows) === null) {
@@ -1585,7 +1636,9 @@ export function ConversationScreen({
 			restoreFrame.current = null;
 			const currentKey = readerKey(timelineRows[command.index]);
 			const measurement = readerMeasurements.current.get(currentKey);
-			if (!measurement) return;
+			// Until the list reports its content size, how far it can scroll
+			// isn't known, and a restore would clamp short of the row.
+			if (!measurement || readerContentHeight.current === 0) return;
 			const desired = measurement.y - command.viewOffset;
 			// On iOS the bar's inset extends how far the list can scroll.
 			const scrollOffset = reachableReaderOffset(
@@ -1593,7 +1646,11 @@ export function ConversationScreen({
 				readerContentHeight.current,
 				listContentMinHeight(readerViewportHeight.current, listUnderBar),
 			);
-			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) return;
+			// Already there: the opening has landed.
+			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) {
+				landOpening();
+				return;
+			}
 			appliedReaderRestore.current = {
 				key: currentKey,
 				height: measurement.height,
@@ -1605,7 +1662,28 @@ export function ConversationScreen({
 				offset: scrollOffset,
 				animated: false,
 			});
+			landOpening();
 		}
+	}
+	// The latest restore, with this render's rows, for the layout timer below.
+	const restoreReadingPositionNow = useRef(restoreReadingPosition);
+	useLayoutEffect(() => {
+		restoreReadingPositionNow.current = restoreReadingPosition;
+	});
+	// A frame's layout events arrive together (the cells, then the content size
+	// they add up to), so the restore runs once after them: a row measured
+	// before the content size is known would otherwise restore short of it.
+	const restoreAfterLayoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	function restoreAfterLayout() {
+		if (restoreAfterLayoutTimer.current !== null) return;
+		restoreAfterLayoutTimer.current = setTimeout(() => {
+			restoreAfterLayoutTimer.current = null;
+			restoreReadingPositionNow.current();
+		}, 0);
+	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: restoreReadingPosition reads these through its closure; the list names what reruns it, a layout revision (the viewport, a drag settling, focus) included.
+	useEffect(() => {
+		restoreReadingPosition();
 	}, [
 		bindingInstance,
 		layoutRevision,
@@ -1625,6 +1703,7 @@ export function ConversationScreen({
 			if (readerAnchor.current) readerPositions.save(readerAnchor.current);
 			if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 			restoreFrame.current = null;
+			if (restoreAfterLayoutTimer.current !== null) clearTimeout(restoreAfterLayoutTimer.current);
 		},
 		[],
 	);
@@ -2120,6 +2199,7 @@ export function ConversationScreen({
 		if (y !== undefined && pagesOlder(follow.state.current, y)) loadOlderPage();
 	}
 	function jumpToLive() {
+		cancelReader();
 		readerHeader.current = false;
 		readerAnchor.current = null;
 		follow.dispatch({ type: "follow" });
@@ -2601,7 +2681,12 @@ export function ConversationScreen({
 								y: event.nativeEvent.layout.y,
 								height: event.nativeEvent.layout.height,
 							});
-							setLayoutRevision((revision) => revision + 1);
+							// Opening at the live end lands once its last row has
+							// measured: pin the end, then show the list.
+							if (!openingLandedNow.current && key === lastRowKey() && follow.state.current.following) {
+								pinOpeningToEnd();
+							}
+							restoreAfterLayout();
 						}}
 					>
 						{children}
@@ -2708,9 +2793,9 @@ export function ConversationScreen({
 						<FlatList
 							ref={timeline}
 							// Where the transcript rests depends on its viewport and the
-							// bar, so it shows once both have laid out and never draws a
-							// frame at a place it then leaves.
-							style={{ opacity: listLaidOut ? 1 : 0 }}
+							// bar, so it shows once both have laid out and the opening has
+							// landed, and never draws a frame at a place it then leaves.
+							style={{ opacity: listLaidOut && !openingHidden ? 1 : 0 }}
 							onLayout={(event) => {
 								readerViewportHeight.current = event.nativeEvent.layout.height;
 								setLayoutRevision((revision) => revision + 1);
@@ -2757,7 +2842,7 @@ export function ConversationScreen({
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
 								readerContentHeight.current = height;
-								setLayoutRevision((revision) => revision + 1);
+								restoreAfterLayout();
 								if (follow.state.current.following)
 									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 							}}
@@ -2810,6 +2895,8 @@ export function ConversationScreen({
 								}
 							}}
 							onScrollBeginDrag={(event) => {
+								// A finger on the list while it opens: show it where it is.
+								landOpening();
 								follow.dispatch({ type: "dragBegin" });
 								pageOlderNear(event?.nativeEvent.contentOffset.y);
 								readerHeader.current = false;
@@ -2915,11 +3002,21 @@ export function ConversationScreen({
 										label={
 											find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
 										}
-										searchingOlder={find.seeking && snapshot.loadingOlder}
+										searchingOlder={
+											find.seeking &&
+											!olderHistory.permanent &&
+											(olderHistory.pending ||
+												snapshot.loadingOlder ||
+												!connected ||
+												!service ||
+												(findHits.length === 0 && olderPage !== null))
+										}
+										error={find.seeking && olderHistory.permanent ? errorText(olderHistory.error) : undefined}
 										settled={!find.seeking}
 										onQuery={(query) => setFind(newFind(query))}
 										onStep={stepFind}
 										onDone={() => {
+											cancelFind();
 											Keyboard.dismiss();
 											setFind(null);
 										}}

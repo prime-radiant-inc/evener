@@ -31,7 +31,15 @@ import type {
 	SearchResponse,
 	Source,
 } from "@evener/appwire-client";
-import { type DemoCoordinator, type DemoShellJob, type DemoSubagent, demoActivityTree } from "./demoSubagents.js";
+import {
+	type DemoCoordinator,
+	type DemoShellJob,
+	type DemoSubagent,
+	demoActivityTree,
+	demoJobOutput,
+} from "./demoSubagents.js";
+import { parseActivityTree } from "@evener/appwire-client";
+import { flattenActivity } from "../subagents/subagentModel.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireV2 response must carry the exact same id:
@@ -869,7 +877,12 @@ export function enabledPluginNames(): string[] {
 	return PLUGINS.filter((plugin) => plugin.on).map((plugin) => plugin.id);
 }
 
-function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
+function toRow(
+	raw: RawSession,
+	startupMs: number,
+	offlineHost: boolean,
+	modelNames: Readonly<Record<string, string>>,
+): NavigationSessionSummary {
 	const owner = hostId(raw.host);
 	const project = projectKeyOf(raw);
 	const sessionId = demoSessionId(raw.id);
@@ -879,6 +892,7 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 	const subs = rawChildren(raw);
 	const { capped, omitted } = capChildren(subs);
 	const jobs = runningJobs(raw);
+	const modelName = raw.model === undefined ? undefined : modelNames[raw.model];
 	return {
 		ref: sessionRef(raw),
 		host_id: owner,
@@ -895,6 +909,7 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
 		...(live && subs.length > 0 ? { subagents: subagentTally(subs) } : {}),
 		...(jobs ? { running_jobs: jobs } : {}),
+		...(modelName ? { model_name: modelName } : {}),
 		children: capped.map((child) => toChildRow(child, owner, project, startupMs, offline)),
 	};
 }
@@ -965,6 +980,10 @@ export interface DemoFleetOptions {
 	// which the fleet's rows don't say: a sign-in notice counts the live
 	// sessions on its provider's models. None by default.
 	modelProviders?: Readonly<Record<string, string>>;
+	// Each model id's display name (demoSetup.ts's catalog), which a row
+	// carries as its model_name (S17) for "Show model on Board rows". None by
+	// default.
+	modelNames?: Readonly<Record<string, string>>;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
@@ -1011,6 +1030,9 @@ export interface DemoFleet extends FleetAnswers {
 	// Answers evener/jobs/list: a coordinator's subagent tree, and an empty
 	// root for any other fleet session (demoSubagents.ts).
 	answerJobsList(params: { ref?: string; continuation?: string }): { data: unknown };
+	// Answers evener/jobs/output: a listed shell job's tail (demoSubagents.ts),
+	// only for the session that owns it (its ownerRef), as a hub answers.
+	answerJobsOutput(params: { ref?: string; jobId: string }): { data: unknown };
 }
 
 // The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
@@ -1038,6 +1060,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	let offlineHost = options.offlineHost ?? false;
 	const clock = options.clock ?? Date.now;
 	const modelProviders = options.modelProviders ?? {};
+	const modelNames = options.modelNames ?? {};
 	// Building the fleet from an empty list, rather than special-casing each
 	// answer, keeps every count, section and catalog below in step for free:
 	// a hub with nothing live just has nothing to filter, page or search over.
@@ -1046,7 +1069,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	// Every resource's revision is one ahead of the navigation sequence: both
 	// start there and each change advances them together.
 	let sequence = 0;
-	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock, modelProviders);
+	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock, modelProviders, modelNames);
 
 	// Moves the fleet to `changed` at the next sequence and revision, and
 	// returns the evener/navigation/invalidated payload for the targets the
@@ -1058,7 +1081,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		sessionsList = changed;
 		sequence += 1;
 		const revision = sequence + 1;
-		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock, modelProviders);
+		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock, modelProviders, modelNames);
 		return { generationId: DEMO_FLEET_GENERATION, sequence, targets: targets(revision) };
 	}
 
@@ -1150,6 +1173,17 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		},
 		archive,
 		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
+		answerJobsOutput: (params) => {
+			// Read back as the phone reads the tree, so the job answered is the
+			// one the Activity list shows, and only for the session that owns
+			// it, as a hub answers.
+			for (const raw of sessionsList) {
+				const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(raw)), startupMs).data);
+				const job = tree ? flattenActivity(tree).jobs.find((row) => row.id === params.jobId)?.job : undefined;
+				if (job && job.ownerRef === params.ref) return demoJobOutput(job);
+			}
+			throw new Error(`job not found: ${params.jobId}`);
+		},
 	};
 }
 
@@ -1192,8 +1226,9 @@ function fleetAnswers(
 	offlineHost: boolean,
 	clock: () => number,
 	modelProviders: Readonly<Record<string, string>>,
+	modelNames: Readonly<Record<string, string>>,
 ): FleetAnswers {
-	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
+	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost, modelNames)]));
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
 
 	// An archived session leaves Live, whatever its state.

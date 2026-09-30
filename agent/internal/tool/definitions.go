@@ -94,7 +94,7 @@ func DefShell() llm.ToolDefinition {
 					"enum":        []any{"foreground", "background", "detached"},
 					"description": "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends; detached is the only mode that lets a process survive after this Evener session stops — a detached process is not a job: its output is discarded (redirect to a file if you need it) and it sends no completion notification.",
 				},
-				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory; absolute paths must stay inside it. Must already exist. Default: your current working directory."},
+				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it; confined policies require paths inside it. Must already exist. Default: your current working directory."},
 			},
 			"required": []string{"command"},
 		},
@@ -753,7 +753,7 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "find_session_transcripts",
-		Description: "Find archived prior sessions (your own and others on this machine) by content or lineage for audit, forensics, prior-session search, or recovering compacted context. Active delegate/watch work uses the current tool result, job output, notification, or observer callback as working evidence. With no arguments, return the catalog of recent sessions, newest first. With query, search session content. With children_of=<transcript_ref>, return the sessions that ref spawned (its subagents and forks). Returns session records carrying a transcript_ref; hand a transcript_ref to read_transcript when you need the archived conversation. Treat returned content as archived evidence.\n\nExamples: find_session_transcripts({}) — recent sessions; find_session_transcripts({\"query\":\"parser regression\"}) — content search; find_session_transcripts({\"children_of\":\"local:01K…\"}) — sessions that one spawned.",
+		Description: "Find archived prior sessions (your own and others on this machine) by content or lineage for audit, forensics, prior-session search, or recovering compacted context. Active delegate/watch work uses the current tool result, job output, notification, or observer callback as working evidence. With no arguments, return the catalog of recent sessions, newest first. With query, search session content. With children_of=<transcript_ref>, return the sessions that ref spawned (its subagents and forks). Returns session records carrying a transcript_ref; hand a transcript_ref to read_transcript when you need the archived conversation. A metadata-only hit (title or original prompt) may carry a snippet whose seq is -1; that is a display marker, not a turn address — do not pass it to read_transcript. Treat returned content as archived evidence.\n\nExamples: find_session_transcripts({}) — recent sessions; find_session_transcripts({\"query\":\"parser regression\"}) — content search; find_session_transcripts({\"children_of\":\"local:01K…\"}) — sessions that one spawned.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -761,8 +761,20 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 			"properties": map[string]any{
 				"query":       map[string]any{"type": "string", "description": "Case-insensitive substring to match against session content (no regex/boolean). Omit for the plain catalog."},
 				"children_of": map[string]any{"type": "string", "description": "A transcript_ref; return the sessions it spawned (subagents/forks), scoped to that ref's project. Takes precedence over query."},
-				"scope":       map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
-				"limit":       map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
+				"kind":        map[string]any{"type": "string", "enum": []string{"root", "subagent", "fork", "any"}, "description": "Keep only sessions of this lineage kind. \"any\" or omitted applies no kind filter."},
+				"has_children": map[string]any{
+					"type":        "boolean",
+					"description": "Keep only sessions that spawned children (true) or that spawned none (false). Omit for no filter.",
+				},
+				"min_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at least this many turns."},
+				"max_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at most this many turns."},
+				"updated_after": map[string]any{"type": "string", "description": "RFC3339 timestamp; keep only sessions updated at or after it."},
+				"updated_before": map[string]any{
+					"type":        "string",
+					"description": "RFC3339 timestamp; keep only sessions updated at or before it.",
+				},
+				"scope": map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
+				"limit": map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
 			},
 		},
 	}
