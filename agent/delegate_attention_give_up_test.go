@@ -223,11 +223,7 @@ func TestGivingUpOnAMissingTranscriptParksInsteadOfDropping(t *testing.T) {
 	for range 2 {
 		root.drivePendingStableDelegateAttention()
 	}
-	c := root.delegateController
-	c.mu.Lock()
-	_, parked := c.attentionParked[fenced.grandchildDelegateID]
-	_, stillOwed := c.attentionWakeIDs[fenced.grandchildDelegateID][fenced.attentionID]
-	c.mu.Unlock()
+	stillOwed, parked := fenced.owedAndParked()
 	root.Close()
 	if !parked || !stillOwed {
 		t.Fatalf("after giving up on a missing transcript: parked=%t owed=%t, want the attention kept and the delegate parked", parked, stillOwed)
@@ -290,30 +286,16 @@ func TestANilRestoreErrorIsNotCounted(t *testing.T) {
 // to the root and the park ends with the attention; gone, nothing is
 // forgotten as never durable, and the delegate stays parked and owed.
 func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
-	closeParent := func(t *testing.T, fenced fencedGrandchildAttention) {
+	parkedUnderClosedParent := func(t *testing.T) fencedGrandchildAttention {
 		t.Helper()
-		root := fenced.root
-		plans, err := root.delegateController.CloseResumability(rootDelegateActor(root.ID()), fenced.fixture.delegateID, "turn_budget_exhausted")
-		if err != nil {
-			t.Fatalf("close parent resumability: %v", err)
-		}
-		if err := root.executeDelegateMutationPlans(plans); err != nil {
-			t.Fatalf("publish parent closure: %v", err)
-		}
-	}
-	owedAndParked := func(fenced fencedGrandchildAttention) (owed, parked bool) {
-		c := fenced.root.delegateController
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		_, owed = c.attentionWakeIDs[fenced.grandchildDelegateID][fenced.attentionID]
-		_, parked = c.attentionParked[fenced.grandchildDelegateID]
-		return owed, parked
+		fenced := newFencedGrandchildAttention(t)
+		fenced.root.delegateController.parkDelegateAttention(fenced.grandchildDelegateID)
+		fenced.closeParent(t)
+		return fenced
 	}
 
 	t.Run("transcript present: handed to the root", func(t *testing.T) {
-		fenced := newFencedGrandchildAttention(t)
-		fenced.root.delegateController.parkDelegateAttention(fenced.grandchildDelegateID)
-		closeParent(t, fenced)
+		fenced := parkedUnderClosedParent(t)
 
 		fenced.root.drivePendingStableDelegateAttention()
 
@@ -324,22 +306,20 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		if got := rootFold.content[fenced.attentionID].Text(); got != "undelivered grandchild message" {
 			t.Fatalf("root attention content = %q, want the parked delegate's message escalated", got)
 		}
-		if owed, parked := owedAndParked(fenced); owed || parked {
+		if owed, parked := fenced.owedAndParked(); owed || parked {
 			t.Fatalf("after escalation: owed=%t parked=%t, want neither", owed, parked)
 		}
 	})
 
 	t.Run("transcript gone: stays parked and owed", func(t *testing.T) {
-		fenced := newFencedGrandchildAttention(t)
-		fenced.root.delegateController.parkDelegateAttention(fenced.grandchildDelegateID)
-		closeParent(t, fenced)
+		fenced := parkedUnderClosedParent(t)
 		if err := os.Remove(transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)); err != nil {
 			t.Fatalf("remove grandchild transcript: %v", err)
 		}
 
 		fenced.root.drivePendingStableDelegateAttention()
 
-		if owed, parked := owedAndParked(fenced); !owed || !parked {
+		if owed, parked := fenced.owedAndParked(); !owed || !parked {
 			t.Fatalf("after a failed strict escalation: owed=%t parked=%t, want the attention kept and parked", owed, parked)
 		}
 	})
