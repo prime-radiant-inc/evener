@@ -34,7 +34,8 @@ test("paces unresolved fulfilled pages and cannot lose demand after any retry co
   const load = vi.fn(async () => {});
   const paging = new HistoryPaging(() => cursor, load);
   const leave = paging.activate();
-  await expect(paging.request()).rejects.toThrow("Older history is not available yet.");
+  await expect(paging.request()).resolves.toBeUndefined();
+  expect(paging.getSnapshot()).toMatchObject({ pending: true, error: null, permanent: false });
   await paging.request();
   expect(load).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(999);
@@ -138,13 +139,13 @@ test("retains demand when history is released while a page finishes", async () =
   const paging = new HistoryPaging(() => cursor, load);
   const leave = paging.activate();
   const request = paging.request();
-  const outcome = expect(request).rejects.toThrow();
+  const outcome = expect(request).resolves.toBeUndefined();
   await Promise.resolve();
   leave();
   cursor = undefined;
   finish?.();
   await outcome;
-  expect(paging.getSnapshot().pending).toBe(true);
+  expect(paging.getSnapshot()).toMatchObject({ pending: true, error: null });
   cursor = "page";
   load.mockImplementation(async () => {
     cursor = null;
@@ -250,6 +251,26 @@ test("a reader joining an in-flight cancelled Find owns recovery of its late fai
   await outcome;
   expect(paging.getSnapshot().pending).toBe(true);
   paging.cancel("reader");
+  expect(vi.getTimerCount()).toBe(0);
+  leave();
+});
+
+test("waits quietly for an unavailable model and reads after paced hydration", async () => {
+  let cursor: string | null | undefined;
+  const load = vi.fn(async () => {
+    cursor = null;
+  });
+  const paging = new HistoryPaging(() => cursor, load);
+  const leave = paging.activate();
+  await expect(paging.request()).resolves.toBeUndefined();
+  expect(paging.getSnapshot()).toMatchObject({ pending: true, error: null, permanent: false });
+  expect(load).not.toHaveBeenCalled();
+  cursor = "page";
+  await vi.advanceTimersByTimeAsync(999);
+  expect(load).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(paging.getSnapshot()).toMatchObject({ pending: false, error: null });
   expect(vi.getTimerCount()).toBe(0);
   leave();
 });
