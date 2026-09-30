@@ -430,7 +430,17 @@ already answer replace and discard), the record held at least one item
 (an empty record takes the ordinary cold merge), and the fresh window's
 first item position is strictly greater than that captured position —
 `comparePositions` on `ThreadItemPosition`, position against position.
-An earlier draft keyed the anchor on "the newest held item below
+One more term guards the live fold: the response's newest item position
+must be at or above the model's current newest. A `history/updated`
+landing while the read is in flight advances that newest past a
+response cut before it — the captured anchor cannot see it — and a
+replacement whose window ends below folded content would move the
+transcript's newest backward and discard a turn the daemon itself just
+pushed. When the term fails, the window lies inside the folded range
+(its start sits below the model's newest by the window's own
+ordering), so the ordinary merge applies it gaplessly as a version
+refresh and the newest boundary survives; no replay or deferral
+machinery is needed. An earlier draft keyed the anchor on "the newest held item below
 `history.length`"; that was dimensionally wrong — `SnapshotIdentity.length`
 is the transcript's covered byte count (the index's own Window doc:
 "the transcript bytes it covered"), not an entry ordinal, so comparing
@@ -542,10 +552,16 @@ content". The row renders a state, not an estimate: **empty**,
 retry — never shown as empty, so the privacy remedy cannot silently
 claim to have worked), or **cleared** — which shows only when the
 clear's transaction committed, and yields the moment that fact goes
-stale: the next record this tab writes, or a reload's enumeration,
-recomputes the row, so a cleared badge never sits over a refilled
-cache and misstates the remedy exactly the way an empty badge over a
-failed open does.
+stale: the next record this tab writes, a reload, or the settings pane
+rendering the row again — its enumeration runs per render — recomputes
+it, so a cleared badge never misstates the remedy the way an empty
+badge over a failed open does. What it reports is this tab's own last
+clear, deliberately not a cross-tab lock: cache writes do not
+broadcast, so a sibling re-opening a session refills the shared store
+silently, and a cleared badge over that refill is bounded staleness of
+a report — the clear did empty the store — until the row renders
+again. Broadcasting writes for a settings badge would add a message
+type the cache does not otherwise need.
 The clear is durable against racing writers, in the only order that
 works, since in-memory timer state cannot commit transactionally:
 first, synchronously and in memory, bump the local epoch view, arm the
@@ -719,9 +735,11 @@ Store integration (`stores/threads.test.ts` additions and a new
    replacement; the pages are dropped, the response's cursor is taken, and
    the rendered transcript has no gap. The same scenario with a failed
    first read and a live `history/updated` folded onto the shell before
-   the retry succeeds: the folded items cannot move the captured anchor,
-   the retry replaces, and no hole persists — the captured-anchor rule's
-   own case.
+   the retry succeeds: the folded items cannot move the captured anchor;
+   the retry replaces when its window covers the fold — its response
+   cut after the fold — but merges as a version refresh when the fold
+   is newer than the response, and the newest boundary never regresses
+   and no hole persists either way.
 8. Stale identity: the server rejects the held snapshot
    (`TranscriptItemCursorStale`); the store retries without it and history
    is fully replaced; the cached record's turns do not survive the
@@ -818,7 +836,8 @@ Store integration (`stores/threads.test.ts` additions and a new
 
 Settings: the row renders empty vs unavailable truthfully and the clear
 action works (scenario 14 covers the adapter side); `cleared` exits on
-the next write or on reload enumeration — never shown over records.
+the next write, a reload, or a re-render of the row — its per-render
+enumeration keeps a sibling's refill from outliving the next render.
 
 Reducer: `threadModelFromCache` is pinned by a type-level test that no
 required `ThreadModel` field is left undefined, and by unit tests that the
@@ -857,7 +876,7 @@ transient invalidation fields are reset and the history identity round-trips.
    store subscription, the bounded load seam, the shared
    `threadModelFromCache`, the invalidation hooks, and the settings row.
 8. **The live-session gap rule over a protocol extension.** Fixing the gap
-   client-side at the shell seam costs one position check; teaching the
+   client-side at the shell seam costs a pair of position checks; teaching the
    daemon `heldSnapshot` is a protocol change with four consumers.
 
 ## Out of scope
