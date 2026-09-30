@@ -596,10 +596,9 @@ WHERE messages_fts MATCH ?`, ftsQuery(query))
 }
 
 // hasMessageSearchWord reports whether any token holds at least
-// minMessageSearchTokenRunes letters or digits. Only those count: the index's
-// unicode61 tokenizer treats an underscore as a separator, so counting it
-// toward a token's length would let "_a" or "__" (each two runes) reach FTS5
-// as the broad single-letter prefix search the minimum exists to reject.
+// minMessageSearchTokenRunes letters or digits, so a query whose only word is
+// a single letter does not reach FTS5 as the broad single-letter prefix search
+// the minimum exists to reject.
 func hasMessageSearchWord(tokens []string) bool {
 	for _, token := range tokens {
 		if wordRuneCount(token) >= minMessageSearchTokenRunes {

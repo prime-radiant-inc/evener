@@ -1042,11 +1042,11 @@ func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
 	return out, true
 }
 
-// IsIndexWordRune reports whether r is a word character to the FTS5
-// unicode61 tokenizer the past_sessions and messages indexes use: a letter or
-// a digit. Everything else, "_" included, separates words. SearchTokens and
-// the search snippet's word split share this one rule, so the words a query
-// looks for are exactly the words the snippet can mark.
+// IsIndexWordRune reports whether r is a word rune: a letter or a digit, the
+// boundary the FTS5 unicode61 tokenizers of the past_sessions and messages
+// indexes draw in practice. Everything else, "_" included, separates words.
+// SearchTokens and the search snippet's word split share this one rule, so the
+// words a query looks for are exactly the words the snippet can mark.
 func IsIndexWordRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
