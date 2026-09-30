@@ -252,6 +252,8 @@ Default task list:
 ----- END {{ .Path }} -----
 {{ end }}{{ end }}
 {{ end }}
+
+Before you end a turn, check where your answer is. It reaches {{ if .IsSubagent }}your caller{{ else }}the person{{ end }} only as the `message` of a `{{ .ResultToolName }}` call. Text you write outside a tool call will force another turn so you can correct it.
 {{ if .UserInstructionOverride }}
 
 {{ .UserInstructionOverride }}
