@@ -674,13 +674,19 @@ path; this case concerns API-key snapshots.
 lifetimes. A new runtime reloads configuration; a running one lacks that repair
 propagation path.
 
-**Discuss.** Propagate authoritative credential changes to live consumers or
-resolve the selected credential at an appropriate request boundary. Preserve
-account/instance identity, active work and explicit project configuration.
+**Decision.** Saving a corrected API key updates running sessions configured to
+use that credential at their next model request. Work waiting on the affected
+authentication failure retries automatically in the same chat, without a manual
+Retry or runtime replacement. Preserve active work and session-owned shell jobs;
+credential repair must not require restarting their execution runtime. Continue
+to respect each session's selected credential source and explicit project
+configuration. Implementation remains pending.
 
-**Acceptance.** Start a daemon with a rejected scripted API key, save its
-replacement through provider settings, and retry normal work in the same
-session. The next eligible request uses the new key without runtime replacement.
+**Acceptance.** Start a daemon with a rejected scripted API key and let work wait
+on authentication. Save its replacement through provider settings. The same
+session automatically retries with the new key at the next eligible request,
+without a user nudge or runtime replacement. Existing shell jobs remain intact,
+and a session configured to use a different credential retains that selection.
 
 ### H03 Host-journal failure scope
 
