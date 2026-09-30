@@ -354,6 +354,8 @@ function LiveGroup({
 
 function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: string }) {
   const groups = groupTasks(rows);
+  const completed = groups.settled.filter((task) => task.status === "done").length;
+  const cancelled = groups.settled.length - completed;
   return (
     <>
       {groups.settled.length > 0 && (
@@ -361,7 +363,9 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
           id={`${sessionRef}\0settled-group`}
           summary={
             <span className={CLASS.settledSummary} data-testid="task-settled-group-summary">
-              Done · settled <span className={CLASS.groupCount}>{groups.settled.length}</span>
+              {completed > 0 ? `${completed} completed ${completed === 1 ? "task" : "tasks"}` : null}
+              {completed > 0 && cancelled > 0 ? " · " : null}
+              {cancelled > 0 ? `${cancelled} cancelled ${cancelled === 1 ? "task" : "tasks"}` : null}
             </span>
           }
           data-testid="task-settled-group"
@@ -373,8 +377,8 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
           </ul>
         </Disclosure>
       )}
-      <LiveGroup label="In progress" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
-      <LiveGroup label="Open" status="open" tasks={groups.open} sessionRef={sessionRef} />
+      <LiveGroup label="Current" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
+      <LiveGroup label="Remaining" status="open" tasks={groups.open} sessionRef={sessionRef} />
     </>
   );
 }

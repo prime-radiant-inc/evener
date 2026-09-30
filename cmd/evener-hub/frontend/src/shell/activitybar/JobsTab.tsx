@@ -1,9 +1,10 @@
 import { ActivityPageBoundary } from "./ActivityPageBoundary";
-// The Jobs tab: running jobs first, then the completed, each opening its own
-// transcript pane (the job log view) beside the session.
+// Current jobs and unsuccessful outcomes stay visible; successful history
+// unfolds without changing the shared collection's visible-page demand.
 
-import { activityNodeID } from "@evener/appwire-client";
+import { activityNodeID, type JobActivityJob } from "@evener/appwire-client";
 import { useSessionActivity } from "../../stores/sessionActivity";
+import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ActivityScope } from "../statusbar/statusScope";
 import { workspaceStore } from "../workspace";
@@ -23,25 +24,39 @@ export function JobsTab({ scope }: { scope: ActivityScope }) {
   if (!collection || (collection.rows.length === 0 && !collection.complete))
     return <span className={CLASS.emptyNote}>Loading jobs…</span>;
   const running = collection.rows.filter((job) => !job.terminal);
-  const completed = collection.rows.filter((job) => job.terminal);
+  const unsuccessful = collection.rows.filter((job) => job.terminal && job.outcome !== "success");
+  const completed = collection.rows.filter((job) => job.terminal && job.outcome === "success");
   if (collection.rows.length === 0 && collection.complete)
     return <span className={CLASS.emptyNote}>No jobs at this level.</span>;
+  const renderJob = (job: JobActivityJob) => (
+    <JobRow
+      key={activityNodeID({ ...job, kind: "shell" })}
+      job={job}
+      onOpen={
+        job.transcriptRef
+          ? () =>
+              workspaceStore
+                .getState()
+                .openPane("transcript", { ref: job.transcriptRef, parentRef: job.ownerRef }, { slot: "secondary" })
+          : undefined
+      }
+    />
+  );
   return (
     <div className={CLASS.stack}>
-      {[...running, ...completed].map((job) => (
-        <JobRow
-          key={activityNodeID({ ...job, kind: "shell" })}
-          job={job}
-          onOpen={
-            job.transcriptRef
-              ? () =>
-                  workspaceStore
-                    .getState()
-                    .openPane("transcript", { ref: job.transcriptRef, parentRef: job.ownerRef }, { slot: "secondary" })
-              : undefined
+      {[...running, ...unsuccessful].map(renderJob)}
+      {completed.length > 0 ? (
+        <Disclosure
+          id={`${scope.leaf.ref}\0completed-jobs`}
+          summary={
+            <span>
+              {completed.length} completed {completed.length === 1 ? "job" : "jobs"}
+            </span>
           }
-        />
-      ))}
+        >
+          <div className={CLASS.stack}>{completed.map(renderJob)}</div>
+        </Disclosure>
+      ) : null}
       <ActivityPageBoundary
         resource="jobs"
         label="jobs"
