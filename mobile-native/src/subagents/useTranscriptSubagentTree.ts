@@ -9,11 +9,9 @@ import { type SubagentTreeTarget, useHeldSubagentTree } from "./useHeldSubagentT
  * so a row-held tree would read again each time one scrolled back. `target`
  * is set only while the transcript has a finished subagent row.
  *
- * A coordinator's own screen follows its delegates' updates, which refetch
- * the tree when one finishes. A subagent's screen follows the subagent, so
- * nothing tells its coordinator's tree one of the subagent's own subagents
- * finished; there (`receivesUpdates` false) the tree reads again each time
- * the screen comes to the front. */
+ * The shared activity owner follows the coordinator independently of the
+ * transcript's selected session. A transcript that also asks for a focus
+ * refresh releases no other holder's collection or thread membership. */
 export function useTranscriptSubagentTree(
 	hubId: string,
 	target: SubagentTreeTarget | null,
@@ -35,8 +33,8 @@ export function useTranscriptSubagentTree(
  * none while no subagent row has finished; the session's own on a
  * coordinator's screen; and on a subagent's screen, the coordinator's under
  * the thread its panel reads now (`panelThread`), and none until the panel
- * has read it. A coordinator that restarted runs under a new thread, and a
- * tree asked for under the route's old one is refused. */
+ * has read it. The binding uses the stable ref; its shared context identifies
+ * a replacement resolved session independently of the route's old thread hint. */
 export function transcriptTreeTarget({
 	showsFinished,
 	coordinator,

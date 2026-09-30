@@ -1,14 +1,13 @@
-// The Subagents list (spec 9) as pure functions over the activity tree the
-// hub already serves (evener/jobs/list, parsed by the shared ActivityList):
-// one flat row per subagent, its state, where it sits, the tallies behind the
-// strip and the filter chips, and the words on its row. Where the spec wants
-// a fact the tree doesn't carry, the fallback lives here. S3 (whole-tree
-// tallies) changes how the phone counts; the rows stay.
+// Native activity rows and outcome words over the shared session projection.
 import {
 	type ActivityDelegate,
 	type ActivityJob,
 	type ActivitySessionNode,
 	type ActivityTree,
+	activityNodeID,
+	buildEntityView,
+	findEntityView,
+	type SessionActivityCounts,
 	delegateEndingText,
 	delegateHasActiveWork,
 	delegateModel,
@@ -61,9 +60,8 @@ export function isStoppedStatus(status: string | undefined): boolean {
 }
 
 /** The delegate fields the state rule reads. The Subagents list passes its
- * ActivityDelegate (turns included); the Session chip passes an
- * EvenerDelegateInfo, which is always the stable "delegate" shape and so
- * carries no turns. `subagentState` is the one classifier for both. */
+ * ActivityDelegate (turns included); other row consumers may pass a stable delegate
+ * shape without turns. Summary counts remain the domain's authority. */
 export type SubagentStateSource = Pick<ActivityDelegate, "type" | "terminal" | "outcome" | "status" | "turns">;
 
 /** Running, failed or done, as the hub's job counts are (active, failed,
@@ -169,7 +167,7 @@ export function flattenActivity(tree: ActivityTree): ActivityListRow[] {
 			if (entry.kind === "shell") {
 				// Job ids and delegate ids are separate namespaces, keyed apart
 				// as activityListKey keys their rows.
-				const key = `job:${entry.job.jobId}`;
+				const key = activityNodeID(entry);
 				if (seen.has(key)) continue;
 				seen.add(key);
 				const job = entry.job;
@@ -184,9 +182,9 @@ export function flattenActivity(tree: ActivityTree): ActivityListRow[] {
 				});
 				continue;
 			}
-			if (entry.kind !== "delegate" || seen.has(entry.delegate.delegateId)) continue;
+			if (entry.kind !== "delegate" || seen.has(activityNodeID(entry))) continue;
 			const delegate = entry.delegate;
-			seen.add(delegate.delegateId);
+			seen.add(activityNodeID(entry));
 			const title = subagentTitle(delegate);
 			rows.push({
 				kind: "subagent",
@@ -261,16 +259,14 @@ export function subagentSections<Row extends ActivityListRow>(rows: readonly Row
 	return sections;
 }
 
-/** The loaded activity rows by state: S3's fallback until the hub counts whole
- * trees for the phone. The type is the Session's Subagents chip's (phase 3). */
+/** Classifies loaded row evidence for dev fixtures; activity surfaces use summaryTally. */
 export function tallyActivity(rows: readonly { state: SubagentState }[]): SubagentTally {
 	const tally: SubagentTally = { total: rows.length, running: 0, failed: 0, done: 0 };
 	for (const row of rows) tally[row.state] += 1;
 	return tally;
 }
 
-/** "55", or "55+" while part of the tree couldn't be listed and so couldn't
- * be counted (ruling 2). */
+/** A count label for loaded fixture evidence, independent of authoritative summary counts. */
 export function countLabel(count: number, partial: boolean): string {
 	return partial ? `${count}+` : String(count);
 }
@@ -341,20 +337,47 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	return { text: "Working" };
 }
 
-// Each tree's rows by id, built once however many transcript rows ask of it.
-const rowsByTree = new WeakMap<ActivityTree, Map<string, SubagentRow>>();
-
-/** A finished subagent's outcome line from the coordinator's tree, as the
- * Subagents list gives it (subagentWhy): its report's opening line, or
- * "Finished" or "Stopped". Undefined while the tree doesn't show it done. */
-export function subagentOutcome(tree: ActivityTree, delegateId: string, now: number): string | undefined {
-	let rows = rowsByTree.get(tree);
-	if (!rows) {
-		rows = new Map(flattenSubagents(tree).map((row) => [row.id, row]));
-		rowsByTree.set(tree, rows);
+// Cache the same qualified entity identity used by the shared projection.
+const rowsByTree = new WeakMap<
+	ActivityTree,
+	{
+		rows: Map<string, SubagentRow>;
+		entities: ReturnType<typeof buildEntityView>;
 	}
-	const row = rows.get(delegateId);
+>();
+
+/** A finished delegate's outcome within the transcript's authoritative owner. */
+export function subagentOutcome(
+	tree: ActivityTree,
+	delegateId: string,
+	now: number,
+	ownerRef: string,
+): string | undefined {
+	let cached = rowsByTree.get(tree);
+	if (!cached) {
+		cached = {
+			rows: new Map(flattenSubagents(tree).map((row) => [activityNodeID({ kind: "delegate", ...row.delegate }), row])),
+			entities: buildEntityView({ sessionRef: tree.root.ref, tree, turns: [], stale: false, ended: false }),
+		};
+		rowsByTree.set(tree, cached);
+	}
+	const entity = findEntityView(cached.entities, "delegate", delegateId, ownerRef);
+	const row = entity ? cached.rows.get(entity.id) : undefined;
 	return row?.state === "done" ? subagentWhy(row, now).text : undefined;
+}
+
+/** Unknown counts have no numeric native tally until the authoritative summary knows them. */
+export function summaryTally(...counts: (SessionActivityCounts | undefined)[]): SubagentTally | null {
+	if (counts.some((count) => !count?.known)) return null;
+	return counts.reduce<SubagentTally>(
+		(tally, count) => ({
+			total: tally.total + (count?.total ?? 0),
+			running: tally.running + (count?.active ?? 0),
+			failed: tally.failed + (count?.failed ?? 0),
+			done: tally.done + (count?.completed ?? 0),
+		}),
+		{ total: 0, running: 0, failed: 0, done: 0 },
+	);
 }
 
 export interface SubagentLastLine {
@@ -391,7 +414,16 @@ export function subagentLastLine(
 	const branch = row.delegate.worktree?.branch.trim();
 	if (branch) line.branch = branch;
 	const usage = row.delegate.usage;
-	if (usage) line.tokens = `${formatTokenCount(usage.totalTokens ?? usage.inputTokens + usage.outputTokens)} tokens`;
+	if (usage) {
+		const total =
+			usage.totalTokens ??
+			(usage.inputTokens !== undefined && usage.outputTokens !== undefined
+				? usage.inputTokens + usage.outputTokens
+				: undefined);
+		if (total !== undefined) line.tokens = `${formatTokenCount(total)} tokens`;
+		else if (usage.inputTokens !== undefined) line.tokens = `${formatTokenCount(usage.inputTokens)} input tokens`;
+		else if (usage.outputTokens !== undefined) line.tokens = `${formatTokenCount(usage.outputTokens)} output tokens`;
+	}
 	return Object.keys(line).length > 0 ? line : null;
 }
 

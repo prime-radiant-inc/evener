@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // The session screen marks itself seen (S4) while it is in front: through
 // the loaded snapshot's turn end, and through the fleet's row for it when a
 // turn ends while you watch (Jesse's ruling, 2026-09-29).
@@ -38,7 +39,7 @@ function setup({ refuse = false, fail = false } = {}) {
 	hubCount += 1;
 	const hubId = `session-seen-hub-${hubCount}`;
 	const sent: SessionSeenMark[][] = [];
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (method, params) => {
 			if (method !== "evener/session/seen/set") throw new Error(`unexpected ${method}`);
 			sent.push((params as { sessions: SessionSeenMark[] }).sessions);
@@ -50,7 +51,7 @@ function setup({ refuse = false, fail = false } = {}) {
 			return Promise.resolve({ ok: true, changed: true, navigation: { generation_id: "g", targets: [] } } as never);
 		},
 		onNotification: () => () => {},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	// The device's own markers, first run a minute before T.
 	const markers = seenMarkers(hubId);
 	markers.adoptEpoch([{ updated_at: iso(T - 60_000) }]);

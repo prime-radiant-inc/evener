@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createCredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderSignIn } from "./providerSignIn";
@@ -14,13 +15,13 @@ export interface ScriptedIO {
 /** A client that answers from `io`, records every call in `calls`, and
  * carries the onNotification the credential store subscribes with. */
 export function signInClient(io: ScriptedIO, calls: RecordedCall[]): ConversationClientLike {
-	return {
+	return Object.assign(new FakeClient("ready"), {
 		request: (method, params) => {
 			calls.push({ method, params });
 			return io.request(method, params);
 		},
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 }
 
 /** One sign-in flow for `provider` over its own credential store, connected

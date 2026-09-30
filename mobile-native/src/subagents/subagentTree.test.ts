@@ -1,19 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { ACTIVITY_REFRESH_MIN_INTERVAL_MS } from "@evener/appwire-client";
+import { afterEach, expect, test, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { forgetSubagentTrees, holdSubagentTree, SubagentTree, subagentTree } from "./subagentTree";
-
+import { SubagentTree, subagentTree, holdSubagentTree, forgetSubagentTrees } from "./subagentTree";
+import { installActivityFixture } from "./sessionActivityTestUtils";
 const session = (entries: unknown[], branch: Record<string, unknown> = {}) => ({
 	kind: "session",
 	sessionId: "coord",
 	ref: "local:coord",
-	label: "Get PR 2138 Test Clean",
+	label: "Coordinator",
 	aggregate: "working",
 	counts: { active: 0, failed: 0, completed: 0, complete: true },
 	entries,
 	branch,
 });
-const subagent = (id: string) => ({
+const delegate = (id: string) => ({
 	kind: "delegate",
 	delegate: {
 		delegateId: id,
@@ -24,294 +23,166 @@ const subagent = (id: string) => ({
 		branch: {},
 	},
 });
-const firstPage = {
-	revision: 1,
-	root: session([subagent("a"), subagent("b")], { truncated: true, continuation: "page-2" }),
-};
-const secondPage = { revision: 1, root: session([subagent("c")]) };
-const whole = { revision: 1, root: session([subagent("a")]) };
-
-function hub(pages: (continuation: string | undefined) => unknown) {
+const whole = { revision: 1, root: session([delegate("a")]) };
+const first = { revision: 1, root: session([delegate("a"), delegate("b")], { truncated: true, continuation: "next" }) };
+const second = { revision: 1, root: session([delegate("c")]) };
+function hub(read: (cursor?: string) => unknown | Promise<unknown> = () => whole) {
 	const client = new FakeClient("ready");
-	client.on("evener/jobs/list", async (params) => ({ data: await pages(params.continuation) }));
+	installActivityFixture(client, read);
+	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "scripted/model" } }) as never);
 	return client;
 }
-const listed = (tree: SubagentTree) =>
+function detail() {
+	const tree = new SubagentTree("local:coord", "coord");
+	tree.observeActivity();
+	return tree;
+}
+const ids = (tree: SubagentTree) =>
 	tree
 		.getSnapshot()
 		.tree?.root.entries.map((entry) => (entry.kind === "delegate" ? entry.delegate.delegateId : entry.job.jobId));
-const reads = (client: FakeClient) =>
-	client.calls
-		.filter((call) => call.method === "evener/jobs/list")
-		.map((call) => (call.params as { continuation?: string }).continuation ?? "root");
-const treeUpdated = (client: FakeClient, ref = "local:coord", threadId = "coord") =>
-	client.emitNotification({ method: "evener/jobs/treeUpdated", params: { threadId, ref, revision: 2 } });
-
-const delegateUpdated = (client: FakeClient, delegateId: string, projectionRevision: number, phase = "running") =>
-	client.emitNotification({
-		method: "evener/delegate/updated",
-		params: {
-			ref: "local:coord",
-			threadId: "coord",
-			delegate: {
-				delegateId,
-				ownerSessionId: "coord",
-				rootSessionId: "coord",
-				childSessionId: delegateId,
-				transcriptRef: `local:${delegateId}`,
-				type: "delegate",
-				lifecycle: "running",
-				phase,
-				status: "running",
-				terminal: false,
-				resumable: false,
-				needsAttention: false,
-				projectionRevision,
-			},
-		},
-	} as never);
-const heldPhase = (tree: SubagentTree) => {
-	const entry = tree.getSnapshot().tree?.root.entries[0];
-	return entry?.kind === "delegate" ? entry.delegate.phase : undefined;
-};
-
+const reads = (client: FakeClient) => client.calls.filter((call) => call.method === "evener/thread/delegates/list");
 afterEach(() => {
+	forgetSubagentTrees("one");
+	forgetSubagentTrees("two");
 	vi.useRealTimers();
 });
-
-describe("one coordinator's subagent tree", () => {
-	it("reads the tree when it gets a client, and keeps it when the client goes", async () => {
-		const client = hub(() => whole);
-		const tree = new SubagentTree("local:coord", "coord");
-		expect(tree.getSnapshot()).toMatchObject({ tree: null, loading: false });
-		const read = tree.setClient(client);
-		expect(tree.getSnapshot().loading).toBe(true);
-		await read;
-		expect(listed(tree)).toEqual(["a"]);
-		await tree.setClient(null);
-		expect(listed(tree)).toEqual(["a"]);
-		expect(tree.getSnapshot().loading).toBe(false);
-	});
-
-	it("follows every page, so the list and its counts are the whole tree's (Review Focus 1)", async () => {
-		const client = hub((continuation) => (continuation === "page-2" ? secondPage : firstPage));
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(client);
-		expect(reads(client)).toEqual(["root", "page-2"]);
-		expect(listed(tree)).toEqual(["a", "b", "c"]);
-		expect(tree.getSnapshot()).toMatchObject({ partial: false, missing: [] });
-	});
-
-	it("tries a failing page once per reload and says what it couldn't list (Review Focus 1)", async () => {
-		const client = hub((continuation) => {
-			if (continuation === "page-2") throw new Error("offline");
-			return firstPage;
-		});
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(client);
-		expect(reads(client)).toEqual(["root", "page-2"]);
-		expect(tree.getSnapshot()).toMatchObject({ partial: true, missing: ["Get PR 2138 Test Clean"] });
-		await tree.reload();
-		expect(reads(client)).toEqual(["root", "page-2", "root", "page-2"]);
-	});
-
-	it("reads through a new client even while the old client's read never answers", async () => {
-		const stuck = new FakeClient("ready");
-		stuck.on("evener/jobs/list", () => new Promise(() => {}));
-		const tree = new SubagentTree("local:coord", "coord");
-		void tree.setClient(stuck);
-		await tree.setClient(hub(() => whole));
-		expect(listed(tree)).toEqual(["a"]);
-	});
-
-	it("calls its count partial while later pages are still loading", async () => {
-		let answer: (page: unknown) => void = () => {};
-		const client = hub((continuation) =>
-			continuation === "page-2" ? new Promise((resolve) => (answer = resolve)) : firstPage,
-		);
-		const tree = new SubagentTree("local:coord", "coord");
-		const read = tree.setClient(client);
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(listed(tree)).toEqual(["a", "b"]);
-		expect(tree.getSnapshot().partial).toBe(true);
-		answer(secondPage);
-		await read;
-		expect(tree.getSnapshot()).toMatchObject({ partial: false, missing: [] });
-	});
-
-	it("stays partial when the connection drops while later pages are loading", async () => {
-		const client = hub((continuation) => (continuation === "page-2" ? new Promise(() => {}) : firstPage));
-		const tree = new SubagentTree("local:coord", "coord");
-		void tree.setClient(client);
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(listed(tree)).toEqual(["a", "b"]);
-		await tree.setClient(null);
-		expect(tree.getSnapshot()).toMatchObject({ partial: true, missing: ["Get PR 2138 Test Clean"] });
-	});
-
-	it("keeps what a settled read couldn't list when a new client drops before its first page", async () => {
-		const client = hub((continuation) => {
-			if (continuation === "page-2") throw new Error("offline");
-			return firstPage;
-		});
-		const stuck = new FakeClient("ready");
-		stuck.on("evener/jobs/list", () => new Promise(() => {}));
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(client);
-		void tree.setClient(stuck);
-		await tree.setClient(null);
-		expect(tree.getSnapshot()).toMatchObject({ partial: true, missing: ["Get PR 2138 Test Clean"] });
-	});
-
-	it("keeps what a settled read couldn't list when a new client's first read fails", async () => {
-		const client = hub((continuation) => {
-			if (continuation === "page-2") throw new Error("offline");
-			return firstPage;
-		});
-		const failing = new FakeClient("ready");
-		failing.on("evener/jobs/list", () => Promise.reject(new Error("offline")));
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(client);
-		await tree.setClient(failing);
-		expect(listed(tree)).toEqual(["a", "b"]);
-		expect(tree.getSnapshot()).toMatchObject({ partial: true, missing: ["Get PR 2138 Test Clean"] });
-	});
-
-	it("keeps saying what it couldn't list while it's disconnected", async () => {
-		const client = hub((continuation) => {
-			if (continuation === "page-2") throw new Error("offline");
-			return firstPage;
-		});
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(client);
-		await tree.setClient(null);
-		expect(tree.getSnapshot()).toMatchObject({ partial: true, missing: ["Get PR 2138 Test Clean"] });
-	});
-
-	it("reads again on its coordinator's tree notifications, folding a burst into one more read", async () => {
-		vi.useFakeTimers();
-		const client = hub(() => whole);
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(client);
-		treeUpdated(client);
-		treeUpdated(client);
-		treeUpdated(client, "local:other", "other");
-		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-		expect(reads(client)).toEqual(["root", "root"]);
-	});
-
-	it("applies a burst of updates for a subagent it holds in place, without reading again", async () => {
-		vi.useFakeTimers();
-		const client = hub(() => whole);
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(client);
-		for (let revision = 2; revision <= 51; revision++) delegateUpdated(client, "a", revision, `step-${revision}`);
-		await vi.advanceTimersByTimeAsync(10 * ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-		expect(reads(client)).toEqual(["root"]);
-		expect(heldPhase(tree)).toBe("step-51");
-	});
-
-	it("reads once for a burst of updates about a subagent it doesn't hold, after the minimum interval", async () => {
-		vi.useFakeTimers();
-		const client = hub(() => whole);
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(client);
-		for (let i = 0; i < 5; i++) delegateUpdated(client, "new", 1);
-		await vi.advanceTimersByTimeAsync(1000);
-		expect(reads(client)).toEqual(["root"]);
-		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-		expect(reads(client)).toEqual(["root", "root"]);
-	});
-
-	it("doesn't read back to back while updates keep arriving and reads are slow", async () => {
-		vi.useFakeTimers();
-		const client = new FakeClient("ready");
-		const starts: number[] = [];
-		client.on("evener/jobs/list", () => {
-			starts.push(Date.now());
-			return new Promise((resolve) => setTimeout(() => resolve({ data: whole }), 3000));
-		});
-		const tree = new SubagentTree("local:coord", "coord");
-		void tree.setClient(client);
-		for (let at = 0; at < 60_000; at += 500) {
-			delegateUpdated(client, "new", 1);
-			await vi.advanceTimersByTimeAsync(500);
-		}
-		// Each read starts at least the minimum interval after the last one ended.
-		for (let i = 1; i < starts.length; i++)
-			expect((starts[i] ?? 0) - (starts[i - 1] ?? 0)).toBeGreaterThanOrEqual(3000 + ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-		expect(starts.length).toBeLessThanOrEqual(13);
-	});
-
-	it("follows the coordinator when asked, learning its model", async () => {
-		const client = hub(() => whole);
-		client.on(
-			"thread/read",
-			() =>
-				({
-					thread: {
-						id: "coord",
-						modelProvider: "lunaroute/glm-5.3-vision",
-						status: { type: "active" },
-						evener: { ref: "local:coord", capabilities: {}, queue: { revision: 0 } },
-					},
-				}) as never,
-		);
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(client);
-		await tree.follow();
-		expect(client.calls.find((call) => call.method === "thread/read")?.params).toEqual({
-			ref: "local:coord",
-			includeTurns: false,
-			subscribe: true,
-			replaceSubscription: true,
-		});
-		expect(tree.getSnapshot().coordinatorModel).toBe("lunaroute/glm-5.3-vision");
-		expect(reads(client)).toEqual(["root", "root"]);
-	});
-
-	it("keeps the last tree on screen through a reconnect until the new read lands", async () => {
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(hub(() => whole));
-		const second = new FakeClient("ready");
-		second.on("evener/jobs/list", () => new Promise<never>(() => {}));
-		void tree.setClient(second);
-		expect(listed(tree)).toEqual(["a"]);
-		expect(tree.getSnapshot().loading).toBe(false);
-	});
-
-	it("takes the new connection's tree even when its revision is lower, as after a daemon restart", async () => {
-		const tree = new SubagentTree("local:coord", "coord");
-		await tree.setClient(hub(() => ({ revision: 7, root: session([subagent("a")]) })));
-		await tree.setClient(hub(() => whole));
-		expect(tree.getSnapshot().tree?.revision).toBe(1);
-		expect(listed(tree)).toEqual(["a"]);
-		await tree.setClient(hub(() => ({ revision: 1, root: session([subagent("a"), subagent("b")]) })));
-		expect(listed(tree)).toEqual(["a", "b"]);
-	});
+test("retains the last accepted membership across disconnect", async () => {
+	const tree = detail();
+	expect(tree.getSnapshot().tree).toBeNull();
+	await tree.setClient(hub());
+	expect(ids(tree)).toEqual(["a"]);
+	await tree.setClient(null);
+	expect(ids(tree)).toEqual(["a"]);
+	expect(tree.getSnapshot().loading).toBe(false);
 });
-
-describe("the shared tree", () => {
-	it("is one per hub and coordinator, reads while any screen holds it, and keeps its tree after", async () => {
-		vi.useFakeTimers();
-		const tree = subagentTree("hub-1", "local:coord", "coord");
-		expect(subagentTree("hub-1", "local:coord", "coord")).toBe(tree);
-		expect(subagentTree("hub-2", "local:coord", "coord")).not.toBe(tree);
-		const client = hub(() => whole);
-		const releaseList = holdSubagentTree(tree);
-		const releaseSubagent = holdSubagentTree(tree);
-		await tree.setClient(client);
-		releaseSubagent();
-		const before = reads(client).length;
-		treeUpdated(client);
-		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-		expect(reads(client).length).toBe(before + 1);
-		releaseList();
-		treeUpdated(client);
-		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-		expect(reads(client).length).toBe(before + 1);
-		expect(listed(tree)).toEqual(["a"]);
-		forgetSubagentTrees("hub-1");
-		expect(subagentTree("hub-1", "local:coord", "coord")).not.toBe(tree);
+test("only explicit visible demand reads continuation and merges membership", async () => {
+	const client = hub((cursor) => (cursor ? second : first));
+	const tree = detail();
+	await tree.setClient(client);
+	expect(reads(client).map((call) => call.params)).toEqual([{ ref: "local:coord", scope: "subtree" }]);
+	expect(ids(tree)).toEqual(["a", "b"]);
+	expect(tree.getSnapshot().partial).toBe(true);
+	await tree.loadMore();
+	expect(ids(tree)).toEqual(["a", "b", "c"]);
+	expect(tree.getSnapshot().partial).toBe(false);
+	await tree.setClient(null);
+});
+test("an empty incomplete page stays unknown and advances to admitted rows", async () => {
+	const tree = detail();
+	await tree.setClient(
+		hub((cursor) => (cursor ? whole : { revision: 1, root: session([], { truncated: true, continuation: "next" }) })),
+	);
+	expect(ids(tree)).toEqual(["a"]);
+	expect(tree.getSnapshot().partial).toBe(false);
+	await tree.setClient(null);
+});
+test("a failed continuation keeps accepted rows across client failure and disconnect", async () => {
+	const tree = detail();
+	await tree.setClient(
+		hub((cursor) => {
+			if (cursor) throw new Error("source offline");
+			return first;
+		}),
+	);
+	await tree.loadMore();
+	expect(ids(tree)).toEqual(["a", "b"]);
+	expect(tree.getSnapshot().partial).toBe(true);
+	await tree.setClient(
+		hub(() => {
+			throw new Error("source offline");
+		}),
+	);
+	expect(ids(tree)).toEqual(["a", "b"]);
+	await tree.setClient(null);
+	expect(tree.getSnapshot().partial).toBe(true);
+});
+test("source issues stay visible in retained presentation while disconnected", async () => {
+	const tree = detail();
+	await tree.setClient(hub(() => ({ revision: 1, root: session([delegate("a")], { error: "branch unavailable" }) })));
+	expect(tree.getSnapshot()).toMatchObject({ partial: true, missing: ["local:coord"] });
+	await tree.setClient(null);
+	expect(tree.getSnapshot().missing).toEqual(["local:coord"]);
+});
+test("a replacement client can read while the old external transport is stuck", async () => {
+	let admit = () => {};
+	const admitted = new Promise<void>((resolve) => {
+		admit = resolve;
 	});
+	let answer: (value: unknown) => void = () => {};
+	const old = hub(() => {
+		admit();
+		return new Promise((resolve) => {
+			answer = resolve;
+		});
+	});
+	const tree = detail();
+	const pending = tree.setClient(old);
+	await admitted;
+	await tree.setClient(hub(() => second));
+	expect(ids(tree)).toEqual(["c"]);
+	answer(whole);
+	await pending;
+	expect(ids(tree)).toEqual(["c"]);
+	await tree.setClient(null);
+});
+test("retains the last tree until a same-session reconnect supplies membership", async () => {
+	const tree = detail();
+	await tree.setClient(hub());
+	let admit = () => {};
+	const admitted = new Promise<void>((resolve) => {
+		admit = resolve;
+	});
+	let answer: (value: unknown) => void = () => {};
+	const pending = tree.setClient(
+		hub(() => {
+			admit();
+			return new Promise((resolve) => {
+				answer = resolve;
+			});
+		}),
+	);
+	await admitted;
+	expect(ids(tree)).toEqual(["a"]);
+	answer(second);
+	await pending;
+	expect(ids(tree)).toEqual(["c"]);
+	await tree.setClient(null);
+});
+test("follow uses additive membership and keeps a model through same-session disconnect", async () => {
+	const tree = detail();
+	const client = hub();
+	await tree.setClient(client);
+	await tree.follow();
+	expect(client.calls.find((call) => call.method === "thread/read")?.params).toMatchObject({
+		ref: "local:coord",
+		subscribe: true,
+		replaceSubscription: false,
+	});
+	expect(tree.getSnapshot().coordinatorModel).toBe("scripted/model");
+	await tree.setClient(null);
+	expect(tree.getSnapshot().coordinatorModel).toBe("scripted/model");
+});
+test("shared holders are ref scoped and the final holder alone disposes reads", async () => {
+	const tree = subagentTree("one", "local:coord", "coord");
+	expect(subagentTree("one", "local:coord", "new-route-hint")).toBe(tree);
+	expect(subagentTree("two", "local:coord", "coord")).not.toBe(tree);
+	const release = holdSubagentTree(tree);
+	const other = holdSubagentTree(tree);
+	const client = hub();
+	await tree.setClient(client);
+	other();
+	other();
+	await tree.reload();
+	expect(ids(tree)).toEqual(["a"]);
+	const unsubscribed = new Promise<void>((resolve) =>
+		client.on("thread/unsubscribe", () => {
+			resolve();
+			return {};
+		}),
+	);
+	release();
+	await unsubscribed;
+	expect(ids(tree)).toEqual(["a"]);
+	expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
 });

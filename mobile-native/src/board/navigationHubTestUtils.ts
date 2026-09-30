@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // The scripted hub the Board's navigation reads meet (boardData.ts), shared
 // by the suites that drive a board controller: each request waits until the
 // test answers it, by reader, in the order asked.
@@ -21,7 +22,7 @@ export function boundary() {
 		answered: boolean;
 	}> = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
 				requests.push({
@@ -36,7 +37,7 @@ export function boundary() {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-	};
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
 	return { client, requests, listeners };
 }
 export type Hub = ReturnType<typeof boundary>;

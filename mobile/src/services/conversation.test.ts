@@ -21,8 +21,6 @@ import type {
 	AnyNotification,
 	EmptyResponse,
 	InputItem,
-	MethodName,
-	MethodTypes,
 	MutationReceipt,
 	Thread,
 	ThreadCapabilities,

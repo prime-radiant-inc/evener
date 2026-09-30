@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createTasksPanelStore } from "@evener/appwire-client";
 import { expect, it } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -6,10 +7,10 @@ import { tasksReadThroughCurrentClient } from "./tasksRead";
 const row = (id: number) => ({ id, status: "open", type: "task", description: `task-${id}`, prompt: "p" });
 
 function clientAnswering(read: () => Promise<unknown>): ConversationClientLike {
-	return {
+	return Object.assign(new FakeClient("ready"), {
 		request: async () => ({ data: await read() }),
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 }
 
 it("retains loaded rows when a replacement connection cannot refresh them", async () => {
