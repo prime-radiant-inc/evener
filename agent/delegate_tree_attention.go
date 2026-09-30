@@ -261,43 +261,47 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 // transcript-driven drive is the only witness of that state, so it reconciles
 // the projection itself rather than waiting for the next bootstrap. An empty
 // fold is authoritative: a wake ID is only ever noted beside a durable
-// transcript entry, so no entry means the attention resolved.
-func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID string) error {
+// transcript entry, so no entry means the attention resolved. The fold read
+// runs outside the controller lock, so the update revalidates the evidence
+// version it started from: an attention opened during the read keeps its flag
+// and wake, and the next pass retries.
+func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID string) (bool, error) {
 	if c == nil || delegateID == "" {
-		return nil
+		return false, nil
 	}
-	release, err := c.beginRetirementMutation()
-	if err != nil {
-		return err
-	}
-	defer release()
 	c.mu.Lock()
 	aggregate := c.durable[delegateID]
 	stateDir := c.stateDir
 	if aggregate == nil || !aggregate.NeedsAttention {
 		c.mu.Unlock()
-		return nil
+		return false, nil
 	}
 	transcriptRef := aggregate.Descriptor.TranscriptRef
+	evidenceVersion := c.evidenceVersion
 	c.mu.Unlock()
 
 	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
 	if err != nil {
-		return err
+		return false, err
 	}
 	fold, err := readDelegateAttentionFold(path, sessionID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(fold.pendingIDs()) != 0 {
-		return nil
+		return false, nil
 	}
 
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	c.mu.Lock()
 	aggregate = c.durable[delegateID]
-	if aggregate == nil || !aggregate.NeedsAttention {
+	if aggregate == nil || !aggregate.NeedsAttention || c.evidenceVersion != evidenceVersion {
 		c.mu.Unlock()
-		return nil
+		return false, nil
 	}
 	if _, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateAttentionChanged,
@@ -307,14 +311,14 @@ func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID strin
 		},
 	}); err != nil {
 		c.mu.Unlock()
-		return err
+		return false, err
 	}
 	c.replaceDelegateAttentionLocked(delegateID, nil)
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(delegateID)
 	c.mu.Unlock()
 	c.emitDelegateUpdate(plan)
-	return nil
+	return true, nil
 }
 
 func (c *delegateTreeController) delegateAttentionOpenEventLocked(delegateID string) (*delegatestore.Event, error) {

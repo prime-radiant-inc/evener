@@ -3348,6 +3348,19 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 		t.Fatalf("armed attention projection = needs:%t wakeIDs:%d, want true/1", armedFlag, wakeIDs)
 	}
 
+	// Unresolved transcript attention is never cleared: the fold still lists a
+	// pending ID, so the projection and its wake must survive untouched.
+	if cleared, err := controller.clearResolvedDelegateAttention(fixture.delegateID); err != nil || cleared {
+		t.Fatalf("clear with pending attention = cleared:%t err:%v, want false/nil", cleared, err)
+	}
+	controller.mu.Lock()
+	keptFlag := controller.durable[fixture.delegateID].NeedsAttention
+	keptWakeIDs := len(controller.attentionWakeIDs[fixture.delegateID])
+	controller.mu.Unlock()
+	if !keptFlag || keptWakeIDs != 1 {
+		t.Fatalf("pending attention projection = needs:%t wakeIDs:%d, want true/1", keptFlag, keptWakeIDs)
+	}
+
 	// Model the accepted resolution whose committed run never landed: the
 	// marker is durable in the child transcript, so the drive finds nothing
 	// pending while the aggregate still carries the true event.
@@ -3355,7 +3368,9 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 		t.Fatalf("resolve stable attention: %v", err)
 	}
 
-	root.driveStableDelegateAttention(sub)
+	if !root.driveStableDelegateAttention(sub) {
+		t.Fatal("drive did not clear the resolved attention projection")
+	}
 
 	controller.mu.Lock()
 	cleared := !controller.durable[fixture.delegateID].NeedsAttention
