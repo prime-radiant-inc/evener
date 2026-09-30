@@ -7,6 +7,14 @@
 // React Navigation's real core (as HubSheet.unsavedEdit.test.tsx does), that
 // a guarded page is never dropped by a link: the host notice's, the sign-in
 // notice's, or a sign-in error's.
+//
+// The provider cases stop at the stack's shape. With the real provider
+// detail, the stacked Providers page does not stay: both Providers pages
+// publish into the Hub's one providers slot, the new page selects nothing
+// (or another provider), and the covered detail, seeing its provider gone,
+// goes back, which pops the page the link opened. The link bounces and the
+// pasted key survives. #3524's guarded popTo is the fix: it leaves one
+// Providers page, so no covered detail reads another page's slot.
 import {
 	BaseNavigationContainer,
 	type NavigationContainerRef,
@@ -74,12 +82,14 @@ async function hubOpenAt(pages: string[]) {
 		return routes.map((entry) => entry.name);
 	};
 	expect(hub()).toEqual(["HubHome", ...pages]);
+	/** The params of the page on top of the Hub: the one the link opened. */
+	const top = () => navigation.current?.getRootState()?.routes.at(-1)?.state?.routes.at(-1)?.params;
 	// The Board's navigation object, as openNotice and openProviders get it.
-	return { links: navigation.current as never, hub };
+	return { links: navigation.current as never, hub, top };
 }
 
 it("never drops an unsaved host edit when a host notice's link arrives", async () => {
-	const { links, hub } = await hubOpenAt(["Hosts", "HostDetail", "HostEdit"]);
+	const { links, hub, top } = await hubOpenAt(["Hosts", "HostDetail", "HostEdit"]);
 	await act(async () =>
 		openNotice(links, "hub-1", {
 			key: "host:studio",
@@ -91,10 +101,11 @@ it("never drops an unsaved host edit when a host notice's link arrives", async (
 	);
 	// The edit is still in the stack, under the Hosts page the link opened.
 	expect(hub()).toEqual(["HubHome", "Hosts", "HostDetail", "HostEdit", "Hosts"]);
+	expect(top()).toEqual({ hubId: "hub-1", focus: "studio" });
 });
 
 it("never drops a provider detail holding a pasted key when a sign-in notice's link arrives", async () => {
-	const { links, hub } = await hubOpenAt(["Providers", "ProviderDetail"]);
+	const { links, hub, top } = await hubOpenAt(["Providers", "ProviderDetail"]);
 	await act(async () =>
 		openNotice(links, "hub-1", {
 			key: "signIn:codex",
@@ -105,10 +116,12 @@ it("never drops a provider detail holding a pasted key when a sign-in notice's l
 		}),
 	);
 	expect(hub()).toEqual(["HubHome", "Providers", "ProviderDetail", "Providers"]);
+	expect(top()).toEqual({ hubId: "hub-1", focus: "codex", signIn: true });
 });
 
 it("never drops a provider detail holding a pasted key when a sign-in error opens Providers", async () => {
-	const { links, hub } = await hubOpenAt(["Providers", "ProviderDetail"]);
+	const { links, hub, top } = await hubOpenAt(["Providers", "ProviderDetail"]);
 	await act(async () => openProviders(links, "hub-1"));
 	expect(hub()).toEqual(["HubHome", "Providers", "ProviderDetail", "Providers"]);
+	expect(top()).toEqual({ hubId: "hub-1" });
 });
