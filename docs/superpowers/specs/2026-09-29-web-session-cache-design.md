@@ -138,10 +138,17 @@ one cache lookup before arming the hydration. Two properties are load-bearing:
   never the in-memory view, which a tab that has not yet received the
   clear's channel message cannot trust — and re-reads the durable epoch
   row immediately before publishing, in the same synchronous step with
-  no await between, discarding on any difference: a lookup that began
-  before a clear, or whose clear committed between the lookup's
-  transaction and its publish, discards its result, so a cleared cache
-  cannot resurrect a shell. The
+  no await between, discarding on any difference, and requires the
+  captured epoch to equal the tab's in-memory epoch at publish — a
+  same-tab clear bumps the in-memory epoch synchronously, so whatever
+  order the lookup, the re-read, the clear, and the publish land in, a
+  same-tab clear never resurrects a shell. IndexedDB cannot make the
+  publish itself atomic with another tab's transaction, so a sibling's
+  clear committing between the re-read and the publish can still paint
+  pre-clear content for the pane's opening moment — bounded staleness,
+  not resurrection: the write seam's in-transaction epoch check keeps
+  that shell from ever re-persisting, and the next fenced read replaces
+  it. The
   same captured value is the lease's epoch: the arming records it, and
   the clear's suppression uses it to tell a lease that predates a
   clear from one opened after it (the clear section). On deadline, open failure, miss, or an epoch
@@ -308,7 +315,12 @@ Three events invalidate rather than write:
   pre-clear content from the shell.
 - **Session delete** (the UI's shared `deleteSession` action): the record
   is deleted on the action's success path (`result.deleted`), the ref
-  joins `deletedRefs` in the same step — the deleting tab arms its own
+  joins `deletedRefs` in the same step, mapped the way
+  `closePanesForDeletedSessions` maps it — `result.deleted` carries
+  bare thread ids, not pane refs, so an id already carrying a source
+  prefix passes through and any other becomes the `local:<id>` ref, or
+  the write gate never matches a `local:` pane — the deleting tab
+  arms its own
   fence, because a BroadcastChannel never delivers the sender its own
   message — and the ref's pending debounce timer is cancelled with it.
   The flush skips refs closed by deletion, so closing a deleted
@@ -529,7 +541,11 @@ content". The row renders a state, not an estimate: **empty**,
 **unavailable** (a failed open or an aborted clear transaction, with a
 retry — never shown as empty, so the privacy remedy cannot silently
 claim to have worked), or **cleared** — which shows only when the
-clear's transaction committed.
+clear's transaction committed, and yields the moment that fact goes
+stale: the next record this tab writes, or a reload's enumeration,
+recomputes the row, so a cleared badge never sits over a refilled
+cache and misstates the remedy exactly the way an empty badge over a
+failed open does.
 The clear is durable against racing writers, in the only order that
 works, since in-memory timer state cannot commit transactionally:
 first, synchronously and in memory, bump the local epoch view, arm the
@@ -549,7 +565,10 @@ commit a record after it. The BroadcastChannel message (the crossTabSync
 pattern the tree already uses) carries the epoch so their scheduled
 writes drop the same way, and arms each sibling tab's suppression set
 for the leases whose captured epoch predates the clear — the same
-per-ref arming the deletion path uses. A lease records the durable
+per-ref arming the deletion path uses. The message is sent only after
+the transaction's commit is observed, never on abort — a sibling never
+arms suppression for a clear that did not happen, so an aborted clear
+leaves no sibling state to revert. A lease records the durable
 epoch its arming lookup observed (the load seam's capture), so the
 arming is exact: a ref still open across the clear captured an older
 epoch and is suppressed — a sibling still receiving `history/updated`
@@ -566,9 +585,10 @@ working, not the remedy failing — while the durable epoch still kills
 anything scheduled before the
 clear. Deletion is the storage adapter's own operation so a wedged
 open degrades to the unavailable state rather than a failed button.
-An aborted clear transaction is a clean no-op, because IndexedDB
-commits the deletions and the epoch increment as one unit: nothing
-changed, so the row returns to **unavailable** with its retry and the
+An aborted clear transaction is a clean no-op in every tab, because IndexedDB
+commits the deletions and the epoch increment as one unit and the
+broadcast is commit-gated: nothing changed anywhere, so the row
+returns to **unavailable** with its retry and the
 clear action reverts what it did optimistically in memory — the epoch
 bump restores the durable value and the suppression it armed disarms,
 so open refs resume caching at their next publication (a cancelled
@@ -734,8 +754,12 @@ Store integration (`stores/threads.test.ts` additions and a new
     `ensureThread` (which joins the shared lookup, never double-arms), a
     release during the lookup (publishes nothing), a lookup that lost its
     own deadline race resolving late (publishes nothing, arms nothing),
-    a clear committing between the lookup's transaction and its publish
-    discarding the result through the second durable read, and
+    a same-tab clear committing between the lookup's transaction and its
+    publish discarding the result through the second durable read, one
+    committing after that read but before the publish discarding it
+    through the in-memory epoch check, a sibling-tab clear in that same
+    window publishing a stale shell that never re-persists and that the
+    next fenced read replaces, and
     hydration still completing within the 250 ms bound.
 14. Deletion and clearing, one focused test per interleaving rather
     than one bundling them (the per-test ceiling makes a monolith opaque
@@ -762,7 +786,10 @@ Store integration (`stores/threads.test.ts` additions and a new
     transaction); a write scheduled under an older epoch skips itself,
     including a timer armed before the clear and firing after it; a
     write whose transaction runs after the clear's aborts itself on
-    the in-transaction epoch read. (c) Suppression lifecycle — an open
+    the in-transaction epoch read; the channel message is observed only
+    after the transaction committed, and an aborted clear sends none,
+    so a sibling never arms suppression for a clear that did not
+    happen. (c) Suppression lifecycle — an open
     pane's post-clear notification write is refused by the suppression
     gate; a sibling tab armed by the clear's channel message refuses
     its next scheduled `history/updated` write without a reload; a ref
@@ -790,7 +817,8 @@ Store integration (`stores/threads.test.ts` additions and a new
     scroll-back pages fetched as before).
 
 Settings: the row renders empty vs unavailable truthfully and the clear
-action works (scenario 14 covers the adapter side).
+action works (scenario 14 covers the adapter side); `cleared` exits on
+the next write or on reload enumeration — never shown over records.
 
 Reducer: `threadModelFromCache` is pinned by a type-level test that no
 required `ThreadModel` field is left undefined, and by unit tests that the
