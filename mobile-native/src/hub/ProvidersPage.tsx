@@ -821,7 +821,7 @@ function ProviderFacts({
 					accessibilityLabel={defaultTag ? `Type, ${instance.providerId}, Default` : `Type, ${instance.providerId}`}
 				/>
 				<Row label="Sign-in" value={signInKind(instance)} />
-				{account ? <Row label="Account" value={account} /> : null}
+				{account ? <Row label="Signed in as" value={account} /> : null}
 				<Row label="Endpoint" sub={styleInfoText(instance)} machineSub />
 				{fromEnvironment(instance) ? <Row label="Defined in" value="Environment" /> : null}
 				{credentialLayers(instance).map((layer) =>

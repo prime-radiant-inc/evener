@@ -40,12 +40,19 @@ export function authByProvider(statuses: readonly AuthStatusResponse[]): Readonl
 
 /** The account a provider signs in with, for its detail page: the hub's live
  * status's email, else the email its stored sign-in names (the status's, then
- * the instance row's); null when none names one. */
+ * the instance row's), trimmed. Null when none names one, and for a provider
+ * that isn't signed in with an account: a key in use leaves a stored
+ * sign-in's email behind, which isn't the account it uses. */
 export function signedInAccount(
-	instance: Pick<InstanceEntry, "storedEmail">,
+	instance: Pick<InstanceEntry, "activeSource" | "storedEmail">,
 	auth: Pick<AuthStatusResponse, "email" | "storedEmail"> | undefined,
 ): string | null {
-	return [auth?.email, auth?.storedEmail, instance.storedEmail].find((email) => !!email?.trim()) ?? null;
+	if (instance.activeSource !== "oauth") return null;
+	for (const email of [auth?.email, auth?.storedEmail, instance.storedEmail]) {
+		const trimmed = email?.trim();
+		if (trimmed) return trimmed;
+	}
+	return null;
 }
 
 /** How a provider signs in, for its detail page: an account (OAuth), a key

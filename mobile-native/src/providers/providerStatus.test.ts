@@ -60,9 +60,24 @@ it("says nothing of an account sign-in until the hub's statuses have been read",
 // The account a provider signs in with (settings audit M5): the hub's live
 // status first, then the account its stored sign-in names.
 it("names the signed-in account, from the live status first, then the stored sign-in", () => {
-	expect(signedInAccount({}, { email: "jesse@example.com", storedEmail: "old@example.com" })).toBe("jesse@example.com");
-	expect(signedInAccount({}, { storedEmail: "old@example.com" })).toBe("old@example.com");
-	expect(signedInAccount({ storedEmail: "row@example.com" }, undefined)).toBe("row@example.com");
-	expect(signedInAccount({ storedEmail: " " }, { email: "" })).toBeNull();
-	expect(signedInAccount({}, undefined)).toBeNull();
+	const oauth = { activeSource: "oauth" };
+	expect(signedInAccount(oauth, { email: "jesse@example.com", storedEmail: "old@example.com" })).toBe(
+		"jesse@example.com",
+	);
+	expect(signedInAccount(oauth, { storedEmail: "old@example.com" })).toBe("old@example.com");
+	expect(signedInAccount({ ...oauth, storedEmail: "row@example.com" }, undefined)).toBe("row@example.com");
+	expect(signedInAccount({ ...oauth, storedEmail: " " }, { email: "" })).toBeNull();
+	expect(signedInAccount(oauth, undefined)).toBeNull();
+});
+
+it("names the account without the padding around it", () => {
+	expect(signedInAccount({ activeSource: "oauth" }, { email: "  jesse@example.com " })).toBe("jesse@example.com");
+});
+
+// Only a provider signed in with an account names one: a key that is in use
+// leaves a stored sign-in's email behind unnamed.
+it("names no account for a provider whose key is in use, even with a stored sign-in", () => {
+	expect(
+		signedInAccount({ activeSource: "store", storedEmail: "old@example.com" }, { storedEmail: "old@example.com" }),
+	).toBeNull();
 });
