@@ -578,6 +578,22 @@ func (h *ProviderRegistry) Get() *registry.Registry {
 	return h.snapshot()
 }
 
+// RetainedUserConfig pairs the failed-load state with the usable registry's
+// source bytes under one lock. A retained registry with nil bytes loaded no
+// user file, so a child must use the implicit instance set.
+func (h *ProviderRegistry) RetainedUserConfig() (string, []byte, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.loadErr == nil {
+		return "", nil, false
+	}
+	if h.current == nil {
+		return "", nil, true
+	}
+	path, raw := h.current.UserConfigSnapshot()
+	return path, raw, true
+}
+
 // BeginLiveFetchReg atomically pairs instance's fetch token with the
 // registry snapshot the fetch must run against AND the endpoint
 // identity that fetch queried: the client is built from the returned

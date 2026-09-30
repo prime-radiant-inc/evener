@@ -1,5 +1,10 @@
 import type { AnyNotification, ItemModel, Thread, TurnModel } from "@evener/appwire-client";
-import { applyNotification, hydrateThread, WarningCodeContextBudget } from "@evener/appwire-client";
+import {
+  applyNotification,
+  hydrateThread,
+  WarningCodeContextBudget,
+  WarningCodeMCPReconnected,
+} from "@evener/appwire-client";
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { ignoringTurn, itemRendererFor } from "../types";
@@ -242,4 +247,16 @@ test("an actionable (uncoded) warning keeps the attention-chip rendering", () =>
   expect(screen.getByText("Provider")).toBeTruthy();
   expect(screen.getByText("provider degraded")).toBeTruthy();
   expect(screen.queryByTestId("warning-quiet-line")).toBeNull();
+});
+
+test("MCP recovery renders with the informational treatment", () => {
+  render(
+    <WarningItem
+      item={item({ text: "connection-1", warning: { code: WarningCodeMCPReconnected } })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("warning-quiet-line")).toBeTruthy();
+  expect(screen.queryByTestId("warning-item")).toBeNull();
 });
