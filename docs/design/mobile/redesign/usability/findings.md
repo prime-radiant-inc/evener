@@ -107,7 +107,7 @@ Three fresh participants (Editor, Commuter, Operator) on the tasks round 2 chang
 | 3 | 2 | The review sheet pre-selected a verdict. | T2b. | Nothing is chosen for you; Send stays disabled until you choose. |
 | 4 | 2 | The "Changed" marker sat on a heading, reading as part of the title. | T2b. | The blue rule alone marks a change. |
 | 5 | 2 | Edge-swipe back inside the plugin picker (a sheet over the launch sheet) did nothing. | Operator, T4. | Edge-swipe back closes the top stacked sheet; one swipe can no longer go back twice. |
-| 6 | 2 | "Last used" didn't say what it would set; effort wasn't explained. | Operator, T4. | "Same as last time", a line saying what it sets (later removed in phase 2, when the rows beneath were found to say the same), and "How long it thinks before acting" (recipes were later removed, 2026-09-29). |
+| 6 | 2 | "Last used" didn't say what it would set; effort wasn't explained. | Operator, T4. | "Same as last time" (recipes were later removed, 2026-09-29), a line saying what it sets (later removed in phase 2, when the rows beneath were found to say the same), and "How long it thinks before acting". |
 | 7 | 2 | Sign-in copy promised a page with the code filled in. | Operator, T7. | The hub's device flow sends only a page URL and a code, so the app copies the code on the way and says so. |
 | 8 | 2 | The host's "Update host" button had nothing real behind it. | Operator, T13, checked against the hub: a protocol-compatible host attaches on its own build (`cmd/evener-hub/internal/sshconn/manager.go`), and the web offers no update action. | Removed; a note says sessions keep working. |
 
