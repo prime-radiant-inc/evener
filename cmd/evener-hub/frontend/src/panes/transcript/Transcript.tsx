@@ -95,7 +95,10 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
   // rejections are best-effort, like the live pane's near-top trigger) and the
   // reporting one to the row, so the row's own geometry fill and its Retry
   // still surface a failure inline.
-  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
+  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
+    ref,
+    paneId,
+  );
   const listRef = useRef<VirtualListHandle>(null);
   const announcementSequence = useRef(0);
   const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
@@ -131,6 +134,7 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
     model,
     listRef,
     loadOlder,
+    cancelOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
     renderedRowCount: rows.length,
