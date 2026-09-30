@@ -151,11 +151,6 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 	// An announcement of a refreshed model list arrived while a load or a
 	// start was out (refreshModels), to be read once it settles.
 	let refreshAfterSettle = false;
-	function refreshIfAnnounced() {
-		if (!refreshAfterSettle) return;
-		refreshAfterSettle = false;
-		void store.getState().refreshModels();
-	}
 	let creationRequested = false;
 	let saving = false;
 	let lastSaved = "";
@@ -222,6 +217,13 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			unconfirmedContent = draftContent();
 			saveDraft();
 		} else store.setState(listed);
+	}
+	/** Reads the model list again when a refresh was announced while a load or
+	 * a start was out (refreshAfterSettle). */
+	function refreshIfAnnounced() {
+		if (!refreshAfterSettle) return;
+		refreshAfterSettle = false;
+		void store.getState().refreshModels();
 	}
 	const store = createStore<Form>((set, get) => ({
 		storageLoaded: !storage,
