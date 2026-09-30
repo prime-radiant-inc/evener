@@ -412,7 +412,29 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	if controller != nil {
 		controller.mu.Unlock()
 	}
-	// Cold badge reads never open descendant job/watch journals.
+	// Receiver watches can be held by any physical descendant source.
+	sourceOwners := map[string]bool{read.rootID: true}
+	if controller != nil {
+		controller.mu.Lock()
+	}
+	for _, row := range read.state() {
+		if row != nil {
+			sourceOwners[row.Descriptor.ChildSessionID] = true
+		}
+	}
+	if controller != nil {
+		controller.mu.Unlock()
+	}
+	var err error
+	result.RefreshPending, err = read.refreshWarmSources(ctx, sourceOwners)
+	if err != nil {
+		return result, err
+	}
+	result.Context.Epoch = read.index.epoch
+	if controller == nil && !read.index.delegateComplete {
+		result.Delegates = appwire.SessionActivityCounts{}
+	}
+	// Cold sources have no complete authority to catch up from.
 	result.Jobs.Known = true
 	for owner := range owners {
 		index := read.index.jobs[owner]
@@ -438,18 +460,6 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	// Receiver watches may be physically held by a descendant; their complete
 	// counts require the same shared-root watch index used by the collection.
 	result.Watches = appwire.SessionActivityCounts{Known: true}
-	sourceOwners := map[string]bool{read.rootID: true}
-	if controller != nil {
-		controller.mu.Lock()
-	}
-	for _, row := range read.state() {
-		if row != nil {
-			sourceOwners[row.Descriptor.ChildSessionID] = true
-		}
-	}
-	if controller != nil {
-		controller.mu.Unlock()
-	}
 	for owner := range sourceOwners {
 		source := read.index.jobs[owner]
 		if source == nil || !source.Complete || source.Version != read.index.revision.Load() {

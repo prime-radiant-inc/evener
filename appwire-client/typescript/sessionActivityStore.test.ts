@@ -436,6 +436,80 @@ test("observed unknown counts refresh after bounded collection progress without 
   expect(callsTo(client, "evener/thread/activity/read")).toBe(3);
 });
 
+test("summary-only warm recovery polls typed demand without collection scans and stops on release", async () => {
+  const client = activityClient();
+  let recovering = true;
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    refreshPending: recovering,
+    jobs: { known: !recovering, total: recovering ? 0 : 6, active: recovering ? 0 : 2, failed: 1, completed: 3 },
+  }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  expect(store.getSnapshot().summaryState.pending).toBe(true);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  recovering = false;
+  await vi.advanceTimersByTimeAsync(100);
+  expect(store.getSnapshot().summary?.jobs).toMatchObject({ known: true, active: 2, total: 6 });
+  expect(store.getSnapshot().summaryState.pending).toBe(false);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(3);
+  recovering = true;
+  await store.refresh("summary");
+  store.dispose();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(4);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
+  expect(callsTo(client, "evener/thread/watches/list")).toBe(0);
+});
+
+test("automatic warm summary failure revokes count trust but preserves context and collection rows", async () => {
+  const client = activityClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  await store.load("jobs");
+  const rows = store.getSnapshot().jobs.rows;
+  const context = store.getSnapshot().context;
+  client.on("evener/thread/activity/read", () => {
+    throw new WireError("source unavailable", -32003, {
+      evenerErrorInfo: "actionUnavailable",
+      retryDisposition: "automatic",
+    });
+  });
+  await store.refresh("summary");
+  expect(store.getSnapshot().summary).toBeNull();
+  expect(store.getSnapshot().context).toEqual(context);
+  expect(store.getSnapshot().jobs.rows).toBe(rows);
+  expect(store.getSnapshot().summaryState.permanent).toBe(false);
+  client.on("evener/thread/activity/read", () => summaryFixture());
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(store.getSnapshot().summary?.jobs.known).toBe(true);
+});
+
+test("warm summary polling pauses offline and resumes through the existing ready owner", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", () => ({ ...summaryFixture(), refreshPending: true }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  client.emitStateChange("reconnecting");
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(1);
+  client.on("evener/thread/activity/read", () => summaryFixture());
+  client.emitReady();
+  await activityState(
+    store,
+    () => callsTo(client, "evener/thread/activity/read") === 2 && !store.getSnapshot().summaryState.pending,
+  );
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
+  expect(callsTo(client, "evener/thread/watches/list")).toBe(0);
+});
+
 test("alias resync fences delayed pre-clear summary and collection replies", async () => {
   const client = activityClient();
   const oldSummary = deferred<SessionActivitySummary>(),
@@ -679,7 +753,7 @@ test("alias resync rearms demanded reads after the former target became unavaila
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(0);
 });
 
-test("automatic source failures retain summary and rows, then use the paced retry owner", async () => {
+test("automatic source failures revoke summary trust and retain rows with paced retry", async () => {
   const client = activityClient(),
     store = owner(client);
   store.start();
@@ -698,7 +772,7 @@ test("automatic source failures retain summary and rows, then use the paced retr
   await Promise.all([store.refresh("summary"), store.refresh("jobs")]);
   expect(store.getSnapshot().summaryState).toMatchObject({ permanent: false, unavailable: false, error });
   expect(store.getSnapshot().jobs).toMatchObject({ permanent: false, unavailable: false, error });
-  expect(store.getSnapshot().summary?.jobs.total).toBe(201);
+  expect(store.getSnapshot().summary).toBeNull();
   expect(store.getSnapshot().jobs.rows[0]?.jobId).toBe("shell-1");
   await vi.advanceTimersByTimeAsync(999);
   expect(callsTo(client, "evener/thread/activity/read")).toBe(2);

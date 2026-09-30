@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,8 +184,16 @@ func TestSessionActivityUnavailableBranchInvalidatesWarmCounts(t *testing.T) {
 				t.Fatalf("warm source failure was not isolated: %+v error=%v", page, err)
 			}
 			summary, err := s.ActivitySummary(t.Context(), appwire.SessionActivityReadParams{Ref: params.Ref, Scope: params.Scope})
-			if err != nil || summary.Jobs.Known || summary.Watches.Known {
+			if summary.Jobs.Known || summary.Watches.Known {
 				t.Fatalf("source failure left trusted cached counts: %+v error=%v", summary, err)
+			}
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("warm recovery lost source failure: %v", err)
+			}
+			data, ok := appwire.ErrorDataOf(wire.Data)
+			if !ok || (data.RetryDisposition == appwire.RetryDispositionAutomatic) != (failure == "stat") {
+				t.Fatalf("source failure retry disposition: %+v", wire)
 			}
 		})
 	}

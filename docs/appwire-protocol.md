@@ -2250,6 +2250,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `refreshPending` | `bool` | yes |  |
 | `context` | `appwire.SessionActivityContext` |  |  |
 | `scope` | `appwire.SessionActivityScope` |  |  |
 | `delegates` | `appwire.SessionActivityCounts` |  |  |

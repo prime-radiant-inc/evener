@@ -170,6 +170,7 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 	}
 	if info == nil {
 		index.Complete = true
+		index.Established = true
 		index.Version = version
 		return true, nil
 	}
@@ -283,11 +284,51 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 	}
 
 	index.Complete = index.PendingComplete
+	index.Established = index.Established || index.Complete
 	index.Version = version
 	index.Pending = nil
 	index.PendingEnds = nil
 	index.PendingPosition = 0
 	return index.Complete, nil
+}
+
+// Summary demand catches up only sources whose complete authority was already
+// established. Source replacement retires that eligibility with the index.
+func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners map[string]bool) (bool, error) {
+	ordered := make([]string, 0, len(owners))
+	for owner := range owners {
+		ordered = append(ordered, owner)
+	}
+	sort.Strings(ordered)
+	// Start after the previous admitted source so a growing journal cannot
+	// consume every summary budget while another established source waits.
+	start := sort.SearchStrings(ordered, read.index.summaryOwner)
+	if start < len(ordered) && ordered[start] == read.index.summaryOwner {
+		start++
+	}
+	ordered = append(ordered[start:], ordered[:start]...)
+	pending := false
+	for _, owner := range ordered {
+		source := read.index.jobs[owner]
+		if source == nil || !source.Established || source.Complete && source.Version == read.index.revision.Load() {
+			continue
+		}
+		if read.budget == 0 || read.bytes <= 128 {
+			pending = true
+			continue
+		}
+		read.index.summaryOwner = owner
+		complete, err := read.advanceJobs(ctx, owner)
+		if err != nil {
+			var wire appwire.WireError
+			if errors.As(err, &wire) && read.context.Epoch != read.index.epoch {
+				return false, nil
+			}
+			return false, err
+		}
+		pending = pending || !complete
+	}
+	return pending, nil
 }
 
 func (read *sessionActivityRead) acceptJobPage(path string, index *sessionActivityJobIndex, cursor jobstore.PageCursor, events []jobstore.Event, complete bool) error {

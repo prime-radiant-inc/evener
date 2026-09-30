@@ -321,13 +321,13 @@ export class SessionActivityStore {
             summary,
             summaryState: {
               ...this.state.summaryState,
-              pending: !summary.context.ancestryKnown,
+              pending: !summary.context.ancestryKnown || summary.refreshPending === true,
               error: null,
               unavailable: false,
               permanent: false,
             },
           });
-          if (!summary.context.ancestryKnown) this.schedule(resource, 100);
+          if (!summary.context.ancestryKnown || summary.refreshPending) this.schedule(resource, 100);
         } else {
           const page = result as ActivityPage;
           if (!root && (page.context.epoch !== read.epoch || page.context.sessionId !== read.sessionId)) {
@@ -399,6 +399,7 @@ export class SessionActivityStore {
         read.pageQueued = false;
         read.failures += 1;
         const permanent = permanentError(error);
+        if (resource === "summary") this.publish({ summary: null });
         this.change(resource, { error, permanent, unavailable: unavailableError(error), pending: false });
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
