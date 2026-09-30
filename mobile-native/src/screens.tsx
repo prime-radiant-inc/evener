@@ -325,6 +325,7 @@ export function useFocusAfterModal(
 /** The sheet or screen each context chip and ⋯ menu item opens. */
 const SESSION_DESTINATIONS = {
 	subagents: "subagents",
+	activity: "subagents",
 	tasks: "tasks",
 	notes: "notes",
 	goal: "session",
@@ -1121,7 +1122,7 @@ export function ConversationScreen({
 			case "files":
 				openFiles();
 				return;
-			case "subagents":
+			case "activity":
 			case "tasks":
 			case "notes":
 			case "info":
@@ -2398,8 +2399,14 @@ export function ConversationScreen({
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();
 			else if (errorAction === "signIn")
-				// The error doesn't name the provider, so the Hub opens at Providers.
-				navigation.navigate("Hub", { screen: "Providers", params: { hubId: route.params.hubId }, initial: false });
+				// The error doesn't name the provider, so the Hub opens at Providers,
+				// the one already in its stack if it has one (openNotice says why).
+				navigation.navigate("Hub", {
+					screen: "Providers",
+					params: { hubId: route.params.hubId },
+					initial: false,
+					pop: true,
+				});
 			else void retryFailedTurn();
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
