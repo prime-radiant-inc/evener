@@ -756,16 +756,30 @@ function removeThreadModel(ref: string): void {
   // The shell-only cache metadata leaves with the model: the fields' whole
   // meaning is "this ref's CURRENT model is an unverified cached shell", so a
   // final release must not leave a ref named with no model behind (Tasks 6/7
-  // read them). The lease (cacheLeases) is deliberately different — it names
-  // the durable epoch this tab's arming captured, which Task 10's clear
-  // suppression needs across the release.
+  // read them). The clear's suppression and the lease that armed it end with
+  // the same final release (spec, "The clear-cached-sessions setting"):
+  // premature suppression decays with the final release of each open ref,
+  // so the next open of the same ref starts with no lease and no
+  // suppression. The guard covers all four fields for the same reason: a
+  // release must not skip the removal because the shell metadata alone is
+  // already gone.
   threadsStore.setState((s) => {
-    if (!s.cacheShellRefs.has(ref) && !s.cacheAnchors.has(ref)) return s;
+    if (
+      !s.cacheShellRefs.has(ref) &&
+      !s.cacheAnchors.has(ref) &&
+      !s.cacheSuppressed.has(ref) &&
+      !s.cacheLeases.has(ref)
+    )
+      return s;
     const cacheShellRefs = new Set(s.cacheShellRefs);
     cacheShellRefs.delete(ref);
     const cacheAnchors = new Map(s.cacheAnchors);
     cacheAnchors.delete(ref);
-    return { cacheShellRefs, cacheAnchors };
+    const cacheSuppressed = new Set(s.cacheSuppressed);
+    cacheSuppressed.delete(ref);
+    const cacheLeases = new Map(s.cacheLeases);
+    cacheLeases.delete(ref);
+    return { cacheShellRefs, cacheAnchors, cacheSuppressed, cacheLeases };
   });
   threadsStore.setState((s) => {
     if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
@@ -981,6 +995,12 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   // clears the oversize memo (spec: "replacement is the only mid-lifetime
   // shrink"; a merge only adds items).
   clearOversizeMemo(targetRef);
+  // The session-content clear's cache hook: the cleared model is a bare
+  // hydrate with no history, so it would never match the write gates;
+  // deleting the record in the same step is what keeps a cleared session's
+  // next reload from painting pre-clear content from the shell.
+  cancelCacheWrite(targetRef);
+  void currentSessionCache().deleteRecords([targetRef]);
   // A clear response is a newer authoritative cut than any thread/read that
   // was already in flight for this ref. Retire those reads before publishing
   // the replacement so a late pre-clear snapshot cannot overwrite it.
@@ -1076,15 +1096,29 @@ function dropUnpinnedModel(ref: string): void {
   // it (see putThreadModel/removeThreadModel — the membership paths).
   const dropped = threadsStore.getState().threads.get(ref);
   if (dropped) removeThreadModelIndex(threadsIndex, dropped);
+  // The clear's suppression and its lease end with this same final release
+  // (removeThreadModel's own rule): premature suppression decays here too,
+  // so a ref the pinned drain retires never stays suppressed with no model.
   threadsStore.setState((state) => {
-    if (!state.threads.has(ref) && !state.frameTimes.has(ref) && !state.hydrations.has(ref)) return state;
+    if (
+      !state.threads.has(ref) &&
+      !state.frameTimes.has(ref) &&
+      !state.hydrations.has(ref) &&
+      !state.cacheSuppressed.has(ref) &&
+      !state.cacheLeases.has(ref)
+    )
+      return state;
     const threads = new Map(state.threads);
     threads.delete(ref);
     const frameTimes = new Map(state.frameTimes);
     frameTimes.delete(ref);
     const hydrations = new Map(state.hydrations);
     hydrations.delete(ref);
-    return { threads, frameTimes, hydrations };
+    const cacheSuppressed = new Set(state.cacheSuppressed);
+    cacheSuppressed.delete(ref);
+    const cacheLeases = new Map(state.cacheLeases);
+    cacheLeases.delete(ref);
+    return { threads, frameTimes, hydrations, cacheSuppressed, cacheLeases };
   });
 }
 
@@ -3161,7 +3195,8 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   // The first authoritative publish ends the cached-shell window: the flag
   // and the gap rule's anchor live only from the shell's arming until this
   // read's publish (spec, "The load seam"); the lease (cacheLeases) outlives
-  // them for the clear's suppression (Task 10).
+  // the window — until the ref's final release — for the clear's suppression
+  // (Task 10).
   threadsStore.setState((s) => {
     if (!s.cacheShellRefs.has(ref) && !s.cacheAnchors.has(ref)) return s;
     const cacheShellRefs = new Set(s.cacheShellRefs);
@@ -5362,6 +5397,38 @@ export function markCacheSessionsDeleted(refs: string[]): void {
   for (const ref of refs) cancelCacheWrite(ref);
   void currentSessionCache().deleteRecords(refs);
   broadcastCacheMessage({ version: 1, sourceId: cacheSourceId, kind: "deletion", refs });
+}
+
+/** Clear cached session content (spec, "The clear-cached-sessions setting").
+ * Synchronous in-memory step first — the only order that works, since
+ * in-memory timer state cannot commit transactionally — then one
+ * read-write transaction. The broadcast is commit-gated: a sibling never
+ * arms suppression for a clear that did not happen. A clear that never
+ * reaches a definite commit reverts its in-memory effects, so open refs
+ * resume caching at their next publication. */
+export async function clearCachedSessions(): Promise<{ committed: boolean }> {
+  const prior = tabCacheEpoch;
+  tabCacheEpoch = (prior ?? 0) + 1;
+  const leases = threadsStore.getState().cacheLeases;
+  threadsStore.setState((s) => {
+    const suppressed = new Set(s.cacheSuppressed);
+    for (const ref of leases.keys()) suppressed.add(ref); // every open lease predates this clear
+    return { cacheSuppressed: suppressed };
+  });
+  for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
+  const result = await currentSessionCache().clear();
+  if (!result.committed) {
+    tabCacheEpoch = prior; // revert unless a definite commit is observed
+    threadsStore.setState((s) => {
+      const suppressed = new Set(s.cacheSuppressed);
+      for (const ref of leases.keys()) suppressed.delete(ref);
+      return { cacheSuppressed: suppressed };
+    });
+    return { committed: false };
+  }
+  tabCacheEpoch = result.epoch;
+  broadcastCacheMessage({ version: 1, sourceId: cacheSourceId, kind: "clear", epoch: result.epoch });
+  return { committed: true };
 }
 
 // The live gap rule (spec, "The two serving paths, the live gap, and its

@@ -16,6 +16,7 @@ import type {
   SnapshotIdentity,
   Thread,
   ThreadCapabilities,
+  ThreadClearResponse,
   ThreadModel,
   ThreadReadResponse,
   ThreadTurnsListResponse,
@@ -34,6 +35,7 @@ import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "./pro
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
 import {
+  clearCachedSessions,
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
   resetThreadsStoreForTests,
@@ -818,7 +820,7 @@ describe("cached shell load seam", () => {
     expect(threadsStore.getState().threads.has("local:thr_1")).toBe(false); // the model is gone
     expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false); // and no unverified shell remains named
     expect(threadsStore.getState().cacheAnchors.has("local:thr_1")).toBe(false); // the anchor went with it
-    expect(threadsStore.getState().cacheLeases.has("local:thr_1")).toBe(true); // the lease is Task 10's, not the shell window's
+    expect(threadsStore.getState().cacheLeases.has("local:thr_1")).toBe(false); // Task 10: the lease ends with the same final release, so the clear's suppression decays with it
     if (resolveRead === undefined) throw new Error("the read must still be parked at release");
     resolveRead(readResponse("local:thr_1"));
     await pending; // the refused publish settles the owner without resurrecting anything
@@ -1951,6 +1953,232 @@ describe("deletion", () => {
       markCacheSessionsDeleted(["local:quiet"]);
       expect(await cacheRecord("local:quiet")).toBeUndefined(); // local deletion intact, no channel needed
       expect(threadsStore.getState().deletedRefs.has("local:quiet")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// The clear bed (Task 10; spec, "The clear-cached-sessions setting"): the
+// settings action's parked and faulted adapters, and the thread/clear driver.
+
+// clearResponse is threads.test.ts's own clear fixture: the durable clear's
+// response snapshot carrying the applied receipt the dispatcher settles its
+// outbox row with.
+function clearResponse(params: { clientMutationId: string }, thread: Thread): ThreadClearResponse {
+  return {
+    thread,
+    ref: thread.evener.ref,
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: thread.id,
+      instanceId: thread.evener.instanceId,
+      projectionState: "reflected",
+    },
+  };
+}
+
+// driveThreadClear drives the store's own clearThread — the same dispatch
+// path threads.test.ts's applyClearResponse coverage uses (the durable outbox
+// row, the instance fence, the applied receipt), never a second mechanism.
+async function driveThreadClear(ref: string, fake: FakeClient): Promise<void> {
+  fake.on("thread/clear", (params) => clearResponse(params, testThread(ref, { turns: [] })));
+  await threadsStore.getState().clearThread(ref);
+}
+
+// The held-clear adapter: the singleton seam answers clear() only when the
+// test releases it. The park is at the adapter seam, not a held transaction:
+// holdCachePutTransaction parks a committed transaction's complete event, so
+// the data would still land while a clear sat parked on it — the ordering
+// test needs the clear's transaction to not have run at all, so it can
+// witness the in-memory step's effects against storage the clear has not
+// touched. Every other operation passes through to the base class over the
+// same default database the seeded record lives in.
+class HeldClearAdapter extends SessionCacheIndexedDB {
+  readonly #open: Promise<void>;
+
+  constructor(open: Promise<void>) {
+    super();
+    this.#open = open;
+  }
+
+  override clear(): Promise<{ committed: boolean; epoch: number }> {
+    return this.#open.then(() => super.clear());
+  }
+}
+
+let releaseHeldClearFn: (() => void) | undefined;
+
+function installHeldClearAdapter(): void {
+  releaseHeldClearFn = undefined;
+  const opened = new Promise<void>((resolve) => {
+    releaseHeldClearFn = resolve;
+  });
+  installCacheAdapter(new HeldClearAdapter(opened));
+}
+
+function releaseHeldClear(): void {
+  const release = releaseHeldClearFn;
+  releaseHeldClearFn = undefined;
+  release?.();
+}
+
+// The faulted-clear adapter: beforeCommit("clear") throws, so the clear's
+// transaction aborts and reads as { committed: false } — the honest no-op
+// every tab must revert from (installFaultedDeleteAdapter's pattern).
+function installFaultedClearAdapter(): void {
+  installCacheAdapter(
+    new SessionCacheIndexedDB({
+      beforeCommit: (operation) => {
+        if (operation === "clear") {
+          throw new Error("clear storage fault");
+        }
+      },
+    }),
+  );
+}
+
+describe("the clear", () => {
+  it("14b ordering: in-memory epoch and timer cancellation happen before the awaited transaction", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // The suppression the clear arms is per open lease, and a lease is what
+      // a pane's arming lookup captured on a cache hit — a seeded record is
+      // what gives this pane one (the missed-message suite's own premise).
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, "local:held");
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 40 } }));
+      await threadsStore.getState().ensureThread("local:held");
+      await resolveEverything(fake);
+      emitHistoryUpdated("local:held", { fold: "turn_k" }); // a pending timer exists
+      installHeldClearAdapter(); // the singleton seam answers clear() only when the test releases it
+      const clearing = clearCachedSessions();
+      // The in-memory step already ran while the clear's transaction never
+      // started: the lease's suppression is armed ahead of any commit.
+      expect(threadsStore.getState().cacheSuppressed.has("local:held")).toBe(true);
+      await vi.advanceTimersByTimeAsync(6_000); // the timer would have fired long ago
+      expect(await cacheRecord("local:held")).toBeDefined(); // the write died by timer cancellation + suppression
+      releaseHeldClear(); // the transaction commits
+      expect(await clearing).toEqual({ committed: true });
+      expect(await cacheRecord("local:held")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("14b revert: a clear that never reaches a definite commit sends no message and reverts, so open refs resume caching", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { posted } = installTestCacheChannel();
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:resume");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await cacheRecord("local:resume")).toBeDefined();
+      installFaultedClearAdapter(); // beforeCommit("clear") throws: the honest no-op
+      expect(await clearCachedSessions()).toEqual({ committed: false });
+      expect(posted).toEqual([]); // commit-gated: no message for a clear that did not happen
+      emitHistoryUpdated("local:resume", { fold: "turn_m" }); // suppression disarmed: caching resumes
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:resume")).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("14c lifecycle: an open pane's post-clear notification write is refused until its final release, and a re-open caches again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // The suppression the clear arms is per open lease, so the pane opens
+      // against a seeded record and holds the lease its arming captured.
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, "local:lc");
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 40 } }));
+      await threadsStore.getState().ensureThread("local:lc");
+      await resolveEverything(fake);
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      emitHistoryUpdated("local:lc", { fold: "turn_n" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:lc")).toBeUndefined(); // suppressed through the open lease
+      threadsStore.getState().releaseThread("local:lc"); // final release ends the suppression
+      // The flush side (Review Focus 4): the release flush runs before the
+      // removal, so it still sees the suppression armed — a suppressed ref's
+      // release flush writes nothing.
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:lc")).toBeUndefined(); // the release flush wrote nothing
+      await threadsStore.getState().ensureThread("local:lc"); // a deliberate re-open: fresh lease
+      await resolveEverything(fake);
+      emitHistoryUpdated("local:lc", { fold: "turn_o" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:lc")).toBeDefined(); // the feature working, not the remedy failing
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("14c sibling: a ref closed before the clear and re-opened after its commit is a fresh lease and caches again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:fresh");
+      await resolveEverything(fake);
+      threadsStore.getState().releaseThread("local:fresh"); // closed BEFORE the clear: the lease is gone
+      expect(await clearCachedSessions()).toEqual({ committed: true }); // the durable epoch is now 1
+      await threadsStore.getState().ensureThread("local:fresh"); // re-opened AFTER the commit: a fresh lease by construction
+      await resolveEverything(fake);
+      emitHistoryUpdated("local:fresh", { fold: "turn_f" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:fresh")).toBeDefined(); // the feature working, not the remedy failing
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("14d the missed message: the delayed clear delivery changes nothing after the backstop already armed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { peer } = installTestCacheChannel();
+      // The lease the backstop's suppression arm needs: the pane's arming
+      // lookup captured the durable epoch, so a seeded record opens it (the
+      // missed-message backstop suite's own premise).
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, "local:mm");
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 40 } }));
+      await threadsStore.getState().ensureThread("local:mm");
+      await resolveEverything(fake);
+      await adapter.deleteRecords(["local:mm"]); // observe only this tab's writes from here
+      await bumpDurableCacheEpoch(3); // a sibling's clear committed; this tab never got the message
+      emitHistoryUpdated("local:mm", { fold: "turn_b" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:mm")).toBeUndefined(); // the aborted write armed the suppression itself
+      expect(threadsStore.getState().cacheSuppressed.has("local:mm")).toBe(true);
+      peer.post({ version: 1, sourceId: "other-tab", kind: "clear", epoch: 3 }); // the message finally arrives
+      await settleProjectionWorkForTests();
+      expect(threadsStore.getState().cacheSuppressed.has("local:mm")).toBe(true); // idempotent: nothing double-armed, nothing disarmed
+      expect(await cacheRecord("local:mm")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the session-content clear (applyClearResponse) deletes the ref's record in the same step", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:cc");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await cacheRecord("local:cc")).toBeDefined();
+      await driveThreadClear("local:cc", fake); // the thread/clear driver threads.test.ts's own coverage uses
+      expect(await cacheRecord("local:cc")).toBeUndefined(); // gone in the same step: no pre-clear shell on the next reload
+      expect(threadsStore.getState().threads.get("local:cc")?.history).toBeUndefined(); // the model is the bare hydrate
     } finally {
       vi.useRealTimers();
     }
