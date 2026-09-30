@@ -1483,13 +1483,40 @@ describe("opening a session", () => {
 			await settle();
 			expect(opacity(tree)).toBe(0);
 			// A row between measures: the restore runs again, already as far as
-			// the list reaches, and the rows below are still estimates.
+			// the list reaches, so it neither moves the list nor shows it, since
+			// the rows below are still estimates.
+			flatListCalls.length = 0;
 			layOutRow(tree, 2, 9_700);
 			await settle();
+			expect(offsets()).toEqual([]);
 			expect(opacity(tree)).toBe(0);
 			layOutRow(tree, 3, 9_900);
 			await settle();
 			expect(opacity(tree)).toBe(1);
+		});
+
+		it("shows it after a second when the last row never measures", async () => {
+			savePosition("ref-open-clamped-cap", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped-cap"));
+			vi.useFakeTimers();
+			try {
+				const advance = async (ms: number) => {
+					await act(async () => {
+						await vi.advanceTimersByTimeAsync(ms);
+					});
+				};
+				layOutViewport(tree, 3_000);
+				layOutRow(tree, 1, 9_523);
+				await advance(0);
+				// The restore fell short and the rows below never measure.
+				expect(offsets().at(-1)).toBeLessThan(9_523);
+				await advance(998);
+				expect(opacity(tree)).toBe(0);
+				await advance(2);
+				expect(opacity(tree)).toBe(1);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 
