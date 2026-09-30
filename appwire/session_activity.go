@@ -106,6 +106,8 @@ type SessionDelegate struct {
 	Phase              string               `json:"phase"`
 	Status             string               `json:"status"`
 	Outcome            string               `json:"outcome,omitempty"`
+	Reason             string               `json:"reason,omitempty"`
+	Error              string               `json:"error,omitempty"`
 	Terminal           bool                 `json:"terminal"`
 	Resumable          bool                 `json:"resumable"`
 	NotResumableReason string               `json:"notResumableReason,omitempty"`
