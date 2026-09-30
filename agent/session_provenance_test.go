@@ -5,11 +5,13 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -128,6 +130,48 @@ func TestReplaceActiveProvenanceClearsCompletedProvenance(t *testing.T) {
 
 	if provenance.ContainsWatch(s.completedCausalProvenance(), "watch_A", "wg_1") {
 		t.Fatalf("completed provenance survived new input: %+v", s.completedCausalProvenance())
+	}
+}
+
+// TestAcceptSteeringCarrierInputClearsCompletedProvenance pins issue #185 item
+// 2: the steering carrier is the only accept*Input that did not reset
+// provenance at its start. Without the reset the previous turn's completed
+// provenance survives into the carrier turn, where subagent.followUpProvenance
+// (which unions completedCausalProvenance) can read the stale lineage.
+func TestAcceptSteeringCarrierInputClearsCompletedProvenance(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	defer sess.Close()
+
+	// A previous turn finished with completed provenance watch_A/wg_1.
+	sess.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
+	sess.finishActiveProvenance()
+	if !provenance.ContainsWatch(sess.completedCausalProvenance(), "watch_A", "wg_1") {
+		t.Fatal("test setup: completed provenance not seeded")
+	}
+
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "carrier-prov-1",
+		Input:            clientMutationInput("focus on the tests", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
+	}
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "carrier-prov-1", StableTurnID: turnID, SteeringCarrier: true}); err != nil {
+		t.Fatalf("acceptSteeringCarrierInput: %v", err)
+	}
+	if provenance.ContainsWatch(sess.completedCausalProvenance(), "watch_A", "wg_1") {
+		t.Fatalf("completed provenance survived carrier start: %+v", sess.completedCausalProvenance())
 	}
 }
 
