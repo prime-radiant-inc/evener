@@ -68,8 +68,9 @@ and end reasons remain useful, and retained watch history has a bounded lifetime
 
 ## Pagination and recovery
 
-Rows are ordered by creation time and stable identity. An opaque cursor fixes
-the initial membership boundary for a walk; new creations appear after a fresh
+Rows are ordered by creation time and stable identity. Equal logical job or watch
+IDs in different source sessions remain distinct throughout pagination. An opaque
+cursor fixes the initial membership boundary for a walk; new creations appear after a fresh
 root read even when timestamps tie or the clock moves backward. Status fields
 reflect the state read for each page, so a job can finish
 while its collection is being paged. This is not a transaction across the three

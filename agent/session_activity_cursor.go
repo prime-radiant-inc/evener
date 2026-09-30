@@ -25,15 +25,19 @@ const sessionActivityCacheRoots = 32
 const sessionActivityWalks = 128
 
 type sessionActivityKey struct {
-	At string
-	ID string
+	At              string
+	ID              string
+	SourceSessionID string
 }
 
 func (key sessionActivityKey) before(other sessionActivityKey) bool {
-	if key.At == other.At {
+	if key.At != other.At {
+		return key.At < other.At
+	}
+	if key.ID != other.ID {
 		return key.ID < other.ID
 	}
-	return key.At < other.At
+	return key.SourceSessionID < other.SourceSessionID
 }
 func sessionActivityCreationKey(at time.Time, id string) sessionActivityKey {
 	return sessionActivityKey{At: at.UTC().Format("2006-01-02T15:04:05.000000000Z"), ID: id}

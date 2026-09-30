@@ -207,7 +207,9 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 				if event.StartedAt != nil {
 					at = *event.StartedAt
 				}
-				index.JobKeys = insertSessionActivityKey(index.JobKeys, sessionActivityCreationKey(at, event.JobID))
+				creationKey := sessionActivityCreationKey(at, event.JobID)
+				creationKey.SourceSessionID = owner
+				index.JobKeys = insertSessionActivityKey(index.JobKeys, creationKey)
 			}
 		}
 		if event.Kind == jobstore.EventWatchRegistered && index.Watches[event.WatchID] != nil {
@@ -215,7 +217,9 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 			if _, exists := index.CreationOffsets[key]; !exists {
 				index.CreationOffsets[key] = index.PendingEnds[i]
 				index.Created[event.WatchID] = event.TS
-				index.WatchKeys = insertSessionActivityKey(index.WatchKeys, sessionActivityCreationKey(event.TS, event.WatchID))
+				creationKey := sessionActivityCreationKey(event.TS, event.WatchID)
+				creationKey.SourceSessionID = owner
+				index.WatchKeys = insertSessionActivityKey(index.WatchKeys, creationKey)
 			}
 			index.Configs[event.WatchID] = event.Watch.Config
 		}
