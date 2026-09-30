@@ -1571,12 +1571,13 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if !registry.ValidInstanceName(name) {
 		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
-	// The instance's credential is gone only once the removal has succeeded:
-	// a removal that fails after its cleanup puts the credential back, and a
+	// The instance's credential is gone only once the removal stands: a
+	// removal that fails after its cleanup puts the credential back, and a
 	// provider's rejection of it still stands (removeCredentials only voids
-	// the probes in flight).
+	// the probes in flight). A removal can stand and still return an error
+	// (removeAppliedError), when the credential could not be put back.
 	defer func() {
-		if err == nil {
+		if _, standing := errors.AsType[removeAppliedError](err); err == nil || standing {
 			c.auth.forgetCredentialRejection(name)
 		}
 	}()

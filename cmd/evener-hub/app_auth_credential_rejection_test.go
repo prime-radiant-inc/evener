@@ -612,3 +612,32 @@ func TestCredentialRejection_StatusIsOnlyA401Or403(t *testing.T) {
 		})
 	}
 }
+
+// A removal that stands although it returns an error (the credential is gone
+// and could not be put back) takes the rejection with the credential, as a
+// clean removal does. The registry stays unloadable after this failure, so
+// the record itself is what is asserted.
+func TestCredentialRejection_AStandingRemovalDropsIt(t *testing.T) {
+	f := newFlakyReloadFixture(t, "groq", func(load int) bool { return load >= 2 })
+	probe := f.ctl.auth.beginCredentialProbe("groq")
+	f.ctl.auth.settleCredentialProbe(probe, llm.ModelListing{}, llm.ErrorFromHTTPStatus("groq", 401, "bad key", nil, nil))
+	status, err := f.ctl.auth.Status(appwire.AuthStatusParams{Provider: "groq"})
+	if err != nil || status.Error == "" {
+		t.Fatalf("precondition: groq status = %+v (%v), want the 401 recorded", status, err)
+	}
+	// The put-back the rollback performs cannot land, so the removal stands.
+	f.ctl.auth.setCredential = func(string, string) error {
+		return errors.New("credentials.toml: write: read-only")
+	}
+
+	err = f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
+	if _, standing := errors.AsType[removeAppliedError](err); !standing {
+		t.Fatalf("precondition: Remove = %v, want a standing removal", err)
+	}
+	f.ctl.auth.rejections.mu.Lock()
+	_, kept := f.ctl.auth.rejections.byName["groq"]
+	f.ctl.auth.rejections.mu.Unlock()
+	if kept {
+		t.Fatal("the standing removal kept the rejection of the credential it deleted")
+	}
+}
