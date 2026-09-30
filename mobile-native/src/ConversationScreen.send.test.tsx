@@ -1266,6 +1266,31 @@ describe("opening a session", () => {
 		expect(opacity(tree)).toBe(1);
 	});
 
+	it("shows the start of an unread reply only once the restore to it has landed", async () => {
+		harness.kv.set(
+			"evener.reader-positions",
+			JSON.stringify({
+				"hub-1\u0000ref-open-unread": {
+					hubId: "hub-1",
+					sessionRef: "ref-open-unread",
+					itemKey: "u-turn_1",
+					withinItemOffset: 0,
+					touchedAt: 1,
+					turnsSeen: "turn_1",
+				},
+			}),
+		);
+		const { tree } = await mount(twoTurns("ref-open-unread"));
+		layOutViewport(tree);
+		await settle();
+		expect(opacity(tree)).toBe(0);
+		// turn_2's reply, row 3, finished since you last read to the end.
+		layOutRow(tree, 3, 9_523);
+		await settle();
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToOffset", args: { offset: 9_523, animated: false } });
+		expect(opacity(tree)).toBe(1);
+	});
+
 	it("shows the list at once when you touch it while it opens", async () => {
 		savePosition("ref-open-touch");
 		const { tree } = await mount(twoTurns("ref-open-touch"));
@@ -1292,6 +1317,35 @@ describe("opening a session", () => {
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(1);
 			});
+			expect(opacity(tree)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("gives a session the screen switches to its own full second to land", async () => {
+		savePosition("ref-open-first");
+		const { tree, route } = await mount(twoTurns("ref-open-first"));
+		const next = "ref-open-second";
+		otherThreads.set(next, twoTurns(next));
+		vi.useFakeTimers();
+		try {
+			layOutViewport(tree);
+			const advance = async (ms: number) => {
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(ms);
+				});
+			};
+			await advance(600);
+			expect(opacity(tree)).toBe(0);
+			const moved = { ...route, params: { ...route.params, ref: next } };
+			navigationState.state = { index: 0, routes: [moved] };
+			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			await advance(0);
+			// The first session's cap has 400ms left; the second's starts afresh.
+			await advance(999);
+			expect(opacity(tree)).toBe(0);
+			await advance(1);
 			expect(opacity(tree)).toBe(1);
 		} finally {
 			vi.useRealTimers();
