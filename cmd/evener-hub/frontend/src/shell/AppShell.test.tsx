@@ -74,20 +74,7 @@ const TREE_SESSION = {
   state: "idle",
   kind: "session",
   live: true,
-  children: [
-    {
-      row_id: "project:proj1:local:sub1",
-      ref: "local:sub1",
-      host_id: "local",
-      session_id: "sub1",
-      title: "Finished helper",
-      project: "prime-radiant",
-      state: "ended",
-      kind: "subagent",
-      live: false,
-      children: [],
-    },
-  ],
+  children: [],
 };
 const EMPTY_NAV_RESPONSE = {
   generation_id: "generation_test",

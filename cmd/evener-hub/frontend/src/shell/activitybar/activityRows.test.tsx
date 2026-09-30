@@ -1,9 +1,8 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { activityDelegate } from "../../stores/sessionActivityTestUtils";
 import { AgentRow } from "./activityRows";
 
-afterEach(cleanup);
 test("stable delegate row uses authoritative phase and lifecycle without fabricated rollup counts", () => {
   render(<AgentRow sub={activityDelegate({ lifecycle: "idle", phase: "waiting", status: "idle", terminal: false })} />);
   expect(screen.getByText("inspect")).toBeTruthy();

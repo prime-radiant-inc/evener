@@ -204,3 +204,26 @@ test("permanent refusal keeps useful rows without claiming ongoing recovery", as
   expect(screen.getByText("useful retained work")).toBeTruthy();
   expect(screen.queryByText("Activity is updating…")).toBeNull();
 });
+
+test("loaded subtree job output uses the supplied owner ref and raw logical job ID", async () => {
+  const client = activityClient(),
+    jobId = "job_02wMz5TxvEMoJEDTDGOTil_000000000123",
+    ownerRef = "source:opaque-owner";
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ ownerRef, jobId, description: "output target" })],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/jobs/output", () => ({ data: { tail: "supplied output tail", totalBytes: 20, retainedStart: 0 } }));
+  connectionStore.getState().connect(client);
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Hide details for output target" }));
+  fireEvent.click(screen.getByRole("button", { name: "Show details for output target" }));
+  expect(await screen.findByText("supplied output tail")).toBeTruthy();
+  expect(client.calls.find((call) => call.method === "evener/jobs/output")?.params).toEqual({
+    ref: ownerRef,
+    jobId,
+    maxBytes: 256,
+  });
+});

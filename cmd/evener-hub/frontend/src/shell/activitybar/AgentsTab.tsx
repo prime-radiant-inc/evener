@@ -1,11 +1,7 @@
 import { ActivityPageBoundary } from "./ActivityPageBoundary";
-// The Agents tab: the scope's subagents as drillable rows, read from the
-// paged subagents resource (lists and locations carry no children anymore -
-// this resource is the tree). Current subagents inline, the loaded inactive
-// ones behind a fold paged 20 at a time, and the wire's remainder behind a
-// REAL control: the resource pages, so "Load more" fetches the next page
-// instead of naming a number nobody can reach. Null resource is a loading
-// state, never "no subagents".
+// The selected session's typed delegates: current rows stay visible, while
+// inactive history opens through disclosure. Visible page boundaries add demand
+// to the shared owner without acquiring another reader or retry loop.
 
 import { activityNodeID, type SessionDelegate } from "@evener/appwire-client";
 import { useState } from "react";
@@ -75,6 +71,7 @@ export function AgentsTab({ scope }: { scope: ActivityScope }) {
       <ActivityPageBoundary
         resource="delegates"
         label="subagents"
+        rows={collection.rows}
         hasMore={collection.hasMore}
         loading={collection.loading}
         error={collection.error}
@@ -82,7 +79,9 @@ export function AgentsTab({ scope }: { scope: ActivityScope }) {
         enabled={foldOpen || inactive.length === 0}
         loadMore={loadMore}
       />
-      {collection.error ? <span className={CLASS.emptyNote}>Subagents are updating…</span> : null}
+      {collection.error && !collection.permanent ? (
+        <span className={CLASS.emptyNote}>Subagents are updating…</span>
+      ) : null}
     </div>
   );
 }

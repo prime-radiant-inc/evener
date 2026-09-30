@@ -39,6 +39,7 @@ import {
   activitySidebarStore,
   closeSessionActivityPanes,
   useActivitySidebarOpenFor,
+  useActivitySidebarStore,
 } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
@@ -118,14 +119,16 @@ export function SessionChrome({
   const [verbosityOpen, setVerbosityOpen] = useState(false);
   const toasts = useToasts();
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
-  const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
+  const tasksPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   // The Activity menu item's checked state is the sidebar open ON THIS
   // SESSION (the shared predicate hook); on mobile the item opens the Sheet
   // and is never "checked".
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
   const activityOpen = !isMobile && sidebarOpenHere;
+  const sidebarTab = useActivitySidebarStore((state) => state.tab);
+  const tasksOpen = tasksPaneOpen || (activityOpen && sidebarTab === "tasks");
   const notesOpen = useTopNotesExpanded(sessionRef);
-  const { snapshot: activitySnapshot } = useSessionActivity(discoverActivity || discoveryOnly ? sessionRef : null);
+  const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
   const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;

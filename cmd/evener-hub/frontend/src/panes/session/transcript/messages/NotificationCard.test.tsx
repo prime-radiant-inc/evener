@@ -1119,6 +1119,7 @@ test("clicking the head's delegate trigger does not toggle the disclosure", () =
       config={toolsConfig}
       surface="readOnly"
       disclosureScope="nc:tools"
+      sessionRef="local:s"
       entities={notificationEntities()}
     >
       <NotificationCard

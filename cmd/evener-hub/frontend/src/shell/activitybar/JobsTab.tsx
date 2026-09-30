@@ -45,13 +45,14 @@ export function JobsTab({ scope }: { scope: ActivityScope }) {
       <ActivityPageBoundary
         resource="jobs"
         label="jobs"
+        rows={collection.rows}
         hasMore={collection.hasMore}
         loading={collection.loading}
         error={collection.error}
         permanent={collection.permanent}
         loadMore={loadMore}
       />
-      {collection.error ? <span className={CLASS.emptyNote}>Jobs are updating…</span> : null}
+      {collection.error && !collection.permanent ? <span className={CLASS.emptyNote}>Jobs are updating…</span> : null}
     </div>
   );
 }

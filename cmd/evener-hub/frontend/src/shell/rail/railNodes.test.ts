@@ -770,6 +770,6 @@ test("compact receiver counts include all watches without loading descendant det
   const root = session({ ref: "parent", watch_count: 5, armed_watch_count: 2, children: [child] });
   expect(activeWatchCount(root)).toBe(2);
   expect(activeWatchCount(child)).toBe(40);
-  expect(watchCountLabel(2, 5, 0)).toBe("5 watches · 2 armed");
-  expect(watchCountLabel(40, 40, 0)).toBe("40 watches");
+  expect(watchCountLabel(2, 5)).toBe("5 watches · 2 armed");
+  expect(watchCountLabel(40, 40)).toBe("40 watches");
 });

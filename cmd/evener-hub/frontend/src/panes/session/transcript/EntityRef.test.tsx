@@ -72,7 +72,7 @@ function jobView(
     stale: state.stale ?? false,
     ended: state.ended ?? false,
   });
-  const view = findEntityView(entities, "job", id, "local:s");
+  const view = findEntityView(entities, "job", id, job.ownerRef);
   if (!view) throw new Error("expected job fixture to resolve");
   return view;
 }
@@ -538,4 +538,49 @@ test("partial supplied usage renders without inventing absent counters", () => {
   const card = focusCard();
   expect(card.textContent).toContain("↓300");
   expect(card.textContent).not.toContain("↑0");
+});
+
+test("context owner selects the authoritative action among identical logical IDs on different sources", () => {
+  const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  const own = jobView(id, "selected", {}, { ownerRef: "local:s", transcriptRef: "job:own" });
+  const other = jobView(id, "other", {}, { ownerRef: "remote:other", transcriptRef: "job:other" });
+  render(
+    <TranscriptRenderProvider
+      sessionRef="local:s"
+      entities={
+        new Map([
+          [own.id, own],
+          [other.id, other],
+        ])
+      }
+    >
+      <EntityRef id={id} />
+    </TranscriptRenderProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open job log" }));
+  expect(workspaceStore.getState().panes.filter((p) => p.type === "transcript")).toEqual([
+    expect.objectContaining({ params: { ref: "job:own", parentRef: "local:s" } }),
+  ]);
+});
+
+test("ambiguous delegate evidence for one owner leaves the logical ID without an action", () => {
+  const id = "dlg_034HQ2kSDXfKFq1mm3idL1";
+  const first = delegateView(id, {}, { transcriptRef: "remote:first" }),
+    second = delegateView(id, {}, { transcriptRef: "remote:second" });
+  render(
+    <TranscriptRenderProvider
+      sessionRef="local:s"
+      entities={
+        new Map([
+          [first.id, first],
+          [second.id, second],
+        ])
+      }
+    >
+      <EntityRef id={id} />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.getByText(id)).toBeTruthy();
+  expect(screen.queryByTestId("entity-trigger")).toBeNull();
+  expect(screen.queryByRole("button")).toBeNull();
 });

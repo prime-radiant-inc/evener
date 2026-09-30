@@ -3415,10 +3415,10 @@ test("an ended session's field rests at one line and opens to three on focus", a
   await mountComposer("ref_a", { status: { type: "notLoaded" } });
   expect(textarea().style.minHeight).toBe("1lh");
 
-  act(() => textarea().focus());
+  await act(async () => textarea().focus());
   expect(textarea().style.minHeight).toBe("3lh");
 
-  act(() => textarea().blur());
+  await act(async () => textarea().blur());
   expect(textarea().style.minHeight).toBe("1lh");
 });
 
@@ -5140,6 +5140,7 @@ test("repeated inline skills survive remount and undo while deletion reconciles 
 
   cleanup();
   render(<Composer ref={ref} focused={false} />);
+  await settleActivityDiscovery(ref);
   expect(textarea().textContent).toBe(original);
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
 });
@@ -5170,6 +5171,7 @@ test("a token typed directly against a chip is separated so the reference stays 
   // The same holds after a re-derivation, which re-reads the persisted value.
   cleanup();
   render(<Composer ref={ref} focused={false} />);
+  await settleActivityDiscovery(ref);
   expect(textarea().textContent).toBe("Use /cleanup d");
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
   expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });

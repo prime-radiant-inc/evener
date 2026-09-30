@@ -1,3 +1,5 @@
+import { acquireSessionActivity } from "./sessionActivity";
+import { activitySummary } from "./sessionActivityTestUtils";
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
@@ -8752,6 +8754,60 @@ describe("retry-safe mutation outbox integration", () => {
 
     response.reject(new RequestTimeoutError("response lost"));
   });
+
+  test.each([true, false])(
+    "activity and a pending outbox replay share alias membership; release activity first %s",
+    async (activityFirst) => {
+      const ref = "remote:workspace";
+      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-activity-alias" });
+      await storage.enqueueIntent({
+        targetRef: ref,
+        method: "turn/queue",
+        payload: { ref, input: [{ type: "text", text: "retained intent" }] },
+        attachments: [],
+        optimisticDisplay: { text: "retained intent" },
+      });
+      storage.close();
+      const fake = connectFakeClient("connecting");
+      const response = deferred<TurnQueueResponse>();
+      fake.on("thread/read", () => readResponse(ref));
+      fake.on("evener/thread/activity/read", () => activitySummary(ref));
+      fake.on("thread/unsubscribe", () => ({}));
+      fake.on("turn/queue", () => response.promise);
+      const activity = acquireSessionActivity(fake, ref);
+      try {
+        fake.emitReady();
+        await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+        expect(
+          fake.calls.filter(
+            (call) => call.method === "thread/read" && (call.params as { subscribe: boolean }).subscribe,
+          ),
+        ).toHaveLength(1);
+        expect(
+          fake.calls
+            .filter((call) => call.method === "thread/read")
+            .every((call) => (call.params as { ref: string }).ref === ref),
+        ).toBe(true);
+        if (activityFirst) {
+          activity.release();
+          expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+        }
+        response.resolve({ receipt: mutationReceipt("mutation-activity-alias") });
+        const probe = new MutationOutboxIndexedDB();
+        await waitFor(async () => expect(await probe.listTargetRefs()).toEqual([]));
+        probe.close();
+        if (!activityFirst) {
+          expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
+          activity.release();
+        }
+        await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1));
+        expect(fake.calls.find((call) => call.method === "thread/unsubscribe")?.params).toEqual({ ref });
+      } finally {
+        activity.release();
+        response.resolve({ receipt: mutationReceipt("mutation-activity-alias") });
+      }
+    },
+  );
 
   test("hydrates a pinned outbox ref before replaying it", async () => {
     const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });

@@ -727,8 +727,8 @@ describe("watch count on the summary line", () => {
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(2),
-      watch_count: [watchSummary()].length + 0,
-      armed_watch_count: [watchSummary()].filter((w) => w.active).length + 0,
+      watch_count: 1,
+      armed_watch_count: 1,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
@@ -739,14 +739,14 @@ describe("watch count on the summary line", () => {
   });
 
   test("counts the row's own watches", () => {
-    // The count reads the row summary's own watch list, never a rollup of
+    // The count reads the row summary's compact receiver total, never a rollup of
     // anything under it - railNodes' activeWatchCount pins that rule on the
     // wire shape.
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(1),
-      watch_count: [watchSummary({ id: "p1" })].length + 0,
-      armed_watch_count: [watchSummary({ id: "p1" })].filter((w) => w.active).length + 0,
+      watch_count: 1,
+      armed_watch_count: 1,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
@@ -756,10 +756,8 @@ describe("watch count on the summary line", () => {
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(2),
-      watch_count: [watchSummary({ id: "armed" }), watchSummary({ id: "fired", active: false })].length + 0,
-      armed_watch_count:
-        [watchSummary({ id: "armed" }), watchSummary({ id: "fired", active: false })].filter((w) => w.active).length +
-        0,
+      watch_count: 2,
+      armed_watch_count: 1,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     // A retained-but-inactive row is still listed by the fold-out, so the
@@ -772,37 +770,31 @@ describe("watch count on the summary line", () => {
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(2),
-      watch_count: [watchSummary({ id: "w1" }), watchSummary({ id: "w2" }), watchSummary({ id: "w3" })].length + 0,
-      armed_watch_count:
-        [watchSummary({ id: "w1" }), watchSummary({ id: "w2" }), watchSummary({ id: "w3" })].filter((w) => w.active)
-          .length + 0,
+      watch_count: 3,
+      armed_watch_count: 3,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("3 watches");
   });
 
-  test("surfaces omitted watches so the row never silently undercounts", () => {
+  test("reports the compact total independently of armed count", () => {
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(2),
-      watch_count: [watchSummary()].length + 2,
-      armed_watch_count: [watchSummary()].filter((w) => w.active).length + 0,
+      watch_count: 3,
+      armed_watch_count: 1,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("3 watches · 1 armed");
   });
 
-  test("reports the armed total across omitted rows, not just the retained rows", () => {
-    // A session with more armed watches than the hub's per-session cap keeps 32
-    // of them and reports the rest as omitted_armed_watches. The summary must
-    // state the true armed total, labelled as covering the omitted rows, rather
-    // than the retained 32.
+  test("reports all armed watches from compact receiver totals", () => {
+    // Compact receiver totals remain authoritative beyond a collection page.
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(2),
-      watch_count: Array.from({ length: 32 }, (_, i) => watchSummary({ id: `armed-${i}` })).length + 8,
-      armed_watch_count:
-        Array.from({ length: 32 }, (_, i) => watchSummary({ id: `armed-${i}` })).filter((w) => w.active).length + 8,
+      watch_count: 40,
+      armed_watch_count: 40,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("40 watches");
@@ -812,8 +804,8 @@ describe("watch count on the summary line", () => {
     const session = apiNode({
       state: "active",
       branch: "feature/x",
-      watch_count: [watchSummary()].length + 0,
-      armed_watch_count: [watchSummary()].filter((w) => w.active).length + 0,
+      watch_count: 1,
+      armed_watch_count: 1,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     const count = screen.getByTestId("rail-row-watches");
@@ -826,8 +818,8 @@ describe("watch count on the summary line", () => {
   test("keeps neutral ink on a signal row instead of inheriting the gloss's tint", () => {
     const session = apiNode({
       state: "errored",
-      watch_count: [watchSummary()].length + 0,
-      armed_watch_count: [watchSummary()].filter((w) => w.active).length + 0,
+      watch_count: 1,
+      armed_watch_count: 1,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     const count = screen.getByTestId("rail-row-watches");

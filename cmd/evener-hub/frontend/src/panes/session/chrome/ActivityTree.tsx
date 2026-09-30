@@ -601,14 +601,8 @@ function OpenWatchMeta({ watch }: { watch: SessionWatch }): ReactNode {
   return <span className={CLASS.denseMeta}>{watchMeta(watch, now)}</span>;
 }
 
-// The Watches group title that leads the panel body, with the count of armed
-// watches on its right. No "needs a look" count: the projection tracks no
-// drops, so there is no abnormal count to report.
-//
-// `armed` is the true total: the retained armed rows plus the armed rows the
-// hub omitted. Whenever rows were omitted the figure is labelled `N armed
-// total`, because it covers rows the panel does not list and the label must
-// never understate the session's armed watches.
+// The header uses authoritative summary counts when supplied. Pending counts
+// remain unknown while loaded watch rows can already be useful.
 function WatchGroupHeader({ armed }: { armed: number | null }): ReactNode {
   const count = `${armed === null ? "…" : armed} armed`;
   return (

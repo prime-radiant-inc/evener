@@ -5,6 +5,7 @@ import { Button } from "../../widgets";
 interface ActivityPageBoundaryProps {
   resource: SessionActivityCollection;
   label: string;
+  rows: readonly unknown[];
   hasMore: boolean;
   loading: boolean;
   error: unknown;
@@ -18,6 +19,7 @@ interface ActivityPageBoundaryProps {
 export function ActivityPageBoundary({
   resource,
   label,
+  rows,
   hasMore,
   loading,
   error,
@@ -27,17 +29,36 @@ export function ActivityPageBoundary({
 }: ActivityPageBoundaryProps) {
   const element = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
+  const currentVisibility = useRef(false);
+  const observedRows = useRef(rows);
   useEffect(() => {
+    observedRows.current = rows;
+    currentVisibility.current = false;
+    setVisible(false);
     const target = element.current;
-    if (!target || !enabled || !hasMore || typeof IntersectionObserver !== "function") return;
-    const observer = new IntersectionObserver((entries) => setVisible(entries.some((entry) => entry.isIntersecting)), {
-      rootMargin: "200px",
-    });
+    if (!target || !enabled || !hasMore || loading || typeof IntersectionObserver !== "function") return;
+    let active = true;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!active || observedRows.current !== rows) return;
+        const next = entries.some((entry) => entry.isIntersecting);
+        currentVisibility.current = next;
+        setVisible(next);
+      },
+      { rootMargin: "200px" },
+    );
     observer.observe(target);
-    return () => observer.disconnect();
-  }, [enabled, hasMore]);
+    return () => {
+      active = false;
+      currentVisibility.current = false;
+      observer.disconnect();
+    };
+    // A successful page changes rows even when React batches the loading states.
+    // Re-observe the moved boundary so stale geometry cannot drain unseen pages.
+  }, [enabled, hasMore, loading, rows]);
   useEffect(() => {
-    if (enabled && visible && hasMore && !loading && !error && !permanent) void loadMore(resource);
+    if (enabled && visible && currentVisibility.current && hasMore && !loading && !error && !permanent)
+      void loadMore(resource);
   }, [enabled, visible, hasMore, loading, error, permanent, loadMore, resource]);
   if (!hasMore) return null;
   return (

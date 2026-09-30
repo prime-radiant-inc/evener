@@ -4,11 +4,19 @@ import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navi
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
-import { activityClient, activityContext, activityDelegate, activityJob } from "../../stores/sessionActivityTestUtils";
+import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import {
+  activityClient,
+  activityContext,
+  activityDelegate,
+  activityJob,
+  activityWatch,
+} from "../../stores/sessionActivityTestUtils";
 import { deriveScope } from "../statusbar/statusScope";
 import { workspaceStore } from "../workspace";
 import { AgentsTab } from "./AgentsTab";
 import { JobsTab } from "./JobsTab";
+import { WatchesTab } from "./WatchesTab";
 
 afterEach(() => {
   cleanup();
@@ -146,4 +154,146 @@ it("definitive unavailable jobs never claim empty or remain a loading promise", 
   expect(screen.queryByText("No jobs at this level.")).toBeNull();
   expect(screen.queryByText("Loading jobs…")).toBeNull();
   expect(screen.queryByRole("button", { name: /retry|repair/i })).toBeNull();
+});
+
+it("closed inactive history does not scan, and disclosed rows page only near the visible boundary", async () => {
+  const client = activityClient();
+  let observations = 0,
+    disconnections = 0,
+    intersect: ((visible: boolean) => void) | undefined;
+  class Observer {
+    constructor(callback: IntersectionObserverCallback) {
+      intersect = (visible) =>
+        callback([{ isIntersecting: visible } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    }
+    observe() {
+      observations++;
+    }
+    disconnect() {
+      disconnections++;
+    }
+  }
+  vi.stubGlobal("IntersectionObserver", Observer);
+  client.on("evener/thread/delegates/list", ({ ref, scope, cursor }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [
+      activityDelegate({
+        delegateId: cursor ? "second" : "first",
+        childRef: cursor ? "remote:second" : "remote:first",
+        description: cursor ? "second inactive" : "first inactive",
+        terminal: true,
+        status: "completed",
+        lifecycle: "idle",
+      }),
+    ],
+    page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "next", issues: [] },
+  }));
+  try {
+    connectionStore.getState().connect(client);
+    await act(async () => {
+      render(<AgentsTab scope={scope()} />);
+    });
+    expect(observations).toBe(0);
+    expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Inactive subagents (1)" }));
+    expect(observations).toBe(1);
+    await act(async () => intersect?.(false));
+    expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
+    await act(async () => intersect?.(true));
+    expect(screen.getByRole("button", { name: /second inactive/ })).toBeTruthy();
+    expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(2);
+    expect(disconnections).toBe(1);
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+  }
+});
+
+it.each([
+  { resource: "delegates" as const, Body: AgentsTab, text: "inspect" },
+  { resource: "jobs" as const, Body: JobsTab, text: "go test" },
+  { resource: "watches" as const, Body: WatchesTab, text: "permanent watch" },
+])(
+  "$resource keeps useful rows after permanent refusal without claiming an active retry",
+  async ({ resource, Body, text }) => {
+    const client = activityClient();
+    client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      jobs: [activityJob()],
+      page: { complete: true, issues: [] },
+    }));
+    client.on("evener/thread/watches/list", ({ ref, scope }) => ({
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      watches: [activityWatch({ note: "permanent watch" }, ref)],
+      page: { complete: true, issues: [] },
+    }));
+    connectionStore.getState().connect(client);
+    render(<Body scope={scope()} />);
+    await screen.findByText(text);
+    const method =
+      resource === "delegates"
+        ? "evener/thread/delegates/list"
+        : resource === "jobs"
+          ? "evener/thread/jobs/list"
+          : "evener/thread/watches/list";
+    client.on(method, () => {
+      throw new WireError("unsupported source", -32014, { evenerErrorInfo: "actionUnavailable" });
+    });
+    act(() =>
+      client.emitNotification({
+        method: "evener/thread/activity/changed",
+        params: { ref: "remote:owner", threadId: "owner", sessionId: "owner", resources: [resource] },
+      }),
+    );
+    await waitFor(() =>
+      expect(sessionActivitySnapshot(client, "remote:owner", "session")?.[resource].permanent).toBe(true),
+    );
+    expect(screen.getByText(text)).toBeTruthy();
+    expect(screen.queryByText(/updating/)).toBeNull();
+  },
+);
+
+it("each positive page needs fresh visible boundary evidence instead of draining unseen history", async () => {
+  const client = activityClient();
+  const intersections: ((visible: boolean) => void)[] = [];
+  class Observer {
+    constructor(callback: IntersectionObserverCallback) {
+      intersections.push((visible) =>
+        callback([{ isIntersecting: visible } as IntersectionObserverEntry], this as unknown as IntersectionObserver),
+      );
+    }
+    observe() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("IntersectionObserver", Observer);
+  client.on("evener/thread/jobs/list", ({ ref, scope, cursor }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ jobId: cursor ?? "first", description: cursor ?? "first", command: cursor ?? "first" })],
+    page:
+      cursor === "third"
+        ? { complete: true, issues: [] }
+        : { complete: false, nextCursor: cursor ? "third" : "second", issues: [] },
+  }));
+  try {
+    connectionStore.getState().connect(client);
+    await act(async () => {
+      render(<JobsTab scope={scope()} />);
+    });
+    expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(1);
+    await act(async () => intersections[0]?.(true));
+    expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(2);
+    expect(screen.getByText("second")).toBeTruthy();
+    await act(async () => intersections.at(-1)?.(false));
+    expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(2);
+    await act(async () => intersections.at(-1)?.(true));
+    expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(3);
+    expect(screen.getByText("third")).toBeTruthy();
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+  }
 });

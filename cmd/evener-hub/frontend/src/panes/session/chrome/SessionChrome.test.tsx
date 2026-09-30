@@ -20,9 +20,10 @@ import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
-import { activitySummary } from "../../../stores/sessionActivityTestUtils";
+import { activityClient, activityContext, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { topNotesStore } from "../../../stores/topNotes";
@@ -142,7 +143,7 @@ function SessionChrome(props: ComponentProps<typeof SessionChromeView>) {
 }
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
+  const fake = activityClient();
   chromeClient = fake;
   connectionStore.getState().connect(fake);
   return fake;
@@ -199,6 +200,7 @@ test("composes the status row and the session menu once the ref's thread is trac
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
 
   // Status row: model chip.
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
@@ -227,6 +229,7 @@ test("composer placement renders one ordered inline status and actions cluster w
   await threadsStore.getState().ensureThread("ref_composer");
 
   render(<SessionChrome ref="ref_composer" placement="composer" />);
+  await settleActivityDiscovery("ref_composer");
 
   const cluster = screen.getByTestId("session-chrome-inline");
   const statusContainer = within(cluster).getByTestId("session-chrome-inline-status");
@@ -299,6 +302,7 @@ test("default placement preserves the standalone session chrome presentation", a
   await threadsStore.getState().ensureThread("ref_footer");
 
   render(<SessionChrome ref="ref_footer" />);
+  await settleActivityDiscovery("ref_footer");
 
   expect(screen.getByTestId("session-chrome")).toBeTruthy();
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
@@ -311,6 +315,7 @@ test("status row has no inline Details/Tasks/Activity/Notes buttons; they live i
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
 
   expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
   expect(screen.queryByRole("button", { name: /Tasks/ })).toBeNull();
@@ -536,7 +541,10 @@ test("desktop Tasks menu item opens the activity sidebar on the tasks tab, never
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
+  await import("../index");
+  workspaceStore.getState().openPane("session", { ref: "ref_a" });
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
 
@@ -547,7 +555,7 @@ test("desktop Tasks menu item opens the activity sidebar on the tasks tab, never
   // Idempotent open, like the menu's sibling pane openers: re-selecting keeps
   // the sidebar on the tasks tab and still opens no pane.
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
+  await user.click(screen.getByRole("menuitem", { name: "Tasks ✓" }));
   expect(activitySidebarStore.getState().open).toBe(true);
   expect(activitySidebarStore.getState().tab).toBe("tasks");
   expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionTasks")).toBe(false);
@@ -561,6 +569,7 @@ test("menu offers Pin/Archive/Delete when the session is in the tree; omits them
   setLocation("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.getByRole("menuitem", { name: "Pin this session…" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: "Archive" })).toBeTruthy();
@@ -684,6 +693,7 @@ test("menu Shut down is gated on capabilities.shutdown", async () => {
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
+  await settleActivityDiscovery("ref_a");
   await user.click(screen.getByRole("button", { name: /session actions/i }));
 
   expect(screen.getByRole("menuitem", { name: "Shut down" }).getAttribute("aria-disabled")).toBe("true");
@@ -766,9 +776,14 @@ test("the activity panel fetches for the SAME ref passed to SessionChrome", asyn
   fake.on("thread/read", () => readResponse("ref_e"));
   await threadsStore.getState().ensureThread("ref_e");
   let calledRef: unknown;
-  fake.on("evener/jobs/list", (params) => {
+  fake.on("evener/thread/jobs/list", (params) => {
     calledRef = params.ref;
-    return { data: [] };
+    return {
+      context: activityContext(params.ref),
+      scope: params.scope ?? "session",
+      jobs: [],
+      page: { complete: true, issues: [] },
+    };
   });
 
   render(<SessionChrome ref="ref_e" />);
@@ -973,6 +988,7 @@ test("composes the session liveness cadence into the chrome row", async () => {
   await threadsStore.getState().ensureThread("ref_cad");
 
   render(<SessionChrome ref="ref_cad" />);
+  await settleActivityDiscovery("ref_cad");
 
   const slot = document.querySelector('[data-testid="session-chrome-cadence"]');
   expect(slot).not.toBeNull();
@@ -1057,7 +1073,8 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
   }));
   await threadsStore.getState().ensureThread(ref);
   render(<SessionChrome ref={ref} />);
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/thread/activity/read")).toHaveLength(1));
+  await settleActivityDiscovery(ref);
+  expect(fake.calls.filter((c) => c.method === "evener/thread/activity/read")).toHaveLength(1);
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.getByRole("menuitem", { name: "Activity · 1" })).toBeTruthy();
@@ -1070,6 +1087,7 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
     }),
   );
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/thread/activity/read")).toHaveLength(2));
+  await settleActivityDiscovery(ref);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.getByRole("menuitem", { name: "Activity · 3" })).toBeTruthy();
   expect(

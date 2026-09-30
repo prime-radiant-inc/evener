@@ -282,11 +282,9 @@ export interface ThreadsStoreState {
   // propagates unchanged, same as every other read-only action here; the
   // caller renders the empty/unsupported state for it.
   listTasks(ref: string): Promise<unknown>;
-  // Lists the session's activity tree (evener/jobs/list) and fetches one job's
-  // output tail (evener/jobs/output). Both Data fields are `any` on the wire
-  // catalog (appwire/types.go) - these return the raw field verbatim, never
-  // wrapped, so the store stays shape-agnostic; the caller owns interpreting
-  // them (the chrome stream's parseActivityTree / parseJobOutputData).
+  // Explicit retained tree reader for callers of evener/jobs/list. Browser
+  // activity views use SessionActivityStore; this method returns the wire's
+  // untyped data field unchanged and owns no background refresh or retry.
   listJobs(ref: string, continuation?: string): Promise<unknown>;
   // beforeBytes > 0 pages backwards: the window ending at that lifetime
   // output offset instead of the tail (appwire.JobsOutputParams.BeforeBytes).

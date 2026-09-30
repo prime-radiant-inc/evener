@@ -91,6 +91,7 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
               key={resource}
               resource={resource}
               label={resource}
+              rows={snapshot[resource].rows}
               hasMore={snapshot[resource].hasMore}
               loading={snapshot[resource].loading}
               error={snapshot[resource].error}

@@ -6,16 +6,25 @@ import { acquireSessionActivity, sessionActivitySnapshot } from "../../../stores
 export async function settleActivityDiscovery(ref: string): Promise<void> {
   await act(async () => {
     const client = connectionStore.getState().client;
-    if (!client || !sessionActivitySnapshot(client, ref, "session")?.summaryState.loading) return;
+    if (!client || !sessionActivitySnapshot(client, ref, "session")) return;
     const binding = acquireSessionActivity(client, ref);
     try {
-      await new Promise<void>((resolve) => {
-        const stop = binding.store.subscribe(() => {
-          if (binding.store.getSnapshot().summaryState.loading) return;
-          stop();
-          resolve();
+      const settled = () => {
+        const state = binding.store.getSnapshot();
+        return (
+          !state.summaryState.loading &&
+          !state.summaryState.pending &&
+          Boolean(state.summary || state.summaryState.error || state.summaryState.permanent)
+        );
+      };
+      if (!settled())
+        await new Promise<void>((resolve) => {
+          const stop = binding.store.subscribe(() => {
+            if (!settled()) return;
+            stop();
+            resolve();
+          });
         });
-      });
     } finally {
       binding.release();
     }

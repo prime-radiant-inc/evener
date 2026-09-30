@@ -2112,6 +2112,7 @@ function renderSummaryWithEntities(toolItem: ItemModel) {
       config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
       surface="readOnly"
       disclosureScope="test:summary-entities"
+      sessionRef="local:s"
       entities={summaryEntities()}
     >
       <ToolCallItem item={toolItem} turn={turn} live={false} />

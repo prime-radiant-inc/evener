@@ -272,56 +272,20 @@ export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpan
   return (id, defaultExpanded) => overrides.get(id) ?? defaultExpanded;
 }
 
-/** How many of a session's OWN live watches are still armed. Deliberately not
- * a subtree rollup: the hub projects each watch onto exactly the summary of
- * the session that receives it (navigation_projection.go's navigationWatches),
- * so summing descendants here would print a subagent's watch on every ancestor
- * row as well as on the subagent's own - one watch, several counts. A receiver
- * watch belongs to the session whose summary carries it. */
+/** A session rail row reads its own compact receiver count, never descendants. */
 export function activeWatchCount(node: NavigationSessionSummary): number {
-  // Include the armed rows the hub omitted: past the per-session cap they are
-  // not on `node.watches`, but they are still this session's armed watches, and
-  // counting only the retained rows understates the total.
   return node.armed_watch_count ?? 0;
 }
 
-/** The same count read straight off the wire list, so the activity panel's
- * Watches header and the rail row's count cannot drift apart: both numbers are
- * one predicate, not two copies of one. */
+/** Counts armed states among the supplied domain rows. */
 export function armedWatchCount(watches: readonly SessionWatch[] | undefined): number {
   return (watches ?? []).filter((watch) => watch.state === "armed").length;
 }
 
-/** The session's summary-line watch count. It reports ONE total per session -
- * the retained rows the activity sidebar's Watches tab lists plus the exact
- * number of rows the projector omitted (a session above its per-session cap,
- * or rows its byte fitter shed) as "+N more" - so the summary line and the
- * sidebar cannot disagree about how many watches the session holds.
- *
- * When every retained row is armed the base is the armed count, byte-identical
- * to the wording that shipped before the retained/inactive distinction existed
- * (`1 watch`, `2 watches · +1 more`). When a retained row is inactive - a fired
- * one-shot whose teardown is still pending projects inactive - the base is the
- * retained total and the armed count stays visible beside it
- * (`5 watches · 2 armed`, `5 watches · 2 armed · +3 more`), because the
- * summary's number must match the Watches tab that lists all of them.
- *
- * `armed` is the session's TRUE armed total (activeWatchCount), so it already
- * includes armed rows the hub omitted. Whenever rows were omitted the figure is
- * labelled `N armed total`, because the retained rows alone cannot say what
- * covers the hidden ones - and the label must never understate the session's
- * armed watches. */
-export function watchCountLabel(armed: number, retained: number, omitted: number): string {
-  if (omitted > 0) {
-    // The byte fitter can shed every retained row, and a leading "0 watches"
-    // would then contradict the totals beside it: the session does hold watches,
-    // the hub just could not fit a single row. Dropping the base count there
-    // matches what the panel's own watch header says in the same case.
-    const total = `${armed} armed total · +${omitted} more`;
-    return retained === 0 ? total : `${retained} watch${retained === 1 ? "" : "es"} · ${total}`;
-  }
-  const retainedLabel = `${retained} watch${retained === 1 ? "" : "es"}`;
-  return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
+/** Compact summary totals include retained and armed watches independently. */
+export function watchCountLabel(armed: number, total: number): string {
+  const label = `${total} watch${total === 1 ? "" : "es"}`;
+  return total === armed ? label : `${label} · ${armed} armed`;
 }
 
 // The states a subagent still has live work in, read through displayState

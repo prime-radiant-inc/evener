@@ -5,7 +5,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
-import { activityContext, activityJob, activityWatch } from "../../stores/sessionActivityTestUtils";
+import { activityClient, activityContext, activityJob, activityWatch } from "../../stores/sessionActivityTestUtils";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
@@ -90,7 +90,7 @@ function seedModel(model: ThreadModel): void {
 }
 
 function connectFakeClient(): FakeClient {
-  const fake = new FakeClient("ready");
+  const fake = activityClient();
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -423,9 +423,11 @@ test("standalone activity pane preserves typed watch countdown through the tree 
     ],
     page: { complete: true, issues: [] },
   }));
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="activity-watch" focused kind="activity" />);
+  await act(async () => {
+    render(<SessionPanelPane params={{ ref: model.ref }} paneId="activity-watch" focused kind="activity" />);
+  });
   const row = await screen.findByRole("treeitem", { name: "Watch: clock" });
   expect(row.textContent).toContain("next ~4m");
-  act(() => vi.advanceTimersByTime(60000));
+  await act(async () => vi.advanceTimersByTimeAsync(60000));
   expect(row.textContent).toContain("next ~3m");
 });

@@ -13,8 +13,25 @@ import { selectRailModel } from "./selectors";
 const key = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
 const entityKey = `${navigationViewScope(key)}/entity/${"1".repeat(64)}`;
 const snapshot = (fields: Record<string, unknown>) => ({
-  metadata: {},
-  entities: [{ key: entityKey, kind: "session", value: { ref: "remote:owner", children: [], ...fields } }],
+  metadata: { generation_id: "g", revision: 1, offset: 0, limit: 50, remaining: 0, truncated: false },
+  entities: [
+    {
+      key: entityKey,
+      kind: "session",
+      value: {
+        ref: "remote:owner",
+        host_id: "remote",
+        session_id: "owner",
+        title: "Owner",
+        project: "",
+        state: "idle",
+        kind: "session",
+        live: true,
+        children: [],
+        ...fields,
+      },
+    },
+  ],
   containers: [
     {
       key: navigationRootContainerKey(key, "sessions"),
@@ -56,7 +73,7 @@ test("v3 compact receiver counts materialize without navigation watch detail", (
   expect(activeWatchCount(session)).toBe(32);
   expect("watches" in session).toBe(false);
 });
-test("v3 browser decoder rejects retired navigation watch detail instead of silently accepting it", () => {
+test("v3 browser decoder drops retired navigation watch details without treating them as activity evidence", () => {
   const decoded = decodeNavigationResponse(key, undefined, {
     status: "ok",
     representation: "snapshot",
@@ -65,5 +82,16 @@ test("v3 browser decoder rejects retired navigation watch detail instead of sile
     etag: "tag",
     data: snapshot({ watches: [{ id: "obsolete" }] }),
   });
-  expect(decoded.status).toBe("error");
+  if (decoded.status !== "snapshot") throw new Error("invalid compact fixture");
+  const model = selectRailModel({
+    key,
+    graph: normalizedGraphFromSnapshot(decoded.snapshot),
+    version: decoded.version,
+    presence: "present",
+  });
+  const session = model.sessions.get(entityKey);
+  expect(session).toBeDefined();
+  expect(session).not.toHaveProperty("watches");
+  if (!session) throw new Error("missing session");
+  expect(activeWatchCount(session)).toBe(0);
 });

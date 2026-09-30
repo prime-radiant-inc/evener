@@ -244,7 +244,7 @@ function leadsOverWork(session: RailSession): boolean {
 // is running: a job count in its place would read as work in progress.
 //
 // Every figure is the row's own: the flat rail carries no children to walk,
-// so the job count is the summary's own running_jobs, and the subagent
+// so the job count is the summary's own running_job_count, and the subagent
 // figures beside the gloss come from the row's `subagents` tally chip, never
 // from a subtree.
 export function activityGloss(session: RailSession): string {
@@ -780,7 +780,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
                 {/* The gloss shares the line's separator convention: the count
                     carries it only when something follows, so a watch-only
                     line ends with the word, not a dangling "·". */}
-                {`${watchCountLabel(watchCount, retainedWatchCount, 0)}${tally !== null || gloss !== "" ? " ·" : ""}`}
+                {`${watchCountLabel(watchCount, retainedWatchCount)}${tally !== null || gloss !== "" ? " ·" : ""}`}
               </span>
             )}
             {tally !== null && (
@@ -977,7 +977,7 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
 // ranges stop at U+2215, so a "◷" (or any other clock code point) falls back
 // to a system font - and the rail's accessible name is name-from-content, so a
 // typed glyph would be announced as a stray character rather than as "watch"
-// (see review synthesis §7). aria-hidden because the visually-hidden "Watch:"
+// aria-hidden because the visually-hidden "Watch:"
 // beside it is the word assistive tech should read.
 //
 // Exported for the activity sidebar's watch rows: the geometry lives here

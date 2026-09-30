@@ -151,7 +151,7 @@ const TREE: ActivityTreeData = {
   },
 };
 
-const FOLD_ID = "session:sess_root:inactive-fold";
+const FOLD_ID = "session:ref_root:inactive-fold";
 
 // The fold row's accessible name matches its visible text: the failed count
 // is part of the aria-label whenever failedCount > 0.
@@ -327,7 +327,7 @@ describe("ActivityTree", () => {
     // wrapped in the ancestor chain, and the graft is fenced by projection
     // revision, so it cannot cost this row its newer parent-side metadata —
     // see activityMerge.test.ts.
-    expect(onContinue).toHaveBeenCalledWith("delegate:dlg_deep", "token_child");
+    expect(onContinue).toHaveBeenCalledWith('delegate:["local:sess_deep_child","dlg_deep"]', "token_child");
   });
 
   test("a delegate that can still be paged offers Load more, not an open-session link", () => {
@@ -444,7 +444,7 @@ describe("ActivityTree", () => {
     } as unknown as ActivityTreeData;
 
     render(
-      <ActivityTree tree={terminalTree} expandedFoldIDs={["session:sess_root:inactive-fold"]} onToggleFold={vi.fn()} />,
+      <ActivityTree tree={terminalTree} expandedFoldIDs={["session:ref_root:inactive-fold"]} onToggleFold={vi.fn()} />,
     );
 
     const row = screen.getByRole("treeitem", { name: "Bounded audit" });
@@ -1177,7 +1177,7 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={continuedTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={onContinue} />);
 
     await user.click(screen.getByRole("button", { name: "Load more" }));
-    expect(onContinue).toHaveBeenCalledWith("session:sess_root", "tok_root");
+    expect(onContinue).toHaveBeenCalledWith("session:ref_root", "tok_root");
     expect(openTranscript).not.toHaveBeenCalled();
   });
 
@@ -1194,7 +1194,7 @@ describe("ActivityTree", () => {
         expandedFoldIDs={[]}
         onToggleFold={vi.fn()}
         onContinue={vi.fn()}
-        loadingContinuationID="delegate:dlg_other"
+        loadingContinuationID='delegate:["ref_other","dlg_other"]'
       />,
     );
     // The panel carries one page at a time, so a branch that is not the one
@@ -1215,7 +1215,7 @@ describe("ActivityTree", () => {
         expandedFoldIDs={[]}
         onToggleFold={vi.fn()}
         onContinue={vi.fn()}
-        continuationFailures={{ "session:sess_root": "Couldn't load more." }}
+        continuationFailures={{ "session:ref_root": "Couldn't load more." }}
         loadingContinuationID={undefined}
       />,
     );
