@@ -422,3 +422,13 @@ export function shellJobMeta(row: ShellJobRow, now: number): string {
 	const ran = compactDuration(Math.max(0, ended - started));
 	return ending === subagentStateWord("done") ? ran : `${ending} · ${ran}`;
 }
+
+/** A shell job's row as VoiceOver reads it: what it is, how it's doing or
+ * how it ended, and who started it. The meta leaves a clean finish's "Done"
+ * to the glyph's hue; the label says it. */
+export function shellJobLabel(row: ShellJobRow, now: number): string {
+	const meta = shellJobMeta(row, now);
+	const done = subagentStateWord("done");
+	const cleanFinish = row.job.terminal && shellJobEnding(row) === done && meta !== done;
+	return ["Shell job", row.title, ...(cleanFinish ? [done] : []), meta, `under ${row.owner}`].join(", ");
+}
