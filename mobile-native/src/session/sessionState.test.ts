@@ -168,25 +168,53 @@ describe("the context chips (spec 8.1)", () => {
 	});
 });
 
-it("uses complete summary counts instead of a partial transcript roster, and shows unknown honestly", () => {
-	const s = { delegates: [delegate("running", 1)], tasks: null, goal: null, queue: null };
-	expect(
-		contextChips(
-			s,
-			true,
-			{ count: 0, fresh: false },
-			{ known: true, total: 501, active: 400, failed: 20, completed: 81 },
-		)[0],
-	).toMatchObject({ label: "Subagents 501", failed: "20 failed" });
-	expect(
-		contextChips(
-			s,
-			true,
-			{ count: 0, fresh: false },
-			{ known: false, total: 0, active: 0, failed: 0, completed: 0 },
-		)[0],
-	).toMatchObject({ label: "Subagents …", accessibilityLabel: "Subagents, count unknown" });
-	expect(
-		contextChips(s, true, { count: 0, fresh: false }, { known: true, total: 0, active: 0, failed: 0, completed: 0 }),
-	).toEqual([]);
+// Spec 8.1: chips appear only with content. The summary's count is the only
+// count source; the transcript's roster is only evidence that subagents exist.
+describe("the Subagents chip", () => {
+	const unknown = { ...counts(), known: false };
+	const withSubagents = { delegates: [delegate("running", 1)], tasks: null, goal: null, queue: null };
+	const without = { delegates: [], tasks: null, goal: null, queue: null };
+	const subagentsChip = (session: Parameters<typeof contextChips>[0], summary: Parameters<typeof contextChips>[3]) =>
+		contextChips(session, true, noFiles, summary).find((chip) => chip.kind === "subagents");
+
+	it("counts from the whole-subtree summary, not the transcript's roster", () => {
+		expect(subagentsChip(withSubagents, counts(501, 20))).toMatchObject({
+			label: "Subagents 501",
+			failed: "20 failed",
+			accessibilityLabel: "Subagents, 501, 20 failed",
+		});
+		expect(subagentsChip(withSubagents, counts(3))).toEqual({
+			kind: "subagents",
+			label: "Subagents 3",
+			attention: false,
+			accessibilityLabel: "Subagents, 3",
+		});
+	});
+
+	it("hides once the summary knows there are none, whatever the roster holds", () => {
+		expect(subagentsChip(withSubagents, counts(0))).toBeUndefined();
+		expect(subagentsChip(without, counts(0))).toBeUndefined();
+	});
+
+	const notKnown = [
+		["no summary yet", null],
+		["a summary that can't count", unknown],
+		["a summary that can't count, whatever numbers it carries", { ...unknown, total: 5, failed: 1 }],
+	] as const;
+
+	it.each(notKnown)("hides with an empty roster and %s", (_name, summary) => {
+		expect(subagentsChip(without, summary)).toBeUndefined();
+		expect(subagentsChip({ ...without, delegates: undefined }, summary)).toBeUndefined();
+	});
+
+	// A shut-down session's summary can stay unknown for good, so the chip says
+	// "Subagents" with no count until the summary knows it.
+	it.each(notKnown)("shows without a count with a roster of subagents and %s", (_name, summary) => {
+		expect(subagentsChip(withSubagents, summary)).toEqual({
+			kind: "subagents",
+			label: "Subagents",
+			attention: false,
+			accessibilityLabel: "Subagents, count unknown",
+		});
+	});
 });
