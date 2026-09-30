@@ -1,9 +1,10 @@
 // The demo fleet's subagents and documents, as the hub serves them: the
 // activity tree the typed activity reads project (demoSessionActivity.ts) for
-// the Activity list, and the documents the Reader opens (/doc/file). Built from the same raw swarm the
-// Board's navigation rows come from (demoFleet.ts, after the prototype's
-// data.js), so the Board, the list and the transcript agree (spec Appendix
-// B). Each subagent's own session (thread/read) is demoSessions.ts's.
+// the Activity list, and the documents the Reader opens (/doc/file). Built
+// from the same raw swarm the Board's navigation rows come from
+// (demoFleet.ts, after the prototype's data.js), so the Board, the list and
+// the transcript agree (spec Appendix B). Each subagent's own session
+// (thread/read) is demoSessions.ts's.
 export interface DemoSubagent {
 	id: string;
 	title: string;

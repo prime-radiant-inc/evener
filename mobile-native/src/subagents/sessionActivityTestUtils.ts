@@ -18,11 +18,12 @@ import {
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 
-// The optional fields a hub's SessionDelegate and JobActivityJob rows carry
-// (appwire-client types.gen.ts). A rich fixture's other fields (a report
-// message, a mandate, a resolved model, timings, origin ids and the like)
-// belong to the retired jobs tree, so the adapter never passes them on and a
-// test can't pass on data the hub doesn't send.
+// The fields a hub's activity rows carry (appwire-client types.gen.ts): a
+// SessionDelegate's optional fields, which the adapter copies beside the ones
+// it always sets, and every JobActivityJob field. A rich fixture's other
+// fields (a report message, a mandate, a resolved model, timings, origin ids
+// and the like) come from the evener/jobs/list tree's shape, so the adapter
+// never passes them on and a test can't pass on data these reads don't send.
 const DELEGATE_FIELDS = [
 	"outcome",
 	"reason",
@@ -58,7 +59,7 @@ const JOB_FIELDS = [
 	"lastOutputAt",
 ] as const satisfies readonly (keyof ActivityJob & keyof JobActivityJob)[];
 
-function present<T extends object, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {
+function definedFields<T extends object, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {
 	const picked: Partial<Pick<T, K>> = {};
 	for (const key of keys) if (source[key] !== undefined) picked[key] = source[key];
 	return picked as Pick<T, K>;
@@ -85,9 +86,11 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 		if (node.branch.error) issues.push({ ref: node.ref, code: "unavailable" });
 		if (node.branch.truncated) continuation ??= node.branch.continuation ?? "remaining";
 		for (const entry of node.entries) {
-			if (entry.kind === "shell") jobs.push(present(entry.job, JOB_FIELDS));
+			if (entry.kind === "shell") jobs.push(definedFields(entry.job, JOB_FIELDS));
 			else {
 				const d = entry.delegate;
+				// The hub reports a finished delegate as idle.
+				const state = d.terminal === true ? "idle" : "running";
 				delegates.push({
 					delegateId: d.delegateId,
 					ownerRef: node.ref,
@@ -97,12 +100,12 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 					description: d.description ?? "",
 					task: d.task ?? d.description ?? "",
 					type: d.type ?? "delegate",
-					lifecycle: d.lifecycle ?? "running",
-					phase: d.phase ?? "running",
-					status: d.status ?? "running",
+					lifecycle: d.lifecycle ?? state,
+					phase: d.phase ?? state,
+					status: d.status ?? state,
 					terminal: d.terminal ?? false,
 					resumable: d.resumable ?? false,
-					...present(d, DELEGATE_FIELDS),
+					...definedFields(d, DELEGATE_FIELDS),
 				});
 				if (d.child && params.scope === "subtree") visit(d.child, d.delegateId);
 			}

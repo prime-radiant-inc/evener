@@ -1042,9 +1042,13 @@ describe("demo fleet subagents", () => {
 		expect(own.delegates.map((row) => row.description)).toEqual(["Check drain ordering in tests"]);
 	});
 
-	it("gives a session with no subagents a complete, empty list", () => {
-		const other = fleet.answerDelegatesList({ ref: `local:${demoSessionId("s-gateway")}` });
-		expect(other.delegates).toEqual([]);
-		expect(other.page).toEqual({ complete: true, issues: [] });
+	it("gives a session with no subagents or shell jobs complete, empty lists", () => {
+		const ref = `local:${demoSessionId("s-gateway")}`;
+		const delegates = fleet.answerDelegatesList({ ref });
+		expect(delegates.delegates).toEqual([]);
+		expect(delegates.page).toEqual({ complete: true, issues: [] });
+		const jobs = fleet.answerSessionJobsList({ ref });
+		expect(jobs.jobs).toEqual([]);
+		expect(jobs.page).toEqual({ complete: true, issues: [] });
 	});
 });
