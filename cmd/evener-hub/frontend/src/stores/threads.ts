@@ -30,6 +30,7 @@ import {
   buildComposerInput,
   buildInput,
   ClientNotReadyError,
+  cachedSessionRecord,
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
   comparePositions,
@@ -742,6 +743,10 @@ function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId
 }
 
 function removeThreadModel(ref: string): void {
+  // The memo never outlives the model (spec, "Eviction, cap, and cross-tab"):
+  // a memo that survived the release would skip an eligible session
+  // indefinitely.
+  clearOversizeMemo(ref);
   const removed = threadsStore.getState().threads.get(ref);
   if (removed) removeThreadModelIndex(threadsIndex, removed);
   // The shell-only cache metadata leaves with the model: the fields' whole
@@ -968,6 +973,10 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   await discardCanceledMutations(targetRef);
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
+  // A clear replaces the history outright — the one mid-lifetime shrink that
+  // clears the oversize memo (spec: "replacement is the only mid-lifetime
+  // shrink"; a merge only adds items).
+  clearOversizeMemo(targetRef);
   // A clear response is a newer authoritative cut than any thread/read that
   // was already in flight for this ref. Retire those reads before publishing
   // the replacement so a late pre-clear snapshot cannot overwrite it.
@@ -1051,6 +1060,12 @@ function currentDispatchClient(targetRef?: string, method?: string, requireArmed
 
 function dropUnpinnedModel(ref: string): void {
   if (pinnedMutationRefs.has(ref) || (refCounts.get(ref) ?? 0) > 0) return;
+  // The pinned drain is the path a pinned ref's model finally leaves through
+  // (releaseThread returns early while pinned), so the flush runs here too —
+  // ordered before the model leaves the map, on the pre-removal snapshot —
+  // and the memo dies with the model.
+  flushCacheWrite(ref);
+  clearOversizeMemo(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
   // The model is leaving `threads` here, so its index membership leaves with
@@ -1957,6 +1972,7 @@ async function hydrateAndSubscribe(
     throw err;
   }
   markSubscribed();
+  if (discardHeldHistory) clearOversizeMemo(ref); // the stale-snapshot retry's replacement is a mid-lifetime shrink
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
   // merge it (same incarnation/epoch, length >= held's), leaving every held
@@ -4483,6 +4499,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // frameTimes is dropped in lockstep — an untracked ref has no business
     // holding onto a liveness trace a future ensureThread() of the same ref
     // should start fresh, the same way it re-reads a fresh model.
+    flushCacheWrite(ref); // the tail commits before the model leaves the map
     removeThreadModel(ref);
   },
 
@@ -5103,6 +5120,109 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 }));
 
+// The write seam (spec, "The write seam"): a subscription to the threads map,
+// not a funnel. Publications flow through putThreadModel(s) and the
+// notification handler's own setState; a subscription sees them all.
+let cacheWriteDebounceMs = 1_000;
+let cacheWriteMaxWaitMs = 5_000;
+export function setCacheWriteTimersForTests(debounceMs: number, maxWaitMs: number): void {
+  cacheWriteDebounceMs = debounceMs;
+  cacheWriteMaxWaitMs = maxWaitMs;
+}
+
+interface CacheWriteSchedule {
+  trailing: ReturnType<typeof setTimeout>;
+  maxWait: ReturnType<typeof setTimeout>;
+}
+const cacheWriteSchedules = new Map<string, CacheWriteSchedule>();
+const oversizeMemo = new Set<string>();
+
+function clearOversizeMemo(ref: string): void {
+  oversizeMemo.delete(ref);
+}
+
+function scheduleCacheWrite(ref: string): void {
+  const existing = cacheWriteSchedules.get(ref);
+  if (existing) clearTimeout(existing.trailing); // trailing debounce: reschedule
+  const fire = () => {
+    cacheWriteSchedules.delete(ref);
+    const model = threadsStore.getState().threads.get(ref);
+    if (model !== undefined) writeCacheRecord(ref, model);
+  };
+  const schedule: CacheWriteSchedule = {
+    trailing: setTimeout(fire, cacheWriteDebounceMs),
+    maxWait: existing?.maxWait ?? setTimeout(fire, cacheWriteMaxWaitMs), // max-wait: a streaming session never starves
+  };
+  cacheWriteSchedules.set(ref, schedule);
+}
+
+function cancelCacheWrite(ref: string): void {
+  const schedule = cacheWriteSchedules.get(ref);
+  if (schedule === undefined) return;
+  clearTimeout(schedule.trailing);
+  clearTimeout(schedule.maxWait);
+  cacheWriteSchedules.delete(ref);
+}
+
+/** The flush: fires a pending write NOW, its gates evaluated on the current
+ * (pre-removal) model. Ordered before the model leaves the map (spec, "The
+ * flush is load-bearing"): a flush after removal would read an empty map and
+ * drop the tail on every graceful close. */
+function flushCacheWrite(ref: string): void {
+  cancelCacheWrite(ref);
+  const model = threadsStore.getState().threads.get(ref);
+  if (model !== undefined) writeCacheRecord(ref, model);
+}
+
+function cacheWriteGatesPass(ref: string, model: ThreadModel): boolean {
+  const state = threadsStore.getState();
+  return (
+    model.history?.incarnation !== undefined && // a completed v6 content-bearing read
+    !state.cacheShellRefs.has(ref) && // the shell skip: lineage state, not object identity
+    !state.deletedRefs.has(ref) && // the deletion fence, re-checked at fire time
+    !state.cacheSuppressed.has(ref) && // the clear suppression, re-checked at fire time
+    model.history.invalidatedAtGeneration === undefined && // the one liveness marker
+    model.history.failed === undefined &&
+    currentSessionCache().isOpen() // a still-opening connection skips; the next publication retries
+  );
+}
+
+function writeCacheRecord(ref: string, model: ThreadModel): void {
+  if (!cacheWriteGatesPass(ref, model)) return;
+  if (oversizeMemo.has(ref)) return; // memoized per ref, scoped to the model's lifetime
+  const record = cachedSessionRecord(model, Date.now()); // the synchronous snapshot
+  if (record === undefined) return;
+  const scheduledEpoch = tabCacheEpoch ?? 0; // the epoch this write was scheduled under
+  void currentSessionCache()
+    .put(record, scheduledEpoch, Date.now())
+    .then((result) => {
+      if (result.outcome === "oversize") oversizeMemo.add(ref);
+      if (result.outcome === "aborted") onCacheEpochObserved(result.observedEpoch);
+    })
+    .catch(() => {}); // every failure is a dropped write; the next debounced window retries
+}
+
+// The missed-message backstop (spec, "Eviction, cap, and cross-tab"): the
+// aborted write is itself the tab's proof that a clear happened.
+function onCacheEpochObserved(observed: number): void {
+  if (tabCacheEpoch !== undefined && observed <= tabCacheEpoch) return;
+  tabCacheEpoch = observed;
+  threadsStore.setState((s) => {
+    const suppressed = new Set(s.cacheSuppressed);
+    for (const [ref, captured] of s.cacheLeases) if (captured < observed) suppressed.add(ref);
+    return { cacheSuppressed: suppressed };
+  });
+}
+
+threadsStore.subscribe((state, previous) => {
+  if (state.threads === previous.threads) return; // watched-only publications never touch this map
+  for (const ref of state.threads.keys()) {
+    if (state.threads.get(ref) === previous.threads.get(ref)) continue;
+    if (state.threads.get(ref)?.history?.incarnation === undefined) continue; // a model with no recorded history can never produce a cache record, so the seam arms nothing for it — a pointless pending timer is the whole cost, but a test suite's fake clock pays it in shifted delivery; the publication that first gives the model a recorded history schedules it, and every write gate still applies at fire time
+    scheduleCacheWrite(ref);
+  }
+});
+
 export function useThreadsStore(): ThreadsStoreState;
 export function useThreadsStore<T>(selector: (state: ThreadsStoreState) => T): T;
 export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): T | ThreadsStoreState {
@@ -5170,6 +5290,17 @@ export function resetThreadsStoreForTests(): void {
   tabCacheEpoch = undefined;
   setSessionCacheAdapterForTests(undefined);
   sessionCacheAdapter.close();
+  // The write seam's module state: a pending debounced write must not fire
+  // into the fresh state, the oversize memo dies with the models it
+  // memoized, and the injected timers return to the spec's defaults.
+  for (const schedule of cacheWriteSchedules.values()) {
+    clearTimeout(schedule.trailing);
+    clearTimeout(schedule.maxWait);
+  }
+  cacheWriteSchedules.clear();
+  oversizeMemo.clear();
+  cacheWriteDebounceMs = 1_000;
+  cacheWriteMaxWaitMs = 5_000;
   trackedHydrationCompletions.clear();
   pendingThreadHydrations.clear();
   pendingMutationReconciliations.clear();

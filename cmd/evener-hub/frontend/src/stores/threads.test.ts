@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
+  CachedSessionRecord,
   ConnectionState,
   InitializeResponse,
   MethodName,
@@ -51,7 +52,7 @@ import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDraf
 import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
-import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { SessionCacheIndexedDB, type SessionCacheWriteOutcome } from "./sessionCacheIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
@@ -366,6 +367,15 @@ async function deleteMutationDatabase(): Promise<void> {
 class MissCacheAdapter extends SessionCacheIndexedDB {
   override get(_ref: string, _now: number): Promise<undefined> {
     return Promise.resolve(undefined);
+  }
+  // The write seam (Task 6) fires debounced writes through this same adapter
+  // whenever a publication passes its fire-time gates. The connection gate
+  // already refuses them here — the sync-miss get above never opens the
+  // adapter — but the shim says "no storage" outright rather than relying on
+  // that, so no fixture in this suite can ever write a record or leave one
+  // behind in the shared fake database.
+  override put(_record: CachedSessionRecord, _scheduledEpoch: number, _now: number): Promise<SessionCacheWriteOutcome> {
+    return Promise.resolve({ outcome: "failed" });
   }
 }
 
