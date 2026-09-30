@@ -2,7 +2,7 @@
 // mark (spec 8.1), and the context chips under it. The mark reuses the
 // Board's states (src/board/attention.ts). A session you are looking at is
 // never unread, so a finished one is Idle, with no dot.
-import { subagentState } from "../subagents/subagentModel";
+import { subagentState, summaryTally } from "../subagents/subagentModel";
 import type { EvenerDelegateInfo, ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
 import { compactDuration } from "./format";
@@ -108,20 +108,22 @@ export function contextChips(
 	subagents: SessionActivityCounts | null = null,
 ): ContextChip[] {
 	const chips: ContextChip[] = [];
-	const total = subagents?.known ? subagents.total : undefined;
-	if (connected && (total === undefined ? (session.delegates?.length ?? 0) > 0 : total > 0)) {
-		const failed = subagents?.known && subagents.failed > 0 ? `${subagents.failed} failed` : undefined;
+	const tally = summaryTally(subagents ?? undefined);
+	if (connected && tally && tally.total > 0) {
+		const failed = tally.failed > 0 ? `${tally.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
-			label: total === undefined ? "Subagents" : `Subagents ${total}`,
+			label: `Subagents ${tally.total}`,
 			failed,
 			attention: false,
-			accessibilityLabel:
-				total === undefined
-					? "Subagents, count unknown"
-					: failed
-						? `Subagents, ${total}, ${failed}`
-						: `Subagents, ${total}`,
+			accessibilityLabel: failed ? `Subagents, ${tally.total}, ${failed}` : `Subagents, ${tally.total}`,
+		});
+	} else if (connected && !tally && (session.delegates?.length ?? 0) > 0) {
+		chips.push({
+			kind: "subagents",
+			label: "Subagents",
+			attention: false,
+			accessibilityLabel: "Subagents, count unknown",
 		});
 	}
 	if (files.count > 0)
