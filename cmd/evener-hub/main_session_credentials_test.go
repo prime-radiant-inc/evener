@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -38,24 +37,18 @@ func TestRunMainProbesACredentialASessionWasRefused(t *testing.T) {
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
 			Evener: appwire.EvenerThread{Failure: &appwire.ThreadFailure{
 				Title: "Turn failed",
-				Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "base", Status: http.StatusUnauthorized},
+				Cause: providerCause("base", http.StatusUnauthorized),
 			}},
 		}}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
-	if err := os.MkdirAll(cfg.RunDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	writeRendezvous(t, cfg.RunDir, entry)
 
-	var probed atomic.Int32
+	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("base", http.StatusUnauthorized, "refused", nil, nil)}
 	deps.afterWeb = func(web *WebServer) {
-		web.auth.credentialTestLoader = func(string, bool) (credentialProbeClient, error) {
-			probed.Add(1)
-			return &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("base", http.StatusUnauthorized, "refused", nil, nil)}, nil
-		}
+		web.auth.credentialTestLoader = func(string, bool) (credentialProbeClient, error) { return client, nil }
 	}
 	var stderr bytes.Buffer
 	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
@@ -63,7 +56,7 @@ func TestRunMainProbesACredentialASessionWasRefused(t *testing.T) {
 	}
 	// runMain waits for its background runner before it returns, and the
 	// probe runs there.
-	if got := probed.Load(); got != 1 {
+	if got := client.callCount(); got != 1 {
 		t.Fatalf("credential checks = %d, want one for the instance the session's turn was refused on", got)
 	}
 }
