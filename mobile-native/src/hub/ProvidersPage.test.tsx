@@ -1610,9 +1610,9 @@ it("leaves the Type row untagged for a provider that isn't the default, and keep
 	await act(async () => {});
 	await openDetail(tree, "work");
 	expect(hasControl(tree, "Type, anthropic")).toBe(true);
-	const modal = tree.root;
-	expect(modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default")).toHaveLength(0);
-	expect(subtreeText(modal)).toContain("The key expires soon.");
+	const page = tree.root;
+	expect(page.findAll((node) => String(node.type) === "Text" && node.props.children === "Default")).toHaveLength(0);
+	expect(subtreeText(page)).toContain("The key expires soon.");
 });
 
 it("keeps a provider's facts in its group: Default as a tag, where it's defined, and each credential", async () => {
@@ -1628,12 +1628,12 @@ it("keeps a provider's facts in its group: Default as a tag, where it's defined,
 	const { tree } = mountPage();
 	await act(async () => {});
 	await openDetail(tree, "work");
-	const modal = tree.root;
-	const text = subtreeText(modal);
+	const page = tree.root;
+	const text = subtreeText(page);
 	expect(text).not.toContain("The default provider.");
 	expect(text).not.toContain("From the environment.");
 	expect(text).not.toContain("Shadowed");
-	const tags = modal.findAll((node) => String(node.type) === "Text" && node.props.children === "Default");
+	const tags = page.findAll((node) => String(node.type) === "Text" && node.props.children === "Default");
 	expect(tags).not.toHaveLength(0);
 	expect(hasControl(tree, "Defined in, Environment")).toBe(true);
 	expect(hasControl(tree, "Credential, Configured via environment variable (WORK_KEY)")).toBe(true);
