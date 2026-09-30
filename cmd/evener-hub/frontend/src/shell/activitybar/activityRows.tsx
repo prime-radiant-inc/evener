@@ -4,9 +4,11 @@
 // app's own formatters (jobStatusDisplay, watchMeta, watchName) so the
 // sidebar can never drift from the rail or the activity panel.
 
-import type { JobActivityJob, SessionDelegate, SessionWatch } from "@evener/appwire-client";
+import type { ActivityWatchRow, JobActivityJob, SessionDelegate } from "@evener/appwire-client";
 import { activityDelegateState, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
+import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
+import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 
@@ -108,16 +110,24 @@ export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => vo
   );
 }
 
-export function WatchRow({ watch, now }: { watch: SessionWatch; now: number }) {
+export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
+  const { watch } = row;
   return (
-    <div className={CLASS.row}>
-      <span className={`${CLASS.rowGlyph} ${CLASS.glyphQuiet}`}>
-        <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
-      </span>
-      <span className={CLASS.rowBody}>
-        <span className={CLASS.rowName}>{watchName(watch)}</span>
-        <span className={CLASS.rowMeta}>{watchMeta(watch, now)}</span>
-      </span>
-    </div>
+    <Disclosure
+      id={`sidebar-${row.id}`}
+      summary={
+        <span className={CLASS.row}>
+          <span className={`${CLASS.rowGlyph} ${CLASS.glyphQuiet}`}>
+            <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
+          </span>
+          <span className={CLASS.rowBody}>
+            <span className={CLASS.rowName}>{watchName(watch)}</span>
+            <span className={CLASS.rowMeta}>{watchMeta(watch, now)}</span>
+          </span>
+        </span>
+      }
+    >
+      <ActivityWatchDetail row={row} now={now} />
+    </Disclosure>
   );
 }

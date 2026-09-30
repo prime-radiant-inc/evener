@@ -65,6 +65,36 @@ test("watch tab reads typed receiver state and preserves cadence/delivery vocabu
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(0);
 });
 
+test("watch disclosure reveals its complete condition and keeps equal IDs in different receivers separate", async () => {
+  const client = activityClient();
+  const note = "Follow the release monitor until the readiness marker appears in its output";
+  client.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [activityWatch({ note, outputMatch: "READY_FOR_REVIEW", target: "release-monitor" }, ref)],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const view = render(<WatchesTab scope={scope()} />);
+  const summary = await screen.findByText(note);
+  expect(screen.queryByTestId("watch-facts")).toBeNull();
+  fireEvent.click(summary);
+  expect(screen.getByTestId("watch-note").textContent).toBe(note);
+  expect(screen.getByTestId("watch-facts").textContent).toContain("READY_FOR_REVIEW");
+  expect(screen.getByTestId("watch-facts").textContent).toContain("release-monitor");
+  expect(client.calls.filter((call) => call.method === "evener/thread/watches/list")).toHaveLength(1);
+  view.rerender(
+    <WatchesTab
+      scope={deriveScope(
+        createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
+        "other:receiver",
+      )}
+    />,
+  );
+  await screen.findByText(note);
+  expect(screen.queryByTestId("watch-facts")).toBeNull();
+});
+
 test("only successful terminal jobs fold, and revealed output retains its authoritative identity", async () => {
   const client = activityClient();
   client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
