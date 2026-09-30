@@ -90,6 +90,10 @@ export function createDemoSessionActivity(resolve: (ref: string) => ActivityRoot
 				const terminal = delegate.terminal === true;
 				const row: SessionDelegate = {
 					runGeneration: delegate.runGeneration ?? 0,
+					...(delegate.reportPreview !== undefined ? { reportPreview: delegate.reportPreview } : {}),
+					...(delegate.reportPreviewTruncated !== undefined
+						? { reportPreviewTruncated: delegate.reportPreviewTruncated }
+						: {}),
 					delegateId: delegate.delegateId,
 					ownerRef: node.ref,
 					rootRef: root.ref,

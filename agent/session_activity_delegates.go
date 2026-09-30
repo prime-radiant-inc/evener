@@ -90,7 +90,53 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 			result.Page.NextCursor = read.index.encode(token)
 			return result, nil
 		}
-	} else {
+	}
+	candidates, complete, err := read.captureDelegateCandidates(ctx, params, token, walk)
+	if err != nil {
+		return result, err
+	}
+	pageBudget := newSessionActivityPageBudget(result)
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if candidate.included {
+			projected := candidate.project()
+			result.Delegates = append(result.Delegates, projected)
+			// Reserve room for the opaque continuation; never consume an excluded row.
+			if !pageBudget.fits(projected, result) {
+				result.Delegates = result.Delegates[:len(result.Delegates)-1]
+				complete = false
+				// Later captured rows must not change the excluded row's budget result.
+				read.budget = candidate.remainingBudget
+				break
+			}
+		}
+		token.After = candidate.key
+	}
+	result.Page.Complete = complete
+	if !complete {
+		if len(result.Delegates) == 0 && read.budget > 0 {
+			return result, appwire.Unavailable("session activity context exceeds response budget")
+		}
+		result.Page.NextCursor = read.index.encode(token)
+	}
+	return result, nil
+}
+
+type sessionActivityDelegateCandidate struct {
+	key             sessionActivityKey
+	included        bool
+	remainingBudget int
+	row             appwire.SessionDelegate
+	report          json.RawMessage
+}
+
+// Capture bounded row facts and the immutable settled packet together. Report
+// decoding and response byte admission happen after releasing the controller.
+func (read *sessionActivityRead) captureDelegateCandidates(ctx context.Context, params appwire.SessionActivityListParams, token sessionActivityToken, walk *sessionActivityWalk) ([]sessionActivityDelegateCandidate, bool, error) {
+	controller := read.index.controller
+	if controller != nil {
 		controller.mu.Lock()
 		defer controller.mu.Unlock()
 	}
@@ -113,10 +159,11 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 	if token.After.ID != "" {
 		start = sort.Search(len(keys), func(i int) bool { return !keys[i].before(token.After) }) - 1
 	}
-	pageBudget := newSessionActivityPageBudget(result)
+	candidates := make([]sessionActivityDelegateCandidate, 0, params.Limit)
+	matched := 0
 	for ; start >= 0 && read.budget > 0; start-- {
 		if err := ctx.Err(); err != nil {
-			return result, err
+			return nil, false, err
 		}
 		key := keys[start]
 		read.budget--
@@ -127,40 +174,31 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 		if row == nil || !owners[sessionActivityDelegateOwner(state, row)] ||
 			(controller != nil && controller.activityAdmissions[key.ID] > walk.Admission) ||
 			(controller == nil && read.index.delegateOffsets[key.ID] > walk.Cutoffs[read.rootID]) {
-			token.After = key
+			candidates = append(candidates, sessionActivityDelegateCandidate{key: key})
 			continue
 		}
-		projected := projectSessionActivityDelegate(read.rootID, state, row, time.Now().UTC())
+		candidate := captureSessionActivityDelegate(read.rootID, state, row, time.Now().UTC())
+		candidate.key = key
+		candidate.included = true
+		candidate.remainingBudget = read.budget
 		if controller != nil {
 			if live := controller.live[key.ID]; live != nil && live.activityAt.After(row.LatestActivityAt) {
-				projected.LatestActivityAt = live.activityAt.UTC().Format(time.RFC3339Nano)
+				candidate.row.LatestActivityAt = live.activityAt.UTC().Format(time.RFC3339Nano)
 			}
 		}
-		result.Delegates = append(result.Delegates, projected)
-		// Reserve room for the opaque continuation; never consume an excluded row.
-		if !pageBudget.fits(projected, result) {
-			result.Delegates = result.Delegates[:len(result.Delegates)-1]
-			break
-		}
-		token.After = key
-		if len(result.Delegates) >= params.Limit {
+		candidates = append(candidates, candidate)
+		matched++
+		if matched >= params.Limit {
 			start--
 			break
 		}
 	}
-	result.Page.Complete = start < 0
-	if !result.Page.Complete {
-		if len(result.Delegates) == 0 && read.budget > 0 {
-			return result, appwire.Unavailable("session activity context exceeds response budget")
-		}
-		result.Page.NextCursor = read.index.encode(token)
-	}
-	return result, nil
+	return candidates, start < 0, nil
 }
 
 // The compact projection reads only already-owned fields, without cloning the
 // immutable frozen prompt or traversing child transcripts and worktrees.
-func projectSessionActivityDelegate(rootID string, state delegatestore.State, aggregate *delegatestore.Aggregate, now time.Time) appwire.SessionDelegate {
+func captureSessionActivityDelegate(rootID string, state delegatestore.State, aggregate *delegatestore.Aggregate, now time.Time) sessionActivityDelegateCandidate {
 	snapshot := delegateSnapshot{id: aggregate.DelegateID, parentID: aggregate.Descriptor.ParentDelegateID, descriptor: aggregate.Descriptor, generation: aggregate.Generation, phase: aggregate.Phase, currentRunOpen: aggregate.CurrentRunOpen, runStartedAt: aggregate.RunStartedAt, resumable: aggregate.Resumable, needsAttention: aggregate.NeedsAttention, notResumableReason: aggregate.NotResumableReason, latestActivityAt: aggregate.LatestActivityAt, lastOutcome: aggregate.LatestOutcome}
 	snapshot.lifecycle = delegateLifecycleRunning
 	if aggregate.Phase == delegatestore.PhaseIdle || aggregate.Phase == delegatestore.PhaseClosed {
@@ -178,14 +216,11 @@ func projectSessionActivityDelegate(rootID string, state delegatestore.State, ag
 			row.RunEndedAt = outcome.EndedAt.UTC().Format(time.RFC3339Nano)
 		}
 	}
-	// RunFinished replaces the packet for the exact open generation and closes
-	// that run atomically. A resumed or settling run still owns the old packet.
+	candidate := sessionActivityDelegateCandidate{}
+	// RunFinished replaces the immutable packet for the exact open generation
+	// and closes that run atomically. A resumed run still owns the old packet.
 	if packet := aggregate.LatestPacket; !aggregate.CurrentRunOpen && aggregate.LatestOutcome != nil && packet != nil && packet.Kind == delegatestore.PacketReported {
-		var report string
-		if json.Unmarshal(packet.Message, &report) == nil {
-			row.ReportPreview = truncateActivityText(report, activityMaxDelegateProseRunes)
-			row.ReportPreviewTruncated = row.ReportPreview != report
-		}
+		candidate.report = packet.Message
 	}
 	if packet := aggregate.LatestPacket; packet != nil && len(packet.Metadata) <= activityMaxDelegatePayloadBytes {
 		var metadata delegateTerminalPacketMetadata
@@ -195,6 +230,17 @@ func projectSessionActivityDelegate(rootID string, state delegatestore.State, ag
 				row.Worktree = &appwire.JobActivityWorktree{Path: truncateActivityText(wt.Path, activityMaxDelegateProseRunes), Branch: truncateActivityText(wt.Branch, activityMaxLabelRunes), HeadSHA: truncateActivityText(wt.HeadSHA, activityMaxLabelRunes), Ahead: wt.Ahead, Dirty: wt.Dirty}
 			}
 		}
+	}
+	candidate.row = row
+	return candidate
+}
+
+func (candidate sessionActivityDelegateCandidate) project() appwire.SessionDelegate {
+	row := candidate.row
+	var report string
+	if json.Unmarshal(candidate.report, &report) == nil {
+		row.ReportPreview = truncateActivityText(report, activityMaxDelegateProseRunes)
+		row.ReportPreviewTruncated = row.ReportPreview != report
 	}
 	return row
 }

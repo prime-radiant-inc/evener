@@ -82,6 +82,19 @@ func TestSessionActivityReportPreviewFollowsSettledGeneration(t *testing.T) {
 		}
 	}
 	assertReport("first report", 1)
+	read, err := s.activityRead(t.Context(), appwire.SessionActivityReadParams{Ref: params.Ref, Scope: appwire.SessionActivityScopeSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, walk, err := read.index.token(params, appwire.SessionActivityResourceDelegates, s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, complete, err := read.captureDelegateCandidates(t.Context(), appwire.SessionActivityListParams{Limit: 1}, token, walk)
+	read.index.release()
+	if err != nil || !complete || len(candidates) != 1 {
+		t.Fatalf("capture: candidates=%d complete=%v err=%v", len(candidates), complete, err)
+	}
 	appendEvents(delegateControllerRunStartedEvent(id, 2, delegatestore.TriggerOwnerInput, at.Add(2*time.Second)))
 	assertReport("", 2)
 	packet.Message = json.RawMessage(`"second report"`)
@@ -89,6 +102,10 @@ func TestSessionActivityReportPreviewFollowsSettledGeneration(t *testing.T) {
 	assertReport("", 2)
 	appendEvents(delegateRunFinishedEvent(delegateLease{delegateID: id, generation: 2}, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", at.Add(3*time.Second), delegateDeliveryID(id, 2), nil))
 	assertReport("second report", 2)
+	captured := candidates[0].project()
+	if captured.RunGeneration != 1 || captured.ReportPreview != "first report" {
+		t.Fatalf("captured report changed with controller: %+v", captured)
+	}
 	appendEvents(delegateControllerRunStartedEvent(id, 3, delegatestore.TriggerAttention, at.Add(4*time.Second)), delegateRunFinishedEvent(delegateLease{delegateID: id, generation: 3}, delegatestore.OutcomeCompleted, delegatestore.DispositionCompletedNoAction, "", at.Add(5*time.Second), "", nil))
 	assertReport("", 3)
 }
@@ -110,7 +127,7 @@ func TestSessionActivityReportPreviewKeepsBoundedText(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			aggregate := &delegatestore.Aggregate{DelegateID: "dlg", Phase: delegatestore.PhaseIdle, LatestOutcome: &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted}, LatestPacket: &delegatestore.TerminalPacket{Kind: tc.kind, Message: tc.message}}
-			row := projectSessionActivityDelegate("root", delegatestore.State{"dlg": aggregate}, aggregate, time.Unix(100, 0))
+			row := captureSessionActivityDelegate("root", delegatestore.State{"dlg": aggregate}, aggregate, time.Unix(100, 0)).project()
 			raw, err := json.Marshal(row)
 			if err != nil {
 				t.Fatal(err)
@@ -151,10 +168,13 @@ func TestSessionActivityReportPreviewPreservesPageMembership(t *testing.T) {
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Limit: 200}
 	seen := make(map[string]bool)
 	complete := false
-	for range 10 {
+	for pageNumber := range 10 {
 		page, err := s.ListActivityDelegates(t.Context(), params)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if pageNumber == 0 && (page.Page.Complete || len(page.Delegates) == 0 || len(page.Delegates) >= 50) {
+			t.Fatalf("byte admission must retain excluded candidates for continuation: rows=%d complete=%v", len(page.Delegates), page.Page.Complete)
 		}
 		encoded, err := json.Marshal(page)
 		if err != nil {
