@@ -502,14 +502,23 @@ function Providers({
 	// show while the detail is pushed. The native modal covers the page's
 	// status line, so the editor carries its own - and the draft stays in
 	// reach of neither a dismissal nor a missed recovery.
-	const editorFrame = (kind: "create" | "edit") => (
+	const editorFrame = (kind: "create" | "edit") => {
+		// A new provider's editor closes, and an edit returns to the provider's detail.
+		const dismiss = kind === "create" ? close : () => setConfiguration(null);
+		// A save clears the editor and shows the saved provider: a new
+		// provider's detail pushes; an edit's is already in front.
+		const showSaved = (name: string) => {
+			setConfiguration(null);
+			if (kind === "create") openDetail(name);
+			else setSelected(name);
+		};
+		return (
 		<ModalFrame
 			visible={configuration === kind}
 			onRequestClose={() => {
 				// A swipe down asks before an edit goes (spec 6), and waits out a
-				// save in flight, as the editor's Cancel does: a new provider's
-				// editor closes, and an edit returns to the provider's detail.
-				editorLeave.current?.(kind === "create" ? close : () => setConfiguration(null));
+				// save in flight, as the editor's Cancel does.
+				editorLeave.current?.(dismiss);
 			}}
 		>
 			{configuration === kind ? (
@@ -521,34 +530,25 @@ function Providers({
 					onEdit={surface.edit}
 					disabled={writeHeld}
 					canUseConnection={canUseConnection}
-					onSaved={(name) => {
-						setConfiguration(null);
-						// A new provider's detail pushes; an edit's is already in front.
-						if (kind === "create") openDetail(name);
-						else setSelected(name);
-					}}
+					onSaved={showSaved}
 					onEndpointConflict={(name) => {
 						// The hub refused the endpoint the save asserted: the name
 						// moved since this editor was seeded, and nothing was
 						// written. Clear the editor like a completed save, re-read
 						// the provider list so a retry asserts the destination now
 						// on screen, and warn in this client's own words.
-						setConfiguration(null);
-						if (kind === "create") openDetail(name);
-						else setSelected(name);
+						showSaved(name);
 						setActionWarning(ENDPOINT_CHANGED_WARNING);
 						surface.refresh();
 					}}
-					onCancel={() => {
-						if (kind === "create") close();
-						else setConfiguration(null);
-					}}
+					onCancel={dismiss}
 					leaveGuard={editorLeave}
 					accessory={<SheetStatus />}
 				/>
 			) : null}
 		</ModalFrame>
-	);
+		);
+	};
 	// The selected provider's detail, which ProviderDetailPage shows pushed over
 	// this page (spec 12; device audit N3). It is built here, beside the writes
 	// and the credential editor it drives, and published on every render.
