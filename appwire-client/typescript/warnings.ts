@@ -10,6 +10,7 @@
 
 import type { ItemModel } from "./model";
 import { isPlainObject } from "./plainObject";
+import { hasWarningText } from "./warningText";
 
 /**
  * The context-budget notices (an output-allocation clamp, a context-usage
@@ -60,4 +61,44 @@ export function isInformationalWarning(item: ItemModel): boolean {
 function noticeWarningCode(raw: unknown): unknown {
   if (!isPlainObject(raw) || !isPlainObject(raw.warning)) return undefined;
   return raw.warning.code;
+}
+
+/** A warning's words as both clients show them, each once. */
+export interface WarningWords {
+  message: string;
+  title?: string;
+  hint?: string;
+}
+
+/**
+ * A warning's message, title and hint, each only when it is a non-blank
+ * string. The message is the warning's text, or its hint, then its title,
+ * when it has none (a title is a label, a hint a sentence that can stand as
+ * the line), and a title or hint that says what the message says is left
+ * out, so no row repeats itself. Null when there is nothing to show.
+ * Every warning row on the web and the phone reads its words from here.
+ */
+export function warningWords(text: unknown, title: unknown, hint: unknown): WarningWords | null {
+  const message = [text, hint, title].find(hasWarningText);
+  if (message === undefined) return null;
+  return {
+    message,
+    ...(hasWarningText(title) && title !== message ? { title } : {}),
+    ...(hasWarningText(hint) && hint !== message ? { hint } : {}),
+  };
+}
+
+/**
+ * A daemon warning notice (a systemMessage with eventKind "warning") that is
+ * not informational: a failure both clients render with the warning
+ * treatment rather than as a quiet system line (#3387). Returns its words
+ * (warningWords) from its text and raw.warning's title and hint
+ * (internal/appoverlay/notices.go warningAnnouncement); null for an
+ * informational warning, one with nothing to show, or anything but a
+ * warning notice.
+ */
+export function attentionWarningNotice(item: ItemModel): WarningWords | null {
+  if (item.type !== "systemMessage" || item.eventKind !== "warning" || isInformationalWarning(item)) return null;
+  const fields = isPlainObject(item.raw) && isPlainObject(item.raw.warning) ? item.raw.warning : {};
+  return warningWords(item.text, fields.title, fields.hint);
 }

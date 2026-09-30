@@ -94,6 +94,7 @@
     "builtinInvocation.ts",
     "transcriptDisplayConfig.ts",
     "transcriptProjector.ts",
+    "warningText.ts",
     "warnings.ts",
     "state/navigation/index.ts",
     "state/navigation/codec.ts",

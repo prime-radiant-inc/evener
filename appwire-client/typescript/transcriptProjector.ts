@@ -7,7 +7,7 @@ import {
   isTurnError,
 } from "./itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
-import { comparePositions, hasWarningText } from "./reducer";
+import { comparePositions } from "./reducer";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
   type ContentVector,
@@ -18,6 +18,7 @@ import {
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
 import { isInformationalWarning } from "./warnings";
+import { hasWarningText } from "./warningText";
 
 export const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
 
