@@ -1303,6 +1303,51 @@ describe("cached write seam", () => {
       vi.useRealTimers();
     }
   });
+
+  it("flush: the pinned drain (dropUnpinnedModel) ends a suppressed ref's suppression and lease with the model", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // The same pinned-drain mechanics as the test above: a durable queued
+      // row pins the ref, the ready discovery publishes its model, and the
+      // row's settle is what finally drops the pin and the model.
+      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-drain-suppressed" });
+      await storage.enqueueIntent({
+        targetRef: "local:pinned_sup",
+        method: "turn/queue",
+        payload: { ref: "local:pinned_sup", expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+        attachments: [],
+        optimisticDisplay: { text: "queued" },
+      });
+      storage.close();
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {})); // the row stays durable
+      await nextModelPublished("local:pinned_sup");
+      await threadsStore.getState().ensureThread("local:pinned_sup_warm"); // warms the connection's adapter
+      void threadsStore.getState().ensureThread("local:pinned_sup"); // the pane claim; the model exists, so no read
+      threadsStore.getState().releaseThread("local:pinned_sup"); // pinned: the model stays
+      expect(threadsStore.getState().threads.has("local:pinned_sup")).toBe(true);
+      // The state a committed clear leaves on an open leased ref, armed
+      // directly here (clearCachedSessions is the production writer, covered
+      // in "the clear" below); this test owns the drain-side lifecycle.
+      threadsStore.setState((s) => ({
+        cacheSuppressed: new Set(s.cacheSuppressed).add("local:pinned_sup"),
+        cacheLeases: new Map(s.cacheLeases).set("local:pinned_sup", 0),
+      }));
+      expect(threadsStore.getState().cacheSuppressed.has("local:pinned_sup")).toBe(true);
+      expect(threadsStore.getState().cacheLeases.has("local:pinned_sup")).toBe(true);
+      const drained = nextModelRemoved("local:pinned_sup");
+      emitAppliedQueuedNotification("local:pinned_sup", "mutation-drain-suppressed"); // the row settles: the pin drops
+      await drained;
+      expect(threadsStore.getState().threads.has("local:pinned_sup")).toBe(false);
+      // The drain's removal dropped both: premature suppression decays with
+      // the final release of the ref, the pinned-drain path included.
+      expect(threadsStore.getState().cacheSuppressed.has("local:pinned_sup")).toBe(false);
+      expect(threadsStore.getState().cacheLeases.has("local:pinned_sup")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // The gap-rule bed (Task 7; spec, "The two serving paths, the live gap, and
@@ -2072,8 +2117,12 @@ describe("the clear", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const { posted } = installTestCacheChannel();
+      // The ref must hold a lease for the clear's arm and the revert's disarm
+      // to have anything to do — a seeded record opens the pane with one.
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, "local:resume");
       const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 40 } }));
       await threadsStore.getState().ensureThread("local:resume");
       await resolveEverything(fake);
       await vi.advanceTimersByTimeAsync(1_000);
@@ -2081,9 +2130,43 @@ describe("the clear", () => {
       installFaultedClearAdapter(); // beforeCommit("clear") throws: the honest no-op
       expect(await clearCachedSessions()).toEqual({ committed: false });
       expect(posted).toEqual([]); // commit-gated: no message for a clear that did not happen
+      expect(threadsStore.getState().cacheSuppressed.has("local:resume")).toBe(false); // the revert disarmed exactly what this clear armed
       emitHistoryUpdated("local:resume", { fold: "turn_m" }); // suppression disarmed: caching resumes
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:resume")).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the stacked clear: an aborted clear's revert never disarms a committed clear's suppression", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // The ref opens against a seeded record so it holds the lease the
+      // first clear's suppression arms.
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, "local:stack");
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 40 } }));
+      await threadsStore.getState().ensureThread("local:stack");
+      await resolveEverything(fake);
+      // Clear #1 commits: the open lease's ref is suppressed through its
+      // final release, and the durable epoch is now 1.
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      expect(threadsStore.getState().cacheSuppressed.has("local:stack")).toBe(true);
+      installFaultedClearAdapter(); // clear #2 aborts: beforeCommit("clear") throws
+      expect(await clearCachedSessions()).toEqual({ committed: false });
+      // The abort reverts exactly what clear #2 armed — nothing, the ref was
+      // already suppressed by clear #1 — so an earlier committed clear's
+      // suppression stands and the pane's next write stays refused.
+      expect(threadsStore.getState().cacheSuppressed.has("local:stack")).toBe(true);
+      emitHistoryUpdated("local:stack", { fold: "turn_x" }); // the pane keeps receiving pushes
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:stack")).toBeUndefined(); // no content re-cached after a committed clear
+      // The final release is still what lifts the suppression the committed clear armed.
+      threadsStore.getState().releaseThread("local:stack");
+      expect(threadsStore.getState().cacheSuppressed.has("local:stack")).toBe(false);
+      expect(threadsStore.getState().cacheLeases.has("local:stack")).toBe(false);
     } finally {
       vi.useRealTimers();
     }

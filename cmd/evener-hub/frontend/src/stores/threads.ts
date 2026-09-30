@@ -5404,15 +5404,22 @@ export function markCacheSessionsDeleted(refs: string[]): void {
  * in-memory timer state cannot commit transactionally — then one
  * read-write transaction. The broadcast is commit-gated: a sibling never
  * arms suppression for a clear that did not happen. A clear that never
- * reaches a definite commit reverts its in-memory effects, so open refs
- * resume caching at their next publication. */
+ * reaches a definite commit reverts its own in-memory effects — an
+ * earlier committed clear's suppression stands — so open refs resume
+ * caching at their next publication. */
 export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   const prior = tabCacheEpoch;
   tabCacheEpoch = (prior ?? 0) + 1;
   const leases = threadsStore.getState().cacheLeases;
+  // Arm only what this clear adds. A lease ref already suppressed carries an
+  // earlier committed clear's arming, still owed through this ref's final
+  // release; the abort branch below must revert exactly what THIS clear
+  // armed, so the refs armed here are recorded and never an earlier clear's
+  // suppression.
+  const armed = [...leases.keys()].filter((ref) => !threadsStore.getState().cacheSuppressed.has(ref));
   threadsStore.setState((s) => {
     const suppressed = new Set(s.cacheSuppressed);
-    for (const ref of leases.keys()) suppressed.add(ref); // every open lease predates this clear
+    for (const ref of armed) suppressed.add(ref); // every open lease predates this clear
     return { cacheSuppressed: suppressed };
   });
   for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
@@ -5421,7 +5428,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     tabCacheEpoch = prior; // revert unless a definite commit is observed
     threadsStore.setState((s) => {
       const suppressed = new Set(s.cacheSuppressed);
-      for (const ref of leases.keys()) suppressed.delete(ref);
+      for (const ref of armed) suppressed.delete(ref);
       return { cacheSuppressed: suppressed };
     });
     return { committed: false };
