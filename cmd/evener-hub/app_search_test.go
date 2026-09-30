@@ -9,7 +9,47 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
+
+// A search must not pull the whole past index into memory: the fetch that
+// feeds the Past group is bounded by the page size plus the live sessions the
+// group skips, not math.MaxInt32, so it stays finite as session history grows
+// (#2873).
+func TestHubSearchBoundsThePastFetch(t *testing.T) {
+	now := time.Now()
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+	// More matching past sessions than the bound, so an unbounded fetch would
+	// have to return every one of them.
+	for i := range searchPastLimit + 5 {
+		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+			ID: hubtest.SessionID(t), UpdatedAt: now.Add(-time.Duration(i+1) * time.Minute),
+			Name: "frobnitz chatter",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	var limits []int
+	past.SetSearchProbeForTest(func(limit, offset int) { limits = append(limits, limit) })
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{PID: 1, SessionID: hubtest.SessionID(t), Status: appwire.ThreadStatusActive},
+		hubcore.LiveEntry{PID: 2, SessionID: hubtest.SessionID(t), Status: appwire.ThreadStatusActive},
+	)
+	if _, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(limits) != 1 {
+		t.Fatalf("Search calls=%v, want exactly the one bounded past fetch", limits)
+	}
+	if want := searchPastLimit + 2; limits[0] != want {
+		t.Fatalf("past fetch limit=%d, want %d (the page size plus the live sessions the group skips)", limits[0], want)
+	}
+}
 
 func TestHubSearchIncludesMatchingPastSession(t *testing.T) {
 	root := t.TempDir()

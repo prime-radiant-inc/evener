@@ -129,6 +129,10 @@ type PastIndex struct {
 	// findCached miss and before the first probe. Instance-scoped test seam for
 	// interleaving a Rebuild swap in that window; nil in production.
 	afterFindCacheMiss func()
+	// searchProbe, when non-nil, observes each Search call's limit and offset.
+	// Instance-scoped test seam so a caller can pin that its fetch stays
+	// bounded however the index grows; nil in production.
+	searchProbe func(limit, offset int)
 
 	// rootIndex caches RootIndex's build for generation rootIndexGen. Guarded
 	// by mu.
@@ -204,6 +208,12 @@ func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
 // writes. It shares SetOnChange's ordering hazard: call it after the initial
 // Rebuild.
 func (i *PastIndex) SetOnRootChange(fn func()) { i.onRootChange = fn }
+
+// SetSearchProbeForTest installs an observer for the limit and offset of each
+// Search call. It is a test-only seam: a caller can pin that its past fetch
+// stays bounded (never math.MaxInt32) however the index grows. nil in
+// production.
+func (i *PastIndex) SetSearchProbeForTest(fn func(limit, offset int)) { i.searchProbe = fn }
 
 // contentFingerprint hashes the consumer-visible fields of the sorted entries so
 // a publish can detect a genuine content delta without a deep compare. It
@@ -606,6 +616,9 @@ func (i *PastIndex) snapshot() ([]PastEntry, uint64) {
 // matches q. SQLite FTS contributes token-prefix matches when available; the
 // in-memory scan preserves substring matches.
 func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
+	if i.searchProbe != nil {
+		i.searchProbe(limit, offset)
+	}
 	if strings.TrimSpace(q) != "" {
 		// Search is FTS's only consumer, so a stale mirror (a fold's or
 		// rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was
@@ -1088,6 +1101,21 @@ func matches(e PastEntry, lowerQ string) bool {
 		return true
 	}
 	return false
+}
+
+// Matches reports whether the entry for sessionID matches q by the same
+// substring rule Search applies, looking the entry up directly instead of
+// scanning Search's results. hubSearch uses it to answer a live session's own
+// prompt match without pulling the whole index into memory (#2873).
+func (i *PastIndex) Matches(sessionID, q string) bool {
+	if i == nil {
+		return false
+	}
+	e, ok := i.Find(sessionID)
+	if !ok {
+		return false
+	}
+	return matches(e, strings.ToLower(strings.TrimSpace(q)))
 }
 
 // SeedForTest replaces the in-memory index with the given metas (StateDir left

@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -52,26 +51,27 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	}
 	resp := appwire.SearchResponse{Live: []appwire.SearchResult{}, Past: []appwire.SearchResult{}, Scope: scope}
 	q := strings.ToLower(strings.TrimSpace(params.Query))
-	// Every past match, so the scope filters before the limit cuts: the
-	// newest matches are rarely the archived ones. This same fetch also
-	// feeds pastMatched (a live session's own prompt match), so bounding it
-	// even for scope=all would let enough newer past-only matches crowd a
-	// live session's older past-index entry out of both groups entirely.
+	var entries []hubcore.LiveEntry
+	if cfg.Roster != nil {
+		entries = cfg.Roster.List()
+		sortLiveForSearch(entries, cfg.Past)
+	}
+	// The past fetch behind the Past group is bounded: the page size plus one
+	// slot per live session, which the past loop skips, so a run of live
+	// matches cannot crowd a past-only match out of the page. A live session's
+	// own prompt match no longer rides on this fetch (it is looked up directly
+	// below), so the bound cannot drop it however old its entry is. The scope
+	// still filters before the limit cuts, now within the bounded page rather
+	// than the whole index, so the fetch stays finite as history grows (#2873).
 	var pastMatches []hubcore.PastEntry
-	pastMatched := map[string]bool{}
 	if cfg.Past != nil {
-		pastMatches = cfg.Past.Search(q, math.MaxInt32, 0)
-		for _, e := range pastMatches {
-			pastMatched[e.Meta.ID] = true
-		}
+		pastMatches = cfg.Past.Search(q, searchPastLimit+len(entries), 0)
 	}
 	// Every live session's result, in the Live order, built once for both
 	// the Live group and the In sessions group.
 	var live []appwire.SearchResult
 	isLive := map[string]bool{}
 	if cfg.Roster != nil {
-		entries := cfg.Roster.List()
-		sortLiveForSearch(entries, cfg.Past)
 		// A subagent is not a navigation row: the roots-only tree gives one no
 		// top-level row and lets an orphan (its parent not live) vanish (#3082).
 		// The Live group mirrors the Board's Live section, so it omits subagents
@@ -94,8 +94,10 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			result := liveSearchResult(cfg, le, decisions, now)
 			live = append(live, result)
 			// A live session's meta is in the past index too, so a prompt or
-			// working-directory match there lists it here, live.
-			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(result.Title), q) && !pastMatched[le.SessionID] {
+			// working-directory match there lists it here, live. That entry is
+			// looked up directly, not read off the bounded fetch, so it is found
+			// however far back it sits.
+			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(result.Title), q) && !cfg.Past.Matches(le.SessionID, q) {
 				continue
 			}
 			if roots.IsSubagent(le.SessionID) || running[le.SessionID] {
