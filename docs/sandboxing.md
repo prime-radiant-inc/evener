@@ -21,6 +21,13 @@ command line (or a resumed session's persisted config), never from a tool call.
 Sandboxing is opt-in on purpose. The default stays off so existing workflows are
 unchanged; turn it on when you want a session's blast radius contained.
 
+With sandbox off, built-in file writes, edits, patches, and the shell's `cwd`
+may target paths outside the session working directory. Relative paths still
+resolve against that working directory, and an omitted `cwd` defaults to it.
+Operating-system permissions and user instructions still apply. Explicit
+sandbox policies retain their boundaries, and allocated session scratch keeps
+its separate access contract.
+
 There is one deliberate delegate safety floor: a delegate whose structured tool
 scope contains no workspace-mutation tool (`write_file`, `edit_file`,
 `apply_patch`, or `manage_worktree`) receives a private `read-only` sandbox even
@@ -129,7 +136,7 @@ sockets beyond stdio.
 
 | Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
 |---|---|---|---|---|
-| `off` (default) | anywhere | working root only (today's behavior) | anywhere | anywhere |
+| `off` (default) | anywhere | anywhere | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
 | `restricted` | worktree only | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
