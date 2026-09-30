@@ -83,6 +83,7 @@ export function attachHistory(
 	reader: symbol,
 ): boolean {
 	if (owner.retired || (owner.reader !== null && owner.reader !== reader)) return false;
+	const adopting = owner.reader === null;
 	owner.reader = reader;
 	owner.store = store;
 	owner.service = service;
@@ -93,6 +94,13 @@ export function attachHistory(
 		sessions.set(owner.ref, owners);
 	}
 	owners.add(owner);
+	if (adopting) {
+		// Returning to a session selects its latest detached intent. Older
+		// detached searches must not resurface after that intent is cancelled.
+		for (const other of owners) {
+			if (other !== owner && other.reader === null) retireHistory(other);
+		}
+	}
 	return true;
 }
 
