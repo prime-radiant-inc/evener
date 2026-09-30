@@ -42,6 +42,7 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 				const { child: _child, branch: _branch, message: _message, turns: _turns, mandate: _mandate, ...facts } = d;
 				delegates.push({
 					...facts,
+					runGeneration: d.runGeneration ?? 0,
 					description: d.description ?? "",
 					ownerRef: node.ref,
 					rootRef: tree.root.ref,

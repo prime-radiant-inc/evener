@@ -1,3 +1,4 @@
+import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activityFixture } from "./subagents/sessionActivityTestUtils";
 // The Session's one Send and the tray's Stop, on the real ConversationScreen:
@@ -8,7 +9,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AnyNotification, type Thread, WireError } from "@evener/appwire-client";
+import { type AnyNotification, type SessionDelegatesResponse, type Thread, WireError } from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
@@ -321,12 +322,17 @@ const fleet: FleetShape = { live: [], needsYou: [] };
 const mountedScreens: ReactTestRenderer[] = [];
 // A coordinator's subagent tree (evener/jobs/list) and its direct stop
 // (evener/delegate/stop), for the subagent screen's tests.
-const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) => unknown; readFails: string | null } =
-	{
-		tree: null,
-		stop: () => ({ outcome: "stopping" }),
-		readFails: null,
-	};
+const coordinatorHub: {
+	tree: unknown;
+	delegates: SessionDelegatesResponse | null;
+	stop: (params: Record<string, unknown>) => unknown;
+	readFails: string | null;
+} = {
+	tree: null,
+	delegates: null,
+	stop: () => ({ outcome: "stopping" }),
+	readFails: null,
+};
 // Whether thread/read answers with a history identity, as a v6 hub does:
 // only then does the store take live pushes (overlay streams among them).
 const readHistory = { live: false };
@@ -344,6 +350,7 @@ afterEach(() => {
 	keyboard.reset();
 	systemGlass.reset();
 	coordinatorHub.tree = null;
+	coordinatorHub.delegates = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
 	otherThreads.clear();
@@ -429,6 +436,7 @@ function hubClient(
 						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
+			if (method === "evener/thread/delegates/list" && coordinatorHub.delegates) return coordinatorHub.delegates;
 			if (method.startsWith("evener/thread/") && coordinatorHub.tree) {
 				const f = activityFixture(coordinatorHub.tree, {
 					ref: String(params.ref),
@@ -4516,7 +4524,15 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	// render again when it does.
 	it("shows a finished subagent's report once the coordinator's tree arrives", async () => {
 		forgetSubagentTrees("hub-1");
-		const endedAt = new Date(Date.now() - 60_000).toISOString();
+		const actual = subagentOutcomesDelegatesResponse();
+		const reported = actual.delegates.find((row) => row.delegateId === "dlg_reported");
+		if (!reported) throw new Error("missing real producer report");
+		coordinatorHub.delegates = {
+			...actual,
+			context: { ...actual.context, ref: COORDINATOR.ref, rootRef: COORDINATOR.ref, sessionId: COORDINATOR.threadId },
+			delegates: [{ ...reported, ownerRef: COORDINATOR.ref, rootRef: COORDINATOR.ref, childRef: "local:fix" }],
+		};
+		const endedAt = reported.runEndedAt;
 		coordinatorHub.tree = subagentTree({
 			terminal: true,
 			outcome: "completed",
@@ -4545,7 +4561,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
 			delegates: [
 				{
-					delegateId: "d-fix",
+					delegateId: reported.delegateId,
+					runGeneration: reported.runGeneration,
 					ownerSessionId: "coord",
 					rootSessionId: "coord",
 					childSessionId: "fix",
@@ -4567,8 +4584,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 		const { tree } = await mount(served);
 		await settle();
-		expect(renderedText(tree)).toContain("Finished");
-		expect(renderedText(tree)).not.toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(tree)).toContain("Fixed the race: settle now waits for the drain.");
 	});
 
 	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {

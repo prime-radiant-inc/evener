@@ -168,7 +168,7 @@ func projectSessionActivityDelegate(rootID string, state delegatestore.State, ag
 	}
 	status := projectStableDelegateStatus(now, snapshot)
 	d := aggregate.Descriptor
-	row := appwire.SessionDelegate{DelegateID: aggregate.DelegateID, OwnerRef: encodeRef("", sessionActivityDelegateOwner(state, aggregate)), RootRef: encodeRef("", rootID), ChildRef: encodeRef("", d.ChildSessionID), ParentDelegateID: d.ParentDelegateID, Description: truncateActivityText(d.Description, activityMaxDelegateProseRunes), Task: truncateActivityText(d.Task, activityMaxDelegateProseRunes), Type: "delegate", Lifecycle: string(snapshot.lifecycle), Phase: string(aggregate.Phase), Status: string(snapshot.lifecycle), Resumable: aggregate.Resumable, NotResumableReason: truncateActivityText(aggregate.NotResumableReason, activityMaxDelegateProseRunes), Model: truncateActivityText(d.ResolvedModel, activityMaxLabelRunes), ReasoningEffort: d.Config.ReasoningEffort, RunStartedAt: status.RunStartedAt, LatestActivityAt: status.LatestActivityAt}
+	row := appwire.SessionDelegate{DelegateID: aggregate.DelegateID, RunGeneration: aggregate.Generation, OwnerRef: encodeRef("", sessionActivityDelegateOwner(state, aggregate)), RootRef: encodeRef("", rootID), ChildRef: encodeRef("", d.ChildSessionID), ParentDelegateID: d.ParentDelegateID, Description: truncateActivityText(d.Description, activityMaxDelegateProseRunes), Task: truncateActivityText(d.Task, activityMaxDelegateProseRunes), Type: "delegate", Lifecycle: string(snapshot.lifecycle), Phase: string(aggregate.Phase), Status: string(snapshot.lifecycle), Resumable: aggregate.Resumable, NotResumableReason: truncateActivityText(aggregate.NotResumableReason, activityMaxDelegateProseRunes), Model: truncateActivityText(d.ResolvedModel, activityMaxLabelRunes), ReasoningEffort: d.Config.ReasoningEffort, RunStartedAt: status.RunStartedAt, LatestActivityAt: status.LatestActivityAt}
 	if outcome := aggregate.LatestOutcome; outcome != nil {
 		row.Reason = truncateActivityText(outcome.Reason, activityMaxDelegateProseRunes)
 		row.Error = truncateActivityText(outcome.Error, activityMaxDelegateProseRunes)
@@ -176,6 +176,15 @@ func projectSessionActivityDelegate(rootID string, state delegatestore.State, ag
 		row.Terminal = delegateRunTerminal(outcome, aggregate.CurrentRunOpen)
 		if !outcome.EndedAt.IsZero() {
 			row.RunEndedAt = outcome.EndedAt.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	// RunFinished replaces the packet for the exact open generation and closes
+	// that run atomically. A resumed or settling run still owns the old packet.
+	if packet := aggregate.LatestPacket; !aggregate.CurrentRunOpen && aggregate.LatestOutcome != nil && packet != nil && packet.Kind == delegatestore.PacketReported {
+		var report string
+		if json.Unmarshal(packet.Message, &report) == nil {
+			row.ReportPreview = truncateActivityText(report, activityMaxDelegateProseRunes)
+			row.ReportPreviewTruncated = row.ReportPreview != report
 		}
 	}
 	if packet := aggregate.LatestPacket; packet != nil && len(packet.Metadata) <= activityMaxDelegatePayloadBytes {

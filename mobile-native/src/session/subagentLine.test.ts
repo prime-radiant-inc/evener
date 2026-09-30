@@ -19,6 +19,7 @@ const row = (over: Partial<Activity> = {}): Activity => ({
 });
 
 const delegate = (over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo => ({
+	runGeneration: 1,
 	delegateId: "d1",
 	ownerSessionId: "s0",
 	rootSessionId: "s0",
@@ -48,6 +49,7 @@ describe("a subagent's row (spec 8.2)", () => {
 			activity: "Working",
 			ref: "local:child-1",
 			delegateId: "d1",
+			runGeneration: 1,
 		});
 	});
 
@@ -96,6 +98,7 @@ describe("a subagent's row (spec 8.2)", () => {
 			stateText: "done · 2m",
 			activity: "Finished",
 			delegateId: "d1",
+			runGeneration: 1,
 		});
 	});
 

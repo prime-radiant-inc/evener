@@ -655,6 +655,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `runGeneration` | `uint64` |  |  |
 | `delegateId` | `string` |  |  |
 | `ownerSessionId` | `string` |  |  |
 | `rootSessionId` | `string` |  |  |

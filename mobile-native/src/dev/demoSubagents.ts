@@ -147,6 +147,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 		const tokens = demoTokens(sub.tokens);
 		const reason = sub.state === "failed" ? (sub.line ?? "").replace(/^Failed:\s*/, "") : "";
 		const delegate = {
+			runGeneration: 1,
 			delegateId: sub.id,
 			ownerSessionId,
 			childSessionId: sessionId,
@@ -164,7 +165,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 						outcome: sub.state === "failed" ? "failed" : "completed",
 						runEndedAt: iso(lastEvent),
 						...(reason ? { reason } : {}),
-						...(sub.state === "done" && sub.line ? { message: `${sub.line}.` } : {}),
+						...(sub.state === "done" && sub.line ? { reportPreview: `${sub.line}.` } : {}),
 					}),
 			...(tokens > 0 ? { usage: { inputTokens: tokens, outputTokens: 0, totalTokens: tokens } } : {}),
 			...(sub.lane

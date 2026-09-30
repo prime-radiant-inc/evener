@@ -323,7 +323,8 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	if (row.state === "failed") return { word: "Failed", text: delegateEndingText(delegate) ?? "" };
 	if (row.state === "done") {
 		if (row.stopped) return { text: "Stopped" };
-		const report = typeof delegate.message === "string" ? firstLine(plainQuoteLine(delegate.message), 120) : "";
+		const report =
+			typeof delegate.reportPreview === "string" ? firstLine(plainQuoteLine(delegate.reportPreview), 120) : "";
 		return { text: report || "Finished" };
 	}
 	const command = runningCommand(delegate.child);
@@ -352,6 +353,7 @@ export function subagentOutcome(
 	delegateId: string,
 	now: number,
 	ownerRef: string,
+	runGeneration: number | undefined,
 ): string | undefined {
 	let cached = rowsByTree.get(tree);
 	if (!cached) {
@@ -363,7 +365,12 @@ export function subagentOutcome(
 	}
 	const entity = findEntityView(cached.entities, "delegate", delegateId, ownerRef);
 	const row = entity ? cached.rows.get(entity.id) : undefined;
-	return row?.state === "done" ? subagentWhy(row, now).text : undefined;
+	return row?.state === "done" &&
+		runGeneration !== undefined &&
+		runGeneration > 0 &&
+		row.delegate.runGeneration === runGeneration
+		? subagentWhy(row, now).text
+		: undefined;
 }
 
 /** Unknown counts have no numeric native tally until the authoritative summary knows them. */

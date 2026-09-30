@@ -89,6 +89,7 @@ export function createDemoSessionActivity(resolve: (ref: string) => ActivityRoot
 				if (!delegate.childSessionId) throw invalid();
 				const terminal = delegate.terminal === true;
 				const row: SessionDelegate = {
+					runGeneration: delegate.runGeneration ?? 0,
 					delegateId: delegate.delegateId,
 					ownerRef: node.ref,
 					rootRef: root.ref,

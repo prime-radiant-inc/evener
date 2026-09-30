@@ -30,6 +30,7 @@ const delegate = (
 	outcome?: string,
 	terminal = outcome !== undefined,
 ): EvenerDelegateInfo => ({
+	runGeneration: 1,
 	delegateId: `d${n}`,
 	ownerSessionId: "root",
 	rootSessionId: "root",

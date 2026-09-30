@@ -1,6 +1,9 @@
 package agent
 
-// A finished subagent's outcome reaches the phone through evener/jobs/list:
+// A finished subagent's outcome reaches the phone through delegates/list.
+// This corpus records the compact domain response and a resumed run with
+// identical timestamps, so clients must join reports by run generation.
+// The legacy tree response remains recorded for consumers of that fixture:
 // the thread/read roster drops the report (appwire.SlimDelegateForRoster), so
 // the transcript's subagent row reads it from the same tree the Subagents list
 // does. The row picks its line from the delegate's outcome, packet kind and
@@ -25,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -76,6 +80,17 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 		seedStableReadonlyFinish(t, s, run.id, descriptor, started, stableDelegateFinishFromRun(inputs), true)
 	}
 
+	delegates, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSubtree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegates.Context.Epoch = "fixture"
+	delegateWire, err := json.Marshal(delegates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegateWire = []byte(strings.ReplaceAll(string(delegateWire), s.ID(), "root"))
+
 	tree, err := s.JobActivityTree(appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("JobActivityTree: %v", err)
@@ -111,11 +126,35 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	}
 	var response json.RawMessage = []byte(strings.ReplaceAll(string(encoded), s.ID(), "root"))
 
+	// Same timestamps deliberately demonstrate that generation, not a clock,
+	// distinguishes a resumed run's report from its predecessor.
+	c := s.delegateController
+	nextPacket := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"Second run report."`)}
+	c.mu.Lock()
+	_, err = c.appendLocked(delegateControllerRunStartedEvent("dlg_reported", 2, delegatestore.TriggerOwnerInput, wireFixtureStart), delegateRunFinishedEvent(delegateLease{delegateID: "dlg_reported", generation: 2}, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", wireFixtureStart.Add(30*time.Second), delegateDeliveryID("dlg_reported", 2), &nextPacket))
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSubtree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed.Context.Epoch = "fixture"
+	resumedWire, err := json.Marshal(resumed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedWire = []byte(strings.ReplaceAll(string(resumedWire), s.ID(), "root"))
 	checkWireFixture(t, subagentOutcomeWireFixturePath, struct {
-		Note     string          `json:"note"`
-		Response json.RawMessage `json:"response"`
+		Note                     string          `json:"note"`
+		Response                 json.RawMessage `json:"response"`
+		DelegatesResponse        json.RawMessage `json:"delegatesResponse"`
+		ResumedDelegatesResponse json.RawMessage `json:"resumedDelegatesResponse"`
 	}{
-		Note:     "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through stableDelegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
-		Response: response,
+		Note:                     "evener/jobs/list's answer for a coordinator with three finished subagents: one that reported, one the user stopped, one whose provider failed. Each is finished through stableDelegateFinishFromRun and the controller's journal events, and read through Session.JobActivityTree; the session id is written as root.",
+		Response:                 response,
+		DelegatesResponse:        delegateWire,
+		ResumedDelegatesResponse: resumedWire,
 	}, "the mobile-native tests that read it")
 }

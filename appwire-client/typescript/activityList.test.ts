@@ -263,6 +263,7 @@ function boundaryClient(autoResponses: Array<ActivityTree | undefined> = []) {
           ref: "local:session",
           threadId: "session",
           delegate: {
+            runGeneration: 1,
             delegateId: "delegate",
             ownerSessionId: "session",
             rootSessionId: "session",
@@ -490,6 +491,7 @@ type Notification = Parameters<Parameters<ActivityClient["onNotification"]>[0]>[
 
 function delegateInfo(overrides: Record<string, unknown> = {}) {
   return {
+    runGeneration: 1,
     delegateId: "delegate",
     ownerSessionId: "session",
     rootSessionId: "session",

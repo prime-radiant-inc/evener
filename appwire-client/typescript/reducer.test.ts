@@ -8585,6 +8585,7 @@ test("applyNotification distributes a union model's extra fields member by membe
 
 function delegateInfo(overrides: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
   return {
+    runGeneration: 1,
     delegateId: "dlg_1",
     ownerSessionId: "sess_owner",
     rootSessionId: "sess_root",
