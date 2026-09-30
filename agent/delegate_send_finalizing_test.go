@@ -226,14 +226,32 @@ func finishedDelegateStillFinalizing(t *testing.T) (*delegateTreeController, del
 	t.Helper()
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	runtime := &Session{}
+	return c, finishGenerationOn(t, c, runtime), runtime
+}
+
+// finishGenerationOn runs one generation of dlg_target on runtime through to
+// FinishGeneration, leaving it finalizing.
+func finishGenerationOn(t *testing.T, c *delegateTreeController, runtime *Session) delegateLease {
+	t.Helper()
+	reservation, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+		t.Fatalf("AttachRuntime: %v", err)
+	}
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
 	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
-	return c, started.lease, runtime
+	return started.lease
 }
 
 func assertStartRefused(t *testing.T, c *delegateTreeController, delegateID, why string) {
@@ -344,30 +362,14 @@ func TestDelegateTailReleasesADelegateWhoseAnnouncementFails(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	runtime := sessionOnHarness(t, c)
-	reservation, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
-	if err != nil {
-		t.Fatalf("ReserveStart: %v", err)
-	}
-	started, err := c.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("CommitStart: %v", err)
-	}
-	if err := c.AttachRuntime(started.lease, runtime); err != nil {
-		t.Fatalf("AttachRuntime: %v", err)
-	}
-	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
-		t.Fatalf("AdmitStartInput: %v", err)
-	}
-	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
-		t.Fatalf("FinishGeneration: %v", err)
-	}
+	lease := finishGenerationOn(t, c, runtime)
 	assertStartRefused(t, c, "dlg_target", "before the tail announces")
 	// A delivery with no controller fails outright (stale lease).
 	failing := delegateMutationPlans{deliveries: []delegateDeliveryPlan{{receiver: committedCallerDeliveryReceiver{}, deliveryID: "dlg_target/delivery/1"}}}
 	if err := runtime.executeDelegateMutationPlans(failing); err == nil {
 		t.Fatal("the failing announcement didn't fail")
 	}
-	(&subagent{sess: runtime}).announceFinishedGeneration(started.lease, failing)
+	(&subagent{sess: runtime}).announceFinishedGeneration(lease, failing)
 	assertStartAdmitted(t, c, "dlg_target", "after the tail released, though announcing failed")
 }
 
@@ -484,30 +486,6 @@ func sessionOnHarness(t *testing.T, c *delegateTreeController) *Session {
 	return s
 }
 
-// finishAnotherGeneration runs one more generation of dlg_target on runtime
-// through to FinishGeneration, leaving it finalizing.
-func finishAnotherGeneration(t *testing.T, c *delegateTreeController, runtime *Session) delegateLease {
-	t.Helper()
-	reservation, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
-	if err != nil {
-		t.Fatalf("ReserveStart successor: %v", err)
-	}
-	started, err := c.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("CommitStart successor: %v", err)
-	}
-	if err := c.AttachRuntime(started.lease, runtime); err != nil {
-		t.Fatalf("AttachRuntime successor: %v", err)
-	}
-	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
-		t.Fatalf("AdmitStartInput successor: %v", err)
-	}
-	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
-		t.Fatalf("FinishGeneration successor: %v", err)
-	}
-	return started.lease
-}
-
 // A send that waited out one finalization and finds the delegate finalizing
 // again (another generation finished in the gap) waits again rather than
 // refusing, within the same ceiling.
@@ -526,7 +504,7 @@ func TestDelegateSendWaitsOutAFinalizationThatFollowsTheOneItWaitedFor(t *testin
 				if err := c.ReportFinalizationQuiesced(first, runtime); err != nil {
 					t.Errorf("release first: %v", err)
 				}
-				second = finishAnotherGeneration(t, c, runtime)
+				second = finishGenerationOn(t, c, runtime)
 			case 2:
 				if err := c.ReportFinalizationQuiesced(second, runtime); err != nil {
 					t.Errorf("release second: %v", err)
