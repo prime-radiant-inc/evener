@@ -24,7 +24,7 @@ import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { ProviderEditor } from "../ProviderEditor";
 import { SwitchRow, Tag } from "../sheet/Grouped";
-import { MODELS_NOT_CHECKED, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
+import { MODELS_NOT_CHECKED, providerGoneWhileEditing, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
 import { ProviderDetailPage } from "./ProviderDetailPage";
 import { back, detailParams, ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
 import {
@@ -1473,6 +1473,37 @@ it("asks before Back from the detail throws away a pasted key", async () => {
 
 // A provider renamed or removed elsewhere leaves the list: its pushed detail
 // goes back rather than showing another provider's detail under its name.
+// A provider that leaves the list while its editor is open takes the edit
+// with it, since there's nothing left to save it to: the page says so rather
+// than dropping the draft silently (#3510 review M7).
+it("says an open edit wasn't saved when its provider leaves the list", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	// Another client removes it, and the listing follows.
+	fake.on("evener/instance/list", () => ({
+		instances: [instance({ name: "home", authModes: ["apiKey"], hasStoredFile: true })],
+		availableProviders: [],
+	}));
+	vi.useFakeTimers();
+	try {
+		await act(async () => {
+			fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work" } } as never);
+			await vi.advanceTimersByTimeAsync(1_000);
+		});
+	} finally {
+		vi.useRealTimers();
+	}
+	await act(async () => {});
+	expect(detailParams()).toBeNull();
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(renderedText(tree)).toContain(providerGoneWhileEditing("work"));
+});
+
 it("goes back from a provider's detail when the provider leaves the list", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
 	const { tree } = mountPage();

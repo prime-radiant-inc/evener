@@ -18,6 +18,12 @@ export function appliedButFailed(done: "removed" | "renamed"): string {
 	return `The provider was ${done}, but a later step failed. Check the list.`;
 }
 
+/** A provider whose editor was open left the hub (removed or renamed from
+ * another client): the edit had nothing left to be saved to. */
+export function providerGoneWhileEditing(name: string): string {
+	return `${name} is no longer on this hub, so the changes you were making to it weren't saved.`;
+}
+
 /** The hub refused the destination the action asserted. */
 export const ENDPOINT_CHANGED_WARNING = endpointMoved("nothing was changed");
 

@@ -53,6 +53,7 @@ import {
 	FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
 	MODELS_NOT_CHECKED,
 	PROVIDERS_NOT_LOADED,
+	providerGoneWhileEditing,
 	UNCONFIRMED_CHANGE,
 	UNCONFIRMED_CREDENTIAL,
 } from "../providers/providerCopy";
@@ -275,6 +276,9 @@ function Providers({
 			setKey("");
 		}
 		if (!instance) {
+			// An edit open on a provider that left the hub had nothing left to be
+			// saved to: say so rather than drop the draft silently.
+			if (configuration === "edit" && selected !== null) setActionWarning(providerGoneWhileEditing(selected));
 			setConfiguration((value) => (value === "edit" ? null : value));
 			setSelected(null);
 			setEditingCredential(null);
@@ -294,7 +298,7 @@ function Providers({
 			setCredentialTarget(null);
 			setKey("");
 		}
-	}, [instance, editingCredential, credentialTarget]);
+	}, [instance, editingCredential, credentialTarget, configuration, selected]);
 	function editCredential(kind: "apiKey" | "credentialJson", target: InstanceEntry) {
 		setActionError(null);
 		setEditingCredential(kind);
