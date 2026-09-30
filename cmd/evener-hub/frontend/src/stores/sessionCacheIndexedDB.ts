@@ -39,6 +39,11 @@ export interface SessionCacheIndexedDBOptions {
   // injection is the test discipline, the way the debounce intervals are
   // injected, so tests exercise eviction with small records.
   maxBytes?: number;
+  // Storage-fault seam used to prove IndexedDB rollback at commit boundaries
+  // (the outbox's beforeCommit): invoked as the last step inside each write
+  // transaction's body, where a throw still aborts that transaction before
+  // it commits.
+  beforeCommit?: (operation: "put" | "clear" | "deleteRecords") => void;
   onOpenDiagnostic?: (diagnostic: SessionCacheOpenDiagnostic) => void;
 }
 export type SessionCacheWriteOutcome =
@@ -106,12 +111,14 @@ export class SessionCacheIndexedDB {
   #database: IDBDatabase | undefined;
   #databasePromise: Promise<IDBDatabase> | undefined;
   readonly #onOpenDiagnostic: (d: SessionCacheOpenDiagnostic) => void;
+  readonly #beforeCommit: ((operation: "put" | "clear" | "deleteRecords") => void) | undefined;
 
   constructor(options: SessionCacheIndexedDBOptions = {}) {
     this.#indexedDB = options.indexedDB ?? globalThis.indexedDB;
     this.#databaseName = options.databaseName ?? DATABASE_NAME;
     this.#maxBytes = options.maxBytes ?? SESSION_CACHE_MAX_BYTES;
     this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
+    this.#beforeCommit = options.beforeCommit;
   }
 
   isOpen(): boolean {
@@ -187,21 +194,61 @@ export class SessionCacheIndexedDB {
         await this.#deleteRows(tx, victim.ref);
         total -= victim.bytes;
       }
+      this.#beforeCommit?.("put");
       return { outcome: "written" } as SessionCacheWriteOutcome;
     });
     return written ?? ({ outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome);
   }
 
-  // clear/deleteRecords/count arrive in Task 4; declared now so the class
-  // compiles with stubs that throw "not implemented in this task".
+  // The commit-observed clear: one readwrite transaction deletes every record
+  // row and its meta row, and increments the reserved epoch row in the same
+  // commit. `committed` is read off the value the transaction runner delivers,
+  // which only arrives after the completion event - an abort (the fault
+  // seam's throw, a request error, a commit-time failure) reads as
+  // { committed: false, epoch: observed-before-the-abort }, so no caller ever
+  // broadcasts a clear that did not land.
   async clear(): Promise<{ committed: boolean; epoch: number }> {
-    throw new Error("clear: implemented in Task 4");
+    let observed = 0;
+    const landed = await this.#readwrite("clear", async (tx) => {
+      const metaStore = tx.objectStore(META_STORE);
+      const recordsStore = tx.objectStore(RECORDS_STORE);
+      const epochRow = await requestResult(metaStore.get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>);
+      observed = epochRow?.epoch ?? 0;
+      const refs = await requestResult(recordsStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
+      for (const ref of refs) {
+        recordsStore.delete(ref);
+        metaStore.delete(String(ref));
+      }
+      metaStore.put({ ref: EPOCH_ROW_KEY, epoch: observed + 1 } satisfies EpochRow);
+      this.#beforeCommit?.("clear");
+      return observed + 1;
+    });
+    return landed === undefined ? { committed: false, epoch: observed } : { committed: true, epoch: landed };
   }
-  async deleteRecords(_refs: string[]): Promise<boolean> {
-    throw new Error("deleteRecords: implemented in Task 4");
+
+  // One transaction removes the named refs' rows, under clear's
+  // delivered-result rule: true only when the transaction's completion was
+  // observed, so an abort reads false and the caller retries idempotently.
+  async deleteRecords(refs: string[]): Promise<boolean> {
+    const landed = await this.#readwrite("deleteRecords", async (tx) => {
+      for (const ref of refs) await this.#deleteRows(tx, ref);
+      this.#beforeCommit?.("deleteRecords");
+      return true;
+    });
+    return landed ?? false;
   }
+
+  // The settings row's reader: the records store's row count, a miss
+  // (undefined) on every failure - a stalled or failed open, a failed
+  // transaction - never a throw.
   async count(): Promise<number | undefined> {
-    throw new Error("count: implemented in Task 4");
+    try {
+      return await this.#transaction([RECORDS_STORE], "readonly", async (tx) =>
+        requestResult(tx.objectStore(RECORDS_STORE).count()),
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   async #deleteRows(tx: IDBTransaction, ref: string): Promise<void> {
@@ -243,9 +290,23 @@ export class SessionCacheIndexedDB {
     const tx = database.transaction(stores, mode);
     const work = body(tx);
     const completion = transactionCompletion(tx);
-    await work; // requests issued; auto-commit happens when the microtask queue drains
-    await completion;
-    return work;
+    // Success requires both the body's result and the durable commit event
+    // (requests issued; auto-commit happens when the microtask queue drains).
+    // Promise.all rejects on either failure without waiting for the other, and
+    // the catch aborts the transaction: a failed body - the beforeCommit fault
+    // seam's throw - must not leave its already-issued requests committing
+    // behind it, the same rollback the outbox's runner enforces.
+    try {
+      const [result] = await Promise.all([work, completion]);
+      return result;
+    } catch (error) {
+      try {
+        tx.abort();
+      } catch {
+        // The transaction already completed; preserve the original failure.
+      }
+      throw error;
+    }
   }
 
   #reportOpenDiagnostic(path: SessionCacheOpenDiagnosticPath, versionchangeTransaction: boolean): void {

@@ -413,6 +413,73 @@ describe("SessionCacheIndexedDB put", () => {
   });
 });
 
+describe("SessionCacheIndexedDB clear, deleteRecords, count", () => {
+  it("clear deletes every record, increments the epoch, and reports the commit", async () => {
+    const { adapter, write } = freshAdapter();
+    await write(record({ ref: "local:a" }));
+    await write(record({ ref: "local:b" }));
+    const result = await adapter.clear();
+    await settleProjectionWorkForTests();
+    expect(result.committed).toBe(true);
+    expect(result.epoch).toBe(1);
+    expect(await adapter.count()).toBe(0);
+    expect((await adapter.get("local:a", Date.now()))?.record).toBeUndefined();
+    adapter.close();
+  });
+
+  it("an aborted clear changes nothing: records remain, the epoch remains, and committed is false (the honest no-op)", async () => {
+    const indexedDB = new IDBFactory();
+    const adapter = new SessionCacheIndexedDB({
+      indexedDB,
+      beforeCommit: (op) => {
+        if (op === "clear") throw new Error("fault");
+      },
+    });
+    await adapter.put(record(), 0, 1_000);
+    await settleProjectionWorkForTests();
+    const result = await adapter.clear();
+    expect(result.committed).toBe(false);
+    await settleProjectionWorkForTests();
+    expect(await adapter.count()).toBe(1); // nothing changed anywhere
+    expect((await adapter.get("local:thr_1", 2_000))?.record.ref).toBe("local:thr_1");
+    adapter.close();
+  });
+
+  it("deleteRecords removes the named refs' rows in one transaction and reports false on failure", async () => {
+    const indexedDB = new IDBFactory();
+    const adapter = new SessionCacheIndexedDB({
+      indexedDB,
+      beforeCommit: (op) => {
+        if (op === "deleteRecords") throw new Error("fault");
+      },
+    });
+    await adapter.put(record({ ref: "local:a" }), 0, 1_000);
+    await adapter.put(record({ ref: "local:b" }), 0, 1_000);
+    await settleProjectionWorkForTests();
+    expect(await adapter.deleteRecords(["local:a", "local:b"])).toBe(false); // aborted: idempotent retry upstream
+    await settleProjectionWorkForTests();
+    const ok = new SessionCacheIndexedDB({ indexedDB });
+    expect(await ok.deleteRecords(["local:a", "local:b"])).toBe(true);
+    await settleProjectionWorkForTests();
+    expect(await ok.count()).toBe(0);
+    ok.close();
+    adapter.close();
+  });
+
+  it("count answers undefined when the open fails", async () => {
+    const adapter = new SessionCacheIndexedDB({ indexedDB: neverSettlingFactory() });
+    vi.useFakeTimers();
+    try {
+      const pending = adapter.count();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await pending).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+      adapter.close();
+    }
+  });
+});
+
 // Take the cache database to version 2 over the factory, closing the
 // connection: the fence and retire tests need a schema version this build
 // did not create.
