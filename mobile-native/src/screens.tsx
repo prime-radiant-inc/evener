@@ -1380,6 +1380,21 @@ export function ConversationScreen({
 		openingLandedNow.current = false;
 		setOpeningLanded(false);
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
+	// Declared before the opening effect below so it reads this render's last
+	// row: effects run in declaration order.
+	useEffect(() => {
+		lastRowKey.current = timelineRows.length > 0 ? readerKey(timelineRows[timelineRows.length - 1]) : null;
+	});
+	function lastRowMeasured() {
+		return lastRowKey.current !== null && readerMeasurements.current.has(lastRowKey.current);
+	}
+	// Follows the live end while opening: pins the list there, and lands the
+	// opening once the last row has measured (until then the cell's own layout
+	// lands it).
+	function pinOpeningToEnd() {
+		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+		if (lastRowMeasured()) landOpening();
+	}
 	// Where the session opens (spec 7.3, ruling 31), decided once per route on
 	// the first layout with rows: the live end while a question or approval
 	// waits, the start of a reply that finished since you last reached the
@@ -1405,8 +1420,7 @@ export function ConversationScreen({
 		if (target.kind === "live") {
 			readerAnchor.current = null;
 			follow.dispatch({ type: "follow" });
-			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
-			if (lastRowMeasured()) landOpening();
+			pinOpeningToEnd();
 		} else if (target.kind === "row") {
 			readerAnchor.current = readerAnchorAt(
 				route.params.hubId,
@@ -1422,12 +1436,6 @@ export function ConversationScreen({
 			readerRestoreAttempts.current.reset();
 		}
 	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
-	useEffect(() => {
-		lastRowKey.current = timelineRows.length > 0 ? readerKey(timelineRows[timelineRows.length - 1]) : null;
-	});
-	function lastRowMeasured() {
-		return lastRowKey.current !== null && readerMeasurements.current.has(lastRowKey.current);
-	}
 	// A session with no rows has nowhere to travel. One with rows shows after
 	// OPENING_REVEAL_CAP_MS however far it got, so an opening that can't land
 	// (its reading position never measures, or offline paging stalls) never
@@ -1591,8 +1599,7 @@ export function ConversationScreen({
 			readerAnchor.current = null;
 			appliedReaderRestore.current = null;
 			follow.dispatch({ type: "follow" });
-			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
-			if (lastRowMeasured()) landOpening();
+			pinOpeningToEnd();
 			return;
 		}
 		if (resolveReaderAnchor(anchor, timelineRows) === null) {
@@ -2649,8 +2656,7 @@ export function ConversationScreen({
 							// Opening at the live end lands once its last row has
 							// measured: pin the end, then show the list.
 							if (!openingLandedNow.current && key === lastRowKey.current && follow.state.current.following) {
-								(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
-								landOpening();
+								pinOpeningToEnd();
 							}
 							setLayoutRevision((revision) => revision + 1);
 						}}
