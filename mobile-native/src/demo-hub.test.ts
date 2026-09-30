@@ -329,7 +329,11 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 
 	it("opens a subagent's own session through the real conversation service", async () => {
 		await withFleetHub(async (_hub, client) => {
-			const listed = await client.request("evener/thread/delegates/list", { ref: PR2138, scope: "subtree", limit: 200 });
+			const listed = await client.request("evener/thread/delegates/list", {
+				ref: PR2138,
+				scope: "subtree",
+				limit: 200,
+			});
 			const child = listed.delegates.find((row) => row.description === "Check drain ordering in tests");
 			if (!child) throw new Error("no nested subagent");
 			const service = createConversationService(client);
