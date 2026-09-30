@@ -1388,6 +1388,25 @@ async function openWork(tree: ReactTestRenderer) {
 	await act(async () => {});
 }
 
+// Another client removes or renames "work": the listing now holds only
+// "home". The store's refetch waits out its debounce, on a fake clock.
+async function workLeavesList(fake: ReturnType<typeof providersHub>) {
+	fake.on("evener/instance/list", () => ({
+		instances: [instance({ name: "home", authModes: ["apiKey"], hasStoredFile: true })],
+		availableProviders: [],
+	}));
+	vi.useFakeTimers();
+	try {
+		await act(async () => {
+			fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work" } } as never);
+			await vi.advanceTimersByTimeAsync(1_000);
+		});
+	} finally {
+		vi.useRealTimers();
+	}
+	await act(async () => {});
+}
+
 const choose = (text: string) =>
 	act(() =>
 		alertRequests
@@ -1482,21 +1501,7 @@ it("goes back from a provider's detail when the provider leaves the list", async
 	press(tree, (label) => label === "Replace key");
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
 	// Another client renames it, and the listing follows.
-	fake.on("evener/instance/list", () => ({
-		instances: [instance({ name: "home", authModes: ["apiKey"], hasStoredFile: true })],
-		availableProviders: [],
-	}));
-	// The store's refetch waits out its debounce, on a fake clock.
-	vi.useFakeTimers();
-	try {
-		await act(async () => {
-			fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work" } } as never);
-			await vi.advanceTimersByTimeAsync(1_000);
-		});
-	} finally {
-		vi.useRealTimers();
-	}
-	await act(async () => {});
+	await workLeavesList(fake);
 	expect(renderedText(tree)).toContain("home");
 	expect(detailParams()).toBeNull();
 	expect(hasControl(tree, "Replace key")).toBe(false);
@@ -1522,20 +1527,7 @@ it("says an open edit wasn't saved when its provider leaves the list", async () 
 	await act(async () => {});
 	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
 	// Another client removes it, and the listing follows.
-	fake.on("evener/instance/list", () => ({
-		instances: [instance({ name: "home", authModes: ["apiKey"], hasStoredFile: true })],
-		availableProviders: [],
-	}));
-	vi.useFakeTimers();
-	try {
-		await act(async () => {
-			fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work" } } as never);
-			await vi.advanceTimersByTimeAsync(1_000);
-		});
-	} finally {
-		vi.useRealTimers();
-	}
-	await act(async () => {});
+	await workLeavesList(fake);
 	expect(detailParams()).toBeNull();
 	expect(renderedText(tree)).not.toContain("Base URL");
 	expect(renderedText(tree)).toContain(providerGoneWhileEditing("work"));
