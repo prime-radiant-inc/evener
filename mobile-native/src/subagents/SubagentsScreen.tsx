@@ -25,6 +25,7 @@ import {
 	flattenActivity,
 	SEARCH_AFTER,
 	STATE_ORDER,
+	type ShellJobRow,
 	type SubagentRow,
 	type SubagentState,
 	sameModel,
@@ -113,6 +114,13 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		[navigation, hubId, ref, threadId, title],
 	);
 
+	// A shell job's detail is its own screen, over this list.
+	const openJob = useCallback(
+		(row: ShellJobRow) =>
+			navigation.push("ShellJob", { hubId, jobId: row.id, title: row.title, coordinator: { ref, threadId, title } }),
+		[navigation, hubId, ref, threadId, title],
+	);
+
 	const count = countLabel(listTally.total, snapshot.partial);
 	useEffect(() => {
 		navigation.setOptions({ headerTitle: () => <HeaderTitle count={count} title={title} /> });
@@ -147,7 +155,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				case "missing":
 					return <MissingLine title={item.title} />;
 				case "row":
-					if (item.row.kind === "job") return <ShellJobRowView row={item.row} now={now} />;
+					if (item.row.kind === "job") return <ShellJobRowView row={item.row} now={now} onOpen={openJob} />;
 					return (
 						<SubagentRowView
 							row={item.row}
@@ -160,7 +168,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 					);
 			}
 		},
-		[now, snapshot.coordinatorModel, modelName, openRow, noteFor],
+		[now, snapshot.coordinatorModel, modelName, openRow, openJob, noteFor],
 	);
 
 	const header = (

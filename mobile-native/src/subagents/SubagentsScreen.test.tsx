@@ -311,6 +311,21 @@ it("says there is nothing yet when the session has no subagents or shell jobs", 
 	expect(headerTitle()).toBe("Activity · 0 Get PR 2138 Test Clean");
 });
 
+// A shell job's detail is its own screen over the list, reading the job
+// from the same tree.
+it("opens a shell job's detail over the list", async () => {
+	client = hub(() => treeWithJobs());
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	act(() => pressable(tree, `Shell job, npm run lint, Command failed · 2m, under ${COORDINATOR.title}`)?.props.onPress());
+	expect(navigation.push).toHaveBeenCalledWith("ShellJob", {
+		hubId: "hub-1",
+		jobId: "j-lint",
+		title: "npm run lint",
+		coordinator: COORDINATOR,
+	});
+});
+
 it("opens the done fold in place", async () => {
 	const tree = await mount();
 	act(() => pressable(tree, "Done · 21")?.props.onPress());

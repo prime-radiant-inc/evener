@@ -207,6 +207,52 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 	};
 }
 
+/** evener/jobs/output's answer for the job `jobId` in `tree` (a
+ * demoActivityTree answer's data), or null when the tree has no such job: a
+ * short tail that reads like its command's output, the whole of it kept. */
+export function demoJobOutput(tree: unknown, jobId: string): { data: unknown } | null {
+	const job = findShellJob(tree, jobId);
+	if (!job) return null;
+	const tail =
+		job.status === "command_exited_nonzero"
+			? [
+					"=== RUN   TestRetirementTreeSettleDrains",
+					"--- FAIL: TestRetirementTreeSettleDrains (0.42s)",
+					"    retirement_test.go:88: drained 3 of 4 delegates",
+					"\u001b[31mFAIL\u001b[0m",
+					`exit status ${job.exitCode ?? 1}`,
+					"",
+				].join("\n")
+			: job.terminal
+				? ""
+				: ["=== RUN   TestRetirement", "--- PASS: TestRetirement (0.08s)", "=== RUN   TestRetirementTreeSettle", ""].join(
+						"\n",
+					);
+	const totalBytes = new TextEncoder().encode(tail).length;
+	return { data: { tail, totalBytes, retainedStart: 0 } };
+}
+
+interface DemoJobFields {
+	jobId: string;
+	status: string;
+	terminal: boolean;
+	exitCode?: number;
+}
+
+// The shell job `jobId` anywhere in a demo tree's session nodes.
+function findShellJob(node: unknown, jobId: string): DemoJobFields | undefined {
+	if (typeof node !== "object" || node === null) return undefined;
+	const { root, entries } = node as { root?: unknown; entries?: unknown };
+	if (root) return findShellJob(root, jobId);
+	if (!Array.isArray(entries)) return undefined;
+	for (const entry of entries as { kind: string; job?: DemoJobFields; delegate?: { child?: unknown } }[]) {
+		if (entry.kind === "shell" && entry.job?.jobId === jobId) return entry.job;
+		const nested = entry.kind === "delegate" ? findShellJob(entry.delegate?.child, jobId) : undefined;
+		if (nested) return nested;
+	}
+	return undefined;
+}
+
 /** A shell job in the tree, owned by the session it names. */
 function shellEntry(ownerSessionId: string, ownerRef: string, fields: Record<string, unknown>) {
 	return {

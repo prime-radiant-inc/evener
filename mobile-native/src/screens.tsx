@@ -295,6 +295,8 @@ export type Routes = {
 	StopSubagentSheet: { hubId: string; coordinator: Coordinator; ref: string };
 	/** A subagent's own session, over its coordinator's (ruling 30). */
 	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
+	/** A shell job's detail, over its coordinator's Activity list. */
+	ShellJob: { hubId: string; jobId: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
 	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
 };

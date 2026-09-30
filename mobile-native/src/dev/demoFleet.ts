@@ -31,7 +31,13 @@ import type {
 	SearchResponse,
 	Source,
 } from "@evener/appwire-client";
-import { type DemoCoordinator, type DemoShellJob, type DemoSubagent, demoActivityTree } from "./demoSubagents.js";
+import {
+	type DemoCoordinator,
+	type DemoShellJob,
+	type DemoSubagent,
+	demoActivityTree,
+	demoJobOutput,
+} from "./demoSubagents.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireV2 response must carry the exact same id:
@@ -1011,6 +1017,9 @@ export interface DemoFleet extends FleetAnswers {
 	// Answers evener/jobs/list: a coordinator's subagent tree, and an empty
 	// root for any other fleet session (demoSubagents.ts).
 	answerJobsList(params: { ref?: string; continuation?: string }): { data: unknown };
+	// Answers evener/jobs/output: a listed shell job's tail (demoSubagents.ts),
+	// found in whichever fleet session's tree holds it.
+	answerJobsOutput(params: { ref?: string; jobId: string }): { data: unknown };
 }
 
 // The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
@@ -1150,6 +1159,14 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		},
 		archive,
 		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
+		answerJobsOutput: (params) => {
+			for (const raw of sessionsList) {
+				const tree = demoActivityTree(coordinatorFor(sessionsList, sessionRef(raw)), startupMs).data;
+				const output = demoJobOutput(tree, params.jobId);
+				if (output) return output;
+			}
+			throw new Error(`job not found: ${params.jobId}`);
+		},
 	};
 }
 
