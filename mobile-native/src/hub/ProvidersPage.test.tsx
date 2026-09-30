@@ -1473,6 +1473,43 @@ it("asks before Back from the detail throws away a pasted key", async () => {
 
 // A provider renamed or removed elsewhere leaves the list: its pushed detail
 // goes back rather than showing another provider's detail under its name.
+it("goes back from a provider's detail when the provider leaves the list", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	expect(detailParams()).toMatchObject({ name: "work" });
+	press(tree, (label) => label === "Replace key");
+	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
+	// Another client renames it, and the listing follows.
+	fake.on("evener/instance/list", () => ({
+		instances: [instance({ name: "home", authModes: ["apiKey"], hasStoredFile: true })],
+		availableProviders: [],
+	}));
+	// The store's refetch waits out its debounce, on a fake clock.
+	vi.useFakeTimers();
+	try {
+		await act(async () => {
+			fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work" } } as never);
+			await vi.advanceTimersByTimeAsync(1_000);
+		});
+	} finally {
+		vi.useRealTimers();
+	}
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("home");
+	expect(detailParams()).toBeNull();
+	expect(hasControl(tree, "Replace key")).toBe(false);
+	// No edit was open, so nothing says one wasn't saved.
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	// The key pasted for the provider that left goes with it: the provider now
+	// listed opens with no paste sheet and no key (RoboRev on 972ebb8).
+	press(tree, (label) => label.startsWith("home,"));
+	await act(async () => {});
+	expect(hasControl(tree, "API key")).toBe(false);
+	expect(tree.root.findAll((node) => node.props.value === "sk-fixture")).toHaveLength(0);
+});
+
 // A provider that leaves the list while its editor is open takes the edit
 // with it, since there's nothing left to save it to: the page says so rather
 // than dropping the draft silently (#3510 review M7).
@@ -1502,41 +1539,37 @@ it("says an open edit wasn't saved when its provider leaves the list", async () 
 	expect(detailParams()).toBeNull();
 	expect(renderedText(tree)).not.toContain("Base URL");
 	expect(renderedText(tree)).toContain(providerGoneWhileEditing("work"));
+	// The word belongs to the list: opening another provider clears it.
+	press(tree, (label) => label.startsWith("home,"));
+	await act(async () => {});
+	expect(detailParams()).toMatchObject({ name: "home" });
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
 });
 
-it("goes back from a provider's detail when the provider leaves the list", async () => {
+// Only an edit its provider left behind says it wasn't saved: a cancelled
+// edit and a saved one say nothing of the kind.
+it("says nothing of an unsaved edit after a Cancel or a save", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/instance/edit", () => ({
+		instances: [instance({ authModes: ["apiKey"], hasStoredFile: true })],
+		availableProviders: [],
+	}));
 	const { tree } = mountPage();
 	await act(async () => {});
 	await openWork(tree);
-	expect(detailParams()).toMatchObject({ name: "work" });
-	press(tree, (label) => label === "Replace key");
-	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
-	// Another client renames it, and the listing follows.
-	fake.on("evener/instance/list", () => ({
-		instances: [instance({ name: "home", authModes: ["apiKey"], hasStoredFile: true })],
-		availableProviders: [],
-	}));
-	// The store's refetch waits out its debounce, on a fake clock.
-	vi.useFakeTimers();
-	try {
-		await act(async () => {
-			fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work" } } as never);
-			await vi.advanceTimersByTimeAsync(1_000);
-		});
-	} finally {
-		vi.useRealTimers();
-	}
+	press(tree, (label) => label === "Edit");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("home");
-	expect(detailParams()).toBeNull();
-	expect(hasControl(tree, "Replace key")).toBe(false);
-	// The key pasted for the provider that left goes with it: the provider now
-	// listed opens with no paste sheet and no key (RoboRev on 972ebb8).
-	press(tree, (label) => label.startsWith("home,"));
+	press(tree, (label) => label === "Cancel");
 	await act(async () => {});
-	expect(hasControl(tree, "API key")).toBe(false);
-	expect(tree.root.findAll((node) => node.props.value === "sk-fixture")).toHaveLength(0);
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
 });
 
 // Discarding through Back discards the draft for good: the page's close,

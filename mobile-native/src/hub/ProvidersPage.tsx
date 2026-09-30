@@ -367,6 +367,9 @@ function Providers({
 	function openDetail(name: string) {
 		detailVisitId.current += 1;
 		setActionError(null);
+		// A warning speaks for the list or the provider it came from, not the
+		// one opening now.
+		setActionWarning(null);
 		setSelected(name);
 		onOpenDetail(name);
 	}
