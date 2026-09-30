@@ -220,6 +220,12 @@ async function settle() {
 	for (let round = 0; round < 10; round += 1) await flush();
 }
 
+async function advanceFakeTimers(ms: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ms);
+	});
+}
+
 const CAPABILITIES = {
 	send: true,
 	steer: true,
@@ -1327,15 +1333,11 @@ describe("opening a session", () => {
 		vi.useFakeTimers();
 		try {
 			layOutViewport(tree);
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(999);
-			});
+			await advanceFakeTimers(999);
 			// The anchor's row never measures: without a cap the list would
 			// stay hidden.
 			expect(opacity(tree)).toBe(0);
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(1);
-			});
+			await advanceFakeTimers(1);
 			expect(opacity(tree)).toBe(1);
 		} finally {
 			vi.useRealTimers();
@@ -1350,21 +1352,16 @@ describe("opening a session", () => {
 		vi.useFakeTimers();
 		try {
 			layOutViewport(tree);
-			const advance = async (ms: number) => {
-				await act(async () => {
-					await vi.advanceTimersByTimeAsync(ms);
-				});
-			};
-			await advance(600);
+			await advanceFakeTimers(600);
 			expect(opacity(tree)).toBe(0);
 			const moved = { ...route, params: { ...route.params, ref: next } };
 			navigationState.state = { index: 0, routes: [moved] };
 			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
-			await advance(0);
+			await advanceFakeTimers(0);
 			// The first session's cap has 400ms left; the second's starts afresh.
-			await advance(999);
+			await advanceFakeTimers(999);
 			expect(opacity(tree)).toBe(0);
-			await advance(1);
+			await advanceFakeTimers(1);
 			expect(opacity(tree)).toBe(1);
 		} finally {
 			vi.useRealTimers();
@@ -1388,31 +1385,26 @@ describe("opening a session", () => {
 			});
 			return { ...mounted, deliver };
 		};
-		const advance = async (ms: number) => {
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(ms);
-			});
-		};
 
 		it("opens at the live end and forgets the spot", async () => {
 			const { tree, deliver } = await mountWaitingOnOlderPage("ref-open-unloaded");
 			vi.useFakeTimers();
 			try {
 				layOutViewport(tree);
-				await advance(999);
+				await advanceFakeTimers(999);
 				expect(opacity(tree)).toBe(0);
 				flatListCalls.length = 0;
-				await advance(1);
+				await advanceFakeTimers(1);
 				// It heads for the end, still out of sight until the end's last row measures.
 				expect(flatListCalls.map((call) => call.method)).toContain("scrollToEnd");
 				expect(opacity(tree)).toBe(0);
 				layOutRow(tree, 3, 19_000);
-				await advance(0);
+				await advanceFakeTimers(0);
 				expect(opacity(tree)).toBe(1);
 				// The older page landing later doesn't pull the list back to the spot.
 				flatListCalls.length = 0;
 				deliver();
-				await advance(0);
+				await advanceFakeTimers(0);
 				expect(flatListCalls.filter((call) => call.method !== "scrollToEnd")).toEqual([]);
 			} finally {
 				vi.useRealTimers();
@@ -1424,11 +1416,11 @@ describe("opening a session", () => {
 			vi.useFakeTimers();
 			try {
 				layOutViewport(tree);
-				await advance(1000);
+				await advanceFakeTimers(1000);
 				expect(opacity(tree)).toBe(0);
-				await advance(999);
+				await advanceFakeTimers(999);
 				expect(opacity(tree)).toBe(0);
-				await advance(1);
+				await advanceFakeTimers(1);
 				expect(opacity(tree)).toBe(1);
 			} finally {
 				vi.useRealTimers();
@@ -1500,19 +1492,14 @@ describe("opening a session", () => {
 			const { tree } = await mount(twoTurns("ref-open-clamped-cap"));
 			vi.useFakeTimers();
 			try {
-				const advance = async (ms: number) => {
-					await act(async () => {
-						await vi.advanceTimersByTimeAsync(ms);
-					});
-				};
 				layOutViewport(tree, 3_000);
 				layOutRow(tree, 1, 9_523);
-				await advance(0);
+				await advanceFakeTimers(0);
 				// The restore fell short and the rows below never measure.
 				expect(offsets().at(-1)).toBeLessThan(9_523);
-				await advance(999);
+				await advanceFakeTimers(999);
 				expect(opacity(tree)).toBe(0);
-				await advance(1);
+				await advanceFakeTimers(1);
 				expect(opacity(tree)).toBe(1);
 			} finally {
 				vi.useRealTimers();
