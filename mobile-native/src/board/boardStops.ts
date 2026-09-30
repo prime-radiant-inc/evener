@@ -146,7 +146,14 @@ export class BoardStops {
 		// Opens the dispatch gate on this read; the runtime then sends the
 		// interrupt. A lease gone stale (the connection dropped in these few
 		// milliseconds) leaves it in the outbox, delivered as any durable Stop is.
-		await host.reconcileRead(lease, response);
+		// A fence that cannot settle is non-fatal, as on the Session screen: the
+		// interrupt is already durably admitted, and the failure only leaves the
+		// gate blocked (the fail-safe direction) until a later read reconciles it.
+		try {
+			await host.reconcileRead(lease, response);
+		} catch (error) {
+			console.error("BoardStops: read fence failed", error);
+		}
 		return "stopped";
 	}
 
