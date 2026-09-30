@@ -283,3 +283,37 @@ func TestSessionActivityAncestryCompleteness(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionDelegateFailureFactsRoundTrip(t *testing.T) {
+	t.Parallel()
+	var row SessionDelegate
+	if err := json.Unmarshal([]byte(`{"delegateId":"d","reason":"reason-sentinel","error":"error-sentinel"}`), &row); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["reason"] != "reason-sentinel" || fields["error"] != "error-sentinel" {
+		t.Fatalf("failure facts lost: %+v", fields)
+	}
+	empty, err := json.Marshal(SessionDelegate{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Decode into a fresh object so omitted fields cannot survive from the prior row.
+	fields = nil
+	if err := json.Unmarshal(empty, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["reason"]; ok {
+		t.Fatal("empty reason emitted")
+	}
+	if _, ok := fields["error"]; ok {
+		t.Fatal("empty error emitted")
+	}
+}
