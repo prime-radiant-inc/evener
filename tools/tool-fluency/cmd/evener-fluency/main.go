@@ -384,23 +384,41 @@ func defineRunFlags(fs *flag.FlagSet, cfg *runConfig, systemPromptAppend *cmduti
 	fs.BoolVar(&cfg.inheritOperatorEnv, "inherit-operator-env", false, "debugging only: restore the operator's real skills and plugins instead of running hermetic (#3227)")
 }
 
+// enabledPluginsFlagLine matches the flag's own definition line in evener's
+// --help output, not a mention of it in another flag's description.
+var enabledPluginsFlagLine = regexp.MustCompile(`(?m)^\s+--enabled-plugins(\s|$)`)
+
 // evenerHelpListsEnabledPlugins reports whether the evener at bin accepts
 // --enabled-plugins, which a hermetic CLI run needs to hide the operator's
 // plugins (#3227). Evener gained the flag on 2026-08-25, so a matrix version
-// older than that lacks it.
+// older than that lacks it. A --help that fails or times out proves nothing
+// either way, so it is an error.
 func evenerHelpListsEnabledPlugins(bin string) (bool, error) {
-	// evener --help exits nonzero on some versions, so read its output
-	// whatever the exit status, and fail only when nothing ran.
-	out, err := exec.Command(bin, "--help").CombinedOutput()
-	if len(out) == 0 && err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--help").CombinedOutput()
+	if err != nil {
 		return false, fmt.Errorf("run %s --help: %w", bin, err)
 	}
-	return strings.Contains(string(out), "--enabled-plugins"), nil
+	return enabledPluginsFlagLine.Match(out), nil
 }
 
 // evenerSupportsEnabledPlugins is evenerHelpListsEnabledPlugins behind a seam:
 // the tests' fake evener scripts print one line for every invocation.
 var evenerSupportsEnabledPlugins = evenerHelpListsEnabledPlugins
+
+// requireHermeticEvener refuses an evener that cannot run hermetic, and names
+// the way to run it anyway.
+func requireHermeticEvener(bin string) error {
+	ok, err := evenerSupportsEnabledPlugins(bin)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%s predates --enabled-plugins, so a hermetic run cannot hide the operator's plugins from it; pass --inherit-operator-env to run it with them", bin)
+	}
+	return nil
+}
 
 func runSuiteWithConfig(cfg runConfig) error {
 	if cfg.repetitions < 1 {
@@ -434,12 +452,8 @@ func runSuiteWithConfig(cfg runConfig) error {
 		cfg.evenerBin = bin
 	}
 	if cfg.harness == "cli" && !cfg.inheritOperatorEnv {
-		ok, err := evenerSupportsEnabledPlugins(cfg.evenerBin)
-		if err != nil {
+		if err := requireHermeticEvener(cfg.evenerBin); err != nil {
 			return err
-		}
-		if !ok {
-			return fmt.Errorf("%s predates --enabled-plugins, so a hermetic run cannot hide the operator's plugins from it; pass --inherit-operator-env to run it with them", cfg.evenerBin)
 		}
 	}
 	probes, err := loadProbes(cfg.probesDir, cfg.probeFilter)

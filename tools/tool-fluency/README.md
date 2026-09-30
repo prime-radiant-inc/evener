@@ -361,15 +361,15 @@ runner is the next step for full `job_watch` callback verification.
 
 ### Hermetic by default
 
-A `run` or `matrix` invocation is hermetic by default (#3227): the operator's
-personal skills (`~/.agents/skills`, their user config skills directory) and
-their installed, enabled plugins (skills, hooks, agents, commands) never
-reach a probe's catalog. This runs both harnesses with
-`EVENER_NO_USER_SKILLS=1` and, for the CLI harness, passes
-`--enabled-plugins` with an explicit empty selection so plugin resolution
-selects nothing regardless of what is installed. A round that measures skill
-or tool use then depends only on the Evener revision under test, not on who
-runs it. Pass `--inherit-operator-env` to restore the operator's real skills
+A `run` or `matrix` invocation hides the operator's skills and plugins by
+default (#3227). The operator's personal skills (`~/.agents/skills`, their
+user config skills directory) and their installed, enabled plugins (skills,
+hooks, agents, commands) never reach a probe. Both harnesses run with
+`EVENER_NO_USER_SKILLS=1`. The CLI harness also passes `--enabled-plugins`
+with an explicit empty selection, so plugin resolution selects nothing
+whatever is installed; the live harness never loads plugins. The
+operator's global MCP config and their evener-wide commands still reach a
+probe (#3487). Pass `--inherit-operator-env` to restore the operator's real skills
 and plugins for debugging; `result.json`'s `env_mode` field
 (`"hermetic"` or `"inherit_operator_env"`) records which mode a run used.
 A hermetic CLI run refuses an evener older than `--enabled-plugins`

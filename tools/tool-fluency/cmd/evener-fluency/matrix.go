@@ -136,6 +136,15 @@ func runMatrixCommand(args []string) error {
 	if err := checkMatrixCells(cfgs); err != nil {
 		return err
 	}
+	// Refuse an old evener before any cell starts, so a matrix never writes
+	// the newer versions' results beside a version that could not run.
+	if !base.inheritOperatorEnv {
+		for _, v := range versions {
+			if err := requireHermeticEvener(v.Bin); err != nil {
+				return fmt.Errorf("version %s: %w", v.Label, err)
+			}
+		}
+	}
 	// Decide the process-wide hermetic setting once, right after parsing and
 	// before any cell (goroutine) runs, so concurrent cells share one setting
 	// instead of racing on a per-cell set/restore (#3227). See
