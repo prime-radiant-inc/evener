@@ -1436,6 +1436,52 @@ describe("opening a session", () => {
 		});
 	});
 
+	// The list's content grows in stages as it renders the rows below a saved
+	// position, so the first restore can fall short of it (clamped). Showing
+	// the list there would show it land short and then move.
+	describe("when the list can't reach the saved position yet", () => {
+		const layOutList = (tree: ReactTestRenderer, contentHeight: number) => {
+			act(() =>
+				transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+			);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
+		};
+		const offsets = () =>
+			flatListCalls
+				.filter((call) => call.method === "scrollToOffset")
+				.map((call) => (call.args as { offset: number }).offset);
+
+		it("shows it only once the restore reaches the row", async () => {
+			savePosition("ref-open-clamped", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped"));
+			flatListCalls.length = 0;
+			layOutList(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			// It moves as far as the list reaches, out of sight.
+			expect(offsets().at(-1)).toBeLessThan(9_523);
+			expect(opacity(tree)).toBe(0);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+			layOutRow(tree, 3, 19_000);
+			await settle();
+			expect(offsets().at(-1)).toBe(9_523);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("shows it short of the row once the rows below it have all measured", async () => {
+			savePosition("ref-open-near-end", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-near-end"));
+			flatListCalls.length = 0;
+			layOutList(tree, 3_000);
+			layOutRow(tree, 1, 2_800);
+			layOutRow(tree, 3, 2_900);
+			await settle();
+			// The content is whole, so as far as the list reaches is where it rests.
+			expect(offsets().at(-1)).toBeLessThan(2_800);
+			expect(opacity(tree)).toBe(1);
+		});
+	});
+
 	it("shows a session with no rows at once", async () => {
 		const served = thread("ref-open-empty", "idle");
 		(served as unknown as { turns: unknown[] }).turns = [];
