@@ -684,7 +684,7 @@ func (c *Client) TurnPromoteQueuedAsSteer(ctx context.Context, params TurnPromot
 // removed entry's full text and image count. The daemon returns Conflict
 // when the index no longer resolves against the live queue or the expected
 // entry id mismatches (the queue shifted under the client's snapshot,
-// review F1) — unlike promote, no active turn is required.
+// review F1) — as with promote, no active turn is required.
 func (c *Client) TurnCancelQueued(ctx context.Context, params TurnCancelQueuedParams) (TurnCancelQueuedResponse, error) {
 	var resp TurnCancelQueuedResponse
 	if err := c.request(ctx, MethodTurnCancelQueued, params, &resp); err != nil {

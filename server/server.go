@@ -755,7 +755,7 @@ func (s *Server) SetDrainAsSteerWithInputFunc(fn func(string, []ImageAttachment)
 // removed entry's full text and image count. A non-empty expectedID must
 // match the queue-entry id minted at enqueue time so a queue that shifted
 // under the client's snapshot is rejected rather than removing the wrong
-// message (review F1). Unlike promote, no active turn is required.
+// message (review F1). Like promote, no active turn is required.
 func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) {
 	s.mu.Lock()
 	s.cancelQueuedFunc = fn

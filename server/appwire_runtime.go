@@ -1735,7 +1735,8 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 }
 
 // handleAppTurnPromoteQueuedAsSteer validates static request shape and leaves
-// active-turn and queue compare-and-commit decisions to the Session callback.
+// queue compare-and-commit decisions to the Session callback. No turn in
+// flight is required.
 func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
 	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
