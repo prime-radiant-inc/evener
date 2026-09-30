@@ -1329,9 +1329,9 @@ These are useful patterns and preservation checks, rather than new fix requests.
   paced rather than reporting a fetch failure. Native session memory also retains pending demand
   across route disposal without holding a closed store or service. Mounted native views keep independent demand; a detached pending owner is
   adopted once when the reader commits, preserving its requested page and Find
-  match boundary. Browser revisit transfers departed-pane demand to the
-  returning pane so Jump to live cancels the view's intent while another open
-  pane retains its own.
+  match boundary. Browser revisit retains demand; Jump to live cancels the
+  returned pane and its removed predecessors while another open pane retains
+  its own.
 - Browser [`loadOlderTurns`](../../cmd/evener-hub/frontend/src/stores/threads.ts)
   refreshes tracked history when `isStaleCursorError` identifies a stale cursor.
   Native first connection and initial transcript reads have separate retry owners.
