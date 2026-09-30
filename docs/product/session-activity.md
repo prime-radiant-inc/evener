@@ -81,7 +81,13 @@ displayed rows until the replacement is ready. Never combine pages from differen
 epochs or refresh attempts.
 
 Pages default to 50 rows and accept a maximum of 200. Collection responses are
-bounded to 256 KiB. Cold reads share a budget of 2,000 event or projection work
+bounded to 256 KiB. If an intact ancestry context or a single projected row cannot
+fit, the read returns a typed unavailable error instead of truncating identity or
+returning a continuation that cannot advance. Remote ref qualification can
+increase the encoded size; an oversized page is reread from the same input
+cursor with a smaller limit and uses that read's own continuation.
+
+Cold reads share a budget of 2,000 event or projection work
 units and 4 MiB of newly read journal bytes across their sources. A stored batch
 is decoded one event at a time. One event and its existing atomic fold count as
 one work unit under the journal's record-size limit; cancellation is checked
