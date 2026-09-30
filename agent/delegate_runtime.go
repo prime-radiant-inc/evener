@@ -1628,6 +1628,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// admitReconstructed/AttachRuntime leg). This per-child flag only has to cover
 	// what follows: from the point restoreIdleForSend has produced the child
 	// through the hand-off to the run.
+	if observer := s.cfg.testOnly.delegateSendChildResolved; observer != nil {
+		observer(sub)
+	}
 	sub.mu.Lock()
 	// The sibling drive guard in driveStableDelegateAttention also refuses a
 	// child whose finalizer is still running or whose worktree disposal holds

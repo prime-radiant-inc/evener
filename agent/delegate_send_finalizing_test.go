@@ -629,3 +629,36 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 		})
 	}
 }
+
+// A send whose child turns busy after the send resolved it is refused as
+// target_busy with nothing written: the send takes the child's drive guard
+// before it commits its start, so no start is committed that the child then
+// can't take.
+func TestDelegateSendToAChildThatTurnsBusyCommitsNothing(t *testing.T) {
+	t.Parallel()
+	held := holdDelegateFinalizing(t)
+	defer held.release()
+	if held.child == nil {
+		t.Fatal("the held delegate's child was never published")
+	}
+	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation}
+	reportFinalizeTailDone(t, held.s.delegateController, lease, held.child.sess)
+	updateSessionTestConfig(held.s, func(cfg *testConfig) {
+		cfg.delegateSendChildResolved = func(sub *subagent) {
+			sub.mu.Lock()
+			sub.driving = true
+			sub.mu.Unlock()
+		}
+	})
+	defer func() {
+		held.child.mu.Lock()
+		held.child.driving = false
+		held.child.mu.Unlock()
+	}()
+	before := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID)
+	res := executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+	if !res.IsError || !strings.Contains(res.Output, "target_busy") {
+		t.Fatalf("a send to a child that turned busy = %q (error %v), want a target_busy refusal", res.Output, res.IsError)
+	}
+	assertDelegateUnchanged(t, held.s.delegateController, held.delegateID, before, "the refused send")
+}
