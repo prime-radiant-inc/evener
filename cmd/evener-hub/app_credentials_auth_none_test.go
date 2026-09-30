@@ -208,7 +208,7 @@ func TestAuthTestCredentials_ProbesTheClientTheChildWouldGet(t *testing.T) {
 		t.Fatalf("status = %q (%q), want success", resp.Status, resp.Message)
 	}
 
-	// The same file broken: the hub is not reading it, so neither is the probe.
+	// A broken edit makes the probe use the retained successful file.
 	if err := os.WriteFile(f.tomlPath, []byte("[instances.openai]\ntype = \"openai\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -218,10 +218,10 @@ func TestAuthTestCredentials_ProbesTheClientTheChildWouldGet(t *testing.T) {
 	if resp, err := auth.TestCredentials(t.Context(), appwire.AuthTestParams{Provider: "groq"}); err != nil {
 		t.Fatalf("TestCredentials: %v", err)
 	} else if resp.Status != appwire.AuthTestStatusSuccess {
-		t.Fatalf("status = %q (%q), want success: the hub still launches groq against the implicit set", resp.Status, resp.Message)
+		t.Fatalf("status = %q (%q), want success: the hub still launches groq against the retained user layer", resp.Status, resp.Message)
 	}
 
-	want := []bool{false, true}
+	want := []bool{false, false}
 	if !reflect.DeepEqual(sawNoUserLayer, want) {
 		t.Fatalf("the probe's user-layer choice = %v, want %v", sawNoUserLayer, want)
 	}

@@ -80,16 +80,6 @@ type HubSpawner struct {
 	NoUserLayer         bool                      // the tri-state from EVENER_PROVIDERS_CONFIG: present and empty means no user layer (spec §10)
 }
 
-// childNoUserLayer is spec §10's third state as a child must see it: the hub's
-// own tri-state, or a providers.toml the registry cannot read right now. It is
-// asked per call rather than frozen at startup, because every credential
-// action reloads the registry and can change the answer in either direction —
-// and a child pointed at a file the hub is not reading (or denied one it is)
-// fails at launch with none of the hub's diagnostics attached.
-func childNoUserLayer(configured bool, reg *hubcore.ProviderRegistry) bool {
-	return configured || (reg != nil && reg.WritesRefused())
-}
-
 type EvenerLaunchModelLister interface {
 	ListLaunchModels(context.Context) ([]appwire.ModelDescriptor, error)
 }
@@ -115,15 +105,21 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 	if err != nil {
 		return appwire.ModelListResponse{}, err
 	}
+	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, nil)
+	if err != nil {
+		return appwire.ModelListResponse{}, err
+	}
+	defer childConfig.cleanup()
+	parentEnv := os.Environ()
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:            launchconfig.Resolved{},
 		RunDir:              h.RunDir,
 		StateDir:            stateDir,
 		HubToken:            h.HubToken,
-		ParentEnv:           os.Environ(),
-		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
-		CredentialsPath:     h.CredentialsPath,
+		ParentEnv:           parentEnv,
+		ProvidersConfigPath: childConfig.path,
+		NoUserLayer:         childConfig.noUserLayer,
+		CredentialsPath:     childConfig.credentialsPath(h.CredentialsPath, parentEnv),
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
@@ -148,15 +144,21 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 			return appwire.ModelListResponse{}, err
 		}
 	}
+	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, nil)
+	if err != nil {
+		return appwire.ModelListResponse{}, err
+	}
+	defer childConfig.cleanup()
+	parentEnv := os.Environ()
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:            launchconfig.Resolved{},
 		RunDir:              h.RunDir,
 		StateDir:            stateDir,
 		HubToken:            h.HubToken,
-		ParentEnv:           os.Environ(),
-		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
-		CredentialsPath:     h.CredentialsPath,
+		ParentEnv:           parentEnv,
+		ProvidersConfigPath: childConfig.path,
+		NoUserLayer:         childConfig.noUserLayer,
+		CredentialsPath:     childConfig.credentialsPath(h.CredentialsPath, parentEnv),
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
@@ -193,15 +195,21 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
 	}
+	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, req.Resolved.Effective.Env)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	defer childConfig.cleanupUnowned()
+	parentEnv := os.Environ()
 	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:            req.Resolved,
-		ParentEnv:           os.Environ(),
+		ParentEnv:           parentEnv,
 		RunDir:              h.RunDir,
 		StateDir:            req.StateDir,
 		HubToken:            h.HubToken,
-		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
-		CredentialsPath:     h.CredentialsPath,
+		ProvidersConfigPath: childConfig.path,
+		NoUserLayer:         childConfig.noUserLayer,
+		CredentialsPath:     childConfig.credentialsPath(h.CredentialsPath, parentEnv),
 	})
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
@@ -209,7 +217,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	return SpawnDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
+	return spawnDaemonWithProviderConfig(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, childConfig)
 }
 
 func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
@@ -248,15 +256,22 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
 	}
+	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, req.Resolved.Effective.Env)
+	if err != nil {
+		prepareDone(err)
+		return rendezvous.Entry{}, err
+	}
+	defer childConfig.cleanupUnowned()
+	parentEnv := os.Environ()
 	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:            req.Resolved,
-		ParentEnv:           os.Environ(),
+		ParentEnv:           parentEnv,
 		RunDir:              h.RunDir,
 		StateDir:            req.StateDir,
 		HubToken:            h.HubToken,
-		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
-		CredentialsPath:     h.CredentialsPath,
+		ProvidersConfigPath: childConfig.path,
+		NoUserLayer:         childConfig.noUserLayer,
+		CredentialsPath:     childConfig.credentialsPath(h.CredentialsPath, parentEnv),
 	})
 	if req.Provider != "" {
 		// The resume request carries the model the session persisted
@@ -283,7 +298,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	contractDone(nil)
 	prepareDone(nil)
-	return ResumeDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
+	return resumeDaemonWithProviderConfig(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, childConfig)
 }
 
 func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (launchconfig.Resolved, func(), error) {
@@ -423,7 +438,11 @@ func SpawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 
 // spawnDaemon is SpawnDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
-func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
+func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
+	return spawnDaemonWithProviderConfig(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
+}
+
+func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "spawn", "", hubLog)
 	daemonStarted := time.Now()
 	trace.record(ctx, "daemon", "begin", daemonStarted, nil, 0, 0)
@@ -456,12 +475,15 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	cleanupProvider := providerConfig.transferToChild()
 	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
 	exited := make(chan error, 1)
 	go func() {
-		exited <- cmd.Wait()
+		err := cmd.Wait()
+		cleanupProvider()
+		exited <- err
 	}()
 
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
@@ -584,7 +606,11 @@ func reapResumeChild(child resumeChild, reaped <-chan struct{}, active *hubcore.
 
 // resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
-func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
+func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
+	return resumeDaemonWithProviderConfig(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
+}
+
+func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, hubLog)
 	done := trace.stage(ctx, "daemon")
 	defer func() { done(launchErr) }()
@@ -635,6 +661,7 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 		launchDone(err)
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	cleanupProvider := providerConfig.transferToChild()
 	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
@@ -642,7 +669,9 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	reaped := make(chan struct{})
 	activeResume := req.ActiveResume
 	go func() {
-		exited <- child.wait()
+		err := child.wait()
+		cleanupProvider()
+		exited <- err
 		if activeResume != nil {
 			activeResume.ChildReaped()
 		}
