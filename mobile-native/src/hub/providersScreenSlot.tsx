@@ -58,7 +58,7 @@ export function ProvidersScreenSlotProvider({ children }: { children: ReactNode 
 
 /** Reads the slot's current publication outside render, where
  * useProviderDetailSlot's render-time value can't: a test seam for when a
- * publication lands within a commit (providersScreenSlot.test.tsx). */
+ * publication lands within a commit (ProviderDetailPage.test.tsx). */
 export function useProviderDetailSlotReader(): () => ProviderDetailSlot | null {
 	return useContext(SlotContext).getSnapshot;
 }

@@ -1,12 +1,17 @@
 // A provider's detail, pushed over the Providers page that publishes it
 // (providersScreenSlot.tsx): it shows only the detail its route names, for the
 // hub it was opened for, and goes back once that page lets the provider go.
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect } from "react";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { render, renderedText } from "../renderNative.testkit";
 import { ProviderDetailPage } from "./ProviderDetailPage";
-import { type ProviderDetailSlot, ProvidersScreenSlotProvider, usePublishProviderDetail } from "./providersScreenSlot";
+import {
+	type ProviderDetailSlot,
+	ProvidersScreenSlotProvider,
+	usePublishProviderDetail,
+	useProviderDetailSlotReader,
+} from "./providersScreenSlot";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 vi.mock("@react-navigation/native", async () => ({
@@ -43,6 +48,27 @@ function mount(published: ProviderDetailSlot, route = { hubId: "hub-1", name: "w
 	const tree = render(page(published));
 	return { tree, update: (value: ProviderDetailSlot, params = route) => act(() => tree.update(page(value, params))) };
 }
+
+// The page publishes in the commit's layout phase: a layout effect that runs
+// after the page's, in the same commit, already finds its publication, so a
+// detail pushed in that commit paints with it.
+it("publishes before the commit's later layout effects run", () => {
+	const seen: (string | null | undefined)[] = [];
+	function LayoutReader() {
+		const read = useProviderDetailSlotReader();
+		useLayoutEffect(() => {
+			seen.push(read()?.name);
+		}, [read]);
+		return null;
+	}
+	render(
+		<ProvidersScreenSlotProvider>
+			<Publisher value={slot({})} />
+			<LayoutReader />
+		</ProvidersScreenSlotProvider>,
+	);
+	expect(seen).toEqual(["work"]);
+});
 
 it("shows the detail the Providers page publishes for the provider its route names", () => {
 	const { tree } = mount(slot({}));
