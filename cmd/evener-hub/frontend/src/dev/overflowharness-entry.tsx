@@ -464,7 +464,7 @@ const location: NavigationSessionLocation = {
   },
 };
 navigationStore.setState({
-  mode: "v2",
+  mode: "v3",
   clientGenerationID: location.generation_id,
   resources: new Map([
     [

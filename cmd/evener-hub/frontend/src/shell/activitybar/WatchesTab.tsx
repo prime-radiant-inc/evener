@@ -1,11 +1,12 @@
+import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // The Watches tab: the scope's watches with the shared cadence/meta wording,
 // plus the honest "+N more · M armed" line when the hub omitted rows (the
 // rail's watchCountLabel grammar, so the two surfaces cannot disagree). The
 // clock is the shared useNowTick, ticking only while this tab is mounted.
 
 import { useNowTick } from "../../panes/session/liveness";
+import { useSessionActivity } from "../../stores/sessionActivity";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { activeWatchCount, watchCountLabel } from "../rail/railNodes";
 import type { ActivityScope } from "../statusbar/statusScope";
 import styles from "./activitybar.module.css";
 import { WatchRow } from "./activityRows";
@@ -18,23 +19,30 @@ const CLASS = {
 
 export function WatchesTab({ scope }: { scope: ActivityScope }) {
   const now = useNowTick(30_000);
-  const watches = scope.leaf.watches ?? [];
-  const omitted = scope.leaf.omitted_watches ?? 0;
-  if (watches.length === 0 && omitted === 0) {
+  const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "watches");
+  const collection = snapshot?.watches;
+  if (collection?.permanent && collection.rows.length === 0)
+    return <span className={CLASS.emptyNote}>Watches unavailable for this session.</span>;
+  if (!collection || (collection.rows.length === 0 && !collection.complete))
+    return <span className={CLASS.emptyNote}>Loading watches…</span>;
+  const watches = collection.rows;
+  if (watches.length === 0 && collection.complete)
     return <span className={CLASS.emptyNote}>No watches at this level.</span>;
-  }
   return (
     <div className={CLASS.stack}>
       {watches.map((watch) => (
-        <WatchRow key={watch.id} watch={watch} now={now} />
+        <WatchRow key={JSON.stringify([watch.receiverRef, watch.watch.id])} watch={watch} now={now} />
       ))}
-      {omitted > 0 ? (
-        // The rail's own grammar with the TRUE totals: the armed figure counts
-        // retained armed rows AND the omitted armed subset, never just one side.
-        <span className={CLASS.passiveMore}>
-          {watchCountLabel(activeWatchCount(scope.leaf), watches.length, omitted)}
-        </span>
-      ) : null}
+      <ActivityPageBoundary
+        resource="watches"
+        label="watches"
+        hasMore={collection.hasMore}
+        loading={collection.loading}
+        error={collection.error}
+        permanent={collection.permanent}
+        loadMore={loadMore}
+      />
+      {collection.error ? <span className={CLASS.emptyNote}>Watches are updating…</span> : null}
     </div>
   );
 }

@@ -21,6 +21,7 @@ import type {
   UrlsRemoveResponse,
 } from "@evener/appwire-client";
 import {
+  acquireThreadSubscription,
   applyHistoryReadFailure,
   applyNotification,
   applyReadResponse,
@@ -41,13 +42,13 @@ import {
   notificationRoutingKey,
   resolvePendingEscalation,
   SHUT_DOWN_STATUSES,
+  type ThreadSubscriptionLease,
   WireError,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
-import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { connectedClientPort, connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
@@ -819,14 +820,39 @@ function noteMutationStateChange(ref: string): void {
 const inflightDurableEnqueues = new Map<string, number>();
 const olderPageGenerations = new Map<string, number>();
 
-// Refs this connection generation holds a wire subscription for. thread/read
-// with subscribe:true is how a subscription is created, and every re-read of
-// a tracked ref (ensureThread retry, onReady resync, watchThread upgrade)
-// used to send it again — additively and with a fresh capture cycle, because
-// nothing recorded "already subscribed on THIS socket". A new connection
-// carries no subscriptions, so rewireClient and the onReady path both clear
-// the set; the next read of a still-tracked ref re-subscribes as before.
-const wireSubscribedRefs = new Set<string>();
+// Pane, watch and durable outbox holders share one local lease. Activity views
+// hold their own leases on the same routing ref and actual client identity.
+const threadSubscriptions = new Map<string, { client: AppwireClientLike; lease: ThreadSubscriptionLease }>();
+
+function syncThreadSubscription(ref: string, client = wiredClient): ThreadSubscriptionLease | undefined {
+  const previous = threadSubscriptions.get(ref);
+  const held = (refCounts.get(ref) ?? 0) > 0 || (watchRefCounts.get(ref) ?? 0) > 0 || pinnedMutationRefs.has(ref);
+  if (previous && (!held || previous.client !== client)) {
+    previous.lease.release();
+    threadSubscriptions.delete(ref);
+  }
+  if (!held || !client) return;
+  const existing = threadSubscriptions.get(ref);
+  if (existing) return existing.lease;
+  const lease = acquireThreadSubscription(client, ref);
+  threadSubscriptions.set(ref, { client, lease });
+  return lease;
+}
+
+function releaseThreadSubscriptions(): void {
+  for (const { lease } of threadSubscriptions.values()) lease.release();
+  threadSubscriptions.clear();
+}
+
+function pinMutationRef(ref: string): void {
+  pinnedMutationRefs.add(ref);
+  syncThreadSubscription(ref);
+}
+
+function unpinMutationRef(ref: string): void {
+  pinnedMutationRefs.delete(ref);
+  syncThreadSubscription(ref);
+}
 
 interface MutationRuntime {
   storage: MutationOutboxIndexedDB;
@@ -999,17 +1025,17 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
       outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
     );
     if (outbox.length > 0) {
-      pinnedMutationRefs.add(targetRef);
+      pinMutationRef(targetRef);
       continue;
     }
     if (optimistic.length > 0) {
-      pinnedMutationRefs.add(targetRef);
+      pinMutationRef(targetRef);
       // An optimistic row is accepted (settled), never undelivered work - the
       // empty outbox above already says so in the ids.
       dispatchableMutationRefs.delete(targetRef);
       continue;
     }
-    pinnedMutationRefs.delete(targetRef);
+    unpinMutationRef(targetRef);
     dispatchableMutationRefs.delete(targetRef);
     dropUnpinnedModel(targetRef);
   }
@@ -1042,10 +1068,10 @@ async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRe
     outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
   );
   if (outbox.length > 0 || optimistic.length > 0) {
-    pinnedMutationRefs.add(targetRef);
+    pinMutationRef(targetRef);
     return;
   }
-  pinnedMutationRefs.delete(targetRef);
+  unpinMutationRef(targetRef);
   dropUnpinnedModel(targetRef);
 }
 
@@ -1078,7 +1104,7 @@ export function notifyReadyForMutationDispatch(refs: Iterable<string>): void {
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
   const refs = [...new Set([...targetRefs, ...threadsStore.getState().mutationReconciliationFailures])];
-  for (const targetRef of refs) pinnedMutationRefs.add(targetRef);
+  for (const targetRef of refs) pinMutationRef(targetRef);
   notifyMutationPersistence(refs);
   scheduleMutationDispatch(runtime, refs);
 
@@ -1629,7 +1655,7 @@ export async function resendRecoveryMutation(
   // and drop the old, so a later settle of the new row or unreadable storage
   // does not strand the guard on a row that no longer exists.
   noteHandledMutation(clientMutationId);
-  pinnedMutationRefs.add(targetRef);
+  pinMutationRef(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
   return record;
@@ -1703,16 +1729,8 @@ const watchIncludeTurns = new Map<string, boolean>();
 // was released before either response arrived.
 const watchHydratedIncludeTurns = new Map<string, boolean>();
 
-// Both hydrate paths (open-pane and watched) read a ref with exactly these
-// params, differing only in includeTurns: replaceSubscription is always
-// false — additive, layering onto whatever the daemon already tracks for this
-// client rather than resetting it.
-//
-// subscribe is true only when this connection generation holds no wire
-// subscription for the ref yet (see wireSubscribeDecision): a re-read of an
-// already-subscribed ref sends subscribe:false so the server skips the
-// buffered-capture cycle a second subscribe would run, and
-// releaseThread's unsubscribe is what drops the entry again.
+// Both hydrate paths retain transcript window and response-cut parameters;
+// the shared lease owns only wire membership and additive subscribe ordering.
 const TRANSCRIPT_ITEM_PAGE_SIZE = 40;
 
 // heldSnapshot lets the server answer with HistoryChanges instead of a full
@@ -1720,19 +1738,10 @@ const TRANSCRIPT_ITEM_PAGE_SIZE = 40;
 // "Later completions of held items"). Sent whenever the request carries a
 // held v6 model's identity - the server decides whether the read is
 // daemon-served or daemonless; the client sends what it holds either way.
-function threadReadParams(
-  ref: string,
-  includeTurns: boolean,
-  subscribe: boolean,
-  requestGeneration?: number,
-  heldSnapshot?: SnapshotIdentity,
-) {
+function threadReadParams(includeTurns: boolean, requestGeneration?: number, heldSnapshot?: SnapshotIdentity) {
   return {
-    ref,
     includeTurns,
     itemsView: "full",
-    subscribe,
-    replaceSubscription: false,
     itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE,
     ...(requestGeneration !== undefined ? { requestGeneration } : {}),
     ...(heldSnapshot ? { heldSnapshot } : {}),
@@ -1757,10 +1766,8 @@ function heldSnapshotFor(baseModel: ThreadModel | undefined): SnapshotIdentity |
 // scope, reports whether that is what happened and the caller should retry
 // once with no held snapshot (for a full latest-window replacement). Both
 // call sites inline that retry in their own nested try/catch (rather than
-// wrapping the whole request in one shared async helper) so the ordinary,
-// non-stale-cursor path awaits client.request() exactly once, matching the
-// microtask timing callers (e.g. a reconnect's response-cut ordering) depend
-// on.
+// wrapping transcript history recovery in the membership helper). The
+// hydration owner retains all history and response-cut ordering authority.
 function shouldRetryWithoutHeldSnapshot(held: SnapshotIdentity | undefined, err: unknown): boolean {
   return held !== undefined && isStaleCursorError(err);
 }
@@ -1768,56 +1775,6 @@ function shouldRetryWithoutHeldSnapshot(held: SnapshotIdentity | undefined, err:
 interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
-}
-
-// sendThreadUnsubscribe drops this client's wire subscription to a ref the
-// last holder of just released. Fire-and-forget on purpose: the local release
-// is already complete and cannot be rolled back, so a failed or racing
-// unsubscribe must not block navigation — the hub's idle-relay teardown and
-// the server's connection-close cleanup (RemoveConnection) are both
-// idempotent backstops for a lost message.
-function sendThreadUnsubscribe(ref: string): void {
-  const client = wiredClient;
-  if (client?.state !== "ready") return;
-  void client.request("thread/unsubscribe", { ref }).catch(() => {
-    // Swallow: see above. A dropped unsubscribe costs only a kept server-side
-    // subscription until the connection or the relay's idle timer ends it.
-  });
-}
-
-// The shared subscribe decision for both hydrate paths (open-pane and
-// watched): a read subscribes only when this connection generation holds no
-// wire subscription for the ref yet, and marks it held only after the read
-// succeeds — a failed read's subscribe never took effect server-side, so its
-// retry must send subscribe:true again.
-//
-// The membership set is NOT derivable from refCounts/watchRefCounts: those
-// count local interest (incremented synchronously, before any wire call),
-// while this records a fact about the wire (a subscribe that completed).
-// A count>0 with no held entry is exactly the pending-hydration and
-// failed-read-retry window, and deriving subscribe:false there would strand
-// the ref unsubscribed.
-//
-// markSubscribed re-checks holders after the read resolves: a release that
-// ran mid-flight left no holder, and that release saw the set WITHOUT this
-// ref (so it sent no unsubscribe). Recording the entry now would leak the
-// server-side subscription this read just created until connection close —
-// so the zero-holder read sends its own unsubscribe instead. A pinned
-// outbox ref is the deliberate exception: it holds no pane but must keep
-// its subscription for the mutation replay.
-function wireSubscribeDecision(ref: string): { subscribe: boolean; markSubscribed: () => void } {
-  const subscribe = !wireSubscribedRefs.has(ref);
-  return {
-    subscribe,
-    markSubscribed: () => {
-      if (!subscribe) return;
-      if ((refCounts.get(ref) ?? 0) <= 0 && (watchRefCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) {
-        sendThreadUnsubscribe(ref);
-        return;
-      }
-      wireSubscribedRefs.add(ref);
-    },
-  };
 }
 
 async function hydrateAndSubscribe(
@@ -1828,20 +1785,15 @@ async function hydrateAndSubscribe(
 ): Promise<ThreadHydration> {
   let response: ThreadReadResponse;
   let discardHeldHistory = false;
-  const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
+  const lease = syncThreadSubscription(ref, client);
+  if (!lease) throw new Error("Thread hydration has no subscription holder");
   const held = heldSnapshotFor(pending.baseModel);
   try {
     try {
-      response = await client.request(
-        "thread/read",
-        threadReadParams(ref, true, subscribe, pending.requestGeneration, held),
-      );
+      response = await lease.read(threadReadParams(true, pending.requestGeneration, held));
     } catch (err) {
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
-      response = await client.request(
-        "thread/read",
-        threadReadParams(ref, true, subscribe, pending.requestGeneration, undefined),
-      );
+      response = await lease.read(threadReadParams(true, pending.requestGeneration, undefined));
       discardHeldHistory = true;
     }
   } catch (err) {
@@ -1861,7 +1813,6 @@ async function hydrateAndSubscribe(
     }
     throw err;
   }
-  markSubscribed();
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
   // merge it (same incarnation/epoch, length >= held's), leaving every held
@@ -1973,20 +1924,15 @@ async function hydrateAndSubscribeWatch(
 ): Promise<ThreadModel> {
   let resp: ThreadReadResponse;
   let discardHeldHistory = false;
-  const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
+  const lease = syncThreadSubscription(ref, client);
+  if (!lease) throw new Error("Thread hydration has no subscription holder");
   const held = heldSnapshotFor(pending.baseModel);
   try {
     try {
-      resp = await client.request(
-        "thread/read",
-        threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, held),
-      );
+      resp = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, held));
     } catch (err) {
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
-      resp = await client.request(
-        "thread/read",
-        threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, undefined),
-      );
+      resp = await lease.read(threadReadParams(includeTurns, pending.requestGeneration, undefined));
       discardHeldHistory = true;
     }
   } catch (err) {
@@ -2001,7 +1947,6 @@ async function hydrateAndSubscribeWatch(
     }
     throw err;
   }
-  markSubscribed();
   // See hydrateAndSubscribe's identical comment: a retry that dropped the
   // held snapshot must fully replace history, not merge into it.
   const model =
@@ -2609,7 +2554,7 @@ async function enqueueMutationIntent(
   // row's pin must survive a stale refresh just as an undelivered row's markers
   // must.
   noteMutationStateChange(ref);
-  pinnedMutationRefs.add(ref);
+  pinMutationRef(ref);
   // A committed row is undelivered work unless the stop barrier committed it
   // born-canceled.
   const committedUndelivered = record.state !== "canceled";
@@ -3875,7 +3820,7 @@ async function handleReady(
     // so reset or reconnect can land inside it; re-check both owners before
     // mutating the shared pin set or putting reads on the wire.
     if (!isCurrentMutationRuntime(runtime)) return;
-    for (const ref of discovered) pinnedMutationRefs.add(ref);
+    for (const ref of discovered) pinMutationRef(ref);
     if (wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
     await Promise.all(
       discovered.filter((ref) => !alreadyHydrated.has(ref)).map((ref) => handleReady(client, epoch, ref)),
@@ -3922,11 +3867,9 @@ async function handleReady(
 function teardownWiring(): void {
   readyEpoch += 1;
   threadsStore.setState({ mutationAuthorityRefs: new Set() });
-  // A different (or absent) client is a different connection: every wire
-  // subscription this generation tracked belongs to a socket that is gone, so
-  // drop the whole set — handleReady's re-reads re-subscribe the still-tracked
-  // refs on the new client.
-  wireSubscribedRefs.clear();
+  // Old leases belong to the outgoing client. The next hydration joins the
+  // replacement client's membership without affecting activity owners.
+  releaseThreadSubscriptions();
   retireAllOwnedHydrations();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
@@ -3952,7 +3895,7 @@ function rewireClient(client: AppwireClientLike): void {
         // onReady is the SAME client reconnecting: its old connection's
         // subscriptions are server-side gone too, even though the client object
         // survives. handleReady re-subscribes the still-tracked refs.
-        wireSubscribedRefs.clear();
+
         retireAllOwnedHydrations();
         dispatchReadyClient = null;
         dispatchReadyEpoch = -1;
@@ -4181,6 +4124,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
     const generation = ensureGenerations.get(ref) ?? 0;
     refCounts.set(ref, count + 1);
+    syncThreadSubscription(ref, client);
     if (threadsStore.getState().threads.has(ref)) return; // already hydrated: no re-read
 
     const startHydration = (hydrationClient: AppwireClientLike): Promise<ThreadModel | null> => {
@@ -4310,6 +4254,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     refCounts.delete(ref);
+    syncThreadSubscription(ref);
     releaseSubagentRows(ref);
     if (pinnedMutationRefs.has(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
@@ -4332,10 +4277,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // model stays; only the pane's own tracking goes. Unsubscribe the wire
     // subscription when this was the last holder of either kind, so the hub
     // stops relaying a thread nobody renders and its relay can idle out.
-    if (wireSubscribedRefs.has(ref) && (watchRefCounts.get(ref) ?? 0) <= 0) {
-      wireSubscribedRefs.delete(ref);
-      sendThreadUnsubscribe(ref);
-    }
+
     // frameTimes is dropped in lockstep — an untracked ref has no business
     // holding onto a liveness trace a future ensureThread() of the same ref
     // should start fresh, the same way it re-reads a fresh model.
@@ -4354,6 +4296,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
     const generation = watchGenerations.get(ref) ?? 0;
     watchRefCounts.set(ref, (watchRefCounts.get(ref) ?? 0) + 1);
+    syncThreadSubscription(ref, client);
     // Monotonic per-ref turns flag: once any watcher wants turns, keep them
     // for every watcher until the last release (yd16 §4.2).
     const hadTurns = watchIncludeTurns.get(ref) ?? false;
@@ -4469,6 +4412,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     watchRefCounts.delete(ref);
+    syncThreadSubscription(ref);
     retireOwnedHydration("watched", ref);
     watchGenerations.set(ref, (watchGenerations.get(ref) ?? 0) + 1);
     // A retired lifecycle must not lend its pending hydrate to a new watcher.
@@ -4485,10 +4429,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     watchHydratedIncludeTurns.delete(ref);
     // The open-pane lifecycle may still hold this ref; only when it is gone
     // too does the wire subscription have no remaining holder.
-    if (wireSubscribedRefs.has(ref) && (refCounts.get(ref) ?? 0) <= 0) {
-      wireSubscribedRefs.delete(ref);
-      sendThreadUnsubscribe(ref);
-    }
+
     removeWatchedThreadModel(ref);
   },
 
@@ -4993,7 +4934,6 @@ export function resetThreadsStoreForTests(): void {
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
   resetTasksPanelStoreForTests();
   if (mutationRuntime) {
     mutationRuntime.active = false;
@@ -5037,7 +4977,7 @@ export function resetThreadsStoreForTests(): void {
   watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
-  wireSubscribedRefs.clear();
+  releaseThreadSubscriptions();
   threadsIndex.clear();
   watchedThreadsIndex.clear();
   modelsCache = null;

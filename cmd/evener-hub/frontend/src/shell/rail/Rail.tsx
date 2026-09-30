@@ -1153,7 +1153,7 @@ function NavigationRail({
   }, [revealTarget, onRevealConsumed]);
 
   useEffect(() => {
-    if (navigationMode !== "v2") return;
+    if (navigationMode !== "v3") return;
     if (!manifest)
       void navigationStore
         .getState()
@@ -1237,7 +1237,7 @@ function NavigationRail({
     }
   }, [loadProjectRoot, resources]);
   useEffect(() => {
-    if (navigationMode !== "v2") return;
+    if (navigationMode !== "v3") return;
     const generation = navigationStore.getState().clientGenerationID;
     if (generation !== rootGeneration.current) {
       rootLoadsInFlight.current.clear();
@@ -1984,7 +1984,7 @@ function NavigationRail({
   ];
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
-    navigationMode === "unknown" || (navigationMode === "v2" && (!manifest || manifest.loading || resourceLoading));
+    navigationMode === "unknown" || (navigationMode === "v3" && (!manifest || manifest.loading || resourceLoading));
   const manifestError = manifest?.error ? errorText(manifest.error) : null;
   const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
   const loadError =

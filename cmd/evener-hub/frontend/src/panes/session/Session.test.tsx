@@ -1,14 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  ActivityJob,
-  ActivityTree,
-  AnyNotification,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import * as appwireClient from "@evener/appwire-client";
 import { AppwireClient, makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
@@ -23,20 +16,13 @@ import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } fr
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
-import {
-  activityPanelStore,
-  EMPTY_ACTIVITY_PANEL_ENTRY,
-  resetActivityPanelStoreForTests,
-} from "../../stores/activityPanel";
-import {
-  activitySummaryStore,
-  EMPTY_ACTIVITY_SUMMARY_ENTRY,
-  resetActivitySummaryStoreForTests,
-} from "../../stores/activitySummary";
+import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import { activityContext, activityDelegate, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
@@ -149,54 +135,6 @@ function versionedReadResponse(ref: string, overrides: Partial<Thread> = {}): Th
   };
 }
 
-function emptyActivityTree(ref: string) {
-  return {
-    revision: 1,
-    root: {
-      sessionId: `sess_${ref}`,
-      ref,
-      label: "Root session",
-      aggregate: "completed",
-      counts: { active: 0, failed: 0, completed: 0, complete: true },
-      entries: [],
-      branch: {},
-    },
-  };
-}
-
-function activityTree(ref: string, jobId: string, description: string): ActivityTree {
-  const job: ActivityJob = {
-    jobId,
-    ownerSessionId: "02wMz5TxvEMoJEDTDGOTil",
-    ownerRef: ref,
-    type: "shell",
-    status: "completed",
-    outcome: "success",
-    transcriptRef: `job:${jobId}`,
-    terminal: true,
-    background: false,
-    hasOutput: true,
-    description,
-    startedAt: "2026-09-13T20:00:00Z",
-    endedAt: "2026-09-13T20:00:01Z",
-    exitCode: 0,
-    outputBytes: 12,
-  };
-  return {
-    revision: 1,
-    root: {
-      kind: "session",
-      sessionId: `sess_${ref}`,
-      ref,
-      label: "root",
-      aggregate: "completed",
-      counts: { active: 0, failed: 0, completed: 1, complete: true },
-      entries: [{ kind: "shell", job }],
-      branch: {},
-    },
-  };
-}
-
 function readOnlyEntityThread(ref: string, text: string): ThreadReadResponse {
   return readResponse(ref, {
     turns: [
@@ -277,7 +215,6 @@ beforeEach(() => {
   resetAskDockStoreForTests();
   resetNavigationStoreForTests();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
   mutationStorage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
@@ -291,7 +228,6 @@ afterEach(() => {
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
   resetActivityPanelStoreForTests();
-  resetActivitySummaryStoreForTests();
   resetWorkspaceStoreForTests();
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
@@ -335,70 +271,6 @@ test("mounts TopNotesPanel at the top of the session content once hydrated", asy
   // transcript area below it in the pane scaffold.
   const below = screen.getByText("Send the first message");
   expect(screen.getByTestId("top-notes-panel").compareDocumentPosition(below)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-});
-
-test("a read-only entity consumer resolves only its ref when another ref's activity stores are populated", async () => {
-  const owner = "02wMz5TxvEMoJEDTDGOTil";
-  const ref = `local:${owner}`;
-  const otherRef = "local:other-entity-session";
-  const ownJob = `job_${owner}_000000000123`;
-  const otherJob = `job_${owner}_000000000456`;
-  const ownTree = activityTree(ref, ownJob, "Owned by the requested ref");
-  const otherTree = activityTree(otherRef, otherJob, "Must not leak across refs");
-  activityPanelStore.setState({
-    entries: new Map([
-      [ref, { ...EMPTY_ACTIVITY_PANEL_ENTRY, established: true, load: { kind: "ready", tree: ownTree } }],
-      [otherRef, { ...EMPTY_ACTIVITY_PANEL_ENTRY, established: true, load: { kind: "ready", tree: otherTree } }],
-    ]),
-  });
-  activitySummaryStore.setState({
-    entries: new Map([
-      [
-        otherRef,
-        {
-          ...EMPTY_ACTIVITY_SUMMARY_ENTRY,
-          counts: otherTree.root.counts,
-          established: true,
-          requestID: 1,
-        },
-      ],
-    ]),
-  });
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readOnlyEntityThread(ref, `Own ${ownJob}. Other ${otherJob}.`));
-
-  render(
-    <ClientProvider client={fake}>
-      <ReadOnlyTranscript params={{ ref }} paneId="read-only-entities" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1));
-  expect(screen.getByTestId("entity-trigger").textContent).toBe(ownJob);
-  expect(screen.getAllByRole("button", { name: "Open job log" })).toHaveLength(1);
-  expect(screen.getByText(otherJob).closest('[data-testid="entity-trigger"]')).toBeNull();
-  expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
-});
-
-test("a read-only entity consumer does not initiate activity discovery", async () => {
-  const owner = "02wMz5TxvEMoJEDTDGOTil";
-  const ref = `local:${owner}`;
-  const job = `job_${owner}_000000000789`;
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readOnlyEntityThread(ref, `Passive reference ${job}.`));
-
-  render(
-    <ClientProvider client={fake}>
-      <ReadOnlyTranscript params={{ ref }} paneId="read-only-passive" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByText(job)).toBeTruthy());
-  await flushUntil(() => false, 5);
-  expect(screen.queryByTestId("entity-trigger")).toBeNull();
-  expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
-  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
-  expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
 });
 
 // A ref stays on "Loading transcript…" forever when thread/read simply never
@@ -602,7 +474,7 @@ function setNavigationTitle(ref: string, title: string, topLevel = true, fields:
     },
   };
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -4248,9 +4120,9 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     if (!stopped) response.thread.evener.capabilities = { ...CAPABILITIES, send: false };
     return response;
   });
-  fake.on("evener/jobs/list", (params) => {
+  fake.on("evener/thread/activity/read", (params) => {
     activityRefs.push(params.ref);
-    return { data: emptyActivityTree(ref) };
+    return activitySummary(params.ref);
   });
   fake.on("evener/thread/forceStop", () => {
     stopped = true;
@@ -4263,12 +4135,12 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     </ClientProvider>,
   );
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
-  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
   // The fence must not hide the editor or its force-stop menu.
   const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
-  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
-  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
+  expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
   const editor = screen.getByRole("textbox", { name: "Message" });
   // The composer's editor is a contenteditable div, which carries neither
@@ -4320,9 +4192,9 @@ test.each([
     response.thread.evener.mutationStateAuthoritative = false;
     return response;
   });
-  fake.on("evener/jobs/list", (params) => {
+  fake.on("evener/thread/activity/read", (params) => {
     activityRefs.push(params.ref);
-    return { data: emptyActivityTree(ref) };
+    return activitySummary(params.ref);
   });
   render(
     <ClientProvider client={fake}>
@@ -4339,4 +4211,65 @@ test.each([
     screen.queryAllByTestId("session-chrome-menu").length + screen.queryAllByTestId("session-chrome-inline").length;
   expect(chromeMounts).toBe(1);
   await waitFor(() => expect(activityRefs).toEqual([ref]));
+});
+
+test("visible retained transcript resolves qualified job and stable delegate rows with authoritative open targets", async () => {
+  const owner = "02wMz5TxvEMoJEDTDGOTil",
+    ref = `local:${owner}`,
+    jobId = `job_${owner}_000000000123`,
+    delegateId = "dlg_034HQ2kSDXfKFq1mm3idL1",
+    otherJob = `job_${owner}_000000000456`;
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readOnlyEntityThread(ref, `Own ${jobId} and ${delegateId}. Other ${otherJob}.`));
+  fake.on("evener/thread/activity/read", () => activitySummary(ref));
+  fake.on("evener/thread/jobs/list", ({ scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [
+      activityJob({
+        jobId,
+        ownerRef: ref,
+        ownerSessionId: owner,
+        transcriptRef: "job:provided-ref",
+        description: "retained owned job",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [
+      activityDelegate({
+        delegateId,
+        ownerRef: ref,
+        childRef: "source:opaque-child",
+        rootRef: ref,
+        description: "retained owned delegate",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  render(
+    <ClientProvider client={fake}>
+      <ReadOnlyTranscript params={{ ref }} paneId="retained" focused={false} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getAllByTestId("entity-trigger")).toHaveLength(2));
+  expect(screen.getByText(otherJob).closest('[data-testid="entity-trigger"]')).toBeNull();
+  await import("./index");
+  act(() => {
+    workspaceStore.getState().openPane("session", { ref });
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Open job log" }));
+  expect(workspaceStore.getState().panes.filter((p) => p.type === "transcript")).toEqual(
+    expect.arrayContaining([expect.objectContaining({ params: { ref: "job:provided-ref", parentRef: ref } })]),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open delegate transcript" }));
+  expect(workspaceStore.getState().panes.filter((p) => p.type === "transcript")).toEqual(
+    expect.arrayContaining([expect.objectContaining({ params: { ref: "source:opaque-child", parentRef: ref } })]),
+  );
+  expect(
+    fake.calls.filter((c) => c.method === "evener/jobs/list" || c.method === "evener/thread/watches/list"),
+  ).toHaveLength(0);
 });

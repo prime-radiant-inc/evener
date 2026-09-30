@@ -6,10 +6,11 @@
 
 import { useMemo } from "react";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { useSessionActivity } from "../../stores/sessionActivity";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { ACTIVITY_TABS } from "../activitybar/activityTabs";
-import { useEnsureActivityScopeResources, useFocusedActivityScopeRef } from "../focusedSession";
+import { useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "./ScopeCrumbs";
 import styles from "./statusbar.module.css";
 import { deriveScope } from "./statusScope";
@@ -28,14 +29,18 @@ export function StatusBar() {
   const ref = useFocusedActivityScopeRef();
   // The location and the subagents page are the surfaces' data; nothing else
   // fetches them for a scope (the open sidebar rides this too).
-  useEnsureActivityScopeResources(ref);
+  const { snapshot } = useSessionActivity(ref);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
-  const scope = useMemo(() => (ref === null ? null : deriveScope(navigationStore.getState(), ref)), [resources, ref]);
+  const scope = useMemo(
+    () => (ref === null ? null : deriveScope(navigationStore.getState(), ref, snapshot)),
+    [resources, ref, snapshot],
+  );
   if (scope === null) return null;
   const { counts } = scope;
   return (
     <div className={CLASS.bar} data-testid="statusbar">
       <ScopeCrumbs path={scope.path} />
+      {!scope.ancestryKnown ? <span>Finding session context…</span> : null}
       <div className={CLASS.chips}>
         {ACTIVITY_TABS.filter((tab) => tab.chipVisible(counts)).map((tab) => (
           <button

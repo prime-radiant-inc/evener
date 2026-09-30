@@ -1,6 +1,6 @@
 import type { InputItem, MethodTypes, MutationReceipt, Turn, TurnStartParams } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { summaries as initialSummaries, initialThreads, PARENT, parentRefs, QUESTION } from "./data";
 
@@ -55,10 +55,10 @@ export function createEditorialClient(): EditorialClient {
       directoryComplete: true,
       auth: true,
     },
-    navigation: { version: 1, readVersions: [2], generationId: "generation_test", sequence: 0 },
+    navigation: { version: 1, readVersions: [3], generationId: "generation_test", sequence: 0 },
   }));
   client.on("evener/navigation/read", (params) => {
-    const wrap = (data: unknown) => wireV2(params, data, `"editorial-${revision}"`, revision);
+    const wrap = (data: unknown) => wireSnapshot(params, data, `"editorial-${revision}"`, revision);
     switch (params.resource) {
       case "manifest":
         return wrap({

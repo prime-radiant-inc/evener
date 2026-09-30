@@ -129,9 +129,6 @@ function resourceKey(params: NavigationReadParams): ResourceKey {
     case "location":
       if (!params.ref) throw new Error("location navigation read requires ref");
       return { kind: "location", ref: params.ref };
-    case "subagents":
-      if (!params.ref) throw new Error("subagents navigation read requires ref");
-      return { kind: "subagents", ref: params.ref, offset, limit };
     default:
       throw new Error(`unsupported navigation resource: ${params.resource}`);
   }
@@ -301,7 +298,7 @@ async function projectDelta(key: Extract<ResourceKey, { kind: "project" }>) {
 async function navigationRead(params: NavigationReadParams): Promise<NavigationReadResponse> {
   if (params.representationVersion !== 2) throw new Error("shellguard expected v2 navigation reads");
   const key = resourceKey(params);
-  const v2 = (
+  const wireResponse = (
     data: unknown,
     representation: "snapshot" | "delta" = "snapshot",
     base?: NavigationReadBase,
@@ -316,7 +313,7 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
   });
   switch (key.kind) {
     case "manifest":
-      return v2(
+      return wireResponse(
         snapshot(
           { ...NAVIGATION_MANIFEST, revision: mutationRevision },
           [],
@@ -330,27 +327,23 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
         ),
       );
     case "section":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "pin_catalog":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "pin_section":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "catalog":
-      return v2(await catalogSnapshot(key));
+      return wireResponse(await catalogSnapshot(key));
     case "project": {
       if (mutationRevision > 1 && params.base?.revision === 1 && key.projectKey === "p0")
-        return v2(await projectDelta(key), "delta", params.base);
+        return wireResponse(await projectDelta(key), "delta", params.base);
       const summary = projectSummaries.find((project) => project.key === key.projectKey);
-      return v2(await sessionSnapshot(key, summary?.name ?? key.projectKey));
+      return wireResponse(await sessionSnapshot(key, summary?.name ?? key.projectKey));
     }
     case "project_page":
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
     case "location":
-      return v2(emptySnapshot(key));
-    case "subagents":
-      // The StatusBar ensures the scope's subagents page on mount; the
-      // harness's sessions are childless, so an empty page is the truth.
-      return v2(emptySnapshot(key));
+      return wireResponse(emptySnapshot(key));
   }
 }
 
@@ -386,7 +379,7 @@ async function boot(): Promise<void> {
       directoryComplete: true,
       auth: true,
     },
-    navigation: { version: 1, readVersions: [2], generationId: "shellguard-generation", sequence: 0 },
+    navigation: { version: 1, readVersions: [3], generationId: "shellguard-generation", sequence: 0 },
   }));
   createRoot(root).render(
     <RailRenderObserver value={(id) => renderCounts.set(id, (renderCounts.get(id) ?? 0) + 1)}>

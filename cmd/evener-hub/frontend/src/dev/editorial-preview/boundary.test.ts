@@ -29,7 +29,7 @@ test.each([
   const location = await client.request("evener/navigation/read", {
     resource: "location",
     ref,
-    representationVersion: 2,
+    representationVersion: 3,
   });
   expect(location.data).toMatchObject({ metadata: { ref, top_level_ref: PARENT, top_level: false } });
   expect(client.rejectedRequests).toEqual([]);
@@ -104,12 +104,12 @@ test("fixture answer is reflected once, clears attention, and publishes real not
     ]),
   );
   expect(notifications.filter((method) => method === "history/updated")).toHaveLength(1);
-  const manifest = await client.request("evener/navigation/read", { resource: "manifest", representationVersion: 2 });
+  const manifest = await client.request("evener/navigation/read", { resource: "manifest", representationVersion: 3 });
   expect(manifest.data).toMatchObject({ metadata: { attentionSummary: { needsYou: 0 } } });
   const section = await client.request("evener/navigation/read", {
     resource: "section",
     section: "needs_you",
-    representationVersion: 2,
+    representationVersion: 3,
   });
   expect(section.data).toMatchObject({ entities: [] });
   await client.request("thread/unsubscribe", { ref: QUESTION });
