@@ -628,14 +628,28 @@ Separately, `TestAuth_UnreadableCredentialsStoreRefusesInsteadOfPanicking` tests
 an auth controller that keeps reads working while refusing writes; it does not
 test whole-hub startup.
 
-**Discuss.** Isolate affected credential use; determine when permissions on an
-owned file can be repaired automatically and when bytes must be preserved for
-diagnosis. Keep unaffected read/navigation capability without pretending a
-missing or malformed key is usable or replacing the store with empty data.
+**Decision — file permissions.** Automatically repair over-permissive modes on
+Evener's own, user-owned credentials file and continue. If permission repair
+cannot succeed but the file remains readable and valid, keep the hub and its
+credentials usable. Retain responsibility for retrying the repair and expose the
+condition in credential diagnostics. A file-mode problem alone must not disable
+the product or prevent valid credentials from being used. Implementation remains
+pending.
 
-**Acceptance.** Start with an owned over-permissive credentials file, then with a
-malformed one. The chosen repair/isolation policy keeps unrelated work available,
-preserves bytes, and makes the repaired provider usable without a hub restart.
+**Acceptance — file permissions.** Start with an owned over-permissive credentials
+file containing valid keys. Repair its mode without changing its contents and
+continue normally. When mode repair fails, the hub and credentials remain usable;
+repair retries converge after the filesystem condition heals without a restart.
+
+**Discuss — unreadable or malformed data.** Isolate affected credential use while
+preserving the original data for recovery. Keep unaffected read/navigation
+capability without treating a missing or malformed key as usable or replacing the
+store with empty data.
+
+**Acceptance — unreadable or malformed data.** Start with an unreadable or
+malformed credentials file. The chosen repair/isolation policy keeps unrelated
+work available, preserves existing data, and makes the repaired provider usable
+without a hub restart.
 
 ### H02 Live daemons after API-key repair
 
