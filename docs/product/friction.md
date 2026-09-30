@@ -43,6 +43,7 @@ and should not be presented as reproduced production incidents.
 | [C09](#c09-following-shell-job-output) | Medium | Job output stays static until Refresh; older output needs clicks | S02, S10, S12 |
 | [C10](#c10-quiet-task-panels) | Medium | A quiet Tasks panel remains failed until Try again | S02, S03, S05, S12 |
 | [C11](#c11-successful-recovery-looks-like-failure) | Medium | Successful MCP recovery receives warning/error presentation | S02, S03, S05, S19 |
+| [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
 | [R03](#r03-watch-intent-after-restart) | High | Restart can end monitoring without informing the owning agent | S08, S12 |
@@ -308,18 +309,30 @@ configure one on that host and offers a retry check. Existing host-scoped
 credential push and remote Codex sign-in live in Settings, so the user must find
 that route and return to the draft.
 
-**Evidence.** [Spawn provider gate](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx#L2537)
+**Evidence.** [Spawn provider gate](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx#L2650)
 differs from the available
-[CredentialsHostScope](../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/CredentialsHostScope.tsx#L190)
-actions. `useProviderSetup` already preserves exact-host scope.
+[remote sign-in](../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/CredentialsHostScope.tsx#L188)
+and [credential transfer](../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/CredentialsHostScope.tsx#L404)
+actions. `useProviderSetup` already preserves exact-host scope. The
+[transfer implementation](../../cmd/evener-hub/app_host_credentials.go#L38)
+copies eligible API keys to matching remote instances; it does not create
+missing custom provider instances or transfer stored credential JSON.
 
 **Discuss.** Connect the launch blockage to supported setup for the selected
-host, preserving the draft. Some providers still require external setup;
-credential transfer remains a deliberate user action with an explicit destination.
+host, preserving prompt, images, project and model choice. Offer the existing
+remote sign-in and credential-transfer actions in that flow, clearly naming
+the destination and what a transfer copies. Refresh readiness automatically
+after setup. If Start has already been requested, continue that same pending
+launch once its prerequisites are satisfied, subject to cancellation or changed
+intent; otherwise leave the preserved form ready. Some custom providers still
+require setup on the host, which needs a specific next step. A failed readiness
+read is an unresolved check to retry, not proof that setup must be repeated.
 
 **Acceptance.** Complete a supported remote sign-in or chosen credential transfer
-from the blocked launch and return to the same draft with Start ready, without
-route hunting or accidental local-host substitution.
+from the blocked launch without route hunting or accidental local-host
+substitution. The original composition and settings survive. A pending Start
+continues once on the selected host after readiness is confirmed; cancellation
+prevents it, and a form without a pending Start remains ready for submission.
 
 ### C09 Following shell-job output
 
@@ -390,6 +403,39 @@ changing this success event need not weaken other warnings.
 
 **Acceptance.** After a dropped MCP connection recovers, both clients show normal
 operation with inspectable recovery history and no failure styling for success.
+
+### C12 Remote credential transfer outcomes
+
+**Current behavior.** The remote Settings action retains a credential-transfer
+report in component state but hides it whenever the browser's connection
+generation changes. Even a completed successful transfer becomes a warning that
+the replacement connection never saw its outcome. A timed-out or interrupted
+transfer also has no automatic reconciliation owner; the user is told to inspect
+the host and decide whether to send the credentials again.
+
+**Evidence.** [PushCredentials](../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/CredentialsHostScope.tsx#L404)
+ties reports to the transport generation;
+[staleOutcome](../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/CredentialsHostScope.tsx#L437)
+hides a settled report after replacement, and the unknown-outcome branch asks
+for manual investigation. `CredentialsHostScope.push.test.tsx` pins timeout,
+in-flight connection replacement and settled-then-replaced presentation. The
+server's [conditional credential writes](../../cmd/evener-hub/app_host_credentials.go)
+check the remote source and configuration revision before changing an entry.
+
+**Discuss.** Keep completed results available with their actual originating hub
+and host identity through transport reconnection. Give genuinely unconfirmed
+transfers a recovery owner that checks authoritative remote state and preserves
+per-entry outcomes. Establish what landed before considering another write;
+respect newer credentials, changed host registration and cancellation. A socket
+replacement alone must not turn known success into an unresolved operation.
+Keep this separate from C08's setup navigation and from any permission-policy
+redesign.
+
+**Acceptance.** Complete a transfer and reconnect to the same hub and host: its
+report remains available. Lose the response after a remote write: recovery
+recognizes the applied result without requiring manual investigation or
+rewriting it. A genuinely changed destination is represented accurately, and
+newer remote credentials are not overwritten by recovery of an older operation.
 
 ## Runtime and continuing intent
 
