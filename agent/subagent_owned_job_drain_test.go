@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -660,6 +661,18 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("delegate did not finish after callback restoration")
 	}
+	// The finalize tail re-arms any attention still owed before it closes
+	// done, so the re-armed drive's turn (the fresh notification above) can
+	// still be settling when done fires. A resume sent into that window is
+	// refused as target_busy — the send's finalization wait covers only the
+	// finalizing refusal, not a drive in flight — so wait for the child to
+	// let everything go before asserting the resume starts.
+	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "quiescent child after post-finalization attention", func() bool {
+		fixture.child.mu.Lock()
+		defer fixture.child.mu.Unlock()
+		return !fixture.child.startBlockedLocked()
+	})
 	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
 		cfg.subagentAfterFinalStatePublish = nil
 	})
@@ -804,6 +817,14 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	if requests := adapter.Requests(); len(requests) != 2 {
 		t.Fatalf("provider requests after refused automatic drive = %d, want 2", len(requests))
 	}
+	// The tail's post-done machinery can still hold the child when done has
+	// fired; the resume this asserts is the one that machinery has let go.
+	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "quiescent child after fatal-run finalize", func() bool {
+		child.mu.Lock()
+		defer child.mu.Unlock()
+		return !child.startBlockedLocked()
+	})
 	explicitResume := (delegateRuntime{owner: parent}).send(context.Background(), result.DelegateID, "resume after fatal run", 0).result
 	if explicitResume.Err != nil || explicitResume.Action != "started" {
 		t.Fatalf("explicit child resume = %+v, want started", explicitResume)
@@ -1504,5 +1525,98 @@ func waitForOwnedShellFinalized(t *testing.T, jm *jobManager, jobID string) {
 	rec := recs[jobID]
 	if rec == nil || rec.NotifyState != jobstore.NotifyDelivered {
 		t.Fatalf("owned shell %s record = %+v, want NotifyDelivered after finalization", jobID, rec)
+	}
+}
+
+// A generation that finishes with attention still owed hands off to an
+// attention successor only after it has announced its own result: while the
+// tail is about to announce, the delegate is refused an attention wake; the
+// parent then holds the original generation's delivery ahead of the
+// successor's, and sees the original idle before the successor runs.
+func TestStableDelegateAttentionSuccessorFollowsItsPredecessorsResult(t *testing.T) {
+	t.Parallel()
+	fixture := newOwnedJobDrainFixture(t)
+	delegateID := fixture.result.DelegateID
+
+	var mu sync.Mutex
+	var lifecycles []string
+	stream := fixture.parent.Events()
+	stop := make(chan struct{})
+	collected := make(chan struct{})
+	record := func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.DelegateUpdatedData); ok && data.DelegateID == delegateID {
+			mu.Lock()
+			lifecycles = append(lifecycles, data.Lifecycle)
+			mu.Unlock()
+		}
+	}
+	go func() {
+		defer close(collected)
+		for {
+			select {
+			case ev := <-stream:
+				record(ev)
+			case <-stop:
+				// select picks at random among ready cases, so events
+				// already buffered when stop closes are drained here.
+				for {
+					select {
+					case ev, ok := <-stream:
+						if !ok {
+							return
+						}
+						record(ev)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	var wakeEligible []bool
+	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeGenerationAnnounced = func(*subagent) {
+			c := fixture.parent.delegateController
+			c.mu.Lock()
+			eligible := c.delegateAttentionWakeEligibleLocked(delegateID)
+			c.mu.Unlock()
+			mu.Lock()
+			wakeEligible = append(wakeEligible, eligible)
+			mu.Unlock()
+		}
+	})
+
+	fixture.releaseAndWait(t)
+	fixture.requireHandledResult(t, 3, "owned shell handled")
+	close(stop)
+	<-collected
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(wakeEligible) == 0 {
+		t.Fatal("the finalize tail never reached its announcement")
+	}
+	if wakeEligible[0] {
+		t.Fatal("an attention successor was eligible to start before the original generation announced its result")
+	}
+	pending, err := readPendingDelegateAttention(transcriptPath(fixture.parent.stateDir, fixture.parent.id), fixture.parent.id)
+	if err != nil {
+		t.Fatalf("read parent stable attention: %v", err)
+	}
+	if len(pending) != 2 || !strings.HasSuffix(pending[0], "/delivery/1") || !strings.HasSuffix(pending[1], "/delivery/2") {
+		t.Fatalf("parent pending stable attention = %#v, want generation 1's delivery ahead of generation 2's", pending)
+	}
+	firstIdle, secondRun := -1, -1
+	for i, lifecycle := range lifecycles {
+		if lifecycle == string(delegateLifecycleIdle) && firstIdle < 0 {
+			firstIdle = i
+		}
+		if lifecycle == string(delegateLifecycleRunning) && firstIdle >= 0 && secondRun < 0 {
+			secondRun = i
+		}
+	}
+	if firstIdle < 0 || secondRun < 0 {
+		t.Fatalf("delegate lifecycles seen = %v, want the original's idle and then the successor running", lifecycles)
 	}
 }

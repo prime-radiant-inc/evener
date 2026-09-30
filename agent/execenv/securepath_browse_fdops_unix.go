@@ -47,11 +47,20 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
-	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY, 0)
+	// Nonblocking + regular-file admission, the same contract readFile enforces:
+	// a read-only open of a FIFO entry (which WalkDir reaches as a non-directory
+	// and grep then fs.ReadFile's) would otherwise block the walk at open until a
+	// writer appears, and a never-ending special file would read without bound.
+	// A directory is still admitted — fs.FS Open must serve one.
+	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: toFsErr(err)}
 	}
-	return os.NewFile(uintptr(fd), name), nil
+	file, err := admitReadFD(fd, name, true)
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+	}
+	return file, nil
 }
 
 // ReadDir lists name through readDirChunked, the same helper boundedDirFS
@@ -68,7 +77,9 @@ func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 }
 
 func (f *secureDirFS) Stat(name string) (fs.FileInfo, error) {
-	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY, 0)
+	// O_NONBLOCK: glob stats every candidate, so a FIFO entry must not block this
+	// open. Stat reports one, so no type admission — only the nonblocking open.
+	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: toFsErr(err)}
 	}

@@ -95,6 +95,11 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	if _, err := c.FinishGeneration(first.started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "first handled"}); err != nil {
 		t.Fatalf("FinishGeneration first: %v", err)
 	}
+	// Report the finished runtime quiesced, as the child's finalize tail
+	// does, so the delegate is ready for its attention successor.
+	if err := c.ReportFinalizationQuiesced(first.started.lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced first: %v", err)
+	}
 	secondReservation, err := c.ReserveAttention(runtime, secondID)
 	if err != nil {
 		t.Fatalf("ReserveAttention second: %v", err)

@@ -622,19 +622,10 @@ func TestEditFile_ReadFaultAndWriteFault(t *testing.T) {
 	}
 }
 
-func TestResolveWrite_EscapeAndEmpty(t *testing.T) {
+func TestResolveWrite_Empty(t *testing.T) {
 	env := faultFsEnv(t, nil, nil)
-	if _, err := env.WriteFile("../escape.txt", "x"); err == nil ||
-		!strings.Contains(err.Error(), "outside working directory") {
-		t.Fatalf("escape write: expected 'outside working directory', got %v", err)
-	}
 	if _, err := env.WriteFile("", "x"); err == nil || !strings.Contains(err.Error(), "empty path") {
 		t.Fatalf("empty path: expected 'empty path' error, got %v", err)
-	}
-	// EditFile shares resolveWrite.
-	if _, err := env.EditFile("../escape.txt", "a", "b", false); err == nil ||
-		!strings.Contains(err.Error(), "outside working directory") {
-		t.Fatalf("escape edit: expected 'outside working directory', got %v", err)
 	}
 }
 

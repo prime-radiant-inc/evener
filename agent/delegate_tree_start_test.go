@@ -730,6 +730,11 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
+	// Report the finished runtime quiesced, as the child's finalize tail
+	// does, so the delegate is ready for its attention successor.
+	if err := c.ReportFinalizationQuiesced(started.lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced: %v", err)
+	}
 
 	if _, err := c.ReserveAttention(&Session{}, "attention-1"); !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("ReserveAttention foreign runtime error = %v, want exact-runtime rejection", err)

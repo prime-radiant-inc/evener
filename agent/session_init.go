@@ -2593,15 +2593,15 @@ func (s *Session) initMCP() error {
 	return nil
 }
 
-// reconnectRecoveryWarning builds the good-news diagnostic emitted when a
-// dropped MCP connection heals itself. It carries its OWN hint so the
-// Source-derived classifier (which would otherwise stamp the MCP-FAILURE hint
-// on any Source:"mcp" warning) does not make a recovery read like a failure.
+// reconnectRecoveryWarning records a restored connection before the tool retry
+// returns. Its own hint avoids the source-derived MCP failure guidance without
+// claiming that the pending tool call succeeded.
 func reconnectRecoveryWarning(name string) events.WarningData {
 	return events.WarningData{
 		Source:  string(diagnostic.SourceMCP),
+		Code:    events.WarningCodeMCPReconnected,
 		Title:   "MCP server reconnected",
-		Hint:    "The connection dropped and was automatically re-established; the in-flight tool call was retried. No action needed.",
+		Hint:    "The connection was automatically re-established.",
 		Message: fmt.Sprintf("MCP server %q reconnected after a dropped connection", name),
 	}
 }

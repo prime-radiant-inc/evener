@@ -643,7 +643,7 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	if _, hasRef := fp["transcript_ref"]; hasRef {
 		t.Errorf("find_session_transcripts must not take transcript_ref (it returns refs)")
 	}
-	for _, k := range []string{"query", "children_of", "scope", "limit"} {
+	for _, k := range []string{"query", "children_of", "kind", "has_children", "min_turns", "max_turns", "updated_after", "updated_before", "scope", "limit"} {
 		if _, ok := fp[k]; !ok {
 			t.Errorf("find missing param %q", k)
 		}

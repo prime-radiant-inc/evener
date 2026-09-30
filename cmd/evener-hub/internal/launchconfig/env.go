@@ -19,7 +19,7 @@ type EnvInputs struct {
 	ProvidersConfigPath string
 	// NoUserLayer sets EVENER_PROVIDERS_CONFIG to the empty string —
 	// spec §10's third state, "no user layer" — replacing any inherited
-	// value. It is how a hub whose providers.toml failed to load still
+	// value. It is how a hub with no usable user configuration still
 	// spawns children that resolve the implicit instance set.
 	NoUserLayer bool
 	// CredentialsPath is passed as EVENER_CREDENTIALS_CONFIG so the child

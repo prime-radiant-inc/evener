@@ -53,6 +53,7 @@ export interface UseTranscriptScrollOptions {
   model: ThreadModel | undefined;
   listRef: RefObject<VirtualListHandle | null>;
   loadOlder: () => Promise<void>;
+  cancelOlder?: () => void;
   /** Injectable measurement seam - defaults to the real DOM (readScrollMetrics). */
   measure?: (el: HTMLElement) => ScrollMetrics;
   /** Identity of the currently rendered transcript representation. */
@@ -780,6 +781,7 @@ export function useTranscriptScroll({
   model,
   listRef,
   loadOlder,
+  cancelOlder,
   measure = readScrollMetrics,
   viewKey = "everything",
   measureAnchors = readAnchorPositions,
@@ -1180,6 +1182,7 @@ export function useTranscriptScroll({
 
   const jumpToBottom = useCallback(() => {
     const anchor = errorAnchorIndexRef.current;
+    if (anchor === null) cancelOlder?.();
     if (anchor !== null) {
       // Jumps INTO the transcript, not to the bottom - wasAtBottomRef must
       // stay false, or the very next mutation's stick-to-bottom check would
@@ -1253,7 +1256,7 @@ export function useTranscriptScroll({
       }
     }
     clearPill();
-  }, [listRef, clearPill, measure]);
+  }, [listRef, clearPill, measure, cancelOlder]);
 
   const captureViewAnchor = useCallback(() => {
     const el = listRef.current?.getScrollElement();

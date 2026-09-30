@@ -1656,7 +1656,7 @@ func readFileNotFoundSuggestion(absPath string) string {
 }
 
 // WriteFile writes content to the file at path, creating any missing parent
-// directories. The path must resolve to a location under RootDir. It returns a
+// directories within the active sandbox policy. It returns a
 // human-readable summary of the bytes written.
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
 	if sfs := e.sandbox(); sfs != nil {
@@ -1691,7 +1691,7 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 }
 
 // EditFile replaces occurrences of oldString with newString in the file at
-// path, which must resolve to a location under RootDir. If oldString is not
+// path, subject to the active sandbox policy. If oldString is not
 // found exactly, a whitespace-normalized fuzzy match is attempted. Unless
 // replaceAll is true, oldString must match exactly once. It returns a summary
 // of the number of replacements made.
@@ -2413,7 +2413,8 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 }
 
 // ExecCommand runs command through the platform shell in its own process group,
-// rooted at workingDir (defaulting to RootDir and required to be under RootDir).
+// rooted at workingDir, defaulting to RootDir. Confined policies require cwd
+// under RootDir; unrestricted off sessions may point elsewhere.
 // The environment is built from EnvPolicy plus envVars, with any local
 // virtualenv bin directory prepended to PATH. The command is terminated if ctx
 // is cancelled or timeoutMS elapses (default 10000ms), escalating from SIGTERM
@@ -2439,7 +2440,7 @@ func (e *LocalExecutionEnvironment) resolveCommandWorkingDir(workingDir string) 
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(e.RootDir, dir)
 	}
-	if err := e.ensureUnderRoot(dir); err != nil {
+	if err := e.EnsureCommandWorkingDirectory(dir); err != nil {
 		return "", fmt.Errorf("working directory %w", err)
 	}
 	return dir, nil
@@ -2908,11 +2909,10 @@ func (e *LocalExecutionEnvironment) resolve(path string) string {
 	return filepath.Join(e.RootDir, p)
 }
 
-// resolveWrite is the boundary-enforcing counterpart to resolve. Unlike
-// resolve (which trusts reads), resolveWrite rejects paths that escape the
-// working directory or this environment's explicitly allocated scratch root,
-// so write_file / edit_file can't reach into the orchestrator's source tree or
-// another session's temporary files.
+// resolveWrite resolves a mutation path relative to the working directory and
+// applies the active file-tool boundary. An unrestricted off session imposes no
+// workspace restriction; confined policies retain their workspace and scratch
+// limits.
 func (e *LocalExecutionEnvironment) resolveWrite(path string) (string, error) {
 	p := strings.TrimSpace(path)
 	if p == "" {
@@ -2929,13 +2929,17 @@ func (e *LocalExecutionEnvironment) resolveWrite(path string) (string, error) {
 	return abs, nil
 }
 
-// ensureWritePath permits the ordinary workspace root and, only after that
-// check fails, the one scratch root already allocated to this environment. The
-// scratch fallback is used on platforms without the fd layer; Linux and macOS
+// ensureWritePath imposes no workspace boundary on unrestricted off sessions.
+// Confined policies permit the workspace root and, only after that check fails,
+// the one scratch root already allocated to this environment. The scratch
+// fallback is used on platforms without the fd layer; Linux and macOS
 // route matching operations through scratchSandboxFor first. It deliberately
-// uses the same symlink-aware best-effort canonicalization as the historical
-// workspace check and never treats a caller-supplied absolute path as a grant.
+// uses symlink-aware best-effort canonicalization and never treats a
+// caller-supplied absolute path as a grant.
 func (e *LocalExecutionEnvironment) ensureWritePath(abs string) error {
+	if e.Sandbox == nil || !e.Sandbox.FileToolConfined() {
+		return nil
+	}
 	if err := e.ensureUnderRoot(abs); err == nil {
 		return nil
 	}
@@ -2972,13 +2976,19 @@ func pathWithinRoot(abs, root string) bool {
 	return strings.HasPrefix(abs, root+string(filepath.Separator))
 }
 
-// EnsureUnderRoot is the exported form of ensureUnderRoot: it validates that
-// an already-resolved absolute path (joined and filepath.Clean'ed by the
-// caller) does not escape this environment's sandbox root, applying the same
-// symlink-aware escape check as resolveWrite. Callers that only have a raw,
-// possibly-relative path should join/clean it against WorkingDirectory()
-// first — this method does not do that for them. It is the shell tool's entry
-// point for validating a model-chosen `cwd` before spawning a process there.
+// EnsureCommandWorkingDirectory applies workspace containment to command cwd
+// only when the environment carries a confined policy. A write-blocked off
+// delegate keeps its chosen role boundary even without a kernel wrapper.
+func (e *LocalExecutionEnvironment) EnsureCommandWorkingDirectory(abs string) error {
+	if e.Sandbox == nil || !e.Sandbox.FileToolConfined() {
+		return nil
+	}
+	return e.ensureUnderRoot(abs)
+}
+
+// EnsureUnderRoot validates an already-resolved absolute path against the working
+// root, independently of sandbox mode. Attachment callers use this narrower
+// scope even when file tools and command cwd are unrestricted.
 func (e *LocalExecutionEnvironment) EnsureUnderRoot(abs string) error {
 	return e.ensureUnderRoot(abs)
 }

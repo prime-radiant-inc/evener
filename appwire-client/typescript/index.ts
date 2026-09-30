@@ -224,6 +224,7 @@ export {
 } from "./errors";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
+export { HistoryPaging, type HistoryPagingState } from "./historyPaging";
 export type {
   EditableHostField,
   HostMutationPair,
@@ -716,6 +717,7 @@ export {
   isInformationalWarning,
   WarningCodeContextBudget,
   WarningCodeDelegateAttentionRestore,
+  WarningCodeMCPReconnected,
   warningWords,
 } from "./warnings";
 export { hasWarningText } from "./warningText";

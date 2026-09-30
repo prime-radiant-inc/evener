@@ -161,8 +161,8 @@ func TestASuccessfulRestoreResetsTheFailureCount(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	root := fenced.root
 	c := root.delegateController
-	c.countDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
-	c.countDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
+	c.recordDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
+	c.recordDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
 
 	root.drivePendingStableDelegateAttention()
 
@@ -185,9 +185,9 @@ func TestLeavingThePendingSetClearsParkedAndCountedState(t *testing.T) {
 		if !c.noteDelegateAttention(id, "delegate:"+id) {
 			t.Fatalf("note %s attention", id)
 		}
-		c.countDelegateAttentionRestoreFailure(id)
+		c.recordDelegateAttentionRestoreFailure(id)
 		c.parkDelegateAttention(id)
-		c.countDelegateAttentionRestoreFailure(id)
+		c.recordDelegateAttentionRestoreFailure(id)
 	}
 	c.forgetDelegateAttention("dlg_forgotten", "delegate:dlg_forgotten")
 	c.mu.Lock()

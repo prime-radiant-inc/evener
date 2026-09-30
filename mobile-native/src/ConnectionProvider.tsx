@@ -21,6 +21,7 @@ import { forgetCreationForHub, releaseCreations } from "./newSession/creations";
 import { forgetLaunchMemoryForHub } from "./newSession/nativeLaunchMemory";
 import { forgetStopRequestsForHub } from "./subagents/nativeStopRequests";
 import { forgetSubagentTrees } from "./subagents/subagentTree";
+import { forgetHistoryForHub } from "./session/historyMemory";
 import { forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { forgetNoteDrafts } from "./session/sessionNotes";
 
@@ -130,6 +131,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 						removeOrganizationData,
 						forgetBoardForHub,
 						forgetDetailLevelsForHub,
+						forgetHistoryForHub,
 						(id) => forgetNoteDrafts(Storage, id),
 						forgetDocumentsForHub,
 						forgetDocumentSummaries,
