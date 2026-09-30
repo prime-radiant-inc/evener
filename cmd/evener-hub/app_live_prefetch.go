@@ -31,6 +31,10 @@ const instanceLiveListTimeout = 8 * time.Second
 // it on the detached registry. An unsupported listing (ok == false)
 // carries no live facts, so it applies nothing.
 func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, auth *hubAuthController, name string) error {
+	// The listing sends the instance's credential, so what the provider
+	// answers is recorded as a probe of it (#3539). The probe begins before
+	// the snapshot below is taken, since that is where the credential is read.
+	probe := auth.beginCredentialProbe(name)
 	// Paired atomically: the client is built from the same snapshot the
 	// token belongs to, so no Reload can slip between the two.
 	reg, tok, id := holder.BeginLiveFetchReg(name)
@@ -49,15 +53,8 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, au
 	// records under it. No lock is held across the request: fetches
 	// for different instances run fully concurrently again.
 	fetchCtx := withScopedCodexAuth(ctx, reg)
-	var rows []registry.Model
-	var ok bool
-	// The listing sends the instance's credential, so what the provider
-	// answers is recorded as a probe of it (#3539).
-	_, err := auth.observeCredentialListing(name, func() (llm.ModelListing, error) {
-		var listErr error
-		rows, ok, listErr = fetchInstanceLiveWith(fetchCtx, newLiveClient(reg), name)
-		return llm.ModelListing{Live: ok}, listErr
-	})
+	rows, ok, err := fetchInstanceLiveWith(fetchCtx, newLiveClient(reg), name)
+	auth.settleCredentialProbe(probe, llm.ModelListing{Live: ok}, err)
 	if err != nil {
 		return err
 	}

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -94,24 +95,48 @@ func TestCredentialRejection_RefreshModelsRecordsAndClearsIt(t *testing.T) {
 	}
 }
 
-// A listing that fails for a reason other than the credential says nothing
-// about it.
-func TestCredentialRejection_ARefreshThatFailsOtherwiseRecordsNothing(t *testing.T) {
-	ctl, status := newListingController(t)
-	status.Store(http.StatusServiceUnavailable)
-	_ = ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
-	if got := gwError(t, ctl.auth); got != "" {
-		t.Fatalf("error after a 503 = %q, want none", got)
+// A listing that fails for a reason other than the credential (a server
+// error, an endpoint with no listing) says nothing about it: a rejection
+// recorded before it stands.
+func TestCredentialRejection_ARefreshThatFailsOtherwiseKeepsIt(t *testing.T) {
+	for _, code := range []int32{http.StatusServiceUnavailable, http.StatusNotFound} {
+		t.Run(http.StatusText(int(code)), func(t *testing.T) {
+			ctl, status := newListingController(t)
+			_ = ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
+			if gwError(t, ctl.auth) != gwRejected {
+				t.Fatal("precondition: the 401 was not recorded")
+			}
+			status.Store(code)
+			_ = ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
+			if got := gwError(t, ctl.auth); got != gwRejected {
+				t.Fatalf("error after a %d = %q, want the rejection kept", code, got)
+			}
+		})
 	}
 }
 
 // The background prefetch lists every instance on a timer, so a rejected key
 // shows as an error without anyone pressing Test.
+// It is announced from the prefetch's goroutine like any other change, so
+// clients re-read the status.
 func TestCredentialRejection_TheLivePrefetchRecordsIt(t *testing.T) {
-	ctl, _ := newListingController(t)
+	ctl, status := newListingController(t)
+	status.Store(http.StatusForbidden)
+	var mu sync.Mutex
+	var announced []string
+	ctl.auth.credentialRejectionChanged = func(name string) {
+		mu.Lock()
+		defer mu.Unlock()
+		announced = append(announced, name)
+	}
 	prefetchAllLiveModels(context.Background(), ctl.reg, ctl.auth, func() {})
-	if got := gwError(t, ctl.auth); got != gwRejected {
-		t.Fatalf("error after the prefetch = %q, want %q", got, gwRejected)
+	if got, want := gwError(t, ctl.auth), "The provider rejected this credential (HTTP 403)."; got != want {
+		t.Fatalf("error after the prefetch = %q, want %q", got, want)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(announced, ",") != "gw" {
+		t.Fatalf("announced = %v, want the rejection of gw", announced)
 	}
 }
 
@@ -134,5 +159,33 @@ func TestCredentialRejection_ThePickersLiveListingRecordsIt(t *testing.T) {
 
 	if got := gwError(t, server.auth); got != gwRejected {
 		t.Fatalf("error after the picker's listing = %q, want %q", got, gwRejected)
+	}
+}
+
+// The picker's client reads every credential when it is built, before the
+// loop lists any instance. A credential write that lands after that read has
+// replaced the key the listing sends, so the listing's rejection must not be
+// recorded against the new one: each probe starts before the client exists.
+func TestCredentialRejection_ThePickerVoidsAListingOfAReplacedKey(t *testing.T) {
+	ctl, _ := newListingController(t)
+	server := NewWebServer(hubcore.WebConfig{
+		Registry:            ctl.reg,
+		ProvidersConfigPath: ctl.providersConfigPath,
+		HubStateRoot:        ctl.auth.stateDir,
+		CredsStore:          ctl.auth.creds,
+	})
+	oldLoadClient := liveModelLoadClient
+	liveModelLoadClient = func(string) (*llm.Client, error) {
+		client := LiveRegistryClient(ctl.reg.Get())
+		// The write lands once the client holds the old key.
+		server.auth.forgetCredentialRejection("gw")
+		return client, nil
+	}
+	t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
+
+	server.fetchLiveModels(context.Background())
+
+	if got := gwError(t, server.auth); got != "" {
+		t.Fatalf("error = %q: the replaced key's rejection landed on the key written after the client read it", got)
 	}
 }
