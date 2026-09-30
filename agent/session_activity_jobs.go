@@ -98,7 +98,7 @@ func (read *sessionActivityRead) prepareSources(ctx context.Context, walk *sessi
 			path := filepath.Join(jobsDir(read.stateDir, owner), "jobs.jsonl")
 			info, err := os.Stat(path)
 			if err != nil && !os.IsNotExist(err) {
-				return false, appwire.Unavailable("session job source unavailable")
+				return false, sessionActivitySourceReadError("session job source unavailable", err)
 			}
 			if info != nil {
 				walk.Cutoffs[owner] = info.Size()
@@ -164,7 +164,7 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 			if ctx.Err() != nil {
 				return false, ctx.Err()
 			}
-			return false, appwire.Unavailable("retained job journal invalid")
+			return false, sessionActivitySourceReadError("retained job journal unavailable", scanErr)
 		}
 		used := cursor.Journal.Offset - before
 		if cursor.Journal.Info != nil && !os.SameFile(index.Source.Info, cursor.Journal.Info) {
@@ -178,15 +178,11 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 		read.bytes -= cursor.Journal.ReadBytes + 128
 		read.budget -= max(len(events), cursor.Journal.ReadLines)
 		read.index.progress += uint64(used) + uint64(len(events))
-		index.Cursor = cursor
-		index.Complete = false
-		index.Pending = events
-		index.PendingEnds = cursor.EventEnds
-		index.PendingComplete = complete
-		index.PendingPosition = 0
-		read.index.rawBytes += uint64(captureSessionActivityTail(path, &index.Source, cursor.Journal.Offset))
+		if err := read.acceptJobPage(path, index, cursor, events, complete); err != nil {
+			return false, err
+		}
 		if !complete && used == 0 && len(events) == 0 {
-			return false, appwire.Unavailable("retained job journal incomplete")
+			return false, sessionActivitySourceUnavailable("retained job journal append incomplete")
 		}
 		reserved = true
 	}
@@ -260,8 +256,21 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 	return index.Complete, nil
 }
 
-// mergeSourceKeys visits only the next bounded candidates. It does not allocate
-// or sort all historical rows to produce one page.
+func (read *sessionActivityRead) acceptJobPage(path string, index *sessionActivityJobIndex, cursor jobstore.PageCursor, events []jobstore.Event, complete bool) error {
+	// A failed fingerprint capture must leave the accepted scanner/fold boundary intact.
+	if err := read.captureTail(path, &index.Source, cursor.Journal.Offset); err != nil {
+		return err
+	}
+	index.Cursor = cursor
+	index.Complete = false
+	index.Pending = events
+	index.PendingEnds = cursor.EventEnds
+	index.PendingComplete = complete
+	index.PendingPosition = 0
+	return nil
+}
+
+// nextKey visits only the next bounded candidates without sorting historical rows.
 func (read *sessionActivityRead) nextKey(owners []string, after sessionActivityKey, watch bool) (string, sessionActivityKey, bool) {
 	var selected sessionActivityKey
 	selectedOwner := ""

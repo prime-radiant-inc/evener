@@ -251,6 +251,7 @@ export {
   rootsFromText,
   rootsToText,
 } from "./hostMutations";
+export { housekeepingAction } from "./housekeepingSteps";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
 export type {

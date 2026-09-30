@@ -52,7 +52,20 @@ export function notificationLine(
 				? { headline: `${subject} quiet · ${notification.quiet.window}`, failed }
 				: // A report whose ending this client doesn't know still reported.
 					{ headline: said(subject, notification.outcome, "reported"), failed };
-			const detail = notification.message ?? (notification.excerpt || undefined);
+			// The parser hands a report's message and retires the machinery stubs
+			// and a failure whose whole error is its ending (the delegate redesign,
+			// mockups 24-delegate-complete): a failed packet frame's cause rides as
+			// its `ending` in words, so the line keeps saying it; a stopped run's
+			// headline says the stop, and its ending names who or what stopped it
+			// ("stopped by its coordinator") - the hub's static head shows the same
+			// words. A legacy attribute-shaped frame keeps its whole report in
+			// `excerpt` with a raw reason code in `reason`, so the excerpt reads
+			// first and the code never wins - `reason` is never display prose for
+			// legacy frames, so it never takes this seat at all.
+			const detail =
+				notification.message ??
+				(notification.excerpt || undefined) ??
+				(notification.outcome === "failed" || notification.outcome === "stopped" ? notification.ending : undefined);
 			if (detail) line.detail = detail;
 			if (ref) line.subagent = { ref, title: subject };
 			return line;

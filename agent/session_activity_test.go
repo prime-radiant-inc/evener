@@ -907,3 +907,459 @@ func TestSessionActivityCanceledDelegateFoldResumesWithoutReplay(t *testing.T) {
 		seen[row.DelegateID] = true
 	}
 }
+
+func TestSessionActivityLiveDelegateAdmissionMembership(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []appwire.SessionActivityScope{appwire.SessionActivityScopeSession, appwire.SessionActivityScopeSubtree} {
+		for _, laterAt := range []int64{150, 200} {
+			t.Run(fmt.Sprintf("%s/%d", scope, laterAt), func(t *testing.T) {
+				s := newSession(t, withoutGitSnapshot())
+				c := s.delegateController
+				create := func(id, parent string, at int64) {
+					t.Helper()
+					descriptor := stableToolDescriptor(s, id, parent)
+					c.mu.Lock()
+					_, err := c.appendLocked(delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: id, TS: time.Unix(at, 0).UTC(), Created: &delegatestore.DelegateCreated{Descriptor: descriptor}})
+					c.mu.Unlock()
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				create("dlg_initial_300", "", 300)
+				create("dlg_initial_200", "", 200)
+				parent := ""
+				if scope == appwire.SessionActivityScopeSubtree {
+					parent = "dlg_initial_300"
+				}
+				create("dlg_initial_100", parent, 100)
+				// The tied-clock cases also prove the membership fence is restored
+				// from accepted journal events when the controller reopens.
+				if laterAt == 200 {
+					restored, err := openDelegateTreeController(delegateTreeControllerConfig{store: c.store, rootRuntime: s, rootSessionID: s.ID(), stateDir: c.stateDir})
+					if err != nil {
+						t.Fatal(err)
+					}
+					c = restored
+					s.delegateController = c
+				}
+				params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: scope, Limit: 1}
+				first, err := s.ListActivityDelegates(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(first.Delegates) != 1 || first.Delegates[0].DelegateID != "dlg_initial_300" || first.Page.NextCursor == "" {
+					t.Fatalf("invalid first page: %+v", first)
+				}
+				create("dlg_a_later", parent, laterAt)
+				c.mu.Lock()
+				_, err = c.appendLocked(delegateControllerRunStartedEvent("dlg_initial_200", 1, delegatestore.TriggerInitial, time.Unix(400, 0).UTC()))
+				c.mu.Unlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+				params.Cursor = first.Page.NextCursor
+				params.Limit = 200
+				second, err := s.ListActivityDelegates(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(second.Delegates) != 2 || !second.Page.Complete {
+					t.Fatalf("later creation changed membership: %+v", second)
+				}
+				for _, row := range second.Delegates {
+					if row.DelegateID == "dlg_a_later" {
+						t.Fatalf("later admission leaked: %+v", second)
+					}
+					if row.DelegateID == "dlg_initial_200" && row.Phase != "running" {
+						t.Fatalf("status update hidden by membership fence: %+v", row)
+					}
+				}
+				params.Cursor = ""
+				fresh, err := s.ListActivityDelegates(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(fresh.Delegates) != 4 || !fresh.Page.Complete {
+					t.Fatalf("fresh walk omitted later admission: %+v", fresh)
+				}
+			})
+		}
+	}
+}
+
+func TestSessionActivityRecoverableSourceAccess(t *testing.T) {
+	t.Parallel()
+	for _, resource := range []string{"metadata", "delegates", "jobs"} {
+		for _, warm := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/warm=%t", resource, warm), func(t *testing.T) {
+				stateDir := t.TempDir()
+				id := "accessrecovery"
+				savePastActivityMeta(t, stateDir, id, "Root")
+				params := appwire.SessionActivityListParams{Ref: encodeRef("", id), Limit: 1}
+				path := filepath.Join(stateDir, "sessions", id+".meta.json")
+				query := func() (int, error) {
+					summary, err := LoadSessionActivitySummary(t.Context(), stateDir, id, appwire.SessionActivityReadParams{Ref: params.Ref})
+					return len(summary.Context.SessionID), err
+				}
+				switch resource {
+				case "delegates":
+					writePastStableDelegates(t, stateDir, id, pastStableDescriptor(id, "accesschild1", "one"), pastStableDescriptor(id, "accesschild2", "two"))
+					path = filepath.Join(jobsDir(stateDir, id), "delegates.jsonl")
+					query = func() (int, error) {
+						page, err := LoadSessionActivityDelegates(t.Context(), stateDir, id, params)
+						if err == nil && params.Cursor == "" {
+							params.Cursor = page.Page.NextCursor
+						}
+						return len(page.Delegates), err
+					}
+				case "jobs":
+					writeJobLogFast(t, stateDir, id, 2)
+					path = filepath.Join(jobsDir(stateDir, id), "jobs.jsonl")
+					query = func() (int, error) {
+						page, err := LoadSessionActivityJobs(t.Context(), stateDir, id, params)
+						if err == nil && params.Cursor == "" {
+							params.Cursor = page.Page.NextCursor
+						}
+						return len(page.Jobs), err
+					}
+				}
+				if warm {
+					if _, err := query(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Rename(path, path+".held"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				_, err := query()
+				var wire appwire.WireError
+				if !errors.As(err, &wire) {
+					t.Fatalf("source failure not typed: %v", err)
+				}
+				data, ok := wire.Data.(appwire.ErrorData)
+				if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorActionUnavailable || data.RetryDisposition != appwire.RetryDispositionAutomatic {
+					t.Fatalf("recoverable access parked: %+v", wire)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(path+".held", path); err != nil {
+					t.Fatal(err)
+				}
+				if rows, err := query(); err != nil || rows == 0 {
+					t.Fatalf("restored source cannot resume same walk: rows=%d err=%v", rows, err)
+				}
+			})
+		}
+	}
+}
+
+func TestSessionActivityPermanentSourceFailuresStayDistinct(t *testing.T) {
+	t.Parallel()
+	for _, resource := range []string{"metadata", "delegates", "jobs"} {
+		t.Run(resource, func(t *testing.T) {
+			dir := t.TempDir()
+			id := "permanentsource"
+			savePastActivityMeta(t, dir, id, "Root")
+			path := filepath.Join(dir, "sessions", id+".meta.json")
+			query := func() error {
+				_, err := LoadSessionActivitySummary(t.Context(), dir, id, appwire.SessionActivityReadParams{Ref: encodeRef("", id)})
+				return err
+			}
+			switch resource {
+			case "delegates":
+				path = filepath.Join(jobsDir(dir, id), "delegates.jsonl")
+				query = func() error {
+					_, err := LoadSessionActivityDelegates(t.Context(), dir, id, appwire.SessionActivityListParams{Ref: encodeRef("", id)})
+					return err
+				}
+			case "jobs":
+				path = filepath.Join(jobsDir(dir, id), "jobs.jsonl")
+				query = func() error {
+					_, err := LoadSessionActivityJobs(t.Context(), dir, id, appwire.SessionActivityListParams{Ref: encodeRef("", id)})
+					return err
+				}
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("{invalid}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := query()
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+				t.Fatalf("corrupt source=%v", err)
+			}
+			if data, ok := wire.Data.(appwire.ErrorData); !ok || data.RetryDisposition == appwire.RetryDispositionAutomatic {
+				t.Fatalf("corrupt data treated as access failure: %+v", wire)
+			}
+		})
+	}
+	dir := t.TempDir()
+	id := "absentmetadata"
+	_, err := LoadSessionActivitySummary(t.Context(), dir, id, appwire.SessionActivityReadParams{Ref: encodeRef("", id)})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.ResourceNotFound("").Code {
+		t.Fatalf("missing metadata=%v", err)
+	}
+}
+
+func TestSessionActivityTailAccessPreservesProbePairing(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "journal")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	index := &sessionActivityIndex{}
+	read := &sessionActivityRead{index: index}
+	source := sessionActivitySource{Offset: 4, Tail: []byte("old!")}
+	err := read.captureTail(path, &source, 8)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("tail access=%v", err)
+	}
+	if data := wire.Data.(appwire.ErrorData); data.RetryDisposition != appwire.RetryDispositionAutomatic {
+		t.Fatalf("tail access parked: %+v", wire)
+	}
+	if source.Offset != 4 || string(source.Tail) != "old!" {
+		t.Fatalf("old tail paired with new offset: %+v", source)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("restored"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := read.captureTail(path, &source, 8); err != nil {
+		t.Fatal(err)
+	}
+	if string(source.Tail) != "restored" || index.rawBytes != 8 {
+		t.Fatalf("restored tail=%+v bytes=%d", source, index.rawBytes)
+	}
+}
+
+func TestSessionActivityRejectedTailCapturePublicRecovery(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"jobs", "delegates"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			id := "tailstaging"
+			savePastActivityMeta(t, dir, id, "Root")
+			params := appwire.SessionActivityListParams{Ref: encodeRef("", id)}
+			path := filepath.Join(jobsDir(dir, id), kind+".jsonl")
+			query := func() (int, error) {
+				page, err := LoadSessionActivityJobs(t.Context(), dir, id, params)
+				return len(page.Jobs), err
+			}
+			if kind == "jobs" {
+				writeJobLogFast(t, dir, id, 2)
+			} else {
+				writePastStableDelegates(t, dir, id, pastStableDescriptor(id, "tailchild1", "one"), pastStableDescriptor(id, "tailchild2", "two"))
+				query = func() (int, error) {
+					page, err := LoadSessionActivityDelegates(t.Context(), dir, id, params)
+					return len(page.Delegates), err
+				}
+			}
+			if rows, err := query(); err != nil || rows != 2 {
+				t.Fatalf("initial read rows=%d err=%v", rows, err)
+			}
+			read, err := retainedActivityRead(t.Context(), dir, id, appwire.SessionActivityReadParams{Ref: params.Ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if read.index != nil {
+					read.index.release()
+				}
+			}()
+			at := time.Unix(1_600_000_000, 0).UTC()
+			var source *sessionActivitySource
+			var accept func() error
+			var candidateOffset int64
+			if kind == "jobs" {
+				index := read.index.jobs[id]
+				store, err := jobstore.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_later", Type: jobstore.JobShell, OwnerSessionID: id, TS: at, StartedAt: &at}); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				cursor := index.Cursor
+				pending, complete, err := jobstore.ReadPage(t.Context(), path, &cursor, 4<<20, 2000)
+				if err != nil {
+					t.Fatal(err)
+				}
+				source = &index.Source
+				candidateOffset = cursor.Journal.Offset
+				accept = func() error { return read.acceptJobPage(path, index, cursor, pending, complete) }
+			} else {
+				store, err := delegatestore.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				event := delegateControllerRunStartedEvent("dlg_tailchild1", 1, delegatestore.TriggerInitial, at)
+				event.TS = at
+				if _, _, err := store.AppendBatch(read.index.delegates, []delegatestore.Event{event}); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				cursor := read.index.delegateCursor
+				pending, complete, err := delegatestore.ReadPage(t.Context(), path, &cursor, 4<<20, 2000)
+				if err != nil {
+					t.Fatal(err)
+				}
+				source = &read.index.delegateSource
+				candidateOffset = cursor.Journal.Offset
+				accept = func() error { return read.acceptDelegatePage(cursor, pending, complete) }
+			}
+			originalOffset := source.Offset
+			originalTail := string(source.Tail)
+			if candidateOffset <= originalOffset || originalTail == "" {
+				t.Fatal("invalid scanner candidate")
+			}
+			if err := os.Rename(path, path+".held"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			captureErr := accept()
+			var wire appwire.WireError
+			if !errors.As(captureErr, &wire) || wire.Data.(appwire.ErrorData).RetryDisposition != appwire.RetryDispositionAutomatic {
+				t.Fatalf("capture error=%v", captureErr)
+			}
+			if source.Offset != originalOffset || string(source.Tail) != originalTail {
+				t.Fatalf("rejected source pairing changed: %+v", source)
+			}
+			if kind == "jobs" {
+				index := read.index.jobs[id]
+				if index.Cursor.Journal.Offset != originalOffset || len(index.Pending) != 0 {
+					t.Fatal("rejected job scanner state committed")
+				}
+			} else if read.index.delegateCursor.Journal.Offset != originalOffset || len(read.index.delegatePending) != 0 {
+				t.Fatal("rejected delegate scanner state committed")
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(path+".held", path); err != nil {
+				t.Fatal(err)
+			}
+			read.index.release()
+			read.index = nil
+			wantRows := 3
+			if kind == "delegates" {
+				wantRows = 2
+			}
+			if rows, err := query(); err != nil || rows != wantRows {
+				t.Fatalf("public recovery rows=%d err=%v", rows, err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rewrite := strings.ReplaceAll(string(raw), "12:26:40Z", "12:26:41Z")
+			if rewrite == string(raw) || len(rewrite) != len(raw) {
+				t.Fatal("invalid changed tail")
+			}
+			if err := os.WriteFile(path, []byte(rewrite), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = query()
+			if !errors.As(err, &wire) || wire.Data.(appwire.ErrorData).EvenerErrorInfo != appwire.ErrorSessionActivityCursorStale {
+				t.Fatalf("changed tail accepted after recovery: %v", err)
+			}
+		})
+	}
+}
+
+func TestSessionActivityPausedAppendRemainsRecoverable(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"jobs", "delegates"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			id := "pausedappend"
+			savePastActivityMeta(t, dir, id, "Root")
+			params := appwire.SessionActivityListParams{Ref: encodeRef("", id)}
+			path := filepath.Join(jobsDir(dir, id), kind+".jsonl")
+			var raw []byte
+			at := time.Unix(1_600_000_000, 0).UTC()
+			query := func() (int, string, appwire.SessionActivityPage, error) {
+				page, err := LoadSessionActivityJobs(t.Context(), dir, id, params)
+				status := ""
+				if len(page.Jobs) > 0 {
+					status = page.Jobs[0].Status
+				}
+				return len(page.Jobs), status, page.Page, err
+			}
+			if kind == "jobs" {
+				writeJobLogFast(t, dir, id, 1)
+				raw, _ = json.Marshal(jobstore.Event{Kind: jobstore.EventJobFinished, Seq: 2, JobID: "job_000000", Status: jobstore.StatusCommandExitedNonzero, TerminalGen: "failure", TS: at})
+			} else {
+				writePastStableDelegates(t, dir, id, pastStableDescriptor(id, "childpaused", "one"))
+				event := delegateControllerRunStartedEvent("dlg_paused", 1, delegatestore.TriggerInitial, at)
+				event.Seq = 2
+				event.TS = at
+				raw, _ = json.Marshal(struct {
+					Events []delegatestore.Event `json:"events"`
+				}{[]delegatestore.Event{event}})
+				query = func() (int, string, appwire.SessionActivityPage, error) {
+					page, err := LoadSessionActivityDelegates(t.Context(), dir, id, params)
+					phase := ""
+					if len(page.Delegates) > 0 {
+						phase = page.Delegates[0].Phase
+					}
+					return len(page.Delegates), phase, page.Page, err
+				}
+			}
+			raw = append(raw, '\n')
+			if rows, _, _, err := query(); err != nil || rows != 1 {
+				t.Fatalf("initial admission rows=%d err=%v", rows, err)
+			}
+			appendBytes := func(data []byte) {
+				t.Helper()
+				file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.Write(data); err != nil {
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			half := len(raw) / 2
+			appendBytes(raw[:half])
+			rows, _, progress, err := query()
+			if err != nil || rows != 0 || progress.Complete || progress.NextCursor == "" {
+				t.Fatalf("incomplete prefix published: rows=%d page=%+v err=%v", rows, progress, err)
+			}
+			params.Cursor = progress.NextCursor
+			_, _, _, err = query()
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || wire.Data.(appwire.ErrorData).RetryDisposition != appwire.RetryDispositionAutomatic {
+				t.Fatalf("paused append parked: %v", err)
+			}
+			appendBytes(raw[half:])
+			rows, status, finished, err := query()
+			want := string(jobstore.StatusCommandExitedNonzero)
+			if kind == "delegates" {
+				want = "running"
+			}
+			if err != nil || rows != 1 || status != want || !finished.Complete {
+				t.Fatalf("completed append cannot resume existing admission: rows=%d status=%s page=%+v err=%v", rows, status, finished, err)
+			}
+		})
+	}
+}

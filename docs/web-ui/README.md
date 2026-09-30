@@ -1,9 +1,12 @@
 # Evener Web Hub — UI/UX
 
-Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
+Design documentation for the web hub (`cmd/evener-hub`).
 
 ## Current
 
+- **[Session activity](../product/session-activity.md)** — ownership of scoped
+  delegate, shell-job and watch reads, compact navigation, pagination and shared
+  recovery. Use this contract when changing activity surfaces or subscriptions.
 - **[design-system.md](design-system.md)** — the authoritative design law, starting with
   the [editorial-instrument rationale](design-system.md#design-model-an-editorial-instrument):
   conversation for understanding, evidence for verification and controls for intervention.

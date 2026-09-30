@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/identifier"
-	"testing"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -186,5 +188,56 @@ func TestSessionActivityRetainedPublicHierarchyAndSourceFences(t *testing.T) {
 		if !isTargetDeletedError(err) {
 			t.Fatalf("%s bypassed deletion fence: %v", method, err)
 		}
+	}
+}
+
+// Context cancellation is a caller boundary. Counting checks makes the cold
+// read interruption deterministic without altering the scanner or filesystem.
+type activityReadCancellation struct {
+	context.Context
+	cancel context.CancelFunc
+	checks atomic.Int32
+}
+
+func (c *activityReadCancellation) Err() error {
+	if c.checks.Add(1) >= 100 {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
+func TestSessionActivityPublicCanceledReconstructionResumes(t *testing.T) {
+	t.Parallel()
+	cfg, _, child, _ := seedPastSessionWithActivity(t, 100)
+	server := newHubAppServer(cfg, newExitedLocalRegistry())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	interrupted := &activityReadCancellation{Context: ctx, cancel: cancel}
+	params := appwire.SessionActivityListParams{Ref: "local:" + child, Limit: 200}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := appwire.Request{Method: appwire.MethodEvenerThreadJobsList, Params: raw}
+	if _, err := server.Router().Dispatch(interrupted, request); !errors.Is(err, context.Canceled) {
+		t.Fatalf("public cold read cancellation=%v", err)
+	}
+	if interrupted.checks.Load() < 100 {
+		t.Fatal("fixture did not interrupt reconstruction")
+	}
+	result, err := server.Router().Dispatch(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := result.(appwire.SessionJobsResponse)
+	if len(page.Jobs) != 100 || !page.Page.Complete || page.Context.SessionID != child {
+		t.Fatalf("reconstruction after cancellation=%+v", page)
+	}
+	seen := make(map[string]bool)
+	for _, job := range page.Jobs {
+		if seen[job.JobID] {
+			t.Fatalf("duplicate resumed identity %s", job.JobID)
+		}
+		seen[job.JobID] = true
 	}
 }

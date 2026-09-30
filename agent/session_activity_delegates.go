@@ -74,7 +74,7 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 		if _, ok := walk.Cutoffs[read.rootID]; !ok {
 			info, statErr := os.Stat(read.delegatePath())
 			if statErr != nil && !os.IsNotExist(statErr) {
-				return result, appwire.Unavailable("delegate source unavailable")
+				return result, sessionActivitySourceReadError("delegate source unavailable", statErr)
 			}
 			if info != nil {
 				walk.Cutoffs[read.rootID] = info.Size()
@@ -99,6 +99,9 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 		keys = controller.activityKeys
 	}
 	if !walk.Ready {
+		if controller != nil {
+			walk.Admission = controller.activityAdmission
+		}
 		if len(keys) > 0 {
 			walk.Highwater = keys[len(keys)-1]
 		}
@@ -120,7 +123,9 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 			continue
 		}
 		row := state[key.ID]
-		if row == nil || !owners[sessionActivityDelegateOwner(state, row)] || (controller == nil && read.index.delegateOffsets[key.ID] > walk.Cutoffs[read.rootID]) {
+		if row == nil || !owners[sessionActivityDelegateOwner(state, row)] ||
+			(controller != nil && controller.activityAdmissions[key.ID] > walk.Admission) ||
+			(controller == nil && read.index.delegateOffsets[key.ID] > walk.Cutoffs[read.rootID]) {
 			token.After = key
 			continue
 		}

@@ -428,19 +428,75 @@ describe("a run's one line", () => {
 				step("a", "github__create_issue"),
 				step("b", "github__list_issues"),
 				step("c", "linear_app__list_issues"),
-				step("d", "compact_context"),
-				step("e", "compact_context"),
+				step("d", "reindex_workspace"),
+				step("e", "reindex_workspace"),
 				step("f", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "a" }) } }),
 				step("g", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "b" }) } }),
 			]).parts.map((part) => [part.key, part.text]),
 		).toEqual([
 			["mcp", "used 3 MCP tools"],
-			["tool:compact context", "used compact context 2 times"],
+			["tool:reindex workspace", "used reindex workspace 2 times"],
 			["skill", "used 2 skills"],
 		]);
 		expect(
 			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map((part) => part.text),
 		).toEqual(["used github 2 times"]);
+	});
+
+	// The session's housekeeping tools say what they did in a run's line, in
+	// the same words as their own step lines (the package's housekeeping
+	// words), each tool a part of its own.
+	it("says what each housekeeping tool did", () => {
+		expect(
+			runSummary([
+				step("a", "notes_agent_set", { detail: { arguments: JSON.stringify({ note: "Drain first." }) } }),
+				step("b", "urls_add"),
+				step("c", "urls_add"),
+				step("d", "update_goal"),
+				step("e", "communicate"),
+			]).parts.map((part) => part.text),
+		).toEqual([
+			"updated its note once",
+			"added a link 2 times",
+			"updated the goal once",
+			"reported to its parent once",
+		]);
+	});
+
+	// A call that only clears a note says so in the run's line, as its own
+	// step line does, apart from calls that set one.
+	it("says a housekeeping call that only cleared a note apart", () => {
+		const note = (id: string, text: string) =>
+			step(id, "notes_agent_set", { detail: { arguments: JSON.stringify({ note: text }) } });
+		expect(
+			runSummary([
+				note("a", "Drain first."),
+				note("b", ""),
+				step("c", "compact_context", {
+					detail: { arguments: JSON.stringify({ note_to_self: "" }), output: "Note cleared. No compaction requested." },
+				}),
+				step("d", "compact_context", { detail: { arguments: JSON.stringify({ note_to_self: "Next: race." }) } }),
+			]).parts.map((part) => part.text),
+		).toEqual([
+			"updated its note once",
+			"cleared its note once",
+			"cleared its compaction note once",
+			"asked for a context compaction once",
+		]);
+	});
+
+	// At Intent a settled step with a rationale keeps its words but not its
+	// arguments or output (projectedRows' intentRow), so a run can't tell a
+	// clear from a set: it says what the tool usually does, never a clear.
+	it("says a summary-only housekeeping step's usual action", () => {
+		const summarized = (id: string, label: string, verb: string) =>
+			step(id, label, { summaryOnly: true, detail: { description: `Rationale ${id}`, words: { verb } } });
+		expect(
+			runSummary([
+				summarized("a", "notes_agent_set", "Updated its note"),
+				summarized("b", "compact_context", "Asked for a context compaction"),
+			]).parts.map((part) => part.text),
+		).toEqual(["updated its note once", "asked for a context compaction once"]);
 	});
 
 	it("says a run updated the task list, or only checked it", () => {

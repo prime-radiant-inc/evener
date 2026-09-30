@@ -141,8 +141,10 @@ bounded retained collection, not a promise of an unlimited durable audit log.
 
 Collections use a stable order by creation instant and stable resource ID,
 newest first. Cursors are opaque and bound to resolved session identity, epoch,
-resource, scope, an initial creation-order high-water mark, and the last emitted
-key. They contain no filesystem path supplied by the client. They are not list
+resource, scope, an initial source-admission boundary, and the last emitted
+creation-order key. Admission is separate from wall-clock ordering, so a later
+creation cannot enter an existing walk by carrying an earlier or tied timestamp.
+They contain no filesystem path supplied by the client. They are not list
 offsets and are not invalidated by an ordinary status or output update.
 
 Pagination is a live view over the initial membership high-water mark: fields
@@ -282,6 +284,15 @@ owner per actual client object, requested ref, and scope; different scopes keep
 their counts and collections separate while sharing thread subscription leases.
 Closing the panel releases its collection demand without releasing a mounted
 transcript or a session-scoped tab's subscription.
+
+The visible transcript also observes session-scoped jobs and delegates to resolve
+inline entity links and controls from retained domain evidence. It shares the
+same binding with session-scoped tabs and releases its demand on disposal;
+transcript watch presentation continues to use its existing transcript evidence.
+This may require two initial bounded collection reads when no other view has
+requested them. It does not enumerate activity for other navigation rows or
+create an exhaustive historical entity cache. Off-page identities are not assumed
+to exist in the loaded first page.
 
 The native subagent tree uses the same session activity owner with subtree scope.
 Its existing views may use a pure adapter from flat domain rows into their
