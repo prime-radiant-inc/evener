@@ -14,13 +14,16 @@ export function ProviderDetailPage({ navigation, route }: NativeStackScreenProps
 	const { hubId, name } = route.params;
 	const slot = useProviderDetailSlot();
 	// Only the detail the route names, for the hub it was opened for: after a
-	// hub switch or while a rename re-targets the route, nothing shows rather
-	// than another provider's detail.
+	// hub switch, or for the commit between a swap of the route's provider and
+	// the Providers page publishing its detail, nothing shows rather than
+	// another provider's detail.
 	const current = slot !== null && slot.hubId === hubId && slot.name === name ? slot : null;
 
 	// Having shown its provider, the page goes back once the Providers page
-	// drops the selection. A selection that moved to another name (a rename
-	// the route is catching up with) waits for the route instead.
+	// drops the selection or the hub. A publication for another provider is the
+	// page swapping this route to it (openDetail sets the selection and the
+	// route together, and the slot follows a commit later), so the page waits
+	// for it rather than going back.
 	const shown = useRef(false);
 	if (current) shown.current = true;
 	const dropped = shown.current && (slot === null || slot.hubId !== hubId || slot.name === null);
@@ -36,12 +39,12 @@ export function ProviderDetailPage({ navigation, route }: NativeStackScreenProps
 
 	// Leaving hands the selection back, so the Providers page drops whatever
 	// the detail had open (a draft key, a check's failure).
-	const latest = useRef({ slot, name });
-	latest.current = { slot, name };
+	const latest = useRef({ slot, hubId, name });
+	latest.current = { slot, hubId, name };
 	useEffect(
 		() => () => {
-			const { slot: last, name: leaving } = latest.current;
-			if (last && last.name === leaving) last.onGone();
+			const { slot: last, hubId: leavingHub, name: leaving } = latest.current;
+			if (last && last.hubId === leavingHub && last.name === leaving) last.onGone();
 		},
 		[],
 	);

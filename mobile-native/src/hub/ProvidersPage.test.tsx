@@ -25,6 +25,7 @@ import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { ProviderEditor } from "../ProviderEditor";
 import { SwitchRow, Tag } from "../sheet/Grouped";
 import { MODELS_NOT_CHECKED, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
+import { ProviderDetailPage } from "./ProviderDetailPage";
 import { back, detailParams, ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
 import {
 	alertRequests,
@@ -151,6 +152,14 @@ function instanceCalls(methods: string[]): string[] {
  * to the Pressable it draws, so the composite and the host both carry it. */
 function control(tree: ReactTestRenderer, name: string): ReactTestInstance {
 	return tree.root.find((node) => typeof node.type === "string" && node.props.accessibilityLabel === name);
+}
+
+/** The pushed detail's edit modal: the editor's frame the detail hosts, the
+ * first modal in its tree (the paste sheet, when open, follows it). */
+function editModal(tree: ReactTestRenderer): ReactTestInstance {
+	const modal = tree.root.findByType(ProviderDetailPage).findAllByType("Modal" as never)[0];
+	if (!modal) throw new Error("no edit modal in the detail");
+	return modal;
 }
 
 /** Whether a control labelled `name` is on screen. */
@@ -289,7 +298,7 @@ it("pushes a provider's detail over the list, and Back returns to it", async () 
 	expect(detailParams()).toEqual({ hubId: "hub-1", name: "lunaroute" });
 	expect(hasControl(tree, "Sign-in, API key")).toBe(true);
 	// No modal holds it: the stack does.
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+	expect(tree.root.findAllByType("Modal" as never).every((modal) => !modal.props.visible)).toBe(true);
 	back();
 	await act(async () => {});
 	expect(detailParams()).toBeNull();
@@ -458,6 +467,21 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 	expect(hasControl(tree, "Remove")).toBe(true);
 });
 
+// A covered screen is out of the window, and a React Native modal presents
+// only from one in the window: the edit's modal lives in the pushed detail,
+// not in the Providers page under it (review C1: Edit did nothing on device).
+it("opens a provider's editor from inside its pushed detail", async () => {
+	providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	const detail = tree.root.findByType(ProviderDetailPage);
+	expect(detail.findAllByType(ProviderEditor)).toHaveLength(1);
+	expect(tree.root.findAllByType(ProviderEditor)).toHaveLength(1);
+});
+
 it("goes back to the provider's detail when its edit is cancelled", async () => {
 	const hub = scriptedClient(rows);
 	harness.connection = screenConnection(hub.client, "ready");
@@ -474,7 +498,7 @@ it("goes back to the provider's detail when its edit is cancelled", async () => 
 	expect(renderedText(tree)).not.toContain("Base URL");
 	expect(hasControl(tree, "Edit")).toBe(true);
 	// The editor's modal has gone; the detail it was opened from stays pushed.
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+	expect(tree.root.findAllByType("Modal" as never).every((modal) => !modal.props.visible)).toBe(true);
 	expect(detailParams()).toMatchObject({ name: "work" });
 });
 
@@ -497,16 +521,16 @@ it("won't let a swipe down drop an edit whose save is still in flight", async ()
 	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {
-		tree.root.findByType("Modal" as never).props.onRequestClose();
+		editModal(tree).props.onRequestClose();
 	});
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(true);
+	expect(editModal(tree).props.visible).toBe(true);
 	expect(renderedText(tree)).toContain("Base URL");
 	await act(async () => answer(rows));
 	await act(async () => {});
 	await act(async () => {
-		tree.root.findByType("Modal" as never).props.onRequestClose();
+		editModal(tree).props.onRequestClose();
 	});
-	expect(tree.root.findByType("Modal" as never).props.visible).toBe(false);
+	expect(editModal(tree).props.visible).toBe(false);
 });
 
 // The editor was opened on one row of the listing, so its save asserts that
@@ -1310,6 +1334,32 @@ it("replaces a key in place, saving it against the endpoint the row was read fro
 	expect(hasControl(tree, "Replace key")).toBe(true);
 });
 
+// Saving an edit returns to the same visit of the provider's detail, as it
+// did before the detail pushed (review M3): it neither starts a new visit
+// nor clears what the detail last said.
+it("keeps the detail's last word through an edit's save", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true, isDefault: false })]);
+	fake.on("evener/instance/setDefault", () => Promise.reject(new Error("config write failed")));
+	fake.on("evener/instance/edit", () => ({
+		instances: [instance({ authModes: ["apiKey"], hasStoredFile: true, isDefault: false })],
+		availableProviders: [],
+	}));
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Make default");
+	await act(async () => {});
+	expect(renderedText(tree)).toContain(UNCONFIRMED_CHANGE);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
+	press(tree, (label) => label === "Save");
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(renderedText(tree)).toContain(UNCONFIRMED_CHANGE);
+});
+
 it("says a connection test's result under the actions", async () => {
 	const fake = providersHub([instance({ authModes: ["apiKey"] })]);
 	let status = "success";
@@ -1355,7 +1405,7 @@ it("asks before Cancel or a swipe throws away an edited provider (spec 6)", asyn
 	await act(async () => {});
 	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
 	// A swipe down asks; Keep editing keeps the edit and the sheet.
-	act(() => tree.root.findByType("Modal" as never).props.onRequestClose());
+	act(() => editModal(tree).props.onRequestClose());
 	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
 	choose("Keep editing");
 	expect(control(tree, "Base URL").props.value).toBe("https://changed.example");
@@ -1431,11 +1481,16 @@ it("goes back from a provider's detail when the provider leaves the list", async
 		instances: [instance({ name: "home", authModes: ["apiKey"], hasStoredFile: true })],
 		availableProviders: [],
 	}));
-	await act(async () => {
-		fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work" } } as never);
-		// The store's refetch waits out its debounce.
-		await new Promise((resolve) => setTimeout(resolve, 300));
-	});
+	// The store's refetch waits out its debounce, on a fake clock.
+	vi.useFakeTimers();
+	try {
+		await act(async () => {
+			fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work" } } as never);
+			await vi.advanceTimersByTimeAsync(1_000);
+		});
+	} finally {
+		vi.useRealTimers();
+	}
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("home");
 	expect(detailParams()).toBeNull();
@@ -1461,7 +1516,7 @@ it("holds a swipe down while a pasted key is being saved, without asking", async
 			?.props.onRequestClose(),
 	);
 	expect(alertRequests).toHaveLength(0);
-	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(2);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(3);
 });
 
 it("closes the editor without asking once its save lands", async () => {
@@ -1598,11 +1653,11 @@ it("pastes a key in its own sheet: the action as its title, Cancel and Save, and
 	const { tree } = mountPage();
 	await act(async () => {});
 	await openDetail(tree, "work");
-	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(2);
 	press(tree, (label) => label === "Replace key");
 	const modals = tree.root.findAllByType("Modal" as never);
-	expect(modals).toHaveLength(2);
-	const sheet = modals[1];
+	expect(modals).toHaveLength(3);
+	const sheet = modals[2];
 	if (!sheet) throw new Error("no key sheet");
 	expect(sheet.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Replace key");
 	expect(subtreeText(sheet)).toContain("The key is stored on the hub, not on this phone.");
@@ -1614,7 +1669,7 @@ it("pastes a key in its own sheet: the action as its title, Cancel and Save, and
 		save().props.onPress();
 	});
 	await act(async () => {});
-	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(1);
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(2);
 	expect(fake.calls.some((call) => call.method === "evener/auth/apiKey/set")).toBe(true);
 });
 

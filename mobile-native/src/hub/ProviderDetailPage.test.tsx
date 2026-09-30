@@ -59,12 +59,12 @@ it("shows nothing published for another hub", () => {
 	expect(renderedText(tree)).toBe("");
 });
 
-// While a rename re-targets the route, the selection names the new provider
-// first: the page shows neither provider's detail under the old name, and
-// waits for the route rather than going back.
-it("shows nothing for another provider's name, and waits for the route to catch up", () => {
+// When the Providers page swaps its detail to another provider (a link opening
+// one in place), the route takes the new name at once and the slot follows a
+// commit later: the page shows neither detail in between and doesn't go back.
+it("shows nothing while the slot catches up with a swapped route, and doesn't go back", () => {
 	const { tree, update } = mount(slot({}));
-	update(slot({ name: "home", detail: "home's detail" }));
+	update(slot({}), { hubId: "hub-1", name: "home" });
 	expect(renderedText(tree)).toBe("");
 	expect(navigation.goBack).not.toHaveBeenCalled();
 	update(slot({ name: "home", detail: "home's detail" }), { hubId: "hub-1", name: "home" });
@@ -82,4 +82,14 @@ it("hands the selection back when it leaves", () => {
 	const { tree } = mount(slot({ onGone }));
 	act(() => tree.unmount());
 	expect(onGone).toHaveBeenCalledTimes(1);
+});
+
+// Only its own hub's selection: another hub's page sharing the name keeps
+// its own (review M5).
+it("hands nothing back to another hub's page", () => {
+	const onGone = vi.fn();
+	const { tree, update } = mount(slot({}));
+	update(slot({ hubId: "hub-2", onGone }));
+	act(() => tree.unmount());
+	expect(onGone).not.toHaveBeenCalled();
 });

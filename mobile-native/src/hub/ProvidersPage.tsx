@@ -495,6 +495,60 @@ function Providers({
 	}, [focus, signInFocus, core.listingEstablished, core.instances, stale, surface.busy, onSignIn, onFocused]);
 
 	const writeHeld = surface.busy || core.writesRefused || stale || !ready;
+	// The provider editor, in a modal over whichever screen holds it: a new
+	// provider's over this list, and an edit's inside the pushed detail. A
+	// screen the stack has covered is out of the window, and a React Native
+	// modal presents only from one in it, so an edit's modal here would never
+	// show while the detail is pushed. The native modal covers the page's
+	// status line, so the editor carries its own - and the draft stays in
+	// reach of neither a dismissal nor a missed recovery.
+	const editorFrame = (kind: "create" | "edit") => (
+		<ModalFrame
+			visible={configuration === kind}
+			onRequestClose={() => {
+				// A swipe down asks before an edit goes (spec 6), and waits out a
+				// save in flight, as the editor's Cancel does: a new provider's
+				// editor closes, and an edit returns to the provider's detail.
+				editorLeave.current?.(kind === "create" ? close : () => setConfiguration(null));
+			}}
+		>
+			{configuration === kind ? (
+				<ProviderEditor
+					key={kind === "create" ? "create" : instance?.name}
+					instance={kind === "edit" ? instance : undefined}
+					providers={core.availableProviders}
+					onCreate={surface.create}
+					onEdit={surface.edit}
+					disabled={surface.busy || core.writesRefused || stale || !ready}
+					canUseConnection={canUseConnection}
+					onSaved={(name) => {
+						setConfiguration(null);
+						// A new provider's detail pushes; an edit's is already in front.
+						if (kind === "create") openDetail(name);
+						else setSelected(name);
+					}}
+					onEndpointConflict={(name) => {
+						// The hub refused the endpoint the save asserted: the name
+						// moved since this editor was seeded, and nothing was
+						// written. Clear the editor like a completed save, re-read
+						// the provider list so a retry asserts the destination now
+						// on screen, and warn in this client's own words.
+						setConfiguration(null);
+						if (kind === "create") openDetail(name);
+						else setSelected(name);
+						setActionWarning(ENDPOINT_CHANGED_WARNING);
+						surface.refresh();
+					}}
+					onCancel={() => {
+						if (kind === "create") close();
+						else setConfiguration(null);
+					}}
+					leaveGuard={editorLeave}
+					accessory={<SheetStatus />}
+				/>
+			) : null}
+		</ModalFrame>
+	);
 	// The selected provider's detail, which ProviderDetailPage shows pushed over
 	// this page (spec 12; device audit N3). It is built here, beside the writes
 	// and the credential editor it drives, and published on every render.
@@ -649,6 +703,7 @@ function Providers({
 						/>
 					)}
 				</Group>
+				{editorFrame("edit")}
 				{editingCredential ? (
 					<CredentialPasteSheet
 						title={credentialTitle(editingCredential, instance)}
@@ -731,53 +786,7 @@ function Providers({
 					</>
 				) : null}
 			</GroupedPage>
-			<ModalFrame
-				visible={configuration !== null}
-				onRequestClose={() => {
-					// A swipe down asks before an edit goes (spec 6), and waits out a
-					// save in flight, as the editor's Cancel does: a new provider's
-					// editor closes, and an edit returns to the provider's detail.
-					editorLeave.current?.(configuration === "create" ? close : () => setConfiguration(null));
-				}}
-			>
-				{/* The native modal covers the page's status line, so the editor in it
-				    carries its own - and the draft stays in reach of neither a
-				    dismissal nor a missed recovery. */}
-				{configuration ? (
-					<ProviderEditor
-						key={configuration === "create" ? "create" : instance?.name}
-						instance={configuration === "edit" ? instance : undefined}
-						providers={core.availableProviders}
-						onCreate={surface.create}
-						onEdit={surface.edit}
-						disabled={surface.busy || core.writesRefused || stale || !ready}
-						canUseConnection={canUseConnection}
-						onSaved={(name) => {
-							setConfiguration(null);
-							// A new provider's detail pushes; an edit's is already in
-							// front, and a rename re-targets it.
-							openDetail(name);
-						}}
-						onEndpointConflict={(name) => {
-							// The hub refused the endpoint the save asserted: the name
-							// moved since this editor was seeded, and nothing was
-							// written. Clear the editor like a completed save, re-read
-							// the provider list so a retry asserts the destination now
-							// on screen, and warn in this client's own words.
-							setConfiguration(null);
-							openDetail(name);
-							setActionWarning(ENDPOINT_CHANGED_WARNING);
-							surface.refresh();
-						}}
-						onCancel={() => {
-							if (configuration === "create") close();
-							else setConfiguration(null);
-						}}
-						leaveGuard={editorLeave}
-						accessory={<SheetStatus />}
-					/>
-				) : null}
-			</ModalFrame>
+			{editorFrame("create")}
 		</>
 	);
 }
