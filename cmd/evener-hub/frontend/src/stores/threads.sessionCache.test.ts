@@ -2411,7 +2411,11 @@ describe("the clear", () => {
   });
 
   it("13, the sibling window: the stale shell it publishes never re-persists, and the next read replaces it", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // Date is faked in this one test so a hypothetical shell rewrite's fresh
+    // savedAt stamp (cachedSessionRecord stamps `savedAt: now`,
+    // reducer.ts:1297, from writeCacheRecord's Date.now(), threads.ts:5291)
+    // is provably different from the seed's: the 6 s advance moves the clock.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
       const { adapter } = cacheTestBed();
       await seedCache(adapter, "local:sib");
@@ -2436,12 +2440,15 @@ describe("the clear", () => {
       // (inc-1) because nothing in this tab observed the sibling's clear.
       expect(threadsStore.getState().cacheShellRefs.has("local:sib")).toBe(true);
       expect(threadsStore.getState().threads.get("local:sib")?.history?.incarnation).toBe("inc-1");
+      const before = await cacheRecord("local:sib");
       await vi.advanceTimersByTimeAsync(6_000);
       // Never re-persists: the debounced write the shell's publication armed
       // is refused at fire time by the shell gate, so the stored record is
-      // still the seed's, un-rewritten (the shell model's threadId would be
-      // thr_local:sib; the seed's is pinned to thr_1).
-      expect((await cacheRecord("local:sib"))?.threadId).toBe("thr_1");
+      // deep-equal to the pre-window capture. The equality has causal teeth:
+      // a shell rewrite re-encodes the round-trip fields identically — the
+      // shell model carries the record's own threadId (reducer.ts:1252) —
+      // but stamps savedAt fresh, and the faked clock has advanced 6 s.
+      expect(await cacheRecord("local:sib")).toEqual(before);
       // The next read replaces it: the shell window ends, the final model is
       // the read's, and no shell flag survives the replacement.
       if (resolveRead === undefined) throw new Error("the reconciling read must still be pending");
