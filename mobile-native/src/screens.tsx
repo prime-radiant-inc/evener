@@ -1701,13 +1701,7 @@ export function ConversationScreen({
 			restoreReadingPositionNow.current();
 		}, 0);
 	}
-	useEffect(
-		() => () => {
-			if (restoreAfterLayoutTimer.current !== null) clearTimeout(restoreAfterLayoutTimer.current);
-		},
-		[],
-	);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: a layout revision (the viewport, a drag settling, focus) retriggers restoration too.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: restoreReadingPosition reads these through its closure; the list names what reruns it, a layout revision (the viewport, a drag settling, focus) included.
 	useEffect(() => {
 		restoreReadingPosition();
 	}, [
@@ -1729,6 +1723,7 @@ export function ConversationScreen({
 			if (readerAnchor.current) readerPositions.save(readerAnchor.current);
 			if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 			restoreFrame.current = null;
+			if (restoreAfterLayoutTimer.current !== null) clearTimeout(restoreAfterLayoutTimer.current);
 		},
 		[],
 	);

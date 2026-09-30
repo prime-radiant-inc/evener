@@ -1142,19 +1142,7 @@ it("restores a reading position once, however its row's measured y moves after",
 // content size they add up to. The restore waits for all of them, so a row
 // measured before the content size is known never lands the list short of it.
 it("restores a reading position once the frame's layouts are all in", async () => {
-	harness.kv.set(
-		"evener.reader-positions",
-		JSON.stringify({
-			"hub-1\u0000ref-restore-frame": {
-				hubId: "hub-1",
-				sessionRef: "ref-restore-frame",
-				itemKey: "a-turn_2",
-				withinItemOffset: 0,
-				touchedAt: 1,
-				turnsSeen: "turn_2",
-			},
-		}),
-	);
+	seedReaderPosition("ref-restore-frame", "a-turn_2", "turn_2");
 	const { tree } = await mount(twoTurns("ref-restore-frame"));
 	act(() =>
 		transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
@@ -1174,19 +1162,7 @@ it("restores a reading position once the frame's layouts are all in", async () =
 // The content size can come in a later batch than the rows: until it is
 // known, where the list can reach isn't, so the restore waits for it.
 it("waits for the content size before restoring a reading position", async () => {
-	harness.kv.set(
-		"evener.reader-positions",
-		JSON.stringify({
-			"hub-1\u0000ref-restore-size": {
-				hubId: "hub-1",
-				sessionRef: "ref-restore-size",
-				itemKey: "a-turn_2",
-				withinItemOffset: 0,
-				touchedAt: 1,
-				turnsSeen: "turn_2",
-			},
-		}),
-	);
+	seedReaderPosition("ref-restore-size", "a-turn_2", "turn_2");
 	const { tree } = await mount(twoTurns("ref-restore-size"));
 	act(() =>
 		transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
@@ -1543,6 +1519,24 @@ function transcriptList(tree: ReactTestRenderer) {
 		(node) =>
 			typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
 	)[0];
+}
+
+// Saves a reading position on hub-1 for the session ref, at the top of the
+// row keyed itemKey, with the turns through turnsSeen already seen.
+function seedReaderPosition(sessionRef: string, itemKey: string, turnsSeen: string) {
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			[`hub-1\u0000${sessionRef}`]: {
+				hubId: "hub-1",
+				sessionRef,
+				itemKey,
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen,
+			},
+		}),
+	);
 }
 
 // Lays out the transcript's row at index at y. twoTurns' rows are ask/reply
