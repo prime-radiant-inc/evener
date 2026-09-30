@@ -327,8 +327,8 @@ it("says a job's subagent isn't listed until that subagent's page loads, then na
 	harness.connection = screenConnection(client, "ready");
 	const screen = await mount();
 	const jobLabel = () =>
-		screen.root.find((node) => String(node.props.accessibilityLabel).startsWith("Shell job, Serving the docs"))
-			.props.accessibilityLabel;
+		screen.root.find((node) => String(node.props.accessibilityLabel).startsWith("Shell job, Serving the docs")).props
+			.accessibilityLabel;
 	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under a subagent that isn't listed");
 	expect(text(screen)).toContain("under a subagent that isn't listed");
 	expect(text(screen)).not.toContain(`under ${COORDINATOR.title}`);
