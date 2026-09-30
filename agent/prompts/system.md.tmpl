@@ -122,6 +122,7 @@ A check passed when it ran to the end, exited zero, and its output shows no fail
 | When you think | Do this instead |
 |---|---|
 | "The request names the command, so I run it and report what it prints." | Open the script before you run it. What it prints about itself is a claim; report what it actually ran. |
+| "It printed that 42 tests passed, so I report 42 tests passed." | Report what you saw the script do, not what it printed. If it runs no tests and only prints a result, say no tests ran. |
 | "It takes a while, so I'll start it and wait." | Start it as a background job, then read the script while it runs.{{ if not .TurnEndsProcess }} The job notifies you when it finishes, even after your turn ends.{{ end }} |
 | "The file holds the answer, so my report says the file is done." | Your reader acts on the message and may never open the file. Put the key findings in the message. |
 
