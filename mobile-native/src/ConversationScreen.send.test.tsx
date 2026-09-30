@@ -1144,9 +1144,7 @@ it("restores a reading position once, however its row's measured y moves after",
 it("restores a reading position once the frame's layouts are all in", async () => {
 	seedReaderPosition("ref-restore-frame", "a-turn_2", "turn_2");
 	const { tree } = await mount(twoTurns("ref-restore-frame"));
-	act(() =>
-		transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
-	);
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 	await settle();
 	flatListCalls.length = 0;
 	act(() => {
@@ -1164,9 +1162,7 @@ it("restores a reading position once the frame's layouts are all in", async () =
 it("waits for the content size before restoring a reading position", async () => {
 	seedReaderPosition("ref-restore-size", "a-turn_2", "turn_2");
 	const { tree } = await mount(twoTurns("ref-restore-size"));
-	act(() =>
-		transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
-	);
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 	await settle();
 	flatListCalls.length = 0;
 	layOutRow(tree, 3, 9_523);
