@@ -489,7 +489,10 @@ describe("the last line's model", () => {
 
 	it("ends the line with the model when the setting is on", () => {
 		const withTask = row("d", { model_name: "GPT-5", tasks: { total: 7, done: 3, current: "Fix it" } });
-		expect(lastLine(withTask, usualPlace(fleet), label, true)).toEqual({ task: "Task 4 of 7 · Fix it", model: "GPT-5" });
+		expect(lastLine(withTask, usualPlace(fleet), label, true)).toEqual({
+			task: "Task 4 of 7 · Fix it",
+			model: "GPT-5",
+		});
 		expect(lastLine(fleet[0] as NavigationSessionSummary, usualPlace(fleet), label, true)).toEqual({
 			model: "GLM 5.3 Vision",
 		});
