@@ -6,12 +6,9 @@
 // lazily-loaded archived project detail map, the manifest's launch sources)
 // and wires the results into <Tree>.
 //
-// Session rows are FLAT: nothing nests under a session anymore. A session's
-// subagents live in the activity sidebar's Agents tab (the paged subagents
-// resource), its jobs and watches ride the row's own summary figures, and
-// the two counts the nested rows used to make derivable ship on the row:
-// `subagents` (a whole-tree tally) and `needs_you_subagents`. The only branch
-// rows left are projects and host groups.
+// Primary navigation session rows are flat and carry compact own-session
+// counters. Archived lists separately retain fork-original conversations as
+// nested session rows; delegate/job/watch detail belongs to session activity.
 
 import { approvalWaiting, type NavigationSessionSummary, type SessionWatch, type Source } from "@evener/appwire-client";
 import {
@@ -34,8 +31,8 @@ export interface RailSession extends NavigationSessionSummary {
   tier?: string;
   pin_section_id?: string;
   model?: string;
-  // Mirrors the wire field, but the rail's adapter (Rail's summarySession)
-  // always leaves it empty: nested summaries never become rail rows.
+  // Fork-only inline children from archived lists; normalized graph rows
+  // remain flat.
   children: RailSession[];
   project_key?: string;
 }
@@ -87,11 +84,7 @@ import type { TreeNode as WidgetTreeNode } from "../../widgets";
 export interface SessionRailNode extends WidgetTreeNode {
   kind: "session";
   session: RailSession;
-  // Always an empty array: a session row is a leaf. The rail's rows no
-  // longer carry nested session children, job rows, or watch rows - the
-  // activity sidebar owns those - so the only thing the row expands into is
-  // nothing. The field stays because the Tree widget reads it for its
-  // leaf/branch call and an empty array is that call's "leaf" answer.
+  // Archived rows may disclose fork originals; other session rows are leaves.
   children: RailNode[];
   // Set only on the ROOT rows of a flat cross-project tier - the ones
   // sessionNodes builds (Live, Needs-you, Pinned): those rows name their
@@ -335,6 +328,30 @@ function toSessionNode(n: RailSession, crossProjectTier = false): SessionRailNod
     : { id: n.row_id, kind: "session", session: n, children: [] };
   cache.set(n as object, result);
   return result;
+}
+
+// Expansion callbacks are immutable snapshots, so each disclosure state gets
+// its own memoized archived tree while unchanged rows retain widget identity.
+const archivedSessionNodeCache = new WeakMap<RailSession, WeakMap<IsExpanded, SessionRailNode>>();
+function toArchivedSessionNode(session: RailSession, isExpanded: IsExpanded): SessionRailNode {
+  const originals = session.children.filter((child) => child.kind === "fork");
+  if (originals.length === 0) return toSessionNode(session);
+  let entries = archivedSessionNodeCache.get(session);
+  const cached = entries?.get(isExpanded);
+  if (cached) return cached;
+  const node: SessionRailNode = {
+    id: session.row_id,
+    kind: "session",
+    session,
+    expanded: isExpanded(session.row_id, false),
+    children: originals.map((child) => toArchivedSessionNode(child, isExpanded)),
+  };
+  if (!entries) {
+    entries = new WeakMap();
+    archivedSessionNodeCache.set(session, entries);
+  }
+  entries.set(isExpanded, node);
+  return node;
 }
 
 /** Builds rail nodes for a flat session list - the Needs-you, Live, and
@@ -839,10 +856,9 @@ export function liveNodesGroupedByHost(
  * owning host group then the project's copy in "Host, then project", the
  * project then its per-host branch in "Project, then host", and a Live host
  * subheader for a live row whenever Live groups. Only TOP-LEVEL rows can be
- * found here - the lists are flat, so a ref that exists only as a nested
- * summary (a subagent, a fork original) names no rail row; its reveal
- * resolves through the location lookup, which names the top-level carrier
- * (top_level_ref) to land on. An archived-tier row
+ * found in the primary lists. Archived fork originals are found recursively
+ * through their continuation and each original's disclosure; activity children
+ * instead resolve through location to their carrier. An archived-tier row
  * routes to its project's archived-group fold instead - the one tier no
  * grouping mode rewrites - unless `options.rowsUnderProjectNode` says these
  * projects render every row under the project's own node (whole-archived
@@ -858,14 +874,26 @@ export function revealExpansionIds(
   options?: { rowsUnderProjectNode?: boolean },
 ): string[] {
   for (const p of projects) {
-    const carrier = p.sessions.find((n) => n.ref === ref);
-    if (!carrier) continue;
+    const pathToRef = (row: RailSession): RailSession[] | undefined => {
+      if (row.ref === ref) return [row];
+      if (!isArchivedTier(row)) return undefined;
+      for (const child of row.children) {
+        if (child.kind !== "fork") continue;
+        const path = pathToRef(child);
+        if (path) return [row, ...path];
+      }
+      return undefined;
+    };
+    const path = p.sessions.map(pathToRef).find((path) => path !== undefined);
+    if (!path) continue;
+    const carrier = path[0];
+    const originalFolds = path.slice(0, -1).map((row) => row.row_id);
     // An archived-tier row renders in the Archived sessions section's
     // archived-group fold (archivedSessionGroups), never under the flat or
     // grouped project branch, whatever mode the rail is in - unless these
     // projects render every row under their own node (whole-archived
     // projects do; see archivedProjectNodes).
-    if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key)];
+    if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key), ...originalFolds];
     const id = projectNodeExpansionKey(p.key);
     const carrierHost = carrier.host_id;
     if (mode === "host-project") return [hostGroupId(carrierHost), hostProjectCopyId(id, carrierHost)];
@@ -876,7 +904,7 @@ export function revealExpansionIds(
       const rowsHosts = new Set(p.sessions.filter((n) => !isArchivedTier(n)).map((n) => n.host_id));
       return rowsHosts.size > 1 ? [id, hostBranchId(id, carrierHost)] : [id];
     }
-    return [id];
+    return [id, ...originalFolds];
   }
   const carrier = live.find((n) => n.ref === ref);
   if (!carrier) return [];
@@ -980,7 +1008,7 @@ export function archivedSessionGroups(
     const expanded = isExpanded(id, false);
     const spawnHost = projectLaunchHost(p, sources);
     const children = projectChildren(p, isExpanded, "archived-group", () => [
-      ...archived.map((n) => toSessionNode(n)),
+      ...archived.map((n) => toArchivedSessionNode(n, isExpanded)),
       ...projectOverflowNode(id, p, ["archived"]),
     ]);
     // The launch host rides the node cache's key, so a manifest that
@@ -1072,7 +1100,7 @@ export function archivedProjectNodes(
       // The hydrated detail is the authority on both the rows and what was
       // capped away from them - the stub carried neither.
       children = projectChildren(detail, isExpanded, "archived-detail", () => [
-        ...detail.sessions.map((n) => toSessionNode(n)),
+        ...detail.sessions.map((n) => toArchivedSessionNode(n, isExpanded)),
         ...projectOverflowNode(id, detail, ["current", "recent", "archived"]),
       ]);
     } else if ((p.session_count ?? 0) > 0) {

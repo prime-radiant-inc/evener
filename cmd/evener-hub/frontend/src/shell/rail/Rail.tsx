@@ -517,9 +517,14 @@ function summarySession(
     tier,
     pin_section_id: pinSectionID,
     project_key: projectKey,
-    // The rail's lists are flat: a summary's nested children (subagents, fork
-    // originals) are the activity sidebar's data, never rows of their own.
-    children: [],
+    // Archived lists retain separate fork-original conversations. Delegate
+    // activity belongs to the scoped activity owner, not navigation rows.
+    children:
+      tier === "archived"
+        ? summary.children
+            .filter((child) => child.kind === "fork")
+            .map((child) => summarySession(child, scope, tier, pinSectionID, projectKey))
+        : [],
   };
   let entries = sessionModelCache.get(summary as object);
   if (!entries) {
@@ -1323,7 +1328,7 @@ function NavigationRail({
       project_key?: string;
       tier?: string;
       pin_section_id?: string;
-      session?: unknown;
+      session?: NavigationSessionSummary;
       top_level?: boolean;
       top_level_ref?: string;
     }>(currentState, locationKey);
@@ -1351,16 +1356,15 @@ function NavigationRail({
       consumeReveal();
       return;
     }
-    // A nested ref (a subagent, a fork original) has no row of its own in the
-    // flat rail: its work reads on its top-level carrier's row and in the
-    // activity sidebar. The reveal lands on the carrier the location names -
-    // scrolling to its row when it is already rendered, else opening the
-    // carrier's own fold chain one id per pass, exactly like a direct target.
+    // Delegate refs reveal their carrier in the flat navigation rail. An
+    // archived fork original has its own inline row; the loaded fold chain
+    // above reveals that row after its continuation arrives.
     const carrierRef =
       location.top_level === false && location.top_level_ref && location.top_level_ref !== revealTarget
         ? location.top_level_ref
         : null;
-    if (carrierRef !== null) {
+    const archivedForkOriginal = location.tier === "archived" && location.session.kind === "fork";
+    if (carrierRef !== null && !archivedForkOriginal) {
       const carrierRow = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
         (element) => element.dataset.sessionRef === carrierRef,
       );

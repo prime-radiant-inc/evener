@@ -3373,6 +3373,81 @@ describe("archived rows come from evener/archived/list", () => {
     restoreScroll();
   });
 
+  test("an archived continuation discloses only fork originals and preserves their action refs", () => {
+    const original = summary({ ref: "local:orig", session_id: "orig", title: "Original", kind: "fork", live: false });
+    const delegate = summary({
+      ref: "local:delegate",
+      session_id: "delegate",
+      title: "Delegate",
+      kind: "subagent",
+      live: false,
+    });
+    installState([archivedCatalog(1), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([{ ...archivedRow(0), children: [original, delegate] }], 1);
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "section:archived": true, "archivedgroup:p": true }));
+    render(<Rail />);
+    const continuation = screen.getByRole("treeitem", { name: /Old run 0/i });
+    expect(continuation.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Original")).toBeNull();
+    fireEvent.click(within(continuation).getByTestId("rail-chevron"));
+    expect(continuation.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Original")).toBeTruthy();
+    expect(screen.queryByText("Delegate")).toBeNull();
+    fireEvent.click(screen.getByText("Original"));
+    expect(window.location.pathname).toBe("/s/local%3Aorig");
+    fireEvent.click(within(continuation).getByTestId("rail-chevron"));
+    expect(screen.queryByText("Original")).toBeNull();
+    window.history.replaceState({}, "", "/");
+  });
+
+  test("a whole archived project's original reveals through the continuation disclosure", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const original = summary({ ref: "local:orig", session_id: "orig", title: "Original", kind: "fork", live: false });
+    const continuation = { ...archivedRow(0), children: [original] };
+    installState([
+      resource(
+        { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          projects: [{ key: "p", name: "Proj", session_count: 1, more_archived: 1 }],
+          remaining: 0,
+        },
+      ),
+      projectResource("p", []),
+      resource(
+        { kind: "location", ref: "local:orig" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:orig",
+          top_level_ref: "local:old-0",
+          top_level: false,
+          tier: "archived",
+          project_key: "p",
+          session: original,
+        },
+      ),
+    ]);
+    archivedListStore.setState({
+      lists: {
+        [archivedListKey("archived_projects", "p")]: {
+          rows: [continuation],
+          total: 1,
+          loaded: true,
+          loading: false,
+          error: null,
+        },
+      },
+    });
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:orig" onRevealConsumed={consumed} />);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:orig"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    restoreScroll();
+  });
+
   test("a reveal of a fork original under an archived row pages until its continuation loads", async () => {
     const restoreScroll = stubScrollIntoView();
     const client = new FakeClient("ready");
@@ -3380,10 +3455,7 @@ describe("archived rows come from evener/archived/list", () => {
     const original = summary({ ref: "local:orig", session_id: "orig", title: "Original", kind: "fork", live: false });
     client.on("evener/archived/list", (params) => {
       cursors.push(params.cursor);
-      // The archived list carries top-level rows only: the continuation row
-      // itself is what the reveal pages toward (top_level_ref), never a
-      // nested fork-original row under it.
-      return { sessions: [archivedRow(2)], total: 3, nextCursor: "cursor-2" };
+      return { sessions: [{ ...archivedRow(2), children: [original] }], total: 3, nextCursor: "cursor-2" };
     });
     connectionStore.getState().connect(client);
     installState([
@@ -3404,10 +3476,15 @@ describe("archived rows come from evener/archived/list", () => {
       ),
     ]);
     installList([archivedRow(0)], 2, "cursor-1");
-    render(<Rail revealTarget="local:orig" />, client);
-    await waitFor(() => expect(cursors).toEqual(["cursor-1"]));
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:orig" onRevealConsumed={consumed} />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:orig"]')).not.toBeNull());
     await act(async () => undefined);
     expect(cursors).toEqual(["cursor-1"]);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("Original"));
+    expect(window.location.pathname).toBe("/s/local%3Aorig");
+    window.history.replaceState({}, "", "/");
     restoreScroll();
   });
 
