@@ -189,7 +189,7 @@ export interface ThreadsStoreState {
    * final release) and by deletion propagation. Re-checked at write-fire
    * time. */
   cacheSuppressed: Set<string>;
-  /** The durable epoch each open ref's arming lookup captured (the lease). */
+  /** Each owned ref's epoch-bound lifetime, including misses and deadline fallbacks. */
   cacheLeases: Map<string, number>;
   /** The gap rule's captured anchor: the newest item position in the record,
    * fixed at shell-build from pure record data before any live merge. */
@@ -403,24 +403,29 @@ function currentSessionCache(): SessionCacheIndexedDB {
 export function setSessionCacheAdapterForTests(adapter: SessionCacheIndexedDB | undefined): void {
   sessionCacheAdapterOverride = adapter;
 }
-const inflightCacheLookups = new Map<string, Promise<{ record: CachedSessionRecord; epoch: number } | undefined>>();
+type CacheLookup = { record?: CachedSessionRecord; epoch: number };
+const inflightCacheLookups = new Map<string, Promise<CacheLookup | undefined>>();
 // The tab's in-memory view of the durable clear epoch: undefined until the
-// first lookup observes it, adopted (never assumed) from every capture, and
-// bumped synchronously by a same-tab clear (Task 10) so a lookup that
-// captured an older value can never publish a shell across it.
+// first lookup observes it. Only durable observations advance it, monotonically.
+// Optimistic same-tab clear arming lives separately in clearInFlight.
 let tabCacheEpoch: number | undefined;
 
 // One shared bounded lookup per ref. The deadline is the lookup's own
 // Promise.race against SESSION_CACHE_LOOKUP_DEADLINE_MS — never the storage
 // timeout — and a lost race resolves the join as a miss, discarding whatever
 // the adapter answers later.
-function joinCacheLookup(ref: string): Promise<{ record: CachedSessionRecord; epoch: number } | undefined> {
+function joinCacheLookup(ref: string): Promise<CacheLookup | undefined> {
   const existing = inflightCacheLookups.get(ref);
   if (existing) return existing;
   const race = (async () => {
     try {
       return await Promise.race([
-        currentSessionCache().get(ref, Date.now()),
+        (async (): Promise<CacheLookup | undefined> => {
+          const adapter = currentSessionCache();
+          const found = await adapter.get(ref, Date.now());
+          const epoch = found?.epoch ?? adapter.observedEpoch;
+          return epoch === undefined ? undefined : { record: found?.record, epoch };
+        })(),
         new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS)),
       ]);
     } catch {
@@ -4355,6 +4360,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const count = refCounts.get(ref) ?? 0;
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
+      // A pinned model keeps its lifetime after the last pane releases it.
+      threadsStore.setState((s) =>
+        s.cacheLeases.has(ref)
+          ? s
+          : {
+              cacheLeases: new Map(s.cacheLeases).set(ref, tabCacheEpoch ?? 0),
+            },
+      );
     }
     const generation = ensureGenerations.get(ref) ?? 0;
     refCounts.set(ref, count + 1);
@@ -4392,17 +4405,24 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // cold read in its own name. (A concurrent holder that published while
       // we looked keeps its model; the guard below just declines to arm the
       // shell over it.)
-      if ((refCounts.get(ref) ?? 0) === 0 || state.deletedRefs.has(ref)) return;
-      if (found !== undefined && !state.threads.has(ref)) {
+      if ((refCounts.get(ref) ?? 0) === 0 || ensureGenerations.get(ref) !== generation || state.deletedRefs.has(ref))
+        return;
+      if (found !== undefined) {
         const captured = found.epoch;
-        const epochMatch = tabCacheEpoch === undefined || tabCacheEpoch === captured;
-        tabCacheEpoch = captured; // adopt: the first observation, or a newer durable epoch, becomes the view
-        if (epochMatch) {
+        // The first durable observation establishes this still-unpublished
+        // claim's epoch. Already-published deadline fallbacks keep their old
+        // lease, and later observations suppress rather than rebind them.
+        if (tabCacheEpoch === undefined && state.clearInFlight === undefined && !state.threads.has(ref)) {
+          threadsStore.setState((s) => ({ cacheLeases: new Map(s.cacheLeases).set(ref, captured) }));
+        }
+        onCacheEpochObserved(captured);
+        const epochMatch =
+          captured === tabCacheEpoch && (state.clearInFlight === undefined || captured >= state.clearInFlight);
+        if (epochMatch && found.record !== undefined && !state.threads.has(ref)) {
           const shell = threadModelFromCache(found.record, Date.now());
           const anchor = newestItemPosition(found.record.history.turns);
           threadsStore.setState((s) => ({
             cacheShellRefs: new Set(s.cacheShellRefs).add(ref),
-            cacheLeases: new Map(s.cacheLeases).set(ref, captured),
             ...(anchor === undefined ? {} : { cacheAnchors: new Map(s.cacheAnchors).set(ref, anchor) }),
           }));
           cachedBase = shell;
@@ -5210,9 +5230,11 @@ interface CacheWriteSchedule {
 }
 const cacheWriteSchedules = new Map<string, CacheWriteSchedule>();
 const oversizeMemo = new Set<string>();
+const cacheHistoryLifetimes = new Map<string, symbol>();
 
 function clearOversizeMemo(ref: string): void {
   oversizeMemo.delete(ref);
+  cacheHistoryLifetimes.delete(ref);
 }
 
 // cancelCacheWrite ends the ref's schedule: both of the CURRENT entry's
@@ -5290,11 +5312,13 @@ function writeCacheRecord(ref: string, model: ThreadModel): void {
   if (oversizeMemo.has(ref)) return; // memoized per ref, scoped to the model's lifetime
   const record = cachedSessionRecord(model, Date.now()); // the synchronous snapshot
   if (record === undefined) return;
+  const lifetime = cacheHistoryLifetimes.get(ref) ?? Symbol();
+  cacheHistoryLifetimes.set(ref, lifetime);
   const scheduledEpoch = tabCacheEpoch ?? 0; // the epoch this write was scheduled under
   void currentSessionCache()
     .put(record, scheduledEpoch, Date.now())
     .then((result) => {
-      if (result.outcome === "oversize") oversizeMemo.add(ref);
+      if (result.outcome === "oversize" && cacheHistoryLifetimes.get(ref) === lifetime) oversizeMemo.add(ref);
       if (result.outcome === "aborted") onCacheEpochObserved(result.observedEpoch);
     })
     .catch(() => {}); // every failure is a dropped write; the next debounced window retries
@@ -5432,22 +5456,18 @@ export function markCacheSessionsDeleted(refs: string[]): void {
  * suppression stands — so open refs resume caching at their next
  * publication. */
 export async function clearCachedSessions(): Promise<{ committed: boolean }> {
-  const prior = tabCacheEpoch;
-  const armed = (prior ?? 0) + 1;
-  tabCacheEpoch = armed;
+  const armed = Math.max(tabCacheEpoch ?? 0, threadsStore.getState().clearInFlight ?? 0) + 1;
   threadsStore.setState({ clearInFlight: armed });
   for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
   const result = await currentSessionCache().clear();
   if (!result.committed) {
     // The abort drops only its own marker — cacheSuppressed is never touched,
-    // so another source's mid-flight arming stands — and the epoch view
-    // reverts only if nothing newer was observed during the flight. The
-    // identity guards keep a concurrent clear's marker and epoch intact.
+    // so another source's mid-flight arming stands. Durable observations
+    // never need reverting: optimistic arming did not change their epoch.
     threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
-    if (tabCacheEpoch === armed) tabCacheEpoch = prior;
     return { committed: false };
   }
-  tabCacheEpoch = result.epoch;
+  onCacheEpochObserved(result.epoch);
   // Every open lease whose captured epoch predates the committed epoch: the
   // same set the marker refused during the flight, re-derived at commit so a
   // lease captured mid-flight is covered too.
@@ -5479,7 +5499,10 @@ export async function countCachedSessions(): Promise<number | undefined> {
 // so does an empty record (the ordinary cold merge) and any disposition the
 // identity rules already answer (replace/discard are theirs).
 function applyCacheGapRule(ref: string, base: ThreadModel, response: ThreadReadResponse, now: number): ThreadModel {
-  const ordinary = () => applyReadResponse(base, response, now);
+  const ordinary = () => {
+    if (base.history !== undefined && readDisposition(base.history, response) === "replace") clearOversizeMemo(ref);
+    return applyReadResponse(base, response, now);
+  };
   const state = threadsStore.getState();
   const anchor = state.cacheAnchors.get(ref);
   if (anchor === undefined || !state.cacheShellRefs.has(ref) || response.changes !== undefined) return ordinary();
@@ -5504,9 +5527,11 @@ function applyCacheGapRule(ref: string, base: ThreadModel, response: ThreadReadR
   // since the anchor sits below the window's start. The result carries the
   // same hole today's live path carries when a notification was dropped;
   // the next authoritative read's merge fills it.
-  const tail = (current.history?.turns ?? []).filter(
-    (turn) => turn.items[0]?.position !== undefined && comparePositions(turn.items[0]?.position, bounds.end) > 0,
-  );
+  const end = bounds.end;
+  const tail = (current.history?.turns ?? []).flatMap((turn) => {
+    const items = turn.items.filter((item) => item.position !== undefined && comparePositions(item.position, end) > 0);
+    return items.length === 0 ? [] : [{ ...turn, items }];
+  });
   return mergeTailTurns(replaced, tail);
 }
 
@@ -5595,6 +5620,7 @@ export function resetThreadsStoreForTests(): void {
   }
   cacheWriteSchedules.clear();
   oversizeMemo.clear();
+  cacheHistoryLifetimes.clear();
   cacheWriteDebounceMs = 1_000;
   cacheWriteMaxWaitMs = 5_000;
   // The cache channel's module state: a test's installed factory and its

@@ -475,21 +475,21 @@ async function driveResyncRead(ref: string): Promise<void> {
   await threadsStore.getState().refreshThread(ref);
 }
 
-// A bed adapter that parks the store's next lookup: the first get() arms a
-// one-shot hold on the next [records, meta] readwrite transaction — the
-// lookup's own, because seeding goes through put() and never arms the hold —
-// so a test scripts exactly when the shared lookup settles.
+// Hold delivery after the real lookup commits. Holding the native complete
+// event also traps fake-indexeddb's internal queue wakeup, which can strand
+// an unrelated clear when the corrected lifetime gate refuses all writes.
 class GatedCacheAdapter extends SessionCacheIndexedDB {
-  readonly #arm: () => void;
+  readonly #gate: Promise<void>;
 
-  constructor(arm: () => void) {
+  constructor(gate: Promise<void>) {
     super();
-    this.#arm = arm;
+    this.#gate = gate;
   }
 
-  override get(ref: string, now: number): Promise<{ record: CachedSessionRecord; epoch: number } | undefined> {
-    this.#arm();
-    return super.get(ref, now);
+  override async get(ref: string, now: number): Promise<{ record: CachedSessionRecord; epoch: number } | undefined> {
+    const found = await super.get(ref, now);
+    await this.#gate;
+    return found;
   }
 }
 
@@ -510,12 +510,10 @@ const beds: SessionCacheIndexedDB[] = [];
 // replay path must NOT park its own lookup, so the default bed arms nothing.
 function cacheTestBed(options: { gated?: boolean } = {}): CacheTestBed {
   let release: (() => void) | undefined;
-  const adapter: SessionCacheIndexedDB = options.gated
-    ? new GatedCacheAdapter(() => {
-        if (release) return;
-        release = holdNextWriteTransaction(["records", "meta"]).release;
-      })
-    : new SessionCacheIndexedDB();
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const adapter = options.gated ? new GatedCacheAdapter(gate) : new SessionCacheIndexedDB();
   setSessionCacheAdapterForTests(adapter);
   beds.push(adapter);
   const settle = () => release?.();
@@ -2295,10 +2293,8 @@ describe("the clear", () => {
   it("the in-flight abort: a newer epoch observed during the flight survives it, with the suppression it armed", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      // local:epoch_a holds the lease (seeded); local:epoch_b is cold, so
-      // its mid-flight write is the aborted write through which the
-      // backstop observes a sibling's committed clear this tab never heard
-      // about.
+      // Both hit and cold-loaded refs own leases. A lookup of another ref
+      // discovers the newer durable epoch while this tab's clear is pending.
       const { adapter } = cacheTestBed();
       await seedCache(adapter, "local:epoch_a");
       const fake = connectFakeClient();
@@ -2315,7 +2311,8 @@ describe("the clear", () => {
       // write this test needs to abort on the newer epoch.
       await held.get("local:epoch_warm", Date.now());
       const clearing = clearCachedSessions();
-      emitHistoryUpdated("local:epoch_b", { fold: "turn_e" }); // the cold ref's mid-flight write
+      await threadsStore.getState().ensureThread("local:epoch_observer");
+      emitHistoryUpdated("local:epoch_b", { fold: "turn_e" });
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:epoch_b")).toBeUndefined(); // the write aborted on the newer epoch...
       expect(threadsStore.getState().cacheSuppressed.has("local:epoch_a")).toBe(true); // ...and the backstop armed the leased ref
@@ -2326,10 +2323,14 @@ describe("the clear", () => {
       emitHistoryUpdated("local:epoch_a", { fold: "turn_e2" }); // the leased ref's post-abort fold stays refused
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:epoch_a")).toBeUndefined();
-      // ...nor clobbered the newer epoch back to the pre-clear view: the
-      // cold ref's next write carries the observed epoch and lands.
+      // The cold ref is suppressed too, through its final release. A fresh
+      // lifetime carries the observed epoch and can cache again.
       emitHistoryUpdated("local:epoch_b", { fold: "turn_e3" });
       await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:epoch_b")).toBeUndefined();
+      threadsStore.getState().releaseThread("local:epoch_b");
+      await threadsStore.getState().ensureThread("local:epoch_b");
+      await vi.advanceTimersByTimeAsync(1_000);
       expect(await cacheRecord("local:epoch_b")).toBeDefined();
     } finally {
       vi.useRealTimers();
@@ -2449,61 +2450,65 @@ describe("the clear", () => {
     // the capture does not match the clear's epoch view, so the found branch
     // publishes no shell and arms nothing.
     expect(threadsStore.getState().cacheShellRefs.has("local:sc")).toBe(false);
-    expect(threadsStore.getState().cacheLeases.has("local:sc")).toBe(false);
+    expect(threadsStore.getState().cacheLeases.get("local:sc")).toBe(0);
     expect(threadsStore.getState().cacheAnchors.has("local:sc")).toBe(false);
-    expect(threadsStore.getState().cacheSuppressed.has("local:sc")).toBe(false);
+    expect(threadsStore.getState().cacheSuppressed.has("local:sc")).toBe(true);
     // The reconcile proceeded as a cold read: the model is the wire's
     // (inc-2), not the pre-clear record's (the seed's identity is inc-1).
     expect(threadsStore.getState().threads.get("local:sc")?.history?.incarnation).toBe("inc-2");
   });
 
-  it("13, the sibling window: the stale shell it publishes never re-persists, and the next read replaces it", async () => {
-    // Date is faked in this one test so a hypothetical shell rewrite's fresh
-    // savedAt stamp (cachedSessionRecord stamps `savedAt: now`,
-    // reducer.ts:1297, from writeCacheRecord's Date.now(), threads.ts:5291)
-    // is provably different from the seed's: the 6 s advance moves the clock.
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  it("13, a lookup captured before a real sibling clear never re-persists after reconciliation", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { adapter } = cacheTestBed();
+    let releaseLookup: (() => void) | undefined;
+    let capturedLookup: (() => void) | undefined;
+    const captured = new Promise<void>((resolve) => {
+      capturedLookup = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
     try {
-      const { adapter } = cacheTestBed();
       await seedCache(adapter, "local:sib");
-      // The sibling's clear committed behind this tab's back: the durable
-      // epoch moved (bumpDurableCacheEpoch, the T6 fixture) while the channel
-      // message never arrives, so the record the lookup returns is stale —
-      // pre-clear content under a post-clear epoch row.
-      await bumpDurableCacheEpoch(3);
-      let resolveRead: ((overrides: ReadResponseOverrides & TestThreadOverrides) => void) | undefined;
-      const fake = connectFakeClient();
-      fake.on("thread/read", (params) => {
-        if (params.ref === undefined) throw new Error("thread/read params must carry a ref");
-        const ref = params.ref;
-        return new Promise<ThreadReadResponse>((resolve) => {
-          resolveRead = (overrides) =>
-            resolve(readResponse(ref, { ...overrides, requestGeneration: params.requestGeneration }));
-        });
+      const get = adapter.get.bind(adapter);
+      vi.spyOn(adapter, "get").mockImplementationOnce(async (ref, now) => {
+        const found = await get(ref, now);
+        expect(found?.epoch).toBe(0);
+        expect(found?.record.history.incarnation).toBe("inc-1");
+        capturedLookup?.();
+        await release;
+        return found;
       });
+      const sibling = new SessionCacheIndexedDB();
+      beds.push(sibling);
+      const fake = connectFakeClient();
+      fake.on("thread/read", parkReloadRead);
       const pending = threadsStore.getState().ensureThread("local:sib");
+      await captured;
+      expect(await sibling.clear()).toEqual({ committed: true, epoch: 1 });
+      expect(await sibling.count()).toBe(0);
+      // No channel message is delivered. Release the genuinely pre-clear capture.
+      releaseLookup?.();
       await nextModelPublished("local:sib");
-      // The stale shell published: the pane paints the pre-clear record
-      // (inc-1) because nothing in this tab observed the sibling's clear.
       expect(threadsStore.getState().cacheShellRefs.has("local:sib")).toBe(true);
-      expect(threadsStore.getState().threads.get("local:sib")?.history?.incarnation).toBe("inc-1");
-      const before = await cacheRecord("local:sib");
       await vi.advanceTimersByTimeAsync(6_000);
-      // Never re-persists: the debounced write the shell's publication armed
-      // is refused at fire time by the shell gate, so the stored record is
-      // deep-equal to the pre-window capture. The equality has causal teeth:
-      // a shell rewrite re-encodes the round-trip fields identically — the
-      // shell model carries the record's own threadId (reducer.ts:1252) —
-      // but stamps savedAt fresh, and the faked clock has advanced 6 s.
-      expect(await cacheRecord("local:sib")).toEqual(before);
-      // The next read replaces it: the shell window ends, the final model is
-      // the read's, and no shell flag survives the replacement.
-      if (resolveRead === undefined) throw new Error("the reconciling read must still be pending");
-      resolveRead({ snapshot: { incarnation: "inc-2", length: 2 } });
+      expect(await sibling.count()).toBe(0); // the shell itself is never written
+      resolveReloadRead(readResponse("local:sib", { snapshot: { incarnation: "inc-2", length: 2 } }));
       await pending;
-      expect(threadsStore.getState().threads.get("local:sib")?.history?.incarnation).toBe("inc-2");
       expect(threadsStore.getState().cacheShellRefs.has("local:sib")).toBe(false);
+      expect(threadsStore.getState().threads.get("local:sib")?.history?.incarnation).toBe("inc-2");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await settleProjectionWorkForTests();
+      expect(threadsStore.getState().cacheSuppressed.has("local:sib")).toBe(true);
+      emitHistoryUpdated("local:sib", { fold: "later", entry: 3 });
+      await vi.advanceTimersByTimeAsync(6_000);
+      threadsStore.getState().releaseThread("local:sib");
+      await settleProjectionWorkForTests();
+      expect(await sibling.get("local:sib", Date.now())).toBeUndefined();
+      expect(await sibling.count()).toBe(0);
     } finally {
+      releaseLookup?.();
       vi.useRealTimers();
     }
   });
@@ -2556,5 +2561,209 @@ describe("degradation", () => {
       clearProjectionWorkForTests();
       restoreCacheAdapter();
     }
+  });
+});
+
+// Whole-branch regressions, exercising the authoritative read and durable cache.
+describe("cache privacy and history regressions", () => {
+  it("a deadline-fallback lifetime stays suppressed through its final release", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { adapter, gate } = cacheTestBed({ gated: true });
+    try {
+      await seedCache(adapter, "local:deadline-clear");
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler());
+      const pending = threadsStore.getState().ensureThread("local:deadline-clear");
+      await vi.advanceTimersByTimeAsync(250);
+      await pending;
+      gate.release();
+      expect(threadsStore.getState().cacheShellRefs.has("local:deadline-clear")).toBe(false);
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      emitHistoryUpdated("local:deadline-clear", { fold: "after-clear", entry: 2 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      threadsStore.getState().releaseThread("local:deadline-clear");
+      await settleProjectionWorkForTests();
+      expect(await adapter.count()).toBe(0);
+    } finally {
+      gate.release();
+      vi.useRealTimers();
+    }
+  }, 3_000);
+
+  it("a stale lookup cannot downgrade the epoch used by a subsequent fresh lifetime", async () => {
+    const { adapter, gate } = cacheTestBed({ gated: true });
+    await seedCache(adapter, "local:stale-lookup");
+    const fake = connectFakeClient();
+    fake.on("thread/read", echoingReadHandler());
+    const pending = threadsStore.getState().ensureThread("local:stale-lookup");
+    expect(await clearCachedSessions()).toEqual({ committed: true });
+    gate.release();
+    await pending;
+    await threadsStore.getState().ensureThread("local:after-stale");
+    expect(threadsStore.getState().cacheLeases.get("local:after-stale")).toBe(1);
+    threadsStore.getState().releaseThread("local:after-stale");
+    await settleProjectionWorkForTests();
+    expect(await adapter.get("local:after-stale", Date.now())).toBeDefined();
+  }, 3_000);
+
+  it("a cold-loaded open ref stays absent after a committed cache clear", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { adapter } = cacheTestBed();
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ turns: [turnFixture("cold")] }));
+      await threadsStore.getState().ensureThread("local:cold-probe");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await adapter.count()).toBe(1);
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      expect(await adapter.count()).toBe(0);
+      emitHistoryUpdated("local:cold-probe", { fold: "after-clear", entry: 2 });
+      await vi.advanceTimersByTimeAsync(1000);
+      await settleProjectionWorkForTests();
+      expect(await adapter.count()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["hit", "miss"])("a lookup %s observing a newer clear epoch suppresses older open leases", async (kind) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, "local:old-lease");
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler());
+      await threadsStore.getState().ensureThread("local:old-lease");
+      expect(threadsStore.getState().cacheLeases.get("local:old-lease")).toBe(0);
+      const sibling = new SessionCacheIndexedDB();
+      beds.push(sibling);
+      expect(await sibling.clear()).toEqual({ committed: true, epoch: 1 });
+      const refill = seededRecord("local:fresh-lookup", {});
+      if (kind === "hit") expect(await sibling.put(refill, 1, Date.now())).toEqual({ outcome: "written" });
+      await threadsStore.getState().ensureThread("local:fresh-lookup");
+      expect(threadsStore.getState().cacheSuppressed.has("local:old-lease")).toBe(true);
+      emitHistoryUpdated("local:old-lease", { fold: "after-sibling-clear", entry: 3 });
+      await vi.advanceTimersByTimeAsync(1000);
+      await settleProjectionWorkForTests();
+      expect(await adapter.get("local:old-lease", Date.now())).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("gap replacement keeps a fold tail within a turn that spans the window", async () => {
+    await seedPositionedRecord("local:gap");
+    await reloadWithFailedFirstRead("local:gap");
+    const { model, history } = requireOpenHistory("probe", "local:gap");
+    requireConnectedClient("probe").emitNotification({
+      method: "history/updated",
+      params: {
+        ref: "local:gap",
+        threadId: model.threadId,
+        bootGeneration: history.bootGeneration,
+        epoch: history.epoch,
+        snapshot: { incarnation: history.incarnation, length: history.length },
+        turns: [{ id: "turn_w", status: "completed", itemsView: "full", version: 3 }],
+        items: [
+          {
+            id: "fold-tail-50",
+            type: "agentMessage",
+            turnId: "turn_w",
+            text: "latest live content",
+            status: "completed",
+            position: { entry: 50, item: 0 },
+          },
+        ],
+      },
+    } as AnyNotification);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:gap")
+        ?.history?.turns.flatMap((t) => t.items.map((i) => i.id)),
+    ).toContain("fold-tail-50");
+    runScheduledHydrationRetryForThisFile();
+    await awaitReadArmed();
+    resolveReloadRead(windowResponse(40, 3, "cur-new"));
+    await settleReload("local:gap");
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:gap")
+        ?.history?.turns.flatMap((t) => t.items.map((i) => i.id)),
+    ).toContain("fold-tail-50");
+  });
+
+  it("an oversized release flush cannot memoize a later model lifetime", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const adapter = new SessionCacheIndexedDB({ indexedDB: new IDBFactory(), maxBytes: 1000 });
+      installCacheAdapter(adapter);
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ turns: [turnFixture("large", "x".repeat(1200))] }));
+      await threadsStore.getState().ensureThread("local:oversize-release");
+      await resolveEverything(fake);
+      threadsStore.getState().releaseThread("local:oversize-release");
+      await settleProjectionWorkForTests();
+      expect(await adapter.count()).toBe(0);
+      fake.on("thread/read", echoingReadHandler({ turns: [turnFixture("small")] }));
+      await threadsStore.getState().ensureThread("local:oversize-release");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1000);
+      await settleProjectionWorkForTests();
+      expect(await adapter.count()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an ordinary identity replacement clears the oversized model memo", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const adapter = new SessionCacheIndexedDB({ indexedDB: new IDBFactory(), maxBytes: 1000 });
+      installCacheAdapter(adapter);
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ turns: [turnFixture("large", "x".repeat(1200))] }));
+      await threadsStore.getState().ensureThread("local:oversize-replace");
+      await vi.advanceTimersByTimeAsync(1000);
+      await settleProjectionWorkForTests();
+      expect(await adapter.count()).toBe(0);
+      fake.on(
+        "thread/read",
+        echoingReadHandler({ snapshot: { incarnation: "inc-new", length: 2 }, turns: [turnFixture("small")] }),
+      );
+      await threadsStore.getState().refreshThread("local:oversize-replace");
+      expect(threadsStore.getState().threads.get("local:oversize-replace")?.history?.incarnation).toBe("inc-new");
+      await vi.advanceTimersByTimeAsync(1000);
+      await settleProjectionWorkForTests();
+      expect(await adapter.count()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("a corrupt history object is a deleted cache miss rather than a shell crash", async () => {
+    const { adapter } = cacheTestBed();
+    await seedCache(adapter, "local:malformed");
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("evener-session-cache", 1);
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("records", "readwrite");
+        tx.objectStore("records").put({ ...seededRecord("local:malformed", {}), history: {} });
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onabort = () => reject(tx.error);
+      };
+      request.onerror = () => reject(request.error);
+    });
+    const found = await adapter.get("local:malformed", Date.now());
+    expect.soft(found).toBeUndefined();
+    expect.soft(await adapter.count()).toBe(0);
+    const fake = connectFakeClient();
+    fake.on("thread/read", echoingReadHandler());
+    await expect.soft(threadsStore.getState().ensureThread("local:malformed")).resolves.toBeUndefined();
+    expect.soft(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
   });
 });

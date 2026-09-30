@@ -151,6 +151,7 @@ export class SessionCacheIndexedDB {
   readonly #maxBytes: number;
   #database: IDBDatabase | undefined;
   #databasePromise: Promise<IDBDatabase> | undefined;
+  #observedEpoch: number | undefined;
   readonly #onOpenDiagnostic: (d: SessionCacheOpenDiagnostic) => void;
   readonly #beforeCommit: ((operation: "put" | "clear" | "deleteRecords") => void) | undefined;
 
@@ -165,6 +166,11 @@ export class SessionCacheIndexedDB {
   isOpen(): boolean {
     return this.#database !== undefined;
   }
+
+  get observedEpoch(): number | undefined {
+    return this.#observedEpoch;
+  }
+
   close(): void {
     // Drop the connection we hold and forget it, so a later call simply opens
     // again. An open still in flight keeps running: its success lands after
@@ -178,27 +184,31 @@ export class SessionCacheIndexedDB {
     // A readwrite transaction so an expired (or corrupt) row can be deleted
     // in the same step that found it: the guarantee is that an expired record
     // does not survive any storage access that sees it.
-    return this.#readwrite(
+    const found = await this.#readwrite(
       "get",
       async (tx) => {
         const epochRow = await requestResult(
           tx.objectStore(META_STORE).get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>,
         );
+        const epoch = epochRow?.epoch ?? 0;
         const row = await requestResult(tx.objectStore(RECORDS_STORE).get(ref));
         const record = decodeRecord(row);
         if (record === undefined) {
           if (row !== undefined) await this.#deleteRows(tx, ref); // corrupt: a miss, never a throw, never a leftover
-          return undefined;
+          return { record: undefined, epoch };
         }
         const meta = await requestResult(tx.objectStore(META_STORE).get(ref) as IDBRequest<CacheMetaRow | undefined>);
         if (meta !== undefined && meta.savedAt + TTL_MS <= now) {
           await this.#deleteRows(tx, ref);
-          return undefined;
+          return { record: undefined, epoch };
         }
-        return { record, epoch: epochRow?.epoch ?? 0 };
+        return { record, epoch };
       },
       now,
     );
+    if (found === undefined) return undefined;
+    this.#observedEpoch = Math.max(this.#observedEpoch ?? 0, found.epoch);
+    return found.record === undefined ? undefined : { record: found.record, epoch: found.epoch };
   }
 
   async put(record: CachedSessionRecord, scheduledEpoch: number, now: number): Promise<SessionCacheWriteOutcome> {
