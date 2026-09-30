@@ -2384,3 +2384,53 @@ describe("the clear", () => {
     }
   });
 });
+
+// The degradation bed (Task 12; spec, "Failure and degradation", Testing
+// scenario 17): the parity contract the whole feature hangs on — an adapter
+// whose every open stalls leaves the pane's behavior identical to today's
+// reload. The wedged lookup can only lose its own 250 ms deadline race and
+// every failure is a cache miss, so the cold path serves the pane exactly as
+// it did before the cache existed: a full latest-window read with no
+// heldSnapshot, scroll-back pages fetched over the wire as before, and no
+// shell ever published.
+describe("degradation", () => {
+  it("an adapter that always fails leaves behavior identical to today's reload", async () => {
+    // Only the clock functions are faked: fake-indexeddb delivers every
+    // IndexedDB event on setImmediate, which a bare useFakeTimers() fakes
+    // too — freezing the mutation outbox's post-publish work mid-test. The
+    // toFake scoping is the deadline test's own pattern.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      installWedgedCacheAdapter(); // every open stalls; every operation is a miss
+      const fake = connectFakeClient();
+      const listCalls: string[] = [];
+      fake.on("thread/turns/list", (params) => {
+        if (params.ref === undefined) throw new Error("thread/turns/list params must carry a ref");
+        listCalls.push(params.ref);
+        return olderPageResponse();
+      });
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 5 }, olderCursor: "cur" }));
+      // The wedged lookup can only lose its own 250 ms deadline race, and
+      // that deadline is a faked timer: drive it, then await the cold read it
+      // armed (the deadline test's shape — awaiting the ensureThread outright
+      // would deadlock on the faked deadline).
+      const pending = threadsStore.getState().ensureThread("local:thr_1");
+      await vi.advanceTimersByTimeAsync(250);
+      await pending;
+      expect(threadsStore.getState().threads.get("local:thr_1")?.history?.incarnation).toBe("inc-1"); // full window read
+      const call = fake.calls.find((c) => c.method === "thread/read");
+      expect((call?.params as { heldSnapshot?: unknown } | undefined)?.heldSnapshot).toBeUndefined(); // no heldSnapshot
+      await threadsStore.getState().loadOlderTurns("local:thr_1");
+      expect(listCalls).toEqual(["local:thr_1"]); // scroll-back pages fetched as before
+      expect(threadsStore.getState().cacheShellRefs.size).toBe(0); // no shell ever published
+    } finally {
+      vi.useRealTimers();
+      // The wedged lookup's open never settles, so the storage work it
+      // registered can never settle either: forget it (the tracker's own
+      // reset contract) or every later settle in this file spins on a
+      // registration whose result no longer matters.
+      clearProjectionWorkForTests();
+      restoreCacheAdapter();
+    }
+  });
+});
