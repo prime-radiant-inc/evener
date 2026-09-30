@@ -305,6 +305,10 @@ const PACKET_KIND_OUTCOMES = new Map([
 ]);
 
 interface TerminalPacket {
+  // The daemon's PacketKind (reported | terminal_error): the reported kind is
+  // the only path that captures a validated structured result, so the
+  // envelope-data fallback keys on it.
+  kind: string;
   // The settled outcome: metadata's delegatestore.OutcomeStatus, or the one
   // the packet kind implies when metadata carries none (the fold's own bare
   // stop packet, agent/internal/delegatestore/fold.go, #3114).
@@ -333,6 +337,7 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
   const metadata = isPlainObject(parsed.metadata) ? parsed.metadata : {};
   const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
   return {
+    kind: parsed.kind,
     outcome: text(metadata.outcome) || (PACKET_KIND_OUTCOMES.get(parsed.kind) ?? ""),
     message: text(parsed.message),
     reason: text(metadata.reason),
@@ -392,9 +397,17 @@ function delegatePacketNotification(
   // A result the daemon refused to capture or validate never rides the
   // packet's structured_result field, and its copy inside the envelope must
   // not render as an authoritative table either - only a valid verdict's data
-  // does, from whichever copy the frame carries.
+  // does, from whichever copy the frame carries. The envelope fallback is
+  // further gated on the reported kind: the daemon captures and validates a
+  // structured result on the reported path only
+  // (captureDelegateStructuredResult), so a terminal_error body that merely
+  // looks like an envelope (a provider error, a report the run managed before
+  // failing) carries no verdict behind its data. Its message field still reads
+  // as content; its data never becomes rows.
   const structuredResult =
-    packet.structuredResultValid === false ? undefined : (packet.structuredResult ?? envelope?.data);
+    packet.structuredResultValid === false
+      ? undefined
+      : (packet.structuredResult ?? (packet.kind === "reported" ? envelope?.data : undefined));
   return {
     type: "delegate",
     // In the outcome's own words; an ending this client doesn't know still reported.

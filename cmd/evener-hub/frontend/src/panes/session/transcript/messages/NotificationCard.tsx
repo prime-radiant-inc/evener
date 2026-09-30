@@ -83,6 +83,13 @@ const CLASS = {
 
 const EXCERPT_PREVIEW = 500;
 const MESSAGE_MAX = 8000;
+// The structured table's bounds, the message's MESSAGE_MAX for rows and
+// cells: the daemon accepts results up to a megabyte
+// (delegatestore.MaxTerminalStructuredResultBytes), and a many-keyed or
+// long-valued result must render a bounded window, not thousands of rows in
+// one mount. The full result stays in the daemon's frame and the transcript.
+const RESULT_ROWS_MAX = 100;
+const RESULT_VALUE_MAX = 2000;
 
 // The head's status glyph for every tone except error: one line-art shape per
 // parsed tone, receding in neutral ink at the rail's ambient 50% opacity like
@@ -251,16 +258,20 @@ function structuredRowLabel(key: string): string {
 // list, nested objects as their JSON (schemas that nest are rare, and their
 // shape is the caller's own). An absent value says so, quietly - an empty
 // cell reads as a gap.
+function boundedValue(text: string): string {
+  return text.length <= RESULT_VALUE_MAX ? text : `${text.slice(0, RESULT_VALUE_MAX)}…`;
+}
+
 function structuredRowValue(value: unknown): ReactNode {
   if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) {
     return <span className={CLASS.resultNone}>(none)</span>;
   }
   if (Array.isArray(value)) {
-    if (value.every((entry) => typeof entry !== "object")) return value.map(String).join(", ");
-    return JSON.stringify(value);
+    if (value.every((entry) => typeof entry !== "object")) return boundedValue(value.map(String).join(", "));
+    return boundedValue(JSON.stringify(value));
   }
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+  if (typeof value === "object") return boundedValue(JSON.stringify(value));
+  return boundedValue(String(value));
 }
 
 // The structured output as a table (mockups 24-delegate-complete §A): one row
@@ -279,10 +290,11 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
   }
   const rows = Object.entries(notification.structuredResult ?? {});
   if (rows.length === 0) return null;
+  const shown = rows.slice(0, RESULT_ROWS_MAX);
   return (
     <table className={CLASS.resultTable} data-testid="notification-structured-result">
       <tbody>
-        {rows.map(([key, value]) => (
+        {shown.map(([key, value]) => (
           <tr key={key}>
             <th scope="row" className={CLASS.resultKey}>
               {structuredRowLabel(key)}
@@ -290,6 +302,13 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
             <td className={CLASS.resultValue}>{structuredRowValue(value)}</td>
           </tr>
         ))}
+        {rows.length > shown.length && (
+          <tr>
+            <td className={CLASS.resultNone} colSpan={2}>
+              (+{rows.length - shown.length} more rows)
+            </td>
+          </tr>
+        )}
       </tbody>
     </table>
   );
@@ -388,7 +407,7 @@ export function NotificationCard({
       notification.message ||
         notification.prose ||
         notification.excerpt ||
-        notification.structuredResult ||
+        Object.keys(notification.structuredResult ?? {}).length > 0 ||
         notification.structuredResultValid === false ||
         notification.concerns.length > 0,
     );

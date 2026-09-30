@@ -342,6 +342,74 @@ test("a structured result that failed its verdict shows a quiet note, never a ta
   expect(screen.queryByTestId("notification-structured-result")).toBeNull();
 });
 
+// The daemon accepts structured results up to a megabyte
+// (delegatestore.MaxTerminalStructuredResultBytes), so the table needs the
+// bound the message already has (MESSAGE_MAX): a many-keyed or long-valued
+// result renders a bounded window, never thousands of rows in one mount.
+test("a structured result is bounded as the message is", () => {
+  const many: Record<string, string> = {};
+  for (let i = 1; i <= 120; i += 1) many[`key_${i}`] = `v${i}`;
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        tone: "success",
+        name: "bulk-review",
+        secondary: "bulk-review",
+        delegateId: "dlg_b",
+        message: "Report.",
+        structuredResult: many,
+        structuredResultValid: true,
+      })}
+    />,
+  );
+  const table = screen.getByTestId("notification-structured-result");
+  expect(table.querySelectorAll("tr")).toHaveLength(101); // 100 rows + the more-row
+  expect(table.textContent).toContain("(+20 more rows)");
+});
+
+test("a single very long structured value renders truncated", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        tone: "success",
+        name: "blob-report",
+        secondary: "blob-report",
+        delegateId: "dlg_l",
+        message: "Report.",
+        structuredResult: { blob: "x".repeat(5000) },
+        structuredResultValid: true,
+      })}
+    />,
+  );
+  const cell = screen.getByTestId("notification-structured-result").querySelector("td");
+  expect(cell?.textContent?.length ?? 0).toBeLessThanOrEqual(2001);
+  expect(cell?.textContent).toContain("…");
+});
+
+// A valid-but-empty result is not a report: the row renders static rather
+// than expanding to a body whose only block (the table) renders nothing.
+test("a valid but empty structured result renders no expandable empty body", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        tone: "success",
+        name: "empty-report",
+        secondary: "empty-report",
+        delegateId: "dlg_e",
+        structuredResult: {},
+        structuredResultValid: true,
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-card").closest("details")).toBeNull();
+});
+
 // A machinery stop has no report: the head's ending says everything, so the
 // row renders as a static line - no chevron, no expandable empty body.
 test("a machinery stop renders its ending on a static head with nothing to expand", () => {

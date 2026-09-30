@@ -1370,6 +1370,26 @@ test("a packet message that is JSON but not an envelope stays whole", () => {
   expect(n?.structuredResult).toBeUndefined();
 });
 
+// A terminal_error packet's message is the run's error text (or a report the
+// run managed before failing), and the daemon captures a structured result on
+// the reported path only (agent/subagents.go: captureDelegateStructuredResult
+// runs inside the reported branch). An error body that happens to be shaped
+// like an envelope must not become rows: its message field may still read as
+// the content, but its data has no validation verdict behind it.
+test("a terminal_error packet whose message is envelope-shaped never yields a table", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "terminal_error",
+        message: JSON.stringify({ message: "rate limited after four retries", data: { retry: "no" } }),
+        metadata: { outcome: "failed", reason: "run_error", error: "provider returned 429" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("rate limited after four retries");
+  expect(n?.structuredResult).toBeUndefined();
+});
+
 // The packet's metadata carries the run's cause beside its reason code
 // (#3327); the card says the cause, never the bare code.
 test("an unnamed subagent's failure parses as a failure carrying its message", () => {
