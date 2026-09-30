@@ -1588,6 +1588,47 @@ test("a completed run whose report is exactly a machinery phrase keeps its messa
   expect(n?.message).toBe("Stopped by the user.");
 });
 
+// normalizeNodeOutput keeps output.message as the model wrote it, whitespace
+// included (session_tools_communicate.go), while parsePacketEnvelope trims the
+// message it extracts - so the capture and the packet's envelope can carry the
+// same words with different surrounding whitespace. The comparison reads
+// trimmed on both sides; the zero-filled empty case still fires.
+test("a capture whose message carries whitespace still unwraps", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({
+          message: "Rebased with whitespace.\n",
+          data: { rebased: "main" },
+          artifacts: [],
+        }),
+        structured_result: { message: "Rebased with whitespace.\n", data: { rebased: "main" }, artifacts: [] },
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task10-whitespace" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual({ rebased: "main" });
+});
+
+// The canonical envelope's artifacts is an array (nodeOutput.Artifacts is a
+// []string); a plain JSON report whose artifacts key holds anything else is
+// the subagent's own text, not a wire envelope, and stays whole.
+test("a plain JSON report with a non-array artifacts stays whole", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "done", data: { rows: 1 }, artifacts: "none" }),
+        metadata: { outcome: "completed", name: "task11-artifacts" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe(JSON.stringify({ message: "done", data: { rows: 1 }, artifacts: "none" }));
+  expect(n?.structuredResult).toBeUndefined();
+});
+
 // The packet's ending is display prose - the one reason-shaped value a phone
 // line can say beneath a headline. A legacy attribute frame's `reason` is the
 // producer's raw code (exit_nonzero, stopped_by_parent) and never earns that

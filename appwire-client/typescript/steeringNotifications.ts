@@ -378,7 +378,10 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
 function parsePacketEnvelope(text: string): { message: string; data?: unknown } | null {
   const parsed = tryParseJsonRecord(text);
   if (parsed === null || typeof parsed.message !== "string") return null;
-  if (!("data" in parsed) || !("artifacts" in parsed)) return null;
+  // artifacts is a []string on the wire (nodeOutput.Artifacts); data always
+  // rides the envelope. JSON whose artifacts key holds anything else is the
+  // subagent's own text, not a wire envelope.
+  if (!("data" in parsed) || !Array.isArray(parsed.artifacts)) return null;
   if (!Object.keys(parsed).every((key) => CANONICAL_ENVELOPE_KEYS.has(key))) return null;
   return { message: parsed.message.trim(), data: parsed.data };
 }
@@ -410,7 +413,11 @@ function isDefaultEnvelopeCopy(result: Record<string, unknown>, envelope: { mess
   // packet's message rides the canonical envelope of effectiveOutput - its
   // message backfilled from the call's top-level message. A zero-filled empty
   // capture message is that documented call shape, so it unwraps too.
-  if (result.message !== "" && result.message !== envelope.message) return false;
+  // The comparison reads trimmed on both sides: normalizeNodeOutput keeps the
+  // model's whitespace while parsePacketEnvelope trims, so the same words can
+  // ride with different surrounding whitespace.
+  const captureMessage = result.message.trim();
+  if (captureMessage !== "" && captureMessage !== envelope.message) return false;
   if (!isPlainObject(result.data) || !Array.isArray(result.artifacts)) return false;
   return Object.keys(result).every((key) => DEFAULT_ENVELOPE_KEYS.has(key));
 }
