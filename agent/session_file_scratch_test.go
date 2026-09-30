@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // allocatedSessionScratch provisions the same per-session scratch directory
@@ -87,10 +89,19 @@ func TestFileToolsAllowOwnAllocatedScratch(t *testing.T) {
 	}
 }
 
-func TestFileToolsDenyUnallocatedAbsolutePaths(t *testing.T) {
+func TestFileToolsWriteBlockedOffDenyUnallocatedAbsolutePaths(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
-	s, _, scratch := allocatedSessionScratch(t, workspace)
+	s, env, scratch := allocatedSessionScratch(t, workspace)
+	policy, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}, sandbox.HostFacts{OS: runtime.GOOS, Home: t.TempDir()}, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.Sandbox = &policy
+	ownWrite := fileToolCall(t, s, "write_file", map[string]string{"file_path": filepath.Join(scratch, "own.txt"), "content": "own scratch"})
+	if ownWrite.isError {
+		t.Fatalf("write-blocked own scratch write: %s", ownWrite.output)
+	}
 	otherRoot := t.TempDir()
 	otherEnv := execenv.NewLocalExecutionEnvironment(otherRoot)
 	if _, err := otherEnv.ExecCommand(context.Background(), "true", 1000, "", nil); err != nil {
