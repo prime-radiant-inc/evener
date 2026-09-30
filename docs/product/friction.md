@@ -1041,12 +1041,23 @@ Session [initMCP](../../agent/session_init.go#L2545) runs at construction.
 `TestIntgMCP_NewManager_SiblingSurvivesFailure` is a useful isolation
 control, not an initial-recovery test.
 
-**Discuss.** Own bounded rediscovery and safe registration while preserving
-healthy siblings and selected server identity. Define tool-schema/name changes
-and session visibility without requiring a new chat for transient startup loss.
+**Decision.** Automatically retry discovery for enabled MCP servers that were
+unavailable at session startup, using backoff. When a server recovers, register
+its discovered tools and make the agent aware of the recovered capabilities in
+the existing chat. Work waiting on those tools can continue without a new chat,
+restart or manual reload. Preserve the selected server identity and keep healthy
+tools usable throughout recovery. Disabling or removing the server ends its
+recovery attempts. Implementation remains pending.
 
-**Acceptance.** Start with one MCP server down, then restore it. Its tools become
-usable in the same session; existing tools remain available throughout.
+**Discuss — registration design.** Define how tool names and schemas become
+visible to the running session while preserving existing tools and in-flight
+operations. The agent-visible tool list must match the callable registrations.
+
+**Acceptance.** Start with one MCP server down, then restore it. Automatic
+discovery makes its tools visible and callable in the same session, and the
+agent can continue work waiting on them. Existing tools remain available
+throughout. A prolonged outage paces discovery without abandoning recovery;
+disabling or removing the server stops retries and prevents late registration.
 
 ### T03 Unsandboxed tool scope
 
