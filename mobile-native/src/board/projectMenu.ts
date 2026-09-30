@@ -28,7 +28,10 @@ export function projectMenuActions(
 
 /** The organization journal holds a change to this project, on its way or unresolved. */
 export function journalHoldsProject(organization: BoardOrganization, projectKey: string): boolean {
-	const operation = organization.state?.recovery?.operation;
+	const state = organization.state;
+	// The unified journal gate (archivingSessionId's): pending or uncertain.
+	if (!state || (!state.pending && !state.uncertain)) return false;
+	const operation = state.recovery?.operation;
 	if (operation?.kind === "favorite") return operation.params.id === projectKey;
 	return operation?.kind === "archive" && operation.params.kind === "project" && operation.params.id === projectKey;
 }
