@@ -153,7 +153,9 @@ describe("delegate and job notifications", () => {
 	it("says a subagent the user stopped was stopped", () => {
 		const { tree } = show("delegate-stopped");
 		expect(renderedText(tree)).toContain("Check drain ordering stopped");
-		expect(renderedText(tree)).toContain("Stopped by the user.");
+		// The stop stub never renders as a report (the delegate redesign): the
+		// headline says the stop.
+		expect(renderedText(tree)).not.toContain("Stopped by the user.");
 	});
 
 	it("reads a parent's stop of a run that left its own packet as stopped", () => {
@@ -163,7 +165,9 @@ describe("delegate and job notifications", () => {
 	it("reads a parent's stop as stopped, not failed", () => {
 		const { tree } = show("delegate-stopped-by-parent");
 		expect(textNode(tree, "Tail the hub log stopped")?.props.style).toMatchObject({ color: INK_LOW });
-		expect(renderedText(tree)).toContain("stopped by parent");
+		// The bare stop packet's stub phrase is machinery, not a report: the
+		// headline carries the stop and the stub never renders.
+		expect(renderedText(tree)).not.toContain("stopped by parent");
 	});
 
 	it.each([

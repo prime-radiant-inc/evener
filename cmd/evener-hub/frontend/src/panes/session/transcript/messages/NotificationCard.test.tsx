@@ -232,10 +232,13 @@ test("renders stable delegate identity as Delegate while shell identity remains 
     />,
   );
   expect(screen.getByTestId("notification-card").textContent).toContain("Delegate completed");
-  // At activity level the card auto-expands (expandByDefault=true), so the
-  // fields are already visible without clicking.
-  expect(screen.getByText(/delegate id/i).parentElement?.textContent).toContain("dlg_42");
+  // A delegate card carries no echo metadata: identity lives on the head (the
+  // entity trigger) and in the daemon's own frame, so the expanded body
+  // renders neither a delegate-id nor a status field.
+  expect(screen.getByTestId("notification-card").textContent).toContain("dlg_42");
+  expect(screen.queryByText(/delegate id/i)).toBeNull();
   expect(screen.queryByText(/job id/i)).toBeNull();
+  expect(screen.queryByTestId("notification-field-status")).toBeNull();
 
   rerender(
     <NotificationCard
@@ -249,6 +252,119 @@ test("renders stable delegate identity as Delegate while shell identity remains 
     />,
   );
   expect(screen.getByTestId("notification-card").textContent).toContain("Job completed");
+});
+
+// The redesigned delegate card (mockups 24-delegate-complete): the head names
+// the delegate and the outcome; the body is the report - the message as a
+// sans-serif bubble and the structured result as a table - with no echo
+// metadata row and no raw disclosure (the hover card carries identity, and
+// the daemon's frame keeps the verbatim wire text).
+test("a delegate report renders its message as a bubble and its structured result as a table", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        tone: "success",
+        name: "task2-review",
+        secondary: "task2-review",
+        delegateId: ENTITY_DELEGATE,
+        message: "Non-null assertions removed; no new breakage found.",
+        structuredResult: {
+          finding_verdict: "ADDRESSED",
+          fix_round: "All findings addressed, no new Critical/Important breakage",
+          new_breakage: "None",
+          out_of_scope: "None",
+          tests_rerun: "false",
+          artifacts: [],
+        },
+        structuredResultValid: true,
+        rawText: `<delegate-notification delegate_id="${ENTITY_DELEGATE}">packet</delegate-notification>`,
+      })}
+    />,
+  );
+  const root = screen.getByTestId("notification-card-root");
+  expect(screen.getByTestId("notification-message").textContent).toContain("Non-null assertions removed");
+  const table = screen.getByTestId("notification-structured-result");
+  expect(table.querySelectorAll("tr")).toHaveLength(6);
+  expect(table.querySelector("th")?.textContent).toBe("Finding verdict");
+  expect(table.querySelectorAll("td")[0]?.textContent).toBe("ADDRESSED");
+  expect(table.textContent).toContain("Fix round");
+  expect(table.textContent).toContain("All findings addressed, no new Critical/Important breakage");
+  expect(table.textContent).toContain("Tests rerun");
+  // An empty array renders as an explicit none, not an empty cell.
+  expect(table.textContent).toContain("(none)");
+  // No echo metadata, no raw disclosure: neither survives the redesign.
+  expect(screen.queryByTestId("notification-field-delegate-id")).toBeNull();
+  expect(screen.queryByTestId("notification-field-status")).toBeNull();
+  expect(root.querySelector("details")).toBeNull();
+});
+
+test("a delegate report without a structured result shows its message and no table", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        tone: "success",
+        name: "parser-rename",
+        secondary: "parser-rename",
+        delegateId: "dlg_p",
+        message: "Renamed the expand helpers; all 214 tests in the package pass.",
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-message").textContent).toContain("Renamed the expand helpers");
+  expect(screen.queryByTestId("notification-structured-result")).toBeNull();
+  expect(screen.queryByTestId("notification-structured-note")).toBeNull();
+});
+
+// A result the daemon refused to capture or validate is a fact the caller
+// needs (they asked for a schema): a quiet ink-low note, never a table of
+// rows that failed their schema, and never a red banner.
+test("a structured result that failed its verdict shows a quiet note, never a table", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        tone: "success",
+        name: "task2-review",
+        secondary: "task2-review",
+        delegateId: "dlg_t",
+        message: "Sweep complete; see the findings.",
+        structuredResultValid: false,
+        structuredResultReason: "schema_result_too_large",
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-structured-note").textContent).toBe("Structured result too large to show.");
+  expect(screen.queryByTestId("notification-structured-result")).toBeNull();
+});
+
+// A machinery stop has no report: the head's ending says everything, so the
+// row renders as a static line - no chevron, no expandable empty body.
+test("a machinery stop renders its ending on a static head with nothing to expand", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        tone: "warning",
+        title: "Delegate stopped",
+        name: "docs-index",
+        secondary: "docs-index · stopped by its coordinator",
+        delegateId: "dlg_d",
+        reason: "stopped by its coordinator",
+      })}
+    />,
+  );
+  const head = screen.getByTestId("notification-card");
+  expect(head.textContent).toContain("Delegate stopped");
+  expect(head.textContent).toContain("docs-index");
+  expect(head.textContent).toContain("stopped by its coordinator");
+  expect(head.closest("details")).toBeNull();
+  expect(screen.queryByTestId("notification-chevron")).toBeNull();
+  expect(screen.queryByTestId("notification-card-root")).toBeNull();
 });
 
 test("collapses to a single row by default; card chrome appears on expand", () => {
@@ -372,7 +488,14 @@ test("a valid local child ref opens the shared transcript action beside the focu
     focusedPaneId: "main",
   });
   const user = userEvent.setup();
-  render(<NotificationCard notification={notif({ type: "delegate", transcriptRef: "local:child" })} />);
+  // A delegate row that carries a report renders the disclosure head; a
+  // machinery stop is a static line with no Open grammar to pin, so these
+  // fixtures speak as reported runs.
+  render(
+    <NotificationCard
+      notification={notif({ type: "delegate", transcriptRef: "local:child", message: "Report complete." })}
+    />,
+  );
   const button = screen.getByRole("button", { name: "Open subagent" });
   expect(button.textContent).toBe(""); // the one icon-only form: no visible words
   await user.click(button);
@@ -432,6 +555,7 @@ test("binds Open to the final notification text fragment instead of permitting a
         secondary:
           "Inspect the complete delegated implementation and verify every browser geometry invariant before reporting",
         transcriptRef: "local:child",
+        message: "Report complete.",
       })}
     />,
   );
@@ -464,7 +588,12 @@ test("the summary shows a trailing disclosure chevron that turns when the card o
 test("with a transcript ref the chevron rides inside the atomic tail unit after the Open control", () => {
   render(
     <NotificationCard
-      notification={notif({ type: "delegate", secondary: "Inspect the workspace", transcriptRef: "local:child" })}
+      notification={notif({
+        type: "delegate",
+        secondary: "Inspect the workspace",
+        transcriptRef: "local:child",
+        message: "Report complete.",
+      })}
     />,
   );
   const chevron = screen.getByTestId("notification-chevron");
@@ -525,7 +654,7 @@ test("opening a child restores the notification owner as main when an unrelated 
   const user = userEvent.setup();
   render(
     <NotificationCard
-      notification={notif({ type: "delegate", transcriptRef: "local:child" })}
+      notification={notif({ type: "delegate", transcriptRef: "local:child", message: "Report complete." })}
       sessionRef="local:owner"
     />,
   );
@@ -553,7 +682,11 @@ test("a qualified remote child ref keeps its identity when opened", async () => 
     focusedPaneId: "main",
   });
   const user = userEvent.setup();
-  render(<NotificationCard notification={notif({ type: "delegate", transcriptRef: "remote:child" })} />);
+  render(
+    <NotificationCard
+      notification={notif({ type: "delegate", transcriptRef: "remote:child", message: "Report complete." })}
+    />,
+  );
   await user.click(screen.getByRole("button", { name: "Open subagent" }));
   expect(workspaceStore.getState().panes.find((pane) => pane.type === "transcript")?.params).toEqual({
     ref: "remote:child",
@@ -742,30 +875,90 @@ test("a job card still renders its echo metadata (watch suppression is scoped to
   expect(screen.getByTestId("notification-field-status").textContent).toContain("completed");
 });
 
-// The identity fields name real entities, so each id is the transcript's
-// shared card trigger rather than plain text - and it must genuinely RESOLVE:
-// EntityRef falls back to a bare span whenever the map cannot answer, which
-// would look identical to a text-only assertion while rendering no card.
-test("a delegate card's delegate and job identity fields are entity card triggers", () => {
+// The delegate card's identity is its head's name: the transcript's shared
+// card trigger (mockups 24-delegate-complete), so the id never needs a body
+// row. It must genuinely RESOLVE: EntityRef falls back to a bare span whenever
+// the map cannot answer, which would look identical to a text-only assertion
+// while rendering no card.
+test("a delegate card's head name is the entity card trigger, and its body renders no identity fields", () => {
   renderWithEntities(
     <NotificationCard
       notification={notif({
         type: "delegate",
         title: "Delegate completed",
+        name: "task1-review",
+        secondary: "task1-review",
         delegateId: ENTITY_DELEGATE,
-        jobId: ENTITY_JOB,
-        jobType: "delegate",
         rawText: `<delegate-notification delegate_id="${ENTITY_DELEGATE}">done</delegate-notification>`,
       })}
     />,
   );
 
-  const delegateField = screen.getByTestId("notification-field-delegate-id");
-  expect(delegateField.textContent).toContain("Delegate id");
-  expect(within(delegateField).getByTestId("entity-trigger").textContent).toBe(ENTITY_DELEGATE);
-  expect(within(screen.getByTestId("notification-field-job-id")).getByTestId("entity-trigger").textContent).toBe(
-    ENTITY_JOB,
+  const head = screen.getByTestId("notification-card");
+  expect(within(head).getByTestId("entity-trigger").textContent).toBe("task1-review");
+  expect(screen.queryByTestId("notification-field-delegate-id")).toBeNull();
+  expect(screen.queryByTestId("notification-field-job-id")).toBeNull();
+});
+
+test("the head's delegate name opens the delegate hover card on focus", () => {
+  vi.useFakeTimers();
+  try {
+    renderWithEntities(
+      <NotificationCard
+        notification={notif({
+          type: "delegate",
+          title: "Delegate completed",
+          tone: "success",
+          name: "task1-review",
+          secondary: "task1-review",
+          delegateId: ENTITY_DELEGATE,
+          message: "Done.",
+        })}
+      />,
+    );
+
+    fireEvent.focus(within(screen.getByTestId("notification-card")).getByTestId("entity-trigger"));
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    const card = screen.getByRole("tooltip");
+    expect(card.textContent).toContain("Delegate");
+    expect(card.textContent).toContain("Review the first line");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The trigger rides inside the clickable head, so a click on the name must
+// open the delegate's card, never toggle the notification's own disclosure.
+test("clicking the head's delegate trigger does not toggle the disclosure", () => {
+  render(
+    <TranscriptRenderProvider
+      config={toolsConfig}
+      surface="readOnly"
+      disclosureScope="nc:tools"
+      entities={notificationEntities()}
+    >
+      <NotificationCard
+        notification={notif({
+          type: "delegate",
+          title: "Delegate completed",
+          tone: "success",
+          name: "task1-review",
+          secondary: "task1-review",
+          delegateId: ENTITY_DELEGATE,
+          message: "Done.",
+        })}
+      />
+    </TranscriptRenderProvider>,
   );
+
+  fireEvent.click(within(screen.getByTestId("notification-card")).getByTestId("entity-trigger"));
+  expect(screen.queryByTestId("notification-card-root")).toBeNull();
+
+  fireEvent.click(screen.getByTestId("notification-card"));
+  expect(screen.getByTestId("notification-card-root")).not.toBeNull();
 });
 
 test("a watch card's watch and job identity fields are entity card triggers", () => {

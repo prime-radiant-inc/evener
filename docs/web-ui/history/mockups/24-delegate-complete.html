@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evener — delegate complete notification mockups</title>
+<style>
+/* Live tokens, inlined from cmd/evener-hub/frontend/src/styles/tokens.css (dark default + light).
+   Self-contained: no dependency on docs/web-ui/history/mockups/tokens.css (obsolete, archived). */
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #17181A; --surface-canvas: #1C1D1F; --surface-1: #232427; --surface-2: #232427;
+  --surface-inset: #1F2022; --hover-1: #2A2B2E; --hover-2: #313236; --field: #2B2C2F;
+  --edge: #2E3033; --edge-strong: #3A3C40;
+  --ink-hi: #F2F3F4; --ink-mid: #A5A8AD; --ink-low: #6C6F75;
+  --attention: #F68F3C; --alive: #3DBB72; --danger: #EE5C61; --accent: #3D9AFF;
+  --attention-bg: color-mix(in oklab, var(--attention) 15%, var(--surface-1));
+  --attention-edge: color-mix(in oklab, var(--attention) 40%, var(--edge));
+  --danger-bg: color-mix(in oklab, var(--danger) 15%, var(--surface-1));
+  --danger-edge: color-mix(in oklab, var(--danger) 40%, var(--edge));
+  --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
+  --attention-ink: #F68F3C; --alive-ink: #3DBB72; --danger-ink: #F17478; --accent-ink: #459EFF;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-prose: "Source Serif 4 Variable", Georgia, "Times New Roman", serif;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --radius-chip: 6px; --radius-control: 8px; --radius-pane: 10px; --radius-pill: 999px;
+  --focus-ring: 2px solid var(--accent);
+  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #00000033, 0 2px 6px #00000033;
+  --shadow-overlay: 0 0 0 1px var(--edge), 0 8px 24px #00000055;
+  --motion-easing-standard: ease-out;
+}
+:root[data-theme="light"], [data-theme="light"] {
+  color-scheme: light;
+  --surface-0: #FAFAFB; --surface-canvas: #F1F2F3; --surface-1: #FFFFFF; --surface-2: #FFFFFF;
+  --surface-inset: #F7F8F9; --hover-1: #F4F5F6; --hover-2: #E7E9EB; --field: #F2F2F3;
+  --edge: #ECEDEF; --edge-strong: #E0E2E5;
+  --ink-hi: #1F2124; --ink-mid: #62656B; --ink-low: #86898F;
+  --attention: #F59E0B; --alive: #189A4D; --danger: #E3474C; --accent: #0285FF;
+  --attention-bg: color-mix(in oklab, var(--attention) 15%, var(--surface-1));
+  --attention-edge: color-mix(in oklab, var(--attention) 40%, var(--edge));
+  --danger-bg: color-mix(in oklab, var(--danger) 15%, var(--surface-1));
+  --danger-edge: color-mix(in oklab, var(--danger) 40%, var(--edge));
+  --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
+  --attention-ink: #AD5209; --alive-ink: #137A3D; --danger-ink: #CE1F25; --accent-ink: #0069CA;
+  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #1018280A, 0 2px 6px #10182808;
+  --shadow-overlay: 0 0 0 1px var(--edge), 0 8px 24px #10182822;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--surface-0);color:var(--ink-hi);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow:auto}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+:focus-visible{outline:var(--focus-ring);outline-offset:2px}
+.page{max-width:1060px;margin:0 auto;padding:var(--space-6) var(--space-5) 120px}
+.page-h h1{font-size:20px;font-weight:600;letter-spacing:-0.02em}
+.page-h .sub{margin-top:var(--space-2);color:var(--ink-mid);line-height:1.6;max-width:80ch}
+.page-h .sub b{color:var(--ink-hi)}
+.themebar{display:flex;gap:var(--space-2);margin-top:var(--space-4);align-items:center}
+.themebar .lbl{font-size:12px;color:var(--ink-low)}
+.seg{display:flex;background:var(--surface-inset);border:1px solid var(--edge);border-radius:var(--radius-pill);padding:2px}
+.seg button{padding:4px 14px;border-radius:var(--radius-pill);font-size:13px;color:var(--ink-mid);min-height:32px}
+.seg button[aria-pressed="true"]{background:var(--hover-2);color:var(--ink-hi)}
+.case{margin-top:var(--space-6);border-top:1px solid var(--edge);padding-top:var(--space-5)}
+.case-h{display:flex;align-items:baseline;gap:var(--space-3);margin-bottom:var(--space-2);flex-wrap:wrap}
+.case-h .badge{font-size:12px;font-weight:600;background:var(--hover-2);border-radius:var(--radius-pill);padding:1px 10px}
+.case-h .ttl{font-size:16px;font-weight:600;letter-spacing:-0.02em}
+.case-h .verdict{font-size:12px;color:var(--ink-low)}
+.cap{font-size:13px;color:var(--ink-mid);line-height:1.6;max-width:82ch;margin-bottom:var(--space-4)}
+.cap b{color:var(--ink-hi);font-weight:600}
+.cap .mono, .mono{font-family:var(--font-mono);font-size:12px}
+.cap .bad{color:var(--danger-ink)} .cap .good{color:var(--alive-ink)}
+.stage{background:var(--surface-canvas);border:1px solid var(--edge);border-radius:var(--radius-pane);padding:var(--space-4) var(--space-5);max-width:760px;margin-bottom:var(--space-3)}
+.stage-lbl{font-size:11.5px;font-weight:500;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-low);margin-bottom:var(--space-3)}
+/* ---- notification card (real grammar: <details> head + Card body) ---- */
+.ncard{border-top:1px solid var(--edge)}
+.nhead{display:flex;align-items:baseline;flex-wrap:wrap;gap:var(--space-2);padding:6px 0;width:100%;text-align:left;min-height:44px;font-size:13px;color:var(--ink-mid)}
+.nhead:hover{color:var(--ink-hi)}
+.nhead .glyph{flex:none;align-self:center;color:var(--ink-low);opacity:.5;display:inline-flex}
+.nhead .glyph.err{color:var(--danger-ink);opacity:1}
+.nhead .title{font-weight:600;font-size:14px;color:var(--ink-hi)}
+.nhead .sec{font-size:12.5px;color:var(--ink-mid);display:inline-flex;align-items:baseline;gap:var(--space-2);min-width:0;flex-wrap:wrap}
+.nhead .chev{flex:none;align-self:center;color:var(--ink-mid);font-size:11px;display:inline-flex;margin-left:var(--space-1)}
+/* entity id/name trigger (entityref.module.css .trigger) */
+.ent{font-family:var(--font-mono);font-size:12px;color:var(--accent-ink);border-radius:var(--radius-chip);cursor:help;text-decoration:underline dotted var(--edge-strong);text-underline-offset:2px}
+.ent:focus-visible{outline:var(--focus-ring);outline-offset:2px}
+/* the inline Open control (openbutton.module.css .inline, mocked) */
+.obtn{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--accent-ink);border:1px solid var(--edge-strong);border-radius:var(--radius-pill);padding:1px 10px;min-height:28px;white-space:nowrap;cursor:pointer}
+.obtn:hover{background:var(--accent-bg)}
+.oicon{display:inline-flex;align-items:center;height:28px;margin-block:min(0px,calc((1em - 28px)/2));vertical-align:middle;color:var(--accent-ink)}
+.oicon svg{display:block}
+/* expanded body = Card widget: surface-0, space-4 padding, shadow ring */
+.nbody{margin-top:var(--space-2);background:var(--surface-0);box-shadow:var(--shadow-card);padding:var(--space-4)}
+/* current-state leftovers */
+.nmeta{display:flex;flex-wrap:wrap;gap:4px var(--space-4);margin-bottom:var(--space-2);font-size:12.5px;color:var(--ink-low)}
+.nmeta .fl{color:var(--ink-low)}
+.nowprose{font-family:var(--font-prose);font-size:13px;line-height:1.55;color:var(--ink-mid);overflow-wrap:anywhere;white-space:pre-wrap}
+/* proposed: the subagent's message — sans, body size, ink-hi */
+.msg{font-family:var(--font-sans);font-size:15px;line-height:1.6;color:var(--ink-hi);overflow-wrap:anywhere}
+.msg.bubble{background:var(--surface-inset);border:1px solid var(--edge);border-radius:var(--radius-control);padding:var(--space-3) var(--space-4)}
+.msg.quote{border-left:2px solid var(--edge-strong);padding-left:var(--space-4);color:var(--ink-mid)}
+/* proposed: structured output table (headerless meta-table, §10 idiom) */
+.kv{display:table;width:100%;border-collapse:collapse;margin-top:var(--space-3);font-size:13px}
+.kv .r{display:table-row}
+.kv .r:first-child .k, .kv .r:first-child .v{border-top:none}
+.kv .k{display:table-cell;width:1%;white-space:nowrap;padding:7px var(--space-4) 7px 0;color:var(--ink-mid);border-top:1px solid var(--edge);vertical-align:baseline}
+.kv .v{display:table-cell;padding:7px 0;color:var(--ink-hi);border-top:1px solid var(--edge);overflow-wrap:anywhere;vertical-align:baseline}
+.kv .v .none{color:var(--ink-low)}
+/* quiet note (invalid structured result, machinery phrasing) */
+.note{margin-top:var(--space-2);font-size:12.5px;color:var(--ink-low)}
+details.disc{margin-top:var(--space-2)}
+details.disc summary{font-size:12.5px;color:var(--ink-mid);cursor:pointer;min-height:44px;display:flex;align-items:center;list-style:none}
+details.disc summary::-webkit-details-marker{display:none}
+details.disc summary::before{content:"▸ ";color:var(--ink-low);font-size:11px}
+details.disc[open] summary::before{content:"▾ "}
+details.disc summary:hover{color:var(--ink-hi)}
+details.disc summary:focus-visible{outline:var(--focus-ring);outline-offset:-2px}
+details.disc .raw{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-mid);white-space:pre-wrap;word-break:break-word;padding-bottom:var(--space-2)}
+/* static hover-card popover (hovercard.module.css .bubble + entity card) */
+.hov{position:relative;display:inline-block}
+.pop{position:absolute;top:calc(100% + 6px);left:0;z-index:20;width:max-content;max-width:320px;padding:var(--space-3);background:var(--surface-1);border-radius:var(--radius-pane);box-shadow:var(--shadow-overlay);color:var(--ink-hi);font-size:13px;line-height:1.5;white-space:normal}
+.pop .ph{display:flex;align-items:baseline;gap:var(--space-2)}
+.pop .kind{color:var(--ink-mid);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em}
+.pop .stat{color:var(--ink-mid)}
+.pop .psum{color:var(--ink-hi);overflow-wrap:anywhere}
+.pop dl{display:flex;flex-direction:column;gap:4px;margin:0}
+.pop .pr{display:grid;grid-template-columns:minmax(64px,auto) minmax(0,1fr);gap:var(--space-2)}
+.pop dt{color:var(--ink-mid)} .pop dd{margin:0;color:var(--ink-hi);overflow-wrap:anywhere}
+.pop .m{font-family:var(--font-mono)}
+/* phone frame */
+.phones{display:flex;gap:var(--space-5);flex-wrap:wrap}
+.phone{width:360px;flex:none;background:var(--surface-0);border:1px solid var(--edge-strong);border-radius:28px;overflow:hidden;display:flex;flex-direction:column}
+.phone .phead{height:52px;border-bottom:1px solid var(--edge);display:flex;align-items:center;padding:0 var(--space-4);font-weight:600;font-size:15px;flex:none;background:var(--surface-canvas)}
+.phone .pbody{padding:var(--space-3);display:flex;flex-direction:column;overflow:hidden}
+.rec{margin-top:var(--space-4);padding:var(--space-4);border-left:2px solid var(--alive);background:var(--surface-inset);border-radius:0 var(--radius-control) var(--radius-control) 0;font-size:13px;color:var(--ink-mid);line-height:1.6;max-width:84ch}
+.rec b{color:var(--ink-hi)}
+@media (max-width:720px){.stage{padding:var(--space-3)}}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-h">
+    <h1>Delegate complete notification — mockups</h1>
+    <p class="sub">The delegate notification card, restated around one idea: <b>the head names the delegate and the outcome; the body is the report</b>. Three changes, applied to every delegate notification shape, not just the completed one: <b>no echo metadata</b> in the expanded state (the delegate id and status say what the head already said), <b>the subagent's message rendered as a message</b> — sans serif prose, not a JSON dump, <b>the structured output as a table</b>, and <b>identity on the inline head</b>: the name is the same hover-card trigger every id in the transcript already is. Real strings from a live session throughout; raw frames stay in the raw disclosure. Toggle the theme — both must hold.</p>
+    <div class="themebar"><span class="lbl">Theme</span><div class="seg" role="group" aria-label="Theme"><button id="t-dark" aria-pressed="true">Dark</button><button id="t-light" aria-pressed="false">Light</button></div></div>
+  </div>
+
+  <!-- A : the hero case — completed with a structured result -->
+  <div class="case" id="a">
+    <div class="case-h"><span class="badge">A</span><span class="ttl">Completed, structured result — current vs proposed</span><span class="verdict">live session strings · desktop</span></div>
+    <p class="cap"><b>Today:</b> the expanded state leads with <span class="mono">Delegate id dlg_034X…</span> and <span class="mono">Status completed</span> — the status restates the title, and the id was only ever a handle for opening the delegate. Then the payload: the daemon's communicate envelope rendered as <b>serif raw JSON</b> (<span class="mono">{"message":…,"data":{…}}</span>), machine text in the reading font. <b>Final design:</b> the body starts with what the subagent <b>said</b>, in a sans-serif inset bubble at body size — the wire already carries the message and the data separately (<span class="mono">packet.message</span>, <span class="mono">packet.structured_result</span>); the parser just never read them that way. The data renders as a headerless table. Identity moves to the head: the name is the shared entity trigger (hover → delegate card, shown here statically), so the id never needs a body row. The Open control is the icon-only box-arrow the app uses everywhere, and the raw disclosure is gone — the daemon's own frame remains the verbatim record. Job notifications keep their metadata row and raw disclosure — the change is scoped to delegate type, the same way watch suppression is.</p>
+    <div class="stage"><div class="stage-lbl">Current — from the live screenshot, do not ship</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph">✓</span><span class="title">Delegate completed</span><span class="sec">task2-review</span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="nmeta"><span class="f"><span class="fl">Delegate id </span><span class="ent">dlg_034Xols6znPCnbmSfgUlCI</span></span><span class="f"><span class="fl">Status </span>completed</span></div>
+          <div class="nowprose">{"message":"Non-null assertions removed; no new breakage found.","data":{"finding_verdict":"ADDRESSED","fix_round":"All findings addressed, no new Critical/Important breakage","new_breakage":"None","out_of_scope":"None","tests_rerun":"false","artifacts":[]}}</div>
+          <details class="disc"><summary>Raw notification</summary></details>
+        </div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Proposed — identity on the head, report in the body</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph">✓</span><span class="title">Delegate completed</span><span class="sec"><span class="hov"><span class="ent" tabindex="0">task2-review</span><span class="pop" role="tooltip">
+          <div class="ph"><span class="kind">Delegate</span><span class="stat">completed</span></div>
+          <div class="psum">Review the NotificationCard changes for non-null assertions and run the test gate.</div>
+          <dl>
+            <div class="pr"><dt>Agent</dt><dd>default</dd></div>
+            <div class="pr"><dt>Model</dt><dd class="m">glm-5.3</dd></div>
+            <div class="pr"><dt>Duration</dt><dd>20m</dd></div>
+            <div class="pr"><dt>Usage</dt><dd class="m">312k in · 18k out</dd></div>
+          </dl>
+        </span></span></span><span class="oicon" title="Open"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg bubble">Non-null assertions removed; no new breakage found.</div>
+          <div class="kv">
+            <div class="r"><span class="k">Finding verdict</span><span class="v">ADDRESSED</span></div>
+            <div class="r"><span class="k">Fix round</span><span class="v">All findings addressed, no new Critical/Important breakage</span></div>
+            <div class="r"><span class="k">New breakage</span><span class="v">None</span></div>
+            <div class="r"><span class="k">Out of scope</span><span class="v">None</span></div>
+            <div class="r"><span class="k">Tests rerun</span><span class="v">false</span></div>
+            <div class="r"><span class="k">Artifacts</span><span class="v"><span class="none">(none)</span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B : message treatment -->
+  <div class="case" id="b">
+    <div class="case-h"><span class="badge">B</span><span class="ttl">"Looks like a message" — three treatments</span><span class="verdict">(b) chosen · same content</span></div>
+    <p class="cap">Three treatments were mocked; <b>(b) the inset bubble</b> was chosen — the report reads as a quoted message inside the card, set apart from the card's own surface. The sans face at <b>15px body size, ink-hi</b> distinguishes the subagent's report from the main agent's serif conversation while still reading as words someone wrote. Message still renders through the sanitizing <span class="mono">Markdown</span> widget (the one live-HTML exception); only the font family, size, and ink change. (a) plain and (c) quote rail stay here as the rejected alternatives. Today it renders serif 13px ink-mid — machine chrome sizing on what is actually the payload.</p>
+    <div class="stage"><div class="stage-lbl">(a) Plain sans prose — rejected</div>
+      <div class="nbody">
+        <div class="msg">Non-null assertions removed; no new breakage found. The two <code>!*</code> sites in <code>NotificationCard.test.tsx</code> now use <code>queryByTestId</code>, and <code>make test-web</code> is green.</div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">(b) Inset bubble — chosen</div>
+      <div class="nbody">
+        <div class="msg bubble">Non-null assertions removed; no new breakage found. The two <code>!*</code> sites in <code>NotificationCard.test.tsx</code> now use <code>queryByTestId</code>, and <code>make test-web</code> is green.</div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">(c) Quote rail — rejected</div>
+      <div class="nbody">
+        <div class="msg quote">Non-null assertions removed; no new breakage found. The two <code>!*</code> sites in <code>NotificationCard.test.tsx</code> now use <code>queryByTestId</code>, and <code>make test-web</code> is green.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- C : the rest of the family -->
+  <div class="case" id="c">
+    <div class="case-h"><span class="badge">C</span><span class="ttl">The rest of the family — same treatment</span><span class="verdict">proposed · desktop</span></div>
+    <p class="cap">Every delegate notification takes the same shape: head carries identity + outcome, body carries only a real report. <b>Reporting endings</b> (completed, failed with an error past its first line) show the message; <b>machinery endings</b> (stopped by its coordinator, stopped by the user, a failure whose whole error is its ending) have no report to show — their packet message is a stub phrase the head's ending already says (<span class="mono">"stopped by parent"</span>, <span class="mono">"Stopped by the user."</span>), so the row renders as a static line: no chevron, nothing to expand. An exhausted run keeps its budget message — it names the limit the ending does not. The quiet watchdog keeps its one sentence. Legacy frames (durable history recorded before the packet carried <span class="mono">structured_result</span>) parse the envelope out of the message and render identically — same parser path, no fork. No delegate card carries a raw disclosure; the daemon's own frame remains the verbatim record.</p>
+    <div class="stage"><div class="stage-lbl">Completed, no result schema — message only, no table</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph">✓</span><span class="title">Delegate completed</span><span class="sec"><span class="ent">parser-rename</span></span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg">Renamed the expand helpers to match the new vocabulary and updated the three call sites. All 214 tests in the package pass.</div>
+        </div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Failed — error text is the message; the cross is the one attention signal</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph err">✕</span><span class="title">Delegate failed</span><span class="sec"><span class="ent">tree-settle-race</span> · provider returned 500</span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg">The provider rejected every retry: 500 on all four attempts, last at 14:02 UTC. Nothing was written.</div>
+        </div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Exhausted — keeps its budget message: it names the limit the ending does not</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph err">✕</span><span class="title">Delegate failed</span><span class="sec"><span class="ent">sweep-flaky-tests</span> · ran out of tool rounds</span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg">max_turns exhausted at limit 40</div>
+        </div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Stopped — by coordinator / by user: static lines, nothing to expand</div>
+      <div class="ncard">
+        <div class="nhead" style="cursor:default"><span class="glyph">◔</span><span class="title">Delegate stopped</span><span class="sec"><span class="ent">docs-index</span> · stopped by its coordinator</span></div>
+      </div>
+      <div class="ncard" style="margin-top:var(--space-3)">
+        <div class="nhead" style="cursor:default"><span class="glyph">◔</span><span class="title">Delegate stopped</span><span class="sec"><span class="ent">docs-index</span> · cancelled</span></div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Quiet watchdog — its one sentence, already prose</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph">◔</span><span class="title">Delegate quiet</span><span class="sec"><span class="ent">task2-review</span></span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg">quiet for 10m; last activity: 2026-09-30T12:38:04Z</div>
+        </div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Legacy frame (durable history) — envelope parsed, renders like §A</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph">✓</span><span class="title">Delegate completed</span><span class="sec"><span class="ent">task1-review</span></span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg">Non-null assertions removed; no new breakage found.</div>
+          <div class="kv">
+            <div class="r"><span class="k">Finding verdict</span><span class="v">ADDRESSED</span></div>
+            <div class="r"><span class="k">Fix round</span><span class="v">All findings addressed, no new Critical/Important breakage</span></div>
+            <div class="r"><span class="k">New breakage</span><span class="v">None</span></div>
+            <div class="r"><span class="k">Out of scope</span><span class="v">None</span></div>
+            <div class="r"><span class="k">Tests rerun</span><span class="v">false</span></div>
+            <div class="r"><span class="k">Artifacts</span><span class="v"><span class="none">(none)</span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- D : edges -->
+  <div class="case" id="d">
+    <div class="case-h"><span class="badge">D</span><span class="ttl">Edges — invalid results, unnamed and unresolved delegates</span><span class="verdict">proposed · desktop</span></div>
+    <p class="cap">A structured result the daemon couldn't capture or validate is a fact the caller needs (they asked for a schema): a quiet ink-low note, never a red banner and never a table of rows that failed their schema. An <b>unnamed</b> delegate's head shows the id itself as the trigger. A delegate the entity map can't answer (an old transcript replayed without the delegate) falls back to plain text — EntityRef's existing contract: never a dead trigger. With the raw disclosure gone, such an id is no longer visible on the card itself: an accepted trade for a rare case (the daemon's durable records and the activity tree keep the identity).</p>
+    <div class="stage"><div class="stage-lbl">Structured result not captured — quiet note, raw keeps the frame</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph">✓</span><span class="title">Delegate completed</span><span class="sec"><span class="ent">task2-review</span></span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg">Done, but the structured result did not survive the trip.</div>
+          <div class="note">Structured result not captured — too large.</div>
+        </div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Schema validation failed — honest verdict, still no alarm</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph">✓</span><span class="title">Delegate completed</span><span class="sec"><span class="ent">task2-review</span></span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg">Sweep complete; see the findings table.</div>
+          <div class="note">Structured result failed schema validation.</div>
+        </div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Unnamed delegate — the id is the trigger</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph">✓</span><span class="title">Delegate completed</span><span class="sec"><span class="ent">dlg_034Xols6znPCnbmSfgUlCI</span></span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg">Indexed the docs folder; 214 files.</div>
+        </div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Unresolvable (replayed history) — plain text, no dead trigger</div>
+      <div class="ncard">
+        <button class="nhead"><span class="glyph">✓</span><span class="title">Delegate completed</span><span class="sec"><span style="font-family:var(--font-mono);font-size:12px">task1-review</span></span><span class="chev">⌄</span></button>
+        <div class="nbody">
+          <div class="msg">Non-null assertions removed; no new breakage found.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- E : mobile -->
+  <div class="case" id="e">
+    <div class="case-h"><span class="badge">E</span><span class="ttl">Mobile — 360px</span><span class="verdict">hero case only</span></div>
+    <p class="cap">The table's label column is <span class="mono">white-space: nowrap</span> so labels set one line and values take the rest; long values wrap anywhere. The head wraps the name trigger and chevron as one unit, exactly as the current grammar does. (The native mobile app has its own one-line renderer — this frame is the responsive hub only.)</p>
+    <div class="phones">
+      <div class="phone"><div class="phead">Session</div><div class="pbody">
+        <div class="stage-lbl">Completed + table, expanded</div>
+        <div class="ncard">
+          <button class="nhead"><span class="glyph">✓</span><span class="title">Delegate completed</span><span class="sec"><span class="ent">task2-review</span></span><span class="chev">⌄</span></button>
+          <div class="nbody">
+            <div class="msg">Non-null assertions removed; no new breakage found.</div>
+            <div class="kv">
+              <div class="r"><span class="k">Finding verdict</span><span class="v">ADDRESSED</span></div>
+              <div class="r"><span class="k">Fix round</span><span class="v">All findings addressed, no new Critical/Important breakage</span></div>
+              <div class="r"><span class="k">New breakage</span><span class="v">None</span></div>
+              <div class="r"><span class="k">Artifacts</span><span class="v"><span class="none">(none)</span></span></div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="rec"><b>Decision record.</b> Approved and built as §A + §C: one parser change (read <span style="font-family:var(--font-mono)">packet.structured_result</span>, fall back to parsing the envelope out of <span style="font-family:var(--font-mono)">packet.message</span> for history, suppress the machinery stub messages), one card change (delegate type: no metadata row; message as the §B(b) inset bubble in sans 15px ink-hi; table below; no raw disclosure), one head change (the name renders as an <span style="font-family:var(--font-mono)">EntityRef</span> with <span style="font-family:var(--font-mono)">triggerOnly</span> — hover/focus opens the delegate card with a 300ms delay, click stops propagation so the head's disclosure toggle never fires, and the existing icon-only Open control stays the single open button). Locked: <b>no echo metadata on any delegate card</b> (status restated the title; the id was only ever a handle, and the hover card answers it better — job and watch cards keep theirs); <b>no raw disclosure on delegate cards</b> (the daemon's own frame remains the verbatim record); <b>machinery stubs and a message identical to the head's ending never render as the body</b> (stopped rows are static lines with nothing to expand; a multi-line error keeps its full text; an exhausted run keeps its budget message because it names the limit); <b>labels are humanized sentence-case</b> (<span style="font-family:var(--font-mono)">finding_verdict</span> → "Finding verdict"); <b>values render as-is</b>, empty arrays as <span style="font-family:var(--font-mono)">(none)</span>, arrays joined with ", "; <b>a failed capture or validation is a quiet ink-low note</b>, never a table and never a banner; <b>the message keeps the sanitizing Markdown widget</b> — only family (via the widget's <span style="font-family:var(--font-mono)">--markdown-font</span> hook), size, and ink change; <b>the table stays unlabeled</b>.</div>
+</div>
+<script>
+const root = document.documentElement;
+const bd = document.getElementById('t-dark'), bl = document.getElementById('t-light');
+function setTheme(t){ root.setAttribute('data-theme', t); bd.setAttribute('aria-pressed', t==='dark'); bl.setAttribute('aria-pressed', t==='light'); }
+bd.addEventListener('click', ()=>setTheme('dark')); bl.addEventListener('click', ()=>setTheme('light'));
+document.querySelectorAll('details.disc summary').forEach(s=>s.addEventListener('click',e=>{e.preventDefault();const d=s.parentElement;d.open=!d.open;}));
+document.querySelectorAll('.nhead').forEach(h=>h.addEventListener('click',()=>{const b=h.parentElement.querySelector('.nbody');if(b)b.style.display=b.style.display==='none'?'':'none';}));
+</script>
+</body>
+</html>

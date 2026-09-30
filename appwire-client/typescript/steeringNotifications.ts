@@ -62,6 +62,13 @@ export interface ParsedNotification {
   excerpt: string;
   prose?: string; // body text before any excerpt marker (timers: sentence + note), decoded to plain text
   message?: string; // a communicate envelope's message (rendered as markdown)
+  // A reported run's schema-shaped result: the packet's structured_result
+  // field, or the envelope's data for frames recorded before the field existed
+  // (see delegatePacketNotification). Undefined when the run reported no
+  // schema output, and suppressed when the daemon refused to validate it.
+  structuredResult?: Record<string, unknown>;
+  structuredResultValid?: boolean;
+  structuredResultReason?: string;
   concerns: string[];
   rawText: string; // the verbatim block, always kept inspectable
 }
@@ -289,6 +296,13 @@ interface TerminalPacket {
   error: string;
   name: string;
   description: string;
+  // The schema-validated result and its verdict
+  // (agent/subagents.go captureDelegateStructuredResult): the data rides
+  // structured_result, and a capture or validation failure leaves it unset and
+  // names why in structured_result_reason.
+  structuredResult?: Record<string, unknown>;
+  structuredResultValid?: boolean;
+  structuredResultReason?: string;
 }
 
 // parseTerminalPacket reads the daemon's TerminalPacket JSON. json.Marshal
@@ -312,7 +326,47 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
     error: text(metadata.error),
     name: text(metadata.name),
     description: text(metadata.description),
+    structuredResult: isPlainObject(parsed.structured_result) ? parsed.structured_result : undefined,
+    structuredResultValid:
+      typeof parsed.structured_result_valid === "boolean" ? parsed.structured_result_valid : undefined,
+    structuredResultReason: text(parsed.structured_result_reason) || undefined,
   };
+}
+
+// A reported packet's message is the terminal communicate's result text
+// (agent/session_tools_communicate.go): the plain message, or the canonical
+// {"message","data","artifacts"} envelope when the delegate reported through a
+// result schema. The envelope's message is the subagent's report; its data is
+// the schema output - the same object the packet's structured_result field
+// carries on a current daemon, and the only copy on a frame recorded before
+// that field existed. JSON that is not an envelope (no string `message`) is
+// the subagent's own text, whatever it looks like, and stays whole.
+function parsePacketEnvelope(text: string): { message: string; data?: Record<string, unknown> } | null {
+  const raw = text.trim();
+  if (!raw.startsWith("{")) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isPlainObject(parsed) || typeof parsed.message !== "string") return null;
+    return { message: parsed.message.trim(), data: isPlainObject(parsed.data) ? parsed.data : undefined };
+  } catch {
+    return null;
+  }
+}
+
+// The stub phrases a machinery ending writes as its packet message - fold.go's
+// bare stop packet ("stopped by parent"), delegate_user_stop.go's
+// delegateUserStopMessage, and context.Canceled's own error text - restate the
+// ending the head's reason line already says in words. So does a message that
+// IS the ending itself (a failed run's whole error is its ending's first
+// line; one that runs further keeps its full text, since the head shows only
+// that first line). None of those is a report, so none parses as the message.
+const MACHINERY_PACKET_MESSAGES = new Set(["stopped by parent", "Stopped by the user.", "context canceled"]);
+
+function packetBodyMessage(text: string, ending: string | undefined): string | undefined {
+  const value = text.trim();
+  if (value === "" || MACHINERY_PACKET_MESSAGES.has(value)) return undefined;
+  if (ending !== undefined && value === ending) return undefined;
+  return value;
 }
 
 function delegatePacketNotification(
@@ -326,6 +380,14 @@ function delegatePacketNotification(
   const label = name || packet.description || delegateId;
   const outcome = DELEGATE_OUTCOMES.get(packet.outcome);
   const ending = delegateEndingText(packet);
+  const envelope = parsePacketEnvelope(packet.message);
+  const message = packetBodyMessage(envelope?.message ?? packet.message, ending);
+  // A result the daemon refused to capture or validate never rides the
+  // packet's structured_result field, and its copy inside the envelope must
+  // not render as an authoritative table either - only a valid verdict's data
+  // does, from whichever copy the frame carries.
+  const structuredResult =
+    packet.structuredResultValid === false ? undefined : (packet.structuredResult ?? envelope?.data);
   return {
     type: "delegate",
     // In the outcome's own words; an ending this client doesn't know still reported.
@@ -339,7 +401,10 @@ function delegatePacketNotification(
     status: packet.outcome,
     reason: ending,
     excerpt: "",
-    message: packet.message || undefined,
+    message: message || undefined,
+    structuredResult,
+    structuredResultValid: packet.structuredResultValid,
+    structuredResultReason: packet.structuredResultReason,
     concerns: [],
     rawText: block,
   };

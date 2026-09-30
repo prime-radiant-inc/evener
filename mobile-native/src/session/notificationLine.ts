@@ -52,7 +52,14 @@ export function notificationLine(
 				? { headline: `${subject} quiet · ${notification.quiet.window}`, failed }
 				: // A report whose ending this client doesn't know still reported.
 					{ headline: said(subject, notification.outcome, "reported"), failed };
-			const detail = notification.message ?? (notification.excerpt || undefined);
+			// The parser hands a report's message and retires the machinery stubs
+			// and a failure whose whole error is its ending (the delegate redesign,
+			// mockups 24-delegate-complete): a failed run's cause rides as `reason`,
+			// so the line keeps saying it; a stopped run's headline already does.
+			const detail =
+				notification.message ??
+				(notification.outcome === "failed" ? notification.reason : undefined) ??
+				(notification.excerpt || undefined);
 			if (detail) line.detail = detail;
 			if (ref) line.subagent = { ref, title: subject };
 			return line;
