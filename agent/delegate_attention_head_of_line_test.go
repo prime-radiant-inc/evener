@@ -3,13 +3,25 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
-// The drive always took the lowest-sorted eligible delegate, so one whose
-// restore kept failing was picked again every pass and every sibling's
-// attention waited behind it forever. Delegates now take turns: the drive
-// picks one it has not picked yet, else the one it picked longest ago.
+// pickDelegateAttention runs one drive selection and releases its restore
+// hold, returning the delegate picked.
+func pickDelegateAttention(t *testing.T, c *delegateTreeController) string {
+	t.Helper()
+	id, _, pending := c.selectDelegateAttentionWake()
+	if !pending {
+		t.Fatal("no delegate selected")
+	}
+	c.releaseAttentionRestoreHold(id)
+	return id
+}
+
+// Delegates owing attention take turns: the drive picks one it has not
+// picked yet, else the one it picked longest ago, so a delegate whose
+// restore keeps failing cannot hold every sibling's attention behind it.
 func TestAFailingDelegateDoesNotStarveItsSiblings(t *testing.T) {
 	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
@@ -21,18 +33,10 @@ func TestAFailingDelegateDoesNotStarveItsSiblings(t *testing.T) {
 	}
 	var picks []string
 	for range 5 {
-		id, _, pending := c.selectDelegateAttentionWake()
-		if !pending {
-			t.Fatal("no delegate selected")
-		}
-		c.releaseAttentionRestoreHold(id)
-		picks = append(picks, id)
+		picks = append(picks, pickDelegateAttention(t, c))
 	}
-	want := []string{"dlg_a", "dlg_b", "dlg_c", "dlg_a", "dlg_b"}
-	for i := range want {
-		if picks[i] != want[i] {
-			t.Fatalf("picks = %v, want each delegate in turn %v", picks, want)
-		}
+	if want := []string{"dlg_a", "dlg_b", "dlg_c", "dlg_a", "dlg_b"}; !slices.Equal(picks, want) {
+		t.Fatalf("picks = %v, want each delegate in turn %v", picks, want)
 	}
 	// A delegate that stops owing attention leaves the line; owing again, it
 	// is new and goes first.
@@ -77,28 +81,16 @@ func TestEverySelectionTakesItsTurnSoNoDelegateMonopolizesTheDrive(t *testing.T)
 			t.Fatalf("note %s attention", id)
 		}
 	}
-	pick := func() string {
-		t.Helper()
-		id, _, pending := c.selectDelegateAttentionWake()
-		if !pending {
-			t.Fatal("no delegate selected")
-		}
-		c.releaseAttentionRestoreHold(id)
-		return id
-	}
 	var picks []string
 	for range 4 {
-		id := pick()
+		id := pickDelegateAttention(t, c)
 		if id == "dlg_b" {
 			// dlg_b restores fine but its attention stays owed.
 			c.delegateAttentionRestored(id)
 		}
 		picks = append(picks, id)
 	}
-	want := []string{"dlg_a", "dlg_b", "dlg_a", "dlg_b"}
-	for i := range want {
-		if picks[i] != want[i] {
-			t.Fatalf("picks = %v, want the two to alternate %v", picks, want)
-		}
+	if want := []string{"dlg_a", "dlg_b", "dlg_a", "dlg_b"}; !slices.Equal(picks, want) {
+		t.Fatalf("picks = %v, want the two to alternate %v", picks, want)
 	}
 }
