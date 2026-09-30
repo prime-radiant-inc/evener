@@ -761,14 +761,20 @@ and [deployment resolution](../../cmd/evener-hub/internal/sshconn/deploy.go#L378
 This requires a build difference or unverifiable development identity, plus an
 unavailable target artifact. It does not describe every release-to-release attach.
 
-**Discuss.** Separate the user's intent to connect from an explicit requirement
-to synchronize builds. Decide whether compatible connection can proceed with
-accurate version status. Preserve actual wire incompatibility checks and any
-user-requested exact build requirement.
+**Decision.** When matching-build synchronization cannot complete, Connect uses
+the healthy, compatible remote build already running. Verify the live host's
+connection protocol and required capabilities, then let the user work and show
+the actual local and remote versions in host details. Preserve an explicitly
+requested exact-build requirement; connecting to a different build does not
+satisfy it. Actual protocol incompatibility still requires an update or another
+compatible connection path. Implementation remains pending.
 
 **Acceptance.** Connect a development controller to a compatible different-target
-host without an available matching artifact. Usable connection follows the
-chosen policy; actual incompatibility remains accurately identified.
+host without an available matching artifact. The connection succeeds using the
+verified running build, and version details identify what each side actually
+runs. A genuinely incompatible host is accurately identified, and a requested
+exact-build synchronization is not reported complete merely because connection
+to another build succeeds.
 
 ### H06 Provider-file repair discovery
 
