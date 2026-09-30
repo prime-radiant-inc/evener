@@ -75,7 +75,7 @@ func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string)
 	}
 	cat, err := installParseCatalog(m.catalogRoot(ref))
 	if err != nil {
-		return MarketplaceRef{}, CatalogPlugin{}, err
+		return MarketplaceRef{}, CatalogPlugin{}, m.storeFileFailed(err, "reading marketplace.json for %s", marketplace)
 	}
 	for _, p := range cat.Plugins {
 		if p.Name == plugin {
