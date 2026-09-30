@@ -55,6 +55,11 @@ interface ActivityPage {
   rows: readonly ActivityRow[];
   page: { nextCursor?: string; complete: boolean; issues: SessionActivityIssue[] };
 }
+interface RefreshWalk {
+  advance: boolean;
+  rows: readonly ActivityRow[];
+  issues: readonly SessionActivityIssue[];
+}
 interface ResourceRead {
   observers: number;
   oneShot: boolean;
@@ -67,6 +72,9 @@ interface ResourceRead {
   epoch: string | undefined;
   sessionId: string | undefined;
   incomplete: boolean;
+  boundary: string | undefined;
+  refresh: RefreshWalk | null;
+  pace: { handle: unknown; resume(): void } | null;
 }
 const resources: readonly SessionActivityResource[] = ["summary", "delegates", "jobs", "watches"];
 const defaultClock: SessionActivityClock = {
@@ -100,6 +108,9 @@ const resourceRead = (): ResourceRead => ({
   epoch: undefined,
   sessionId: undefined,
   incomplete: false,
+  boundary: undefined,
+  refresh: null,
+  pace: null,
 });
 
 /** Owns one session/scope/connection lifetime. Results from a disposed owner
@@ -168,6 +179,7 @@ export class SessionActivityStore {
       if (read.observers === 0) {
         this.cancelTimer(read);
         if (!read.oneShot) {
+          this.cancelPace(read);
           read.rootQueued = false;
           read.pageQueued = false;
           if (!read.inFlight) this.change(resource, { pending: false });
@@ -197,7 +209,12 @@ export class SessionActivityStore {
       this.client.onStateChange((state) => {
         if (state === "ready") return;
         this.generation += 1;
-        for (const resource of resources) this.cancelTimer(this.reads[resource]);
+        for (const resource of resources) {
+          const read = this.reads[resource];
+          this.cancelTimer(read);
+          this.cancelPace(read);
+          read.refresh = null;
+        }
       }),
       this.client.onReady(() => {
         for (const resource of resources) {
@@ -237,6 +254,9 @@ export class SessionActivityStore {
       read.epoch = undefined;
       read.sessionId = undefined;
       read.incomplete = false;
+      read.boundary = undefined;
+      read.refresh = null;
+      this.cancelPace(read);
       read.failures = 0;
     }
     const freshCollection = <Row>(resource: SessionActivityCollection): SessionActivityCollectionState<Row> => ({
@@ -270,6 +290,7 @@ export class SessionActivityStore {
     if (mode === "root") read.rootQueued = true;
     else read.pageQueued = true;
     if (read.inFlight) return read.inFlight;
+    if (mode === "root") read.refresh = null;
     if (this.client.state !== "ready") {
       this.change(resource, { pending: true });
       return Promise.resolve();
@@ -298,10 +319,26 @@ export class SessionActivityStore {
   }
   private async drain(resource: SessionActivityResource): Promise<void> {
     const read = this.reads[resource];
-    while (!this.disposed && this.client.state === "ready" && (read.rootQueued || read.pageQueued)) {
-      const root = read.rootQueued;
-      read.rootQueued = false;
-      read.pageQueued = false;
+    while (
+      !this.disposed &&
+      this.client.state === "ready" &&
+      (read.rootQueued || read.pageQueued || (read.refresh?.advance && (read.observers > 0 || read.oneShot)))
+    ) {
+      // Finish the admitted walk before servicing coalesced invalidations;
+      // restarting at every changed row can starve later-page current work.
+      const advancingRefresh = read.refresh?.advance;
+      const root = read.rootQueued && !advancingRefresh;
+      if (root) read.rootQueued = false;
+      else if (advancingRefresh && read.refresh) read.refresh.advance = false;
+      else read.pageQueued = false;
+      if (root && resource !== "summary") {
+        const rows = this.state[resource].rows;
+        const last = rows[rows.length - 1];
+        // A stale cursor/reconnect restarts the fresh walk, not its original
+        // displayed boundary: provisional rows must not extend that boundary.
+        read.boundary ??= last ? rowIdentity(resource, last) : undefined;
+        read.refresh = read.boundary ? { advance: false, rows: [], issues: [] } : null;
+      }
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
       try {
@@ -332,32 +369,50 @@ export class SessionActivityStore {
           const page = result as ActivityPage;
           if (!root && (page.context.epoch !== read.epoch || page.context.sessionId !== read.sessionId)) {
             read.cursor = undefined;
+            read.refresh = null;
             read.rootQueued = true;
             continue;
           }
           const current = this.state[resource];
-          const retainPartial =
-            root &&
-            page.page.issues.length > 0 &&
-            current.context?.epoch === page.context.epoch &&
-            current.context.sessionId === page.context.sessionId;
-          const rows = root && !retainPartial ? page.rows : mergeRows(resource, current.rows, page.rows);
+          const walk = read.refresh;
+          if (walk) {
+            walk.rows = mergeRows(resource, walk.rows, page.rows);
+            walk.issues = [...walk.issues, ...page.page.issues];
+          }
+          const reachedBoundary =
+            walk && (page.page.complete || walk.rows.some((row) => rowIdentity(resource, row) === read.boundary));
+          const issues = walk?.issues ?? page.page.issues;
+          // Only a fresh walk through the displayed boundary (or the whole
+          // collection) proves membership absent. Partial source issues never
+          // prove removal, and an opaque epoch change is not session replacement.
+          const rows = walk
+            ? reachedBoundary && issues.length === 0
+              ? walk.rows
+              : mergeRows(resource, current.rows, page.rows)
+            : root && issues.length === 0
+              ? page.rows
+              : mergeRows(resource, current.rows, page.rows);
+          if (reachedBoundary) {
+            read.refresh = null;
+            if (issues.length === 0) read.boundary = undefined;
+          }
           read.cursor = page.page.nextCursor;
           read.epoch = page.context.epoch;
           read.sessionId = page.context.sessionId;
-          read.incomplete = !page.page.complete || page.page.issues.length > 0;
+          read.incomplete = !page.page.complete || issues.length > 0 || read.refresh !== null;
           this.publishCollection(resource, {
             ...current,
             rows,
             context: page.context,
-            complete: page.page.complete && page.page.issues.length === 0,
+            complete: page.page.complete && issues.length === 0 && read.refresh === null,
             hasMore: !!read.cursor,
-            issues: page.page.issues,
+            issues,
             pending: !page.context.ancestryKnown || read.incomplete,
             error: null,
             unavailable: false,
             permanent: false,
           });
+          if (this.disposed || generation !== this.generation) continue;
           this.publish({ context: page.context });
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
@@ -368,7 +423,10 @@ export class SessionActivityStore {
             (read.cursor !== undefined && read.cursor !== cursor) ||
             (page.page.complete && !current.complete);
           if (progressed && this.state.summary && !this.state.summary[resource].known) this.schedule("summary", 100);
-          if (
+          if (read.refresh && read.cursor && read.cursor !== cursor && (read.observers > 0 || read.oneShot)) {
+            read.refresh.advance = true;
+            await this.pacePage(read);
+          } else if (
             page.rows.length === 0 &&
             read.cursor &&
             read.cursor !== cursor &&
@@ -377,7 +435,7 @@ export class SessionActivityStore {
           ) {
             read.pageQueued = true;
           } else if (
-            page.page.issues.length > 0 ||
+            issues.length > 0 ||
             (!page.page.complete && !read.cursor) ||
             (page.rows.length === 0 && read.cursor === cursor && !page.page.complete)
           ) {
@@ -392,6 +450,7 @@ export class SessionActivityStore {
         if (this.disposed || generation !== this.generation) continue;
         if (error instanceof WireError && error.evenerErrorInfo === "sessionActivityCursorStale" && cursor) {
           read.cursor = undefined;
+          read.refresh = null;
           read.rootQueued = true;
           continue;
         }
@@ -446,6 +505,20 @@ export class SessionActivityStore {
       void this.request(resource, mode);
     }, delayMs);
   }
+  private pacePage(read: ResourceRead): Promise<void> {
+    return new Promise((resolve) => {
+      const resume = () => {
+        read.pace = null;
+        resolve();
+      };
+      read.pace = { handle: this.clock.setTimeout(resume, 100), resume };
+    });
+  }
+  private cancelPace(read: ResourceRead): void {
+    if (!read.pace) return;
+    this.clock.clearTimeout(read.pace.handle);
+    read.pace.resume();
+  }
   private cancelTimer(read: ResourceRead): void {
     if (read.timer !== null) this.clock.clearTimeout(read.timer);
     read.timer = null;
@@ -479,6 +552,10 @@ export class SessionActivityStore {
         changed = resources;
         break;
       case "evener/thread/resync":
+        for (const resource of resources) {
+          this.reads[resource].refresh = null;
+          this.cancelPace(this.reads[resource]);
+        }
         // The server may already have emitted a reply before the alias was
         // cleared. It must not publish after this resync boundary.
         this.generation += 1;
@@ -516,6 +593,9 @@ export class SessionActivityStore {
     for (const resource of resources) {
       const read = this.reads[resource];
       this.cancelTimer(read);
+      this.cancelPace(read);
+      read.boundary = undefined;
+      read.refresh = null;
       read.observers = 0;
       read.rootQueued = false;
       read.pageQueued = false;
