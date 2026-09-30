@@ -69,12 +69,13 @@ const CHILD_B = summary({
   tasks: { total: 5, done: 2, current: "doing the thing" },
 });
 const CHILD_C = summary({ ref: "local:c", title: "C", state: "idle", kind: "subagent" });
+// The wire's real shapes: list rows and locations are FLAT (no children), and
+// the session's child tree arrives through the paged subagents resource -
+// page 0 here, with 201 direct children beyond it accounted in `remaining`.
 const ROOT_A = summary({
   ref: "local:a",
   title: "A",
   state: "active",
-  children: [CHILD_B, CHILD_C],
-  more_subagents: 201,
 });
 const ROOT_D = summary({ ref: "local:d", title: "D", state: "idle" });
 
@@ -84,26 +85,34 @@ function stateWith(...entries: [ResourceKey, unknown][]): NavigationStoreState {
 
 const LIVE_KEY: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
 const locationKey = (ref: string): ResourceKey => ({ kind: "location", ref });
+const subagentsKey = (ref: string, offset = 0): ResourceKey => ({ kind: "subagents", ref, offset, limit: 50 });
 
 function fullState(): NavigationStoreState {
   return stateWith(
     [LIVE_KEY, { sessions: [ROOT_A, ROOT_D] }],
     [locationKey("local:a"), { ref: "local:a", top_level_ref: "local:a", top_level: true, session: ROOT_A }],
     [locationKey("local:b"), { ref: "local:b", top_level_ref: "local:a", top_level: false, session: CHILD_B }],
+    [subagentsKey("local:a"), { sessions: [CHILD_B, CHILD_C], remaining: 201, truncated: false }],
   );
 }
 
 describe("scopeCounts", () => {
   test("counts active work only, never the completed fold", () => {
-    const counts = scopeCounts(ROOT_A);
+    // Agents come from the subagents resource's rows, never the (flat) leaf.
+    const counts = scopeCounts(ROOT_A, { rows: [CHILD_B, CHILD_C], remaining: 201 });
     expect(counts.activeSubagents).toBe(1); // B is current, C folds
     expect(counts.runningJobs).toBe(0);
     expect(counts.armedWatches).toBe(0);
     expect(counts.tasksTotal).toBe(0);
   });
 
+  test("an unloaded subagents resource counts zero agents, never children off the leaf", () => {
+    const counts = scopeCounts(ROOT_A, null);
+    expect(counts.activeSubagents).toBe(0);
+  });
+
   test("reads the leaf's own jobs, watches, and tasks", () => {
-    const counts = scopeCounts(CHILD_B);
+    const counts = scopeCounts(CHILD_B, null);
     expect(counts.runningJobs).toBe(1);
     expect(counts.armedWatches).toBe(1);
     expect(counts.tasksDone).toBe(2);
@@ -118,21 +127,20 @@ describe("scopeCounts", () => {
       omitted_watches: 2,
       omitted_armed_watches: 1,
     });
-    expect(scopeCounts(s).armedWatches).toBe(2);
+    expect(scopeCounts(s, null).armedWatches).toBe(2);
   });
 
-  test("fork originals in children never count as agents", () => {
-    // The wire's children carry fork originals (kind "fork") beside
-    // subagents; the chip counts subagents only, or a live fork inflates it.
-    const s = summary({
-      ref: "local:x",
-      title: "X",
-      children: [
+  test("fork originals in the page rows never count as agents", () => {
+    // The page's rows carry fork originals (kind "fork") beside subagents;
+    // the chip counts subagents only, or a live fork inflates it.
+    const counts = scopeCounts(ROOT_A, {
+      rows: [
         summary({ ref: "local:fork", title: "Fork", state: "active", kind: "fork" }),
         summary({ ref: "local:sub", title: "Sub", state: "active", kind: "subagent" }),
       ],
+      remaining: 0,
     });
-    expect(scopeCounts(s).activeSubagents).toBe(1);
+    expect(counts.activeSubagents).toBe(1);
   });
 });
 
@@ -165,12 +173,42 @@ describe("scopePath", () => {
 });
 
 describe("deriveScope", () => {
-  test("assembles leaf, path, and counts", () => {
+  test("assembles leaf, path, counts, and the subagents page", () => {
     const scope = deriveScope(fullState(), "local:b");
     expect(scope?.leaf.ref).toBe("local:b");
     expect(scope?.path.map((c) => c.title)).toEqual(["A", "B"]);
     expect(scope?.counts.runningJobs).toBe(1);
     expect(scope?.counts.armedWatches).toBe(1);
+  });
+
+  test("carries the leaf's subagents rows and the wire's remainder", () => {
+    const scope = deriveScope(fullState(), "local:a");
+    expect(scope?.subagents?.rows.map((row) => row.ref)).toEqual(["local:b", "local:c"]);
+    expect(scope?.subagents?.remaining).toBe(201);
+    expect(scope?.counts.activeSubagents).toBe(1);
+  });
+
+  test("a scope whose subagents resource has not loaded reads null, with zero agents counted", () => {
+    const state = stateWith(
+      [LIVE_KEY, { sessions: [ROOT_D] }],
+      [locationKey("local:d"), { ref: "local:d", top_level_ref: "local:d", top_level: true, session: ROOT_D }],
+    );
+    const scope = deriveScope(state, "local:d");
+    expect(scope?.subagents).toBeNull();
+    expect(scope?.counts.activeSubagents).toBe(0);
+  });
+
+  test("concatenates every loaded page in offset order", () => {
+    const extra = summary({ ref: "local:e", title: "E", state: "idle", kind: "subagent" });
+    const state = stateWith(
+      [LIVE_KEY, { sessions: [ROOT_A] }],
+      [locationKey("local:a"), { ref: "local:a", top_level_ref: "local:a", top_level: true, session: ROOT_A }],
+      [subagentsKey("local:a", 0), { sessions: [CHILD_B], remaining: 1, truncated: false }],
+      [subagentsKey("local:a", 50), { sessions: [extra], remaining: 0, truncated: false }],
+    );
+    const scope = deriveScope(state, "local:a");
+    expect(scope?.subagents?.rows.map((row) => row.ref)).toEqual(["local:b", "local:e"]);
+    expect(scope?.subagents?.remaining).toBe(0);
   });
 
   test("returns null for an unknown ref", () => {

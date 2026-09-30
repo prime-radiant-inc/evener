@@ -9,7 +9,7 @@ import { navigationStore, useNavigationStore } from "../../stores/navigation/sto
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { ACTIVITY_TABS } from "../activitybar/activityTabs";
-import { useFocusedActivityScopeRef } from "../focusedSession";
+import { useEnsureActivityScopeResources, useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "./ScopeCrumbs";
 import styles from "./statusbar.module.css";
 import { deriveScope } from "./statusScope";
@@ -26,6 +26,9 @@ export function StatusBar() {
   // scope's ref, not on every store touch (mode flips, expansion, attention).
   const resources = useNavigationStore((state) => state.resources);
   const ref = useFocusedActivityScopeRef();
+  // The location and the subagents page are the surfaces' data; nothing else
+  // fetches them for a scope (the open sidebar rides this too).
+  useEnsureActivityScopeResources(ref);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
   const scope = useMemo(() => (ref === null ? null : deriveScope(navigationStore.getState(), ref)), [resources, ref]);
   if (scope === null) return null;

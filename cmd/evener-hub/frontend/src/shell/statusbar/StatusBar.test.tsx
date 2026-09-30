@@ -8,7 +8,7 @@ import type { NavigationManifest } from "@evener/appwire-client";
 import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { navigationStore } from "../../stores/navigation/store";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { resetFocusedActivityScopeForTests } from "../focusedSession";
@@ -67,24 +67,25 @@ function resource<T>(key: ResourceKey, data: T): ResourceState {
 }
 
 function installTree(opts?: { omitWatches?: boolean }) {
-  const { ROOT_A, CHILD_B, ROOT_D } = sampleTree();
+  const { ROOT_A, CHILD_B, CHILD_C, ROOT_D } = sampleTree();
   const leaf = opts?.omitWatches
     ? summaryOf({ ...CHILD_B, watches: undefined, omitted_watches: 2, omitted_armed_watches: 1 })
     : CHILD_B;
-  const root = summaryOf({ ...ROOT_A, children: [leaf, ...ROOT_A.children.slice(1)] });
   const liveKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
+  const subagentsKey: ResourceKey = { kind: "subagents", ref: "local:a", offset: 0, limit: 50 };
   navigationStore.setState({
     mode: "v2",
     capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
     clientGenerationID: "g1",
     manifest: resource({ kind: "manifest" }, manifest()) as ResourceState<NavigationManifest>,
     resources: new Map([
-      [keyID(liveKey), resource(liveKey, { sessions: [root, ROOT_D] })],
+      [keyID(liveKey), resource(liveKey, { sessions: [ROOT_A, ROOT_D] })],
+      [keyID(subagentsKey), resource(subagentsKey, { sessions: [leaf, CHILD_C], remaining: 201, truncated: false })],
       [
         keyID({ kind: "location", ref: "local:a" }),
         resource(
           { kind: "location", ref: "local:a" },
-          { ref: "local:a", top_level_ref: "local:a", top_level: true, session: root },
+          { ref: "local:a", top_level_ref: "local:a", top_level: true, session: ROOT_A },
         ),
       ],
       [
@@ -132,6 +133,56 @@ describe("StatusBar", () => {
     fireEvent.click(screen.getByRole("button", { name: /Watches/ }));
     expect(activitySidebarStore.getState().open).toBe(true);
     expect(activitySidebarStore.getState().tab).toBe("watches");
+  });
+
+  test("mounting fetches the scope's subagents page when none exists", () => {
+    installTree();
+    const subagentsLoad = vi
+      .spyOn(navigationStore.getState(), "loadSubagents")
+      .mockRejectedValue(new Error("no client") as never);
+    try {
+      // local:d has no subagents page in the fixture; local:a does.
+      openSession("local:d");
+      render(<StatusBar />);
+      expect(subagentsLoad).toHaveBeenCalledWith("local:d");
+    } finally {
+      subagentsLoad.mockRestore();
+    }
+  });
+
+  test("an existing page is never re-fetched", () => {
+    installTree();
+    const subagentsLoad = vi
+      .spyOn(navigationStore.getState(), "loadSubagents")
+      .mockRejectedValue(new Error("no client") as never);
+    try {
+      // local:a's page is installed in the fixture.
+      openSession("local:a");
+      render(<StatusBar />);
+      expect(subagentsLoad).not.toHaveBeenCalledWith("local:a");
+    } finally {
+      subagentsLoad.mockRestore();
+    }
+  });
+
+  test("a drilled scope also fetches the root's page (the crumb walks it)", () => {
+    installTree();
+    // Remove the root's page: the drill's crumb must fetch it.
+    const resources = new Map(navigationStore.getState().resources);
+    resources.delete(keyID({ kind: "subagents", ref: "local:a", offset: 0, limit: 50 }));
+    navigationStore.setState({ resources });
+    const subagentsLoad = vi
+      .spyOn(navigationStore.getState(), "loadSubagents")
+      .mockRejectedValue(new Error("no client") as never);
+    try {
+      openSession("local:a");
+      workspaceStore.getState().openPane("transcript", { ref: "local:b", parentRef: "local:a" }, { slot: "secondary" });
+      render(<StatusBar />);
+      expect(subagentsLoad).toHaveBeenCalledWith("local:b");
+      expect(subagentsLoad).toHaveBeenCalledWith("local:a");
+    } finally {
+      subagentsLoad.mockRestore();
+    }
   });
 
   test("drilling re-scopes: a focused subagent transcript shows the path and the child's counts", () => {

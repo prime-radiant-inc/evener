@@ -1,9 +1,11 @@
 // Shared fixtures for the activity-surface tests (statusScope.test.ts,
 // StatusBar.test.tsx, ActivitySidebar tests): one session tree at realistic
 // shape - root A with an active subagent (B: running job, armed watch, 2/5
-// tasks) and an idle one (C), plus 201 more subagents the wire did not carry,
-// and an unrelated root D. Builders return fresh objects per call so tests
-// never share mutable state.
+// tasks) and an idle one (C), plus 201 more direct children the wire has not
+// sent (the page's `remaining`), and an unrelated root D. The wire's real
+// shapes: list rows and locations are FLAT; the tree arrives through the
+// paged subagents resource (SUBAGENTS_A below). Builders return fresh
+// objects per call so tests never share mutable state.
 
 import type { NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
 
@@ -48,9 +50,10 @@ export function sampleTree() {
     ref: "local:a",
     title: "A",
     state: "active",
-    children: [CHILD_B, CHILD_C],
-    more_subagents: 201,
   });
   const ROOT_D = summaryOf({ ref: "local:d", title: "D", state: "idle" });
-  return { ROOT_A, CHILD_B, CHILD_C, ROOT_D };
+  // The subagents resource's page-0 payload for local:a: the direct children
+  // (each keeping its own nested subtree) and the wire's remainder.
+  const SUBAGENTS_A = { sessions: [CHILD_B, CHILD_C], remaining: 201, truncated: false };
+  return { ROOT_A, CHILD_B, CHILD_C, ROOT_D, SUBAGENTS_A };
 }

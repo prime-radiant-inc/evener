@@ -172,6 +172,20 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
         },
         '"test"',
       );
+    case "subagents":
+      // The StatusBar ensures the scope's subagents page on every mount;
+      // answer with an empty one (tests that need rows install them into the
+      // store directly).
+      return wireV2(
+        params,
+        {
+          offset: params.offset,
+          sessions: [],
+          remaining: 0,
+          truncated: false,
+        },
+        '"test"',
+      );
   }
   throw new Error(`unsupported navigation resource: ${params.resource}`);
 }

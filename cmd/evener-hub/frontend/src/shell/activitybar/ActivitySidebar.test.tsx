@@ -88,8 +88,9 @@ function resource<T>(key: ResourceKey, data: T): ResourceState {
 }
 
 function installTree() {
-  const { ROOT_A, ROOT_D } = sampleTree();
+  const { ROOT_A, ROOT_D, SUBAGENTS_A } = sampleTree();
   const liveKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
+  const subagentsKey: ResourceKey = { kind: "subagents", ref: "local:a", offset: 0, limit: 50 };
   navigationStore.setState({
     mode: "v2",
     capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
@@ -97,6 +98,7 @@ function installTree() {
     manifest: resource({ kind: "manifest" }, manifest()) as ResourceState<NavigationManifest>,
     resources: new Map([
       [keyID(liveKey), resource(liveKey, { sessions: [ROOT_A, ROOT_D] })],
+      [keyID(subagentsKey), resource(subagentsKey, SUBAGENTS_A)],
       [
         keyID({ kind: "location", ref: "local:a" }),
         resource(
@@ -159,23 +161,38 @@ describe("ActivitySidebar", () => {
     expect(screen.getByRole("radio", { name: /Tasks 0\/0/ })).toBeTruthy();
   });
 
-  test("agents tab lists current children and folds the inactive behind their true total", () => {
+  test("agents tab lists current children and folds the loaded inactive behind their count", () => {
     installTree();
     workspaceStore.getState().openPane("session", { ref: "local:a" });
     activitySidebarStore.getState().openWith("agents");
     renderSidebar();
     expect(screen.getByText("B")).toBeTruthy();
-    // C folds; the fold's count includes the 201 the wire never carried.
-    expect(screen.getByRole("button", { name: /Inactive subagents \(202\)/ })).toBeTruthy();
+    // C folds; the fold counts the loaded inactive rows.
+    expect(screen.getByRole("button", { name: /Inactive subagents \(1\)/ })).toBeTruthy();
     expect(screen.queryByText("C")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /Inactive subagents \(202\)/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Inactive subagents \(1\)/ }));
     expect(screen.getByText("C")).toBeTruthy();
-    // The unloaded remainder is a passive note, never a fake control.
-    expect(screen.getByText(/\+201 more/)).toBeTruthy();
     // The fold control carries its spacing class (the CSS rule and the
     // requireClass map entry exist for exactly this wrapper).
-    const foldButton = screen.getByRole("button", { name: /Inactive subagents \(202\)/ });
+    const foldButton = screen.getByRole("button", { name: /Inactive subagents \(1\)/ });
     expect(foldButton.parentElement?.className).toContain("foldButton");
+  });
+
+  test("the wire's remainder is a real fetch: load more pages the subagents resource", () => {
+    installTree();
+    const load = vi.spyOn(navigationStore.getState(), "loadSubagents").mockResolvedValue(undefined as never);
+    try {
+      workspaceStore.getState().openPane("session", { ref: "local:a" });
+      activitySidebarStore.getState().openWith("agents");
+      renderSidebar();
+      // 201 direct children past page 0, and the control names the next slice.
+      const control = screen.getByRole("button", { name: /Load 50 more · 201 not shown/ });
+      fireEvent.click(control);
+      // Offset is the loaded row count: pages are contiguous 50-row slices.
+      expect(load).toHaveBeenCalledWith("local:a", 2);
+    } finally {
+      load.mockRestore();
+    }
   });
 
   test("clicking an agent row drills: the transcript pane opens in the secondary slot", () => {
@@ -200,14 +217,15 @@ describe("ActivitySidebar", () => {
   });
 
   test("the fold and its paging reset when the scope's leaf changes", () => {
-    // Two sessions, each with an inactive child behind a fold.
-    const { ROOT_A, ROOT_D } = sampleTree();
-    const rootB = { ...ROOT_D, ref: "local:d", title: "D", children: ROOT_A.children };
+    // Two sessions, each with an inactive child behind a fold, served through
+    // their subagents resources.
+    const { ROOT_A, CHILD_B, CHILD_C, ROOT_D } = sampleTree();
     const liveKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
     const locationKey = (ref: string) => ({ kind: "location", ref }) as const;
+    const subagentsKeyFor = (ref: string) => ({ kind: "subagents", ref, offset: 0, limit: 50 }) as const;
     navigationStore.setState({
       resources: new Map([
-        [keyID(liveKey), resource(liveKey, { sessions: [ROOT_A, rootB] })],
+        [keyID(liveKey), resource(liveKey, { sessions: [ROOT_A, ROOT_D] })],
         [
           keyID(locationKey("local:a")),
           resource(locationKey("local:a"), {
@@ -223,8 +241,16 @@ describe("ActivitySidebar", () => {
             ref: "local:d",
             top_level_ref: "local:d",
             top_level: true,
-            session: rootB,
+            session: ROOT_D,
           }),
+        ],
+        [
+          keyID(subagentsKeyFor("local:a")),
+          resource(subagentsKeyFor("local:a"), { sessions: [CHILD_B, CHILD_C], remaining: 0, truncated: false }),
+        ],
+        [
+          keyID(subagentsKeyFor("local:d")),
+          resource(subagentsKeyFor("local:d"), { sessions: [CHILD_C], remaining: 0, truncated: false }),
         ],
       ]),
     });
@@ -239,60 +265,86 @@ describe("ActivitySidebar", () => {
       workspaceStore.getState().openPane("session", { ref: "local:d" });
     });
     expect(screen.queryByText("C")).toBeNull();
-    expect(screen.getByRole("button", { name: /Inactive subagents/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Inactive subagents \(1\)/ })).toBeTruthy();
   });
 
-  test("agents tab with no loaded subagents but more on the wire shows the remainder, never a contradiction", () => {
-    // The wire omitted every subagent row but says 5 exist. The tab must not
-    // claim "No subagents" while folding 5 behind a click: show the passive
-    // remainder directly (WatchesTab's pattern), with no fold hiding it.
+  test("agents tab with no loaded rows but more on the wire offers the fetch, never a contradiction", () => {
+    // The wire sent an empty page with 5 children behind it. The tab must not
+    // claim "No subagents" while 5 exist: the load-more control, no fold.
     const { ROOT_D } = sampleTree();
-    const sparse = { ...ROOT_D, ref: "local:sparse", title: "S", children: [], more_subagents: 5 };
     const liveKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
     const locationKey = { kind: "location", ref: "local:sparse" } as const;
+    const sparseKey = { kind: "subagents", ref: "local:sparse", offset: 0, limit: 50 } as const;
     navigationStore.setState({
       resources: new Map([
-        [keyID(liveKey), resource(liveKey, { sessions: [sparse] })],
+        [keyID(liveKey), resource(liveKey, { sessions: [ROOT_D] })],
         [
           keyID(locationKey),
           resource(locationKey, {
             ref: "local:sparse",
             top_level_ref: "local:sparse",
             top_level: true,
-            session: sparse,
+            session: { ...ROOT_D, ref: "local:sparse", title: "S" },
           }),
         ],
+        [keyID(sparseKey), resource(sparseKey, { sessions: [], remaining: 5, truncated: false })],
       ]),
     });
     workspaceStore.getState().openPane("session", { ref: "local:sparse" });
     activitySidebarStore.getState().openWith("agents");
     renderSidebar();
     expect(screen.queryByText("No subagents at this level.")).toBeNull();
-    expect(screen.getByText("+5 more")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Load 5 more · 5 not shown/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Inactive subagents/ })).toBeNull();
   });
 
   test("agents tab with truly no subagents says so", () => {
-    installTree();
+    // Truly empty means a loaded page with no rows and no remainder.
+    const { ROOT_D } = sampleTree();
+    const liveKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+    const locationKey = { kind: "location", ref: "local:d" } as const;
+    const emptyKey = { kind: "subagents", ref: "local:d", offset: 0, limit: 50 } as const;
+    navigationStore.setState({
+      resources: new Map([
+        [keyID(liveKey), resource(liveKey, { sessions: [ROOT_D] })],
+        [
+          keyID(locationKey),
+          resource(locationKey, { ref: "local:d", top_level_ref: "local:d", top_level: true, session: ROOT_D }),
+        ],
+        [keyID(emptyKey), resource(emptyKey, { sessions: [], remaining: 0, truncated: false })],
+      ]),
+    });
     workspaceStore.getState().openPane("session", { ref: "local:d" });
     activitySidebarStore.getState().openWith("agents");
     renderSidebar();
     expect(screen.getByText("No subagents at this level.")).toBeTruthy();
   });
 
-  test("fork originals in the wire's children never list as agents", () => {
-    // The hub's tree carries fork originals (kind "fork") in children beside
-    // subagents; the rail renders those as nested session rows. The Agents
-    // tab lists subagents only, or a fork reads as an agent.
+  test("agents tab reads the loading state while no page has landed", () => {
+    // No subagents resource for the scope: null is a loading state, never
+    // "No subagents" (the surfaces ensure the fetch).
+    installTree();
+    workspaceStore.getState().openPane("session", { ref: "local:d" });
+    activitySidebarStore.getState().openWith("agents");
+    renderSidebar();
+    expect(screen.getByText("Loading subagents…")).toBeTruthy();
+    expect(screen.queryByText("No subagents at this level.")).toBeNull();
+  });
+
+  test("fork originals in the page's rows never list as agents", () => {
+    // The page's rows carry fork originals (kind "fork") beside subagents.
+    // The Agents tab lists subagents only, or a fork reads as an agent.
     const { ROOT_D } = sampleTree();
     const fork = { ...ROOT_D, ref: "local:fork", title: "FORK SNAP", state: "active", kind: "fork" };
     const agent = { ...ROOT_D, ref: "local:agent", title: "AGENT ROW", state: "active", kind: "subagent" };
-    const leaf = { ...ROOT_D, ref: "local:leaf", title: "L", children: [fork, agent] };
+    const leaf = { ...ROOT_D, ref: "local:leaf", title: "L" };
     const liveKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
     const locationKey = { kind: "location", ref: "local:leaf" } as const;
+    const leafAgentsKey = { kind: "subagents", ref: "local:leaf", offset: 0, limit: 50 } as const;
     navigationStore.setState({
       resources: new Map([
         [keyID(liveKey), resource(liveKey, { sessions: [leaf] })],
+        [keyID(leafAgentsKey), resource(leafAgentsKey, { sessions: [fork, agent], remaining: 0, truncated: false })],
         [
           keyID(locationKey),
           resource(locationKey, { ref: "local:leaf", top_level_ref: "local:leaf", top_level: true, session: leaf }),
