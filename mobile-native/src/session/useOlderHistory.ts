@@ -48,7 +48,12 @@ export function useOlderHistory({
 	return {
 		state,
 		loadOlder: () => {
-			void paging.request().catch(() => {});
+			void paging.request("reader").catch(() => {});
 		},
+		findOlder: () => {
+			void paging.request("find").catch(() => {});
+		},
+		cancelFind: () => paging.cancel("find"),
+		cancelReader: () => paging.cancel("reader"),
 	};
 }

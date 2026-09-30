@@ -1259,11 +1259,11 @@ it("marks its session seen through the read's turn end once it has loaded in fro
 
 afterEach(() => vi.useRealTimers());
 
-function olderHistoryAnswers(page: () => unknown): Answers {
+function olderHistoryAnswers(page: () => unknown, source: Thread = busy): Answers {
 	return {
 		"thread/read": {
 			thread: {
-				...busy,
+				...source,
 				turns: [
 					{
 						id: "current-turn",
@@ -1406,5 +1406,79 @@ it("explains a proven permanent older-history failure without claiming Find has 
 	expect(renderedText(tree)).not.toContain("No matches");
 	await advanceHistory(300_000);
 	expect(attempts).toBe(1);
+	act(() => tree.unmount());
+});
+
+it.each([false, true])("closing Find cancels only its demand (browse waiting: %s)", async (browse) => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 1) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	await flush();
+	vi.useFakeTimers();
+	if (browse) {
+		sessionList(tree).drag(100);
+		await advanceHistory(0);
+	}
+	openFind(tree, "unique search needle");
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	const bar = tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+	act(() => bar.props.onDone());
+	await advanceHistory(60_000);
+	expect(attempts).toBe(browse ? 2 : 1);
+	expect(renderedText(tree).includes("unique search needle")).toBe(browse);
+	act(() => tree.unmount());
+});
+
+it.each([false, true])("jumping live cancels browse demand and preserves Find (Find waiting: %s)", async (find) => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 1) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	await flush();
+	vi.useFakeTimers();
+	sessionList(tree).drag(100);
+	await advanceHistory(0);
+	if (find) {
+		openFind(tree, "unique search needle");
+		await advanceHistory(0);
+	}
+	const composer = tree.root.findAll((node) => typeof node.props.onJumpToLive === "function")[0];
+	expect(composer).toBeDefined();
+	act(() => composer.props.onJumpToLive());
+	await advanceHistory(60_000);
+	expect(attempts).toBe(find ? 2 : 1);
+	expect(renderedText(tree).includes("unique search needle")).toBe(find);
+	act(() => tree.unmount());
+});
+
+it.each(["closed", "ended"] as const)("Find reads older history for a %s session", async (status) => {
+	let attempts = 0;
+	const source = { ...busy, status: { type: status } };
+	const { tree } = mount(
+		source,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("temporary");
+			return olderHistoryPage("finished session needle");
+		}, source),
+	);
+	await flush();
+	vi.useFakeTimers();
+	openFind(tree, "finished session needle");
+	await advanceHistory(10_000);
+	expect(attempts).toBe(2);
+	expect(renderedText(tree)).toContain("1 of 1");
 	act(() => tree.unmount());
 });

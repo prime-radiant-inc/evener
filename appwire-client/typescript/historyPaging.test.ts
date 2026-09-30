@@ -173,3 +173,83 @@ test("a durably deleted target is permanent but a history-read failure remains u
   expect(vi.getTimerCount()).toBe(0);
   leave();
 });
+
+test("cancelling Find stops its retries without discarding a reader's demand", async () => {
+  const load = vi.fn(async () => {
+    throw new Error("temporary");
+  });
+  const paging = new HistoryPaging(() => "page", load);
+  const leave = paging.activate();
+  await expect(paging.request("find")).rejects.toThrow();
+  await paging.request("reader");
+  paging.cancel("find");
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(load).toHaveBeenCalledTimes(2);
+  paging.cancel("reader");
+  await vi.advanceTimersByTimeAsync(600_000);
+  expect(load).toHaveBeenCalledTimes(2);
+  expect(paging.getSnapshot().pending).toBe(false);
+  leave();
+});
+
+test("a failure after the last consumer cancels cannot resurrect demand", async () => {
+  let reject: ((error: Error) => void) | undefined;
+  const load = vi.fn(
+    () =>
+      new Promise<void>((_, fail) => {
+        reject = fail;
+      }),
+  );
+  const paging = new HistoryPaging(() => "page", load);
+  const leave = paging.activate();
+  const request = paging.request("find");
+  const outcome = expect(request).rejects.toThrow();
+  await Promise.resolve();
+  paging.cancel("find");
+  reject?.(new Error("temporary"));
+  await outcome;
+  await vi.advanceTimersByTimeAsync(600_000);
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(paging.getSnapshot().pending).toBe(false);
+  leave();
+});
+
+test("one view jumping live preserves a different view's pending browse demand", async () => {
+  const load = vi.fn(async () => {
+    throw new Error("temporary");
+  });
+  const paging = new HistoryPaging(() => "page", load);
+  const leave = paging.activate();
+  await expect(paging.request("view-one")).rejects.toThrow();
+  await paging.request("view-two");
+  paging.cancel("view-one");
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(load).toHaveBeenCalledTimes(2);
+  paging.cancel("view-two");
+  leave();
+});
+
+test("a reader joining an in-flight cancelled Find owns recovery of its late failure", async () => {
+  let reject: ((error: Error) => void) | undefined;
+  const load = vi.fn(
+    () =>
+      new Promise<void>((_, fail) => {
+        reject = fail;
+      }),
+  );
+  const paging = new HistoryPaging(() => "page", load);
+  const leave = paging.activate();
+  const find = paging.request("find");
+  const outcome = expect(find).rejects.toThrow();
+  await Promise.resolve();
+  paging.cancel("find");
+  const reader = paging.retryNow("reader");
+  expect(reader).toBe(find);
+  expect(paging.getSnapshot().pending).toBe(true);
+  reject?.(new Error("temporary"));
+  await outcome;
+  expect(paging.getSnapshot().pending).toBe(true);
+  paging.cancel("reader");
+  expect(vi.getTimerCount()).toBe(0);
+  leave();
+});

@@ -1400,7 +1400,13 @@ export function ConversationScreen({
 			readerRestoreAttempts.current.reset();
 		}
 	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
-	const { state: olderHistory, loadOlder: loadOlderPage } = useOlderHistory({
+	const {
+		state: olderHistory,
+		loadOlder: loadOlderPage,
+		findOlder,
+		cancelFind,
+		cancelReader,
+	} = useOlderHistory({
 		store,
 		service,
 		active: Boolean(service) && connected && focused && snapshot.status === "open",
@@ -1454,7 +1460,7 @@ export function ConversationScreen({
 			findLeftTheEnd.current = true;
 			follow.dispatch({ type: "unfollow" });
 		}
-		loadOlderPage();
+		findOlder();
 	});
 	// A search that ends with no match, or find closing, gives the end back to
 	// a list find unfollowed, when the list is still there. A jump to a match
@@ -2098,6 +2104,7 @@ export function ConversationScreen({
 		if (y !== undefined && pagesOlder(follow.state.current, y)) loadOlderPage();
 	}
 	function jumpToLive() {
+		cancelReader();
 		readerHeader.current = false;
 		readerAnchor.current = null;
 		follow.dispatch({ type: "follow" });
@@ -2907,6 +2914,7 @@ export function ConversationScreen({
 										onQuery={(query) => setFind(newFind(query))}
 										onStep={stepFind}
 										onDone={() => {
+											cancelFind();
 											Keyboard.dismiss();
 											setFind(null);
 										}}
@@ -2923,6 +2931,7 @@ export function ConversationScreen({
 										onGlass={navGlass}
 										preview={notesPreview}
 										onPress={() => {
+											cancelFind();
 											Keyboard.dismiss();
 											// Showing your note, the editor opens with the caret at its end.
 											navigation.navigate("NotesSheet", {

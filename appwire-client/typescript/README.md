@@ -109,6 +109,10 @@ active readers with `activate()` and observe `getSnapshot()`/`subscribe()`;
 release readers while their view is inactive. `request()` coalesces concurrent
 reads and retries unresolved pages with exponential backoff capped at 30 seconds,
 without an attempt or duration limit. `retryNow()` is the explicit retry affordance.
+Pass a view or Find consumer identity to `request()`/`retryNow()`; `cancel()` with
+that identity drops only its demand. Inactivity releases the reader, preserving
+pending demand; explicitly leaving history cancels it. An in-flight page can still
+merge, but a late failure cannot revive cancelled demand.
 The supplied page key is an opaque cursor (including any trim boundary), `null`
 for confirmed history end, or `undefined` while history is unavailable. The
 existing history store remains responsible for merging pages and scroll anchors.

@@ -13,6 +13,7 @@ export class HistoryPaging {
   private state: HistoryPagingState = { loading: false, pending: false, error: null, permanent: false };
   private listeners = new Set<() => void>();
   private readers = 0;
+  private consumers = new Set<string>();
   private failures = 0;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private inFlight: Promise<void> | null = null;
@@ -47,8 +48,12 @@ export class HistoryPaging {
     };
   }
 
-  request = (): Promise<void> => {
-    if (this.inFlight !== null) return this.inFlight;
+  request = (consumer = "reader"): Promise<void> => {
+    this.consumers.add(consumer);
+    if (this.inFlight !== null) {
+      if (!this.state.pending) this.publish({ ...this.state, pending: true });
+      return this.inFlight;
+    }
     if (this.state.permanent || this.retry !== null) return Promise.resolve();
     if (this.readers === 0) {
       if (!this.state.pending) this.publish({ ...this.state, pending: true });
@@ -61,12 +66,24 @@ export class HistoryPaging {
     return this.inFlight;
   };
 
-  retryNow = (): Promise<void> => {
-    if (this.inFlight !== null) return this.inFlight;
+  /** Explicitly leaving history cancels only that view or Find demand.
+   * An already-started page can still merge; its failure cannot restart demand. */
+  cancel = (consumer = "reader"): void => {
+    this.consumers.delete(consumer);
+    if (this.consumers.size > 0) return;
+    this.cancelRetry();
+    this.failures = 0;
+    if (this.state.pending) this.publish({ ...this.state, pending: false });
+    this.releaseIdle();
+  };
+
+  retryNow = (consumer = "reader"): Promise<void> => {
+    this.consumers.add(consumer);
+    if (this.inFlight !== null) return this.request(consumer);
     this.cancelRetry();
     this.failures = 0;
     this.publish({ ...this.state, permanent: false });
-    return this.request();
+    return this.request(consumer);
   };
 
   private async read(): Promise<void> {
@@ -83,11 +100,12 @@ export class HistoryPaging {
         throw new Error("Older history is not available yet.");
       }
       this.failures = 0;
+      this.consumers.clear();
       settled = { loading: false, pending: false, error: null, permanent: false };
     } catch (error) {
       this.failures += 1;
       const permanent = isUpgradeRequiredError(error) || mutationErrorData(error)?.mutationOutcome === "targetDeleted";
-      settled = { loading: false, pending: !permanent, error, permanent };
+      settled = { loading: false, pending: this.consumers.size > 0 && !permanent, error, permanent };
       failure = { error };
     }
     // Release the request and arm failure pacing before notifying readers:
@@ -120,7 +138,8 @@ export class HistoryPaging {
     const delay = this.failures === 0 ? 0 : Math.min(1000 * 2 ** Math.min(this.failures - 1, 5), 30_000);
     this.retry = setTimeout(() => {
       this.retry = null;
-      void this.request().catch(() => {});
+      const consumer = this.consumers.values().next().value;
+      if (consumer !== undefined) void this.request(consumer).catch(() => {});
     }, delay);
   }
 }

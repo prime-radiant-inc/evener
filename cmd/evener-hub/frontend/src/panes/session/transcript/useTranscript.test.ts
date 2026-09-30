@@ -6,7 +6,8 @@ import { createElement, type PropsWithChildren, StrictMode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { useTranscript } from "./useTranscript";
+import { useTranscriptScroll } from "./flow/useTranscriptScroll";
+import { resetTranscriptPagingForTests, useTranscript } from "./useTranscript";
 
 // flushUntil drains microtask turns until `done()` reports true - same
 // contract/name as stores/threads.test.ts's own helper (duplicated here:
@@ -58,6 +59,7 @@ function connectFakeClient(): FakeClient {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetTranscriptPagingForTests();
 });
 
 test("model is undefined before the ref is tracked", () => {
@@ -411,4 +413,119 @@ test.each([false, true])("suspends older-page retries and resumes on return (Str
   expect(returned.result.current.model?.turns.map((turn) => turn.id)).toEqual(["older"]);
   expect(attempts).toBe(2);
   returned.unmount();
+});
+
+test("jumping live cancels this pane's recovery without cancelling another pane", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "page" }));
+  let attempts = 0;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    throw new Error("temporary");
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const first = renderHook(() => {
+    const transcript = useTranscript("ref_a", "pane-one");
+    const flow = useTranscriptScroll({
+      ref: "ref_a",
+      model: transcript.model,
+      listRef: { current: null },
+      loadOlder: transcript.loadOlder,
+      cancelOlder: transcript.cancelOlder,
+    });
+    return { transcript, flow };
+  });
+  const second = renderHook(() => useTranscript("ref_a", "pane-two"));
+  await act(async () => {
+    await first.result.current.transcript.loadOlder().catch(() => {});
+  });
+  await act(async () => {
+    await second.result.current.loadOlder();
+  });
+  act(() => first.result.current.flow.jumpToBottom());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(attempts).toBe(2);
+  act(() => second.result.current.cancelOlder());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600_000);
+  });
+  expect(attempts).toBe(2);
+  first.unmount();
+  second.unmount();
+  vi.useRealTimers();
+});
+
+test.each([false, true])(
+  "retains failed demand across client replacement (temporary null: %s)",
+  async (clearClient) => {
+    vi.useFakeTimers();
+    const first = connectFakeClient();
+    first.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "page" }));
+    first.on("thread/turns/list", () => {
+      throw new Error("temporary");
+    });
+    await act(async () => {
+      await threadsStore.getState().ensureThread("ref_a");
+    });
+    const hook = renderHook(() => useTranscript("ref_a"));
+    await act(async () => {
+      await hook.result.current.loadOlder().catch(() => {});
+    });
+    if (clearClient) act(() => connectionStore.setState({ client: null, state: "reconnecting" }));
+    const replacement = new FakeClient("ready");
+    replacement.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "page" }));
+    let attempts = 0;
+    replacement.on("thread/turns/list", (): ThreadTurnsListResponse => {
+      attempts += 1;
+      return {
+        data: [{ id: "healed-turn", status: "completed", itemsView: "full", items: [] }],
+        nextCursor: undefined,
+      };
+    });
+    act(() => connectionStore.getState().connect(replacement));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(attempts).toBe(1);
+    expect(hook.result.current.model?.turns.map((turn) => turn.id)).toContain("healed-turn");
+    hook.unmount();
+    vi.useRealTimers();
+  },
+);
+
+test("does not transfer old demand into a different conversation binding at the same ref", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "page" }));
+  let attempts = 0;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    throw new Error("temporary");
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const hook = renderHook(() => useTranscript("ref_a"));
+  await act(async () => {
+    await hook.result.current.loadOlder().catch(() => {});
+  });
+  act(() =>
+    threadsStore.setState((state) => {
+      const threads = new Map(state.threads);
+      const model = threads.get("ref_a");
+      if (model) threads.set("ref_a", { ...model, instanceId: "different-binding" });
+      return { threads };
+    }),
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600_000);
+  });
+  expect(attempts).toBe(1);
+  hook.unmount();
+  vi.useRealTimers();
 });
