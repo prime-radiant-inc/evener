@@ -170,7 +170,12 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				// sideways and fades at its trailing edge, as the Board's and the
 				// Session's chip rows do.
 				<ChipStrip testID="subagent-filters" onGlass={false}>
-					<FilterChip label="All" count={listTally.total} selected={filter === "all"} onPress={() => setFilter("all")} />
+					<FilterChip
+						label="All"
+						count={listTally.total}
+						selected={filter === "all"}
+						onPress={() => setFilter("all")}
+					/>
 					{STATE_ORDER.filter((state) => listTally[state] > 0).map((state) => (
 						<FilterChip
 							key={state}

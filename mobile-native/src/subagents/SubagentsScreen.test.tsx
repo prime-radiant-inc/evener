@@ -290,7 +290,10 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	expect(shown.indexOf("RUNNING · 2")).toBeLessThan(shown.indexOf("Serving the docs"));
 	const labels = tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Shell job,"));
 	expect(new Set(labels.map((node) => node.props.accessibilityLabel))).toEqual(
-		new Set([`Shell job, npm run lint, 2m, under ${COORDINATOR.title}`, "Shell job, Serving the docs, running · 3m, under Only one"]),
+		new Set([
+			`Shell job, npm run lint, 2m, under ${COORDINATOR.title}`,
+			"Shell job, Serving the docs, running · 3m, under Only one",
+		]),
 	);
 
 	act(() => pressable(tree, "Failed, 1")?.props.onPress());

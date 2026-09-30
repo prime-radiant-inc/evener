@@ -62,8 +62,8 @@ describe("a shell job's row", () => {
 
 	it("reads to VoiceOver as one sentence", () => {
 		const tree = render(<ShellJobRowView row={row("running")} now={NOW} />);
-		expect(
-			tree.root.find((node) => typeof node.props.accessibilityLabel === "string").props.accessibilityLabel,
-		).toBe("Shell job, Serving the docs, running · 4m, under Fix race in tree settle");
+		expect(tree.root.find((node) => typeof node.props.accessibilityLabel === "string").props.accessibilityLabel).toBe(
+			"Shell job, Serving the docs, running · 4m, under Fix race in tree settle",
+		);
 	});
 });

@@ -33,7 +33,13 @@ export const ShellJobRowView = memo(function ShellJobRowView({ row, now }: { row
 			<View style={{ width: 28, height: 22 * scale, alignItems: "center", justifyContent: "center" }}>
 				<Text
 					allowFontScaling={allowFontScaling}
-					style={{ fontFamily: fonts.mono, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: hue }}
+					style={{
+						fontFamily: fonts.mono,
+						fontSize: 17 * scale,
+						lineHeight: 22 * scale,
+						fontWeight: "600",
+						color: hue,
+					}}
 				>
 					$
 				</Text>
