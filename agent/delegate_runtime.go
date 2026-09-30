@@ -1646,14 +1646,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// with no owner check) lets the unleased turn steal the run's follow-up.
 	// sub.driving is the flag every other guard already reads as "a turn is in
 	// flight on this idle child"; it is handed to the run under the same sub.mu
-	// hold that sets running and released by the deferred rollback on every
-	// failure exit.
+	// hold that sets running.
 	//
-	// A resident child's guard was taken before the commit. A child restored
-	// after it (cold) takes its guard here; the id-keyed childCommittedSendStart
-	// claim, taken right after ReserveStart, covers it until then. A freshly
-	// restored child is only found busy if another path installed it first,
-	// and that start is recorded as failed.
+	// A child the send didn't guard before the commit (restored cold, or a
+	// resident replaced since) takes its guard here; the id-keyed
+	// childCommittedSendStart claim covers it until then. Such a child is only
+	// found busy if another path installed it first, and that start is
+	// recorded as failed.
 	if sub != guarded {
 		if guarded != nil {
 			releaseSendDriveGuard(guarded)
