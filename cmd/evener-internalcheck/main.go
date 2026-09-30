@@ -49,6 +49,7 @@ var libraryPackages = []string{
 	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest",
 	"primeradiant.com/evener/execsupport/procgroup",
 	"primeradiant.com/evener/execsupport/shellquote",
+	"primeradiant.com/evener/execsupport/syncio",
 	"primeradiant.com/evener/execsupport/valueexpr",
 }
 
