@@ -168,8 +168,11 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
 
   // The shared label the activity strip's detail uses too, so the pane and the
   // strip word a job identically; undefined when the job carries none (or its
-  // payload could not be read).
-  const command = job === null ? undefined : jobCommandLabel(job);
+  // payload could not be read). Guarded by job id: a pane switched to another
+  // job must never show the previous job's command while the new read is in
+  // flight, while a Refresh of the same job keeps it - the command is immutable
+  // per job, so clearing it on every fetch would only flicker it away.
+  const command = job !== null && job.jobId === jobId ? jobCommandLabel(job) : undefined;
 
   return (
     <PaneScaffold title={jobId} actions={actions}>

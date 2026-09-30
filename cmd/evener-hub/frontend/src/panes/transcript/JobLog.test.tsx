@@ -5,7 +5,7 @@
 // pin.
 
 import type { ActivityJob } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
@@ -96,5 +96,31 @@ describe("JobLog", () => {
 
     expect(await screen.findByTestId("joblog-content")).toBeTruthy();
     expect(screen.queryByTestId("joblog-command")).toBeNull();
+  });
+
+  test("never shows another job's command while the new job's metadata is in flight", async () => {
+    jobGet.mockResolvedValueOnce(job({ jobId: "job_x", command: "first command" }));
+    jobOutput.mockResolvedValue({ tail: "one\n", totalBytes: 4, retainedStart: 0 });
+    const { rerender } = render(<JobLog jobRef="job:job_x" parentRef="ref_root" />);
+    expect((await screen.findByTestId("joblog-command")).textContent).toBe("first command");
+
+    // The second job's metadata read stays in flight, the window in which the
+    // previous job's command could still be on screen.
+    let resolveSecond: (value: unknown) => void = () => {};
+    jobGet.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+    );
+    await act(async () => {
+      rerender(<JobLog jobRef="job:job_y" parentRef="ref_root" />);
+    });
+    expect(screen.queryByTestId("joblog-command")).toBeNull();
+
+    await act(async () => {
+      resolveSecond(job({ jobId: "job_y", command: "second command" }));
+    });
+    expect((await screen.findByTestId("joblog-command")).textContent).toBe("second command");
   });
 });
