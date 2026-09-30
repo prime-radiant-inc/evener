@@ -88,6 +88,16 @@ type delegateTreeController struct {
 	// first once every eligible delegate has failed. Process-local.
 	attentionRestoreDeferred map[string]uint64
 	attentionRestoreSeq      uint64
+	// attentionRestoreFailures counts, per delegate, the consecutive restores
+	// of its cold runtime that failed for a reason that is not transient
+	// (isTransientStartFailure); the drive gives up at
+	// maxDelegateAttentionRestoreFailures. attentionParked holds delegates
+	// whose attention could be neither delivered nor handed to the root: the
+	// drive leaves them alone until new attention arrives or the daemon
+	// restarts. Both are process-local and cleared when the delegate stops
+	// owing attention or its attention is replaced from a transcript fold.
+	attentionRestoreFailures map[string]int
+	attentionParked          map[string]struct{}
 	idleReleaseTimers        map[string]idleReleaseTimerHandle
 	idleReleaseArmSeq        uint64
 	watchEnqueues            map[uint64]*delegateWatchReceipt
@@ -161,6 +171,13 @@ type delegateRuntimeBinding struct {
 	evidence   *delegateGenerationEvidence
 }
 
+// delegateFinalization is a finished generation whose runtime has not yet
+// reported its finalize tail done.
+type delegateFinalization struct {
+	runtime    *Session
+	generation uint64
+}
+
 type delegateLiveState struct {
 	runtime          *Session
 	binding          *delegateRuntimeBinding
@@ -189,6 +206,14 @@ type delegateLiveState struct {
 	// ReportActivityPhase, which resets the baseline to activityAt.
 	quietNotifiedAt time.Time
 	quietClaim      *delegateQuietAttentionClaim
+	// finalizing is the generation FinishGeneration just finished, and its
+	// runtime, while that runtime's own finalize tail is still running: the
+	// aggregate already reads idle, and its parent may already hold the
+	// result, but the child is not ready for another generation until the
+	// tail reports quiescence (ReportFinalizationQuiesced) for that
+	// generation. ReserveStart refuses while the runtime is still resident,
+	// so idle means ready for a send.
+	finalizing *delegateFinalization
 }
 
 type delegateSnapshot struct {

@@ -3252,8 +3252,12 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 				controller.mu.Lock()
 				aggregate := controller.durable[delegateID]
 				runOpen := aggregate != nil && aggregate.CurrentRunOpen
+				// A finished generation whose finalize tail hasn't reported
+				// quiescence still holds the delegate: it takes no start yet.
+				live := controller.live[delegateID]
+				finalizing := live != nil && live.finalizing != nil
 				controller.mu.Unlock()
-				if runOpen {
+				if runOpen || finalizing {
 					return false
 				}
 			}

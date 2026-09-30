@@ -45,7 +45,7 @@ func TestAFailingDelegateDoesNotStarveItsSiblings(t *testing.T) {
 	if got := next(); got != "dlg_b" {
 		t.Fatalf("after dlg_a failed again, pick = %s, want dlg_b", got)
 	}
-	c.clearDelegateAttentionRestoreDeferral("dlg_c")
+	c.delegateAttentionRestored("dlg_c")
 	if got := next(); got != "dlg_c" {
 		t.Fatalf("after dlg_c restored, pick = %s, want dlg_c back at the front", got)
 	}

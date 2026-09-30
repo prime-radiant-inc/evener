@@ -9,8 +9,8 @@ import (
 	"math"
 	"os"
 	"strings"
-	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -452,11 +452,7 @@ func Truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	cut := maxLen
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "…"
+	return runetrim.Cut(s, maxLen) + "…"
 }
 
 func oneLine(s string) string {

@@ -157,9 +157,10 @@ export function TimelineItem({
 			content = isCriticalNotice(item) ? (
 				<ErrorRow
 					title={item.text}
-					detail=""
+					detail={item.hint ?? ""}
 					action={errorActionFor?.({ id: item.id, title: item.text, detail: "", turnId: item.turnId }) ?? null}
 					onAction={onErrorAction}
+					attention={item.tone === "attention"}
 				/>
 			) : (
 				<SystemEvent label={label} text={item.text} expanded={expanded} onToggle={toggle}>
@@ -185,6 +186,7 @@ export function TimelineItem({
 					detail={item.detail}
 					action={errorActionFor?.(item) ?? null}
 					onAction={onErrorAction}
+					attention={item.attention}
 				/>
 			);
 			break;

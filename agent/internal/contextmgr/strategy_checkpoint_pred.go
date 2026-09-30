@@ -120,7 +120,9 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 			// detailed level, with a neutral title and hint so the
 			// classifier's fallback does not stamp it as an error.
 			emitFn(events.EventWarning, events.WarningData{
-				Message: "Predictive checkpoint failed, using deterministic: " + err.Error(),
+				// Bare, as summarizerFailureWarning is: the error can carry a
+				// provider body echoing the conversation.
+				Message: "Predictive checkpoint failed, using deterministic",
 				Source:  string(diagnostic.SourceEvener),
 				Title:   "Context budget",
 				Hint:    "Evener compacted the conversation with its deterministic checkpoint instead. No action needed.",
@@ -150,9 +152,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 		before := s.cm.estimateTokensFor(prof, *history)
 		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
-			emitFn(events.EventWarning, events.WarningData{
-				Message: "LLM summarization failed: " + err.Error(),
-			})
+			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
 			*history = result
 			after := s.cm.estimateTokensFor(prof, *history)
