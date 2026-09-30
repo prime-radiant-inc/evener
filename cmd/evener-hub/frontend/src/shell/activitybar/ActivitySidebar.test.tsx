@@ -43,7 +43,7 @@ test("closed sidebar owns no read and an open tab observes only its own collecti
   await screen.findByRole("button", { name: /inspect/ });
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("radio", { name: "Jobs 2" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Jobs, 2 of 201 running" }));
   await screen.findByText("No jobs at this level.");
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "thread/read")).toHaveLength(1);

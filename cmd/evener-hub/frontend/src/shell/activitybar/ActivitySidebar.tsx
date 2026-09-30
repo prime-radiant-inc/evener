@@ -99,7 +99,11 @@ export function ActivitySidebar() {
               fullWidth
               value={tab}
               onChange={(next) => activitySidebarStore.getState().setTab(next)}
-              options={ACTIVITY_TABS.map((spec) => ({ value: spec.id, label: spec.tabLabel(scope.counts) }))}
+              options={ACTIVITY_TABS.map((spec) => ({
+                value: spec.id,
+                label: spec.tabLabel(scope.counts),
+                accessibleLabel: spec.chipLabel(scope.counts),
+              }))}
             />
           </div>
           {/* key on the leaf: the tab's fold/paging state belongs to the

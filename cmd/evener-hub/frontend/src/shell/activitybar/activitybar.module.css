@@ -150,3 +150,15 @@
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
+
+.tabs [role="radio"] {
+  block-size: auto;
+  min-block-size: var(--tap-min);
+  padding-block: var(--space-1);
+  font-size: var(--font-size-caption);
+}
+
+.tabs [role="radio"] > span {
+  white-space: pre-line;
+  font-variant-numeric: tabular-nums;
+}
