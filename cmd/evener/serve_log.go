@@ -34,21 +34,26 @@ func serveLogAt(w io.Writer, at time.Time, sessionID, format string, args ...any
 		at.UTC().Format(serveLogTimeLayout), sessionID, fmt.Sprintf(format, args...))
 }
 
-// turnFailureSummary renders a failed turn for the daemon log as the failure's
-// kind and HTTP status, never the provider's own error body: a provider body
-// can carry a credential fragment or the user's request text, and this line
-// lands in run/logs/daemon-*.log. It mirrors the pause line's
-// providerFailureSummary (agent/session_attention.go, #3411). "HTTP 401
-// (authentication)", or "sign-in required"; the failure's kind alone when the
-// error carries no HTTP status (#3418).
+// turnFailureSummary renders a failed turn for the daemon log. A provider
+// failure's error body can carry a credential fragment or the user's request
+// text and must never reach run/logs/daemon-*.log, so it is rendered as the
+// failure's kind and HTTP status with no provider text
+// (llm.ProviderFailureSummary, the same summary the pause warning carries).
+// Every other error is Evener's own — a closed session, a refused admission, a
+// configuration diagnosis — and keeps its message so the log still says what
+// failed (#3418).
 func turnFailureSummary(err error) string {
 	if errors.Is(err, llm.ErrSignInRequired) {
 		return "sign-in required"
 	}
-	kind := llm.Kind(err).String()
-	var llmErr llm.Error
-	if errors.As(err, &llmErr) && llmErr.StatusCode() != 0 {
-		return fmt.Sprintf("HTTP %d (%s)", llmErr.StatusCode(), kind)
+	// A configuration diagnosis is Evener's own remediation text, not a
+	// provider body, even when it is attributed to a provider instance.
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		return err.Error()
 	}
-	return kind
+	var llmErr llm.Error
+	if !errors.As(err, &llmErr) {
+		return err.Error()
+	}
+	return llm.ProviderFailureSummary(err)
 }

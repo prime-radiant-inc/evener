@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -21,6 +22,28 @@ func TestTurnFailureSummaryWithholdsProviderBody(t *testing.T) {
 	}
 	if strings.Contains(got, "sk-svcac") {
 		t.Fatalf("turnFailureSummary = %q, want the provider body withheld", got)
+	}
+}
+
+// TestTurnFailureSummaryKeepsEvenerOwnErrors pins the other half: an error
+// Evener itself produced carries no provider body, so the log keeps its
+// message instead of collapsing it to "unknown" (#3418).
+func TestTurnFailureSummaryKeepsEvenerOwnErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"plain error", errors.New("session is closed"), "session is closed"},
+		{"configuration diagnosis", &llm.ConfigurationError{Message: "model is not configured"}, "configuration error: model is not configured"},
+		{"sign-in required", &llm.ConfigurationError{Message: "sign in", Cause: llm.ErrSignInRequired}, "sign-in required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := turnFailureSummary(tc.err); got != tc.want {
+				t.Fatalf("turnFailureSummary = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
