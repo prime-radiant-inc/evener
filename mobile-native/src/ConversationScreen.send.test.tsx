@@ -4029,7 +4029,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			revision,
 			root: {
 				kind: "session",
-				// ActivityList checks the root is the coordinator's thread.
+				// The activity context names the coordinator's thread.
 				sessionId: COORDINATOR.threadId,
 				ref: COORDINATOR.ref,
 				label: COORDINATOR.title,

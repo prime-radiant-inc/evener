@@ -5,7 +5,6 @@ import { installActivityFixture } from "./subagents/sessionActivityTestUtils";
 // detail level. A real `delegate` call settles as soon as its launch receipt
 // returns, so the row's state has to come from the subagent, never the call.
 import {
-	ACTIVITY_REFRESH_MIN_INTERVAL_MS,
 	type EvenerDelegateInfo,
 	hydrateThread,
 	type JobsListResponse,
@@ -571,7 +570,6 @@ describe("a finished subagent's outcome (audit G13)", () => {
 					resources: ["delegates"],
 				},
 			});
-			await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 		});
 		expect(jobsLists(client)).toHaveLength(2);
 		expect(renderedText(screen)).toContain("Finished");
@@ -591,7 +589,6 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		act(() => screen.update(<Transcript delegates={delegates} receivesUpdates={receivesUpdates} inFront={false} />));
 		await act(async () => {
 			screen.update(<Transcript delegates={delegates} receivesUpdates={receivesUpdates} />);
-			await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 		});
 		expect(jobsLists(client)).toHaveLength(reads);
 	});
