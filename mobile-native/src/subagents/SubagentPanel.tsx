@@ -86,10 +86,7 @@ export function SubagentPanel({
 	useEffect(() => {
 		if (!inFront || !client) return;
 		void tree.reload();
-		return client.onNotification((notification) => {
-			if (notification.method === "thread/status/changed" && notification.params.ref === ref) void tree.reload();
-		});
-	}, [inFront, client, tree, ref]);
+	}, [inFront, client, tree]);
 
 	// The stops you asked for, settled against each new tree, with a toast for
 	// each that just stopped. Only the screen in front settles them, so the

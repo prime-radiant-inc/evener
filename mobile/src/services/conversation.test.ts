@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type {
 	AnyNotification,
 	EmptyResponse,
@@ -41,56 +42,21 @@ import type { createActivityService } from "./activity";
 import * as activityModule from "./activity";
 import { createConversationService, type LiveConversationService } from "./conversation";
 
-// --- minimal fake client (cannot import Hub testing modules) ----------------
-
-type RequestHandler = (params: unknown) => unknown | Promise<unknown>;
-
-class FakeAppwireClient {
-	readonly calls: { method: string; params: unknown }[] = [];
+// Script the same lifecycle-capable client surface used by native consumers.
+class FakeAppwireClient extends FakeClient {
 	forceStopCalls: string[] = [];
 	resumeThreadCalls: string[] = [];
-	private readonly handlers = new Map<string, RequestHandler>();
-	private readonly notificationHandlers = new Set<(n: AnyNotification) => void>();
-
-	on<M extends MethodName>(
-		method: M,
-		handler: (params: MethodTypes[M]["params"]) => MethodTypes[M]["result"] | Promise<MethodTypes[M]["result"]>,
-	): void {
-		this.handlers.set(method, handler as unknown as RequestHandler);
+	constructor() {
+		super("ready");
+		this.on("thread/unsubscribe", () => ({}));
 	}
-
-	request<M extends MethodName>(method: M, params: MethodTypes[M]["params"]): Promise<MethodTypes[M]["result"]> {
-		this.calls.push({ method, params });
-		const handler = this.handlers.get(method);
-		if (!handler) {
-			return Promise.reject(new Error(`FakeAppwireClient: no handler for "${method}"`));
-		}
-		return Promise.resolve().then(() => handler(params) as MethodTypes[M]["result"]);
-	}
-
-	onNotification(cb: (n: AnyNotification) => void): () => void {
-		this.notificationHandlers.add(cb);
-		return () => {
-			this.notificationHandlers.delete(cb);
-		};
-	}
-
-	forceStop(ref: string): Promise<void> {
+	override forceStop(ref: string): Promise<void> {
 		this.forceStopCalls.push(ref);
 		return Promise.resolve();
 	}
-
-	resumeThread(ref: string): Promise<{ thread: Thread }> {
+	override resumeThread(ref: string): Promise<{ thread: Thread }> {
 		this.resumeThreadCalls.push(ref);
 		return Promise.resolve({ thread: makeThread() });
-	}
-
-	emitNotification(n: AnyNotification): void {
-		for (const cb of Array.from(this.notificationHandlers)) cb(n);
-	}
-
-	get notificationSubscriberCount(): number {
-		return this.notificationHandlers.size;
 	}
 }
 
@@ -281,7 +247,7 @@ describe("ConversationService", () => {
 				ref: "ref-1",
 				includeTurns: true,
 				subscribe: true,
-				replaceSubscription: true,
+				replaceSubscription: false,
 			});
 		});
 
@@ -1391,12 +1357,12 @@ describe("ConversationService", () => {
 			await service.readProjection("ref-1");
 			const call = client.calls.find((c) => c.method === "thread/read");
 			expect(call).toBeDefined();
-			// M1: exact canonical request — toEqual full object, no extra keys.
+			// The existing lease keeps membership; the rich bounded read still carries its projection fields.
 			expect(call?.params).toEqual({
 				ref: "ref-1",
 				includeTurns: true,
-				subscribe: true,
-				replaceSubscription: true,
+				subscribe: false,
+				replaceSubscription: false,
 				itemsView: "fragment",
 				itemLimit: 40,
 			});
@@ -1695,7 +1661,7 @@ describe("ConversationService", () => {
 				ref: "ref-1",
 				includeTurns: true,
 				subscribe: true,
-				replaceSubscription: true,
+				replaceSubscription: false,
 			});
 		});
 	});

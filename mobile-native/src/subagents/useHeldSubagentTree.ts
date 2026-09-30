@@ -19,16 +19,19 @@ export function useHeldSubagentTree(
 	hubId: string,
 	target: SubagentTreeTarget,
 	client: ConversationClientLike | null,
+	options?: { collections?: boolean },
 ): { tree: SubagentTree; snapshot: SubagentTreeSnapshot };
 export function useHeldSubagentTree(
 	hubId: string,
 	target: SubagentTreeTarget | null,
 	client: ConversationClientLike | null,
+	options?: { collections?: boolean },
 ): { tree: SubagentTree; snapshot: SubagentTreeSnapshot } | null;
 export function useHeldSubagentTree(
 	hubId: string,
 	target: SubagentTreeTarget | null,
 	client: ConversationClientLike | null,
+	{ collections = true }: { collections?: boolean } = {},
 ): { tree: SubagentTree; snapshot: SubagentTreeSnapshot } | null {
 	const ref = target?.ref;
 	const threadId = target?.threadId;
@@ -36,7 +39,7 @@ export function useHeldSubagentTree(
 		() => (ref !== undefined && threadId !== undefined ? subagentTree(hubId, ref, threadId) : null),
 		[hubId, ref, threadId],
 	);
-	useEffect(() => (tree ? holdSubagentTree(tree) : undefined), [tree]);
+	useEffect(() => (tree ? holdSubagentTree(tree, { collections }) : undefined), [tree, collections]);
 	useEffect(() => {
 		if (tree) void tree.setClient(client);
 	}, [tree, client]);
