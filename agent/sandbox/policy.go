@@ -24,12 +24,13 @@ import (
 
 // Mode is the sandbox enforcement mode, selected once at session start and
 // immutable for the session's lifetime — no tool call can relax it. The zero
-// value is ModeOff, so an absent or nil policy is exactly today's behavior.
+// value is ModeOff, so an absent or nil policy applies no sandbox.
 type Mode int
 
 const (
-	// ModeOff applies no sandbox: exactly today's behavior (reads anywhere,
-	// writes confined to the working root as they are now). The zero value.
+	// ModeOff applies no kernel sandbox or workspace boundary to file tools
+	// and command cwd. A derived WriteBlocked role retains its file-tool scope.
+	// The zero value.
 	ModeOff Mode = iota
 	// ModeReadOnly denies all file-tool writes (session tmp excepted) and
 	// confines spawned-process writes to tmp; reads are anywhere minus the

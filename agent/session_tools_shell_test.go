@@ -1577,6 +1577,7 @@ func TestShellToolConfinedCwdOutsideWorkingDirectory(t *testing.T) {
 		{Mode: sandbox.ModeReadOnly}, {Mode: sandbox.ModeWorkspaceWrite}, {Mode: sandbox.ModeRestricted}, {Mode: sandbox.ModeOff, WriteBlocked: true},
 	} {
 		env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+		t.Cleanup(env.Cleanup)
 		env.Sandbox = &policy
 		if _, err := resolveShellWorkingDir(env, t.TempDir()); err == nil {
 			t.Fatalf("policy %+v accepted external cwd", policy)
