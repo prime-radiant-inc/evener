@@ -734,18 +734,14 @@ func TestDelegateSendReleasesAResidentReplacedAfterItsCommit(t *testing.T) {
 	updateSessionTestConfig(held.s, func(cfg *testConfig) {
 		cfg.delegateSendChildResolved = func(sub *subagent) {
 			if sub == resident && swapped.CompareAndSwap(false, true) {
-				manager.mu.Lock()
-				manager.subs[resident.id] = replacement
-				manager.mu.Unlock()
+				manager.track(replacement)
 			}
 		}
 	})
 	// Cleanups run last-registered first: the resident goes back before the
 	// session closes.
 	t.Cleanup(func() {
-		manager.mu.Lock()
-		manager.subs[resident.id] = resident
-		manager.mu.Unlock()
+		manager.track(resident)
 	})
 	executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
 	if !swapped.Load() {
