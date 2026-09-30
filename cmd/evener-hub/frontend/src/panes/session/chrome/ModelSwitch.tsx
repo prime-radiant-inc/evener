@@ -19,7 +19,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
-import { useConnectionStore } from "../../../stores/connection";
+import { onConnectionNotification } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, useToasts } from "../../../widgets";
 import { modelListToCatalog } from "../../../widgets/modelCatalog/catalogClient";
@@ -55,14 +55,13 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // a stale list at once and refreshes it behind the request), so an open
   // picker re-reads it in place rather than showing the old list until it is
   // reopened.
-  const client = useConnectionStore((state) => state.client);
   const [modelsRevision, setModelsRevision] = useState(0);
   useEffect(
     () =>
-      client?.onNotification((n) => {
+      onConnectionNotification((n) => {
         if (n.method === "evener/auth/updated") setModelsRevision((revision) => revision + 1);
       }),
-    [client],
+    [],
   );
 
   async function handlePick(entry: ModelCatalogEntry): Promise<void> {

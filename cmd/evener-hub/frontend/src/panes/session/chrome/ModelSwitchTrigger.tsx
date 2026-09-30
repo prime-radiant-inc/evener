@@ -120,10 +120,6 @@ export function ModelSwitchTrigger({
   // The refreshKey the current list reflects; a new one under an open picker
   // is newer data for the same scope, reloaded in place.
   const loadedRefreshKeyRef = useRef(refreshKey);
-  // Whether a list is on screen with no load in flight: only then can a reload
-  // keep it up. Refs, so the effect below reads them without re-running.
-  const catalogRef = useRef<ModelCatalog | null>(null);
-  const loadingRef = useRef(false);
 
   // Stable across renders (refs + setState only), so the scope-change
   // effect below can honestly depend on it without re-running every render.
@@ -137,15 +133,10 @@ export function ModelSwitchTrigger({
       if (!inPlace) {
         setError(null);
         setLoading(true);
-        loadingRef.current = true;
-        // Nothing is on screen while this loads, and if it fails the error
-        // is: either way no list is left for a later reload to keep.
-        catalogRef.current = null;
       }
       try {
         const loaded = await loader(refresh);
         if (loadGenerationRef.current !== generation) return;
-        catalogRef.current = loaded;
         setCatalog(loaded);
       } catch (err) {
         if (loadGenerationRef.current !== generation) return;
@@ -166,10 +157,7 @@ export function ModelSwitchTrigger({
         // A superseded load clears neither the fresh load's spinner nor its
         // result: without this, a dead request landing mid-fresh-load drops
         // the loading state while the panel still has nothing to show.
-        if (loadGenerationRef.current === generation) {
-          setLoading(false);
-          loadingRef.current = false;
-        }
+        if (loadGenerationRef.current === generation) setLoading(false);
       }
     },
     [],
@@ -194,7 +182,10 @@ export function ModelSwitchTrigger({
   // scope's in-flight request can neither populate the panel nor clobber
   // the fresh catalog. Closed, the bump alone invalidates the dead request.
   // A new refreshKey is newer data for the same scope: an open picker with a
-  // list on screen reloads in place, bypassing the caller's cache.
+  // list on screen reloads in place, bypassing the caller's cache. The list is
+  // on screen only once a load has settled without an error: while a full
+  // load runs, or after one failed, there is nothing for a reload to keep.
+  const listShown = catalog !== null && !loading && error === null;
   useEffect(() => {
     const refreshed = refreshKey !== loadedRefreshKeyRef.current;
     if (loadCatalog === loadedLoaderRef.current && !refreshed) return;
@@ -202,19 +193,18 @@ export function ModelSwitchTrigger({
     loadedRefreshKeyRef.current = refreshKey;
     loadGenerationRef.current += 1;
     if (!open) return;
-    if (refreshed && catalogRef.current !== null && !loadingRef.current) {
+    if (refreshed && listShown) {
       void startLoad(loadGenerationRef.current, loadCatalog, true, true);
     } else {
       // Newer data still bypasses the caller's cache when there is no list
       // to keep; a scope change alone reads through it.
       void startLoad(loadGenerationRef.current, loadCatalog, refreshed || undefined);
     }
-  }, [loadCatalog, refreshKey, open, startLoad]);
+  }, [loadCatalog, refreshKey, open, listShown, startLoad]);
   useEffect(() => {
     if (!connectionRequest || handledConnection.current === connectionRequest) return;
     handledConnection.current = connectionRequest;
     setProviderFilter(connectionRequest.name);
-    catalogRef.current = null;
     setCatalog(null);
     setOpen(true);
     loadedLoaderRef.current = loadCatalog;
