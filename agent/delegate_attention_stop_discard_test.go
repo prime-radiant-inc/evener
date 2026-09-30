@@ -82,7 +82,7 @@ func TestDelegateAttention_LiveStopCompletionDiscardsLateBoundWake(t *testing.T)
 		aggregate.LatestOutcome.Reason != "stopped_by_parent" {
 		t.Fatalf("settled stop aggregate = %#v", aggregate)
 	}
-	if got := len(c.attentionWakeIDs[delegateID]); got != 0 {
+	if got := len(attentionWakeIDsOf(c, delegateID)); got != 0 {
 		t.Fatalf("stop-gated delegate retained %d attention wake IDs", got)
 	}
 	if c.hasPendingDelegateAttention() {
@@ -150,7 +150,7 @@ func TestDelegateAttention_LiveStopSettlementDiscardsBoundAttention(t *testing.T
 		t.Fatalf("settled stop aggregate = %#v", aggregate)
 	}
 
-	if got := len(c.attentionWakeIDs[delegateID]); got != 0 {
+	if got := len(attentionWakeIDsOf(c, delegateID)); got != 0 {
 		t.Fatalf("stop-gated delegate retained %d attention wake IDs", got)
 	}
 	if c.hasPendingDelegateAttention() {
