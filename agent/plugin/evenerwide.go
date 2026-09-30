@@ -31,7 +31,8 @@ func globalCommandsDir() string {
 // git-root→cwd scanning <dir>/.evener/commands, returning commands keyed by
 // bare name. Later scans shadow earlier ones, so the deepest project dir wins
 // and every project command shadows the user-global one. A nil env or empty
-// cwd skips the project walk but still scans the user-global dir.
+// cwd skips the project walk; the user-global dir is still scanned unless
+// EVENER_NO_USER_SKILLS=1 suppresses it (#3487).
 //
 // Discovery is fail-soft: a missing dir is silent, and per-file problems
 // (unreadable dir/file, bad name, malformed frontmatter) skip the file with a
