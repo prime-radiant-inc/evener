@@ -1162,7 +1162,7 @@ func TestStartLaunchRefreshRefusesAfterTheShutdownGate(t *testing.T) {
 	web.waitLaunchRefreshes() // nothing in flight: closes the gate and returns
 
 	web.launchModels.refreshing[""] = true
-	if web.startLaunchRefresh("", 1) {
+	if web.startLaunchRefresh("", 1, appwire.ModelListResponse{}) {
 		t.Fatal("startLaunchRefresh accepted a refresh after the shutdown gate closed")
 	}
 	if web.launchModels.refreshing[""] {
