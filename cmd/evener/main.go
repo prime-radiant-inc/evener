@@ -210,7 +210,7 @@ func mainWithDeps(deps mainDeps) {
 		deps.exit(2)
 		return
 	}
-	if err := rejectAskResponderWithResume(*flags.askResponder, *flags.resume, *flags.resumeLast); err != nil {
+	if err := rejectAskResponderWithResume(*flags.askResponder, *flags.resume, *flags.resumeWith, *flags.resumeLast); err != nil {
 		_, _ = fmt.Fprintf(deps.stderr, "evener: %v\n", err)
 		deps.exit(2)
 		return

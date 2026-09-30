@@ -15,24 +15,25 @@ import (
 	"primeradiant.com/evener/execsupport/procgroup"
 )
 
-// rejectAskResponderWithResume rejects --ask-responder combined with
-// --resume or --resume-last, in the style of
-// rejectPluginSelectionWithResume (plugin_selection_flag.go): a restored
-// session keeps NonInteractive from its persisted snapshot
-// (RestoreSessionConfig, agent/session_init.go, carries no override), and a
-// restored session's pending ask_user calls, if any, carry no
-// askPendingCallArgs (askPendingCallArgs is live-only state, never
-// persisted or rebuilt from the transcript on restore) — so the combination
-// would silently do nothing rather than ever answer a question.
-// --resume-with is deliberately not rejected here, matching
-// rejectPluginSelectionWithResume's own scope: it builds a fresh child
-// session config rather than reusing a fixed one.
-func rejectAskResponderWithResume(askResponder, resume string, resumeLast bool) error {
+// rejectAskResponderWithResume rejects --ask-responder combined with any
+// resume flag, in the style of rejectPluginSelectionWithResume
+// (plugin_selection_flag.go): a restored session keeps NonInteractive from
+// its persisted snapshot (RestoreSessionConfig, agent/session_init.go,
+// carries no override), and --resume-with's child config is a clone of the
+// source session's, restored the same way. A prior one-shot run's session is
+// non-interactive, so ask_user would stay unregistered. A restored session's
+// pending ask_user calls, if any, also carry no askPendingCallArgs
+// (live-only state, never rebuilt from the transcript). Either way the
+// combination would silently do nothing rather than ever answer a question.
+func rejectAskResponderWithResume(askResponder, resume, resumeWith string, resumeLast bool) error {
 	if askResponder == "" {
 		return nil
 	}
 	if resume != "" {
 		return errors.New("--ask-responder cannot be used with --resume")
+	}
+	if resumeWith != "" {
+		return errors.New("--ask-responder cannot be used with --resume-with")
 	}
 	if resumeLast {
 		return errors.New("--ask-responder cannot be used with --resume-last")

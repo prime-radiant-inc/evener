@@ -103,7 +103,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
 		return err
 	}
-	if err := rejectAskResponderWithResume(cfg.askResponder, cfg.resume, cfg.resumeLast); err != nil {
+	if err := rejectAskResponderWithResume(cfg.askResponder, cfg.resume, cfg.resumeWith, cfg.resumeLast); err != nil {
 		return err
 	}
 	if cfg.runTimeout > 0 {

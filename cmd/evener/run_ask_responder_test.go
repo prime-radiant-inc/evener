@@ -297,8 +297,8 @@ func TestRunAskResponderLoopReturnsCancellationInsteadOfSwallowingIt(t *testing.
 
 // TestRejectAskResponderWithResume mirrors
 // TestPluginSelectionResumeConflicts's table: --ask-responder combined with
-// --resume or --resume-last is rejected up front, because a restored
-// session keeps NonInteractive from its persisted snapshot
+// --resume, --resume-with, or --resume-last is rejected up front, because a
+// restored session keeps NonInteractive from its persisted snapshot
 // (RestoreSessionConfig carries no override) and its pending ask_user calls
 // (if any) carry no askPendingCallArgs — the flag would silently do
 // nothing rather than ever ask.
@@ -306,21 +306,23 @@ func TestRejectAskResponderWithResume(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		resume     string
+		resumeWith string
 		resumeLast bool
 		wantErr    bool
 	}{
 		{name: "resume", resume: "session", wantErr: true},
+		{name: "resume-with", resumeWith: "session", wantErr: true},
 		{name: "resume-last", resumeLast: true, wantErr: true},
-		{name: "neither", wantErr: false},
+		{name: "none", wantErr: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := rejectAskResponderWithResume("./responder.sh", test.resume, test.resumeLast)
+			err := rejectAskResponderWithResume("./responder.sh", test.resume, test.resumeWith, test.resumeLast)
 			if (err != nil) != test.wantErr {
 				t.Fatalf("error = %v, wantErr=%v", err, test.wantErr)
 			}
 		})
 	}
-	if err := rejectAskResponderWithResume("", "session", true); err != nil {
+	if err := rejectAskResponderWithResume("", "session", "session", true); err != nil {
 		t.Fatalf("omitted --ask-responder rejected: %v", err)
 	}
 }
