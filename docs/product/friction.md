@@ -528,23 +528,36 @@ available approaches before a decision to block the goal. A blocked outcome
 identifies a concrete impediment the agent cannot resolve. Preserve explicit
 resource limits and cancellation. Implementation remains pending.
 
+**Decision — evaluator authority.** A progress evaluator may eventually block a
+goal, but its first supported finding of stalled work goes to the working agent
+as specific evidence and an opportunity to change approach. A later assessment
+examines progress since that intervention. Blocking requires a persistent,
+concrete impediment after the agent has had an opportunity to recover. An
+unavailable or inconclusive evaluator leaves authorized work running, subject
+to explicit resource limits and cancellation.
+
 **Discuss — progress evaluator.** A side LLM call that reviews recent turns and
 returns a structured assessment is a candidate for evaluating useful progress.
 The evaluator needs the current objective and relevant instructions as well as
 observed actions and results; a short transcript window alone can omit what the
 work is meant to accomplish. Existing [auxiliary call
 routing](../../agent/internal/cheapmodel/caller.go#L60) and [schema-validated
-output](../../llm/generate_object.go#L31) provide implementation references.
-Context selection, evaluation cadence, model choice and the assessment's
-authority over continuation remain open design questions. In particular,
-distinguish feedback that helps the working agent recover from an evaluator
-that can directly end the goal.
+output](../../llm/generate_object.go#L32) provide implementation references.
+Context selection, evaluation cadence and model choice remain open design
+questions. The proposed assessment distinguishes progressing, waiting, stalled
+and uncertain work, cites evidence from the supplied turns and suggests a next
+step. A bounded context window should preserve complete action/result pairs and
+enough earlier progress and dependency context to distinguish new learning from
+repetition. Choosing the evaluator mechanism remains implementation design work.
 
 **Acceptance.** A read-only investigation producing useful evidence can finish
 without false no-progress blocking. Repeated ineffective or failed mutating
 calls prompt reassessment rather than resetting progress solely because of the
 tool category. A blocked outcome explains the unresolved impediment; explicit
-resource limits and cancellation still take effect.
+resource limits and cancellation still take effect. When an evaluator flags a
+stall, an agent that changes approach and makes useful progress continues. A
+persistent, evidenced impediment can lead to blocking after the recovery
+opportunity. An unavailable or inconclusive evaluator does not stop the goal.
 
 ### R07 Restored goals without a wake
 
