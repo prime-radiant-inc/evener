@@ -974,12 +974,20 @@ and [alert policy](../../mobile-native/src/alerts/alertCenter.ts#L345) determine
 temporary presentation. Device/visual prominence remains unqualified. This
 native path does not establish browser banner behavior.
 
-**Discuss.** Keep dormant state discoverable in Hosts while reserving recovery
-attention for interrupted work or pending intent. Decide how informative status
-differs from an actionable interruption.
+**Decision.** Keep unused offline hosts quietly listed in Hosts, with their
+availability discoverable there. Host-offline notices require affected work or a
+pending Connect request; being registered and offline alone does not warrant an
+attention row or a general warning. Show relevant connection and recovery status
+alongside the affected work, continue automatic recovery, and request input only
+when the user needs to supply information or make a decision. Implementation
+remains pending.
 
-**Acceptance.** A registered unused host causes no blocked-work alert. Losing a
-host needed by active work produces a relevant notice that clears on recovery.
+**Acceptance.** A registered unused host causes no attention row or offline
+banner. Its availability remains visible in Hosts. Losing a host needed by work,
+or awaiting an explicit Connect request, produces relevant recovery status that
+clears on recovery or cancellation. Determine affected work independently of
+which session pages the client has loaded, so an incomplete local view cannot
+suppress a relevant notice. Routine recovery requires no user action.
 
 ## Agent capabilities and terminal workflow
 
