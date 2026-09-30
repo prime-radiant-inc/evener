@@ -253,6 +253,70 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 	return added, nil, plan, openEvent != nil, nil
 }
 
+// clearResolvedDelegateAttention lowers a delegate's lingering NeedsAttention
+// projection once its transcript holds no unresolved attention. A resolution
+// can outrun the committed attention run that would otherwise emit the clearing
+// event (acceptDelegateAttention makes the marker durable first, and a
+// later-declined CommitStart leaves the journal's last event at true), and the
+// transcript-driven drive is the only witness of that state, so it reconciles
+// the projection itself rather than waiting for the next bootstrap. An empty
+// fold is authoritative: a wake ID is only ever noted beside a durable
+// transcript entry, so no entry means the attention resolved.
+func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID string) error {
+	if c == nil || delegateID == "" {
+		return nil
+	}
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
+	c.mu.Lock()
+	aggregate := c.durable[delegateID]
+	stateDir := c.stateDir
+	if aggregate == nil || !aggregate.NeedsAttention {
+		c.mu.Unlock()
+		return nil
+	}
+	transcriptRef := aggregate.Descriptor.TranscriptRef
+	c.mu.Unlock()
+
+	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
+	if err != nil {
+		return err
+	}
+	fold, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return err
+	}
+	if len(fold.pendingIDs()) != 0 {
+		return nil
+	}
+
+	c.mu.Lock()
+	aggregate = c.durable[delegateID]
+	if aggregate == nil || !aggregate.NeedsAttention {
+		c.mu.Unlock()
+		return nil
+	}
+	if _, err := c.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateAttentionChanged,
+		DelegateID: delegateID,
+		AttentionChanged: &delegatestore.DelegateAttentionChanged{
+			NeedsAttention: false,
+		},
+	}); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	c.replaceDelegateAttentionLocked(delegateID, nil)
+	c.evidenceVersion++
+	plan := c.capturedPlanLocked(delegateID)
+	c.mu.Unlock()
+	c.emitDelegateUpdate(plan)
+	return nil
+}
+
 func (c *delegateTreeController) delegateAttentionOpenEventLocked(delegateID string) (*delegatestore.Event, error) {
 	aggregate := c.durable[delegateID]
 	if aggregate == nil {
