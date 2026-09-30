@@ -667,7 +667,12 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	// refused as target_busy — the send's finalization wait covers only the
 	// finalizing refusal, not a drive in flight — so wait for the child to
 	// let everything go before asserting the resume starts.
-	waitForSubagentQuiescent(t, fixture.child, "quiescent after post-finalization attention")
+	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "quiescent child after post-finalization attention", func() bool {
+		fixture.child.mu.Lock()
+		defer fixture.child.mu.Unlock()
+		return !fixture.child.startBlockedLocked()
+	})
 	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
 		cfg.subagentAfterFinalStatePublish = nil
 	})
@@ -814,7 +819,12 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	}
 	// The tail's post-done machinery can still hold the child when done has
 	// fired; the resume this asserts is the one that machinery has let go.
-	waitForSubagentQuiescent(t, child, "quiescent after fatal-run finalize")
+	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "quiescent child after fatal-run finalize", func() bool {
+		child.mu.Lock()
+		defer child.mu.Unlock()
+		return !child.startBlockedLocked()
+	})
 	explicitResume := (delegateRuntime{owner: parent}).send(context.Background(), result.DelegateID, "resume after fatal run", 0).result
 	if explicitResume.Err != nil || explicitResume.Action != "started" {
 		t.Fatalf("explicit child resume = %+v, want started", explicitResume)
@@ -1170,27 +1180,6 @@ func waitForOwnedJobDrainGeneration(t *testing.T, child *subagent, entered <-cha
 	case <-done:
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatalf("%s did not finish", description)
-	}
-}
-
-// waitForSubagentQuiescent waits for the child to hold no in-flight run,
-// drive, or finalizer: the state a fresh send requires. done firing is not
-// enough — the finalize tail closes done only after re-arming any attention
-// still owed, and that re-armed drive keeps the child busy past done, so a
-// send that follows done alone races it.
-func waitForSubagentQuiescent(t *testing.T, child *subagent, description string) {
-	t.Helper()
-	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Millisecond) {
-		child.mu.Lock()
-		startBlocked := child.startBlockedLocked()
-		child.mu.Unlock()
-		if !startBlocked {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: child still busy (running/driving/finalizing/dispose-gated) after 30s", description)
-		}
 	}
 }
 
