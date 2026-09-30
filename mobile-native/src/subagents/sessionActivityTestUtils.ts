@@ -1,9 +1,7 @@
 // Typed external activity replies for native tests that share the rich row fixtures.
 import {
 	type ActivityDelegate,
-	type ActivityJob,
 	type ActivityTree,
-	type JobActivityJob,
 	type Thread,
 	type SessionActivityContext,
 	type SessionActivityCounts,
@@ -18,12 +16,12 @@ import {
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 
-// The fields a hub's activity rows carry (appwire-client types.gen.ts): a
-// SessionDelegate's optional fields, which the adapter copies beside the ones
-// it always sets, and every JobActivityJob field. A rich fixture's other
-// fields (a report message, a mandate, a resolved model, timings, origin ids
-// and the like) come from the evener/jobs/list tree's shape, so the adapter
-// never passes them on and a test can't pass on data these reads don't send.
+// The optional SessionDelegate fields a hub's delegate rows carry, which the
+// adapter copies beside the ones it always sets. A rich fixture's other
+// ActivityDelegate fields (a report message, a mandate, a resolved model,
+// timings, origin ids and the like) belong to the activity tree's shape, so
+// the adapter never passes them on and a test can't pass on data these reads
+// don't send.
 const DELEGATE_FIELDS = [
 	"outcome",
 	"reason",
@@ -37,27 +35,6 @@ const DELEGATE_FIELDS = [
 	"usage",
 	"worktree",
 ] as const satisfies readonly (keyof ActivityDelegate & keyof SessionDelegate)[];
-const JOB_FIELDS = [
-	"jobId",
-	"ownerSessionId",
-	"ownerRef",
-	"transcriptRef",
-	"type",
-	"status",
-	"outcome",
-	"terminal",
-	"background",
-	"hasOutput",
-	"description",
-	"command",
-	"task",
-	"reason",
-	"startedAt",
-	"endedAt",
-	"exitCode",
-	"outputBytes",
-	"lastOutputAt",
-] as const satisfies readonly (keyof ActivityJob & keyof JobActivityJob)[];
 
 function definedFields<T extends object, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {
 	const picked: Partial<Pick<T, K>> = {};
@@ -86,8 +63,11 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 		if (node.branch.error) issues.push({ ref: node.ref, code: "unavailable" });
 		if (node.branch.truncated) continuation ??= node.branch.continuation ?? "remaining";
 		for (const entry of node.entries) {
-			if (entry.kind === "shell") jobs.push(definedFields(entry.job, JOB_FIELDS));
-			else {
+			if (entry.kind === "shell") {
+				// A hub's job row is a JobActivityJob, which has no parentDelegateId.
+				const { parentDelegateId: _parentDelegateId, ...job } = entry.job;
+				jobs.push(job);
+			} else {
 				const d = entry.delegate;
 				// The hub reports a finished delegate as idle.
 				const state = d.terminal === true ? "idle" : "running";
