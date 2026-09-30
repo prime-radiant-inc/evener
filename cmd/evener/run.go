@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/syncio"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/plugins"
@@ -123,7 +124,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// write to cfg.stderr from different goroutines. Every read of
 	// cfg.stderr after this point — including the closures captured
 	// below — sees the synchronized writer.
-	cfg.stderr = newSyncWriter(cfg.stderr)
+	cfg.stderr = syncio.NewWriter(cfg.stderr)
 	if cfg.workDir == "" {
 		wd, err := runGetwd()
 		if err != nil {
