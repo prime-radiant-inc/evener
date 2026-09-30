@@ -212,10 +212,17 @@ func TestNavigationChildSummaryCapsItsOwnWatches(t *testing.T) {
 	if len(parent.Watches) != 0 || parent.OmittedWatches != 0 {
 		t.Fatalf("parent watches = %+v / omitted %d, want none", parent.Watches, parent.OmittedWatches)
 	}
-	if len(parent.Children) != 1 {
-		t.Fatalf("parent children = %+v, want the child summary", parent.Children)
+	// The nested original no longer rides the list row; it arrives through
+	// the parent's subagents page, capped exactly like a root row.
+	location, ok := projection.Location("local:parent")
+	if !ok || location.Session == nil || len(location.Session.Children) != 0 {
+		t.Fatalf("location = %#v found=%v, want shallow", location, ok)
 	}
-	child := parent.Children[0]
+	page, ok := projection.SubagentsPage("local:parent", 0, 50)
+	if !ok || len(page.Sessions) != 1 {
+		t.Fatalf("subagents page = %#v found=%v, want the child summary", page, ok)
+	}
+	child := page.Sessions[0]
 	if len(child.Watches) != maxNavigationWatches {
 		t.Fatalf("child kept watches = %d, want the cap %d", len(child.Watches), maxNavigationWatches)
 	}

@@ -23,7 +23,9 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
-func TestNavigationSectionAppliesRecursiveBounds(t *testing.T) {
+func TestNavigationSectionFlattensDeepTrees(t *testing.T) {
+	// A 40-deep subagent chain no longer costs the list anything: the row is
+	// flat, and the tree arrives through the per-session location instead.
 	projection, err := buildNavigationProjection(navigationBuildInputs{
 		GenerationID: "generation",
 		Revision:     7,
@@ -33,14 +35,21 @@ func TestNavigationSectionAppliesRecursiveBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	section := projection.LivePage(0, 50)
-	if !section.Truncated {
-		t.Fatal("deep section must report truncation")
+	if section.Truncated {
+		t.Fatal("a deep tree is one flat row; nothing truncates")
 	}
-	if got := countNavigationNodes(section.Sessions); got > maxNavigationNodes {
-		t.Fatalf("nodes=%d, max=%d", got, maxNavigationNodes)
+	if got, want := len(section.Sessions), 1; got != want {
+		t.Fatalf("rows=%d, want %d", got, want)
 	}
-	if got := navigationDepth(section.Sessions); got > maxNavigationDepth {
-		t.Fatalf("depth=%d, max=%d", got, maxNavigationDepth)
+	if got := len(section.Sessions[0].Children); got != 0 {
+		t.Fatalf("list row carries %d children, want none", got)
+	}
+	page, ok := projection.SubagentsPage("local:session-40", 0, 50)
+	if !ok || len(page.Sessions) != 1 {
+		t.Fatalf("root's subagents page missing: %#v found=%v", page, ok)
+	}
+	if got := navigationDepth(page.Sessions[0].Children); got == 0 {
+		t.Fatal("the subagents resource must carry the chain the list dropped")
 	}
 }
 
@@ -91,6 +100,150 @@ func TestNavigationManifestHasNoRowsAndLocationHasSummary(t *testing.T) {
 	}
 	if _, ok := any(manifest).(hubapi.NavigationSessionSummary); ok {
 		t.Fatal("manifest must not contain navigation rows")
+	}
+}
+
+// The flat-lists contract: rows in the section, pin, and project lists carry
+// NO children - subagents and fork originals are served by the per-session
+// location instead.
+func TestNavigationListsCarryNoChildren(t *testing.T) {
+	parent := hubcore.TreeNode{ID: "session-parent", Title: "parent", Kind: "session", State: "idle", Children: []hubcore.TreeNode{
+		{ID: "session-sub", Title: "sub", Kind: "subagent", State: "active"},
+		{ID: "session-original", Title: "original", Kind: "fork", State: "ended"},
+	}}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation", Revision: 2,
+		Tree: hubcore.Tree{Live: []hubcore.TreeNode{parent}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := projection.LivePage(0, 50)
+	if got, want := len(section.Sessions), 1; got != want {
+		t.Fatalf("rows=%d, want %d", got, want)
+	}
+	if got := len(section.Sessions[0].Children); got != 0 {
+		t.Fatalf("list row carries %d children, want none (agents and originals are the location's tree)", got)
+	}
+}
+
+// The per-session subagents API: a paged resource carries the session's
+// direct children, kinds and nesting intact at every depth the caps allow.
+// The location itself stays shallow - status, jobs, watches, tallies - so
+// fetching one session's detail never pays for its tree.
+func TestNavigationSubagentsPageCarriesTheChildTree(t *testing.T) {
+	grandchild := hubcore.TreeNode{ID: "session-grand", Title: "grand", Kind: "subagent", State: "active"}
+	parent := hubcore.TreeNode{ID: "session-parent", Title: "parent", Kind: "session", State: "active", Children: []hubcore.TreeNode{
+		{ID: "session-sub", Title: "sub", Kind: "subagent", State: "active", Children: []hubcore.TreeNode{grandchild}},
+		{ID: "session-original", Title: "original", Kind: "fork", State: "ended"},
+	}}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation", Revision: 2,
+		Tree:         hubcore.Tree{Live: []hubcore.TreeNode{parent}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	location, ok := projection.Location("local:session-parent")
+	if !ok || location.Session == nil {
+		t.Fatalf("location missing: %#v", location)
+	}
+	if got := len(location.Session.Children); got != 0 {
+		t.Fatalf("location carries %d children, want none - the tree is the subagents resource's", got)
+	}
+	page, ok := projection.SubagentsPage("local:session-parent", 0, 50)
+	if !ok {
+		t.Fatal("subagents page missing for a session with children")
+	}
+	children := page.Sessions
+	if got, want := len(children), 2; got != want {
+		t.Fatalf("children=%d, want %d", got, want)
+	}
+	if children[0].Kind != "subagent" || children[1].Kind != "fork" {
+		t.Fatalf("child kinds=%q,%q, want subagent,fork", children[0].Kind, children[1].Kind)
+	}
+	if got, want := len(children[0].Children), 1; got != want || children[0].Children[0].SessionID != "session-grand" {
+		t.Fatalf("grandchild missing under the subagent: %#v", children[0].Children)
+	}
+	// A descendant's own page carries its subtree too.
+	sub, ok := projection.SubagentsPage("local:session-sub", 0, 50)
+	if !ok || len(sub.Sessions) != 1 || sub.Sessions[0].SessionID != "session-grand" {
+		t.Fatalf("subagent page=%#v found=%v, want its child", sub, ok)
+	}
+}
+
+// Direct children page like every other list: the page cap and offset are
+// real, and remaining accounts the rest - no child is ever unreachable.
+// Nested fan-out past the per-level cap keeps its passive accounting.
+func TestNavigationSubagentsPagePagesAndAccounts(t *testing.T) {
+	children := make([]hubcore.TreeNode, maxNavigationChildren+7)
+	for i := range children {
+		children[i] = hubcore.TreeNode{ID: fmt.Sprintf("session-sub-%03d", i), Title: "sub", Kind: "subagent", State: "idle"}
+	}
+	// One child's own fan-out exceeds the per-level cap: nested sheds stay
+	// passive, accounted on that child.
+	children[0].Children = make([]hubcore.TreeNode, maxNavigationChildren+3)
+	for i := range children[0].Children {
+		children[0].Children[i] = hubcore.TreeNode{ID: fmt.Sprintf("session-grand-%03d", i), Title: "grand", Kind: "subagent", State: "idle"}
+	}
+	parent := hubcore.TreeNode{ID: "session-parent", Title: "parent", Kind: "session", State: "active", Children: children}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation", Revision: 2,
+		Tree:         hubcore.Tree{Live: []hubcore.TreeNode{parent}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := projection.SubagentsPage("local:session-parent", 0, 50)
+	if !ok {
+		t.Fatal("subagents page missing")
+	}
+	if got, want := len(first.Sessions), maxNavigationChildren; got != want {
+		t.Fatalf("page one rows=%d, want the %d cap", got, want)
+	}
+	if got, want := first.Remaining, 7; got != want {
+		t.Fatalf("page one remaining=%d, want %d", got, want)
+	}
+	if got, want := first.Sessions[0].MoreSubagents, 3; got != want {
+		t.Fatalf("nested more_subagents=%d, want %d", got, want)
+	}
+	if got, want := first.Sessions[0].OmittedDescendants, 3; got != want {
+		t.Fatalf("nested omitted_descendants=%d, want %d", got, want)
+	}
+	second, ok := projection.SubagentsPage("local:session-parent", 50, 50)
+	if !ok {
+		t.Fatal("subagents page two missing")
+	}
+	if got, want := len(second.Sessions), 7; got != want {
+		t.Fatalf("page two rows=%d, want %d", got, want)
+	}
+	if got, want := second.Remaining, 0; got != want {
+		t.Fatalf("page two remaining=%d, want %d", got, want)
+	}
+}
+
+// The needs-you bubble the children walk used to provide, as a count the
+// hub computes at projection time: subagent descendants waiting on a person.
+func TestNavigationRowCountsNeedsYouSubagents(t *testing.T) {
+	parent := hubcore.TreeNode{ID: "session-parent", Title: "parent", Kind: "session", State: "active", Children: []hubcore.TreeNode{
+		// An approval blocks mid-tool, so the wire state stays active and the
+		// escalation folds it to awaiting; a pending ask reports awaiting.
+		{ID: "session-blocked", Title: "blocked", Kind: "subagent", State: "active", ApprovalPending: true},
+		{ID: "session-asking", Title: "asking", Kind: "subagent", State: "awaiting", AskPending: true},
+		{ID: "session-quiet", Title: "quiet", Kind: "subagent", State: "active"},
+		{ID: "session-original", Title: "original", Kind: "fork", State: "ended", AskPending: true},
+	}}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation", Revision: 2,
+		Tree:         hubcore.Tree{Live: []hubcore.TreeNode{parent}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := projection.LivePage(0, 50).Sessions[0]
+	// The fork original is not a subagent; only the two waiting subagents count.
+	if got, want := row.NeedsYouSubagents, 2; got != want {
+		t.Fatalf("needs_you_subagents=%d, want %d", got, want)
 	}
 }
 
@@ -1017,8 +1170,19 @@ func TestNavigationProjectionEnforcesExactEncodedCeilings(t *testing.T) {
 	}
 	section := projection.LivePage(0, 50)
 	encoded, _ := json.Marshal(section)
-	if len(encoded) > maxNavigationResponseBytes || !section.Truncated || countNavigationNodes(section.Sessions) > maxNavigationNodes {
-		t.Fatalf("section bytes=%d truncated=%v nodes=%d", len(encoded), section.Truncated, countNavigationNodes(section.Sessions))
+	// List rows are flat now: the page holds every root untruncated under the
+	// byte ceiling, and the fixture's children no longer ride the list (they
+	// are served by the per-session subagents resource instead).
+	if len(encoded) > maxNavigationResponseBytes || section.Truncated {
+		t.Fatalf("section bytes=%d truncated=%v, want the flat page complete under %d bytes", len(encoded), section.Truncated, maxNavigationResponseBytes)
+	}
+	if len(section.Sessions) != len(roots) {
+		t.Fatalf("flat page rows=%d, want all %d roots", len(section.Sessions), len(roots))
+	}
+	for index, row := range section.Sessions {
+		if len(row.Children) != 0 {
+			t.Fatalf("row %d carries %d children, want a flat list row", index, len(row.Children))
+		}
 	}
 	catalog, err := projection.CatalogPage(navigationResourceProjects, 0, 100)
 	if err != nil {
@@ -1088,31 +1252,11 @@ func TestNavigationByteTruncatedCatalogContinuationIsContiguous(t *testing.T) {
 }
 
 func TestNavigationByteTruncatedProjectPageContinuationIsContiguous(t *testing.T) {
-	rows := make([]hubcore.TreeNode, 50)
-	for root := range rows {
-		// Forty roots of fifty total nodes exactly reach the node ceiling, so
-		// any missing top-level root below is caused by the byte envelope.
-		children := make([]hubcore.TreeNode, 49)
-		for child := range children {
-			children[child] = hubcore.TreeNode{
-				ID:      fmt.Sprintf("session-%03d-%03d", root, child),
-				Title:   strings.Repeat("t", maxNavigationTitleRunes),
-				Project: strings.Repeat("p", maxNavigationLabelRunes),
-				Branch:  strings.Repeat("b", maxNavigationLabelRunes),
-				Kind:    "subagent",
-				State:   "idle",
-			}
-		}
-		rows[root] = hubcore.TreeNode{
-			ID:       fmt.Sprintf("session-root-%03d", root),
-			Title:    strings.Repeat("t", maxNavigationTitleRunes),
-			Project:  strings.Repeat("p", maxNavigationLabelRunes),
-			Branch:   strings.Repeat("b", maxNavigationLabelRunes),
-			Kind:     "session",
-			State:    "idle",
-			Children: children,
-		}
-	}
+	// Flat list rows carry no children, so the byte overflow rides on the
+	// rows themselves: fifty max-field rows with fat running jobs, each
+	// untrimmable, so any missing top-level row below is caused by the byte
+	// envelope shedding whole rows.
+	rows := navigationMaxFieldSectionNodes(time.Unix(1_700_000_000, 0).UTC())
 	projection, err := buildNavigationProjection(navigationBuildInputs{
 		GenerationID: "generation",
 		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{
@@ -1187,7 +1331,7 @@ func TestNavigationProjectionValidatesIdentitiesAndTruncatesWorkingDir(t *testin
 	}
 }
 
-func TestNavigationProjectionCapsChildrenAndPreservesRowFields(t *testing.T) {
+func TestNavigationProjectionPreservesRowFieldsAndCapsTheLocationTree(t *testing.T) {
 	children := make([]hubcore.TreeNode, maxNavigationChildren+1)
 	for index := range children {
 		children[index] = hubcore.TreeNode{ID: fmt.Sprintf("session-child-%03d", index), Title: "child", Kind: "fork", State: "ended"}
@@ -1199,11 +1343,28 @@ func TestNavigationProjectionCapsChildrenAndPreservesRowFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := projection.LivePage(0, 50).Sessions[0]
-	if len(row.Children) != maxNavigationChildren || row.OmittedDescendants != 1 {
-		t.Fatalf("children=%d omitted=%d", len(row.Children), row.OmittedDescendants)
+	// The list row is flat: every field rides the row itself, children nowhere.
+	if len(row.Children) != 0 {
+		t.Fatalf("list row carries %d children, want none", len(row.Children))
 	}
 	if row.Ref != "local:session-root" || row.HostID != "local" || row.SessionID != "session-root" || row.Title != root.Title || row.Project != root.Project || row.State != root.State || row.Kind != root.Kind || row.Branch != root.Branch || !row.Favorite || !row.Rename || !row.Live || !row.AskPending || !row.ApprovalPending || !row.Dormant || row.UpdatedAt == nil || !row.UpdatedAt.Equal(updated) {
 		t.Fatalf("row fields diverged: %#v", row)
+	}
+	// The fork-original cap accounting lives on the subagents page, the only
+	// resource that still carries children; the location stays shallow.
+	location, ok := projection.Location("local:session-root")
+	if !ok || location.Session == nil {
+		t.Fatalf("location missing: %#v", location)
+	}
+	if len(location.Session.Children) != 0 {
+		t.Fatalf("location carries %d children, want none", len(location.Session.Children))
+	}
+	page, ok := projection.SubagentsPage("local:session-root", 0, 50)
+	if !ok {
+		t.Fatal("subagents page missing for a session with fork originals")
+	}
+	if len(page.Sessions) != maxNavigationChildren || page.Remaining != 1 {
+		t.Fatalf("subagents page rows=%d remaining=%d, want the %d cap and 1 remaining", len(page.Sessions), page.Remaining, maxNavigationChildren)
 	}
 }
 
@@ -1382,26 +1543,6 @@ func TestNavigationFittingRowOutweighsTheCountsItShrinks(t *testing.T) {
 	}
 }
 
-func TestNavigationProjectionCutsTwoThousandNodesBeforeByteLimit(t *testing.T) {
-	roots := make([]hubcore.TreeNode, 40)
-	for root := range roots {
-		children := make([]hubcore.TreeNode, 50)
-		for child := range children {
-			children[child] = hubcore.TreeNode{ID: fmt.Sprintf("session-node-%03d-%03d", root, child), Title: "small", Kind: "subagent", State: "idle"}
-		}
-		roots[root] = hubcore.TreeNode{ID: fmt.Sprintf("session-node-root-%03d", root), Title: "small", Kind: "session", State: "idle", Children: children}
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: roots}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	section := projection.LivePage(0, 50)
-	encoded, _ := json.Marshal(section)
-	if got := countNavigationNodes(section.Sessions); got != maxNavigationNodes || !section.Truncated || len(encoded) >= maxNavigationResponseBytes {
-		t.Fatalf("nodes=%d truncated=%v bytes=%d", got, section.Truncated, len(encoded))
-	}
-}
-
 func TestNavigationProjectionFingerprintSurvivesReturnedOutputMutation(t *testing.T) {
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{{ID: "session", Title: "before", Kind: "session", State: "idle"}}}})
 	if err != nil {
@@ -1421,11 +1562,10 @@ func TestNavigationProjectionFingerprintSurvivesReturnedOutputMutation(t *testin
 func oversizeNavigationRoots() []hubcore.TreeNode {
 	roots := make([]hubcore.TreeNode, 40)
 	for root := range roots {
-		children := make([]hubcore.TreeNode, 50)
-		for child := range children {
-			children[child] = hubcore.TreeNode{ID: fmt.Sprintf("session-log-%03d-%03d", root, child), Title: strings.Repeat("t", maxNavigationTitleRunes), Project: strings.Repeat("p", maxNavigationLabelRunes), Branch: strings.Repeat("b", maxNavigationLabelRunes), Kind: "subagent", State: "idle"}
-		}
-		roots[root] = hubcore.TreeNode{ID: fmt.Sprintf("session-log-root-%03d", root), Title: strings.Repeat("t", maxNavigationTitleRunes), Project: strings.Repeat("p", maxNavigationLabelRunes), Branch: strings.Repeat("b", maxNavigationLabelRunes), Kind: "session", State: "idle", Children: children}
+		// Flat list rows carry no children, so the overflow rides on the rows
+		// themselves: twelve fat running jobs make each root untrimmable.
+		id := fmt.Sprintf("session-log-root-%03d", root)
+		roots[root] = hubcore.TreeNode{ID: id, Title: strings.Repeat("t", maxNavigationTitleRunes), Project: strings.Repeat("p", maxNavigationLabelRunes), Branch: strings.Repeat("b", maxNavigationLabelRunes), Kind: "session", State: "idle", RunningJobs: navigationFatRunningJobs(id, 12)}
 	}
 	return roots
 }
@@ -1436,19 +1576,6 @@ func deepNavigationNode(depth int) hubcore.TreeNode {
 		node.Children = []hubcore.TreeNode{deepNavigationNode(depth - 1)}
 	}
 	return node
-}
-
-func countNavigationNodes(rows []hubapi.NavigationSessionSummary) int {
-	count := 0
-	var visit func([]hubapi.NavigationSessionSummary)
-	visit = func(nodes []hubapi.NavigationSessionSummary) {
-		for _, node := range nodes {
-			count++
-			visit(node.Children)
-		}
-	}
-	visit(rows)
-	return count
 }
 
 func navigationDepth(rows []hubapi.NavigationSessionSummary) int {

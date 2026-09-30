@@ -374,8 +374,11 @@ func TestNavigationReadV2FitsProductionMaxFieldSectionToExactResponseBudget(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(encoded) > maxNavigationResponseBytes || len(encoded) < maxNavigationResponseBytes-4096 {
-		t.Fatalf("normalized v2 response bytes=%d, want tightly fitted at or below %d", len(encoded), maxNavigationResponseBytes)
+	// Rows are the sheddable unit now (a fat row is ~56 KB, far over the old
+	// child-sized 4096 band), so convergence is tight at row granularity: never
+	// over the cap, never more than two rows under it.
+	if len(encoded) > maxNavigationResponseBytes || len(encoded) < maxNavigationResponseBytes-128*1024 {
+		t.Fatalf("normalized v2 response bytes=%d, want fitted at or below %d within two rows", len(encoded), maxNavigationResponseBytes)
 	}
 }
 
@@ -623,30 +626,49 @@ func TestNavigationOversizedLocationWatchStaysServed(t *testing.T) {
 	}
 }
 
+// navigationMaxFieldSectionNodes builds a flat live list that overflows the
+// response budget. Lists carry no children anymore, so the oversize rides on
+// the rows themselves: each carries ten jobs with full-length commands
+// (untrimmable payload - the watch trim levels cannot shrink a job), so the
+// fitter must shed whole rows, the granularity flat lists leave it.
 func navigationMaxFieldSectionNodes(now time.Time) []hubcore.TreeNode {
-	const roots = 40
+	const roots = 50
+	// Twelve jobs make a row ~56 KB: the fitted snapshot sheds rows to fit
+	// (35-36 kept), but a complete delta touching every row re-encodes ~2.8
+	// MB and must fall back to a fresh snapshot.
+	const jobsPerRow = 12
 	rows := make([]hubcore.TreeNode, roots)
-	next := 0
-	makeNode := func() hubcore.TreeNode {
-		next++
-		return hubcore.TreeNode{
-			ID:        fmt.Sprintf("max-field-%04d", next),
-			Title:     strings.Repeat("t", maxNavigationTitleRunes),
-			Project:   strings.Repeat("p", maxNavigationLabelRunes),
-			Branch:    strings.Repeat("b", maxNavigationLabelRunes),
-			State:     "active",
-			Kind:      "session",
-			UpdatedAt: now,
-		}
-	}
 	for root := range rows {
-		rows[root] = makeNode()
-		rows[root].Children = make([]hubcore.TreeNode, 49)
-		for child := range rows[root].Children {
-			rows[root].Children[child] = makeNode()
+		rows[root] = hubcore.TreeNode{
+			ID:          fmt.Sprintf("max-field-%04d", root),
+			Title:       strings.Repeat("t", maxNavigationTitleRunes),
+			Project:     strings.Repeat("p", maxNavigationLabelRunes),
+			Branch:      strings.Repeat("b", maxNavigationLabelRunes),
+			State:       "active",
+			Kind:        "session",
+			UpdatedAt:   now,
+			RunningJobs: navigationFatRunningJobs(fmt.Sprintf("%04d", root), jobsPerRow),
 		}
 	}
 	return rows
+}
+
+// navigationFatRunningJobs builds running jobs with full-length commands. A
+// job's command is capped at maxNavigationFullCommandRunes and no watch trim
+// level shrinks a job, so a row carrying enough of them is untrimmable
+// payload and the fitter must shed whole rows, the granularity flat lists
+// leave it.
+func navigationFatRunningJobs(session string, count int) []appwire.EvenerJobInfo {
+	jobs := make([]appwire.EvenerJobInfo, count)
+	for index := range jobs {
+		jobs[index] = appwire.EvenerJobInfo{
+			JobID:   fmt.Sprintf("job-%s-%02d", session, index),
+			JobType: "shell",
+			Status:  "running",
+			Command: strings.Repeat("c", maxNavigationFullCommandRunes),
+		}
+	}
+	return jobs
 }
 
 // TestNavigationCatalogPagesEncodeEachRowOnce pins the encode work of filling
@@ -942,29 +964,56 @@ func TestNavigationReadV2FittingIsDeterministicAndPreservesMetadataAndReachabili
 	if !metadata.Truncated || metadata.Remaining == 0 {
 		t.Fatalf("bounded metadata = %+v, want truncated with omitted top-level rows", metadata)
 	}
-	foundOmittedDescendants := false
+	// Every kept row is flat: the bounded prefix carries no children, and the
+	// shed rows are accounted in the metadata's Remaining (asserted above).
 	for _, entity := range snapshot.Entities {
 		var summary hubapi.NavigationSessionSummary
 		if err := json.Unmarshal(entity.Value, &summary); err != nil {
 			t.Fatal(err)
 		}
-		if summary.OmittedDescendants > 0 {
-			foundOmittedDescendants = true
+		if len(summary.Children) != 0 {
+			t.Fatalf("bounded row %q carries %d children, want a flat list", summary.Ref, len(summary.Children))
 		}
-	}
-	if !foundOmittedDescendants {
-		t.Fatal("bounded node prefix did not account for omitted descendants")
 	}
 }
 
 func TestNavigationReadV2OversizeCompleteDeltaFallsBackToBoundedSnapshot(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
+	// A subagents page with a deep nested tree: the serve fitter sheds nested
+	// children one at a time, so the retained base converges tightly to the
+	// cap, and a mutation that touches every node pushes the complete delta
+	// over it deterministically. (Flat list pages shed whole rows - a
+	// row-sized convergence margin hides the delta overhead that triggers
+	// the fallback.)
+	children := make([]hubcore.TreeNode, 50)
+	for index := range children {
+		grandchildren := make([]hubcore.TreeNode, 50)
+		for nested := range grandchildren {
+			grandchildren[nested] = hubcore.TreeNode{
+				ID:      fmt.Sprintf("delta-grand-%03d-%03d", index, nested),
+				Title:   strings.Repeat("t", maxNavigationTitleRunes),
+				Project: strings.Repeat("p", maxNavigationLabelRunes),
+				Branch:  strings.Repeat("b", maxNavigationLabelRunes),
+				Kind:    "subagent",
+				State:   "idle",
+			}
+		}
+		children[index] = hubcore.TreeNode{
+			ID:       fmt.Sprintf("delta-child-%03d", index),
+			Title:    strings.Repeat("t", maxNavigationTitleRunes),
+			Project:  strings.Repeat("p", maxNavigationLabelRunes),
+			Branch:   strings.Repeat("b", maxNavigationLabelRunes),
+			Kind:     "subagent",
+			State:    "idle",
+			Children: grandchildren,
+		}
+	}
 	source.mu.Lock()
-	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.inputs.Tree.Live = []hubcore.TreeNode{{ID: "delta-parent", Title: "parent", Kind: "session", State: "active", Children: children}}
 	source.mu.Unlock()
 	service := newTestNavigationService(t, source)
-	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+	key := navigationResourceKey{Kind: navigationResourceSubagents, ID: "local:delta-parent", Limit: maxNavigationSectionRows}
 	initial, err := service.readV2(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -975,7 +1024,7 @@ func TestNavigationReadV2OversizeCompleteDeltaFallsBackToBoundedSnapshot(t *test
 	}
 
 	source.mu.Lock()
-	var retitle func([]hubcore.TreeNode)
+	var retitle func(rows []hubcore.TreeNode)
 	retitle = func(rows []hubcore.TreeNode) {
 		for index := range rows {
 			rows[index].Title = strings.Repeat("u", maxNavigationTitleRunes)

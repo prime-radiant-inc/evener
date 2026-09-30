@@ -67,6 +67,7 @@ const (
 	navigationResourceTestRuns         navigationResourceKind = "test_runs"
 	navigationResourceProject          navigationResourceKind = "project"
 	navigationResourceProjectPage      navigationResourceKind = "project_page"
+	navigationResourceSubagents        navigationResourceKind = "subagents"
 	navigationResourceLocation         navigationResourceKind = "location"
 )
 
@@ -128,6 +129,9 @@ type navigationProjection struct {
 	projects      map[string]hubcore.TreeProject
 	catalogs      map[navigationResourceKind][]hubcore.TreeProject
 	locations     map[string]hubapi.NavigationSessionLocation
+	// nodes indexes every indexed tree node by ref, so the subagents resource
+	// can page any session's direct children without re-walking the tree.
+	nodes map[string]hubcore.TreeNode
 	// alias, when set on a per-request copy, is the location served for a ref
 	// that is not an indexed row. See NavigationService.aliasProjectionLocked.
 	alias *hubapi.NavigationSessionLocation
@@ -161,7 +165,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	if err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources)}
+	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), nodes: make(map[string]hubcore.TreeNode), offlineSources: offlineSourceIDs(cloned.Sources)}
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
 	p.pinCandidates, err = navigationPinCandidatesContext(ctx, p.inputs.Tree)
@@ -802,6 +806,29 @@ func (p navigationProjection) sectionPage(rows []hubcore.TreeNode, offset uint32
 	return resource
 }
 
+// SubagentsPage is the per-session agents API the flat lists no longer serve:
+// the session's direct children as a paged list (every row reachable through
+// offset pages, Remaining accounting the rest), each child carrying its own
+// nested subtree under the structural caps with MoreSubagents accounting what
+// those caps shed. Unknown refs report not-found, never an empty page.
+func (p navigationProjection) SubagentsPage(ref string, offset uint32, limit int) (hubapi.NavigationSectionResource, bool) {
+	node, ok := p.nodes[ref]
+	if !ok {
+		return hubapi.NavigationSectionResource{}, false
+	}
+	page, sourceRemaining := navigationPage(node.Children, offset, limit, maxNavigationSectionRows)
+	projector := navigationProjector{projection: p}
+	sessions := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], 0, len(page))
+	for _, child := range page {
+		budget := maxNavigationLocationNodes
+		summary, _ := projector.projectLocationSubtree(child, 1, &budget)
+		sessions = append(sessions, summary)
+	}
+	resource := hubapi.NavigationSectionResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Sessions: sessions, Remaining: sourceRemaining + len(page) - len(sessions)}
+	fitNavigationSection(&resource)
+	return resource, true
+}
+
 func (p navigationProjection) PinCatalogPage(offset uint32, limit int) hubapi.NavigationPinSectionCatalog {
 	limit = navigationLimit(limit, maxNavigationCatalogRows)
 	start, end := navigationRange(len(p.pinSections), offset, limit)
@@ -1141,6 +1168,21 @@ func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
 	return weight
 }
 
+// navigationSummarySubagentWeight is the subagent-kind share of a shed
+// subtree's weight - the MoreSubagents counterpart of
+// navigationSummaryWeight, already-accounted MoreSubagents included so
+// sheds-of-sheds never double count.
+func navigationSummarySubagentWeight(summary hubapi.NavigationSessionSummary) int {
+	weight := summary.MoreSubagents
+	if summary.Kind == "subagent" {
+		weight++
+	}
+	for _, child := range summary.Children {
+		weight += navigationSummarySubagentWeight(child)
+	}
+	return weight
+}
+
 // navigationEncodedSize is the length of value's JSON encoding. A value that
 // cannot be encoded fits no budget.
 func navigationEncodedSize(value any) int {
@@ -1196,6 +1238,7 @@ func limitNavigationSummary(row hubapi.NavigationSessionSummary, budget *int) (h
 		if !included {
 			for _, omitted := range row.Children[index:] {
 				limited.OmittedDescendants += navigationSummaryWeight(omitted)
+				limited.MoreSubagents += navigationSummarySubagentWeight(omitted)
 			}
 			return limited, true, false
 		}
@@ -1203,6 +1246,7 @@ func limitNavigationSummary(row hubapi.NavigationSessionSummary, budget *int) (h
 		if !complete {
 			for _, omitted := range row.Children[index+1:] {
 				limited.OmittedDescendants += navigationSummaryWeight(omitted)
+				limited.MoreSubagents += navigationSummarySubagentWeight(omitted)
 			}
 			return limited, true, false
 		}
@@ -1370,6 +1414,12 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 	case navigationResourceLocation:
 		var ok bool
 		resource, ok = p.Location(key.ID)
+		if !ok {
+			err = fmt.Errorf("navigation session %q not found", key.ID)
+		}
+	case navigationResourceSubagents:
+		var ok bool
+		resource, ok = p.SubagentsPage(key.ID, key.Offset, int(key.Limit))
 		if !ok {
 			err = fmt.Errorf("navigation session %q not found", key.ID)
 		}
@@ -1564,7 +1614,13 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 	if err != nil {
 		return err
 	}
+	if _, exists := p.nodes[ref.String()]; !exists {
+		p.nodes[ref.String()] = node
+	}
 	if _, exists := p.locations[ref.String()]; !exists {
+		// The location stays shallow - status, jobs, watches, tallies - so
+		// fetching one session's detail never pays for its tree. The tree is
+		// the subagents resource's (SubagentsPage over p.nodes).
 		summary := navigationProjector{projection: p}.projectShallow(node)
 		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
 	}
@@ -1616,6 +1672,10 @@ func (p *navigationProjector) projectTier(project hubcore.TreeProject, tier stri
 	return sessions, sourceRemaining + len(page) - len(sessions)
 }
 
+// projectNode projects one list row. Lists carry NO children: subagents and
+// fork originals nest nowhere in the section, pin, and project lists - the
+// per-session location serves that tree instead (projectLocationSubtree), and
+// the row's Subagents tally and NeedsYouSubagents count carry its numbers.
 func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hubapi.NavigationSessionSummary, bool) {
 	p.depth = max(p.depth, depth)
 	if p.nodes >= maxNavigationNodes || depth > maxNavigationDepth {
@@ -1624,27 +1684,62 @@ func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hub
 	}
 	summary := p.projectShallow(node)
 	p.nodes++
+	return summary, true
+}
+
+// maxNavigationLocationNodes bounds one child's nested subtree inside a
+// subagents page. Direct children page (every row is reachable through
+// offset pages, and the serve-time fitter sheds whole rows into Remaining),
+// so this budget is the only hard stop in the resource - and everything it
+// sheds is accounted in MoreSubagents and OmittedDescendants on the child
+// that owns the shed.
+const maxNavigationLocationNodes = 500
+
+// projectLocationSubtree projects a location's session with its whole child
+// tree: the per-session agents API the flat lists no longer serve. The caps
+// mirror the list projector's (children per level, depth, the per-location
+// node budget); every shed row is accounted - subagent-kind sheds in
+// MoreSubagents, all sheds in OmittedDescendants - so a fold can name the
+// true remainder instead of a fake page control.
+func (p navigationProjector) projectLocationSubtree(node hubcore.TreeNode, depth int, budget *int) (hubapi.NavigationSessionSummary, bool) {
+	if *budget <= 0 || depth > maxNavigationDepth {
+		return hubapi.NavigationSessionSummary{}, false
+	}
+	*budget--
+	summary := p.projectShallow(node)
 	if depth == maxNavigationDepth {
-		if omitted := countTreeNodes(node.Children); omitted != 0 {
-			summary.OmittedDescendants = omitted
-			p.truncated = true
-		}
+		summary.OmittedDescendants += countTreeNodes(node.Children)
+		summary.MoreSubagents += countSubagentNodes(node.Children)
 		return summary, true
 	}
 	for index, child := range node.Children {
 		if index >= maxNavigationChildren {
 			summary.OmittedDescendants += countTreeNodes(node.Children[index:])
-			p.truncated = true
+			summary.MoreSubagents += countSubagentNodes(node.Children[index:])
 			break
 		}
-		projected, ok := p.projectNode(child, depth+1)
+		projected, ok := p.projectLocationSubtree(child, depth+1, budget)
 		if !ok {
 			summary.OmittedDescendants += countTreeNodes(node.Children[index:])
+			summary.MoreSubagents += countSubagentNodes(node.Children[index:])
 			break
 		}
 		summary.Children = append(summary.Children, projected)
 	}
 	return summary, true
+}
+
+// countSubagentNodes counts the subagent-kind nodes in a tree (every depth) -
+// the MoreSubagents share of a shed subtree.
+func countSubagentNodes(nodes []hubcore.TreeNode) int {
+	count := 0
+	for _, node := range nodes {
+		if node.Kind == "subagent" {
+			count++
+		}
+		count += countSubagentNodes(node.Children)
+	}
+	return count
 }
 
 // navigationModelName is the name a row shows for a session's model (S17):
@@ -1702,7 +1797,29 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		OmittedArmedWatches: omittedArmedWatches,
 		Tasks:               navigationTaskProgress(node.Tasks),
 		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+		NeedsYouSubagents:   countNeedsYouSubagents(node.Children),
 	}
+}
+
+// countNeedsYouSubagents counts the subagent-kind descendants waiting on a
+// person: the flat lists' replacement for the needs-you bubble-up the nested
+// children used to give the rail. The predicate is the attention model's own
+// (the display state - an approval folds any non-failure state to awaiting -
+// at the needs-you level), so the count and the NeedsYou tier can never
+// disagree about the same node. Fork originals are not subagents and never
+// count, whatever they wait on.
+func countNeedsYouSubagents(children []hubcore.TreeNode) int {
+	count := 0
+	for _, child := range children {
+		if child.Kind != "subagent" {
+			continue
+		}
+		if hubcore.NeedsYou(hubcore.NormalizeState(child.State), child.ApprovalPending) {
+			count++
+		}
+		count += countNeedsYouSubagents(child.Children)
+	}
+	return count
 }
 
 // optionalTime is t as an optional wire timestamp: nil when t is zero, so the

@@ -143,6 +143,19 @@ func navigationReadKeyWithFields(params appwire.NavigationReadParams, fields map
 			return navigationResourceKey{}, err
 		}
 		return navigationResourceKey{Kind: navigationResourceLocation, ID: ref.String()}, nil
+	case "subagents":
+		if err := rejectNavigationReadFields(params, fields, "ref", "offset", "limit"); err != nil {
+			return navigationResourceKey{}, err
+		}
+		ref, err := navigationRef(params.Ref)
+		if err != nil {
+			return navigationResourceKey{}, err
+		}
+		offset, limit, err := navigationReadPage(params, maxNavigationSectionRows)
+		if err != nil {
+			return navigationResourceKey{}, err
+		}
+		return navigationResourceKey{Kind: navigationResourceSubagents, ID: ref.String(), Offset: offset, Limit: limit}, nil
 	default:
 		return navigationResourceKey{}, fmt.Errorf("unknown navigation resource %q", params.Resource)
 	}

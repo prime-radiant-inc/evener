@@ -1147,6 +1147,32 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 			return nil, nil, err
 		}
 	}
+	// The subagents resource: one semantic key per indexed session, content-
+	// addressed over the session's whole child list (pages are views), with
+	// the same tier/project dependency its location carries.
+	for ref, node := range projection.nodes {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		location, indexed := projection.locations[ref]
+		if !indexed {
+			continue
+		}
+		rows, err := navigationLogicalNodesContext(ctx, projection, node.Children)
+		if err != nil {
+			return nil, nil, err
+		}
+		key := navigationResourceKey{Kind: navigationResourceSubagents, ID: ref}
+		var dep navigationResourceKey
+		if location.ProjectKey != "" {
+			dep = navigationResourceKey{Kind: navigationResourceProject, ProjectKey: location.ProjectKey}
+		} else if location.Tier == "live" || location.Tier == "needs_you" {
+			dep = navigationResourceKey{Kind: navigationResourceKind(location.Tier)}
+		}
+		if err := put(key, rows, dep); err != nil {
+			return nil, nil, err
+		}
+	}
 	return fingerprints, dependencies, nil
 }
 
@@ -1546,7 +1572,7 @@ func (key navigationResourceKey) Semantic() navigationResourceKey {
 	key.Revision = 0
 	switch key.Kind {
 	case navigationResourceLive, navigationResourceNeedsYou, navigationResourcePinCatalog, navigationResourcePinSection,
-		navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns:
+		navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns, navigationResourceSubagents:
 		key.Offset, key.Limit = 0, 0
 	case navigationResourceProjectPage:
 		key.Kind, key.Tier, key.Offset, key.Limit = navigationResourceProject, "", 0, 0

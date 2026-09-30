@@ -195,7 +195,7 @@ func validateNavigationMetadata(key navigationResourceKey, generation string, re
 			return nil, navigationSchemaError("metadata")
 		}
 		return metadata, nil
-	case navigationResourceLive, navigationResourceNeedsYou, navigationResourcePinSection:
+	case navigationResourceLive, navigationResourceNeedsYou, navigationResourcePinSection, navigationResourceSubagents:
 		var metadata navigationPagedMetadata
 		if strictNavigationDecode(raw, []string{"generation_id", "revision", "offset", "limit", "remaining", "truncated"}, &metadata) != nil ||
 			!validVersion(metadata.GenerationID, metadata.Revision) || metadata.Offset != key.Offset || metadata.Limit != key.Limit || !navigationCount(metadata.Remaining) {
@@ -428,6 +428,7 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		appwire.Excerpt(value.LastMessage, appwire.MaxMessageExcerptRunes) != value.LastMessage ||
 		utf8.RuneCountInString(value.ModelName) > maxNavigationLabelRunes ||
 		!navigationIntCount(value.MoreSubagents) ||
+		!navigationIntCount(value.NeedsYouSubagents) ||
 		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) ||
 		!navigationIntCount(value.OmittedArmedWatches) || value.OmittedArmedWatches > value.OmittedWatches {
 		return false
@@ -615,7 +616,7 @@ func navigationExpectedRootSlot(kind navigationResourceKind) string {
 	switch kind {
 	case navigationResourceManifest:
 		return "manifest"
-	case navigationResourceLive, navigationResourceNeedsYou, navigationResourcePinSection, navigationResourceProjectPage:
+	case navigationResourceLive, navigationResourceNeedsYou, navigationResourcePinSection, navigationResourceProjectPage, navigationResourceSubagents:
 		return "sessions"
 	case navigationResourcePinCatalog:
 		return "pin_sections"
@@ -652,7 +653,8 @@ func navigationRootChildrenWithinBounds(key navigationResourceKey, count int) bo
 	case navigationResourceLocation:
 		return count <= 1
 	case navigationResourceLive, navigationResourceNeedsYou, navigationResourcePinSection, navigationResourceProjectPage,
-		navigationResourcePinCatalog, navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns:
+		navigationResourcePinCatalog, navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns,
+		navigationResourceSubagents:
 		return uint64(count) <= uint64(key.Limit)
 	default:
 		return count == 0
