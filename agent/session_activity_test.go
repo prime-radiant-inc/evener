@@ -462,6 +462,7 @@ func TestSessionActivityRealDelegateTree(t *testing.T) {
 	sub.mu.Unlock()
 	select {
 	case <-done:
+	// TRIPWIRE: scripted local delegates finish in milliseconds; ten seconds only detects a stuck completion signal.
 	case <-time.After(10 * time.Second):
 		t.Fatal("scripted parent did not finish")
 	}
@@ -486,6 +487,7 @@ func TestSessionActivityRealDelegateTree(t *testing.T) {
 	childSub.mu.Unlock()
 	select {
 	case <-childDone:
+	// TRIPWIRE: scripted local delegates finish in milliseconds; ten seconds only detects a stuck completion signal.
 	case <-time.After(10 * time.Second):
 		t.Fatal("scripted grandchild did not finish")
 	}
