@@ -56,9 +56,11 @@ var exitProcess = os.Exit
 // today's pre-#3227 behavior for debugging: it clears the variable instead
 // of setting it, so a run sees the operator's real skills again.
 //
-// runSuite and runMatrixCommand call this exactly once, right after parsing
-// their own flags and before running any probe, so concurrent matrix cells
-// share one setting instead of racing on a per-cell set/restore.
+// run sets the hermetic default before dispatching any subcommand, so every
+// session evener-fluency builds (catalog's too) hides the operator's skills.
+// runSuite and runMatrixCommand then apply their own flag once, after
+// parsing and before running any probe, so concurrent matrix cells share one
+// setting instead of racing on a per-cell set/restore.
 func configureHermeticRunEnv(inheritOperatorEnv bool) {
 	if inheritOperatorEnv {
 		_ = envvars.EVENERNoUserSkills.Unsetenv()
@@ -79,6 +81,7 @@ func run(args []string) error {
 		usage()
 		return flag.ErrHelp
 	}
+	configureHermeticRunEnv(false)
 	switch args[0] {
 	case "catalog":
 		return runCatalog(args[1:])
