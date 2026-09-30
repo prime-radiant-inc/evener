@@ -54,8 +54,8 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 	const face = useReadingFace();
 	const { kind, title, name, lines, age, spokenAge, freshness } = useDocumentFacts(hubId, sessionRef, path, updatedAt);
 	// A chip marks only a change (8.2); Files and its chip mark what's new. On
-	// screen the change is the blue dot alone: the words cut to "ch…" on the
-	// fact line. VoiceOver, which can't see the dot, says them.
+	// screen the change is the blue dot alone; VoiceOver, which can't see the
+	// dot, says it in words.
 	const changed = freshness === "changed" ? "changed since you last read" : null;
 	const facts = [lines, age].filter((fact) => fact !== null);
 	// Until its summary lands the title is the file name, so a second copy
