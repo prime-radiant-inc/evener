@@ -57,10 +57,12 @@ func personAskResponderCommand(cfg runConfig, probe probeFile, res probeResult) 
 // the run's transcript, res.CanonicalToolCounts) and every pair
 // personAskResponderCommand's --log wrote to asks.jsonl beside the work
 // dir. A task with no person: block is left untouched. A missing log yields
-// a zero count and no asks; but when the run made ask_user calls and yet the
-// log holds no asks (missing, empty, or unreadable), that is a failed
+// a zero count and no asks; but when the run made ask_user calls and the log
+// holds no well-formed asks (missing, empty, or unreadable), that is a failed
 // responder, so an infra finding points at the probe's stderr, where the
-// responder's own error is printed, rather than letting the failure vanish.
+// responder's own error is printed, rather than letting the failure vanish. A
+// log that holds only malformed records is reported as malformed instead, so
+// the reader is not sent to a responder that did run.
 func applyAskExchanges(res *probeResult, probe probeFile) {
 	if probe.Person == nil {
 		return
@@ -75,7 +77,7 @@ func applyAskExchanges(res *probeResult, probe probeFile) {
 			Title:    "ask log unreadable",
 			Detail:   fmt.Sprintf("read %s: %v; the responder's failure is printed in %s", logPath, err, res.StderrPath),
 		})
-	} else if res.AskUserCalls > 0 && len(asks) == 0 {
+	} else if res.AskUserCalls > 0 && len(asks) == 0 && malformed == 0 {
 		res.Findings = append(res.Findings, finding{
 			Category: "infra",
 			Title:    "responder logged no asks",

@@ -165,3 +165,25 @@ func TestApplyAskExchangesCountsBlankRecordsMalformed(t *testing.T) {
 		t.Fatalf("Findings = %+v, want one infra finding for the 2 malformed records", res.Findings)
 	}
 }
+
+// TestApplyAskExchangesBlankOnlyLogReportsMalformedNotMissing: a log holding
+// only blank records is a corrupt log, not a responder that never ran, so
+// the malformed finding is the one reported -- not the "no asks" finding,
+// whose stderr pointer would misdirect the operator.
+func TestApplyAskExchangesBlankOnlyLogReportsMalformedNotMissing(t *testing.T) {
+	dir := t.TempDir()
+	res := probeResult{
+		WorkDir:             filepath.Join(dir, "work"),
+		StderrPath:          filepath.Join(dir, "stderr.ndjson"),
+		CanonicalToolCounts: map[string]int{"ask_user": 1},
+	}
+	if err := os.WriteFile(filepath.Join(dir, "asks.jsonl"), []byte(`null`+"\n"+`{}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	applyAskExchanges(&res, probeFile{Person: &personSpec{Brief: "b"}})
+
+	if len(res.Findings) != 1 || res.Findings[0].Title != "ask log has malformed lines" {
+		t.Fatalf("Findings = %+v, want just the malformed-lines finding", res.Findings)
+	}
+}
