@@ -326,6 +326,7 @@ export function useFocusAfterModal(
 /** The sheet or screen each context chip and ⋯ menu item opens. */
 const SESSION_DESTINATIONS = {
 	subagents: "subagents",
+	activity: "subagents",
 	tasks: "tasks",
 	notes: "notes",
 	goal: "session",
@@ -1122,7 +1123,7 @@ export function ConversationScreen({
 			case "files":
 				openFiles();
 				return;
-			case "subagents":
+			case "activity":
 			case "tasks":
 			case "notes":
 			case "info":

@@ -9,7 +9,16 @@
 // Unlike that slot, this one is an external store, not React state: the page
 // publishes on every render, and only the pushed page subscribes, so a
 // publication never re-renders the page that made it.
-import { createContext, type ReactNode, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+	createContext,
+	type ReactNode,
+	useContext,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 
 /** The detail the Providers page shows for its selected provider. */
 export interface ProviderDetailSlot {
@@ -56,6 +65,13 @@ export function ProvidersScreenSlotProvider({ children }: { children: ReactNode 
 	return <SlotContext.Provider value={store}>{children}</SlotContext.Provider>;
 }
 
+/** Reads the slot's current publication outside render, where
+ * useProviderDetailSlot's render-time value can't: a test seam for when a
+ * publication lands within a commit (ProviderDetailPage.test.tsx). */
+export function useProviderDetailSlotReader(): () => ProviderDetailSlot | null {
+	return useContext(SlotContext).getSnapshot;
+}
+
 /** The Providers page's current detail, or null when none is mounted. */
 export function useProviderDetailSlot(): ProviderDetailSlot | null {
 	const store = useContext(SlotContext);
@@ -63,11 +79,15 @@ export function useProviderDetailSlot(): ProviderDetailSlot | null {
 }
 
 /** Publishes `slot` after every render of the calling page, and takes it back
- * when the page goes, unless a newer page has published since. */
+ * when the page goes, unless a newer page has published since. It publishes
+ * in a layout effect, before the commit paints, so a detail pushed in the
+ * commit that builds it paints with its content, and a controlled field in
+ * the detail (the pasted key) never renders a commit behind the page's
+ * state, which drops and reorders fast keystrokes. */
 export function usePublishProviderDetail(slot: ProviderDetailSlot): void {
 	const store = useContext(SlotContext);
 	const published = useRef<ProviderDetailSlot | null>(null);
-	useEffect(() => {
+	useLayoutEffect(() => {
 		published.current = slot;
 		store.set(slot);
 	});
