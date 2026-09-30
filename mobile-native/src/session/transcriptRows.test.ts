@@ -455,7 +455,12 @@ describe("a run's one line", () => {
 				step("d", "update_goal"),
 				step("e", "communicate"),
 			]).parts.map((part) => part.text),
-		).toEqual(["updated its note once", "added a link 2 times", "updated the goal once", "reported to its parent once"]);
+		).toEqual([
+			"updated its note once",
+			"added a link 2 times",
+			"updated the goal once",
+			"reported to its parent once",
+		]);
 	});
 
 	it("says a run updated the task list, or only checked it", () => {

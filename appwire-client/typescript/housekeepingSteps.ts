@@ -103,7 +103,9 @@ export const HOUSEKEEPING_WORDS: Record<keyof typeof ACTIONS, HousekeepingWords>
   },
   compact_context: {
     words: (step) => ({
-      verb: step.output?.startsWith("Note cleared.") ? "Cleared its compaction note" : sentence(ACTIONS.compact_context),
+      verb: step.output?.startsWith("Note cleared.")
+        ? "Cleared its compaction note"
+        : sentence(ACTIONS.compact_context),
     }),
     progress: () => "Asking for a context compaction",
   },
