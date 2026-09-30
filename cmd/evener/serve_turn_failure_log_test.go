@@ -47,6 +47,26 @@ func TestTurnFailureSummaryKeepsEvenerOwnErrors(t *testing.T) {
 	}
 }
 
+// TestTurnFailureSummarySummarizesProviderWrappingConfigurationError pins the
+// boundary the other way: a configuration diagnosis can wrap a provider
+// failure and quote its body in the message (llm/providers/google's Vertex
+// regional-404 remedy does). That body must not reach the log, so the summary
+// falls back to the kind (#3418).
+func TestTurnFailureSummarySummarizesProviderWrappingConfigurationError(t *testing.T) {
+	const canary = "Publisher model leaked-secret-body was not found"
+	err := &llm.ConfigurationError{
+		Message: "instance \"vertex\": use global (set GOOGLE_VERTEX_LOCATION); provider said: " + canary,
+		Cause:   llm.ErrorFromHTTPStatus("vertex", 404, canary, nil, nil),
+	}
+	got := turnFailureSummary(err)
+	if strings.Contains(got, "leaked-secret-body") {
+		t.Fatalf("turnFailureSummary = %q, want the provider body withheld", got)
+	}
+	if got != "not_found" {
+		t.Fatalf("turnFailureSummary = %q, want the failure's kind only", got)
+	}
+}
+
 // TestServe_TurnFailureLogWithholdsProviderBody drives a real daemon through a
 // turn its provider fails and reads the daemon log. The failed-turn line must
 // name the failure's kind and HTTP status, not the provider's own error body,

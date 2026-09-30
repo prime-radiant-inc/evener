@@ -39,16 +39,20 @@ func serveLogAt(w io.Writer, at time.Time, sessionID, format string, args ...any
 // text and must never reach run/logs/daemon-*.log, so it is rendered as the
 // failure's kind and HTTP status with no provider text
 // (llm.ProviderFailureSummary, the same summary the pause warning carries).
-// Every other error is Evener's own — a closed session, a refused admission, a
-// configuration diagnosis — and keeps its message so the log still says what
-// failed (#3418).
+// Every other error is Evener's own — a closed session, a refused admission —
+// and keeps its message so the log still says what failed. A configuration
+// diagnosis keeps its remediation text too, unless it wraps a provider
+// failure: llm/providers/google builds the Vertex regional-404 remedy with the
+// provider's own words in the message, so one that wraps an llm.Error is
+// summarized instead (#3418).
 func turnFailureSummary(err error) string {
 	if errors.Is(err, llm.ErrSignInRequired) {
 		return "sign-in required"
 	}
-	// A configuration diagnosis is Evener's own remediation text, not a
-	// provider body, even when it is attributed to a provider instance.
-	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+	if ce, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		if _, wrapsProvider := errors.AsType[llm.Error](ce.Cause); wrapsProvider {
+			return llm.ProviderFailureSummary(ce)
+		}
 		return err.Error()
 	}
 	if _, ok := errors.AsType[llm.Error](err); !ok {
