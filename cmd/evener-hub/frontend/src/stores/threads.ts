@@ -5462,6 +5462,15 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   return { committed: true };
 }
 
+/** The settings row's reader (spec, "The clear-cached-sessions setting"):
+ * the records store's row count through the same singleton seam the lookup,
+ * the write and the clear ride. The adapter's failure discipline holds:
+ * undefined means unavailable (a failed open or transaction), never a throw
+ * and never a zero that would let the row claim a remedy ran. */
+export async function countCachedSessions(): Promise<number | undefined> {
+  return currentSessionCache().count();
+}
+
 // The live gap rule (spec, "The two serving paths, the live gap, and its
 // rule"): a cached-shell reconciling read that carries no changes and whose
 // fresh window starts above the shell's captured anchor replaces instead of

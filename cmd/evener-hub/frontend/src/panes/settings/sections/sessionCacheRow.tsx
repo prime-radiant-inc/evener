@@ -1,0 +1,121 @@
+// The settings storage row for the session cache (web session-history cache
+// plan, Task 11; spec, "The clear-cached-sessions setting"): the row's state
+// machine — empty, cached, cleared, unavailable — plus the Clear action. The
+// row keeps its own module-scoped store, mirroring the settingsOverview
+// convention, because its state is this row's alone: the count is re-derived
+// per render, so no other pane's state can hold it stale.
+import { useEffect } from "react";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
+import { clearCachedSessions, countCachedSessions } from "../../../stores/threads";
+import { Button } from "../../../widgets";
+import { SettingsField } from "./settingsField";
+
+export type SessionCacheRowStatus = "empty" | "cached" | "unavailable" | "cleared";
+
+export interface SessionCacheRowState {
+  status: SessionCacheRowStatus;
+  /** True while the Clear action's transaction is in flight. */
+  clearing: boolean;
+  refresh: () => Promise<void>;
+  clear: () => Promise<void>;
+}
+
+// sessionCacheRowStore's shape is PINNED by sessionCacheRow.test.tsx, which
+// is written against it directly (the settingsOverview.ts convention): the
+// four-state status plus clearing and the two actions. Do not change this
+// surface without checking that test.
+//
+// sessionCacheRow's store: the row's state machine. The count runs per
+// render through refresh(), so a cleared badge never outlives the next
+// render (spec, "The clear-cached-sessions setting").
+export const sessionCacheRowStore = createStore<SessionCacheRowState>((set) => ({
+  status: "empty",
+  clearing: false,
+  refresh: async () => {
+    const count = await countCachedSessions();
+    if (count === undefined) {
+      set({ status: "unavailable" }); // never "empty": the remedy did not run
+      return;
+    }
+    if (count > 0) {
+      set({ status: "cached" }); // a refill — this tab's or a sibling's — yields the cleared badge
+      return;
+    }
+    // count === 0: this tab's committed clear still tells the truth, so the
+    // badge holds until a refill or a reload (a fresh module state answers
+    // "empty"); anything else is the honest empty store.
+    set((s) => ({ status: s.status === "cleared" ? "cleared" : "empty" }));
+  },
+  clear: async () => {
+    set({ clearing: true });
+    const result = await clearCachedSessions();
+    set({ status: result.committed ? "cleared" : "unavailable", clearing: false });
+  },
+}));
+
+export function useSessionCacheRowStore(): SessionCacheRowState;
+export function useSessionCacheRowStore<T>(selector: (state: SessionCacheRowState) => T): T;
+export function useSessionCacheRowStore<T>(selector?: (state: SessionCacheRowState) => T): T | SessionCacheRowState {
+  // Not a real conditional hook call - see stores/connection.ts's own
+  // useConnectionStore for the full explanation (zustand's useStore has a
+  // `selector = identity` JS default param, so both arms run identically).
+  // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see stores/connection.ts
+  return selector ? useStore(sessionCacheRowStore, selector) : useStore(sessionCacheRowStore);
+}
+
+// resetSessionCacheRowStoreForTests returns the store to its initial state -
+// sessionCacheRow.tsx is a singleton store shared by every StorageSection
+// render, so sessionCacheRow.test.tsx must reset it between tests to keep
+// them isolated. No production code should ever call this (mirrors
+// settingsOverview.ts's resetSettingsOverviewStoreForTests).
+export function resetSessionCacheRowStoreForTests(): void {
+  sessionCacheRowStore.setState({ status: "empty", clearing: false });
+}
+
+/** The storage row's "Cached session content" entry: the cache's state word
+ * (never a byte or session estimate - the round-2 cut) plus the Clear
+ * action, the privacy remedy that removes the cached content from this
+ * browser only. The count runs on EVERY render - the effect has no
+ * dependency array - which is the spec's own staleness rule: a cleared badge
+ * yields the moment the pane renders the row again and the fresh count finds
+ * records, and an unavailable row recovers on the next render or Retry. */
+export function SessionCacheRow() {
+  const status = useSessionCacheRowStore((s) => s.status);
+  const clearing = useSessionCacheRowStore((s) => s.clearing);
+  const refresh = useSessionCacheRowStore((s) => s.refresh);
+  const clear = useSessionCacheRowStore((s) => s.clear);
+
+  // No dependency array: the count runs per render, so the badge can never
+  // outlive a render whose own count contradicts it. A same-status set is
+  // invisible to the selectors above, so the loop settles instead of
+  // spinning: only a genuine status change renders again.
+  useEffect(() => {
+    void refresh();
+  });
+
+  return (
+    <SettingsField
+      label="Cached session content"
+      value={
+        <>
+          {status}
+          {status === "unavailable" && (
+            <Button size="sm" variant="secondary" onClick={() => void refresh()}>
+              Retry
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={clearing || status === "empty" || status === "unavailable"}
+            onClick={() => void clear()}
+          >
+            Clear
+          </Button>
+        </>
+      }
+      help="Copies of this browser's session transcripts kept on disk, so reopening a session paints without a fetch. Clear removes them from this browser only."
+    />
+  );
+}
