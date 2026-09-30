@@ -24,7 +24,7 @@
 - Run generation after protocol edits; import the shared package by name.
 - Read testing instructions before test edits. Never run npm ci through a symlink.
 - Keep evergreen product docs truthful; implementation progress belongs in the plan ledger.
-- Implementers use isolated worktrees and GPT-6.1 Sol at low reasoning effort, with precise task briefs. The controller integrates commits and owns architectural decisions and the PR review/merge process.
+- Implementers use isolated worktrees and GPT-6.1 Sol with precise task briefs. Prefer low reasoning effort where available; the coordination ledger records the authorized worker settings. The controller integrates commits and owns architectural decisions and the PR review/merge process.
 
 ## Review Focus
 
