@@ -465,6 +465,16 @@ test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
     "Cleared its compaction note",
     "Asking for a context compaction",
   ],
+  [
+    "an empty note that still asks for a compaction",
+    housekeeping(
+      "compact_context",
+      { note_to_self: "", compaction_instructions: "Keep the drain analysis." },
+      "Note cleared. A compaction will run at the seam, honoring your instructions; your note will be handed back to you right after.",
+    ),
+    "Asked for a context compaction",
+    "Asking for a context compaction",
+  ],
   ["the models listed", housekeeping("model_list", {}), "Listed the available models", "Listing the available models"],
   ["more models listed", housekeeping("model_list", { cursor: "c2" }), "Listed more models", "Listing more models"],
   [

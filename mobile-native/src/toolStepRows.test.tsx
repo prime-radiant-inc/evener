@@ -32,7 +32,7 @@ type Run = Extract<TimelineRow, { kind: "run" }>;
 
 // Every tool the corpus calls, by the name the wire carries.
 const RAW_NAMES =
-	/\b(read_file|grep|glob|list_dir|edit_file|write_file|apply_patch|shell|web_fetch|web_search|use_skill|github__create_issue|linear_app__list_issues|compact_context)\b/;
+	/\b(read_file|grep|glob|list_dir|edit_file|write_file|apply_patch|shell|web_fetch|web_search|use_skill|github__create_issue|linear_app__list_issues|reindex_workspace)\b/;
 
 function rowsAt(level: Level): TimelineRow[] {
 	const model = toolWireModel();

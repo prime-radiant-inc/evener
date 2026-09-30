@@ -78,7 +78,9 @@ describe("the tray's line (spec 8.3)", () => {
 		const text = (running: ReturnType<typeof item>) => trayLine(session({ turns: [turn([running])] }), NOW)?.text;
 		expect(text(step("read_file", { file_path: "agent/tree.go" }))).toBe("Reading agent/tree.go · 5s");
 		expect(text(step("github__create_issue", { title: "x" }))).toBe("Using github: create issue · 5s");
-		expect(text(step("compact_context", {}))).toBe("Using compact context · 5s");
+		expect(text(step("reindex_workspace", {}))).toBe("Using reindex workspace · 5s");
+		// A housekeeping tool says what it's doing in its own words.
+		expect(text(step("compact_context", {}))).toBe("Asking for a context compaction · 5s");
 		expect(text(step("shell", {}))).toBe("Running a command · 5s");
 	});
 

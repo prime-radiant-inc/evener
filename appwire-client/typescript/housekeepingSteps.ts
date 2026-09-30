@@ -8,9 +8,14 @@
 // Ground truth: agent/session_tools_notes.go (notes_agent_set, notes_read,
 // urls_add, urls_remove), session_tools_goal.go (update_goal, and "No goal is
 // active…" when none was set), session_tools_compact.go (compact_context, and
-// "Note cleared. No compaction requested." for an empty note),
+// "Note cleared. No compaction requested." when an empty note asks for no
+// compaction; an empty note with compaction instructions still schedules one
+// and prints "Note cleared. A compaction will run…"),
 // internal/tool/definitions.go (model_list's cursor, doctor_evener's command
-// and selector), and the communicate result tool's end_turn.
+// and selector), and session_tools_communicate.go (communicate's end_turn).
+// A session that renames its result tool (SessionConfig.ResultToolName) shows
+// that tool's calls in the generic words, since only "communicate" is known
+// here.
 
 import type { ItemModel } from "./model";
 import type { StepWords } from "./stepWords";
@@ -103,9 +108,12 @@ export const HOUSEKEEPING_WORDS: Record<keyof typeof ACTIONS, HousekeepingWords>
   },
   compact_context: {
     words: (step) => ({
-      verb: step.output?.startsWith("Note cleared.")
-        ? "Cleared its compaction note"
-        : sentence(ACTIONS.compact_context),
+      // The whole line: an empty note that still asks for a compaction also
+      // starts "Note cleared."
+      verb:
+        step.output?.trim() === "Note cleared. No compaction requested."
+          ? "Cleared its compaction note"
+          : sentence(ACTIONS.compact_context),
     }),
     progress: () => "Asking for a context compaction",
   },
