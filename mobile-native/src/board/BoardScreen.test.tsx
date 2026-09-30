@@ -523,7 +523,7 @@ function hub(
 }
 
 function navigation() {
-	return { navigate: vi.fn(), setOptions: vi.fn() };
+	return { navigate: vi.fn(), setOptions: vi.fn(), dispatch: vi.fn(), getState: () => undefined };
 }
 type Navigation = ReturnType<typeof navigation>;
 

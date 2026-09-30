@@ -32,7 +32,7 @@ const list: Notice[] = [
 ];
 
 function mount(notices: Notice[], connected = true) {
-	const navigation = { navigate: vi.fn() };
+	const navigation = { navigate: vi.fn(), dispatch: vi.fn(), getState: () => undefined };
 	const tree = render(<BoardNotices hubId="hub-1" notices={notices} navigation={navigation} connected={connected} />);
 	return { tree, navigation };
 }
