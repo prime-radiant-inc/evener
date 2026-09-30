@@ -588,9 +588,7 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 		name    string
 		release func(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session)
 	}{
-		{"the finished runtime reports quiescence", func(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session) {
-			reportFinalizeTailDone(t, c, lease, runtime)
-		}},
+		{"the finished runtime reports quiescence", reportFinalizeTailDone},
 		{"another runtime becomes resident", func(_ *testing.T, c *delegateTreeController, _ delegateLease, _ *Session) {
 			c.mu.Lock()
 			c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
