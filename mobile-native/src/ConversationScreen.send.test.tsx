@@ -1188,8 +1188,8 @@ describe("opening a session", () => {
 	// The rows are ask/reply for turn_1, then turn_2.
 	const layOutRow = (tree: ReactTestRenderer, index: number, y: number) => {
 		const cell = transcriptList(tree)
-			.findAll((node) => String(node.type) === "Item")[index]
-			?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+			.findAll((node) => String(node.type) === "Item")
+			[index]?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
 		if (!cell) throw new Error(`no cell at row ${index}`);
 		act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height: 150 } } }));
 	};
