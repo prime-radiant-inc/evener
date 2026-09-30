@@ -9,16 +9,14 @@
 // notice's, or a sign-in error's.
 import {
 	BaseNavigationContainer,
-	createNavigatorFactory,
 	type NavigationContainerRef,
 	type ParamListBase,
-	StackRouter,
-	useNavigationBuilder,
 	usePreventRemove,
 } from "@react-navigation/core";
-import { createRef, Fragment, type ReactNode } from "react";
+import { createRef } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
+import { createTestStack } from "../navigationTestStack.testkit";
 import { render } from "../renderNative.testkit";
 import { openNotice, openProviders } from "./BoardNotices";
 
@@ -27,19 +25,6 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
-/** A stack that renders every route it holds, as a native stack keeps the
- * screens under the top one mounted. */
-function TestStack({ children, initialRouteName }: { children: ReactNode; initialRouteName?: string }) {
-	const { state, descriptors, NavigationContent } = useNavigationBuilder(StackRouter, { children, initialRouteName });
-	return (
-		<NavigationContent>
-			{state.routes.map((route) => (
-				<Fragment key={route.key}>{descriptors[route.key]?.render()}</Fragment>
-			))}
-		</NavigationContent>
-	);
-}
-const createTestStack = createNavigatorFactory(TestStack);
 const Root = createTestStack();
 const Hub = createTestStack();
 
