@@ -163,13 +163,13 @@ usage and missing logical session IDs remain unknown rather than fabricated.
 
 **Interfaces:** Consume Task 4's shared owner and Task 1's domain rows. Preserve existing workspace focus/routing and the Tasks tab's task model. Context supplies ancestry; navigation locations still supply rail placement. The browser binding shares owners by connection/ref/scope and releases view demand on disposal.
 
-- [ ] Add UI tests that get counts and ancestry without fetching collection pages; opening Agents/Jobs/Watches acquires only that collection; deep child drill-in does not require sibling pages.
-- [ ] Add tests for loading versus known-empty, retained data through disconnect, automatic pagination recovery, and scope switching during a request. Use the shared owner rather than a fabricated navigation tree.
-- [ ] Run focused sidebar/status/focus tests, capture intended failures, and migrate the views to typed domain data. Preserve row actions and embedded Tasks behavior.
-- [ ] Remove the unmerged navigation subagents API, child-derived attention count, and obsolete fixtures. Inventory all consumers of navigation jobs/watch arrays before removing them; migrate a dependent view to the shared owner rather than silently dropping behavior. Keep root-only tree/attention tests intact.
-- [ ] Cut navigation over to representation version 3: advertised read versions, validation, shared client requests/codec, browser fixtures and native callers must agree. Keep compact running-job/watch counts and a bounded command summary. Do not add v2 fallback emission or change the AppWire connection version for this navigation-only shape change.
-- [ ] Update the browser layout guard to exercise Tasks in the activity sidebar and retain its actual overflow/collapse assertions. Run targeted navigation tests, `make test-web`, and the affected real-browser guard.
-- [ ] Commit, with source/behavior evidence that global navigation no longer carries activity detail or builds per-session child resources.
+- [x] Add UI tests that get counts and ancestry without fetching collection pages; opening Agents/Jobs/Watches acquires only that collection; deep child drill-in does not require sibling pages.
+- [x] Add tests for loading versus known-empty, retained data through disconnect, automatic pagination recovery, and scope switching during a request. Use the shared owner rather than a fabricated navigation tree.
+- [x] Run focused sidebar/status/focus tests, capture intended failures, and migrate the views to typed domain data. Preserve row actions and embedded Tasks behavior.
+- [x] Remove the unmerged navigation subagents API, child-derived attention count, and obsolete fixtures. Inventory all consumers of navigation jobs/watch arrays before removing them; migrate a dependent view to the shared owner rather than silently dropping behavior. Keep root-only tree/attention tests intact.
+- [x] Cut navigation over to representation version 3: advertised read versions, validation, shared client requests/codec, browser fixtures and native callers must agree. Keep compact running-job/watch counts and a bounded command summary. Do not add v2 fallback emission or change the AppWire connection version for this navigation-only shape change.
+- [x] Update the browser layout guard to exercise Tasks in the activity sidebar and retain its actual overflow/collapse assertions. Run targeted navigation tests, `make test-web`, and the affected real-browser guard.
+- [x] Commit, with source/behavior evidence that global navigation no longer carries activity detail or builds per-session child resources.
 
 ### Task 6: Native consumers use the shared owner
 
@@ -189,11 +189,11 @@ usage and missing logical session IDs remain unknown rather than fabricated.
 
 **Interfaces:** Consume the integrated branch and every task's test/review report. Product docs describe only behavior verified in that branch. Add concise AGENTS guidance that session activity comes from domain APIs and changes update the owning guide/subsystem map and real producer/router tests.
 
-- [ ] Run the source-backed acceptance matrix from the spec across real producers, public routers, shared client, and both consumers. Resolve missing evidence through the owning task before claiming completion.
-- [ ] Keep the existing root-only navigation invariants and reproduce the original missing-agent failure against the new public route. Verify every page can be consumed under changes and reconnect without a repair click.
-- [ ] Update evergreen ownership, scope, pagination, recovery, and retention semantics with verified source references. Keep deferred friction cases R08, T04, T05, and D01 deferred.
-- [ ] Apply simplify-code to the completed diff and run the tests covering simplifications. Complete generated freshness, focused race checks, web/native/API checks, and browser guards appropriate to the final diff.
-- [ ] Obtain independent task and whole-branch reviews. Resolve valid important findings at the root and retain red/green or conclusive refutation evidence.
+- [x] Run the source-backed acceptance matrix from the spec across real producers, public routers, shared client, and both consumers. Resolve missing evidence through the owning task before claiming completion.
+- [x] Keep the existing root-only navigation invariants and reproduce the original missing-agent failure against the new public route. Verify every page can be consumed under changes and reconnect without a repair click.
+- [x] Update evergreen ownership, scope, pagination, recovery, and retention semantics with verified source references. Keep deferred friction cases R08, T04, T05, and D01 deferred.
+- [x] Apply simplify-code to the completed diff and run the tests covering simplifications. Complete generated freshness, focused race checks, web/native/API checks, and browser guards appropriate to the final diff.
+- [x] Obtain independent task and whole-branch reviews. Resolve valid important findings at the root and retain red/green or conclusive refutation evidence.
 - [ ] Update PR #3493's title/body to describe the resulting behavior, push one complete round, and inspect all current-head CI checks, the actual combined RoboRev comment, and open per-commit reviews. Repeat only for actionable findings. Merge under Jesse's existing green-CI/Low-or-refuted authorization and complete the repository's post-merge qualification. Handle actionable Low findings in a small follow-up.
 
 ## Completion evidence

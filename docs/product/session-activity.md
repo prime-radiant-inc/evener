@@ -223,6 +223,8 @@ The normalized navigation graph stays flat. The separate
 originals as bounded inline conversation rows. They remain independently
 openable and revealable through their continuation's disclosure in the
 [browser rail](../../cmd/evener-hub/frontend/src/shell/rail/railNodes.ts).
+When depth, node or byte limits trim these rows, `omitted_descendants` reports
+the excluded fork originals without counting delegate activity.
 Fork originals are separate conversations, outside either activity scope; this
 archive path does not restore subagent or job/watch detail to navigation.
 
