@@ -1284,7 +1284,11 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		}
 		pending := s.delegateController != nil && s.delegateController.hasPendingDelegateAttention()
 		s.attentionMu.Lock()
-		if pending {
+		// Runnable work the drive retries (a parked delegate's fenced
+		// escalation is runnable without being pending) backs the next retry
+		// off too: resetting here would re-run a persistent failure at the
+		// initial delay forever.
+		if pending || runnable {
 			s.stableAttentionRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
 		} else {
 			s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
