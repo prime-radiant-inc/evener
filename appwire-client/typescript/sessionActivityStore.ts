@@ -221,6 +221,46 @@ export class SessionActivityStore {
     this.state = { ...this.state, ...update };
     for (const listener of this.listeners) listener();
   }
+  private acceptContext(context: SessionActivityContext, source: SessionActivityResource): number {
+    if (!this.state.context || this.state.context.sessionId === context.sessionId) return this.generation;
+    // A routing alias can resolve to a replacement session. Its evidence and
+    // cursors retire together; opaque cache epochs alone do not imply this.
+    this.generation += 1;
+    const generation = this.generation;
+    for (const resource of resources) {
+      const read = this.reads[resource];
+      this.cancelTimer(read);
+      const demanded = read.observers > 0 || read.oneShot || read.rootQueued || read.pageQueued;
+      read.rootQueued = resource === source ? read.rootQueued : demanded;
+      read.pageQueued = false;
+      read.cursor = undefined;
+      read.epoch = undefined;
+      read.sessionId = undefined;
+      read.incomplete = false;
+      read.failures = 0;
+    }
+    const freshCollection = <Row>(resource: SessionActivityCollection): SessionActivityCollectionState<Row> => ({
+      ...collectionState<Row>(),
+      loading: this.reads[resource].inFlight !== null,
+      pending: this.reads[resource].rootQueued,
+    });
+    this.publish({
+      context,
+      summary: null,
+      summaryState: {
+        ...readState(),
+        loading: this.reads.summary.inFlight !== null,
+        pending: this.reads.summary.rootQueued,
+      },
+      delegates: freshCollection<SessionDelegate>("delegates"),
+      jobs: freshCollection<JobActivityJob>("jobs"),
+      watches: freshCollection<SessionWatch>("watches"),
+    });
+    for (const resource of resources) {
+      if (resource !== source && this.reads[resource].rootQueued) void this.request(resource, "root");
+    }
+    return generation;
+  }
   private request(resource: SessionActivityResource, mode: "root" | "page", explicit = false): Promise<void> {
     if (this.disposed || (!explicit && this.readState(resource).permanent)) return Promise.resolve();
     this.listen();
@@ -263,7 +303,7 @@ export class SessionActivityStore {
       read.rootQueued = false;
       read.pageQueued = false;
       const cursor = root ? undefined : read.cursor;
-      const generation = this.generation;
+      let generation = this.generation;
       try {
         this.lease ??= acquireThreadSubscription(this.client, this.ref);
         await this.lease.ensure();
@@ -271,6 +311,8 @@ export class SessionActivityStore {
         const result = await this.fetch(resource, cursor);
         if (this.disposed || generation !== this.generation) continue;
         if (result.scope !== this.scope) throw new Error("Session activity response belongs to another scope");
+        generation = this.acceptContext(result.context, resource);
+        if (this.disposed || generation !== this.generation) continue;
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
           read.failures = 0;
@@ -434,13 +476,22 @@ export class SessionActivityStore {
         changed = ["summary", "jobs"];
         break;
       case "evener/jobs/treeUpdated":
+        changed = resources;
+        break;
       case "evener/thread/resync":
+        // The server may already have emitted a reply before the alias was
+        // cleared. It must not publish after this resync boundary.
+        this.generation += 1;
         changed = resources;
         break;
       default:
         return;
     }
-    for (const resource of changed) if (this.reads[resource].observers > 0) void this.request(resource, "root");
+    for (const resource of changed) {
+      if (this.reads[resource].observers > 0 || this.reads[resource].oneShot) {
+        void this.request(resource, "root", notification.method === "evener/thread/resync");
+      }
+    }
   }
   private releaseIdle(): void {
     if (
