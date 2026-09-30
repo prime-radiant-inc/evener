@@ -50,6 +50,7 @@ type residualServeServer struct {
 	tasks          func() any
 	jobs           func(appwire.JobsListParams) (any, error)
 	jobOutput      func(string, int64, int64) (any, bool, error)
+	jobGet         func(string) (any, bool, error)
 	clear          func(context.Context, appwire.ThreadClearParams) error
 	shutdown       func()
 }
@@ -99,6 +100,9 @@ func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, e
 }
 func (s *residualServeServer) SetJobOutputFunc(f func(string, int64, int64) (any, bool, error)) {
 	s.jobOutput = f
+}
+func (s *residualServeServer) SetJobGetFunc(f func(string) (any, bool, error)) {
+	s.jobGet = f
 }
 func (s *residualServeServer) SetClearFunc(f func(context.Context, appwire.ThreadClearParams) error) {
 	s.clear = f
@@ -152,6 +156,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_ = s.tasks()
 	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
 	_, _, _ = s.jobOutput("job_1", 0, 1024)
+	_, _, _ = s.jobGet("job_1")
 }
 
 type residualTaskEnvelopeSampling struct {

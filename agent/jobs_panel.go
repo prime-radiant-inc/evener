@@ -21,6 +21,11 @@ func isOutputNotExistErr(err error) bool { return errors.Is(err, os.ErrNotExist)
 // carve-out). The alias keeps this package's producer named in domain terms.
 type JobOutputTail = appwire.JobOutputTail
 
+// JobActivityJob is the activity-tree job node, aliased here for the same
+// reason JobOutputTail is: the wire shape lives in appwire, and evener/jobs/get
+// returns exactly it.
+type JobActivityJob = appwire.JobActivityJob
+
 const (
 	jobOutputTailDefaultBytes = 4096
 	jobOutputTailMaxBytes     = 65536
@@ -118,4 +123,49 @@ func LoadSessionJobOutputTail(stateDir, sessionID, jobID string, beforeBytes, ma
 		total:    validatedTotal,
 		earliest: earliest,
 	}), true, nil
+}
+
+// JobGet resolves one job's record — the running record when the job is live,
+// else the store's folded record — and projects it into the activity-tree job
+// shape, including the untruncated command. found=false means no job with that
+// id exists.
+func (s *Session) JobGet(jobID string) (JobActivityJob, bool, error) {
+	if s == nil || s.jobManager == nil {
+		return JobActivityJob{}, false, nil
+	}
+	_, rec, err := s.jobManager.recordForRead(jobID)
+	if err != nil {
+		return JobActivityJob{}, false, err
+	}
+	if rec == nil {
+		return JobActivityJob{}, false, nil
+	}
+	ownerRef := appwire.Ref{SourceID: "local", ThreadID: rec.OwnerSessionID}.String()
+	return projectActivityJob(rec, ownerRef), true, nil
+}
+
+// LoadSessionJobGet reads one local session's durable jobs.jsonl and projects
+// one job's record, for the hub's past-session fallback. It is read-only.
+// found=false means no job with that id exists.
+func LoadSessionJobGet(stateDir, sessionID, jobID string) (JobActivityJob, bool, error) {
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return JobActivityJob{}, false, err
+	}
+	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
+	if _, err := historicalJobsStat(path); err != nil {
+		if os.IsNotExist(err) {
+			return JobActivityJob{}, false, nil
+		}
+		return JobActivityJob{}, false, err
+	}
+	events, err := jobstore.ReadEvents(path)
+	if err != nil {
+		return JobActivityJob{}, false, err
+	}
+	recs := jobstore.Fold(events)
+	rec := recs[jobID]
+	if rec == nil {
+		return JobActivityJob{}, false, nil
+	}
+	return projectActivityJob(rec, "local:"+sessionID), true, nil
 }

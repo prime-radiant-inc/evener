@@ -178,6 +178,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerTasksList, TaskListParams{}, TaskListResponse{}, ScopeBoth, "Lists the session's tasks."},
 	{MethodEvenerJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data."},
 	{MethodEvenerJobsOutput, JobsOutputParams{}, JobsOutputResponse{}, ScopeBoth, "Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback."},
+	{MethodEvenerJobsGet, JobsGetParams{}, JobsGetResponse{}, ScopeBoth, "Reads one job's metadata (the activity-tree job shape, including the untruncated command). Hub-served for exited sessions via the persisted jobs.jsonl fallback."},
 	{MethodEvenerDaemonList, DaemonListParams{}, DaemonListResponse{}, ScopeHub, "Lists resident daemons with lifecycle and exact ownership identity, including archived, incompatible, and unresolved discovered processes."},
 	{MethodEvenerDaemonRetire, DaemonRetireParams{}, DaemonRetireResponse{}, ScopeBoth, "Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle."},
 	{MethodEvenerDaemonStatus, DaemonStatusParams{}, DaemonStatusResponse{}, ScopeDaemon, "Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility."},

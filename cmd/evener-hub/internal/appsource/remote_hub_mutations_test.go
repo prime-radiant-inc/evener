@@ -151,6 +151,10 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 			_, err := s.JobOutput(ctx, appwire.JobsOutputParams{Ref: testControllerRef, JobID: "j1"})
 			return err
 		}},
+		{"JobGet", appwire.MethodEvenerJobsGet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.JobGet(ctx, appwire.JobsGetParams{Ref: testControllerRef, JobID: "j1"})
+			return err
+		}},
 	}
 
 	// StartThread's harness is the controller's source selector; it must be
