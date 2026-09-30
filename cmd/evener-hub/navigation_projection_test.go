@@ -1797,3 +1797,91 @@ func TestTreeNodeOrderBreaksTiesByCreatedThenRawTitleThenID(t *testing.T) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
 }
+
+// A merged row must sit where its recency says it belongs. The merge keeps a
+// Key's first-appearance position while its LastActivity becomes the max across
+// the merged groups, so a collision can raise the merged row above a later
+// row's instant. The test-runs bucket is the live shape: it concatenates the
+// active and archived test-run projects, each LastActivity-ordered on its own,
+// so the bucket is not globally ordered and an archived test run newer than an
+// active one lifts the merged row past rows it should precede. Re-sorting the
+// bucket by LastActivity desc restores hubcore's own project order.
+func TestNavigationMergeProjectBucketsOrdersMergedRowByLastActivity(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	session := func(id string) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: id, Project: "x", Kind: "session", State: "idle"}
+	}
+	tree := hubcore.Tree{
+		Projects: []hubcore.TreeProject{
+			{Key: "other", Name: "other", IsTestRun: true, LastActivity: now.Add(-time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAV")}},
+			{Key: "dup", Name: "dup", IsTestRun: true, LastActivity: now.Add(-2 * time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAW")}},
+		},
+		ArchivedProjects: []hubcore.TreeProject{
+			{Key: "dup", Name: "dup archived", IsTestRun: true, IsArchived: true, LastActivity: now,
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAX")}},
+		},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "00112233445566778899aabbccddeeff", Revision: 1, Tree: tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, err := projection.CatalogPage(navigationResourceTestRuns, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, project := range resource.Projects {
+		got = append(got, project.Key)
+	}
+	// The merged dup row's LastActivity is now (the archived group's instant),
+	// newer than other's (now-1h), so dup must lead the bucket.
+	if want := []string{"dup", "other"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("test-runs catalog order = %v, want %v (merged row must follow its LastActivity)", got, want)
+	}
+}
+
+// A merged test-run row keeps the first group's IsArchived flag. IsTestRun is
+// uniform inside every bucket (navigationProjectBuckets routes on it), but
+// IsArchived is not uniform in the test-runs bucket, which holds both archived
+// and unarchived test runs. The merge's first group owns the row's identity,
+// flags included, so the flag is the first group's and does not depend on
+// which other groups folded in. This pins that deliberate rule.
+func TestNavigationMergeProjectKeepsFirstGroupArchivedFlag(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	session := func(id string) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: id, Project: "x", Kind: "session", State: "idle"}
+	}
+	tree := hubcore.Tree{
+		Projects: []hubcore.TreeProject{
+			{Key: "dup", Name: "active run", IsTestRun: true, LastActivity: now.Add(-time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAV")}},
+		},
+		ArchivedProjects: []hubcore.TreeProject{
+			{Key: "dup", Name: "archived run", IsTestRun: true, IsArchived: true, LastActivity: now.Add(-2 * time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAW")}},
+		},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "00112233445566778899aabbccddeeff", Revision: 1, Tree: tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, err := projection.CatalogPage(navigationResourceTestRuns, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resource.Projects) != 1 {
+		t.Fatalf("test-runs catalog rows = %d, want the merged dup row alone", len(resource.Projects))
+	}
+	merged, ok := projection.projects["dup"]
+	if !ok {
+		t.Fatal("merged dup row has no project entry")
+	}
+	if !merged.IsTestRun {
+		t.Errorf("merged test-run row IsTestRun = false, want true (uniform inside the bucket)")
+	}
+	if merged.IsArchived {
+		t.Errorf("merged test-run row IsArchived = true, want the first group's false flag")
+	}
+}

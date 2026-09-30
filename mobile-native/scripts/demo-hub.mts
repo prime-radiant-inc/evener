@@ -821,6 +821,9 @@ export async function createDemoHub(
 					case "evener/jobs/list":
 						result = requireFleet().answerJobsList(params);
 						break;
+					case "evener/jobs/output":
+						result = requireFleet().answerJobsOutput(params);
+						break;
 					case "evener/search":
 						result = requireFleet().answerSearch(params);
 						break;
