@@ -69,7 +69,7 @@ function hub(check: UpdateCheckResponse | Error) {
 }
 
 /** A ready hub listing provider instances named `names`, with the sign-in
- * statuses `auth`. */
+ * statuses `auth` there for the home to prove it never reads them. */
 function providersHub(names: string[], auth: Pick<AuthStatusResponse, "provider" | "needsLogin">[]) {
 	const fake = new FakeClient("ready");
 	const instances = names.map(
@@ -185,7 +185,9 @@ it("opens Hosts inside the sheet, counting the hub's own machine and tagging the
 	expect(fleet.calls.filter((call) => call.method === "evener/host/list")).toHaveLength(1);
 });
 
-it("opens Providers inside the sheet, counting them and tagging the ones to sign in (spec 12)", async () => {
+// Jesse, 2026-09-30: the Hub home counts providers and says nothing about
+// which need a sign-in or have an error; the Providers page says that per row.
+it("opens Providers inside the sheet, counting them with no sign-in count (spec 12)", async () => {
 	const providers = providersHub(
 		["codex-jesse-fsck.com", "lunaroute", "meta"],
 		[
@@ -194,24 +196,12 @@ it("opens Providers inside the sheet, counting them and tagging the ones to sign
 		],
 	);
 	const { find, press, sheet } = await mount({ check: UP_TO_DATE, providers });
-	expect(find("Providers, 3, 1 to sign in")).not.toBeNull();
-	press("Providers, 3, 1 to sign in");
+	expect(find("Providers, 3")).not.toBeNull();
+	press("Providers, 3");
 	expect(sheet.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
-	const tags = find("Providers, 3, 1 to sign in")?.findAllByType(Tag);
-	expect(tags?.map((tag) => tag.props)).toEqual([{ text: "1 to sign in", tone: "amber" }]);
-});
-
-it("reads no providers while the connection can't be used, even when it says ready", async () => {
-	// A re-key window: the client may still be the previous hub's.
-	const providers = providersHub(["codex-jesse-fsck.com"], [{ provider: "codex-jesse-fsck.com", needsLogin: true }]);
-	await mount({ providers, usable: false });
+	expect(find("Providers, 3")?.findAllByType(Tag)).toEqual([]);
+	// With no count to show, the home reads no sign-in statuses at all.
 	expect(providers.calls.map((call) => call.method)).not.toContain("evener/auth/list");
-});
-
-it("counts providers with no tag when none needs signing in", async () => {
-	const providers = providersHub(["lunaroute", "meta"], []);
-	const { find } = await mount({ providers });
-	expect(find("Providers, 2")).not.toBeNull();
 });
 
 it("reads a count of none to VoiceOver as it shows it", async () => {
