@@ -158,6 +158,52 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 		});
 	});
 
+	it("recovers an evicted continuation through only the affected shared-store collection", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const requests = vi.spyOn(client, "request");
+			const store = new SessionActivityStore(client, PR2138, { scope: "subtree" });
+			store.start();
+			const releases = [store.observe("delegates"), store.observe("jobs"), store.observe("watches")];
+			try {
+				await Promise.all([
+					store.refresh("summary"),
+					store.load("delegates"),
+					store.load("jobs"),
+					store.load("watches"),
+				]);
+				expect(store.getSnapshot().delegates.rows).toHaveLength(50);
+				const initialMembership = store.getSnapshot().delegates.rows.map((row) => row.delegateId);
+				for (let i = 0; i < 129; i++)
+					await client.request("evener/thread/delegates/list", { ref: PR2138, scope: "subtree", limit: 1 });
+				requests.mockClear();
+				const memberships: string[][] = [];
+				const leave = store.subscribe(() =>
+					memberships.push(store.getSnapshot().delegates.rows.map((row) => row.delegateId)),
+				);
+				await store.loadMore("delegates");
+				leave();
+				expect(store.getSnapshot().delegates).toMatchObject({ error: null, permanent: false, hasMore: true });
+				expect(memberships.length).toBeGreaterThan(0);
+				for (const membership of memberships) expect(membership).toEqual(initialMembership);
+				expect(requests.mock.calls.map(([method]) => method)).toEqual([
+					"evener/thread/delegates/list",
+					"evener/thread/delegates/list",
+				]);
+				expect(requests.mock.calls[0]?.[1]).toHaveProperty("cursor");
+				expect(requests.mock.calls[1]?.[1]).not.toHaveProperty("cursor");
+				await store.loadMore("delegates");
+				const rows = store.getSnapshot().delegates.rows;
+				expect(rows).toHaveLength(55);
+				expect(new Set(rows.map((row) => row.delegateId)).size).toBe(55);
+				expect(store.getSnapshot().delegates.complete).toBe(true);
+				expect(requests.mock.calls.every(([method]) => method === "evener/thread/delegates/list")).toBe(true);
+			} finally {
+				for (const release of releases) release();
+				store.dispose();
+			}
+		});
+	});
+
 	it("keeps a coordinator's running job consistent with its compact navigation summary", async () => {
 		await withFleetHub(async (_hub, client) => {
 			const ref = `local:${demoSessionId("s-tasklist")}`;

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -342,7 +341,8 @@ func (read *sessionActivityRead) jobsPage(ctx context.Context, params appwire.Se
 		return result, err
 	}
 	result.Page.Issues = append([]appwire.SessionActivityIssue(nil), walk.Issues...)
-	if raw, _ := json.Marshal(result); len(raw) > sessionActivityPageBytes-2048 {
+	pageBudget := newSessionActivityPageBudget(result)
+	if pageBudget.bytes > sessionActivityPageBytes-2048 {
 		return result, appwire.Unavailable("session activity context and issues exceed response budget")
 	}
 	if !complete {
@@ -388,8 +388,7 @@ func (read *sessionActivityRead) jobsPage(ctx context.Context, params appwire.Se
 		row.Task = truncateActivityText(row.Task, activityMaxDelegateProseRunes)
 		row.Reason = truncateActivityText(row.Reason, activityMaxDelegateProseRunes)
 		result.Jobs = append(result.Jobs, row)
-		raw, _ := json.Marshal(result)
-		if len(raw) > sessionActivityPageBytes-2048 {
+		if !pageBudget.fits(row, result) {
 			result.Jobs = result.Jobs[:len(result.Jobs)-1]
 			if len(result.Jobs) == 0 {
 				return result, appwire.Unavailable("session activity row exceeds response budget")

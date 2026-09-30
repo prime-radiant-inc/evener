@@ -2,12 +2,14 @@
 import { expect, test } from "vitest";
 import { activityNodeID } from "./activityData";
 import {
+  activityDelegateState,
   buildActivityRows,
   buildWatchRows,
   indexActivityEntities,
   watchDeliveryInstants,
   watchFacts,
 } from "./activityRows";
+import { buildEntityView, findEntityView } from "./entityView";
 import { projectSessionActivity } from "./sessionActivityPresentation";
 import { type SessionActivitySnapshot, SessionActivityStore } from "./sessionActivityStore";
 import {
@@ -54,6 +56,77 @@ function watch(receiverRef: string, state: SessionWatch["state"] = "unknown"): S
     },
   };
 }
+
+test("stable active delegate projection remains visible and preserves its raw action target", () => {
+  const active = {
+    ...delegateFixture("active_raw"),
+    lifecycle: "running",
+    phase: "running",
+    status: "running",
+    terminal: false,
+    childRef: "remote:opaque-child-target",
+  };
+  const projected = projectSessionActivity(snapshot([active]));
+  if (!projected.tree) throw new Error("missing loaded projection");
+  const rows = buildActivityRows(projected.tree, new Set());
+  expect(rows.map((row) => row.kind)).toEqual(["delegate"]);
+  const row = rows[0];
+  if (row?.kind !== "delegate") throw new Error("missing active stable delegate row");
+  expect(activityDelegateState(row.delegate)).toEqual({ active: true, failed: false, status: "running" });
+  expect(row.live).toBe(true);
+  expect(row.defaultDetailOpen).toBe(true);
+  const entities = buildEntityView({
+    sessionRef: activityRef,
+    tree: projected.tree,
+    turns: [],
+    stale: false,
+    ended: false,
+  });
+  const entity = findEntityView(entities, "delegate", active.delegateId, active.ownerRef);
+  if (entity?.kind !== "delegate") throw new Error("missing active delegate action");
+  expect(entity.logicalId).toBe("active_raw");
+  expect(entity.open).toEqual({ ref: active.childRef, parentRef: active.ownerRef });
+});
+
+test("retained failed stable delegate projection keeps failure in its fold and action target", () => {
+  const failed = {
+    ...delegateFixture("failed_raw"),
+    lifecycle: "idle",
+    phase: "idle",
+    status: "idle",
+    terminal: true,
+    outcome: "failed",
+    error: "failure-sentinel",
+    childRef: "remote:retained-child-target",
+  };
+  const state = snapshot([failed]);
+  state.context = { ...activityContext(), availability: "retained" };
+  const projected = projectSessionActivity(state);
+  if (!projected.tree) throw new Error("missing retained projection");
+  const closed = buildActivityRows(projected.tree, new Set());
+  expect(closed).toHaveLength(1);
+  const fold = closed[0];
+  if (fold?.kind !== "fold") throw new Error("missing inactive fold");
+  expect([fold.inactiveCount, fold.failedCount]).toEqual([1, 1]);
+  const expanded = buildActivityRows(projected.tree, new Set([fold.id]));
+  const row = expanded.find((row) => row.kind === "delegate");
+  if (row?.kind !== "delegate") throw new Error("missing disclosed retained delegate");
+  expect(activityDelegateState(row.delegate)).toEqual({ active: false, failed: true, status: "failed" });
+  expect(row.live).toBe(false);
+  expect(row.defaultDetailOpen).toBe(false);
+  expect(row.delegate.error).toBe(failed.error);
+  const entities = buildEntityView({
+    sessionRef: activityRef,
+    tree: projected.tree,
+    turns: [],
+    stale: true,
+    ended: false,
+  });
+  const entity = findEntityView(entities, "delegate", failed.delegateId, failed.ownerRef);
+  if (entity?.kind !== "delegate") throw new Error("missing retained delegate action");
+  expect(entity.logicalId).toBe("failed_raw");
+  expect(entity.open).toEqual({ ref: failed.childRef, parentRef: failed.ownerRef });
+});
 
 test("loaded orphan descendants survive until an out-of-order parent page arrives", () => {
   const child = delegate("child", "remote:child", "remote:leaf", "parent");

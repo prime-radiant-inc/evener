@@ -46,7 +46,7 @@ export const delegateFixture = (delegateId = "delegate-1"): SessionDelegate => (
   childRef: `remote:${delegateId}`,
   description: "work",
   task: "inspect",
-  type: "agent",
+  type: "delegate",
   lifecycle: "idle",
   phase: "done",
   status: "completed",

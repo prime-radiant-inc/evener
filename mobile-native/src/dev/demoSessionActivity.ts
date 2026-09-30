@@ -1,4 +1,4 @@
-import { isFailedJobOutcome, WireError } from "@evener/appwire-client";
+import { isFailedJobOutcome, isPlainObject, WireError } from "@evener/appwire-client";
 import type {
 	ActivitySessionNode,
 	ActivityTree,
@@ -29,12 +29,35 @@ interface ActivityProjection {
 /** Typed demo reads share the legacy fixture's activity authority, never navigation. */
 export function createDemoSessionActivity(resolve: (ref: string) => ActivityRoot | null, epoch: string) {
 	let sequence = 0;
-	const continuations = new Map<
-		string,
-		{ ref: string; scope: SessionActivityScope; resource: string; rows: unknown[] }
-	>();
+	const continuations = new Map<string, unknown[]>();
 	const invalid = () =>
 		new WireError("Invalid demonstration activity request", -32602, { evenerErrorInfo: "invalidParams" });
+	function cursorKey(sequence: number, ref: string, scope: SessionActivityScope, resource: string) {
+		return JSON.stringify({ version: 1, sequence, ref, scope, resource });
+	}
+	function readCursor(cursor: string, ref: string, scope: SessionActivityScope, resource: string) {
+		let token: unknown;
+		try {
+			token = JSON.parse(cursor);
+		} catch {
+			throw invalid();
+		}
+		// Binding survives FIFO eviction; the issuance range needs no tombstone history.
+		if (
+			!isPlainObject(token) ||
+			Object.keys(token).length !== 5 ||
+			token.version !== 1 ||
+			typeof token.sequence !== "number" ||
+			!Number.isSafeInteger(token.sequence) ||
+			token.sequence <= 0 ||
+			token.sequence > sequence ||
+			token.ref !== ref ||
+			token.scope !== scope ||
+			token.resource !== resource
+		)
+			throw invalid();
+		return cursorKey(token.sequence, ref, scope, resource);
+	}
 	function project(params: SessionActivityReadParams): ActivityProjection {
 		const scope = params.scope ?? "session";
 		if (!params.ref || (scope !== "session" && scope !== "subtree")) throw invalid();
@@ -132,15 +155,18 @@ export function createDemoSessionActivity(resolve: (ref: string) => ActivityRoot
 		if (params.limit !== undefined && (!Number.isInteger(params.limit) || params.limit < 0)) throw invalid();
 		const limit = Math.min(params.limit || 50, 200);
 		if (params.cursor) {
-			const held = continuations.get(params.cursor);
-			if (!held || held.ref !== params.ref || held.scope !== scope || held.resource !== resource) throw invalid();
-			rows = held.rows as T[];
+			const held = continuations.get(readCursor(params.cursor, params.ref, scope, resource));
+			if (!held)
+				throw new WireError("Demonstration activity continuation expired", -32602, {
+					evenerErrorInfo: "sessionActivityCursorStale",
+				});
+			rows = held as T[];
 		}
 		const admitted = rows.slice(0, limit);
 		let nextCursor: string | undefined;
 		if (admitted.length < rows.length) {
-			nextCursor = `demo-activity-${++sequence}`;
-			continuations.set(nextCursor, { ref: params.ref, scope, resource, rows: rows.slice(admitted.length) });
+			nextCursor = cursorKey(++sequence, params.ref, scope, resource);
+			continuations.set(nextCursor, rows.slice(admitted.length));
 			if (continuations.size > 128) {
 				const oldest = continuations.keys().next().value;
 				if (oldest !== undefined) continuations.delete(oldest);
