@@ -108,7 +108,7 @@ no router (reserved).
 | `turn/interrupt` | both | `TurnInterruptParams` | `TurnInterruptResponse` | Cancels whatever turn the session is running; the receipt names the turn actually cancelled. |
 | `turn/queue` | both | `TurnQueueParams` | `TurnQueueResponse` | Queues a user message for after the active turn completes. |
 | `turn/drainAsSteer` | both | `TurnDrainAsSteerParams` | `TurnDrainAsSteerResponse` | Drains the input queue and injects it as a single steering message. |
-| `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
+| `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn (or the next turn when none is running). |
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `notes/human/set` | both | `NotesHumanSetParams` | `NotesHumanSetResponse` | Atomically accepts the human whiteboard and a notification; returns the canonical note and mutation receipt. |

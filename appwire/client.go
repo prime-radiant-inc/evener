@@ -670,9 +670,11 @@ func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerPa
 
 // TurnPromoteQueuedAsSteer calls turn/promoteQueuedAsSteer (issue #22) to
 // remove the queued message at params.Index and inject it as a user-sourced
-// STEERING message into the in-flight turn, leaving the rest of the queue
-// in place. The daemon returns Conflict when no turn is active or the index
-// no longer resolves against the live queue.
+// STEERING message into the in-flight turn (or the next turn when none is
+// running), leaving the rest of the queue in place. Unlike TurnSteer, no
+// turn needs to be active: a queue a Stop parked is promoteable. The daemon
+// returns Conflict when the index no longer resolves against the live queue
+// or the expected entry id mismatches.
 func (c *Client) TurnPromoteQueuedAsSteer(ctx context.Context, params TurnPromoteQueuedAsSteerParams) error {
 	return c.request(ctx, MethodTurnPromoteQueuedAsSteer, params, nil)
 }
