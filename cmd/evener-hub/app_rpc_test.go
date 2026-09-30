@@ -12913,6 +12913,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerTasksList,
 		appwire.MethodEvenerJobsList,
 		appwire.MethodEvenerJobsOutput,
+		appwire.MethodEvenerJobsGet,
 		appwire.MethodEvenerThreadTranscriptsList,
 		appwire.MethodEvenerPathsComplete,
 		appwire.MethodEvenerDirsCreate,
