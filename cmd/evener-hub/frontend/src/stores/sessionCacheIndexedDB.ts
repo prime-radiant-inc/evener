@@ -112,6 +112,9 @@ export class SessionCacheIndexedDB {
     return this.#database !== undefined;
   }
   close(): void {
+    // Drop the connection we hold and forget it, so a later call simply opens
+    // again. An open still in flight keeps running: its success lands after
+    // this, finds its promise superseded, and closes the late connection.
     this.#database?.close();
     this.#database = undefined;
     this.#databasePromise = undefined;
@@ -202,13 +205,20 @@ export class SessionCacheIndexedDB {
     }
   }
 
-  #open(): Promise<IDBDatabase> {
+  // One attempt per call: a timeout fails this call and the next call tries
+  // the open afresh (the outbox's rule). The lookup's Promise.race against
+  // SESSION_CACHE_LOOKUP_DEADLINE_MS lives in the store seam, not here.
+  async #open(): Promise<IDBDatabase> {
+    // A stuck open is not remembered: every later call attempts the open
+    // again, so a read after storage recovers still succeeds.
     if (this.#database) return Promise.resolve(this.#database);
     if (this.#databasePromise) return this.#databasePromise;
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
       const request = this.#indexedDB.open(this.#databaseName, DATABASE_VERSION);
       let abandoned = false;
       const timer = setTimeout(() => {
+        // The watchdog fired: fail this one attempt. A later call attempts
+        // the open again.
         abandoned = true;
         this.#reportOpenDiagnostic("open-timeout", Boolean(request.transaction));
         reject(new Error("session cache open timed out"));
@@ -216,6 +226,19 @@ export class SessionCacheIndexedDB {
       request.addEventListener(
         "upgradeneeded",
         () => {
+          // The schema upgrade must always be allowed to commit, even for an
+          // open this adapter has already abandoned or superseded: aborting
+          // a versionchange/upgrade transaction is the documented trigger for
+          // Chromium's wedged connection coordinator (crbug 40278488), after
+          // which open() never fires success, error, or blocked. `abandoned`
+          // and the success handler's identity guard below decide only
+          // whether the late success installs its connection, never whether
+          // the upgrade commits; recording the abandoned attempt is the
+          // whole reaction, and a later call opens afresh, which is what
+          // makes recovery after a stalled upgrade possible.
+          if (abandoned || this.#databasePromise !== opening) {
+            this.#reportOpenDiagnostic("upgrade-abandoned", Boolean(request.transaction));
+          }
           const database = request.result;
           if (!database.objectStoreNames.contains(RECORDS_STORE)) {
             database.createObjectStore(RECORDS_STORE, { keyPath: "ref" });
@@ -232,11 +255,29 @@ export class SessionCacheIndexedDB {
       request.addEventListener(
         "success",
         () => {
-          if (abandoned) return;
           clearTimeout(timer);
-          this.#database = request.result;
+          const database = request.result;
+          // A close() (or a newer attempt) superseded this open, or the
+          // watchdog abandoned it: never install the late connection. Close
+          // it so nothing outlives the adapter's lifecycle, and fail this
+          // call, which reads as a miss.
+          if (abandoned || this.#databasePromise !== opening) {
+            database.close();
+            reject(new Error("session cache open was superseded"));
+            return;
+          }
+          this.#database = database;
           this.#databasePromise = undefined;
-          resolve(request.result);
+          database.addEventListener("versionchange", () => {
+            // Another connection is taking the database to a new version, so
+            // this one must close. No versionchange transaction is in
+            // progress on it; the upgrade belongs to the other connection's
+            // request.
+            this.#reportOpenDiagnostic("versionchange-retire", false);
+            this.#retire(database);
+          });
+          database.addEventListener("close", () => this.#retire(database));
+          resolve(database);
         },
         { once: true },
       );
@@ -245,8 +286,15 @@ export class SessionCacheIndexedDB {
         () => {
           if (abandoned) return;
           clearTimeout(timer);
-          this.#reportOpenDiagnostic("version-fence", request.error?.name === "VersionError");
-          reject(request.error ?? new Error("session cache open failed"));
+          const error = request.error ?? new Error("session cache open failed");
+          // The fence is the one open error a diagnostic path names: this
+          // build's version is below the stored database's, a newer tab owns
+          // the schema, and this tab fails closed (a miss). No versionchange
+          // transaction of ours was live - the upgrade belongs to the newer
+          // connection - and any other open error stays a silent failed
+          // open; inventing a generic path is out of bounds.
+          if (error.name === "VersionError") this.#reportOpenDiagnostic("version-fence", false);
+          reject(error);
         },
         { once: true },
       );
@@ -259,9 +307,24 @@ export class SessionCacheIndexedDB {
       );
     });
     this.#databasePromise = opening;
-    opening.catch(() => {
-      this.#databasePromise = undefined;
-    });
-    return opening;
+    try {
+      return await opening;
+    } catch (error) {
+      // Forget the attempt only if it is still the current one: a close()
+      // during this open already cleared the field, and a newer attempt's
+      // promise must survive this attempt's failure.
+      if (this.#databasePromise === opening) this.#databasePromise = undefined;
+      throw error;
+    }
+  }
+
+  #retire(database: IDBDatabase): void {
+    // A versionchange or a browser-side close ended this connection: drop it
+    // so the next call opens afresh instead of reusing a dead handle, and
+    // only when it is still the installed one.
+    database.close();
+    if (this.#database !== database) return;
+    this.#database = undefined;
+    this.#databasePromise = undefined;
   }
 }
