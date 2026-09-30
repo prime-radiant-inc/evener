@@ -716,6 +716,7 @@ export {
   isInformationalWarning,
   WarningCodeContextBudget,
   WarningCodeDelegateAttentionRestore,
+  WarningCodeMCPReconnected,
   warningWords,
 } from "./warnings";
 export { hasWarningText } from "./warningText";
