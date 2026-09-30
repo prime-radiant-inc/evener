@@ -629,11 +629,12 @@ func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 
 // SearchAdmitted returns the newest up-to-limit entries that match q and
 // satisfy admit, in the Hub session ordering. Unlike Search it applies admit
-// before the limit cuts, and unlike an unbounded Search it never collects more
-// than limit entries: hubSearch uses it so the Past group's scope filter runs
-// over the whole index without pulling every match into memory (#2873). A nil
-// admit admits everything. admit must be a pure predicate; it runs under the
-// index's read lock and must not call back into the index.
+// before the limit cuts, so the whole match set never lands in the caller's
+// hands: hubSearch uses it so the Past group's scope filter runs over the whole
+// index while the returned page stays bounded to limit entries (#2873). The FTS
+// path still resolves the match id set, as Search does. A nil admit admits
+// everything. admit must be a pure predicate; it runs under the index's read
+// lock and must not call back into the index.
 func (i *PastIndex) SearchAdmitted(q string, limit int, admit func(PastEntry) bool) []PastEntry {
 	if limit <= 0 {
 		return nil
@@ -1166,53 +1167,79 @@ func matches(e PastEntry, lowerQ string) bool {
 	return false
 }
 
-// Matches reports whether the entry for sessionID matches q by the same rules
-// Search applies — the in-memory substring scan unioned with SQLite FTS —
-// looking the entry up directly instead of fetching the whole match set.
-// hubSearch uses it to answer a live session's own prompt match without pulling
-// the index into memory (#2873).
-func (i *PastIndex) Matches(sessionID, q string) bool {
-	if i == nil {
-		return false
-	}
-	// An id absent from the index cannot appear in Search's results, so it
-	// cannot match there either.
-	e, ok := i.Find(sessionID)
-	if !ok {
-		return false
+// MatchIDs returns the subset of ids whose indexed entry matches q by the same
+// rules Search applies — the in-memory substring scan unioned with SQLite FTS —
+// resolved for all ids in one pass. hubSearch uses it to answer every live
+// session's own prompt match with a single lookup, rather than fetching the
+// whole match set or querying once per session (#2873). An id absent from the
+// index cannot appear in Search's results, so it never matches. A nil index
+// matches nothing.
+func (i *PastIndex) MatchIDs(ids []string, q string) map[string]bool {
+	out := map[string]bool{}
+	if i == nil || len(ids) == 0 {
+		return out
 	}
 	lower := strings.ToLower(strings.TrimSpace(q))
-	if matches(e, lower) {
-		return true
+	var ftsCandidates []string
+	for _, id := range ids {
+		e, ok := i.Find(id)
+		if !ok {
+			continue
+		}
+		if lower == "" || matches(e, lower) {
+			out[id] = true
+			continue
+		}
+		ftsCandidates = append(ftsCandidates, id)
 	}
-	return i.ftsMatchesID(lower, sessionID)
+	for _, id := range i.ftsMatchIDs(lower, ftsCandidates) {
+		out[id] = true
+	}
+	return out
 }
 
-// ftsMatchesID reports whether the FTS mirror holds sessionID as a match for q,
-// the same token-prefix rule Search's FTS path applies. It queries the one id
-// directly, so Matches can union FTS with the substring scan without
-// materializing the whole FTS match set.
-func (i *PastIndex) ftsMatchesID(q, sessionID string) bool {
+// ftsMatchIDs returns the ids among ids the FTS mirror holds as matches for q,
+// the same token-prefix rule Search's FTS path applies. One query resolves the
+// whole candidate set, so MatchIDs unions FTS with the substring scan without a
+// query per id.
+func (i *PastIndex) ftsMatchIDs(q string, ids []string) []string {
 	query := ftsQuery(q)
-	if query == "" {
-		return false
+	if query == "" || len(ids) == 0 {
+		return nil
 	}
 	i.ensureFTSFresh()
 	i.mu.RLock()
 	available := i.fts
 	i.mu.RUnlock()
 	if !available || i.dbPath == "" {
-		return false
+		return nil
 	}
 	db, err := i.openDB("sqlite", sqliteDSN(i.dbPath))
 	if err != nil {
-		return false
+		return nil
 	}
 	defer func() { _ = db.Close() }()
-	var id string
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, query)
+	for _, id := range ids {
+		args = append(args, id)
+	}
 	// local in-process SQLite query; PastIndex.Search is a context-free API. (noctx)
-	err = db.QueryRow(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? AND id = ? LIMIT 1`, query, sessionID).Scan(&id) //nolint:noctx
-	return err == nil
+	rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? AND id IN (`+placeholders+`)`, args...) //nolint:noctx
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return out
+		}
+		out = append(out, id)
+	}
+	return out
 }
 
 // SeedForTest replaces the in-memory index with the given metas (StateDir left

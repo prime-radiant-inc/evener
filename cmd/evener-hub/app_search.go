@@ -56,6 +56,21 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 		entries = cfg.Roster.List()
 		sortLiveForSearch(entries, cfg.Past)
 	}
+	// A live session's meta sits in the past index too, so a prompt or
+	// working-directory match there lists it here, live. Resolve every live
+	// session's own past-index match in one lookup, ahead of the bounded Past
+	// fetch, so it is found however far back its entry sits and one search costs
+	// one query rather than one per live session (#2873).
+	var pastMatched map[string]bool
+	if cfg.Past != nil && q != "" {
+		ids := make([]string, 0, len(entries))
+		for _, le := range entries {
+			if le.SessionID != "" {
+				ids = append(ids, le.SessionID)
+			}
+		}
+		pastMatched = cfg.Past.MatchIDs(ids, q)
+	}
 	// Every live session's result, in the Live order, built once for both
 	// the Live group and the In sessions group.
 	var live []appwire.SearchResult
@@ -82,11 +97,7 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			isLive[le.SessionID] = true
 			result := liveSearchResult(cfg, le, decisions, now)
 			live = append(live, result)
-			// A live session's meta is in the past index too, so a prompt or
-			// working-directory match there lists it here, live. That entry is
-			// looked up directly, not read off the bounded fetch, so it is found
-			// however far back it sits.
-			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(result.Title), q) && !cfg.Past.Matches(le.SessionID, q) {
+			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(result.Title), q) && !pastMatched[le.SessionID] {
 				continue
 			}
 			if roots.IsSubagent(le.SessionID) || running[le.SessionID] {
@@ -99,10 +110,10 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	}
 	// The Past group's fetch filters before the limit cuts, so the scope still
 	// applies over the whole index and newer out-of-scope or live matches cannot
-	// crowd an older in-scope match out of the page. It collects at most
-	// searchPastLimit entries, so no query — not even an empty one — pulls the
-	// whole match set into memory (#2873). A live session's own prompt match is
-	// answered separately above (Past.Matches), so it never depended on this
+	// crowd an older in-scope match out of the page. It returns at most
+	// searchPastLimit entries, so the whole match set no longer lands in the
+	// caller's hands on every query, even an empty one (#2873). A live session's
+	// own prompt match is answered separately above, so it never depended on this
 	// fetch's width.
 	if cfg.Past != nil {
 		pastMatches := cfg.Past.SearchAdmitted(q, searchPastLimit, func(e hubcore.PastEntry) bool {

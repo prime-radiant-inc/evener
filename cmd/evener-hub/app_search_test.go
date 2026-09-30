@@ -122,6 +122,22 @@ func TestHubSearchLivePromptMatchUsesTheFTSRule(t *testing.T) {
 	}
 }
 
+// A query with live sessions but no past index must not panic: the live
+// prompt-match lookup treats a nil index as no past match, the same as the map
+// it replaced (#2873).
+func TestHubSearchWithLiveSessionsAndNoPastIndex(t *testing.T) {
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{PID: 1, SessionID: "02wMz5TxvLgZ6BB3uYgqz5", Status: appwire.ThreadStatusActive},
+	)
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, time.Now())
+	if err != nil {
+		t.Fatalf("hubSearch: %v", err)
+	}
+	if got := searchIDs(resp.Live); len(got) != 0 {
+		t.Fatalf("live = %v, want none with no past index and no ID or title match", got)
+	}
+}
+
 func TestHubSearchIncludesMatchingPastSession(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "projects", "project-x-0123456789")
