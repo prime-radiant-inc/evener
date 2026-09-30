@@ -907,3 +907,82 @@ func TestSessionActivityCanceledDelegateFoldResumesWithoutReplay(t *testing.T) {
 		seen[row.DelegateID] = true
 	}
 }
+
+func TestSessionActivityLiveDelegateAdmissionMembership(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []appwire.SessionActivityScope{appwire.SessionActivityScopeSession, appwire.SessionActivityScopeSubtree} {
+		for _, laterAt := range []int64{150, 200} {
+			t.Run(fmt.Sprintf("%s/%d", scope, laterAt), func(t *testing.T) {
+				s := newSession(t, withoutGitSnapshot())
+				c := s.delegateController
+				create := func(id, parent string, at int64) {
+					t.Helper()
+					descriptor := stableToolDescriptor(s, id, parent)
+					c.mu.Lock()
+					_, err := c.appendLocked(delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: id, TS: time.Unix(at, 0).UTC(), Created: &delegatestore.DelegateCreated{Descriptor: descriptor}})
+					c.mu.Unlock()
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				create("dlg_initial_300", "", 300)
+				create("dlg_initial_200", "", 200)
+				parent := ""
+				if scope == appwire.SessionActivityScopeSubtree {
+					parent = "dlg_initial_300"
+				}
+				create("dlg_initial_100", parent, 100)
+				// The tied-clock cases also prove the membership fence is restored
+				// from accepted journal events when the controller reopens.
+				if laterAt == 200 {
+					restored, err := openDelegateTreeController(delegateTreeControllerConfig{store: c.store, rootRuntime: s, rootSessionID: s.ID(), stateDir: c.stateDir})
+					if err != nil {
+						t.Fatal(err)
+					}
+					c = restored
+					s.delegateController = c
+				}
+				params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: scope, Limit: 1}
+				first, err := s.ListActivityDelegates(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(first.Delegates) != 1 || first.Delegates[0].DelegateID != "dlg_initial_300" || first.Page.NextCursor == "" {
+					t.Fatalf("invalid first page: %+v", first)
+				}
+				create("dlg_a_later", parent, laterAt)
+				c.mu.Lock()
+				_, err = c.appendLocked(delegateControllerRunStartedEvent("dlg_initial_200", 1, delegatestore.TriggerInitial, time.Unix(400, 0).UTC()))
+				c.mu.Unlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+				params.Cursor = first.Page.NextCursor
+				params.Limit = 200
+				second, err := s.ListActivityDelegates(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(second.Delegates) != 2 || !second.Page.Complete {
+					t.Fatalf("later creation changed membership: %+v", second)
+				}
+				for _, row := range second.Delegates {
+					if row.DelegateID == "dlg_a_later" {
+						t.Fatalf("later admission leaked: %+v", second)
+					}
+					if row.DelegateID == "dlg_initial_200" && row.Phase != "running" {
+						t.Fatalf("status update hidden by membership fence: %+v", row)
+					}
+				}
+				params.Cursor = ""
+				fresh, err := s.ListActivityDelegates(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(fresh.Delegates) != 4 || !fresh.Page.Complete {
+					t.Fatalf("fresh walk omitted later admission: %+v", fresh)
+				}
+			})
+		}
+	}
+}

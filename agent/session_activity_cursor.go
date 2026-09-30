@@ -50,6 +50,7 @@ type sessionActivityToken struct {
 type sessionActivityWalk struct {
 	Cutoffs        map[string]int64
 	Highwater      sessionActivityKey
+	Admission      uint64
 	Ready          bool
 	Owners         []string
 	SourcesReady   bool
