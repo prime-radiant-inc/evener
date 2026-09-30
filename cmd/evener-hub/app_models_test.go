@@ -818,6 +818,32 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 	}
 }
 
+// TestStartLaunchModelsPrefetchRunsOnce: the launch warm is one startup pass
+// and never a timer (Jesse, 2026-09-30); after it the picker refreshes the
+// list when it is opened. With a synchronous runner the pass returns having
+// run the launch check once; a loop that polled would never return.
+func TestStartLaunchModelsPrefetchRunsOnce(t *testing.T) {
+	t.Parallel()
+	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	web := newLaunchModelsTestWeb(t, spawner, true)
+	runs := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		startLaunchModelsPrefetch(t.Context(), web, func(fn func()) { runs++; fn() })
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the launch warm never returned: it is still polling after its startup pass")
+	}
+	if runs != 1 || spawner.callCount() != 1 {
+		t.Fatalf("background runs = %d, launch checks = %d; want one of each", runs, spawner.callCount())
+	}
+}
+
 // TestFetchLaunchModelsCoalescesColdLoads: concurrent reads of one uncached key
 // share a single launch check, so a burst of cold picker opens — or a read
 // racing the startup warm — spawns one child, not one per reader.

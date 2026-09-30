@@ -2046,8 +2046,8 @@ state (`InstanceModels`), which the sheet renders as one toggle per row
 driving `evener/instance/setModelDisabled`; every listed row is toggleable,
 with a cross-provider alias toggling on that instance alone (§7.2). The
 hub prefetches every instance's
-live listing at startup and every few minutes after, so the sheet reads
-cached inventory; a Refresh button drives `evener/instance/refreshModels`
+live listing once at startup and never polls providers after, so the sheet
+reads cached inventory; a Refresh button drives `evener/instance/refreshModels`
 for one instance on demand. Toggling a live-only id authors an
 exact config row, which precedes live lookup, so the exception takes
 effect; its existing `BaseURL`, `IsDefault`, `HasStoredOAuth`,

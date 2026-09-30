@@ -236,8 +236,9 @@ func TestPrefetchLiveModelsSurvivesUnreachable(t *testing.T) {
 }
 
 // The hub lists providers once at startup and never again on a timer: a
-// provider is polled only when someone asks (Jesse, 2026-09-30). The startup
-// pass lists each instance once; nothing lists it again while the hub runs.
+// provider is polled only when someone asks (Jesse, 2026-09-30). With a
+// synchronous runner the prefetch hands over one pass that returns, having
+// listed the instance once; a loop that polled would never return.
 func TestLiveModelsPrefetchRunsOnceAtStartup(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -255,18 +256,21 @@ func TestLiveModelsPrefetchRunsOnceAtStartup(t *testing.T) {
 	if err := ctl.reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	passes := make(chan struct{}, 16)
-	startLiveModelsPrefetch(t.Context(), ctl.reg, nil, func(fn func()) { go fn() }, func() { passes <- struct{}{} })
-
-	// The startup pass changes the listing, so it announces once.
+	runs := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		startLiveModelsPrefetch(t.Context(), ctl.reg, ctl.auth, func(fn func()) { runs++; fn() }, func() {})
+	}()
 	select {
-	case <-passes:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the startup pass never ran")
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prefetch never returned: it is still listing providers after its startup pass")
 	}
-	startup := hits.Load()
-	time.Sleep(100 * time.Millisecond)
-	if got := hits.Load(); got != startup {
-		t.Fatalf("the provider was listed %d times after the startup pass, want none", got-startup)
+	if runs != 1 {
+		t.Fatalf("the prefetch started %d background runs, want 1", runs)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("the provider was listed %d times, want once", got)
 	}
 }
