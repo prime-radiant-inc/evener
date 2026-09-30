@@ -300,11 +300,17 @@ func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, atten
 	ids := c.attentionWakeIDs[delegateID]
 	delete(ids, attentionID)
 	if len(ids) == 0 {
-		delete(c.attentionWakeIDs, delegateID)
-		delete(c.attentionDriveTurns, delegateID)
-		delete(c.attentionParked, delegateID)
-		delete(c.attentionRestoreFailures, delegateID)
+		c.dropDelegateAttentionLocked(delegateID)
 	}
+}
+
+// dropDelegateAttentionLocked clears the drive's state for a delegate that
+// owes no attention, which takes it out of the drive's line.
+func (c *delegateTreeController) dropDelegateAttentionLocked(delegateID string) {
+	delete(c.attentionWakeIDs, delegateID)
+	delete(c.attentionDriveTurns, delegateID)
+	delete(c.attentionParked, delegateID)
+	delete(c.attentionRestoreFailures, delegateID)
 }
 
 // countDelegateAttentionRestoreFailure records one more counted restore
@@ -389,9 +395,7 @@ func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID strin
 		}
 	}
 	if delegateID == "" || len(ids) == 0 {
-		// It owes nothing now, so it leaves the drive's line too.
-		delete(c.attentionWakeIDs, delegateID)
-		delete(c.attentionDriveTurns, delegateID)
+		c.dropDelegateAttentionLocked(delegateID)
 		return
 	}
 	c.attentionWakeIDs[delegateID] = ids
