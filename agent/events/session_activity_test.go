@@ -1,8 +1,9 @@
 package events
 
 import (
-	"primeradiant.com/evener/appwire"
 	"testing"
+
+	"primeradiant.com/evener/appwire"
 )
 
 func TestSessionActivityEventSeparatesPhysicalAndLogicalSession(t *testing.T) {
