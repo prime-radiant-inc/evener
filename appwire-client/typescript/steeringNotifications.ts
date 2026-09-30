@@ -65,7 +65,8 @@ export interface ParsedNotification {
   // A reported run's schema-shaped result: the packet's structured_result
   // field, or the envelope's data for frames recorded before the field existed
   // (see delegatePacketNotification). Undefined when the run reported no
-  // schema output, and suppressed when the daemon refused to validate it.
+  // schema output or the frame is not a reported packet, and suppressed when
+  // the daemon refused to validate it.
   structuredResult?: Record<string, unknown>;
   structuredResultValid?: boolean;
   structuredResultReason?: string;
@@ -306,8 +307,8 @@ const PACKET_KIND_OUTCOMES = new Map([
 
 interface TerminalPacket {
   // The daemon's PacketKind (reported | terminal_error): the reported kind is
-  // the only path that captures a validated structured result, so the
-  // envelope-data fallback keys on it.
+  // the only path that captures a validated structured result, so both
+  // structured-result sources and their verdict fields key on it.
   kind: string;
   // The settled outcome: metadata's delegatestore.OutcomeStatus, or the one
   // the packet kind implies when metadata carries none (the fold's own bare
@@ -394,20 +395,21 @@ function delegatePacketNotification(
   const ending = delegateEndingText(packet);
   const envelope = parsePacketEnvelope(packet.message);
   const message = packetBodyMessage(envelope?.message ?? packet.message, ending);
-  // A result the daemon refused to capture or validate never rides the
-  // packet's structured_result field, and its copy inside the envelope must
-  // not render as an authoritative table either - only a valid verdict's data
-  // does, from whichever copy the frame carries. The envelope fallback is
-  // further gated on the reported kind: the daemon captures and validates a
-  // structured result on the reported path only
-  // (captureDelegateStructuredResult), so a terminal_error body that merely
-  // looks like an envelope (a provider error, a report the run managed before
-  // failing) carries no verdict behind its data. Its message field still reads
-  // as content; its data never becomes rows.
+  // Both structured-result sources and their verdict fields are gated on the
+  // reported kind: the daemon captures and validates a structured result on
+  // the reported path only (captureDelegateStructuredResult runs inside the
+  // reported branch, agent/subagents.go), so a terminal_error body carries no
+  // validation verdict behind whatever structured-result fields or
+  // envelope-shaped data it happens to hold (a provider error, a report the
+  // run managed before failing). Its message field still reads as content;
+  // nothing else becomes rows. Within the reported kind, a result the daemon
+  // refused to capture or validate never rides the packet's structured_result
+  // field, and its copy inside the envelope must not render as an
+  // authoritative table either - only a valid verdict's data does, from
+  // whichever copy the frame carries.
+  const reported = packet.kind === "reported";
   const structuredResult =
-    packet.structuredResultValid === false
-      ? undefined
-      : (packet.structuredResult ?? (packet.kind === "reported" ? envelope?.data : undefined));
+    reported && packet.structuredResultValid !== false ? (packet.structuredResult ?? envelope?.data) : undefined;
   return {
     type: "delegate",
     // In the outcome's own words; an ending this client doesn't know still reported.
@@ -423,8 +425,8 @@ function delegatePacketNotification(
     excerpt: "",
     message: message || undefined,
     structuredResult,
-    structuredResultValid: packet.structuredResultValid,
-    structuredResultReason: packet.structuredResultReason,
+    structuredResultValid: reported ? packet.structuredResultValid : undefined,
+    structuredResultReason: reported ? packet.structuredResultReason : undefined,
     concerns: [],
     rawText: block,
   };

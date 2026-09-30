@@ -187,8 +187,10 @@
 
 /* The structured result as a headerless table (§A): labels are the schema's
  * own keys in words, one hairline per row, the first row's top edge left open
- * so the message and the table read as one report. Labels never wrap (they
- * are short); values take the rest of the width and wrap anywhere. */
+ * so the message and the table read as one report. Both cells wrap anywhere:
+ * a schema key can be as long as its author likes, and `overflow-wrap:
+ * anywhere` (not break-word) is what collapses a cell's min-content width,
+ * so neither cell can widen the table past the card. */
 .resultTable {
   width: 100%;
   margin-top: var(--space-3);
@@ -201,7 +203,7 @@
   text-align: left;
   font-weight: var(--font-weight-regular);
   color: var(--ink-mid);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   border-top: 1px solid var(--edge);
   vertical-align: baseline;
 }

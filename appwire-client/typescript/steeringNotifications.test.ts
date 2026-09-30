@@ -1390,6 +1390,30 @@ test("a terminal_error packet whose message is envelope-shaped never yields a ta
   expect(n?.structuredResult).toBeUndefined();
 });
 
+// The kind gates BOTH structured-result sources and their verdict fields, not
+// just the envelope fallback: a terminal_error frame never carries a validated
+// result from a current daemon (captureDelegateStructuredResult runs inside
+// the reported branch only), so whatever structured-result fields its body
+// happens to carry have no verdict behind them and must not become rows.
+test("a terminal_error packet carrying structured-result fields yields neither table nor verdict", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "terminal_error",
+        message: "the run reported once, then the provider 429ed",
+        structured_result: { retry: "no" },
+        structured_result_valid: true,
+        structured_result_reason: "schema_validation_failed",
+        metadata: { outcome: "failed", reason: "run_error" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("the run reported once, then the provider 429ed");
+  expect(n?.structuredResult).toBeUndefined();
+  expect(n?.structuredResultValid).toBeUndefined();
+  expect(n?.structuredResultReason).toBeUndefined();
+});
+
 // The packet's metadata carries the run's cause beside its reason code
 // (#3327); the card says the cause, never the bare code.
 test("an unnamed subagent's failure parses as a failure carrying its message", () => {

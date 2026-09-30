@@ -150,6 +150,25 @@ describe("delegate and job notifications", () => {
 		expect(renderedText(tree)).toContain("go test exited 1 three times");
 	});
 
+	// A legacy attribute-shaped frame (recorded before packets) carries its
+	// whole report in the body's excerpt and a raw reason code in the reason
+	// attr: the line shows the report, never the code. Packet frames have an
+	// empty excerpt, so the redesign's reason fallback still reads for them.
+	it("shows a legacy failed frame's report, not its reason code", () => {
+		const { tree } = showItem({
+			...notificationWireItem("delegate-failed-unnamed"),
+			id: "item_legacy_failed",
+			text: `<delegate-notification delegate_id="dlg_2" name="Split the retry loop" status="failed" reason="exit_nonzero">
+The delegate failed.
+excerpt:
+The retry loop splits reads from writes; the flaky test needs a fixed seed.
+</delegate-notification>`,
+		});
+		expect(renderedText(tree)).toContain("Split the retry loop failed");
+		expect(renderedText(tree)).toContain("The retry loop splits reads from writes; the flaky test needs a fixed seed.");
+		expect(renderedText(tree)).not.toContain("exit_nonzero");
+	});
+
 	it("says a subagent the user stopped was stopped", () => {
 		const { tree } = show("delegate-stopped");
 		expect(renderedText(tree)).toContain("Check drain ordering stopped");

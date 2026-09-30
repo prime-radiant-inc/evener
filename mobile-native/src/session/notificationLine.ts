@@ -56,10 +56,13 @@ export function notificationLine(
 			// and a failure whose whole error is its ending (the delegate redesign,
 			// mockups 24-delegate-complete): a failed run's cause rides as `reason`,
 			// so the line keeps saying it; a stopped run's headline already does.
+			// A legacy attribute-shaped frame keeps its whole report in `excerpt`
+			// with a raw reason code in `reason`, so the excerpt reads first - a
+			// packet frame's excerpt is always empty, and the code never wins.
 			const detail =
 				notification.message ??
-				(notification.outcome === "failed" ? notification.reason : undefined) ??
-				(notification.excerpt || undefined);
+				(notification.excerpt || undefined) ??
+				(notification.outcome === "failed" ? notification.reason : undefined);
 			if (detail) line.detail = detail;
 			if (ref) line.subagent = { ref, title: subject };
 			return line;

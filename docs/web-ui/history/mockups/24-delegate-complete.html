@@ -101,7 +101,7 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .kv{display:table;width:100%;border-collapse:collapse;margin-top:var(--space-3);font-size:13px}
 .kv .r{display:table-row}
 .kv .r:first-child .k, .kv .r:first-child .v{border-top:none}
-.kv .k{display:table-cell;width:1%;white-space:nowrap;padding:7px var(--space-4) 7px 0;color:var(--ink-mid);border-top:1px solid var(--edge);vertical-align:baseline}
+.kv .k{display:table-cell;width:1%;overflow-wrap:anywhere;padding:7px var(--space-4) 7px 0;color:var(--ink-mid);border-top:1px solid var(--edge);vertical-align:baseline}
 .kv .v{display:table-cell;padding:7px 0;color:var(--ink-hi);border-top:1px solid var(--edge);overflow-wrap:anywhere;vertical-align:baseline}
 .kv .v .none{color:var(--ink-low)}
 /* quiet note (invalid structured result, machinery phrasing) */
@@ -310,7 +310,7 @@ details.disc .raw{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-
   <!-- E : mobile -->
   <div class="case" id="e">
     <div class="case-h"><span class="badge">E</span><span class="ttl">Mobile — 360px</span><span class="verdict">hero case only</span></div>
-    <p class="cap">The table's label column is <span class="mono">white-space: nowrap</span> so labels set one line and values take the rest; long values wrap anywhere. The head wraps the name trigger and chevron as one unit, exactly as the current grammar does. (The native mobile app has its own one-line renderer — this frame is the responsive hub only.)</p>
+    <p class="cap">Both table cells wrap with <span class="mono">overflow-wrap: anywhere</span>: a schema key can be as long as its author likes, and that declaration (not <span class="mono">break-word</span>) collapses a cell's min-content width, so neither cell can widen the table past the card. The head wraps the name trigger and chevron as one unit, exactly as the current grammar does. (The native mobile app has its own one-line renderer — this frame is the responsive hub only.)</p>
     <div class="phones">
       <div class="phone"><div class="phead">Session</div><div class="pbody">
         <div class="stage-lbl">Completed + table, expanded</div>
