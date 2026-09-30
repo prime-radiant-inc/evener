@@ -15,9 +15,9 @@ export type SubagentListItem =
 	| { kind: "missing"; title: string };
 
 /** The list's items for a filter and a search (spec 9): subagents and shell
- * jobs together, failed, then running, then done, where done is one folded row under All until you open
- * it. Section counts follow the search; the chips and the strip don't (ruling
- * 8). What couldn't be listed comes last. */
+ * jobs together, failed, then running, then done, where done is one folded
+ * row under All until you open it. Section counts follow the search; the
+ * chips and the strip don't (ruling 8). What couldn't be listed comes last. */
 export function subagentListItems(
 	rows: readonly ActivityListRow[],
 	view: { filter: SubagentFilter; query: string; doneOpen: boolean; missing: readonly string[] },

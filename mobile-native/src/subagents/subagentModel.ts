@@ -382,7 +382,8 @@ export function subagentLastLine(
 /** The list offers its search field past this many subagents (ruling 8). */
 export const SEARCH_AFTER = 8;
 
-/** The search field's filter (spec 9): the title, ignoring case. */
+/** The search field's filter (spec 9): the title, ignoring case, and for a
+ * shell job its command and who started it too. */
 export function matchesSearch(row: ActivityListRow, query: string): boolean {
 	const needle = query.trim().toLowerCase();
 	if (needle === "") return true;
