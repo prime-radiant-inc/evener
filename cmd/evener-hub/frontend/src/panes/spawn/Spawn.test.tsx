@@ -4531,12 +4531,19 @@ test("switching host under an open model picker reloads it from scratch", async 
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
   ]);
+  // The remote host's model list waits for the test, so the picker's state
+  // while it loads can be seen.
+  let release: () => void = () => {};
+  const remoteList = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   const fake = readyClient((f) => {
-    f.on("evener/host/request", (params) => {
+    f.on("evener/host/request", async (params) => {
       const forwarded = params as HostRequestParams;
-      // The remote host's model list never answers here, so the picker's
-      // state while it loads can be seen.
-      if (forwarded.method === "model/list") return new Promise(() => {});
+      if (forwarded.method === "model/list") {
+        await remoteList;
+        return { data: [{ provider: "buildbox-llm", model: "local-7b", displayName: "buildbox-llm/local-7b" }] };
+      }
       return routedDiscoveryDefault(forwarded.method);
     });
   });
@@ -4548,6 +4555,8 @@ test("switching host under an open model picker reloads it from scratch", async 
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
   await act(async () => {});
   expect(screen.queryByRole("listbox", { name: "Model" })).toBeNull();
+  await act(async () => release());
+  await screen.findByText("buildbox-llm/local-7b");
 });
 
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
