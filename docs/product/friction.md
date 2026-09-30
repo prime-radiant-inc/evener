@@ -731,13 +731,20 @@ returns the initial failure. Browser
 [hostsController](../../mobile-native/src/hosts/hostsController.ts#L136) add no
 continuing first-attempt retry owner.
 
-**Discuss.** Retain explicit desired connection with cancellable backoff and
-meaningful status. Distinguish transient transport from required credentials or
-incompatible protocol. Honor Disconnect and intentionally dormant hosts.
+**Decision.** An explicit Connect establishes continuing intent until it succeeds
+or the user cancels it. Retry temporary failures with backoff, even through a
+long outage, and show an accurate waiting/connecting state with cancellation
+available. Navigating away from host settings does not cancel the request, and
+one attempt's timeout does not discard it. If required authentication is missing,
+retain the request while obtaining it and continue automatically when available.
+Explicit Disconnect or cancellation ends the request; intentionally disconnected
+hosts remain dormant. Implementation remains pending.
 
-**Acceptance.** Click Connect once while SSH is temporarily unavailable, then
-restore it. The host attaches without another click; Disconnect during recovery
-prevents later attachment.
+**Acceptance.** Click Connect once while SSH is unavailable, navigate away, then
+restore SSH after a prolonged outage. Attempts remain paced and the host attaches
+without another click. Disconnect or cancellation during recovery prevents later
+attachment. Supplying required authentication resumes the retained request
+without another Connect, while an intentionally disconnected host stays dormant.
 
 ### H05 Connection versus build synchronization
 
