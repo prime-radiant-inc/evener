@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -633,7 +634,9 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 // A send whose child turns busy after the send resolved it is refused as
 // target_busy with nothing written: the send takes the child's drive guard
 // before it commits its start, so no start is committed that the child then
-// can't take.
+// can't take. The hook stands in for a real racer that doesn't check the
+// send's claim, such as startOrSteerSubagentRun setting running or
+// trySetDisposeGate gating the child for disposal.
 func TestDelegateSendToAChildThatTurnsBusyCommitsNothing(t *testing.T) {
 	t.Parallel()
 	held := holdDelegateFinalizing(t)
@@ -661,4 +664,95 @@ func TestDelegateSendToAChildThatTurnsBusyCommitsNothing(t *testing.T) {
 		t.Fatalf("a send to a child that turned busy = %q (error %v), want a target_busy refusal", res.Output, res.IsError)
 	}
 	assertDelegateUnchanged(t, held.s.delegateController, held.delegateID, before, "the refused send")
+}
+
+// A resident child's drive guard is held from before the send commits its
+// start until the run takes it over. A disposal that races the commit
+// (trySetDisposeGate, which refuses only a running or driving child) is
+// refused, so it can't gate a child that has just been handed a generation.
+func TestDelegateSendHoldsAResidentChildsGuardThroughItsCommit(t *testing.T) {
+	t.Parallel()
+	held := holdDelegateFinalizing(t)
+	defer held.release()
+	if held.child == nil {
+		t.Fatal("the held delegate's child was never published")
+	}
+	c := held.s.delegateController
+	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, c, held.delegateID).Generation}
+	reportFinalizeTailDone(t, c, lease, held.child.sess)
+	var guardTaken, probed, disposalWon atomic.Bool
+	updateSessionTestConfig(held.s, func(cfg *testConfig) {
+		cfg.delegateSendChildResolved = func(*subagent) { guardTaken.Store(true) }
+	})
+	// The controller reads its clock inside CommitStart, which is where the
+	// probe races the commit.
+	c.mu.Lock()
+	now := c.now
+	c.now = func() time.Time {
+		if guardTaken.Load() && probed.CompareAndSwap(false, true) {
+			if held.child.trySetDisposeGate() {
+				disposalWon.Store(true)
+				held.child.clearDisposeGate()
+			}
+		}
+		return now()
+	}
+	c.mu.Unlock()
+	res := executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+	if !probed.Load() {
+		t.Fatal("the probe never ran during the send's commit")
+	}
+	if disposalWon.Load() {
+		t.Fatal("a disposal gated the child while the send committed its start: the send wasn't holding its drive guard")
+	}
+	if !sendTaken(res) {
+		t.Fatalf("send = %q (error %v), want it taken", res.Output, res.IsError)
+	}
+}
+
+// If a different subagent replaces the resident child between the send's
+// guard and its commit, the send gives the resident's guard back before it
+// guards the replacement: the resident is never left marked driving, which
+// would keep every later drive off it.
+func TestDelegateSendReleasesAResidentReplacedAfterItsCommit(t *testing.T) {
+	t.Parallel()
+	held := holdDelegateFinalizing(t)
+	defer held.release()
+	if held.child == nil {
+		t.Fatal("the held delegate's child was never published")
+	}
+	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation}
+	reportFinalizeTailDone(t, held.s.delegateController, lease, held.child.sess)
+	resident := held.child
+	// The replacement is busy, so the send refuses it after the commit and
+	// nothing runs on either.
+	replacement := &subagent{id: resident.id, sess: resident.sess, driving: true}
+	manager := held.s.subagents
+	var swapped atomic.Bool
+	updateSessionTestConfig(held.s, func(cfg *testConfig) {
+		cfg.delegateSendChildResolved = func(sub *subagent) {
+			if sub == resident && swapped.CompareAndSwap(false, true) {
+				manager.mu.Lock()
+				manager.subs[resident.id] = replacement
+				manager.mu.Unlock()
+			}
+		}
+	})
+	// Cleanups run last-registered first: the resident goes back before the
+	// session closes.
+	t.Cleanup(func() {
+		manager.mu.Lock()
+		manager.subs[resident.id] = resident
+		manager.mu.Unlock()
+	})
+	executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+	if !swapped.Load() {
+		t.Fatal("the resident was never replaced")
+	}
+	resident.mu.Lock()
+	driving := resident.driving
+	resident.mu.Unlock()
+	if driving {
+		t.Fatal("the replaced resident was left marked driving")
+	}
 }

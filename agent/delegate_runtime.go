@@ -1343,8 +1343,10 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 // takeSendDriveGuard takes sub's drive guard for a send's start: it sets
 // driving unless the child can't take a new generation now (a run, a drive
 // or a finalizer in flight, or worktree disposal holding it), and reports
-// whether it did. The sibling guard in driveStableDelegateAttention reads the
-// same flags. `running` goes false at the top of a run's finalize block, before
+// whether it did. The sibling guard in driveStableDelegateAttention refuses
+// on these flags too, and also on a closed or fatally gated child and on a
+// committed-send claim, which a send has already settled by this point.
+// `running` goes false at the top of a run's finalize block, before
 // FinishGeneration moves the aggregate back to idle and before finalizing is
 // cleared, so the finalizer and dispose flags are read under the same sub.mu
 // hold as running and driving.
@@ -1359,6 +1361,14 @@ func (s *Session) takeSendDriveGuard(sub *subagent) bool {
 	}
 	sub.driving = true
 	return true
+}
+
+// releaseSendDriveGuard gives back the guard takeSendDriveGuard took, on a
+// send that didn't hand its start to a run.
+func releaseSendDriveGuard(sub *subagent) {
+	sub.mu.Lock()
+	sub.driving = false
+	sub.mu.Unlock()
 }
 
 // delegateFinalizationWaitCeiling bounds how long a send waits for a finished
@@ -1562,9 +1572,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	launched := false
 	defer func() {
 		if guarded != nil && !launched {
-			guarded.mu.Lock()
-			guarded.driving = false
-			guarded.mu.Unlock()
+			releaseSendDriveGuard(guarded)
 		}
 	}()
 	if committedChildID != "" {
@@ -1650,9 +1658,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// and that start is recorded as failed.
 	if sub != guarded {
 		if guarded != nil {
-			guarded.mu.Lock()
-			guarded.driving = false
-			guarded.mu.Unlock()
+			releaseSendDriveGuard(guarded)
 			guarded = nil
 		}
 		if !s.takeSendDriveGuard(sub) {
