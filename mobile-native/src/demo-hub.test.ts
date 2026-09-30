@@ -22,7 +22,8 @@ import {
 import { readDocFile } from "@evener/appwire-client/docContent";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
 import { nativeDocPort } from "./nativeDocPort";
-import { flattenJobs, flattenSubagents } from "./subagents/subagentModel";
+import { flattenActivity, flattenJobs, flattenSubagents, isJobRow, isSubagentRow } from "./subagents/subagentModel";
+import { SubagentTree } from "./subagents/subagentTree";
 
 describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 	const PR2138 = `local:${demoSessionId("s-pr2138")}`;
@@ -284,19 +285,32 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 		});
 	});
 
-	it("lists Get PR 2138 Test Clean's 55 subagents over a real socket", async () => {
+	// The Activity list's own binding over the typed activity reads, every
+	// page loaded, as the list loads them while you scroll.
+	it("lists Get PR 2138 Test Clean's 55 subagents, and who ran each shell job, over a real socket", async () => {
 		await withFleetHub(async (_hub, client) => {
-			const response = await client.request("evener/jobs/list", { ref: PR2138 });
-			const tree = parseActivityTree((response as { data: unknown }).data);
-			if (!tree) throw new Error("no tree");
-			expect(flattenSubagents(tree)).toHaveLength(55);
-			// Its Activity list's shell jobs include its own finished build.
-			const jobs = flattenJobs(tree);
-			expect(jobs.map((row) => [row.title, row.state, row.owner])).toContainEqual([
-				"go build ./...",
-				"done",
-				"Get PR 2138 Test Clean",
-			]);
+			const coordinator = "Get PR 2138 Test Clean";
+			const binding = new SubagentTree(PR2138, demoSessionId("s-pr2138"));
+			const release = binding.observeActivity();
+			try {
+				await binding.setClient(client);
+				for (let page = 0; page < 5 && binding.getSnapshot().hasMore; page++) await binding.loadMore();
+				const tree = binding.getSnapshot().tree;
+				if (!tree) throw new Error("no tree");
+				const activity = flattenActivity(tree, coordinator);
+				expect(activity.filter(isSubagentRow)).toHaveLength(55);
+				// Its own finished build names it by its title, and a subagent's
+				// failed test names that subagent: never a ref.
+				const jobs = activity.filter(isJobRow);
+				const owned = jobs.map((row) => [row.title, row.state, row.owner]);
+				expect(owned).toContainEqual(["go build ./...", "done", coordinator]);
+				expect(owned).toContainEqual(["go test", "failed", "Fix race in tree settle"]);
+				const titles = new Set([coordinator, ...activity.filter(isSubagentRow).map((row) => row.title)]);
+				expect(jobs.filter((row) => !titles.has(row.owner))).toEqual([]);
+			} finally {
+				release();
+				await binding.setClient(null);
+			}
 		});
 	});
 
@@ -306,7 +320,7 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			const listed = await client.request("evener/jobs/list", { ref: PR2138 });
 			const tree = parseActivityTree((listed as { data: unknown }).data);
 			if (!tree) throw new Error("no tree");
-			const failed = flattenJobs(tree).find((row) => row.state === "failed");
+			const failed = flattenJobs(tree, tree.root.label).find((row) => row.state === "failed");
 			if (!failed) throw new Error("no failed job");
 			const response = await client.request("evener/jobs/output", {
 				ref: failed.job.ownerRef,

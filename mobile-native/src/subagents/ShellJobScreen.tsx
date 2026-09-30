@@ -27,9 +27,9 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 	const row = useMemo(
 		() =>
 			snapshot.tree
-				? flattenJobs(snapshot.tree).find((job) => job.id === jobId && job.job.ownerRef === ownerRef)
+				? flattenJobs(snapshot.tree, coordinator.title).find((job) => job.id === jobId && job.job.ownerRef === ownerRef)
 				: undefined,
-		[snapshot.tree, jobId, ownerRef],
+		[snapshot.tree, coordinator.title, jobId, ownerRef],
 	);
 	// Taken when the tree changes, so the screen runs no clock (ruling 7).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock

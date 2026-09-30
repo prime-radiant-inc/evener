@@ -41,7 +41,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const { width } = useWindowDimensions();
 	const { tree, snapshot } = useFollowedSubagentTree(hubId, ref, threadId);
 
-	const activity = useMemo(() => (snapshot.tree ? flattenActivity(snapshot.tree) : []), [snapshot.tree]);
+	const activity = useMemo(() => (snapshot.tree ? flattenActivity(snapshot.tree, title) : []), [snapshot.tree, title]);
 	// The strip, stops and subagent screens are the subagents' own; the list,
 	// its chips and its count hold the shell jobs too.
 	const rows = useMemo(() => activity.filter(isSubagentRow), [activity]);
@@ -54,9 +54,19 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const [filter, setFilter] = useState<ActivityFilter>("all");
 	const [query, setQuery] = useState("");
 	const [doneOpen, setDoneOpen] = useState(false);
+	// The hub's own ref for the coordinator, once a tree carries it, names
+	// the coordinator's branch in what couldn't be listed.
+	const coordinatorRef = snapshot.tree?.root.ref ?? ref;
 	const items = useMemo(
-		() => activityListItems(activity, { filter, query, doneOpen, missing: snapshot.missing }),
-		[activity, filter, query, doneOpen, snapshot.missing],
+		() =>
+			activityListItems(activity, {
+				filter,
+				query,
+				doneOpen,
+				missing: snapshot.missing,
+				coordinator: { ref: coordinatorRef, title },
+			}),
+		[activity, filter, query, doneOpen, snapshot.missing, coordinatorRef, title],
 	);
 
 	// The stops you asked for, on their rows, and settled against each new
@@ -339,7 +349,7 @@ function DoneFold({ count, open, onToggle }: { count: number; open: boolean; onT
 	);
 }
 
-function MissingLine({ title }: { title: string }) {
+function MissingLine({ title }: { title?: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
@@ -347,7 +357,7 @@ function MissingLine({ title }: { title: string }) {
 			allowFontScaling={allowFontScaling}
 			style={{ padding: 16, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 		>
-			{`Some activity under “${title}” isn't listed.`}
+			{title === undefined ? "Some activity isn't listed." : `Some activity under “${title}” isn't listed.`}
 		</Text>
 	);
 }

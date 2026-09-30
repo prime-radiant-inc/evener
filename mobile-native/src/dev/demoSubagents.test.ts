@@ -112,7 +112,7 @@ describe("the demo fleet's subagents", () => {
 	// coordinator's own finished ones.
 	it("serves a shell job for each running command, each failed one, and the coordinator's own", () => {
 		const tree = parseActivityTree(demoActivityTree(coordinator, NOW).data);
-		const jobs = flattenJobs(tree as NonNullable<typeof tree>);
+		const jobs = flattenJobs(tree as NonNullable<typeof tree>, coordinator.title);
 		const shown = jobs.map((row) => [row.title, row.state, row.owner, shellJobMeta(row, NOW)]);
 		expect(shown).toContainEqual(["go build ./...", "done", "Get PR 2138 Test Clean", "40s"]);
 		expect(shown).toContainEqual(["go test", "failed", "Fix race in tree settle", "Command failed · 1m"]);
