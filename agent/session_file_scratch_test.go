@@ -252,3 +252,36 @@ func TestFileToolsPinAllocatedScratchAcrossRootSwap(t *testing.T) {
 		t.Fatalf("pinned-root content = %q", got)
 	}
 }
+
+func TestFileToolsSandboxOffAllowExternalPaths(t *testing.T) {
+	t.Parallel()
+	for _, explicit := range []bool{false, true} {
+		base := t.TempDir()
+		workspace := filepath.Join(base, "workspace")
+		if err := os.Mkdir(workspace, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		s, env, _ := allocatedSessionScratch(t, workspace)
+		if explicit {
+			env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeOff}
+		}
+		for _, path := range []string{filepath.Join(base, "absolute.txt"), "../relative.txt"} {
+			write := fileToolCall(t, s, "write_file", map[string]string{"file_path": path, "content": "before\n"})
+			if write.isError {
+				t.Fatalf("off write %q: %s", path, write.output)
+			}
+			edit := fileToolCall(t, s, "edit_file", map[string]string{"file_path": path, "old_string": "before", "new_string": "after"})
+			if edit.isError {
+				t.Fatalf("off edit %q: %s", path, edit.output)
+			}
+			abs := path
+			if !filepath.IsAbs(abs) {
+				abs = filepath.Join(workspace, path)
+			}
+			got, err := os.ReadFile(abs)
+			if err != nil || string(got) != "after\n" {
+				t.Fatalf("registry file %q = %q, %v", abs, got, err)
+			}
+		}
+	}
+}
