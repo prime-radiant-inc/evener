@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -237,8 +238,15 @@ func parseFindFilters(args map[string]any) (findFilters, error) {
 	}
 
 	f.hasChildren = optionalBoolArg(args, "has_children")
-	f.minTurns = optionalIntArg(args, "min_turns")
-	f.maxTurns = optionalIntArg(args, "max_turns")
+	minTurns, err := optionalWholeIntArg(args, "min_turns")
+	if err != nil {
+		return findFilters{}, err
+	}
+	maxTurns, err := optionalWholeIntArg(args, "max_turns")
+	if err != nil {
+		return findFilters{}, err
+	}
+	f.minTurns, f.maxTurns = minTurns, maxTurns
 	if f.minTurns != nil && f.maxTurns != nil && *f.minTurns > *f.maxTurns {
 		return findFilters{}, fmt.Errorf("invalid_request: min_turns %d is greater than max_turns %d", *f.minTurns, *f.maxTurns)
 	}
@@ -265,6 +273,21 @@ func optionalBoolArg(args map[string]any, key string) *bool {
 		return &v
 	}
 	return nil
+}
+
+// optionalWholeIntArg extracts an optional integer argument, rejecting a
+// non-integral JSON number with invalid_request rather than truncating it, so
+// min_turns:5.9 is an error and not a silent >= 5 filter.
+func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
+	v, ok := args[key].(float64)
+	if !ok {
+		return nil, nil
+	}
+	if v != math.Trunc(v) {
+		return nil, fmt.Errorf("invalid_request: %s must be a whole number, got %v", key, v)
+	}
+	n := int(v)
+	return &n, nil
 }
 
 // optionalTimeArg extracts an optional RFC3339 timestamp from tool arguments.
@@ -645,6 +668,12 @@ func matchCandidate(c findCandidate, query, needle string, scanned *int, scanTru
 // so the record is not context-free. The initial prompt is the strongest
 // evidence (it is what the user asked); the title is the fallback. A match on
 // another metadata field (id, model, parent, working dir) yields no snippet.
+//
+// Seq is a display coordinate, not necessarily a turn address: the metadata-only
+// fast path deliberately opens no transcript, and a subagent or fork can carry
+// inherited context ahead of its own assignment, so the matching text need not
+// live at turn 0. Callers must not feed this Seq to read_transcript's range or
+// expand_turn.
 func metadataSnippets(m schema.SessionMeta, query, needle string) []snippet {
 	if m.OriginalPrompt != "" && strings.Contains(strings.ToLower(m.OriginalPrompt), needle) {
 		return []snippet{{Seq: 0, Role: "user", Snippet: makeSnippet(m.OriginalPrompt, query, snippetWidth)}}

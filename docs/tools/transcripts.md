@@ -137,10 +137,11 @@ children-of-a-parent are just which filters you set, and all return the same rec
   raw-text scan (200 newest). When the scan stops early, `scan_truncated:true` reports the
   partial coverage; `snippets` carries the matching excerpts (search results only).
 - A metadata-only match (a hit on the title or original prompt) carries one bounded
-  `snippet`: role `user` at `seq 0` when the prompt matched (the first user turn), or
-  role `title` when only the title matched. A `title` snippet's `seq 0` is a display
-  coordinate, not a turn address — do not pass it to `read_transcript`'s `range` or
-  `expand_turn`.
+  `snippet`: role `user` for the original prompt, or role `title` when only the title
+  matched. Its `seq` is a display coordinate (0), not a turn address — a subagent or
+  fork can inherit context ahead of its own assignment, so the matching text need not
+  live at turn 0. Do not pass a metadata snippet's `seq` to `read_transcript`'s `range`
+  or `expand_turn`.
 - With **`children_of`**, results are restricted to sessions whose parent is that ref's
   session. A `local:` or `proj:` ref resolves the parent's bucket and ID from the ref
   alone — **no transcript is opened, not even the parent's** — and children are looked up

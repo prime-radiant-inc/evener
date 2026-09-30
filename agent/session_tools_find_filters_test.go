@@ -188,6 +188,8 @@ func TestFind_FilterValidation(t *testing.T) {
 		{"updated_after after updated_before", map[string]any{"updated_after": "2026-06-07T00:00:00Z", "updated_before": "2026-06-01T00:00:00Z"}},
 		{"unknown kind", map[string]any{"kind": "bogus"}},
 		{"unparsable timestamp", map[string]any{"updated_after": "not-a-time"}},
+		{"non-integral min_turns", map[string]any{"min_turns": float64(5.9)}},
+		{"non-integral max_turns", map[string]any{"max_turns": float64(2.5)}},
 	}
 	for _, c := range cases {
 		if _, err := execFindSessionTranscripts(deps, c.args); err == nil || !strings.Contains(err.Error(), "invalid_request") {
