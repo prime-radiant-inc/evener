@@ -57,7 +57,11 @@ export function createAuthStatusesStore(client: AuthStatusesClient): AuthStatuse
     store: () => store,
     refetch: (state) => state.fetchAuthStatuses(),
     revision: listRevision,
-    onFence: (set) => set({ authStatusesLoading: false }),
+    // A fence is a replaced client (another hub), a reset or a dispose: the
+    // statuses read so far describe a hub this store no longer speaks to, so
+    // they go with the read in flight, and no error of the previous hub is
+    // shown against the next one's providers, even if its read fails.
+    onFence: (set) => set({ authStatuses: null, authStatusesLoading: false }),
     wantsList: (s) => s.authStatuses !== null || s.authStatusesError !== null || s.authStatusesLoading,
   });
 

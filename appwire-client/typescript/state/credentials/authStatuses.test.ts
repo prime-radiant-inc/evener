@@ -55,8 +55,7 @@ test("a reply that lands after reset publishes nothing", async () => {
   let answer: (value: { providers: AuthStatusResponse[] }) => void = () => {};
   fake.on(LIST, () => new Promise((resolve) => (answer = resolve)));
   const read = store.getState().fetchAuthStatuses();
-  await Promise.resolve();
-  await Promise.resolve();
+  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === LIST)).toBe(true));
   store.reset();
   answer({ providers: [rejected] });
   await read;
@@ -71,8 +70,6 @@ describe("following the hub", () => {
     vi.useRealTimers();
   });
 
-  // The hub announces every credential change and every rejection it records
-  // or clears on evener/auth/updated, so a read status list is read again.
   // A host that never asked for the statuses must not start asking on its own
   // (storeLifecycle.ts): a reconnect re-reads only what something has read.
   test("a store nothing has read reads nothing on a reconnect", async () => {
@@ -109,6 +106,25 @@ describe("following the hub", () => {
     expect(store.getState().authStatuses?.get("lunaroute")?.error).toBe(rejected.error);
   });
 
+  // A replaced client is another hub: the statuses read from the previous one
+  // go at once, before the new hub's are read, so none of its errors are shown
+  // against the new hub's providers, even if that read fails.
+  test("a replaced client drops the previous hub's statuses and reads the new hub's", async () => {
+    const { fake, store } = storeWithFake();
+    store.connectionChanged(fake, "ready");
+    fake.on(LIST, () => ({ providers: [rejected] }));
+    await store.getState().fetchAuthStatuses();
+
+    // The store's port now reaches the new hub, whose read fails.
+    fake.on(LIST, failing("hub unavailable"));
+    store.connectionChanged(new FakeClient("ready"), "ready");
+    expect(store.getState().authStatuses).toBeNull();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getState().authStatuses).toBeNull();
+  });
+
+  // The hub announces every credential change and every rejection it records
+  // or clears on evener/auth/updated, so a read status list is read again.
   test("start() follows evener/auth/updated: the statuses are read again after the debounce", async () => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, () => ({ providers: [fine] }));
