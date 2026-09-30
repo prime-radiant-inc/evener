@@ -1,47 +1,38 @@
-// One coordinator's subagent tree, shared by the Subagents list and the
-// subagent screens above it so moving between them never starts from nothing.
-// It reads evener/jobs/list through the shared ActivityList and follows every
-// page on its own, so an ordinary tree loads whole and its counts are exact
-// (spec 9; S3's fallback, ruling 2).
-//
-// It drives its own reloads instead of calling ActivityList.start(). A page
-// requested from a listener while a load is finishing is queued behind a loop
-// that has already ended (activityList.ts load: the final publish runs while
-// inFlight is still set), so each reload here awaits the root, then each page
-// in turn, and notifications during a reload fold into one more.
-import { ActivityList, type ActivityTree } from "@evener/appwire-client";
+// A retained native binding for one coordinator. The shared owner controls
+// network reads, retries and membership; this binding projects loaded evidence.
+import {
+	type ActivityTree,
+	type SessionActivitySummary,
+	type SessionActivityPresentation,
+	SessionActivityStore,
+	projectSessionActivity,
+	acquireThreadSubscription,
+	type ThreadSubscriptionLease,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 
 export interface SubagentTreeSnapshot {
 	tree: ActivityTree | null;
-	/** No tree yet, and one is being read. */
+	summary: SessionActivitySummary | null;
 	loading: boolean;
-	/** No tree yet, and the last read failed; the next focus or reconnect reads again. */
 	failed: boolean;
-	/** The coordinator's session can't list its activity at all. */
 	unsupported: boolean;
-	/** The coordinator's session can't be found. */
 	ended: boolean;
-	/** Settled, and part of the tree couldn't be listed (ruling 2). */
 	partial: boolean;
-	/** Whose subagents couldn't be listed, by title. */
 	missing: string[];
-	/** The coordinator's model, for the last line's "only when it differs". */
+	hasMore: boolean;
 	coordinatorModel: string | null;
 }
 
 export class SubagentTree {
 	private client: ConversationClientLike | null = null;
-	private list: ActivityList | null = null;
-	private detachList: (() => void) | null = null;
-	private tree: ActivityTree | null = null;
+	private store: SessionActivityStore | null = null;
+	private detachStore: (() => void) | null = null;
+	private followLease: ThreadSubscriptionLease | null = null;
+	private presentation: SessionActivityPresentation | null = null;
 	private coordinatorModel: string | null = null;
-	private settledMissing: string[] = [];
-	/** Bumped with each new client, so an old client's reload stops where it stands. */
-	private generation = 0;
-	private reloading: Promise<void> | null = null;
-	/** A read asked for while one runs: at once, or paced when only notifications asked. */
-	private again: "now" | "paced" | null = null;
+	private activityObservers = 0;
+	private stopActivity: (() => void)[] = [];
 	private snapshot: SubagentTreeSnapshot;
 	private listeners = new Set<() => void>();
 
@@ -51,157 +42,106 @@ export class SubagentTree {
 	) {
 		this.snapshot = this.build();
 	}
-
 	getSnapshot = (): SubagentTreeSnapshot => this.snapshot;
-
 	subscribe = (listener: () => void): (() => void) => {
 		this.listeners.add(listener);
 		return () => {
 			this.listeners.delete(listener);
 		};
 	};
-
-	/** Binds to the hub's current client, or null while disconnected. The last
-	 * tree stays on screen until the new client's read lands. Resolves when
-	 * that first read settles.
-	 *
-	 * The new list starts empty rather than from the last tree: ActivityList
-	 * refuses a root older than the tree it holds, and a restarted daemon can
-	 * count revisions from lower down, which would pin the screen to the tree
-	 * from before the restart. The screen keeps showing `this.tree` until the
-	 * new list has its own. */
 	setClient(client: ConversationClientLike | null): Promise<void> {
-		if (client === this.client) return this.reloading ?? Promise.resolve();
-		// A read cut off mid-way leaves the pages it hadn't reached unlisted.
-		if (this.list && this.reloading) this.recordMissing(this.list);
-		this.detachList?.();
-		this.detachList = null;
-		this.list = null;
+		if (client === this.client) return Promise.resolve();
+		this.detachStore?.();
+		this.detachStore = null;
+		this.stopActivity.forEach((stop) => stop());
+		this.stopActivity = [];
+		this.store?.dispose();
+		this.store = null;
+		this.followLease?.release();
+		this.followLease = null;
 		this.client = client;
-		// The old client's reload is abandoned where it stands: it may never
-		// answer, and the new client reads on its own.
-		this.generation += 1;
-		this.reloading = null;
-		let read: Promise<void> = Promise.resolve();
-		if (client) {
-			const list = new ActivityList(client, this.ref, this.threadId);
-			const stopState = list.subscribe(() => {
-				const tree = list.getSnapshot().tree;
-				if (tree) this.tree = tree;
-				this.publish();
-			});
-			// The shared list decides which notifications need a read: it applies a
-			// held delegate's update in place, and skips a revision it already shows.
-			const stopNotifications = client.onNotification((notification) => {
-				if (list.applyNotification(notification)) void this.reload({ paced: true });
-			});
-			this.list = list;
-			this.detachList = () => {
-				stopState();
-				stopNotifications();
-				list.dispose();
-			};
-			read = this.reload();
+		if (!client) {
+			this.publish();
+			return Promise.resolve();
 		}
+		const store = new SessionActivityStore(client, this.ref, { scope: "subtree" });
+		this.store = store;
+		this.detachStore = store.subscribe(() => {
+			const state = store.getSnapshot();
+			const next = projectSessionActivity(state);
+			if (next.context && this.presentation?.context && next.context.sessionId !== this.presentation.context.sessionId)
+				this.presentation = null;
+			// Context can land before collections. Keep the retained rows until the
+			// replacement supplies membership evidence, including a proven empty set.
+			if (next.tree && (state.delegates.rows.length > 0 || state.jobs.rows.length > 0 || next.complete))
+				this.presentation = next;
+			this.publish();
+		});
+		store.start();
+		this.observeCollections();
+		const read = store.refresh();
 		this.publish();
 		return read;
 	}
-
-	/** Makes this connection follow the coordinator, so its tree notifications
-	 * arrive (ruling 9), learns its model, and reads the tree again. The
-	 * Subagents list calls this whenever it comes into focus. */
+	observeActivity(): () => void {
+		this.activityObservers += 1;
+		if (this.activityObservers === 1) this.observeCollections();
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.activityObservers -= 1;
+			if (this.activityObservers === 0) {
+				this.stopActivity.forEach((stop) => stop());
+				this.stopActivity = [];
+			}
+		};
+	}
+	private observeCollections(): void {
+		if (this.store && this.activityObservers > 0 && this.stopActivity.length === 0)
+			this.stopActivity = [this.store.observe("delegates"), this.store.observe("jobs")];
+	}
 	async follow(): Promise<void> {
 		const client = this.client;
 		if (!client) return;
+		this.followLease ??= acquireThreadSubscription(client, this.ref);
 		try {
-			const response = await client.request("thread/read", {
-				ref: this.ref,
-				includeTurns: false,
-				subscribe: true,
-				replaceSubscription: true,
-			});
+			const response = await this.followLease.read({ includeTurns: false });
 			if (client === this.client) this.coordinatorModel = response.thread.modelProvider || null;
 		} catch {
-			// The tree read below still runs; the next focus follows again.
+			/* The shared activity owner retains and recovers its own reads. */
 		}
-		await this.reload();
+		if (client === this.client) await this.reload();
 	}
-
-	/** Reads the root, then every page it names, each at most once per reload.
-	 * A paced read waits out the list's minimum interval since its last
-	 * whole-tree read; notifications ask for those, and folding into a running
-	 * reload keeps them paced. */
-	reload({ paced = false }: { paced?: boolean } = {}): Promise<void> {
-		if (this.reloading) {
-			if (!paced) this.again = "now";
-			else this.again ??= "paced";
-			return this.reloading;
-		}
-		const generation = this.generation;
-		const current = () => generation === this.generation;
-		const run: Promise<void> = (async () => {
-			let next: "now" | "paced" | null = paced ? "paced" : "now";
-			do {
-				const list = this.list;
-				if (!list) return;
-				if (next === "paced") {
-					await list.waitForRefreshWindow();
-					if (!current() || this.list !== list) return;
-				}
-				// Notifications that arrived while waiting are answered by this read.
-				this.again = null;
-				const tried = new Set<string>();
-				await list.refresh();
-				for (;;) {
-					if (!current() || this.list !== list || this.again) break;
-					const page = list
-						.branches()
-						.find((branch) => branch.continuation !== undefined && !tried.has(branch.continuation));
-					if (page?.continuation === undefined) break;
-					tried.add(page.continuation);
-					await list.loadMore(page.id, page.continuation);
-				}
-				next = this.again;
-			} while (current() && next && this.list !== null);
-		})().finally(() => {
-			if (this.reloading === run) this.reloading = null;
-			this.publish();
-		});
-		this.reloading = run;
-		this.publish();
-		return run;
+	reload(): Promise<void> {
+		return this.store?.refresh() ?? Promise.resolve();
 	}
-
+	loadMore(): Promise<void> {
+		const store = this.store;
+		return store
+			? Promise.all([store.loadMore("delegates"), store.loadMore("jobs")]).then(() => {})
+			: Promise.resolve();
+	}
 	private build(): SubagentTreeSnapshot {
-		const list = this.list;
-		const state = list?.getSnapshot();
-		const settled = this.reloading === null && state?.loading !== true;
-		// What the last settled read couldn't list stays said until a read
-		// settles again, through a reconnect too; while pages are still
-		// arriving, the count isn't whole yet either.
-		const pending = list ? list.branches().map((branch) => branch.label) : [];
-		if (list && settled) this.recordMissing(list);
-		const missing = this.settledMissing;
+		const state = this.store?.getSnapshot();
+		const current = state ? projectSessionActivity(state) : this.presentation;
+		const tree = this.presentation?.tree ?? null;
+		const errors = state ? [state.summaryState, state.delegates, state.jobs] : [];
+		const missing = current?.issues.map((issue) => issue.ref) ?? [];
 		return {
-			tree: this.tree,
-			loading: this.tree === null && this.client !== null && !settled,
-			failed: this.tree === null && settled && !!state?.error,
-			unsupported: state?.unsupported ?? false,
-			ended: state?.ended ?? false,
-			partial: this.tree !== null && (missing.length > 0 || (!settled && pending.length > 0)),
+			tree,
+			summary: state?.summary ?? this.presentation?.summary ?? null,
+			loading: tree === null && this.client !== null && errors.some((read) => read.loading || read.pending),
+			failed: tree === null && errors.some((read) => read.error !== null),
+			unsupported: errors.some((read) => read.permanent),
+			ended: false,
+			partial:
+				tree !== null && (current?.complete !== true || errors.some((read) => read.unavailable || read.error !== null)),
 			missing,
+			hasMore: !!state && (state.delegates.hasMore || state.jobs.hasMore),
 			coordinatorModel: this.coordinatorModel,
 		};
 	}
-
-	/** What a list couldn't list, taken as the tree's answer. Only a read
-	 * that produced a tree speaks for it: a list with no tree (its first
-	 * read failed, or never came) knows nothing new, so the last answer
-	 * stands. */
-	private recordMissing(list: ActivityList): void {
-		if (list.getSnapshot().tree) this.settledMissing = list.branches().map((branch) => branch.label);
-	}
-
 	private publish(): void {
 		this.snapshot = this.build();
 		for (const listener of [...this.listeners]) listener();
@@ -219,7 +159,7 @@ interface HeldTree {
 const trees = new Map<string, HeldTree>();
 
 export function subagentTree(hubId: string, ref: string, threadId: string): SubagentTree {
-	const key = JSON.stringify([hubId, ref, threadId]);
+	const key = JSON.stringify([hubId, ref]);
 	let entry = trees.get(key);
 	if (entry) trees.delete(key);
 	else entry = { hubId, tree: new SubagentTree(ref, threadId), holders: 0 };
@@ -233,14 +173,19 @@ export function subagentTree(hubId: string, ref: string, threadId: string): Suba
 
 /** Holds a tree for a mounted screen. Once no screen holds it, it stops
  * reading and keeps its tree. */
-export function holdSubagentTree(tree: SubagentTree): () => void {
+export function holdSubagentTree(
+	tree: SubagentTree,
+	{ collections = true }: { collections?: boolean } = {},
+): () => void {
 	const entry = [...trees.values()].find((candidate) => candidate.tree === tree);
 	if (!entry) return () => {};
 	entry.holders += 1;
+	const releaseActivity = collections ? tree.observeActivity() : () => {};
 	let released = false;
 	return () => {
 		if (released) return;
 		released = true;
+		releaseActivity();
 		entry.holders -= 1;
 		if (entry.holders === 0) void entry.tree.setClient(null);
 	};

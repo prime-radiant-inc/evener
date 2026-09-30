@@ -26,7 +26,7 @@ export function useTranscriptSubagentTree(
 	useEffect(() => {
 		const cameToFront = inFront && !wasInFront.current;
 		wasInFront.current = inFront;
-		if (cameToFront && !receivesUpdates && tree) void tree.reload({ paced: true });
+		if (cameToFront && !receivesUpdates && tree) void tree.reload();
 	}, [inFront, receivesUpdates, tree]);
 	return held?.snapshot.tree ?? null;
 }
