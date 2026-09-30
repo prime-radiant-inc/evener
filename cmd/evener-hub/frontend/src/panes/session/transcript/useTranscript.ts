@@ -32,7 +32,7 @@ interface TranscriptPaging {
   ref: string;
   binding: string | undefined;
   paging: HistoryPaging;
-  consumers: Map<string, "session" | "transcript">;
+  paneConsumers: Map<string, "session" | "transcript">;
 }
 const pagingByRef = new Map<string, TranscriptPaging>();
 
@@ -49,7 +49,7 @@ function createPaging(ref: string, binding: string | undefined): TranscriptPagin
   const entry: TranscriptPaging = {
     ref,
     binding,
-    consumers: new Map(),
+    paneConsumers: new Map(),
     paging: new HistoryPaging(
       () => {
         const current = threadsStore.getState().threads.get(ref);
@@ -68,11 +68,12 @@ function createPaging(ref: string, binding: string | undefined): TranscriptPagin
 }
 
 function rememberConsumer(entry: TranscriptPaging, viewId: string): HistoryPaging {
-  // A fulfilled read may still have pending demand when its cursor did not
-  // advance. Only settled demand can discard its retained pane ownership.
-  if (!entry.paging.getSnapshot().pending) entry.consumers.clear();
+  // Unresolved reads and permanent failures both retain consumers. Only a
+  // successful settlement or explicit cancellation can retire their ownership.
+  const state = entry.paging.getSnapshot();
+  if (!state.pending && state.error === null) entry.paneConsumers.clear();
   const pane = workspaceStore.getState().panes.find((pane) => pane.id === viewId);
-  if (pane && (pane.type === "session" || pane.type === "transcript")) entry.consumers.set(viewId, pane.type);
+  if (pane && (pane.type === "session" || pane.type === "transcript")) entry.paneConsumers.set(viewId, pane.type);
   return entry.paging;
 }
 
@@ -126,12 +127,12 @@ export function useTranscript(ref: string, viewId = ref): UseTranscriptResult {
   const cancelOlder = useCallback(() => {
     const selected = committedEntry();
     selected.paging.cancel(viewId);
-    selected.consumers.delete(viewId);
+    selected.paneConsumers.delete(viewId);
     // Navigation retains demand but creates a fresh pane ID on return. Jump
     // to live abandons those removed predecessors, while an independently
     // open pane keeps its demand even when its reader is currently inactive.
     const panes = workspaceStore.getState().panes;
-    for (const [consumer, type] of selected.consumers) {
+    for (const [consumer, type] of selected.paneConsumers) {
       if (
         panes.some(
           (pane) => pane.id === consumer && pane.type === type && (pane.params as { ref?: unknown })?.ref === ref,
@@ -139,7 +140,7 @@ export function useTranscript(ref: string, viewId = ref): UseTranscriptResult {
       )
         continue;
       selected.paging.cancel(consumer);
-      selected.consumers.delete(consumer);
+      selected.paneConsumers.delete(consumer);
     }
   }, [committedEntry, viewId, ref]);
   return {
