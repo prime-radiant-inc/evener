@@ -1218,11 +1218,11 @@ it("waits for the bottom bar to lay out before restoring a reading position", as
 // land, move and land again.
 describe("opening a session", () => {
 	const opacity = (tree: ReactTestRenderer) => transcriptList(tree).props.style?.opacity;
-	const layOutViewport = (tree: ReactTestRenderer) => {
+	const layOutViewport = (tree: ReactTestRenderer, contentHeight = 20_000) => {
 		act(() =>
 			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
 		);
-		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+		act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
 	};
 	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
 		harness.kv.set(
@@ -1440,12 +1440,6 @@ describe("opening a session", () => {
 	// position, so the first restore can fall short of it (clamped). Showing
 	// the list there would show it land short and then move.
 	describe("when the list can't reach the saved position yet", () => {
-		const layOutList = (tree: ReactTestRenderer, contentHeight: number) => {
-			act(() =>
-				transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
-			);
-			act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
-		};
 		const offsets = () =>
 			flatListCalls
 				.filter((call) => call.method === "scrollToOffset")
@@ -1455,7 +1449,7 @@ describe("opening a session", () => {
 			savePosition("ref-open-clamped", "a-turn_1", "turn_2");
 			const { tree } = await mount(twoTurns("ref-open-clamped"));
 			flatListCalls.length = 0;
-			layOutList(tree, 3_000);
+			layOutViewport(tree, 3_000);
 			layOutRow(tree, 1, 9_523);
 			await settle();
 			// It moves as far as the list reaches, out of sight.
@@ -1472,7 +1466,7 @@ describe("opening a session", () => {
 			savePosition("ref-open-near-end", "a-turn_1", "turn_2");
 			const { tree } = await mount(twoTurns("ref-open-near-end"));
 			flatListCalls.length = 0;
-			layOutList(tree, 3_000);
+			layOutViewport(tree, 3_000);
 			layOutRow(tree, 1, 2_800);
 			layOutRow(tree, 3, 2_900);
 			await settle();
@@ -1484,7 +1478,7 @@ describe("opening a session", () => {
 		it("keeps it hidden when the restore runs again short of the row, until the last row measures", async () => {
 			savePosition("ref-open-clamped-again", "a-turn_1", "turn_2");
 			const { tree } = await mount(twoTurns("ref-open-clamped-again"));
-			layOutList(tree, 3_000);
+			layOutViewport(tree, 3_000);
 			layOutRow(tree, 1, 9_523);
 			await settle();
 			expect(opacity(tree)).toBe(0);
