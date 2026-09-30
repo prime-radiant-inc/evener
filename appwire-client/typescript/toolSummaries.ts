@@ -9,8 +9,8 @@
 
 import { parseAskUserQuestions } from "./askShared";
 import { delegateSendTarget, delegateSendWords } from "./delegateSteps";
-import { HOUSEKEEPING_WORDS } from "./housekeepingSteps";
 import { diffStats, editDiffText } from "./editDiff";
+import { HOUSEKEEPING_WORDS } from "./housekeepingSteps";
 import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
 import { jobWatchWords } from "./jobWatchSteps";
 import type { ItemModel } from "./model";
@@ -499,7 +499,10 @@ const TOOLS: Record<string, ToolEntry> = {
   // The session's housekeeping tools count as plain tool steps, each worded
   // on its own (housekeepingSteps).
   ...Object.fromEntries(
-    Object.entries(HOUSEKEEPING_WORDS).map(([name, { words, progress }]) => [name, { family: "tool", words, progress }]),
+    Object.entries(HOUSEKEEPING_WORDS).map(([name, { words, progress }]) => [
+      name,
+      { family: "tool", words, progress },
+    ]),
   ),
 };
 

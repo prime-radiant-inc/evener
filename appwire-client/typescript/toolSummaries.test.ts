@@ -401,8 +401,18 @@ const housekeeping = (toolName: string, args: Record<string, unknown>, output?: 
 });
 
 test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
-  ["a note set", housekeeping("notes_agent_set", { note: "Drain first." }, "Agent note recorded."), "Updated its note", "Updating its note"],
-  ["a note cleared", housekeeping("notes_agent_set", { note: " " }, "Agent note recorded."), "Cleared its note", "Clearing its note"],
+  [
+    "a note set",
+    housekeeping("notes_agent_set", { note: "Drain first." }, "Agent note recorded."),
+    "Updated its note",
+    "Updating its note",
+  ],
+  [
+    "a note cleared",
+    housekeeping("notes_agent_set", { note: " " }, "Agent note recorded."),
+    "Cleared its note",
+    "Clearing its note",
+  ],
   ["the notes read", housekeeping("notes_read", {}), "Read the session notes", "Reading the session notes"],
   [
     "a labelled link added",
@@ -463,7 +473,12 @@ test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
     "Checked evener's records ses_abc · transcript",
     "Checking evener's records ses_abc",
   ],
-  ["a report to the parent", housekeeping("communicate", { message: "Found it." }), "Reported to its parent", "Reporting to its parent"],
+  [
+    "a report to the parent",
+    housekeeping("communicate", { message: "Found it." }),
+    "Reported to its parent",
+    "Reporting to its parent",
+  ],
   [
     "a final report to the parent",
     housekeeping("communicate", { message: "Fixed.", end_turn: true }),

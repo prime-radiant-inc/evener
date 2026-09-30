@@ -40,7 +40,8 @@ const goalStatus = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
   return status === "complete" || status === "blocked" ? status : undefined;
 };
 
-const nextPage = (step: Pick<HousekeepingStep, "argumentsJSON">) => Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
+const nextPage = (step: Pick<HousekeepingStep, "argumentsJSON">) =>
+  Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
 
 /** Each housekeeping tool's words, by tool name. */
 export const HOUSEKEEPING_WORDS: Record<string, HousekeepingWords> = {
