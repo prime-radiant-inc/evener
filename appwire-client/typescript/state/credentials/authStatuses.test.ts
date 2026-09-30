@@ -120,7 +120,9 @@ describe("following the hub", () => {
     store.connectionChanged(new FakeClient("ready"), "ready");
     expect(store.getState().authStatuses).toBeNull();
     await vi.advanceTimersByTimeAsync(0);
-    expect(store.getState().authStatuses).toBeNull();
+    // The new hub was read, and its failure keeps nothing of the previous one.
+    expect(fake.calls.filter((call) => call.method === LIST)).toHaveLength(2);
+    expect(store.getState()).toMatchObject({ authStatuses: null, authStatusesError: "hub unavailable" });
   });
 
   // The hub announces every credential change and every rejection it records

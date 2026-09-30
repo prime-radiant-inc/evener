@@ -61,7 +61,7 @@ export function createAuthStatusesStore(client: AuthStatusesClient): AuthStatuse
     // statuses read so far describe a hub this store no longer speaks to, so
     // they go with the read in flight, and no error of the previous hub is
     // shown against the next one's providers, even if its read fails.
-    onFence: (set) => set({ authStatuses: null, authStatusesLoading: false }),
+    onFence: (set) => set({ authStatuses: null, authStatusesLoading: false, authStatusesError: null }),
     wantsList: (s) => s.authStatuses !== null || s.authStatusesError !== null || s.authStatusesLoading,
   });
 
