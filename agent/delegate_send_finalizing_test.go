@@ -524,14 +524,10 @@ func TestDelegateSendWaitsOutAFinalizationThatFollowsTheOneItWaitedFor(t *testin
 			case 1:
 				// Release the first generation, and let another run and
 				// finish before the send reserves again.
-				if err := c.ReportFinalizationQuiesced(first, runtime); err != nil {
-					t.Errorf("release first: %v", err)
-				}
+				reportFinalizeTailDone(t, c, first, runtime)
 				second = finishGenerationOn(t, c, runtime)
 			case 2:
-				if err := c.ReportFinalizationQuiesced(second, runtime); err != nil {
-					t.Errorf("release second: %v", err)
-				}
+				reportFinalizeTailDone(t, c, second, runtime)
 			}
 		}
 	})
@@ -557,9 +553,7 @@ func TestDelegateSendTakesAReleaseReadyAlongsideItsCancellation(t *testing.T) {
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.delegateSendAwaitingFinalization = func() {
 			cancel()
-			if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-				t.Errorf("release: %v", err)
-			}
+			reportFinalizeTailDone(t, c, lease, runtime)
 		}
 	})
 	reservation, err := s.reserveStartAfterFinalization(ctx, rootDelegateActor(c.rootSessionID), "dlg_target")
