@@ -261,20 +261,23 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 // transcript-driven drive is the only witness of that state, so it reconciles
 // the projection itself rather than waiting for the next bootstrap. An empty
 // fold is authoritative: a wake ID is only ever noted beside a durable
-// transcript entry, so no entry means the attention resolved. The fold read
-// runs outside the controller lock, so the update revalidates the evidence
-// version it started from: an attention opened during the read keeps its flag
-// and wake, and the next pass retries.
-func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID string) (bool, error) {
+// transcript entry, so no entry means the attention resolved. A missing
+// transcript is not an empty one: the fold is read strictly (as the bootstrap
+// reconcile does) so an unreadable child keeps its flag and retries instead of
+// having attention silently discarded. The fold read runs outside the
+// controller lock, so the update revalidates the transcript reference and the
+// evidence version it started from: an attention opened or a transcript
+// rotated during the read keeps its flag and wake, and the next pass retries.
+func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID string) error {
 	if c == nil || delegateID == "" {
-		return false, nil
+		return nil
 	}
 	c.mu.Lock()
 	aggregate := c.durable[delegateID]
 	stateDir := c.stateDir
 	if aggregate == nil || !aggregate.NeedsAttention {
 		c.mu.Unlock()
-		return false, nil
+		return nil
 	}
 	transcriptRef := aggregate.Descriptor.TranscriptRef
 	evidenceVersion := c.evidenceVersion
@@ -282,26 +285,26 @@ func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID strin
 
 	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
 	if err != nil {
-		return false, err
+		return err
 	}
-	fold, err := readDelegateAttentionFold(path, sessionID)
+	fold, err := readExistingDelegateAttentionFold(path, sessionID)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if len(fold.pendingIDs()) != 0 {
-		return false, nil
+		return nil
 	}
 
 	release, err := c.beginRetirementMutation()
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer release()
 	c.mu.Lock()
 	aggregate = c.durable[delegateID]
-	if aggregate == nil || !aggregate.NeedsAttention || c.evidenceVersion != evidenceVersion {
+	if aggregate == nil || !aggregate.NeedsAttention || aggregate.Descriptor.TranscriptRef != transcriptRef || c.evidenceVersion != evidenceVersion {
 		c.mu.Unlock()
-		return false, nil
+		return nil
 	}
 	if _, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateAttentionChanged,
@@ -311,14 +314,14 @@ func (c *delegateTreeController) clearResolvedDelegateAttention(delegateID strin
 		},
 	}); err != nil {
 		c.mu.Unlock()
-		return false, err
+		return err
 	}
 	c.replaceDelegateAttentionLocked(delegateID, nil)
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(delegateID)
 	c.mu.Unlock()
 	c.emitDelegateUpdate(plan)
-	return true, nil
+	return nil
 }
 
 func (c *delegateTreeController) delegateAttentionOpenEventLocked(delegateID string) (*delegatestore.Event, error) {

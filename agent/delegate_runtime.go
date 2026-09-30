@@ -659,13 +659,13 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		// The transcript holds no unresolved attention, but the controller may
 		// still owe a wake whose resolution outran its run (a durable accept
 		// followed by a declined commit). Reconcile the projection so the last
-		// journal event is not left at needs_attention:true forever.
-		cleared, err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID)
-		if err != nil {
+		// journal event is not left at needs_attention:true forever. This
+		// reconciliation launches no run, so it never claims the wake: return
+		// false and let the notification drive proceed as it did before.
+		if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
 			s.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", err))
-			return true
 		}
-		return cleared
+		return false
 	}
 	// Claim the child for the WHOLE start, not just for this check. Everything
 	// between here and launchAcceptedDelegateAttention is durable work
