@@ -321,7 +321,7 @@ func TestDelegateControllerAUnlaunchedGenerationLeavesTheDelegateStartable(t *te
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
-	plans, release, err := c.finishUnlaunchedGeneration(started.lease, runtime, errors.New("plans failed"))
+	plans, err := c.finishUnlaunchedGeneration(started.lease, errors.New("plans failed"))
 	if err != nil {
 		t.Fatalf("finishUnlaunchedGeneration: %v", err)
 	}
@@ -329,8 +329,8 @@ func TestDelegateControllerAUnlaunchedGenerationLeavesTheDelegateStartable(t *te
 		t.Fatal("the unlaunched generation's plans carry no idle snapshot to announce")
 	}
 	assertStartRefused(t, c, "dlg_target", "before the unlaunched generation is released")
-	if err := release(); err != nil {
-		t.Fatalf("release: %v", err)
+	if err := c.ReportFinalizationQuiesced(started.lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced: %v", err)
 	}
 	if got := delegateAggregateSnapshot(t, c, "dlg_target"); got.LatestOutcome == nil || got.LatestOutcome.Reason != "launch_failed" {
 		t.Fatalf("latest outcome = %+v, want launch_failed", got.LatestOutcome)

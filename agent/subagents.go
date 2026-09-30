@@ -2072,9 +2072,7 @@ func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements
 	if err := a.sess.executeDelegateMutationPlans(announcements); err != nil {
 		a.sess.emit(events.EventWarning, warningDataFromError("delegate result delivery incomplete", err))
 	}
-	if err := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); err != nil {
-		a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", err))
-	}
+	a.sess.releaseFinishedGeneration(lease, a.sess)
 }
 
 func (a *subagent) drainForFinalization(ctx context.Context, result string) (string, func(), error) {
