@@ -1384,9 +1384,10 @@ export function ConversationScreen({
 		openingLandedNow.current = false;
 		setOpeningLanded(false);
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
-	// Declared before the opening effect below so it reads this render's rows:
-	// effects run in declaration order.
-	useEffect(() => {
+	// A layout effect, so a cell's layout or the cap can never read the rows of
+	// the render before (a passive effect leaves a window after the commit),
+	// and it runs before the opening effect below.
+	useLayoutEffect(() => {
 		rowsNow.current = timelineRows;
 	});
 	function lastRowKey() {
