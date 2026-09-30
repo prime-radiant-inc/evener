@@ -485,11 +485,21 @@ func delegateStoppedRunPacket(packet delegatestore.TerminalPacket) delegatestore
 		return stopped
 	}
 	stopped.Kind = delegatestore.PacketTerminalError
-	var metadata delegateTerminalPacketMetadata
-	_ = json.Unmarshal(stopped.Metadata, &metadata)
-	metadata.Outcome = delegatestore.OutcomeStopped
-	metadata.Reason = delegatestore.ReasonStoppedByParent
-	stopped.Metadata, _ = json.Marshal(metadata)
+	// Rewrite only the outcome and reason so every other key the run wrote —
+	// name, task, worktree, scratch path, and any key this build does not know
+	// — survives. Malformed metadata cannot come from this process's own
+	// packets; a fresh stamp is still the right fallback if it somehow does.
+	metadata := map[string]json.RawMessage{}
+	if len(stopped.Metadata) > 0 {
+		if err := json.Unmarshal(stopped.Metadata, &metadata); err != nil {
+			metadata = map[string]json.RawMessage{}
+		}
+	}
+	metadata["outcome"], _ = json.Marshal(delegatestore.OutcomeStopped)
+	metadata["reason"], _ = json.Marshal(delegatestore.ReasonStoppedByParent)
+	if raw, err := json.Marshal(metadata); err == nil {
+		stopped.Metadata = raw
+	}
 	return stopped
 }
 

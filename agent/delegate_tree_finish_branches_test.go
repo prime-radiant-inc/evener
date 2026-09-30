@@ -131,13 +131,78 @@ func TestStoppedGenerationFinishOverReportedRunReadsStopped(t *testing.T) {
 	if len(deliveries) != 1 {
 		t.Fatalf("deliveries = %#v, want the stopped report queued once", deliveries)
 	}
+	// The fold must deliver the recorded report, not synthesize its own bare
+	// stop packet: a bare literal also reads outcome stopped, so only the
+	// message and evidence prove the fold kept this packet.
+	var deliveredMessage string
+	if err := json.Unmarshal(deliveries[0].Packet.Message, &deliveredMessage); err != nil {
+		t.Fatalf("delivered packet message: %v", err)
+	}
+	if deliveredMessage != message {
+		t.Fatalf("delivered packet message = %q, want the run's report %q", deliveredMessage, message)
+	}
 	var delivered delegateTerminalPacketMetadata
 	if err := json.Unmarshal(deliveries[0].Packet.Metadata, &delivered); err != nil {
 		t.Fatalf("delivered packet metadata: %v", err)
 	}
-	if delivered.Outcome != delegatestore.OutcomeStopped {
-		t.Fatalf("delivered packet = %+v, want outcome stopped", delivered)
+	if delivered.Outcome != delegatestore.OutcomeStopped || delivered.Reason != delegatestore.ReasonStoppedByParent {
+		t.Fatalf("delivered packet = %+v, want outcome stopped, reason stopped_by_parent", delivered)
 	}
+	if delivered.Name != metadata.Name || delivered.Task != metadata.Task {
+		t.Fatalf("delivered packet lost the run's evidence: %+v", delivered)
+	}
+}
+
+// TestDelegateStoppedRunPacket pins the restamp itself: a reported run keeps
+// every metadata key it wrote while only outcome and reason change, and a run
+// that already ended (a terminal-error packet) is cloned untouched.
+func TestDelegateStoppedRunPacket(t *testing.T) {
+	t.Parallel()
+
+	t.Run("reported run keeps its report and evidence", func(t *testing.T) {
+		rawMessage, err := json.Marshal("the settle pass now waits for the drain")
+		if err != nil {
+			t.Fatalf("marshal message: %v", err)
+		}
+		packet := delegatestore.TerminalPacket{
+			Kind:     delegatestore.PacketReported,
+			Message:  rawMessage,
+			Metadata: json.RawMessage(`{"outcome":"completed","name":"Fix race","task":"settle","future_key":"kept"}`),
+		}
+		got := delegateStoppedRunPacket(packet)
+		if got.Kind != delegatestore.PacketTerminalError {
+			t.Fatalf("kind = %q, want terminal_error", got.Kind)
+		}
+		var message string
+		if err := json.Unmarshal(got.Message, &message); err != nil || message != "the settle pass now waits for the drain" {
+			t.Fatalf("message = %q (err %v), want the run's report", message, err)
+		}
+		var metadata map[string]json.RawMessage
+		if err := json.Unmarshal(got.Metadata, &metadata); err != nil {
+			t.Fatalf("metadata: %v (%s)", err, got.Metadata)
+		}
+		if string(metadata["outcome"]) != `"stopped"` || string(metadata["reason"]) != `"stopped_by_parent"` {
+			t.Fatalf("metadata = %s, want outcome stopped, reason stopped_by_parent", got.Metadata)
+		}
+		if string(metadata["name"]) != `"Fix race"` || string(metadata["task"]) != `"settle"` {
+			t.Fatalf("restamp lost the run's evidence: %s", got.Metadata)
+		}
+		if string(metadata["future_key"]) != `"kept"` {
+			t.Fatalf("restamp dropped an unknown metadata key: %s", got.Metadata)
+		}
+		if packet.Kind != delegatestore.PacketReported {
+			t.Fatalf("restamp mutated its input: kind = %q", packet.Kind)
+		}
+	})
+
+	t.Run("already-terminal packet is cloned untouched", func(t *testing.T) {
+		original := delegateTerminalErrorPacket("cancelled on the way out")
+		got := delegateStoppedRunPacket(original)
+		if got.Kind != original.Kind || string(got.Message) != string(original.Message) ||
+			string(got.Metadata) != string(original.Metadata) {
+			t.Fatalf("got %#v, want the terminal-error packet untouched", got)
+		}
+	})
 }
 
 // foldedStopAfterReport folds the one sequence the hole needs: a root delegate
