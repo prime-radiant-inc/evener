@@ -314,8 +314,8 @@ func parseShellToolArgs(ctx context.Context, args map[string]any) (shellArgs, er
 		Background: mode == shellModeBackground,
 		// WorkingDir is the raw model-supplied cwd, if any; "" means omitted. It is
 		// resolved (relative paths joined against env.WorkingDirectory(), validated
-		// against the sandbox root) by resolveShellWorkingDir before dispatch, which
-		// also supplies the env.WorkingDirectory() fallback when this is "".
+		// against the active command policy) by resolveShellWorkingDir before
+		// dispatch, which also supplies the env.WorkingDirectory() fallback.
 		WorkingDir: stringArg(args, "cwd"),
 	}
 	var ok bool

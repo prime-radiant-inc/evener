@@ -299,10 +299,7 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
-		sub.mu.Lock()
-		active := sub.running || sub.finalizing || sub.driving
-		child := sub.sess
-		sub.mu.Unlock()
+		active, child := s.subagentActive(sub)
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id)) {
 			// A deliberately stopped or fatally failed child is never driven —
 			// driveChildrenWithUndeliveredAttention skips all three gates — so its
@@ -541,6 +538,22 @@ func (s *Session) drainSubtreeIsStalled() (bool, error) {
 	return !live, nil
 }
 
+// subagentActive reports whether sub's child is still at work, and returns
+// the child. A child is at work while it runs, is driven or finalizes, and
+// until its finalize tail releases the delegate: the child stops finalizing
+// locally before the tail announces the finished generation, so the result
+// may not have reached this session yet.
+func (s *Session) subagentActive(sub *subagent) (bool, *Session) {
+	sub.mu.Lock()
+	active := sub.running || sub.finalizing || sub.driving
+	child := sub.sess
+	sub.mu.Unlock()
+	if !active && child != nil && child.owningDelegateID != "" {
+		active = s.delegateController.stillFinalizing(child.owningDelegateID)
+	}
+	return active, child
+}
+
 // subtreeHasLiveComponent reports whether any live or deliverable drain
 // component (see drainSubtreeIsStalled) exists in this session or any live,
 // non-gated descendant.
@@ -568,10 +581,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
-		sub.mu.Lock()
-		active := sub.running || sub.finalizing || sub.driving
-		child := sub.sess
-		sub.mu.Unlock()
+		active, child := s.subagentActive(sub)
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id)) {
 			continue
 		}

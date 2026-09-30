@@ -814,7 +814,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// still prefers exact progress over cancellation.
 		requirements, current := c.stopReconcileRequirements(stop)
 		if !current {
-			if drainAbandoned(abandon) {
+			if channelClosed(abandon) {
 				return ctx.Err()
 			}
 			continue
@@ -829,7 +829,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {
-				if drainAbandoned(abandon) {
+				if channelClosed(abandon) {
 					return ctx.Err()
 				}
 				continue
@@ -857,7 +857,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			}
 		}
 		if len(plans.attention) != 0 || len(plans.shellRepairs) != 0 {
-			if drainAbandoned(abandon) {
+			if channelClosed(abandon) {
 				return ctx.Err()
 			}
 			continue
@@ -867,20 +867,6 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 				return err
 			}
 		}
-	}
-}
-
-// drainAbandoned reports whether an abandon signal has fired. A nil signal
-// never reports abandoned.
-func drainAbandoned(abandon <-chan struct{}) bool {
-	if abandon == nil {
-		return false
-	}
-	select {
-	case <-abandon:
-		return true
-	default:
-		return false
 	}
 }
 

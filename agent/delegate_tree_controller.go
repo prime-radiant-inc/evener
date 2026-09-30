@@ -175,9 +175,23 @@ type delegateRuntimeBinding struct {
 // delegateFinalization is a finished generation whose runtime has not yet
 // reported its finalize tail done.
 type delegateFinalization struct {
+	delegateID string
 	runtime    *Session
 	generation uint64
+	// released closes when the finalization is released, so a send refused
+	// in the meantime can wait for it.
+	released chan struct{}
 }
+
+// delegateFinalizingError refuses a start because the delegate's finished
+// generation hasn't released its finalization yet. It is errDelegateTargetBusy
+// to every caller, and carries the channel that closes on release.
+type delegateFinalizingError struct {
+	released <-chan struct{}
+}
+
+func (delegateFinalizingError) Error() string        { return errDelegateTargetBusy.Error() }
+func (delegateFinalizingError) Is(target error) bool { return target == errDelegateTargetBusy }
 
 type delegateLiveState struct {
 	runtime          *Session

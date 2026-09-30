@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -159,6 +160,7 @@ func TestConfinedCommandWorkingDirectory(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			env := NewLocalExecutionEnvironment(t.TempDir())
+			t.Cleanup(env.Cleanup)
 			env.Sandbox = &policy
 			outside := t.TempDir()
 			boundaryErr := env.EnsureCommandWorkingDirectory(outside)
@@ -196,23 +198,24 @@ func TestSandboxOffDetachedWorkingDirectory(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("detached execution is unsupported")
 	}
-	base := t.TempDir()
-	root := filepath.Join(base, "workspace")
-	if err := os.Mkdir(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	for _, explicit := range []bool{false, true} {
+		base := t.TempDir()
+		root := filepath.Join(base, "workspace")
+		if err := os.Mkdir(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
 		env := NewLocalExecutionEnvironment(root)
 		if explicit {
 			env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeOff}
 		}
 		t.Cleanup(env.Cleanup)
-		for _, cwd := range []string{base, "..", ""} {
+		for caseIndex, cwd := range []string{base, "..", ""} {
+			marker := fmt.Sprintf("detached-cwd-%d.txt", caseIndex)
 			want := base
 			if cwd == "" {
 				want = root
 			}
-			receipt, err := env.DetachCommand(context.Background(), "pwd > detached-cwd.txt", cwd, nil)
+			receipt, err := env.DetachCommand(context.Background(), "pwd > "+marker, cwd, nil)
 			if err != nil {
 				t.Fatalf("detach cwd %q: %v", cwd, err)
 			}
@@ -221,7 +224,7 @@ func TestSandboxOffDetachedWorkingDirectory(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("detached process did not exit")
 			}
-			got, err := os.ReadFile(filepath.Join(want, "detached-cwd.txt"))
+			got, err := os.ReadFile(filepath.Join(want, marker))
 			want, resolveErr := filepath.EvalSymlinks(want)
 			if err != nil || resolveErr != nil || strings.TrimSpace(string(got)) != want {
 				t.Fatalf("detached cwd = %q, %v; want %s, %v", got, err, want, resolveErr)
