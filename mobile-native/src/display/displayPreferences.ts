@@ -1,6 +1,7 @@
-// This phone's display choices (spec 12's Display): the appearance, the
-// reading font, and whether Board rows show their model. They belong to the phone, not a hub, so they survive switching
-// hubs and aren't cleared when a hub is removed.
+// This phone's display choices (spec 12's Display): the appearance, the reading
+// font, and whether Board rows show their model. They belong to the phone, not
+// a hub, so they survive switching hubs and aren't cleared when a hub is
+// removed.
 import type { SyncStringStorage } from "../syncStringStorage";
 
 export type AppearanceChoice = "system" | "light" | "dark";

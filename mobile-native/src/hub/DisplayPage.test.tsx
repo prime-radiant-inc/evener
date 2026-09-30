@@ -184,6 +184,17 @@ it("offers Show model on Board rows, off at first, and stores it for this phone"
 	expect(tree.root.findByProps({ accessibilityLabel: "Show model on Board rows" }).props.value).toBe(true);
 });
 
+it("says Show model on Board rows applies now but won't survive a restart when the phone can't store it", () => {
+	const { tree, prefs } = mount();
+	prefs.set = ((set) => (change: Parameters<typeof set>[0]) => {
+		set(change);
+		throw new Error("disk full");
+	})(prefs.set.bind(prefs));
+	act(() => tree.root.findByProps({ accessibilityLabel: "Show model on Board rows" }).props.onValueChange(true));
+	expect(prefs.getSnapshot().showModel).toBe(true);
+	expect(renderedText(tree)).toContain("This choice applies now but couldn't be saved on this phone.");
+});
+
 it("never asks to reconnect or refresh", () => {
 	const { tree } = mount();
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b|\bRefresh\b|transcript display/i);
