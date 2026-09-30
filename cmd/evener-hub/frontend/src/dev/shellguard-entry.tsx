@@ -296,7 +296,7 @@ async function projectDelta(key: Extract<ResourceKey, { kind: "project" }>) {
   };
 }
 async function navigationRead(params: NavigationReadParams): Promise<NavigationReadResponse> {
-  if (params.representationVersion !== 2) throw new Error("shellguard expected v2 navigation reads");
+  if (params.representationVersion !== 3) throw new Error("shellguard expected v3 navigation reads");
   const key = resourceKey(params);
   const wireResponse = (
     data: unknown,
