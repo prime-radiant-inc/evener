@@ -177,11 +177,10 @@ func TestAuthTestCredentials_ProbesTheCredentialTheLaunchPathResolves(t *testing
 	}
 }
 
-// TestAuthTestCredentials_ProbesTheClientTheChildWouldGet: while providers.toml
-// does not load, the hub launches against the implicit set and hands children
-// no user layer (spec §10). The probe must build that same client, or "Test
-// credentials" answers configuration failure for every instance the pane lists
-// as configured and the gate launches happily.
+// TestAuthTestCredentials_ProbesTheClientTheChildWouldGet: an invalid edit
+// retains the last usable user layer for new children. The probe must build
+// that same client so "Test credentials" describes the configured instance
+// the hub can still launch.
 func TestAuthTestCredentials_ProbesTheClientTheChildWouldGet(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	clearProviderKeysFromEnvironment(t)

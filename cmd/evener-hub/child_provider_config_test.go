@@ -261,43 +261,63 @@ func TestRetainedProviderSnapshotCreationFailureCleansDirectory(t *testing.T) {
 }
 
 func TestRetainedProviderCredentialProbeResolvesAndCleansSnapshot(t *testing.T) {
-	authorization := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authorization <- r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"house"}]}`))
-	}))
-	t.Cleanup(server.Close)
-	config := strings.ReplaceAll(retainedProviderConfig, "http://127.0.0.1:9/v1", server.URL+"/v1")
-	f := retainedProviderFixture(t, config)
-	t.Setenv("EVENER_PROVIDERS_CONFIG", f.tomlPath)
-	t.Setenv("EVENER_CREDENTIALS_CONFIG", f.credsPath)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	var snapshot string
-	loader := func(path string, noUser bool) (credentialProbeClient, error) {
-		if noUser {
-			t.Fatal("retained credential probe discarded user layer")
-		}
-		snapshot = path
-		client, err := loadCredentialTestClient(path, noUser)
-		if err != nil {
-			return nil, err
-		}
-		resolved, err := client.Registry().Resolve("work/house")
-		if err != nil || resolved.Credential.Source != "store" || resolved.Credential.Value != "fixture-key" {
-			t.Fatal("probe did not preserve original credential source")
-		}
-		return client, nil
-	}
-	result, err := f.ctl.auth.runCredentialTest(t.Context(), "work", "", loader)
-	if err != nil || result.Status != appwire.AuthTestStatusSuccess {
-		t.Fatalf("probe result=%s error=%v", result.Status, err)
-	}
-	if gotAuthorization := <-authorization; gotAuthorization != "Bearer fixture-key" {
-		t.Fatal("probe sent a different credential")
-	}
-	if _, err := os.Stat(snapshot); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("closed probe retained snapshot")
+	for _, credentialSource := range []string{"explicit override", "original sibling"} {
+		t.Run(credentialSource, func(t *testing.T) {
+			authorization := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				authorization <- r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"id":"house"}]}`))
+			}))
+			t.Cleanup(server.Close)
+			config := strings.ReplaceAll(retainedProviderConfig, "http://127.0.0.1:9/v1", server.URL+"/v1")
+			f := retainedProviderFixture(t, config)
+			t.Setenv("EVENER_PROVIDERS_CONFIG", f.tomlPath)
+			t.Setenv("EVENER_CREDENTIALS_CONFIG", f.credsPath)
+			if credentialSource == "original sibling" {
+				raw, err := os.ReadFile(f.credsPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sibling := filepath.Join(filepath.Dir(f.tomlPath), "credentials.toml")
+				if err := os.WriteFile(sibling, raw, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Unsetenv("EVENER_CREDENTIALS_CONFIG"); err != nil {
+					t.Fatal(err)
+				}
+				if cmdutil.CredentialsPath() != sibling {
+					t.Fatal("probe fallback lost the original credential store")
+				}
+			}
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			var snapshot string
+			loader := func(path string, noUser bool) (credentialProbeClient, error) {
+				if noUser {
+					t.Fatal("retained credential probe discarded user layer")
+				}
+				snapshot = path
+				client, err := loadCredentialTestClient(path, noUser)
+				if err != nil {
+					return nil, err
+				}
+				resolved, err := client.Registry().Resolve("work/house")
+				if err != nil || resolved.Credential.Source != "store" || resolved.Credential.Value != "fixture-key" {
+					t.Fatal("probe did not preserve original credential source")
+				}
+				return client, nil
+			}
+			result, err := f.ctl.auth.runCredentialTest(t.Context(), "work", "", loader)
+			if err != nil || result.Status != appwire.AuthTestStatusSuccess {
+				t.Fatalf("probe result=%s error=%v", result.Status, err)
+			}
+			if gotAuthorization := <-authorization; gotAuthorization != "Bearer fixture-key" {
+				t.Fatal("probe sent a different credential")
+			}
+			if _, err := os.Stat(snapshot); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("closed probe retained snapshot")
+			}
+		})
 	}
 }
 

@@ -1573,12 +1573,10 @@ func TestHubSpawnerListLaunchModelContract_NonexistentWorkingDir(t *testing.T) {
 	}
 }
 
-// TestHubSpawnerNoUserLayerFollowsTheLiveRegistry: whether a child gets the
-// user layer is a live property, not a startup constant. The auth controller
-// reloads the registry on every credential action, so a hub that started
-// refusing writes can come to accept them and vice versa; a frozen answer
-// hands the child a providers.toml the hub is not reading, or withholds one it
-// is (spec §10).
+// TestHubSpawnerNoUserLayerFollowsTheLiveRegistry: the child provider source
+// follows the live registry. Valid files use their source path, invalid edits
+// use the retained user layer, and repairs return to the source. A startup-only
+// choice would discard a usable provider or reread an invalid file.
 func TestHubSpawnerNoUserLayerFollowsTheLiveRegistry(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	const good = "default = \"groq\"\n"
