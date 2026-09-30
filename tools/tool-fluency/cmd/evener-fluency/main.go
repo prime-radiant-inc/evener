@@ -588,6 +588,12 @@ func loadProbes(dir, filter string) ([]probeFile, error) {
 		if probe.ID == "" {
 			return fmt.Errorf("%s: missing id", path)
 		}
+		// A person: block with no brief cannot play anyone: respond would
+		// answer "I don't know." to everything, silently. Reject it at load
+		// time, naming the task.
+		if probe.Person != nil && strings.TrimSpace(probe.Person.Brief) == "" {
+			return fmt.Errorf("%s: task %s: person.brief must not be empty", path, probe.ID)
+		}
 		if filter == "all" || filter == probe.ID {
 			probes = append(probes, probe)
 		}

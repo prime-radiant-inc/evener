@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +88,80 @@ func TestApplyAskExchangesMissingLogIsNotAnError(t *testing.T) {
 
 	if res.AskUserCalls != 0 || res.Asks != nil {
 		t.Errorf("result = %+v, want zero/nil with no log file", res)
+	}
+}
+
+// TestApplyAskExchangesReportsMissingAsksWhenCallsMade: the run made
+// ask_user calls (AskUserCalls > 0) but the responder logged nothing -- a
+// missing or empty asks.jsonl -- so the failure is surfaced as an infra
+// finding pointing at the probe's stderr, where the responder's own error is
+// printed.
+func TestApplyAskExchangesReportsMissingAsksWhenCallsMade(t *testing.T) {
+	dir := t.TempDir()
+	res := probeResult{
+		WorkDir:             filepath.Join(dir, "work"),
+		StderrPath:          filepath.Join(dir, "stderr.ndjson"),
+		CanonicalToolCounts: map[string]int{"ask_user": 2},
+	}
+
+	applyAskExchanges(&res, probeFile{Person: &personSpec{Brief: "b"}})
+
+	if len(res.Findings) != 1 || res.Findings[0].Category != "infra" {
+		t.Fatalf("Findings = %+v, want one infra finding when asks were made but none logged", res.Findings)
+	}
+	if !strings.Contains(res.Findings[0].Detail, res.StderrPath) {
+		t.Errorf("finding detail = %q, want it to point at the responder stderr %q", res.Findings[0].Detail, res.StderrPath)
+	}
+}
+
+// TestApplyAskExchangesReportsUnreadableLog: an ask log that exists but
+// cannot be read (not merely absent) is reported rather than silently
+// treated as no asks.
+func TestApplyAskExchangesReportsUnreadableLog(t *testing.T) {
+	dir := t.TempDir()
+	// asks.jsonl is a directory, so reading it fails with something other
+	// than not-exist.
+	if err := os.MkdirAll(filepath.Join(dir, "asks.jsonl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := probeResult{
+		WorkDir:             filepath.Join(dir, "work"),
+		StderrPath:          filepath.Join(dir, "stderr.ndjson"),
+		CanonicalToolCounts: map[string]int{"ask_user": 1},
+	}
+
+	applyAskExchanges(&res, probeFile{Person: &personSpec{Brief: "b"}})
+
+	if len(res.Findings) != 1 || res.Findings[0].Category != "infra" {
+		t.Fatalf("Findings = %+v, want one infra finding for the unreadable log", res.Findings)
+	}
+	if !strings.Contains(res.Findings[0].Detail, res.StderrPath) {
+		t.Errorf("finding detail = %q, want it to point at the responder stderr %q", res.Findings[0].Detail, res.StderrPath)
+	}
+}
+
+// TestApplyAskExchangesCountsBlankRecordsMalformed: a JSON null or {} line is
+// an empty question and answer, not a real exchange, so it is counted as
+// malformed rather than attached to Asks as a blank pair.
+func TestApplyAskExchangesCountsBlankRecordsMalformed(t *testing.T) {
+	dir := t.TempDir()
+	res := probeResult{
+		WorkDir:             filepath.Join(dir, "work"),
+		CanonicalToolCounts: map[string]int{"ask_user": 3},
+	}
+	if err := os.WriteFile(filepath.Join(dir, "asks.jsonl"), []byte(
+		`{"question":"q","answer":"a"}`+"\n"+
+			`null`+"\n"+
+			`{}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	applyAskExchanges(&res, probeFile{Person: &personSpec{Brief: "b"}})
+
+	if len(res.Asks) != 1 {
+		t.Errorf("Asks = %+v, want only the one real pair", res.Asks)
+	}
+	if len(res.Findings) != 1 || res.Findings[0].Category != "infra" {
+		t.Fatalf("Findings = %+v, want one infra finding for the 2 malformed records", res.Findings)
 	}
 }

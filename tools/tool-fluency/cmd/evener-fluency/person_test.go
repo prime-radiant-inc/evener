@@ -55,9 +55,9 @@ func TestCliProbeArgsAddsAskResponderWhenPersonSet(t *testing.T) {
 	}
 }
 
-// TestCliProbeArgsDefaultsPersonModelToFastCheapModel: an unset person.model
-// falls back to the run's --fast-cheap-model.
-func TestCliProbeArgsDefaultsPersonModelToFastCheapModel(t *testing.T) {
+// TestCliProbeArgsPrefersPersonModelOverFastCheapModel: an explicit
+// person.model wins over the run's --fast-cheap-model.
+func TestCliProbeArgsPrefersPersonModelOverFastCheapModel(t *testing.T) {
 	oldSelf := evenerFluencyExecutablePath
 	t.Cleanup(func() { evenerFluencyExecutablePath = oldSelf })
 	evenerFluencyExecutablePath = func() (string, error) { return "/path/to/evener-fluency", nil }
@@ -74,6 +74,46 @@ func TestCliProbeArgsDefaultsPersonModelToFastCheapModel(t *testing.T) {
 	command := findFlagValue(t, args, "--ask-responder")
 	if got := extractFlagValue(t, command, "--model"); got != "openai/specific" {
 		t.Errorf("command model = %q, want the person's own model, not the fast-cheap default", got)
+	}
+}
+
+// TestCliProbeArgsDefaultsPersonModelToFastCheapModel: an unset person.model
+// falls back to the run's --fast-cheap-model.
+func TestCliProbeArgsDefaultsPersonModelToFastCheapModel(t *testing.T) {
+	oldSelf := evenerFluencyExecutablePath
+	t.Cleanup(func() { evenerFluencyExecutablePath = oldSelf })
+	evenerFluencyExecutablePath = func() (string, error) { return "/path/to/evener-fluency", nil }
+
+	dir := t.TempDir()
+	res := probeResult{WorkDir: filepath.Join(dir, "work"), StateDir: filepath.Join(dir, "state")}
+	probe := probeFile{Prompt: "p", Person: &personSpec{Brief: "brief"}}
+	cfg := runConfig{model: "openai/m", fastCheapModel: "openai/cheap"}
+
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
+	command := findFlagValue(t, args, "--ask-responder")
+	if got := extractFlagValue(t, command, "--model"); got != "openai/cheap" {
+		t.Errorf("command model = %q, want the fast-cheap default", got)
+	}
+}
+
+// TestPersonSpecRejectsEmptyBrief: a person: block whose brief is missing or
+// blank is rejected at load time, naming the task, instead of silently
+// accepting a person who answers "I don't know." to everything.
+func TestPersonSpecRejectsEmptyBrief(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing": "schema: 1\nid: prose.x\nprompt: p\nperson:\n  model: openai/gpt-5-mini\n",
+		"blank":   "schema: 1\nid: prose.x\nprompt: p\nperson:\n  brief: \"  \"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			mustWrite(t, filepath.Join(dir, "task.yaml"), body)
+			if _, err := loadProbes(dir, "all"); err == nil || !strings.Contains(err.Error(), "prose.x") {
+				t.Fatalf("loadProbes = %v, want an error naming the task with an empty person.brief", err)
+			}
+		})
 	}
 }
 
