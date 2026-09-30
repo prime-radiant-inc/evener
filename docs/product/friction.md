@@ -942,13 +942,20 @@ passes an empty log path to
 Manual host access or a separate supervisor/log setup is the remaining diagnosis
 path; an existing configured log path does not have this issue.
 
-**Discuss.** Retain bounded bootstrap diagnostics and return the useful cause or
-an accessible diagnostic reference. Choose log lifetime/rotation and avoid
-recording credential material.
+**Decision.** Retain bounded startup diagnostics with automatic cleanup or
+rotation. When remote startup fails, automatically retrieve the relevant output
+and associate it with that connection attempt. Make the actual cause available
+to Evener's recovery logic and the agent so they can investigate and pursue
+repair without requiring the user to find logs manually. Any user-facing
+explanation describes the specific unresolved problem. Avoid recording
+credential material. Implementation remains pending.
 
 **Acceptance.** Fail remote startup with a malformed configuration. Connect
-identifies the cause and retained diagnostic location instead of only a readiness
-failure, with bounded output and no secrets.
+automatically retrieves the startup explanation for the failed attempt and makes
+it available for recovery, rather than reporting only a readiness failure or
+requiring manual log collection. Retained output and its diagnostic location are
+accessible, bounded and free of credential material. Cleanup or rotation keeps
+repeated attempts from accumulating unbounded logs.
 
 ### H12 Dormant host notices
 
