@@ -344,22 +344,20 @@ func TestLoadSessionJobGetRejectsUnsafeSessionID(t *testing.T) {
 func TestRecordForReadSnapshotsTheLiveRecord(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	rec, err := jm.createShell(createShellOpts{Command: "true"})
-	if err != nil {
-		t.Fatalf("createShell: %v", err)
+	// Seed the running job directly rather than launch a real command: the
+	// behavior under test is recordForRead's cloning, and a command that exits
+	// could be finalized out of jm.running before the snapshot is taken.
+	rec := &jobstore.JobRecord{
+		JobID: "job_live", Type: jobstore.JobShell, Status: jobstore.StatusRunning,
+		OwnerSessionID: "sess_1", StartedAt: time.Now(),
 	}
-	jm.mu.Lock()
-	live := jm.running[rec.JobID]
-	jm.mu.Unlock()
-	if live == nil {
-		t.Fatal("the job under test is not running")
-	}
+	jm.running[rec.JobID] = &runningJob{rec: rec}
 
 	_, got, err := jm.recordForRead(rec.JobID)
 	if err != nil || got == nil {
 		t.Fatalf("recordForRead: rec=%v err=%v", got, err)
 	}
-	if got == live.rec {
+	if got == rec {
 		t.Fatal("recordForRead returned the live record by pointer; its caller reads it after the lock is released")
 	}
 	if got.JobID != rec.JobID {
