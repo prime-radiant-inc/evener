@@ -1070,7 +1070,7 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 func (s *Session) escalateUnreachableDelegateAttention() bool {
 	progressed, failed := false, false
 	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
-		if err := s.escalateOneUnreachableDelegateAttention(plan); err != nil {
+		if err := s.escalateOneUnreachableDelegateAttention(plan, readDelegateAttentionFold); err != nil {
 			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
 			failed = true
 			continue
@@ -1084,14 +1084,12 @@ func (s *Session) escalateUnreachableDelegateAttention() bool {
 	return progressed
 }
 
-func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAttentionEscalation) error {
+// escalateOneUnreachableDelegateAttention transfers plan's attention to the
+// root, reading the source transcript's fold with readFold.
+func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAttentionEscalation, readFold func(path, expectedSessionID string) (delegateAttentionFold, error)) error {
 	sourcePath, sourceSessionID, err := delegateTranscriptPathFromRef(s.delegateController.stateDir, plan.transcriptRef)
 	if err != nil {
 		return err
-	}
-	readFold := readDelegateAttentionFold
-	if plan.requireTranscript {
-		readFold = readExistingDelegateAttentionFold
 	}
 	fold, err := readFold(sourcePath, sourceSessionID)
 	if err != nil {
@@ -1197,7 +1195,7 @@ func (s *Session) countDelegateAttentionRestoreFailure(delegateID string, err er
 	if err == nil || isTransientStartFailure(err) {
 		return
 	}
-	if s.delegateController.countDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
+	if s.delegateController.recordDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
 		s.giveUpDelegateAttention(delegateID, err)
 	}
 }
@@ -1221,7 +1219,13 @@ func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	if !ok {
 		return
 	}
-	escalateErr := s.handOverDelegateAttention(plan)
+	// The fenced escalation's lenient read treats a missing transcript as
+	// empty (attention never made durable) and forgets the ids, which here
+	// would drop owed attention as though delivered. A delegate whose
+	// transcript is gone has nothing to hand over, so the hand-over reads it
+	// strictly and a missing transcript fails it, in the same read the
+	// transfer uses.
+	escalateErr := s.escalateOneUnreachableDelegateAttention(plan, readExistingDelegateAttentionFold)
 	if escalateErr == nil {
 		s.delegateController.delegateAttentionRestored(delegateID)
 		s.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, delegateID)
@@ -1237,17 +1241,6 @@ func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	data.Code = events.WarningCodeDelegateAttentionUndeliverable
 	data.DelegateID = delegateID
 	s.emit(events.EventWarning, data)
-}
-
-// handOverDelegateAttention transfers plan's attention to the root. The
-// fenced escalation's fold read treats a missing transcript as empty
-// (attention never made durable) and forgets the ids, which here would drop
-// owed attention as though delivered; a delegate whose transcript is gone has
-// nothing to hand over, so the hand-over reads it strictly and a missing
-// transcript fails it, in the same read the transfer uses.
-func (s *Session) handOverDelegateAttention(plan delegateFencedAttentionEscalation) error {
-	plan.requireTranscript = true
-	return s.escalateOneUnreachableDelegateAttention(plan)
 }
 
 func (s *Session) drivePendingStableDelegateAttention() bool {

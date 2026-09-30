@@ -291,8 +291,7 @@ func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attenti
 	ids[attentionID] = struct{}{}
 	// New attention is a new chance: a delegate the drive gave up on gets
 	// another round of attempts.
-	delete(c.attentionParked, delegateID)
-	delete(c.attentionRestoreFailures, delegateID)
+	c.resetDelegateAttentionAttemptsLocked(delegateID)
 	return true
 }
 
@@ -304,18 +303,24 @@ func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, atten
 	}
 }
 
+// resetDelegateAttentionAttemptsLocked starts delegateID's delivery attempts
+// over: no counted restore failures, and not parked.
+func (c *delegateTreeController) resetDelegateAttentionAttemptsLocked(delegateID string) {
+	delete(c.attentionParked, delegateID)
+	delete(c.attentionRestoreFailures, delegateID)
+}
+
 // dropDelegateAttentionLocked clears the drive's state for a delegate that
 // owes no attention, which takes it out of the drive's line.
 func (c *delegateTreeController) dropDelegateAttentionLocked(delegateID string) {
 	delete(c.attentionWakeIDs, delegateID)
 	delete(c.attentionDriveTurns, delegateID)
-	delete(c.attentionParked, delegateID)
-	delete(c.attentionRestoreFailures, delegateID)
+	c.resetDelegateAttentionAttemptsLocked(delegateID)
 }
 
-// countDelegateAttentionRestoreFailure records one more counted restore
+// recordDelegateAttentionRestoreFailure records one more counted restore
 // failure for delegateID and returns the consecutive count.
-func (c *delegateTreeController) countDelegateAttentionRestoreFailure(delegateID string) int {
+func (c *delegateTreeController) recordDelegateAttentionRestoreFailure(delegateID string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.attentionRestoreFailures == nil {
@@ -386,8 +391,7 @@ func (c *delegateTreeController) escalationPlanLocked(delegateID string, aggrega
 func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID string, attentionIDs []string) {
 	// A replacement is the transcript fold's word on what is owed: it starts
 	// the delegate's attempts over, as new attention does.
-	delete(c.attentionParked, delegateID)
-	delete(c.attentionRestoreFailures, delegateID)
+	c.resetDelegateAttentionAttemptsLocked(delegateID)
 	ids := make(map[string]struct{}, len(attentionIDs))
 	for _, attentionID := range attentionIDs {
 		if attentionID != "" {
@@ -588,10 +592,6 @@ type delegateFencedAttentionEscalation struct {
 	transcriptRef string
 	attentionIDs  []string
 	runtime       *Session
-	// requireTranscript makes a missing source transcript an error rather
-	// than an empty fold: set for a give-up hand-over, whose attention is
-	// owed and must not be forgotten as never durable.
-	requireTranscript bool
 }
 
 // permanentlyFencedDelegateAttention lists pending attention wakes whose
