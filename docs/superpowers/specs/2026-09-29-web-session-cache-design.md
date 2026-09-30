@@ -267,6 +267,17 @@ it fires. The gates:
   pair is ordinary cache content; a mid-transition one is not,
 - `history.failed` is unset.
 
+Gate evaluation and the transaction's open are one synchronous step — no
+await sits between them — so a deletion (the action's success handler,
+the fence, or a received per-ref message) meets a write in only two
+orders: its task runs before the callback's, and the gates refuse the
+ref, or it runs after the transaction opened, and IndexedDB's
+serialization places the deletion after the write, where it removes the
+record the write just committed. A timer that already fired but has not
+yet run is the queued shape of the first case: cancelling it cannot
+unqueue its task, which is exactly what the fire-time `deletedRefs` gate
+refuses.
+
 The subscription sees every publication, so a `history/updated` that grows
 the recorded history refreshes the record like any read merge.
 
@@ -292,10 +303,12 @@ Three events invalidate rather than write:
   ref's record in the same step, or a cleared session's next reload paints
   pre-clear content from the shell.
 - **Session delete** (the UI's shared `deleteSession` action): the record
-  is deleted on the action's success path (`result.deleted`) and the
-  ref's pending debounce timer is cancelled with it. The flush skips refs
-  closed by deletion, so closing a deleted session's pane cannot
-  re-persist it. Deletion also propagates cross-tab: one BroadcastChannel
+  is deleted on the action's success path (`result.deleted`), the ref
+  joins `deletedRefs` in the same step — the deleting tab arms its own
+  fence, because a BroadcastChannel never delivers the sender its own
+  message — and the ref's pending debounce timer is cancelled with it.
+  The flush skips refs closed by deletion, so closing a deleted
+  session's pane cannot re-persist it. Deletion also propagates cross-tab: one BroadcastChannel
   message per deleted ref, the same channel and the same shape the clear
   uses. On receiving it a sibling does two things, not one: it adds the
   ref to its suppression set — re-checked at write-fire time — and it
@@ -304,7 +317,10 @@ Three events invalidate rather than write:
   that started after the deleting tab's removal but before the message
   arrives still passes its gates and re-creates the record, and the
   message's arrival deletes that resurrection in the same step that
-  arms the suppression. The remaining residual is a sibling that dies
+  arms the suppression — a heal that cannot be lost, because the
+  message's delete transaction cannot start until an in-flight write's
+  transaction completes, so it always runs after the record it must
+  remove. The remaining residual is a sibling that dies
   between its racing write and the message's arrival: nothing is left
   to hear the message, and the record it re-created waits for the
   14-day expiry or the next fenced read of the ref — the same stated
@@ -711,7 +727,11 @@ Store integration (`stores/threads.test.ts` additions and a new
     committed is not suppressed — its lease captured the clear's epoch —
     and caches again; a deletion message received by a sibling holding
     the ref open both suppresses its writes and deletes the record a
-    racing write re-created before the message arrived.
+    racing write re-created before the message arrived; in the deleting
+    tab, a debounce callback whose task was already queued when the
+    action's success handler ran is refused by its own `deletedRefs`
+    arming, and a write whose transaction was already open commits
+    first only for the deletion serialized after it to remove it.
 15. Write gating: `failed` history writes nothing; an invalidated
     history — `invalidatedAtGeneration` set, with `awaited`,
     `pendingIncarnation`, and a deferred page present — writes nothing
