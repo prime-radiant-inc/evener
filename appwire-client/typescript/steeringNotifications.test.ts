@@ -1264,6 +1264,7 @@ const REPORT_ENVELOPE = JSON.stringify({
     tests_rerun: "false",
     artifacts: [],
   },
+  artifacts: [],
 });
 
 test("a reported packet with a structured result parses the envelope out of its message", () => {
@@ -1381,7 +1382,7 @@ test("a terminal_error packet whose message is envelope-shaped never yields a ta
     parseSteeringNotifications(
       structuredPacketFrame({
         kind: "terminal_error",
-        message: JSON.stringify({ message: "rate limited after four retries", data: { retry: "no" } }),
+        message: JSON.stringify({ message: "rate limited after four retries", data: { retry: "no" }, artifacts: [] }),
         metadata: { outcome: "failed", reason: "run_error", error: "provider returned 429" },
       }),
     ),
@@ -1519,7 +1520,7 @@ test("a legacy envelope's array data parses through", () => {
     parseSteeringNotifications(
       structuredPacketFrame({
         kind: "reported",
-        message: JSON.stringify({ message: "Swept.", data: ["alpha", "beta"] }),
+        message: JSON.stringify({ message: "Swept.", data: ["alpha", "beta"], artifacts: [] }),
         metadata: { outcome: "completed", name: "task7-sweep" },
       }),
     ),
@@ -1547,6 +1548,27 @@ test("a validated non-object result parses through", () => {
   );
   expect(n?.structuredResult).toEqual(["alpha", "beta"]);
   expect(n?.structuredResultValid).toBe(true);
+});
+
+// The daemon's packet.message is either the plain message or the canonical
+// nodeOutput envelope - {message, data, artifacts}, plus an optional decision
+// (session_tools_communicate.go marshals every non-decision field without
+// omitempty, so the canonical shape always carries all three keys). JSON
+// beyond that shape is the subagent's own text: a report whose body merely
+// HAS a "message" key keeps its whole text, never reduced to the string under
+// that key.
+test("a plain JSON report with extra keys stays whole", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "done", details: "kept in full" }),
+        metadata: { outcome: "completed", name: "task8-plain" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe(JSON.stringify({ message: "done", details: "kept in full" }));
+  expect(n?.structuredResult).toBeUndefined();
 });
 
 // The packet's ending is display prose - the one reason-shaped value a phone

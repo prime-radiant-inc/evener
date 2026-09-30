@@ -366,18 +366,26 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
 
 // A reported packet's message is the terminal communicate's result text
 // (agent/session_tools_communicate.go): the plain message, or the canonical
-// {"message","data","artifacts"} envelope when the delegate reported through a
-// result schema. The envelope's message is the subagent's report; its data is
+// nodeOutput envelope - {"message","data","artifacts"}, plus an optional
+// decision. The envelope's message is the subagent's report; its data is
 // the schema output - the same object the packet's structured_result field
 // carries on a current daemon, and the only copy on a frame recorded before
 // that field existed - in whatever shape the caller's fields took, not only
-// objects. JSON that is not an envelope (no string `message`) is the
-// subagent's own text, whatever it looks like, and stays whole.
+// objects. Only that canonical shape unwraps: the daemon marshals message,
+// data, and artifacts without omitempty, so a wire envelope always carries
+// all three keys, and JSON beyond that shape - whatever keys it has - is the
+// subagent's own text and stays whole.
 function parsePacketEnvelope(text: string): { message: string; data?: unknown } | null {
   const parsed = tryParseJsonRecord(text);
   if (parsed === null || typeof parsed.message !== "string") return null;
-  return { message: parsed.message.trim(), data: "data" in parsed ? parsed.data : undefined };
+  if (!("data" in parsed) || !("artifacts" in parsed)) return null;
+  if (!Object.keys(parsed).every((key) => CANONICAL_ENVELOPE_KEYS.has(key))) return null;
+  return { message: parsed.message.trim(), data: parsed.data };
 }
+
+// The canonical output envelope's keys (session_tools_communicate.go's
+// nodeOutput json tags): decision is omitempty, the rest always marshal.
+const CANONICAL_ENVELOPE_KEYS = new Set(["message", "data", "artifacts", "decision"]);
 
 // The default communicate output envelope's keys
 // (session_tools_communicate.go's defaultEnvelopeKeys).
