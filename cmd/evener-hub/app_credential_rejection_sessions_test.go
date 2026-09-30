@@ -31,6 +31,12 @@ func providerCause(instance string, status int) *appwire.DiagnosticCause {
 	return &appwire.DiagnosticCause{Kind: "provider", Provider: instance, Status: status}
 }
 
+// refusingGateway is a provider client whose credential check the gateway
+// instance refuses with status.
+func refusingGateway(status int) *credentialProbeFakeClient {
+	return &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", status, "refused", nil, nil)}
+}
+
 // newSessionWatch watches for c with a synchronous runner, so each observe
 // has finished its probes when it returns.
 func newSessionWatch(c *hubAuthController) *sessionCredentialWatch {
@@ -47,7 +53,7 @@ func listing(entries ...hubcore.LiveEntry) func() []hubcore.LiveEntry {
 func TestSessionCredentialWatch_ARejectedTurnProbesTheInstance(t *testing.T) {
 	for _, status := range []int{401, 403} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", status, "refused", nil, nil)}
+			client := refusingGateway(status)
 			c, _ := newRejectionController(t, client)
 			newSessionWatch(c).observe(listing(failedOn("s1", providerCause("gateway", status))))
 			if client.callCount() != 1 {
@@ -63,7 +69,7 @@ func TestSessionCredentialWatch_ARejectedTurnProbesTheInstance(t *testing.T) {
 // A session that stays failed is one failure: it is probed when it fails,
 // not again on every roster change while it rests there.
 func TestSessionCredentialWatch_ProbesOncePerFailure(t *testing.T) {
-	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	client := refusingGateway(401)
 	c, _ := newRejectionController(t, client)
 	w := newSessionWatch(c)
 	failed := listing(failedOn("s1", providerCause("gateway", 401)))
@@ -82,7 +88,7 @@ func TestSessionCredentialWatch_ProbesOncePerFailure(t *testing.T) {
 
 // Two sessions failing on one instance at once need one probe of it.
 func TestSessionCredentialWatch_OneProbePerInstance(t *testing.T) {
-	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	client := refusingGateway(401)
 	c, _ := newRejectionController(t, client)
 	newSessionWatch(c).observe(listing(
 		failedOn("s1", providerCause("gateway", 401)),
@@ -97,7 +103,7 @@ func TestSessionCredentialWatch_OneProbePerInstance(t *testing.T) {
 // a sign-in that expired (already needsLogin), a crash or a failure with no
 // provider says nothing about the key.
 func TestSessionCredentialWatch_OtherFailuresProbeNothing(t *testing.T) {
-	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	client := refusingGateway(401)
 	c, _ := newRejectionController(t, client)
 	crashed := failedOn("s6", providerCause("gateway", 401))
 	crashed.Crashed = true
@@ -150,7 +156,7 @@ func TestSessionCredentialWatch_NeverMintsACredentialCommand(t *testing.T) {
 // A watch the hub has not finished wiring (no runner yet) probes nothing and
 // forgets nothing: a failure it sees then is still new once it can probe.
 func TestSessionCredentialWatch_WaitsForItsRunner(t *testing.T) {
-	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	client := refusingGateway(401)
 	c, _ := newRejectionController(t, client)
 	w := &sessionCredentialWatch{auth: c}
 	failed := listing(failedOn("s1", providerCause("gateway", 401)))
@@ -168,7 +174,7 @@ func TestSessionCredentialWatch_WaitsForItsRunner(t *testing.T) {
 // Each (session, instance) failure is its own: a session already failed on
 // one instance that then fails on another (a model switch) probes the other.
 func TestSessionCredentialWatch_ASecondInstanceOnTheSameSessionIsProbed(t *testing.T) {
-	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	client := refusingGateway(401)
 	c, _ := newRejectionController(t, client)
 	w := newSessionWatch(c)
 	w.observe(listing(failedOn("s1", providerCause("gateway", 401))))
@@ -180,7 +186,7 @@ func TestSessionCredentialWatch_ASecondInstanceOnTheSameSessionIsProbed(t *testi
 
 // A session that leaves the roster and comes back failed is a new failure.
 func TestSessionCredentialWatch_ASessionThatReturnsFailedIsProbedAgain(t *testing.T) {
-	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	client := refusingGateway(401)
 	c, _ := newRejectionController(t, client)
 	w := newSessionWatch(c)
 	failed := listing(failedOn("s1", providerCause("gateway", 401)))
@@ -194,7 +200,7 @@ func TestSessionCredentialWatch_ASessionThatReturnsFailedIsProbedAgain(t *testin
 
 // Once the hub is shutting down, a roster change starts no probe.
 func TestSessionCredentialWatch_ProbesNothingAfterShutdown(t *testing.T) {
-	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	client := refusingGateway(401)
 	c, _ := newRejectionController(t, client)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -210,7 +216,7 @@ func TestSessionCredentialWatch_ProbesNothingAfterShutdown(t *testing.T) {
 // the provider refused fires the roster's change hook, the watch attached
 // there probes on the background runner, and the rejection is recorded.
 func TestSessionCredentialWatch_ARosterRefreshProbesInTheBackground(t *testing.T) {
-	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	client := refusingGateway(401)
 	c, _ := newRejectionController(t, client)
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, residentEntryForTest(t, 6201))

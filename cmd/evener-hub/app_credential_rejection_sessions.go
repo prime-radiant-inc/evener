@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -86,8 +85,8 @@ func (w *sessionCredentialWatch) observe(list func() []hubcore.LiveEntry) {
 }
 
 // refusedCredential is the instance a live session's failed turn says refused
-// its credential: a provider failure with an HTTP 401 or 403, the statuses
-// credentialRejectionStatus reads as a rejection. The daemon sends only the
+// its credential: a provider failure whose HTTP status is a rejected
+// credential (rejectedCredentialStatus). The daemon sends only the
 // cause's kind and status, never the provider's text. A sign-in that expired
 // is not one: it already reads as needsLogin.
 func refusedCredential(entry hubcore.LiveEntry) (string, bool) {
@@ -99,10 +98,7 @@ func refusedCredential(entry hubcore.LiveEntry) (string, bool) {
 	if cause.Kind != diagnosticCauseProvider || instance == "" {
 		return "", false
 	}
-	if cause.Status != http.StatusUnauthorized && cause.Status != http.StatusForbidden {
-		return "", false
-	}
-	return instance, true
+	return instance, rejectedCredentialStatus(cause.Status)
 }
 
 // diagnosticCauseProvider is DiagnosticCause.Kind for an HTTP failure from an

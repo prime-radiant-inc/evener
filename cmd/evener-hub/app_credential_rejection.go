@@ -3,6 +3,7 @@ package hub
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"sync"
@@ -42,13 +43,19 @@ func credentialRejectionStatus(err error) (status int, rejected bool) {
 			status, _ = strconv.Atoi(match[1])
 		}
 	}
-	if status == 401 || status == 403 {
+	if rejectedCredentialStatus(status) {
 		return status, true
 	}
 	if kind := llm.Kind(err); kind == llm.KindAuthentication || kind == llm.KindAccessDenied {
 		return 0, true
 	}
 	return 0, false
+}
+
+// rejectedCredentialStatus reports whether an HTTP status is the provider
+// refusing the credential: 401 or 403.
+func rejectedCredentialStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
 // credentialRejectionText finds a 401 or 403 in an error's text, as a whole
