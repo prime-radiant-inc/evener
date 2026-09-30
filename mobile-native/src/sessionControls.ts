@@ -41,7 +41,8 @@ export class SessionControls {
 	};
 	private listeners = new Set<() => void>();
 	private disposed = false;
-	// Counts refreshModels reads, so only the newest one publishes.
+	// Counts catalog reads (a refresh or a load), so a refresh publishes only
+	// when no newer read has started.
 	private refreshes = 0;
 	constructor(
 		private service: Pick<ConversationService, Exclude<Operation, "forceStop" | "resume">> &
@@ -112,6 +113,8 @@ export class SessionControls {
 	 * rather than waiting on it forever. */
 	async loadModels() {
 		if (this.disposed || !this.isCurrent() || this.state.loadingModels || this.state.pending) return;
+		// A load is the newest read: a refresh still out answers older.
+		this.refreshes++;
 		this.publish({ loadingModels: true, modelError: null });
 		try {
 			const catalog = await this.service.models();

@@ -365,6 +365,39 @@ describe("conversation-owned session controls", () => {
 		expect(reads).toBe(3);
 		expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3");
 	});
+	// A load started after a refresh is the newer read: whatever it brings,
+	// including a failure that clears the catalog, the older refresh landing
+	// afterwards changes nothing.
+	it.each([
+		["fails", true],
+		["succeeds", false],
+	])("lets a load that %s after a refresh stand over the refresh", async (_, loadFails) => {
+		let reads = 0;
+		const held = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					const read = reads;
+					if (read === 2) await held.promise;
+					if (read === 3 && loadFails) throw new Error("hub unavailable");
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${read}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const refresh = controls.refreshModels();
+		await controls.loadModels();
+		held.resolve();
+		await refresh;
+		if (loadFails) expect(controls.getSnapshot()).toMatchObject({ catalog: null, modelError: "hub unavailable" });
+		else expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3");
+	});
 	it("refreshes nothing before a catalog is loaded", async () => {
 		let reads = 0;
 		const controls = new SessionControls(
