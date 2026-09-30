@@ -158,6 +158,11 @@ labeled demonstration text and remain active until Stop. This is a scripted WebS
 an Evener daemon or a model run. Its integration tests exercise the real shared
 client, services, stores, and notification handling.
 
+Typed activity pages retain at most 128 continuation snapshots in the playground.
+An evicted continuation reports a stale cursor, so the shared activity store
+refreshes only that collection and retains useful rows while it loads. Malformed
+cursors and requests for a different session, scope or resource remain invalid.
+
 ## Standalone simulator builds
 
 Follow the [locked dependency procedure](../docs/design/mobile/ios-build-distribution.md) to prebuild iOS and install pods.
