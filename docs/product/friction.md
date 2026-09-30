@@ -701,13 +701,21 @@ some other IO failures already have degraded recovery paths.
 refusal. This does not justify discarding the journal or following untrusted
 stash paths.
 
-**Discuss.** Quarantine the smallest affected host-management scope while
-retaining exact evidence and preventing ambiguous destructive operations. Decide
-which independent hub capabilities can remain available during custody repair.
+**Decision.** Keep the hub usable during host-journal recovery. Local work,
+history, navigation and other capabilities independent of the damaged records
+remain available. Preserve the journal and recovery records while the product
+automatically investigates, reconciles actual host state and repairs the
+bookkeeping. Only operations that depend on unresolved state wait; recovery
+resumes their intent according to the reconciled outcome. If the affected hosts
+cannot be identified, the temporary limitation may cover remote deployment or
+restart operations more broadly, while independent hub capabilities remain
+usable. Implementation remains pending.
 
-**Acceptance.** Inject incomplete custody. Local navigation and unrelated work
-remain available under the chosen policy; ambiguous host cleanup stays isolated,
-and original/custody bytes remain intact for subsequent repair.
+**Acceptance.** Start with a truncated journal or incomplete custody. Local
+navigation and unrelated work remain available, and original/recovery bytes are
+preserved. Operations whose prior outcomes are uncertain wait for reconciliation
+without being blindly repeated. Once recovery establishes the relevant state,
+affected work proceeds according to that outcome without a user repair click.
 
 ### H04 Retaining explicit Connect intent
 
