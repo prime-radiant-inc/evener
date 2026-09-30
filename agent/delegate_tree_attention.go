@@ -432,8 +432,7 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 // every wake-cache scan, so the driver, the retry loop, and the escalation
 // collector cannot disagree about the same delegate.
 func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID string) bool {
-	aggregate := c.durable[delegateID]
-	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
+	if !c.idleRestorableLocked(delegateID) {
 		return false
 	}
 	if _, parked := c.attentionParked[delegateID]; parked {
