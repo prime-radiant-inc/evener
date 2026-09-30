@@ -5,7 +5,7 @@ import type {
 	NavigationReadParams,
 	NavigationReadResponse,
 } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NavigationPages, updating } from "./navigationPages";
 
@@ -118,9 +118,9 @@ function response(
 	offset = 0,
 	generation = "hub-generation",
 ): NavigationReadResponse {
-	return wireV2(
+	return wireSnapshot(
 		{
-			representationVersion: 2,
+			representationVersion: 3,
 			resource: "catalog",
 			catalog: "projects",
 			offset,
@@ -616,9 +616,9 @@ it("retries a read that predates a generation change during the request", async 
 it("retains session truncation across pages and clears it on refresh", async () => {
 	const { requests, pages } = boundary("section");
 	const page = (ref: string, offset: number, remaining: number, truncated: boolean) =>
-		wireV2(
+		wireSnapshot(
 			{
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "section",
 				section: "live",
 				offset,
@@ -712,7 +712,7 @@ it("uses exact page bases for conditional refresh and preserves not-modified row
 	const { pages, requests } = boundary();
 	const first = pages.refresh();
 	expect(requests[0].params).toEqual({
-		representationVersion: 2,
+		representationVersion: 3,
 		resource: "catalog",
 		catalog: "projects",
 		offset: 0,
@@ -932,7 +932,7 @@ it("re-reads the pin catalog when a section changes and does not spin on an olde
 			const p = params as NavigationReadParams;
 			requests.push(p);
 			const offset = p.offset ?? 0;
-			return wireV2(
+			return wireSnapshot(
 				p,
 				{
 					pin_sections: [

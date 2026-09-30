@@ -11,7 +11,12 @@
  * surface (agent messages, the doc pane) pins
  * --prose-font-size: var(--font-size-prose) on an ancestor to keep the 18px
  * reading step. Body text composes with the host; headings and GFM tables
- * stay on the fixed document ramp below regardless - the known boundary. */
+ * stay on the fixed document ramp below regardless - the known boundary.
+ *
+ * --markdown-font is the family the --markdown-ink pattern already set:
+ * serif is the conversation's reading voice, and the one caller that renders
+ * a subagent's report as a message (NotificationCard's delegate bubble) takes
+ * the sans face without reaching into this module's descendants. */
 .root {
   color: var(--markdown-ink, var(--ink-hi));
   /* Long unbreakable tokens (paths, URLs) wrap at any point rather than
@@ -19,7 +24,7 @@
    * decision 5) - anywhere, not break-word, so the token also stops counting
    * toward min-content sizing inside fit-content bubbles. */
   overflow-wrap: anywhere;
-  font-family: var(--font-prose);
+  font-family: var(--markdown-font, var(--font-prose));
   font-size: var(--prose-font-size, 1em);
   line-height: var(--line-height-body);
 }

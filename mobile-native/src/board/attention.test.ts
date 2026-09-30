@@ -320,7 +320,8 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 		expect(workingActivity(three)).toBe("Waiting on 3 subagents");
 		const running = row("s", {
 			state: "active",
-			running_jobs: [{ job_id: "j", job_type: "shell", status: "running", command: "go test ./agent/..." }],
+			running_job_count: 1,
+			running_job_command: "go test ./agent/...",
 		});
 		expect(workingActivity(running)).toBe("Running go test ./agent/...");
 		// A settled tally (no running) leaves the command or Working to say it.
@@ -380,7 +381,8 @@ describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
 		expect(whyLine({ row: working, state: "working" }, activity, 0)).toEqual({ text: "Working" });
 		const running = row("s", {
 			state: "active",
-			running_jobs: [{ job_id: "j", job_type: "shell", status: "running", command: "go test ./agent/..." }],
+			running_job_count: 1,
+			running_job_command: "go test ./agent/...",
 		});
 		expect(whyLine({ row: running, state: "working" }, activity, 0)).toEqual({ text: "Running go test ./agent/..." });
 	});

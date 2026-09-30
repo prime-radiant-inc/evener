@@ -5,7 +5,7 @@ import type {
 	NavigationReadParams,
 	NavigationReadResponse,
 } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { createProjectBrowserController, type ProjectSessionTier } from "./projectBrowser";
 
@@ -34,10 +34,10 @@ function boundary() {
 }
 type Pending = ReturnType<typeof boundary>["requests"][number];
 function response(params: NavigationReadParams, data: unknown, revision = 1) {
-	return wireV2(
+	return wireSnapshot(
 		{
 			...params,
-			representationVersion: 2,
+			representationVersion: 3,
 			offset: params.offset ?? 0,
 			limit: params.limit ?? 50,
 		},

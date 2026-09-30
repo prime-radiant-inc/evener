@@ -32,6 +32,18 @@ test("the default descriptor's summary says the tool in words", () => {
   expect(d.summary(item({ toolName: "github__create_issue" }))).toBe("Used github: create issue");
 });
 
+// A tool the package has words for, with no descriptor of its own, reads in
+// those words, as it does on the phone.
+test("the default descriptor's summary says a housekeeping tool in its own words", () => {
+  const d = toolRendererFor("notes_agent_set");
+  expect(
+    d.summary(item({ toolName: "notes_agent_set", argumentsJSON: JSON.stringify({ note: "Drain first." }) })),
+  ).toBe("Updated its note");
+  expect(d.summary(item({ toolName: "communicate", argumentsJSON: JSON.stringify({ end_turn: true }) }))).toBe(
+    "Reported to its parent · done",
+  );
+});
+
 test("the default descriptor's summary falls back to a literal label when toolName is (unusually) absent", () => {
   const d = toolRendererFor("tt-unregistered-tool-3");
   expect(d.summary(item({ toolName: undefined }))).toBe("Used a tool");

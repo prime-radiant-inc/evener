@@ -98,6 +98,18 @@ func (read *sessionActivityRead) withBoundedContext() (*sessionActivityRead, err
 	return read, nil
 }
 
+// Filesystem access can recover without replacing activity authority. Corrupt
+// or unrepresentable stored data remains unavailable until the source changes.
+func sessionActivitySourceReadError(message string, cause error) appwire.WireError {
+	if _, pathError := errors.AsType[*os.PathError](cause); pathError && !errors.Is(cause, os.ErrNotExist) {
+		return sessionActivitySourceUnavailable(message)
+	}
+	return appwire.Unavailable(message)
+}
+func sessionActivitySourceUnavailable(message string) appwire.WireError {
+	return appwire.WireError{Code: appwire.CodeUnavailable, Message: message, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorActionUnavailable, RetryDisposition: appwire.RetryDispositionAutomatic}}
+}
+
 func retainedActivityRead(ctx context.Context, stateDir, sessionID string, params appwire.SessionActivityReadParams) (*sessionActivityRead, error) {
 	id, scope, _, err := normalizeSessionActivity(params.Ref, params.Scope, 0)
 	if err != nil {
@@ -114,7 +126,7 @@ func retainedActivityRead(ctx context.Context, stateDir, sessionID string, param
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, appwire.ResourceNotFound("session activity source missing")
 		}
-		return nil, appwire.Unavailable("session activity metadata unavailable")
+		return nil, sessionActivitySourceReadError("session activity metadata unavailable", err)
 	}
 	rootID := activityRootIDFromMeta(id, meta)
 	if schema.ValidateSessionID(rootID) != nil {
@@ -251,7 +263,7 @@ func (read *sessionActivityRead) advanceDelegates(ctx context.Context) (bool, er
 			if ctx.Err() != nil {
 				return false, ctx.Err()
 			}
-			return false, appwire.Unavailable("retained delegate journal invalid")
+			return false, sessionActivitySourceReadError("retained delegate journal unavailable", scanErr)
 		}
 		used := cursor.Journal.Offset - before
 		if cursor.Journal.Info != nil && !os.SameFile(index.delegateSource.Info, cursor.Journal.Info) {
@@ -265,15 +277,11 @@ func (read *sessionActivityRead) advanceDelegates(ctx context.Context) (bool, er
 		read.bytes -= cursor.Journal.ReadBytes + 128
 		read.budget -= max(len(events), cursor.Journal.ReadLines)
 		index.progress += uint64(used) + uint64(len(events))
-		index.delegateCursor = cursor
-		index.delegateComplete = false
-		index.delegatePending = events
-		index.delegatePendingEnds = cursor.EventEnds
-		index.delegatePendingPosition = 0
-		index.delegatePendingComplete = complete
-		index.rawBytes += uint64(captureSessionActivityTail(path, &index.delegateSource, cursor.Journal.Offset))
+		if err := read.acceptDelegatePage(cursor, events, complete); err != nil {
+			return false, err
+		}
 		if !complete && used == 0 && len(events) == 0 {
-			return false, appwire.Unavailable("retained delegate journal incomplete")
+			return false, sessionActivitySourceUnavailable("retained delegate journal append incomplete")
 		}
 		reserved = true
 	}
@@ -309,6 +317,21 @@ func (read *sessionActivityRead) advanceDelegates(ctx context.Context) (bool, er
 	index.delegatePendingPosition = 0
 	return index.delegateComplete, nil
 }
+func (read *sessionActivityRead) acceptDelegatePage(cursor delegatestore.PageCursor, events []delegatestore.Event, complete bool) error {
+	index := read.index
+	// Capture the candidate fingerprint before accepting its cursor and buffered events.
+	if err := read.captureTail(read.delegatePath(), &index.delegateSource, cursor.Journal.Offset); err != nil {
+		return err
+	}
+	index.delegateCursor = cursor
+	index.delegateComplete = false
+	index.delegatePending = events
+	index.delegatePendingEnds = cursor.EventEnds
+	index.delegatePendingPosition = 0
+	index.delegatePendingComplete = complete
+	return nil
+}
+
 func (read *sessionActivityRead) state() delegatestore.State {
 	if read.index.controller != nil {
 		return read.index.controller.durable

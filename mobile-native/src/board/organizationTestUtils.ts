@@ -3,7 +3,7 @@
 // and pin section, and the pin catalog. Anything else is a write, recorded
 // and answered by `answer`. Tests only.
 import type { NavigationReadParams } from "@evener/appwire-client";
-import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 
 /** A session id localSessionId accepts (22 base62 characters). */
@@ -24,7 +24,7 @@ export function organizationHub({ tier = "archived", pinSectionId = "release" } 
 			}
 			reads.push(params);
 			if (params.resource === "location") {
-				const response = wireV2(
+				const response = wireSnapshot(
 					params,
 					{
 						session: {
@@ -46,14 +46,14 @@ export function organizationHub({ tier = "archived", pinSectionId = "release" } 
 				return response;
 			}
 			if (params.resource === "pin_catalog")
-				return wireV2(
+				return wireSnapshot(
 					params,
 					{ pin_sections: [{ id: "release", name: "Release", count: 1 }], remaining: 0 },
 					'"pins"',
 					3,
 					"g",
 				);
-			return wireV2(params, manifest(), '"manifest"', 3, "g");
+			return wireSnapshot(params, manifest(), '"manifest"', 3, "g");
 		},
 	} as unknown as ConversationClientLike;
 	return {

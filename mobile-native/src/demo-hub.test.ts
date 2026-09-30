@@ -429,7 +429,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			expect(handshake.features.transcriptDisplaySettings).toBe(false);
 			await expect(
 				client.request("evener/navigation/read", {
-					representationVersion: 2,
+					representationVersion: 3,
 					resource: "manifest",
 				}),
 			).rejects.toThrow();
@@ -450,11 +450,11 @@ describe("native demonstration hub's redesign fleet", () => {
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			const handshake = await client.connect();
-			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [2] });
+			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [3] });
 			expect(handshake.features.auth).toBe(true);
 			expect(handshake.features.transcriptDisplaySettings).toBe(true);
 			const manifest = await client.request("evener/navigation/read", {
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "manifest",
 			});
 			expect(manifest.status).toBe("ok");
@@ -558,7 +558,7 @@ describe("native demonstration hub's redesign fleet", () => {
 		try {
 			await client.connect();
 			const manifest = await client.request("evener/navigation/read", {
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "manifest",
 			});
 			const snapshot = manifest.data as {
@@ -594,7 +594,7 @@ describe("native demonstration hub's redesign fleet", () => {
 				]),
 			);
 			const needsYou = await client.request("evener/navigation/read", {
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "section",
 				section: "needs_you",
 			});
@@ -938,7 +938,7 @@ describe("native demonstration hub's fleet sessions", () => {
 				// The hub has built its fleet; the rest runs on the real clock.
 				now.mockRestore();
 				const live = await client.request("evener/navigation/read", {
-					representationVersion: 2,
+					representationVersion: 3,
 					resource: "section",
 					section: "live",
 				});
@@ -1092,7 +1092,7 @@ describe("native demonstration hub's fleet sessions", () => {
 			const ref = fleetSessionRef("s-pr2138");
 			const rowState = async (resource: { resource: string; section?: string; sectionId?: string }) => {
 				const read = await client.request("evener/navigation/read", {
-					representationVersion: 2,
+					representationVersion: 3,
 					...resource,
 				} as NavigationReadParams);
 				const entities = (read.data as { entities: { value: { session_id?: string; state?: string } }[] }).entities;

@@ -58,8 +58,11 @@ type delegateTreeController struct {
 	// ""-keyed edge. Guarded by mu.
 	delegateChildren map[string]map[string]struct{}
 	activityKeys     []sessionActivityKey
-	live             map[string]*delegateLiveState
-	rootRuntime      *Session
+	// Accepted journal sequences fence activity membership independently of the creation clock.
+	activityAdmissions map[string]uint64
+	activityAdmission  uint64
+	live               map[string]*delegateLiveState
+	rootRuntime        *Session
 
 	rootSessionID       string
 	stateDir            string
@@ -320,6 +323,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		durable:             durable,
 		delegateChildren:    deriveDelegateChildrenIndex(durable),
 		activityKeys:        deriveSessionActivityDelegateKeys(durable),
+		activityAdmissions:  make(map[string]uint64),
 		live:                make(map[string]*delegateLiveState),
 		rootRuntime:         cfg.rootRuntime,
 		rootSessionID:       cfg.rootSessionID,
@@ -350,6 +354,11 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		runStarts:           delegateRunStartIndex(events),
 		owedAdmission:       true,
 	}
+	for _, event := range events {
+		if event.Created != nil {
+			c.noteActivityAdmissionLocked(event)
+		}
+	}
 	if err := c.restorePendingStop(events); err != nil {
 		return nil, err
 	}
@@ -376,6 +385,7 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 			c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
 		}
 		if event.Created != nil {
+			c.noteActivityAdmissionLocked(event)
 			// A new delegate inserts into its owner's sorted delegate list
 			// and moves every activity entry after it — the mutation a
 			// resumed ResumeIndex must never be applied across. For a live
@@ -392,6 +402,11 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 		}
 	}
 	return appended, nil
+}
+
+func (c *delegateTreeController) noteActivityAdmissionLocked(event delegatestore.Event) {
+	c.activityAdmissions[event.DelegateID] = event.Seq
+	c.activityAdmission = max(c.activityAdmission, event.Seq)
 }
 
 func (c *delegateTreeController) authorizeMutationLocked(actor delegateActor, targetID string) error {

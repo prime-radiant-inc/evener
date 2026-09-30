@@ -18,7 +18,7 @@ import type {
 	Thread,
 } from "@evener/appwire-client";
 import { STUCK_AFTER_MS, WireError } from "@evener/appwire-client";
-import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -468,8 +468,8 @@ function hub(
 					return;
 				}
 				const respond = () => {
-					const response = wireV2(
-						{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
+					const response = wireSnapshot(
+						{ ...read, representationVersion: 3, offset: read.offset ?? 0, limit: read.limit ?? 50 },
 						answer(read),
 						`etag-${read.resource}-${read.offset ?? 0}`,
 						1,

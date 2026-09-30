@@ -75,7 +75,7 @@ export class NavigationPages<T> {
 	) {
 		this.resourceKey = navigationParamsToResourceKey({
 			...params,
-			representationVersion: 2,
+			representationVersion: 3,
 		});
 	}
 	/** Follow hub invalidations. Newer data is re-read here without user
@@ -190,7 +190,7 @@ export class NavigationPages<T> {
 			const offset = reset ? 0 : this.offset,
 				params = {
 					...this.params,
-					representationVersion: 2,
+					representationVersion: 3,
 					offset,
 					limit: this.limit,
 				},
