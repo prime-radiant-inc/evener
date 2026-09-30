@@ -181,18 +181,26 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 		}
 		c.evidenceVersion++
 	}
-	// Rebuild the whole per-delegate attention state from the transcripts: a
-	// delegate that no longer owes attention leaves the drive's line entirely,
-	// taking its turn, park and failure count with it.
-	c.attention = make(map[string]*delegateAttentionState, len(pending))
-	for _, id := range ids {
+	// Rebuild the owed wake IDs from the transcripts. A delegate that still owes
+	// attention keeps its other per-delegate state — drive turn, park and
+	// failure count — so a reconcile does not reset the drive's scheduling; one
+	// that no longer owes any leaves the drive's line entirely.
+	rebuilt := make(map[string]*delegateAttentionState, len(pending))
+	for id, attentionIDs := range pending {
 		if !delegateAttentionProjectionEligible(c.durable, id) {
 			continue
 		}
-		for _, attentionID := range pending[id] {
-			c.noteDelegateAttentionLocked(id, attentionID)
+		state := c.attention[id]
+		if state == nil {
+			state = &delegateAttentionState{}
 		}
+		state.wakeIDs = make(map[string]struct{}, len(attentionIDs))
+		for _, attentionID := range attentionIDs {
+			state.wakeIDs[attentionID] = struct{}{}
+		}
+		rebuilt[id] = state
 	}
+	c.attention = rebuilt
 	return nil
 }
 
