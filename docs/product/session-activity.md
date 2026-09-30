@@ -81,12 +81,14 @@ stale-cursor result. Clients restart the affected collection and retain useful
 displayed rows until the replacement is ready. Never combine pages from different
 epochs or refresh attempts.
 
-Pages default to 50 rows and accept a maximum of 200. Collection responses are
-bounded to 256 KiB. If an intact ancestry context or a single projected row cannot
+Pages default to 50 rows and accept a maximum of 200. Activity responses are
+bounded to 256 KiB, including summaries after remote reference qualification.
+If an intact ancestry context or a single projected row cannot
 fit, the read returns a typed unavailable error instead of truncating identity or
 returning a continuation that cannot advance. Remote ref qualification can
 increase the encoded size; an oversized page is reread from the same input
-cursor with a smaller limit and uses that read's own continuation.
+cursor with a smaller limit and uses that read's own continuation. Summaries
+retain their complete context and return unavailable if it cannot fit.
 
 Cold reads share a budget of 2,000 event or projection work
 units and 4 MiB of newly read journal bytes across their sources. A stored batch
