@@ -42,7 +42,6 @@ and should not be presented as reproduced production incidents.
 | [C08](#c08-remote-provider-setup-at-launch) | Medium | Remote setup sends the user away from an otherwise usable setup path | S02, S07, S15 |
 | [C09](#c09-following-shell-job-output) | Medium | Job output stays static until Refresh; older output needs clicks | S02, S10, S12 |
 | [C10](#c10-quiet-task-panels) | Medium | A quiet Tasks panel remains failed until Try again | S02, S03, S05, S12 |
-| [C11](#c11-successful-recovery-looks-like-failure) | Medium | Successful MCP recovery receives warning/error presentation | S02, S03, S05, S19 |
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
@@ -57,7 +56,6 @@ and should not be presented as reproduced production incidents.
 | [H03](#h03-host-journal-failure-scope) | High | Incomplete host-journal quarantine prevents unrelated local work | S06, S07 |
 | [H04](#h04-retaining-explicit-connect-intent) | High | A transient first Connect failure has no continuing retry owner | S02, S03, S07 |
 | [H05](#h05-connection-versus-build-synchronization) | High | Build synchronization can block an otherwise compatible remote host | S07, S20 |
-| [H06](#h06-provider-file-repair-discovery) | Medium | An invalid provider edit hides retained working configuration from new launches | S06, S15 |
 | [H07](#h07-proven-no-op-teardown-remnants) | Medium | Already-harmless teardown remnants still require manual recovery | S07 |
 | [H08](#h08-oauth-refresh-across-processes) | Medium | Shared rotating credentials can race and provoke another sign-in | S08, S15 |
 | [H09](#h09-issued-credentials-awaiting-persistence) | Medium | A local save failure discards successfully issued credentials | S06, S15 |
@@ -180,8 +178,9 @@ its geometry-driven path stops on an error and offers Retry. Its separate
 near-top scroll path swallows a failed read and relies on another scroll event.
 
 **Evidence.** Native
-[loadOlderPage](../../mobile-native/src/screens.tsx#L1342) retains the failed
-guard; [Find](../../mobile-native/src/screens.tsx#L1403) checks it. Browser
+[`loadOlderPage`](../../mobile-native/src/screens.tsx) retains the failed
+cursor in `readerPageAttempts`; `stepFind` in the same file checks that guard.
+Browser
 [LoadOlderRow](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/LoadOlderRow.tsx#L58)
 blocks automatic loading on error, while
 [useTranscriptScroll](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts#L1487)
@@ -404,37 +403,6 @@ and keeps previously expanded rows and reading position. An initial read failure
 does not present an empty task list, repeated attempts do not produce repeated
 alerts, and successful recovery retires the retry timer. A healthy panel adds no
 polling, and closing the panel ends its recovery reads.
-
-### C11 Successful recovery looks like failure
-
-**Current behavior.** Successful MCP reconnect emits an EventWarning saying no
-action is needed. Its missing informational code makes it a critical warning in
-shared projection and gives it attention or failure styling on web and native.
-The recovery event is emitted before the retried tool call returns, so connection
-recovery does not establish that the tool operation succeeded.
-
-**Evidence.** [reconnectRecoveryWarning](../../agent/session_init.go#L2600),
-[warning classification](../../appwire-client/typescript/warnings.ts#L27), web
-[WarningItem](../../cmd/evener-hub/frontend/src/panes/session/transcript/messages/WarningItem.tsx#L67),
-and native [warning projection](../../mobile-native/src/projectedRows.ts#L447).
-The [MCP tool callback](../../agent/internal/mcp/manager.go#L405) emits recovery
-before making the retry and separately returns its actual result.
-This is a source-traced presentation path; visual/device qualification remains.
-
-**Decision.** Give successful repair structured informational meaning and a quiet
-diagnostic record, available in full/detail views without attention styling in
-the normal conversation. State only what recovered: a restored connection does
-not prove that the retried operation succeeded. Keep an actual failed tool call,
-ongoing interruption or required sign-in accurately represented in its own
-result or status. Implementation remains pending.
-
-**Acceptance.** After a dropped MCP connection recovers, both clients show normal
-operation with inspectable recovery history and no failure styling for success.
-Verify both direct warning items and their system-notice representation: normal
-views do not draw attention to the success, and full/detail views render it
-quietly.
-Make the retried operation fail after reconnect: its real failure remains visible
-and the connection-recovery record does not claim the operation succeeded.
 
 ### C12 Remote credential transfer outcomes
 
@@ -914,47 +882,6 @@ runs. A genuinely incompatible host is accurately identified, and a requested
 exact-build synchronization is not reported complete merely because connection
 to another build succeeds.
 
-### H06 Provider-file repair discovery
-
-**Current behavior.** The hub's notice watcher detects external providers.toml
-edits and retries failed loads. A valid repair clears the error and invalidates
-client settings and model listings automatically. Invalid edits retain the
-previous usable hub registry and preserve the edited bytes. Child launches and
-launch-model discovery still disable the user layer whenever the source file
-cannot load, so they cannot use the explicit providers retained by the hub.
-In-app writes acknowledge their persisted bytes, so the watcher does not repeat
-the reload and client invalidation for the same write.
-
-**Evidence.** [refreshProviderFile](../../cmd/evener-hub/app_provider_reload.go#L14)
-owns file observation and retries;
-[watchRead](../../cmd/evener-hub/app_notices.go#L258) invalidates clients when the
-registry or diagnostic changes.
-[ProviderRegistry.Reload](../../cmd/evener-hub/internal/hubcore/registry.go#L121)
-retains the previous registry on failure. The remaining launch gap is in
-[childNoUserLayer](../../cmd/evener-hub/spawn.go#L89), which excludes the user
-layer when [WritesRefused](../../cmd/evener-hub/internal/hubcore/registry.go#L695)
-reports a load error. [Instance writes](../../cmd/evener-hub/app_instances.go#L65)
-update the watcher's signature from the exact persisted representation under
-the same lock used by observation.
-
-**Decision.** Detect provider-configuration changes and automatically adopt a
-valid repair. Clear the stale load error and update open settings and launch
-forms without requiring a restart, manual reload or unrelated save. While an
-edit is invalid, keep usable previous configuration active where available,
-preserve the edited file and show the specific problem. Make clear when running
-configuration differs from an invalid edit, then converge as soon as the
-replacement validates. Failed loads retain a recovery owner rather than
-remaining cached indefinitely. Retained configuration must also remain usable
-by child launches and model discovery. Avoid redundant invalidations after
-in-app writes. The remaining child-configuration gap keeps the case open.
-
-**Acceptance.** Start with malformed provider configuration, repair it on disk,
-and keep the same settings/launch surface open. The repaired instances appear
-and the stale error clears without another user action. Also make an invalid
-intermediate edit to a previously usable configuration: working providers remain
-available, the edited bytes are preserved, and a valid replacement is adopted
-automatically with the updated settings accurately reflected.
-
 ### H07 Proven no-op teardown remnants
 
 **Current behavior.** A teardown record can fence Connect before its already
@@ -1423,7 +1350,8 @@ unnecessary repeated permission or duplicate implementation rituals.
 These are useful patterns and preservation checks, rather than new fix requests.
 
 - Browser chat history already demand-pages, and
-  [stale cursors trigger a fresh read](../../cmd/evener-hub/frontend/src/stores/threads.ts#L4014).
+  [`loadOlderTurns`](../../cmd/evener-hub/frontend/src/stores/threads.ts) refreshes
+  tracked history when `isStaleCursorError` identifies a stale cursor.
   Native first connection and initial transcript reads already have retry owners.
   A fallback button by itself does not establish a manual-only experience.
 - Browser [IndexedDB recovery](../../cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts#L717)
@@ -1448,6 +1376,20 @@ These are useful patterns and preservation checks, rather than new fix requests.
   isolates broken instances; [plugin storage](../../internal/plugins) recovers
   interrupted marketplace rename state and isolates auto-upgrade failures.
   Fresh skill invocations can [recover collected source revisions](../../agent/session_skill_source.go).
+- MCP connection recovery carries the structured `mcp_reconnected` code.
+  [Shared warning classification](../../appwire-client/typescript/warnings.ts)
+  keeps direct warnings and overlay notices quiet at Full and hides them at
+  normal detail. The [connection notice](../../agent/session_init.go) describes
+  only restored connectivity; failed retries, interruptions and required
+  sign-in remain independently visible. The [MCP architecture](../architecture.md)
+  describes the producer and presentation contract.
+- The hub's [provider-file observer](../../cmd/evener-hub/app_provider_reload.go)
+  adopts valid repairs and retains the last usable configuration during invalid
+  edits. When a user file was successfully loaded, an observed invalid edit
+  makes new launches, model lists and credential checks use a private retained
+  copy while preserving the edited source and project/credential precedence. The owning child or probe keeps the
+  copy until it exits. [Provider configuration](../llm-providers.md#providerstoml)
+  describes the observation interval, startup fallback and filesystem limits.
 - Established remote connections and TUI connections own reconnect loops.
   Host-scoped provider operations do not substitute local credentials for a
   failed remote read. Installed-artifact digest checks and update rollback protect
