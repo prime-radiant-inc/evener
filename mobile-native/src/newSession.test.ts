@@ -354,6 +354,25 @@ it("reads the list again after a start when an announcement arrived during it", 
 	expect(reads()).toHaveLength(2);
 });
 
+// A refreshed list that lands while a start is out is the other way an
+// announcement meets a start: it is read again once the start settles.
+it("reads the list again after a start when a refreshed list landed during it", async () => {
+	const { store, calls } = setup();
+	const initial = store.getState().setCwd("/project");
+	calls[0]?.response.resolve({ data: [model] });
+	await initial;
+	store.getState().setPrompt("go");
+	const refresh = store.getState().refreshModels();
+	const start = store.getState().submit();
+	const reads = () => calls.filter((call) => call.method === "model/list");
+	reads()[1]?.response.resolve({ data: [] });
+	await refresh;
+	expect(reads()).toHaveLength(2);
+	calls.find((call) => call.method === "thread/start")?.response.reject(new Error("hub unavailable"));
+	await start;
+	expect(reads()).toHaveLength(3);
+});
+
 it("refreshes nothing before the form's list is loaded", async () => {
 	const { store, calls } = setup();
 	void store.getState().setCwd("/project");
