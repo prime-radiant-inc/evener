@@ -98,11 +98,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					icon="key"
 					label="Providers"
 					value={providerCount === null ? undefined : String(providerCount)}
-					accessibilityLabel={
-						providerCount !== null
-							? `Providers, ${providerCount}`
-							: "Providers"
-					}
+					accessibilityLabel={providerCount !== null ? `Providers, ${providerCount}` : "Providers"}
 					chevron
 					onPress={() => navigation.navigate("Providers", { hubId })}
 				/>
@@ -202,4 +198,3 @@ function fleetSummary(rows: readonly HostRow[] | null, hubVersion: string | unde
 				: null;
 	return { count: rows.length + 1, tag };
 }
-
