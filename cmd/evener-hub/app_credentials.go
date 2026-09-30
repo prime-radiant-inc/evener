@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 
@@ -207,9 +206,11 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 		}
 	}
 
+	probe := c.beginCredentialProbe(name)
 	probeCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), credentialTestTimeout)
 	defer cancel()
 	listing, err := client.Models(probeCtx, name)
+	c.settleCredentialProbe(probe, listing, err)
 	if err != nil {
 		status, message := classifyCredentialTestError(err)
 		return credentialTestResponse(name, status, message), nil
@@ -224,20 +225,7 @@ func classifyCredentialTestError(err error) (string, string) {
 	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
 		return appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage
 	}
-
-	statusCode := 0
-	if llmErr, ok := errors.AsType[llm.Error](err); ok {
-		statusCode = llmErr.StatusCode()
-	}
-	if statusCode == 0 {
-		for _, code := range []int{401, 403} {
-			if strings.Contains(err.Error(), "HTTP "+strconv.Itoa(code)) || strings.Contains(err.Error(), "status="+strconv.Itoa(code)) {
-				statusCode = code
-				break
-			}
-		}
-	}
-	if statusCode == 401 || statusCode == 403 || llm.Kind(err) == llm.KindAuthentication || llm.Kind(err) == llm.KindAccessDenied {
+	if _, rejected := credentialRejectionStatus(err); rejected {
 		return appwire.AuthTestStatusAuthRejected, credentialTestAuthMessage
 	}
 	return appwire.AuthTestStatusEndpointFailure, credentialTestEndpointMessage

@@ -2005,6 +2005,17 @@ func registerThreadHandlers(
 // registerAuthHandlers registers the evener/auth/* RPC handlers, routed to the
 // auth controller. Successful mutations broadcast evener/auth/updated.
 func registerAuthHandlers(server *appserver.Server, authController *hubAuthController) {
+	// A credential rejection appearing or clearing changes the instance's
+	// status (its Error) with no write behind it, so it is announced the way a
+	// write is: clients re-read statuses on evener/auth/updated.
+	authController.credentialRejectionChanged = func(name string) {
+		status, err := authController.Status(appwire.AuthStatusParams{Provider: name})
+		if err != nil {
+			notifyInstanceUpdated(server, "")
+			return
+		}
+		notifyAuthUpdated(server, status.Provider, status.ActiveSource, "")
+	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 		return authController.Status(params)
 	})
