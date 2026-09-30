@@ -1133,13 +1133,28 @@ can require repeated decisions.
 This is a scoped mechanism, not a claim that every Evener permission flow has
 these restrictions.
 
-**Discuss.** Choose meaningful grant scope and lifetime, revocation, and a usable
-delegate/batch path. Preserve what the user actually approved; neither automatic
-universal approval nor repeated identical prompts follows from their intent.
+**Decision — scope and lifetime.** When approval is needed, default to a
+revocable grant for a named file or directory and an explicit access level,
+lasting for that chat. A read grant supports the required investigation; a
+read-and-edit grant supports the ordinary edit-and-verify sequence. Retain the
+grant across ordinary reconnects and resumes of the same chat. The approval UI
+states the resource, access level and duration before approval. Keep a single-use
+option, and preserve the original meaning of existing single-use decisions.
+Later turns reusing the named access until revocation is an accepted tradeoff.
+Implementation remains pending.
 
-**Acceptance.** A deliberate grant permits the intended read/edit/read sequence
-and supported batch work under an understandable lifetime. Revocation and
-out-of-scope requests retain their stated behavior.
+**Discuss — tool coverage and delegation.** Define usable batch and browse paths,
+how other tools honor the same grant, and how a delegate routes an unmet access
+need through its owning chat. Resolve unattended delivery without assuming that
+an absent subscriber means the user rejected the request. Preserve the scope the
+user actually approved and the delegate's assigned role.
+
+**Acceptance.** A grant with clearly presented scope permits the intended
+read/edit/read sequence without repeated prompts, including after reconnect or
+resume of the same chat. Revocation ends subsequent use. Access outside the
+named resource or beyond the approved operation is not implicitly granted. A
+single-use approval still applies only to its original invocation. Batch and
+delegate acceptance criteria depend on the remaining product decisions.
 
 ### U01 TUI uncertain submission
 
