@@ -104,3 +104,30 @@ func TestFillFailsLoudlyOnMethodBearingInterface(t *testing.T) {
 		t.Fatal("filler panicked or skipped a method-bearing interface instead of failing loudly")
 	}
 }
+
+// TestFillFailsLoudlyOnNonComparableMapKey pins that an interface-keyed map
+// (whose generic filler value is a non-comparable map) reports through Fatalf
+// instead of panicking inside reflect.Value.SetMapIndex.
+func TestFillFailsLoudlyOnNonComparableMapKey(t *testing.T) {
+	r := &fakeReporter{}
+	var m map[any]int
+	reflectfill.Fill(r, reflect.ValueOf(&m).Elem(), "anyKeyedMap")
+	if !r.failed {
+		t.Fatal("filler did not report a non-comparable map key")
+	}
+}
+
+type recursiveNode struct {
+	Next *recursiveNode
+}
+
+// TestFillFailsLoudlyOnRecursiveType pins that a self-referential type reports
+// through Fatalf at the depth bound instead of overflowing the stack.
+func TestFillFailsLoudlyOnRecursiveType(t *testing.T) {
+	r := &fakeReporter{}
+	var n recursiveNode
+	reflectfill.Fill(r, reflect.ValueOf(&n).Elem(), "recursiveNode")
+	if !r.failed {
+		t.Fatal("filler did not report a recursive type")
+	}
+}

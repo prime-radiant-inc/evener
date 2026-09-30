@@ -3,9 +3,11 @@
 // field — current and future — without a hand-written fixture to update each
 // time a field is added.
 //
-// It fails loudly through its Reporter on an unhandled reflect kind rather than
-// silently leaving a field at its zero value: a filler that skips a kind is a
-// coverage test that silently stops covering it.
+// It fails loudly through its Reporter on a shape it cannot populate — an
+// unhandled reflect kind, a method-bearing interface, a recursive type, or a
+// non-comparable map key — rather than silently leaving a field at its zero
+// value or crashing: a filler that skips a kind is a coverage test that
+// silently stops covering it.
 //
 // # Reporter, not *testing.T
 //
@@ -33,6 +35,11 @@ type Reporter interface {
 	Helper()
 }
 
+// maxDepth bounds recursion so a self-referential type (type Node struct {
+// Next *Node }) reports through Fatalf instead of overflowing the stack. It is
+// far deeper than any test fixture nests.
+const maxDepth = 64
+
 var (
 	timeType       = reflect.TypeFor[time.Time]()
 	errorType      = reflect.TypeFor[error]()
@@ -44,9 +51,18 @@ var (
 // nested structs. path names the root for readable failure output, e.g. "Entry".
 //
 // time.Time is filled directly, because its own fields are unexported and
-// reflection cannot reach them. An unhandled kind reports through r.Fatalf.
+// reflection cannot reach them. A shape the filler cannot populate reports
+// through r.Fatalf.
 func Fill(r Reporter, v reflect.Value, path string) {
 	r.Helper()
+	fill(r, v, path, 0)
+}
+
+func fill(r Reporter, v reflect.Value, path string, depth int) {
+	if depth > maxDepth {
+		r.Fatalf("%s: nested deeper than %d — likely a recursive type; teach the filler a cycle guard for this shape", path, maxDepth)
+		return
+	}
 	if v.Type() == timeType {
 		v.Set(reflect.ValueOf(time.UnixMilli(1_700_000_000_000)))
 		return
@@ -64,7 +80,7 @@ func Fill(r Reporter, v reflect.Value, path string) {
 		v.SetFloat(1)
 	case reflect.Pointer:
 		pointer := reflect.New(v.Type().Elem())
-		Fill(r, pointer.Elem(), path)
+		fill(r, pointer.Elem(), path, depth+1)
 		v.Set(pointer)
 	case reflect.Interface:
 		if v.Type() == errorType {
@@ -93,15 +109,21 @@ func Fill(r Reporter, v reflect.Value, path string) {
 			return
 		}
 		element := reflect.New(v.Type().Elem())
-		Fill(r, element.Elem(), path+"[0]")
+		fill(r, element.Elem(), path+"[0]", depth+1)
 		v.Set(reflect.Append(reflect.MakeSlice(v.Type(), 0, 1), element.Elem()))
 	case reflect.Map:
-		key := reflect.New(v.Type().Key())
-		Fill(r, key.Elem(), path+".key")
-		value := reflect.New(v.Type().Elem())
-		Fill(r, value.Elem(), path+".value")
+		key := reflect.New(v.Type().Key()).Elem()
+		fill(r, key, path+".key", depth+1)
+		// A map key must be comparable; the filler's map/interface values are
+		// not. Report the key shape rather than letting SetMapIndex panic.
+		if !key.Comparable() {
+			r.Fatalf("%s: map key type %v is not comparable — teach the filler a comparable key", path, v.Type().Key())
+			return
+		}
+		value := reflect.New(v.Type().Elem()).Elem()
+		fill(r, value, path+".value", depth+1)
 		entries := reflect.MakeMap(v.Type())
-		entries.SetMapIndex(key.Elem(), value.Elem())
+		entries.SetMapIndex(key, value)
 		v.Set(entries)
 	case reflect.Struct:
 		for i := range v.NumField() {
@@ -110,7 +132,7 @@ func Fill(r Reporter, v reflect.Value, path string) {
 			if !v.Type().Field(i).IsExported() {
 				continue
 			}
-			Fill(r, v.Field(i), path+"."+v.Type().Field(i).Name)
+			fill(r, v.Field(i), path+"."+v.Type().Field(i).Name, depth+1)
 		}
 	default:
 		r.Fatalf("%s: unhandled kind %v (type %v) — teach the filler this shape", path, v.Kind(), v.Type())
