@@ -138,8 +138,11 @@ func TestSessionActivityTranslatedPageSingleRowOversize(t *testing.T) {
 	})
 	_, err := source.ThreadJobsList(t.Context(), appwire.SessionActivityListParams{Ref: source.ID() + ":root", Limit: 1})
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
 		t.Fatalf("oversized compact response = %v", err)
+	}
+	if data, ok := wire.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorActionUnavailable || data.RetryDisposition != "" {
+		t.Fatalf("unrepresentable response must be permanently unavailable: %+v", wire)
 	}
 	if len(wireCalls(calls())) != 1 {
 		t.Fatal("limit-one overflow was reread")
@@ -156,5 +159,58 @@ func TestSessionActivityTranslatedPageFitsWithoutReread(t *testing.T) {
 	}
 	if len(wireCalls(calls())) != 1 {
 		t.Fatal("fitting response dispatched more than once")
+	}
+}
+
+func TestSessionActivityTranslatedSummaryEnvelope(t *testing.T) {
+	for _, oversized := range []bool{false, true} {
+		t.Run(fmt.Sprintf("oversized=%t", oversized), func(t *testing.T) {
+			context := appwire.SessionActivityContext{Ref: "local:selected", SessionID: "selected", RootRef: "local:root", ParentRef: "local:parent", AncestryKnown: true, Epoch: "epoch", Availability: "live"}
+			if oversized {
+				for i := range 150 {
+					id := fmt.Sprintf("ancestor-%d", i)
+					context.Ancestors = append(context.Ancestors, appwire.SessionActivityAncestor{Ref: "local:" + id, SessionID: id})
+				}
+			}
+			summary := appwire.SessionActivitySummary{Context: context, Scope: appwire.SessionActivityScopeSubtree}
+			raw, err := json.Marshal(summary)
+			if err != nil || len(raw) > 256<<10 {
+				t.Fatalf("source summary is not a fitting fixture: %d bytes, %v", len(raw), err)
+			}
+			sourceID := "remote"
+			if oversized {
+				sourceID = strings.Repeat("remote-", 260)
+			}
+			source, calls := newScriptedRemote(t, sourceID, func(method string, raw json.RawMessage) scriptedReply {
+				if method != appwire.MethodEvenerThreadActivityRead {
+					t.Errorf("unexpected method %s", method)
+				}
+				var params appwire.SessionActivityReadParams
+				if err := json.Unmarshal(raw, &params); err != nil {
+					t.Error(err)
+				}
+				if params.Ref != "local:selected" || params.Scope != appwire.SessionActivityScopeSubtree {
+					t.Errorf("source request=%+v", params)
+				}
+				return scriptedReply{result: summary}
+			})
+			out, err := source.ThreadActivityRead(t.Context(), appwire.SessionActivityReadParams{Ref: sourceID + ":selected", Scope: appwire.SessionActivityScopeSubtree})
+			if oversized {
+				var wire appwire.WireError
+				if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+					encoded, _ := json.Marshal(out)
+					t.Fatalf("qualified summary %d bytes from source %d bytes: %v", len(encoded), len(raw), err)
+				}
+				data, ok := wire.Data.(appwire.ErrorData)
+				if !ok || data.EvenerErrorInfo != appwire.ErrorActionUnavailable || data.RetryDisposition != "" {
+					t.Fatalf("unrepresentable context classification=%+v", wire)
+				}
+			} else if err != nil || out.Context.Ref != "remote:selected" || out.Context.RootRef != "remote:root" || out.Context.ParentRef != "remote:parent" || out.Context.SessionID != "selected" || !out.Context.AncestryKnown || out.Context.Epoch != "epoch" {
+				t.Fatalf("healthy translated summary=%+v, %v", out, err)
+			}
+			if len(wireCalls(calls())) != 1 {
+				t.Fatal("summary dispatched more than once")
+			}
+		})
 	}
 }
