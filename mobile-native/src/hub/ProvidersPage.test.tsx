@@ -1556,12 +1556,19 @@ it("clears an unsaved-edit notice when Add opens", async () => {
 
 // Only an edit its provider left behind says it wasn't saved: a cancelled
 // edit and a saved one say nothing of the kind.
-it("says nothing of an unsaved edit after a Cancel or a save", async () => {
+function editsHub() {
 	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
 	fake.on("evener/instance/edit", () => ({
 		instances: [instance({ authModes: ["apiKey"], hasStoredFile: true })],
 		availableProviders: [],
 	}));
+	return fake;
+}
+
+// A closed edit holds no draft, so the provider leaving afterwards has
+// nothing unsaved to report.
+it("says nothing of an unsaved edit when the provider leaves after a Cancel", async () => {
+	const fake = editsHub();
 	const { tree } = mountPage();
 	await act(async () => {});
 	await openWork(tree);
@@ -1570,6 +1577,15 @@ it("says nothing of an unsaved edit after a Cancel or a save", async () => {
 	press(tree, (label) => label === "Cancel");
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	await workLeavesList(fake);
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+});
+
+it("says nothing of an unsaved edit when the provider leaves after a save", async () => {
+	const fake = editsHub();
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
 	press(tree, (label) => label === "Edit");
 	await act(async () => {});
 	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
@@ -1577,6 +1593,8 @@ it("says nothing of an unsaved edit after a Cancel or a save", async () => {
 	await act(async () => {});
 	await act(async () => {});
 	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	await workLeavesList(fake);
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
 });
 
