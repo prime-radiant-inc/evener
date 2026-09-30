@@ -249,6 +249,18 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 	return false
 }
 
+// setResidentRuntimeLocked makes runtime live's resident runtime. A finished
+// generation still finalizing on the runtime it replaces no longer holds the
+// delegate (see finalizingLocked), so its finalization is released here and
+// a send waiting on it tries again at once. The caller holds c.mu.
+func (c *delegateTreeController) setResidentRuntimeLocked(live *delegateLiveState, runtime *Session) {
+	if live.finalizing != nil && live.finalizing.runtime != runtime {
+		close(live.finalizing.released)
+		live.finalizing = nil
+	}
+	live.runtime = runtime
+}
+
 // finalizingLocked is delegateID's finished generation still finalizing on
 // its resident runtime, which holds the delegate from any new generation
 // until the finalize tail releases it; nil otherwise. A finalizing runtime a

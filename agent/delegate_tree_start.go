@@ -394,7 +394,7 @@ func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Ses
 	if err != nil || ownerID != "" && ownerID != lease.delegateID {
 		return errDelegateTargetBusy
 	}
-	live.runtime = runtime
+	c.setResidentRuntimeLocked(live, runtime)
 	live.binding.runtime = runtime
 	c.evidenceVersion++
 	return nil
@@ -835,7 +835,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		c.replaceDelegateAttentionLocked(record.delegateID, record.attentionPendingIDs)
 	}
 	if record.runtime != nil {
-		live.runtime = record.runtime
+		c.setResidentRuntimeLocked(live, record.runtime)
 	}
 	if record.waiter != nil {
 		if live.waiters == nil {
@@ -872,7 +872,7 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 	}
 	c.dropRuntimeClaimsForMembersLocked(map[string]struct{}{lease.delegateID: {}})
 	if live.binding.runtime != nil {
-		live.runtime = live.binding.runtime
+		c.setResidentRuntimeLocked(live, live.binding.runtime)
 	}
 	live.binding = nil
 	// A steer accepted under the covering stop outlives the generation it was

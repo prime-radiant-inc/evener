@@ -1028,7 +1028,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 	owned := exact
 	conflict := live != nil && (live.binding != nil && live.binding.runtime == start.sub.sess || live.runtime == start.sub.sess) && !owned && live.binding != nil
 	if !owned && !conflict && live != nil && live.binding == nil && live.runtime == start.sub.sess {
-		live.runtime = nil
+		c.setResidentRuntimeLocked(live, nil)
 	}
 	c.mu.Unlock()
 	var persistErr error
@@ -1041,7 +1041,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 				live.binding.runtime = nil
 			}
 			if live.runtime == start.sub.sess {
-				live.runtime = nil
+				c.setResidentRuntimeLocked(live, nil)
 			}
 		}
 		c.mu.Unlock()
@@ -1355,8 +1355,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// A delegate whose finished generation is still finalizing is announced
 	// idle only as its finalize tail's last step, so a send that heard it
 	// waits out that step and reserves once more.
-	var finalizing delegateFinalizingError
-	if errors.As(err, &finalizing) {
+	if finalizing, ok := errors.AsType[delegateFinalizingError](err); ok {
 		if waitErr := s.awaitDelegateFinalization(ctx, finalizing.released); waitErr != nil {
 			return failed(waitErr)
 		}

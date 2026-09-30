@@ -300,7 +300,7 @@ func TestDelegateControllerAdmitsAStartOnceTheFinishedRuntimeIsReplaced(t *testi
 	c, _, _ := finishedDelegateStillFinalizing(t)
 	assertStartRefused(t, c, "dlg_target", "while the finished runtime is resident")
 	c.mu.Lock()
-	c.live["dlg_target"].runtime = &Session{}
+	c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
 	c.mu.Unlock()
 	assertStartAdmitted(t, c, "dlg_target", "once another runtime is resident")
 }
@@ -449,4 +449,25 @@ func TestDelegateSendOnTheIdleEventIsTaken(t *testing.T) {
 	if got := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation; got != before.Generation+1 {
 		t.Fatalf("generation after the send = %d, want %d", got, before.Generation+1)
 	}
+}
+
+// A finalizing runtime that stops being the delegate's resident runtime no
+// longer holds it, and a send already waiting on its release is let go at
+// once rather than at the wait's ceiling.
+func TestDelegateControllerReleasesAFinalizationWhoseRuntimeIsReplaced(t *testing.T) {
+	c, _, _ := finishedDelegateStillFinalizing(t)
+	_, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
+	finalizing, ok := errors.AsType[delegateFinalizingError](err)
+	if !ok {
+		t.Fatalf("ReserveStart while finalizing = %v, want a finalizing refusal", err)
+	}
+	c.mu.Lock()
+	c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
+	c.mu.Unlock()
+	select {
+	case <-finalizing.released:
+	default:
+		t.Fatal("the replaced runtime's finalization was not released")
+	}
+	assertStartAdmitted(t, c, "dlg_target", "once the finalizing runtime was replaced")
 }

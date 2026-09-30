@@ -712,7 +712,7 @@ func (installation *delegateIdleRuntimeInstallation) attach(runtime *Session) er
 	if err != nil || owner != nil && owner != live || ownerID != "" && ownerID != delegateID {
 		return errDelegateTargetBusy
 	}
-	live.runtime = runtime
+	c.setResidentRuntimeLocked(live, runtime)
 	c.evidenceVersion++
 	return nil
 }
