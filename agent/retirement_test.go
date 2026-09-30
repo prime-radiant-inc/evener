@@ -383,6 +383,71 @@ func TestRetirementEarlyReturnReportsFreshNonLeaseObligation(t *testing.T) {
 	}
 }
 
+// TestRetirementEarlyReturnKeepsTheLeaseThatRefusedIt pins the #3009 load
+// flake's root: the pre-evidence early return builds its snapshot from the
+// non-blocking read plus a fresh c.active, so a lease that releases between the
+// admission predicate and that fresh read disappears and the refusal presents no
+// obligation at all. Under load the retirement-attention test hit exactly that
+// with the just-resumed attention-retry lease, reading an empty "missing
+// notification evidence" snapshot. The lease the claim was refused for must
+// survive the read.
+func TestRetirementEarlyReturnKeepsTheLeaseThatRefusedIt(t *testing.T) {
+	t.Parallel()
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	c := retirementEvidenceController(t, root)
+
+	// Admitted work forces the early return (len(c.active) != 0) instead of a
+	// full evidence read.
+	release, err := c.BeginMutation(root.ID(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	// Release the lease inside the snapshot's non-blocking evidence read: the
+	// exact interleaving, present at the predicate and gone when the snapshot is
+	// assembled.
+	c.evidenceGate = func() { release() }
+
+	claim, snapshot, err := c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("early-return claim: %v", err)
+	}
+	if claim != nil {
+		t.Fatalf("early return admitted a claim: %+v", snapshot)
+	}
+	if !hasRetirementBlockerFor(snapshot.Blockers, "turn", root.ID()) {
+		t.Fatalf("early-return snapshot lost the lease that refused it: %+v", snapshot.Blockers)
+	}
+
+	// Second case: the lease stays held, so it is captured under the predicate
+	// and read again from c.active when the snapshot is assembled. The sort +
+	// slices.Compact in snapshotWithBlockersLocked must collapse the two copies
+	// to one, or every ordinary refusal would double-report its lease.
+	c.evidenceGate = nil
+	holds, err := c.BeginMutation(root.ID(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holds()
+	claim, snapshot, err = c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("held-lease claim: %v", err)
+	}
+	if claim != nil {
+		t.Fatalf("held lease admitted a claim: %+v", snapshot)
+	}
+	var turns int
+	for _, blocker := range snapshot.Blockers {
+		if blocker.Category == "turn" && blocker.SessionID == root.ID() {
+			turns++
+		}
+	}
+	if turns != 1 {
+		t.Fatalf("early-return snapshot reported the refusing lease %d times, want 1: %+v", turns, snapshot.Blockers)
+	}
+}
+
 // TestRetirementClaimSnapshotDoesNotMixSwappedRootEvidence drives the real
 // root-swap race: TryClaim captures the root and releases c.mu for the
 // non-blocking evidence read, and AttachRoot can replace the root and advance the

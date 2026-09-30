@@ -798,7 +798,17 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 function informationalWarningNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> | null {
 	const words = warningWords(it.text, it.warning?.title, it.warning?.hint);
 	if (words === null) return null;
-	return { kind: "notice", id: it.id, origin: "system", family: "informational", tone: "system", text: words.message };
+	return {
+		kind: "notice",
+		id: it.id,
+		origin: "system",
+		family: "informational",
+		tone: "system",
+		text: words.message,
+		// The web keeps the hint as hover title and VisuallyHidden text; the
+		// phone has no hover, so SystemEvent draws it as a second quiet line.
+		...(words.hint ? { hint: words.hint } : {}),
+	};
 }
 
 // A warning's attention row, or null when it carries nothing to show (the web

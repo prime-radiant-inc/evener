@@ -42,6 +42,7 @@ and should not be presented as reproduced production incidents.
 | [C09](#c09-following-shell-job-output) | Medium | Job output stays static until Refresh; older output needs clicks | S02, S10, S12 |
 | [C10](#c10-quiet-task-panels) | Medium | A quiet Tasks panel remains failed until Try again | S02, S03, S05, S12 |
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
+| [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web send reorder, escape a cross-tab Stop, or duplicate | S02, S11 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
 | [R03](#r03-watch-intent-after-restart) | High | Restart can end monitoring without informing the owning agent | S08, S12 |
@@ -407,6 +408,54 @@ finishes still-needed entries once their outcomes are established. A genuinely
 changed destination is represented accurately, and newer remote credentials are
 not overwritten by recovery of an older operation. Cancellation prevents further
 transfer while retaining the record of what already happened.
+
+### C13 Storage-unavailable send fallback ordering and Stop fence
+
+**Current behavior.** When the mutation outbox cannot be written — the storage
+watchdog rejects the durable enqueue with `MutationStorageTimeoutError` — a
+composer send (`turn/start`, `turn/queue`, `turn/steer`, `turn/drainAsSteer`) is
+retried once and then dispatched directly as a plain RPC instead of failing
+closed, so sends keep working in a storage wedge. The fallback re-earns the
+dispatcher's admission and refuses when this tab can see an earlier undelivered
+or in-flight durable send for the same ref, but it carries none of the durable
+row's guarantees. Three gaps remain. (1) Per-ref ordering: the guard reads this
+tab's in-memory snapshot — its own enqueues plus any non-canceled rows a
+successful outbox read has observed — so a durable row another tab wrote after
+this page's last successful read, a row from a previous session this page never
+read, or a concurrent enqueue in another tab still in flight is invisible, and a
+later send can reach the daemon ahead of an earlier undelivered one for the ref.
+(2) The cross-tab Stop fence: a fallback send carries no click-time stop epoch.
+The epoch is a commit-order comparison inside the enqueue transaction against
+the durable row that would have been written, not a wire parameter, so a send
+with no row has nothing to compare and a Stop landing in another tab during the
+wedge cannot cancel it. (3) Duplicate suppression across a human retry: the
+fallback's automatic wire retry reuses one `clientMutationId`, but if the RPC
+lands and its reply is lost the composer reports a failure and keeps the draft,
+and the person's re-send is a new intent with a new id, so the daemon can apply
+the send twice.
+
+**Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2449)
+and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2538);
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2689)
+mints one `clientMutationId` before its retry ladder; the missing fence is the
+[click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
+the enqueue compares against. `threads.test.ts` pins the direct dispatch, the
+retry ladder, and the refusal to jump an undelivered or concurrent durable send;
+it does not pin the cross-tab, prior-session or human-retry cases above, which
+need the storage the wedge makes unreadable. The accepted behavior keeps the
+in-memory guard and accepts the three gaps (issue #3313).
+
+**Deferred.** Keep the existing behavior: sends keep working in every storage
+wedge, at the cost of a possible reorder, an unhonoured cross-tab Stop, or a
+duplicate on human retry in the narrow cases above. Revisit when the outbox can
+be read again but not written, or if a reorder, a duplicated send, or an
+unhonoured cross-tab Stop is observed in practice.
+
+**Acceptance if revisited.** Hold the mutation outbox's write path unavailable
+while a send is issued from one tab, a durable row for the same ref exists in
+another tab or an earlier session, and a Stop lands in the other tab. The send
+reaches the daemon at most once, in per-ref order, and the unhonoured Stop is
+either honored or reported rather than silently applied.
 
 ## Runtime and continuing intent
 

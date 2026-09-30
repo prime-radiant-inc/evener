@@ -114,7 +114,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 			return;
 		}
 		try {
-			memory.recordStart(setup, Date.now());
+			memory.recordStart(setup);
 		} catch {
 			// A start this phone couldn't remember still opens its session.
 		}

@@ -33,12 +33,6 @@ export interface LaunchSetup {
 	overrides: OwnedOverrides;
 }
 
-/** A remembered start: its setup, and when a session started with it (ms). */
-export interface RememberedSetup {
-	setup: LaunchSetup;
-	at: number;
-}
-
 /** What "New session like this" copies from a session (ruling 24). */
 export interface SessionSeed {
 	host: string;
@@ -80,14 +74,6 @@ export function withOwnedOverrides(layer: LaunchConfigLayer, owned: OwnedOverrid
 	const next: LaunchConfigLayer = { ...layer };
 	for (const field of OWNED_FIELDS) delete next[field];
 	return { ...next, ...ownedOverrides(owned) };
-}
-
-/** The newest setup started from this phone: where a sheet with nothing in
- * it yet begins. */
-export function newestSetup(history: readonly RememberedSetup[]): LaunchSetup | null {
-	let newest: RememberedSetup | null = null;
-	for (const entry of history) if (!newest || entry.at > newest.at) newest = entry;
-	return newest?.setup ?? null;
 }
 
 export interface HostMove {

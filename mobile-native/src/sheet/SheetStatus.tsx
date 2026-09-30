@@ -4,6 +4,7 @@ import { Text } from "react-native";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useConnection } from "../ConnectionProvider";
+import { scaledType, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { Spinner } from "./Spinner";
 
@@ -18,8 +19,7 @@ export function SheetStatus() {
 			allowFontScaling={allowFontScaling}
 			style={{
 				color: palette.inkMid,
-				fontSize: 13 * scale,
-				lineHeight: 18 * scale,
+				...scaledType(uiType.footnote, scale),
 				textAlign: "center",
 				paddingVertical: 6,
 			}}
@@ -42,7 +42,7 @@ export function FirstLoad({ hubName, label }: { hubName: string; label: string }
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
-			style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale, textAlign: "center", padding: 32 }}
+			style={{ color: palette.inkMid, ...scaledType(uiType.subheadline, scale), textAlign: "center", padding: 32 }}
 		>
 			{fatal ? INCOMPATIBLE_VERSIONS : `Connecting to ${hubName}…`}
 		</Text>

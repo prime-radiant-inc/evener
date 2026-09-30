@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1074,14 +1075,33 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 	return errors.Join(err, s.executeDelegateMutationPlans(plans))
 }
 
+// errDelegateAttentionSourceMissing marks an escalation that failed because
+// the delegate's own transcript, the source of the attention it hands over,
+// does not exist.
+var errDelegateAttentionSourceMissing = errors.New("delegate attention source transcript missing")
+
+// parkedEscalationStandsDown reports whether a parked delegate's failed
+// escalation should wait with it (new attention or a restart) instead of
+// re-arming the retry: only when its transcript is gone, which no retry can
+// bring back. The delegate already said it is undeliverable. Any other
+// failure (appending the hand-over to the root, resolving the source) may
+// clear, so it keeps the retry.
+func parkedEscalationStandsDown(err error) bool {
+	return errors.Is(err, errDelegateAttentionSourceMissing)
+}
+
 // escalateUnreachableDelegateAttention transfers permanently fenced wakes to
 // the root, preserving identity/content and idempotent crash replay.
 func (s *Session) escalateUnreachableDelegateAttention() bool {
 	progressed, failed := false, false
 	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
-		if err := s.escalateOneUnreachableDelegateAttention(plan, readDelegateAttentionFold); err != nil {
+		readFold := readDelegateAttentionFold
+		if plan.parked {
+			readFold = readExistingDelegateAttentionFold
+		}
+		if err := s.escalateOneUnreachableDelegateAttention(plan, readFold); err != nil {
 			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
-			failed = true
+			failed = failed || !plan.parked || !parkedEscalationStandsDown(err)
 			continue
 		}
 		s.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, plan.delegateID)
@@ -1089,6 +1109,8 @@ func (s *Session) escalateUnreachableDelegateAttention() bool {
 	}
 	if failed {
 		s.scheduleStableDelegateAttentionRetry()
+	} else if progressed {
+		s.resetStableDelegateAttentionRetryDelay()
 	}
 	return progressed
 }
@@ -1101,6 +1123,9 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		return err
 	}
 	fold, err := readFold(sourcePath, sourceSessionID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w", errDelegateAttentionSourceMissing, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -1220,9 +1245,9 @@ func (s *Session) delegateAttentionGiveUpAfter() int {
 // owed attention to the root, the way attention a closed ancestor fences off
 // is escalated: the root receives each message under its original identity
 // and the source is resolved, so nothing is dropped. When the hand-over
-// fails too, the delegate is parked, out of the drive until new attention
-// arrives or the daemon restarts, and the session says so once at every
-// level and in the daemon log.
+// fails too, the delegate is parked, out of the drive's cold restores until
+// new attention arrives or the daemon restarts, and the session says so once
+// at every level and in the daemon log.
 func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	plan, ok := s.delegateController.giveUpAttentionPlan(delegateID)
 	if !ok {

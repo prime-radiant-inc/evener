@@ -163,7 +163,7 @@ export function TimelineItem({
 					attention={item.tone === "attention"}
 				/>
 			) : (
-				<SystemEvent label={label} text={item.text} expanded={expanded} onToggle={toggle}>
+				<SystemEvent label={label} text={item.text} hint={item.hint} expanded={expanded} onToggle={toggle}>
 					{item.rendersMarkdown ? <MarkdownResponse markdown={item.text} /> : undefined}
 				</SystemEvent>
 			);
