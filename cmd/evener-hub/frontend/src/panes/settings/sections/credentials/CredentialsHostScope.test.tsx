@@ -372,7 +372,11 @@ test("a remote selection issues no controller-scoped credential write", async ()
   await user.selectOptions(select, "beta");
   await screen.findByText("on-beta");
 
-  expect(fake.calls.some((call) => call.method.startsWith("evener/auth/"))).toBe(false);
+  // The section reads this hub's credential statuses (evener/auth/list) for its
+  // own rows; a read writes nothing, so only the mutations count here.
+  expect(fake.calls.some((call) => call.method.startsWith("evener/auth/") && call.method !== "evener/auth/list")).toBe(
+    false,
+  );
 });
 
 // Medium (roborev): the read must follow the connection. useConnectedEffect's
