@@ -295,24 +295,12 @@ func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attenti
 	return true
 }
 
-// deferDelegateAttentionRestore moves delegateID to the back of the drive's
-// line after its restore failed.
-func (c *delegateTreeController) deferDelegateAttentionRestore(delegateID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.attentionRestoreDeferred == nil {
-		c.attentionRestoreDeferred = make(map[string]uint64)
-	}
-	c.attentionRestoreSeq++
-	c.attentionRestoreDeferred[delegateID] = c.attentionRestoreSeq
-}
-
 func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, attentionID string) {
 	ids := c.attentionWakeIDs[delegateID]
 	delete(ids, attentionID)
 	if len(ids) == 0 {
 		delete(c.attentionWakeIDs, delegateID)
-		delete(c.attentionRestoreDeferred, delegateID)
+		delete(c.attentionDriveTurns, delegateID)
 		delete(c.attentionParked, delegateID)
 		delete(c.attentionRestoreFailures, delegateID)
 	}
@@ -330,13 +318,11 @@ func (c *delegateTreeController) countDelegateAttentionRestoreFailure(delegateID
 	return c.attentionRestoreFailures[delegateID]
 }
 
-// delegateAttentionRestored ends delegateID's run of counted failures and
-// puts it back in sorted order in the drive's line.
+// delegateAttentionRestored ends delegateID's run of counted failures.
 func (c *delegateTreeController) delegateAttentionRestored(delegateID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.attentionRestoreFailures, delegateID)
-	delete(c.attentionRestoreDeferred, delegateID)
 }
 
 // parkDelegateAttention takes delegateID out of the drive until new attention
@@ -523,6 +509,13 @@ func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, 
 	if !pending {
 		return "", "", false
 	}
+	// Taking its turn sends the delegate to the back of the line, whatever
+	// this pass then does with it.
+	if c.attentionDriveTurns == nil {
+		c.attentionDriveTurns = make(map[string]uint64)
+	}
+	c.attentionDriveSeq++
+	c.attentionDriveTurns[delegateID] = c.attentionDriveSeq
 	c.holdAttentionRestoreLocked(delegateID)
 	return delegateID, attentionID, true
 }
@@ -541,12 +534,11 @@ func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, stri
 	if len(delegateIDs) == 0 {
 		return "", "", false
 	}
-	// Sorted order, except that a delegate whose restore failed waits behind
-	// every delegate that has not failed, and failed ones take turns oldest
-	// failure first: one delegate that can't be restored must not hold every
-	// sibling's attention back.
+	// Turns: a delegate the drive has not picked yet first, in sorted order,
+	// then the one it picked longest ago. One delegate that can't be restored,
+	// or whose drive keeps declining, must not hold every sibling back.
 	sort.Slice(delegateIDs, func(i, j int) bool {
-		left, right := c.attentionRestoreDeferred[delegateIDs[i]], c.attentionRestoreDeferred[delegateIDs[j]]
+		left, right := c.attentionDriveTurns[delegateIDs[i]], c.attentionDriveTurns[delegateIDs[j]]
 		if left != right {
 			return left < right
 		}

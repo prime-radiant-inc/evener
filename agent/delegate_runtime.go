@@ -1268,7 +1268,6 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 	defer s.delegateController.releaseAttentionRestoreHold(delegateID)
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
-		s.delegateController.deferDelegateAttentionRestore(delegateID)
 		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
 		s.countDelegateAttentionRestoreFailure(delegateID, err)
 		s.scheduleStableDelegateAttentionRetry()

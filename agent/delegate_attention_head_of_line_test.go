@@ -8,10 +8,8 @@ import (
 
 // The drive always took the lowest-sorted eligible delegate, so one whose
 // restore kept failing was picked again every pass and every sibling's
-// attention waited behind it forever. A delegate whose restore failed goes
-// to the back of the line: the drive picks a sibling that has not failed
-// first, and among failed ones the one that failed longest ago, so every
-// delegate keeps getting its turn.
+// attention waited behind it forever. Delegates now take turns: the drive
+// picks one it has not picked yet, else the one it picked longest ago.
 func TestAFailingDelegateDoesNotStarveItsSiblings(t *testing.T) {
 	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
@@ -21,38 +19,34 @@ func TestAFailingDelegateDoesNotStarveItsSiblings(t *testing.T) {
 			t.Fatalf("note %s attention", id)
 		}
 	}
-	next := func() string {
-		t.Helper()
-		id, _, pending := c.nextIdleDelegateAttention()
+	var picks []string
+	for range 5 {
+		id, _, pending := c.selectDelegateAttentionWake()
 		if !pending {
 			t.Fatal("no delegate selected")
 		}
-		return id
+		c.releaseAttentionRestoreHold(id)
+		picks = append(picks, id)
 	}
-	if got := next(); got != "dlg_a" {
-		t.Fatalf("first pick = %s, want dlg_a", got)
+	want := []string{"dlg_a", "dlg_b", "dlg_c", "dlg_a", "dlg_b"}
+	for i := range want {
+		if picks[i] != want[i] {
+			t.Fatalf("picks = %v, want each delegate in turn %v", picks, want)
+		}
 	}
-	c.deferDelegateAttentionRestore("dlg_a")
-	if got := next(); got != "dlg_b" {
-		t.Fatalf("after dlg_a failed, pick = %s, want its sibling dlg_b", got)
+	// A delegate that stops owing attention leaves the line; owing again, it
+	// is new and goes first.
+	c.forgetDelegateAttention("dlg_a", "delegate:dlg_a")
+	if !c.noteDelegateAttention("dlg_a", "delegate:dlg_a-again") {
+		t.Fatal("note dlg_a attention again")
 	}
-	c.deferDelegateAttentionRestore("dlg_b")
-	c.deferDelegateAttentionRestore("dlg_c")
-	if got := next(); got != "dlg_a" {
-		t.Fatalf("with every delegate failed, pick = %s, want dlg_a, whose failure is oldest", got)
-	}
-	c.deferDelegateAttentionRestore("dlg_a")
-	if got := next(); got != "dlg_b" {
-		t.Fatalf("after dlg_a failed again, pick = %s, want dlg_b", got)
-	}
-	c.delegateAttentionRestored("dlg_c")
-	if got := next(); got != "dlg_c" {
-		t.Fatalf("after dlg_c restored, pick = %s, want dlg_c back at the front", got)
+	if id, _, _ := c.nextIdleDelegateAttention(); id != "dlg_a" {
+		t.Fatalf("after dlg_a owes afresh, next = %s, want dlg_a", id)
 	}
 }
 
-// The drive puts a delegate whose restore failed at the back of the line.
-func TestAFailedRestoreDefersTheDelegate(t *testing.T) {
+// The drive's selection takes the delegate's turn, failed restore or not.
+func TestAFailedRestoreTakesTheDelegatesTurn(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	root, fixture := fenced.root, fenced.fixture
 	if err := os.Remove(filepath.Join(fixture.stateDir, sessionsSubdir, fenced.grandchildSessionID+".meta.json")); err != nil {
@@ -61,9 +55,50 @@ func TestAFailedRestoreDefersTheDelegate(t *testing.T) {
 	root.drivePendingStableDelegateAttention()
 	c := root.delegateController
 	c.mu.Lock()
-	_, deferred := c.attentionRestoreDeferred[fenced.grandchildDelegateID]
+	_, taken := c.attentionDriveTurns[fenced.grandchildDelegateID]
 	c.mu.Unlock()
-	if !deferred {
+	if !taken {
 		t.Fatal("a failed restore left the delegate at the front of the line")
+	}
+}
+
+// Fairness can't depend on how a pass ends. A delegate whose restore
+// succeeds but whose attention stays owed (its drive declined: the child was
+// busy) would, if success put it back at the front, be picked every pass
+// and starve a sibling whose restore failed, which then never reaches the
+// give-up limit either. Every selection moves the picked delegate to the back
+// of the line, so eligible delegates take turns whatever each pass did.
+func TestEverySelectionTakesItsTurnSoNoDelegateMonopolizesTheDrive(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	for _, id := range []string{"dlg_a", "dlg_b"} {
+		seedDelegateControllerIdle(t, c, id, "")
+		if !c.noteDelegateAttention(id, "delegate:"+id) {
+			t.Fatalf("note %s attention", id)
+		}
+	}
+	pick := func() string {
+		t.Helper()
+		id, _, pending := c.selectDelegateAttentionWake()
+		if !pending {
+			t.Fatal("no delegate selected")
+		}
+		c.releaseAttentionRestoreHold(id)
+		return id
+	}
+	var picks []string
+	for range 4 {
+		id := pick()
+		if id == "dlg_b" {
+			// dlg_b restores fine but its attention stays owed.
+			c.delegateAttentionRestored(id)
+		}
+		picks = append(picks, id)
+	}
+	want := []string{"dlg_a", "dlg_b", "dlg_a", "dlg_b"}
+	for i := range want {
+		if picks[i] != want[i] {
+			t.Fatalf("picks = %v, want the two to alternate %v", picks, want)
+		}
 	}
 }
