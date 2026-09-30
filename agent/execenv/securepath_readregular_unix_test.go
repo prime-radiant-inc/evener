@@ -109,3 +109,79 @@ func grepOrFailFast(t *testing.T, s *sandboxFS, base string) (string, error) {
 		return "", nil // unreachable
 	}
 }
+
+// TestSandboxBrowseOpenAdmitsDirectories pins the fs.FS contract on the confined
+// browse fs: the non-regular refusal must not reject a directory, which a walk
+// opens for its root and subdirectories.
+func TestSandboxBrowseOpenAdmitsDirectories(t *testing.T) {
+	t.Parallel()
+	s, _, worktree := newSB(t, sandbox.ModeRestricted)
+	if err := os.MkdirAll(filepath.Join(worktree, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	baseFd, canonical, err := s.openReadBaseFd("glob", worktree)
+	if err != nil {
+		t.Fatalf("openReadBaseFd: %v", err)
+	}
+	defer func() { _ = unix.Close(baseFd) }()
+	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: newGlobBudget("glob")}
+	for _, name := range []string{".", "sub"} {
+		f, err := fsys.Open(name)
+		if err != nil {
+			t.Fatalf("secureDirFS.Open(%q) on a directory = %v, want success", name, err)
+		}
+		_ = f.Close()
+	}
+}
+
+// TestSandboxGlobSkipsNonRegularWithoutBlocking pins the admission contract on
+// the glob path: glob stats every candidate through secureDirFS.Stat, so a FIFO
+// entry must not block that stat. The walk must still return the real file's
+// match.
+func TestSandboxGlobSkipsNonRegularWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	s, _, worktree := newSB(t, sandbox.ModeRestricted)
+	if err := os.WriteFile(filepath.Join(worktree, "real.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(filepath.Join(worktree, "pipe"), 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	matches, _, err := globOrFailFast(t, s, worktree)
+	if err != nil {
+		t.Fatalf("glob over a tree with a FIFO entry: %v", err)
+	}
+	found := false
+	for _, m := range matches {
+		if filepath.Base(m) == "real.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("glob matches = %v, want the real file", matches)
+	}
+}
+
+// globOrFailFast runs the confined glob and returns its result, failing the test
+// if it does not return within a few seconds so a FIFO entry that blocks a stat
+// surfaces as a visible timeout rather than a stuck suite.
+func globOrFailFast(t *testing.T, s *sandboxFS, base string) ([]string, int, error) {
+	t.Helper()
+	type result struct {
+		matches  []string
+		excluded int
+		err      error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		m, excluded, err := s.glob(context.Background(), "glob", base, "*", false, newGlobBudget("glob"))
+		resCh <- result{m, excluded, err}
+	}()
+	select {
+	case res := <-resCh:
+		return res.matches, res.excluded, res.err
+	case <-time.After(5 * time.Second):
+		t.Fatalf("sandbox glob hung walking %q (a non-regular entry blocked a stat)", base)
+		return nil, 0, nil // unreachable
+	}
+}

@@ -314,26 +314,57 @@ func (s *sandboxFS) grantedWriteParent(tool, abs string) (int, string, error) {
 	return parentFd, leaf, nil
 }
 
-// readFile reads the whole file at abs through a race-safe fd. The open is
-// nonblocking and the descriptor is confirmed regular before any read: a
-// read-only open of an allowed FIFO would otherwise block until a writer
-// appears, and a never-ending special file would allocate without bound. The
-// admission check and the read share one descriptor, so the type cannot be
-// swapped between the check and the bytes.
+// errNotRegularFile is the refusal for an admitted path that is neither a
+// regular file nor (where allowed) a directory.
+var errNotRegularFile = errors.New("not a regular file")
+
+// admitReadFD turns a descriptor opened with O_NONBLOCK into an *os.File whose
+// type is confirmed before any read: a regular file, or — when allowDir — a
+// directory (the fs.FS Open contract admits directories). The nonblocking open
+// keeps an allowed FIFO or device from blocking at open; the type is then
+// fstat'd on the same descriptor, so it cannot be swapped between the check and
+// the bytes. O_NONBLOCK is cleared once the type is admitted, so callers get the
+// ordinary blocking descriptor they expect. On a non-nil error the caller owns
+// nothing (the file, and its fd, are closed); on success the returned *os.File
+// owns fd.
+func admitReadFD(fd int, name string, allowDir bool) (*os.File, error) {
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open %q: no file for descriptor", name)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() && !(allowDir && info.IsDir()) {
+		_ = file.Close()
+		return nil, errNotRegularFile
+	}
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags&^unix.O_NONBLOCK); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+// readFile reads the whole file at abs through a race-safe fd, admitted by
+// admitReadFD: a FIFO would otherwise block at open and a never-ending special
+// file would allocate without bound.
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), abs) // takes ownership of fd; f.Close closes it
-	info, serr := f.Stat()
-	if serr != nil {
-		_ = f.Close()
-		return nil, serr
-	}
-	if !info.Mode().IsRegular() {
-		_ = f.Close()
-		return nil, fmt.Errorf("read %q: not a regular file", abs)
+	f, err := admitReadFD(fd, abs, false)
+	if err != nil {
+		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
 	defer func() { _ = f.Close() }()
 	return io.ReadAll(f)
