@@ -77,6 +77,10 @@ interface Form {
 	setReasoning(value: string): void;
 	loadMetadata(): Promise<void>;
 	loadModels(refresh?: boolean): Promise<void>;
+	/** Reads the form's loaded model list again after the hub announced a
+	 * refreshed one (evener/auth/updated), in place: the list stays on screen
+	 * until the new one lands, and a failed read keeps it. */
+	refreshModels(): Promise<void>;
 	submit(): Promise<Outcome>;
 	changeHost(host: string, hostLabel: string): Promise<void>;
 	applySetup(setup: LaunchSetup): void;
@@ -121,6 +125,11 @@ export function startedSetup(form: {
 	const override = form.launchOverrides.reasoningEffort?.trim();
 	const reasoning = override || (model?.reasoningEffortLevels?.includes(form.reasoning) ? form.reasoning : "");
 	return setupOf({ ...form, model, reasoning });
+}
+
+/** Reads the model list for a host, scoped to the project when one is named. */
+function readModels(service: NewSessionService, source: string, cwd: string) {
+	return service.models(cwd.trim() ? { cwd: cwd.trim() } : {}, source);
 }
 
 /** The per-launch overrides without a model or effort of their own: the
@@ -174,6 +183,37 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 		pendingModelId = null;
 		store.setState({ movingHost: false });
 		return ++placement;
+	}
+	/** Puts a model list read for the form's host and project on the form:
+	 * the chosen model stays when the list still has it (or a seeded one takes
+	 * its place), and the effort stays when that model still offers it. */
+	function listModels(
+		result: { data: ModelDescriptor[]; recent?: ModelDescriptor[] },
+		selection: ModelDescriptor | null,
+		reasoning: string,
+	) {
+		const seeded = pendingModelId === null ? null : modelFromId(pendingModelId, result.data);
+		pendingModelId = null;
+		const model =
+			seeded ??
+			result.data.find((item) => item.provider === selection?.provider && item.model === selection.model) ??
+			null;
+		const settingsModel = creationModel(result.data, model, store.getState().launchOverrides);
+		// The host's list filling in or clearing the model and effort isn't
+		// the person editing the draft: a draft whose start may exist stays
+		// that draft (#3104).
+		const listed = {
+			models: result.data,
+			recentModels: result.recent ?? [],
+			model,
+			reasoning: settingsModel?.reasoningEffortLevels?.includes(reasoning) ? reasoning : "",
+			modelError: null,
+		};
+		if (isUnconfirmedDraft()) {
+			withoutSaving(() => store.setState(listed));
+			unconfirmedContent = draftContent();
+			saveDraft();
+		} else store.setState(listed);
 	}
 	const store = createStore<Form>((set, get) => ({
 		storageLoaded: !storage,
@@ -335,31 +375,10 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			});
 			if (!current) return;
 			try {
-				const result = await current.models(cwd.trim() ? { cwd: cwd.trim() } : {}, source);
+				const result = await readModels(current, source, cwd);
 				if (generation === catalog) {
 					loadedContext = context;
-					const seeded = pendingModelId === null ? null : modelFromId(pendingModelId, result.data);
-					pendingModelId = null;
-					const model =
-						seeded ??
-						result.data.find((item) => item.provider === selection?.provider && item.model === selection.model) ??
-						null;
-					const settingsModel = creationModel(result.data, model, get().launchOverrides);
-					// The host's list filling in or clearing the model and effort isn't
-					// the person editing the draft: a draft whose start may exist stays
-					// that draft (#3104).
-					const listed = {
-						models: result.data,
-						recentModels: result.recent ?? [],
-						model,
-						reasoning: settingsModel?.reasoningEffortLevels?.includes(reasoning) ? reasoning : "",
-						modelError: null,
-					};
-					if (isUnconfirmedDraft()) {
-						withoutSaving(() => set(listed));
-						unconfirmedContent = draftContent();
-						saveDraft();
-					} else set(listed);
+					listModels(result, selection, reasoning);
 				}
 			} catch {
 				if (generation === catalog)
@@ -371,6 +390,21 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 					refreshingModels = false;
 					set({ loadingModels: false });
 				}
+			}
+		},
+		async refreshModels() {
+			const current = service;
+			const { cwd, source } = get();
+			// Only a list on screen for the form's host and project can be kept
+			// up; a load in flight is already reading, and a start takes the form
+			// as it was sent, the way every other list change waits for it.
+			if (!current || loadedContext !== modelContext(source, cwd) || get().loadingModels || get().submitting) return;
+			const generation = ++catalog;
+			try {
+				const result = await readModels(current, source, cwd);
+				if (generation === catalog && !get().submitting) listModels(result, get().model, get().reasoning);
+			} catch {
+				// A failed refresh keeps the list the hub last served.
 			}
 		},
 		async submit() {
