@@ -1556,19 +1556,10 @@ it("clears an unsaved-edit notice when Add opens", async () => {
 
 // Only an edit its provider left behind says it wasn't saved: a cancelled
 // edit and a saved one say nothing of the kind.
-function editsHub() {
-	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
-	fake.on("evener/instance/edit", () => ({
-		instances: [instance({ authModes: ["apiKey"], hasStoredFile: true })],
-		availableProviders: [],
-	}));
-	return fake;
-}
-
 // A closed edit holds no draft, so the provider leaving afterwards has
 // nothing unsaved to report.
 it("says nothing of an unsaved edit when the provider leaves after a Cancel", async () => {
-	const fake = editsHub();
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
 	const { tree } = mountPage();
 	await act(async () => {});
 	await openWork(tree);
@@ -1582,7 +1573,11 @@ it("says nothing of an unsaved edit when the provider leaves after a Cancel", as
 });
 
 it("says nothing of an unsaved edit when the provider leaves after a save", async () => {
-	const fake = editsHub();
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	fake.on("evener/instance/edit", () => ({
+		instances: [instance({ authModes: ["apiKey"], hasStoredFile: true })],
+		availableProviders: [],
+	}));
 	const { tree } = mountPage();
 	await act(async () => {});
 	await openWork(tree);
