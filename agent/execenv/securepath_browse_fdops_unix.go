@@ -63,7 +63,7 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	}
 	if !info.Mode().IsRegular() {
 		_ = file.Close()
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fmt.Errorf("not a regular file")}
+		return nil, &fs.PathError{Op: "open", Path: name, Err: errors.New("not a regular file")}
 	}
 	return file, nil
 }
