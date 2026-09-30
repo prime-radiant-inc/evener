@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -165,7 +166,7 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 	// Stale: serve it now and refresh behind the request, so a picker open pays
 	// the live listing once per key rather than on every open.
 	if s.beginLaunchModelsRefresh(workingDir) {
-		s.startLaunchRefresh(workingDir, gen)
+		s.startLaunchRefresh(workingDir, gen, entry.resp)
 	}
 	return cloneModelListResponse(entry.resp), nil
 }
@@ -176,14 +177,14 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 // shutdown gate is closed, and releases the refresh slot it was given: a live
 // AppWire socket can still serve a model/list during shutdown, and an Add
 // racing the WaitGroup's Wait from zero is WaitGroup misuse.
-func (s *WebServer) startLaunchRefresh(workingDir string, gen uint64) bool {
+func (s *WebServer) startLaunchRefresh(workingDir string, gen uint64, served appwire.ModelListResponse) bool {
 	s.launchRefreshMu.Lock()
 	defer s.launchRefreshMu.Unlock()
 	if s.launchRefreshesClosed {
 		s.endLaunchModelsRefresh(workingDir)
 		return false
 	}
-	s.launchRefreshes.Go(func() { s.refreshLaunchModels(workingDir, gen) })
+	s.launchRefreshes.Go(func() { s.refreshLaunchModels(workingDir, gen, served) })
 	return true
 }
 
@@ -300,11 +301,21 @@ func launchModelsFetchContext(parent context.Context) (context.Context, context.
 // stale entry from. Its parent is the hub's lifetime context, not the request's,
 // so the request returning does not cancel it and shutdown does. A failed
 // refresh leaves the stale entry in place for the next request to retry.
-func (s *WebServer) refreshLaunchModels(workingDir string, gen uint64) {
+//
+// A refresh that lands a different list than served, the stale list the
+// triggering request was answered with, is announced (launchModelsChanged): a
+// picker still showing served updates in place.
+func (s *WebServer) refreshLaunchModels(workingDir string, gen uint64, served appwire.ModelListResponse) {
 	defer s.endLaunchModelsRefresh(workingDir)
 	ctx, cancel := launchModelsFetchContext(s.lifetime)
 	defer cancel()
-	_, _ = s.loadLaunchModels(ctx, workingDir, gen)
+	fresh, err := s.loadLaunchModels(ctx, workingDir, gen)
+	if err != nil || reflect.DeepEqual(served, fresh) {
+		return
+	}
+	if s.launchModelsChanged != nil {
+		s.launchModelsChanged()
+	}
 }
 
 // warmLaunchModels loads the unscoped launch model list into the cache, so the
