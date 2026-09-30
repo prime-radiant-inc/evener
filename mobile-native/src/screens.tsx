@@ -200,6 +200,9 @@ const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
 /** The most of its room the Session's bottom bar may take (spec 8.1). */
 const BAR_MAX_SHARE = 0.8;
+// How long an opening session's transcript stays hidden while it travels to
+// where it opens, at most.
+const OPENING_REVEAL_CAP_MS = 1000;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
 
 /** Find in session while it's open: what you typed, the current match's
@@ -455,6 +458,18 @@ export function ConversationScreen({
 	const turnsSeen = useRef<string | undefined>(undefined);
 	// Where the session opened is decided once per route (spec 7.3).
 	const openedFor = useRef<string | null>(null);
+	// Opening lands once: the list stays hidden while it travels to where the
+	// session opens (the live end, or a reading position), and shows once it
+	// is there. Scrolls the list takes while hidden are never seen, so no one
+	// watches it land, move and land again as rows measure.
+	const [openingLanded, setOpeningLanded] = useState(false);
+	const openingLandedNow = useRef(false);
+	const lastRowKey = useRef<string | null>(null);
+	function landOpening() {
+		if (openingLandedNow.current) return;
+		openingLandedNow.current = true;
+		setOpeningLanded(true);
+	}
 	// Following the live end, what moves the list, and the rows it held when
 	// you left the end, which "↓ 3 new" counts against (session/liveEndFollow).
 	// The store trims the 500-row cap only while the reader follows the end.
@@ -1362,6 +1377,8 @@ export function ConversationScreen({
 		follow.dispatch({ type: "reset", following: readerAnchor.current === null });
 		turnsSeen.current = readerAnchor.current?.turnsSeen;
 		openedFor.current = null;
+		openingLandedNow.current = false;
+		setOpeningLanded(false);
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
 	// Where the session opens (spec 7.3, ruling 31), decided once per route on
 	// the first layout with rows: the live end while a question or approval
@@ -1389,6 +1406,7 @@ export function ConversationScreen({
 			readerAnchor.current = null;
 			follow.dispatch({ type: "follow" });
 			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+			if (lastRowMeasured()) landOpening();
 		} else if (target.kind === "row") {
 			readerAnchor.current = readerAnchorAt(
 				route.params.hubId,
@@ -1404,6 +1422,23 @@ export function ConversationScreen({
 			readerRestoreAttempts.current.reset();
 		}
 	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
+	useEffect(() => {
+		lastRowKey.current = timelineRows.length > 0 ? readerKey(timelineRows[timelineRows.length - 1]) : null;
+	});
+	function lastRowMeasured() {
+		return lastRowKey.current !== null && readerMeasurements.current.has(lastRowKey.current);
+	}
+	// A session with no rows has nowhere to travel. One with rows shows after
+	// OPENING_REVEAL_CAP_MS however far it got, so an opening that can't land
+	// (its reading position never measures, or offline paging stalls) never
+	// leaves the transcript hidden.
+	const openingHidden = !openingLanded && timelineRows.length > 0;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the cap starts once per hidden, laid-out opening.
+	useEffect(() => {
+		if (!listLaidOut || !openingHidden) return;
+		const cap = setTimeout(landOpening, OPENING_REVEAL_CAP_MS);
+		return () => clearTimeout(cap);
+	}, [listLaidOut, openingHidden]);
 	// Loads the page above the loaded history once per cursor: a page that
 	// failed, or brought nothing new, stays guarded until the binding or route
 	// resets, so a failing page never loops. Both a reading position restored
@@ -1557,6 +1592,7 @@ export function ConversationScreen({
 			appliedReaderRestore.current = null;
 			follow.dispatch({ type: "follow" });
 			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+			if (lastRowMeasured()) landOpening();
 			return;
 		}
 		if (resolveReaderAnchor(anchor, timelineRows) === null) {
@@ -1597,7 +1633,11 @@ export function ConversationScreen({
 				readerContentHeight.current,
 				listContentMinHeight(readerViewportHeight.current, listUnderBar),
 			);
-			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) return;
+			// Already there: the opening has landed.
+			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) {
+				landOpening();
+				return;
+			}
 			appliedReaderRestore.current = {
 				key: currentKey,
 				height: measurement.height,
@@ -1609,6 +1649,7 @@ export function ConversationScreen({
 				offset: scrollOffset,
 				animated: false,
 			});
+			landOpening();
 		}
 	}, [
 		bindingInstance,
@@ -2605,6 +2646,12 @@ export function ConversationScreen({
 								y: event.nativeEvent.layout.y,
 								height: event.nativeEvent.layout.height,
 							});
+							// Opening at the live end lands once its last row has
+							// measured: pin the end, then show the list.
+							if (!openingLandedNow.current && key === lastRowKey.current && follow.state.current.following) {
+								(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
+								landOpening();
+							}
 							setLayoutRevision((revision) => revision + 1);
 						}}
 					>
@@ -2712,9 +2759,9 @@ export function ConversationScreen({
 						<FlatList
 							ref={timeline}
 							// Where the transcript rests depends on its viewport and the
-							// bar, so it shows once both have laid out and never draws a
-							// frame at a place it then leaves.
-							style={{ opacity: listLaidOut ? 1 : 0 }}
+							// bar, so it shows once both have laid out and the opening has
+							// landed, and never draws a frame at a place it then leaves.
+							style={{ opacity: listLaidOut && !openingHidden ? 1 : 0 }}
 							onLayout={(event) => {
 								readerViewportHeight.current = event.nativeEvent.layout.height;
 								setLayoutRevision((revision) => revision + 1);
@@ -2814,6 +2861,8 @@ export function ConversationScreen({
 								}
 							}}
 							onScrollBeginDrag={(event) => {
+								// A finger on the list while it opens: show it where it is.
+								landOpening();
 								follow.dispatch({ type: "dragBegin" });
 								pageOlderNear(event?.nativeEvent.contentOffset.y);
 								readerHeader.current = false;
