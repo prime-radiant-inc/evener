@@ -4,10 +4,11 @@ import {
   type SessionActivityCollection,
   type ThreadModel,
 } from "@evener/appwire-client";
-import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { forwardRef, memo, useCallback, useImperativeHandle, useMemo } from "react";
 import { ActivityPageBoundary } from "../../../shell/activitybar/ActivityPageBoundary";
 import { ScopeCrumbs } from "../../../shell/statusbar/ScopeCrumbs";
 import { deriveScope } from "../../../shell/statusbar/statusScope";
+import { useIsMobile } from "../../../shell/useIsMobile";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { useSessionActivity } from "../../../stores/sessionActivity";
@@ -40,6 +41,7 @@ const CLASS = {
 
 /** The recursive tree owns explicit subtree demand only while its body is visible. */
 export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps) {
+  const isMobile = useIsMobile();
   const { snapshot, loadMore } = useSessionActivity(sessionRef, "subtree", COLLECTIONS);
   const resources = useNavigationStore((state) => state.resources);
   // biome-ignore lint/correctness/useExhaustiveDependencies: resources invalidates the navigation title read.
@@ -49,6 +51,14 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
   );
   const presentation = useMemo(() => (snapshot ? projectSessionActivity(snapshot) : null), [snapshot]);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
+  const detailDisclosure = useMemo(
+    () => ({
+      overrides: entry.detailOverrides,
+      onOpenChange: (rowID: string, open: boolean) =>
+        activityPanelStore.getState().setDetailOpen(sessionRef, rowID, open),
+    }),
+    [sessionRef, entry.detailOverrides],
+  );
   const entities = useMemo(
     () =>
       buildEntityView({
@@ -92,6 +102,8 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
               watches={presentation.watches}
               watchCounts={snapshot?.summary?.watches}
               expandedFoldIDs={entry.expandedFoldIDs}
+              compactDetails={isMobile}
+              detailDisclosure={detailDisclosure}
               onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
             />
           </div>
@@ -120,22 +132,22 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   { sessionRef, model, hideTrigger = false, refreshWhenHidden = false, discoverWhenHidden = refreshWhenHidden },
   ref,
 ) {
-  const [open, setOpen] = useState(false);
+  const open = useActivityPanelStore((state) => state.entries.get(sessionRef)?.sheetOpen ?? false);
+  const setOpen = useCallback(
+    (open: boolean) => activityPanelStore.getState().setSheetOpen(sessionRef, open),
+    [sessionRef],
+  );
   const { snapshot } = useSessionActivity(
     !hideTrigger || refreshWhenHidden || discoverWhenHidden || open ? sessionRef : null,
   );
   const summary = snapshot?.summary;
   const active = summary?.delegates.known && summary.jobs.known ? summary.delegates.active + summary.jobs.active : null;
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each selected session has its own Sheet lifetime
-  useEffect(() => {
-    setOpen(false);
-  }, [sessionRef]);
+  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), [setOpen]);
   return (
     <>
       {!hideTrigger ? (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          {active === null ? "Activity" : `Activity · ${active}`}
+          {active === null ? "Activity" : `Activity · ${active} active`}
         </Button>
       ) : null}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">

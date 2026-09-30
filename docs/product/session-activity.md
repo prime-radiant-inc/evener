@@ -242,6 +242,19 @@ references use the transcript's own watch evidence. The
 observes subtree collections while its body is open. These view lifetimes do not
 cause an activity read for every session in the navigation rail.
 
+Narrow session chrome exposes Activity directly. Its optional active count sums
+the session's authoritative job and delegate active counts only when both are
+known; watches and completed work are not part of that number. The mobile sheet
+starts with compact job, delegate and watch details, each one disclosure away.
+Failed entries remain visible outside the inactive fold, including parent rows
+needed to expose failed descendants; successful inactive work stays folded.
+The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
+retains sheet visibility and disclosure choices by session ref for the lifetime
+of its retained workspace panes. Opening a child transcript releases the hidden
+subtree read demand; Back restores the Activity inspection context and acquires
+demand again through the shared binding. Explicitly closing the sheet keeps it
+closed across navigation. Closing the last retaining pane evicts this view state.
+
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection
 holders acquire demand separately, and client replacement fences old replies.

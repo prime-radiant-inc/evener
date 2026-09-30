@@ -54,6 +54,11 @@ export interface ActivityTreeProps {
   tree: ActivityTreeData;
   expandedFoldIDs: string[];
   onToggleFold: (foldID: string) => void;
+  compactDetails?: boolean;
+  detailDisclosure?: {
+    overrides: ReadonlyMap<string, boolean>;
+    onOpenChange: (rowID: string, open: boolean) => void;
+  };
   watches?: readonly SessionWatch[];
   // Summary counts cover every page; loaded rows cannot establish an unknown total.
   watchCounts?: SessionActivityCounts;
@@ -804,6 +809,8 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     tree,
     expandedFoldIDs,
     onToggleFold,
+    compactDetails = false,
+    detailDisclosure,
     watches,
     watchCounts,
     continuationFailures = {},
@@ -814,12 +821,13 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   ref,
 ) {
   // Detail strips are per-row, not an accordion: each row carries its own
-  // default (buildActivityRows' defaultDetailOpen - top-level rows open,
-  // nested and fold-revealed rows collapsed), and every chevron/arrow toggle
-  // overrides its row's default independently. Overrides keyed by vanished
+  // default (compact views start collapsed), and every chevron/arrow toggle
+  // overrides its row's default independently. A retaining panel supplies its
+  // disclosure owner; standalone trees keep local state. Overrides keyed by vanished
   // rows stay inert - they are only ever read for rows the current tree
   // actually renders.
-  const [detailOverrides, setDetailOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const [localDetailOverrides, setLocalDetailOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const detailOverrides = detailDisclosure?.overrides ?? localDetailOverrides;
   const activityRows = useMemo(() => buildActivityRows(tree, new Set(expandedFoldIDs)), [tree, expandedFoldIDs]);
   const watchRows = useMemo(() => buildWatchRows(watches), [watches]);
   const rows = useMemo(() => [...watchRows, ...activityRows], [watchRows, activityRows]);
@@ -831,17 +839,24 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   // Stable callbacks so the memoized row views below only re-render when
   // their own row's data, disclosure, or focus actually changes.
   const isDetailOpen = useCallback(
-    (row: DetailRow): boolean => detailOverrides.get(row.id) ?? row.defaultDetailOpen,
-    [detailOverrides],
+    (row: DetailRow): boolean => detailOverrides.get(row.id) ?? (!compactDetails && row.defaultDetailOpen),
+    [detailOverrides, compactDetails],
   );
 
-  const setDetailOpen = useCallback((row: DetailRow, open: boolean): void => {
-    setDetailOverrides((current) => {
-      const next = new Map(current);
-      next.set(row.id, open);
-      return next;
-    });
-  }, []);
+  const setDetailOpen = useCallback(
+    (row: DetailRow, open: boolean): void => {
+      if (detailDisclosure) {
+        detailDisclosure.onOpenChange(row.id, open);
+        return;
+      }
+      setLocalDetailOverrides((current) => {
+        const next = new Map(current);
+        next.set(row.id, open);
+        return next;
+      });
+    },
+    [detailDisclosure],
+  );
   const expandedFolds = useMemo(() => new Set(expandedFoldIDs), [expandedFoldIDs]);
   // The ticking clock lives in TreeTickProvider below, gated on this same
   // flag: no live rows, no interval - the old effect's contract, minus the

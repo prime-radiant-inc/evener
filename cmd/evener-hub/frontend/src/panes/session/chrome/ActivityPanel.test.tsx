@@ -51,11 +51,11 @@ test("closed trigger shares session counts while an open recursive tree owns onl
       <JobsTab scope={deriveScope(navigationStore.getState(), ref)} />
     </>,
   );
-  await screen.findByRole("button", { name: "Activity · 3" });
+  await screen.findByRole("button", { name: "Activity · 3 active" });
   await screen.findByRole("button", { name: /go test/ });
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(0);
   expect(client.calls.filter((c) => c.method === "evener/thread/watches/list")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "Activity · 3" }));
+  fireEvent.click(screen.getByRole("button", { name: "Activity · 3 active" }));
   await screen.findByText("subtree work");
   expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
   expect(

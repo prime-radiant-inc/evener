@@ -1077,7 +1077,7 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
   expect(fake.calls.filter((c) => c.method === "evener/thread/activity/read")).toHaveLength(1);
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Activity · 1" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Activity · 1 active" })).toBeTruthy();
   await user.keyboard("{Escape}");
   active = 3;
   act(() =>
@@ -1089,7 +1089,7 @@ test("triggerless chrome shares summary ownership and refreshes its menu on type
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/thread/activity/read")).toHaveLength(2));
   await settleActivityDiscovery(ref);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Activity · 3" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Activity · 3 active" })).toBeTruthy();
   expect(
     fake.calls.filter((c) => c.method === "evener/thread/jobs/list" || c.method === "evener/thread/delegates/list"),
   ).toHaveLength(0);

@@ -9,10 +9,10 @@
 //
 // The menu is the shared SessionMenu (2026-08-05-unified-session-context-
 // menu-design): Details/Tasks/Activity and pane-only Verbosity lead it at every
-// width (there are no inline triggers and no narrow-collapse - the status
-// row's container-query variants own compression inside .body instead),
-// followed by Rename, the tree-gated Pin/Archive/Delete organization group,
-// and Shut down. The composer placement alone can also lead with the
+// width, followed by Rename, the tree-gated Pin/Archive/Delete organization
+// group, and Shut down. Narrow chrome also exposes Activity directly; the
+// status row's container-query variants own compression inside .body.
+// The composer placement alone can also lead with the
 // narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The three
 // panels stay mounted triggerless so their imperative handles still open the
 // mobile Sheets; ActivityPanel's refreshWhenHidden is unconditional because
@@ -54,7 +54,7 @@ import { navigationStore, useNavigationStore } from "../../../stores/navigation/
 import { useSessionActivity } from "../../../stores/sessionActivity";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { topNotesStore, useTopNotesExpanded } from "../../../stores/topNotes";
-import { Cadence, useToasts } from "../../../widgets";
+import { Button, Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
@@ -246,7 +246,7 @@ export function SessionChrome({
   };
   const activityLabel =
     activitySummary?.delegates.known && activitySummary.jobs.known
-      ? `Activity · ${activitySummary.delegates.active + activitySummary.jobs.active}`
+      ? `Activity · ${activitySummary.delegates.active + activitySummary.jobs.active} active`
       : "Activity";
 
   // The menu's action adapters, shared by the composer and menu-only
@@ -373,6 +373,16 @@ export function SessionChrome({
           <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
           {!onOpenTasks && <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />}
           {hiddenActivityPanel}
+          {isMobile && (
+            <Button
+              variant="quiet"
+              size="sm"
+              title="Activity: active jobs and agents in this session"
+              onClick={openActivity}
+            >
+              {activityLabel}
+            </Button>
+          )}
           <SessionMenu
             sessionRef={sessionRef}
             title={model.name}
