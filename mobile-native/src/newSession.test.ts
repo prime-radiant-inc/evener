@@ -368,6 +368,7 @@ it("reads the list again after a start when a refreshed list landed during it", 
 	reads()[1]?.response.resolve({ data: [] });
 	await refresh;
 	expect(reads()).toHaveLength(2);
+	expect(store.getState().models).toEqual([model]);
 	calls.find((call) => call.method === "thread/start")?.response.reject(new Error("hub unavailable"));
 	await start;
 	expect(reads()).toHaveLength(3);
