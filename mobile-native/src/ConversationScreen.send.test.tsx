@@ -1246,6 +1246,26 @@ describe("opening a session", () => {
 		expect(opacity(tree)).toBe(1);
 	});
 
+	it("shows a reading position restored before the viewport's first layout without moving it again", async () => {
+		savePosition("ref-open-early");
+		const { tree } = await mount(twoTurns("ref-open-early"));
+		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+		// The row measures before the list's own layout: the restore lands, but
+		// the list can't show until its viewport has laid out.
+		layOutRow(tree, 3, 19_500);
+		await settle();
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToOffset", args: { offset: 19_500, animated: false } });
+		expect(opacity(tree)).toBe(0);
+		flatListCalls.length = 0;
+		act(() =>
+			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+		);
+		await settle();
+		// The viewport arriving shows the list where it landed, with no second restore.
+		expect(flatListCalls).toEqual([]);
+		expect(opacity(tree)).toBe(1);
+	});
+
 	it("shows the list at once when you touch it while it opens", async () => {
 		savePosition("ref-open-touch");
 		const { tree } = await mount(twoTurns("ref-open-touch"));
