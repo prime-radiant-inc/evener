@@ -228,7 +228,11 @@ type findFilters struct {
 // rather than a silently ignored argument.
 func parseFindFilters(args map[string]any) (findFilters, error) {
 	var f findFilters
-	kind := strings.TrimSpace(stringArg(args, "kind"))
+	kind, err := optionalStringArg(args, "kind")
+	if err != nil {
+		return findFilters{}, err
+	}
+	kind = strings.TrimSpace(kind)
 	switch kind {
 	case "", "any":
 	case kindRoot, kindSubagent, kindFork:
@@ -271,6 +275,20 @@ func parseFindFilters(args map[string]any) (findFilters, error) {
 	return f, nil
 }
 
+// optionalStringArg extracts an optional string argument, rejecting a
+// present-but-wrong-type value rather than silently ignoring it.
+func optionalStringArg(args map[string]any, key string) (string, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return "", nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid_request: %s must be a string, got %T", key, v)
+	}
+	return s, nil
+}
+
 // optionalBoolArg extracts an optional boolean argument, rejecting a
 // present-but-wrong-type value rather than silently ignoring it.
 func optionalBoolArg(args map[string]any, key string) (*bool, error) {
@@ -306,7 +324,11 @@ func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
 
 // optionalTimeArg extracts an optional RFC3339 timestamp from tool arguments.
 func optionalTimeArg(args map[string]any, key string) (*time.Time, error) {
-	raw := strings.TrimSpace(stringArg(args, key))
+	raw, err := optionalStringArg(args, key)
+	if err != nil {
+		return nil, err
+	}
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, nil
 	}
@@ -694,7 +716,10 @@ func metadataSnippets(m schema.SessionMeta, query, needle string) []snippet {
 	if m.OriginalPrompt != "" && strings.Contains(strings.ToLower(m.OriginalPrompt), needle) {
 		return []snippet{{Seq: metadataSnippetSeq, Role: "user", Snippet: makeSnippet(m.OriginalPrompt, query, snippetWidth)}}
 	}
-	if title := schema.SessionDisplayName(m); title != "" && strings.Contains(strings.ToLower(title), needle) {
+	// Only the generated name, not SessionDisplayName: that falls back to the
+	// prompt (handled above) and then the session ID, and an ID match should not
+	// be mislabelled as a title.
+	if title := strings.TrimSpace(m.Name); title != "" && strings.Contains(strings.ToLower(title), needle) {
 		return []snippet{{Seq: metadataSnippetSeq, Role: "title", Snippet: makeSnippet(title, query, snippetWidth)}}
 	}
 	return nil

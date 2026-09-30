@@ -175,6 +175,26 @@ func TestFind_ChildrenOfComposesWithFilters(t *testing.T) {
 	}
 }
 
+// TestFind_MetadataHitOnIDHasNoSnippet pins that a metadata match on the
+// session ID alone yields no snippet: the title branch uses the name field (not
+// SessionDisplayName, which falls back to the ID) and the prompt branch needs a
+// prompt, so an ID-only hit stays context-free rather than mislabelling the ID
+// as a title.
+func TestFind_MetadataHitOnIDHasNoSnippet(t *testing.T) {
+	t.Parallel()
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	id := identifier.MustNewSessionID()
+	writeFindSession(t, dir, findMetaSpec{id: id, updated: now}, "unrelated body")
+	env := findOne(t, &toolDeps{stateDir: dir}, map[string]any{"query": id})
+	if len(env.Matches) != 1 {
+		t.Fatalf("matches = %d, want 1", len(env.Matches))
+	}
+	if snips := env.Matches[0].Snippets; len(snips) != 0 {
+		t.Fatalf("id-only metadata hit snippets = %v, want none", snips)
+	}
+}
+
 // TestFind_FilterValidation rejects invalid filter combinations and values
 // rather than silently ignoring them.
 func TestFind_FilterValidation(t *testing.T) {
@@ -194,6 +214,8 @@ func TestFind_FilterValidation(t *testing.T) {
 		{"overflowing max_turns", map[string]any{"max_turns": 1e100}},
 		{"wrong-typed has_children", map[string]any{"has_children": "true"}},
 		{"wrong-typed min_turns", map[string]any{"min_turns": "5"}},
+		{"wrong-typed kind", map[string]any{"kind": float64(123)}},
+		{"wrong-typed updated_after", map[string]any{"updated_after": float64(1)}},
 	}
 	for _, c := range cases {
 		if _, err := execFindSessionTranscripts(deps, c.args); err == nil || !strings.Contains(err.Error(), "invalid_request") {
