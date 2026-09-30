@@ -146,15 +146,19 @@ native [rehydrate](../../mobile/src/state/conversation.ts#L2017) and
 Shared `reducer.history.test.ts` specifies that a later success clears history failure.
 
 **Discuss.** Keep the retained transcript and anchor while paced automatic
-rereads remain owned by the visible/needed session. A server read can rebuild a
-failed projection, so deduplicate concurrent recovery and pace expensive rebuilds
-as well as network retries. Classify persistent source damage separately;
-preserving its diagnostic need not prohibit a later health check or justify
-discarding the recorded history.
+rereads remain owned by the visible/needed session. Arm recovery only after a
+failed read and retire it on authoritative success: a healthy chat incurs no
+additional polling, network requests or disk reads for this mechanism. A server
+read can rebuild a failed projection, so deduplicate concurrent recovery and pace
+expensive rebuilds as well as network retries. Classify persistent source damage
+separately; preserving its diagnostic need not prohibit a later health check or
+justify discarding the recorded history.
 
 **Acceptance.** Fail an already-open transcript read, repair its backing
 condition, and leave the session idle. Content recovers without reopening or
-losing the reader's position.
+losing the reader's position. A healthy idle chat emits no recovery reads or
+rebuilds; after a failure recovers, advancing the retry clock produces no further
+recovery requests.
 
 ### C04 Older history and Find
 
