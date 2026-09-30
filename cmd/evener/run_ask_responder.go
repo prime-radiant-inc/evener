@@ -114,7 +114,10 @@ func askResponderPayload(pendingCallArgs [][]byte) ([]byte, error) {
 		questions = append(questions, parsed...)
 	}
 	if len(questions) == 0 {
-		return nil, errors.New("no pending ask_user questions to send the responder")
+		// The loop calls this only while a question is pending, so an empty
+		// list means the pending set was rebuilt from the transcript (after a
+		// failed turn), which records no call arguments to send.
+		return nil, errors.New("a question is pending but its ask_user arguments were not recorded (the turn failed and its asks were rebuilt from the transcript); ending with it unanswered")
 	}
 	return json.Marshal(struct {
 		Questions []agent.AskUserQuestion `json:"questions"`

@@ -411,29 +411,30 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := parseAskQuestions(normalized); err != nil {
+	parsed, err := parseAskQuestions(normalized)
+	if err != nil {
 		return nil, err
 	}
+	// parseAskQuestions validated the shape and carries every field but the
+	// optional option detail, which is read from the same normalized call.
 	raw, _ := normalized["questions"].([]any)
-	out := make([]AskUserQuestion, 0, len(raw))
-	for _, r := range raw {
-		qm, _ := r.(map[string]any)
-		opts, _ := qm["options"].([]any)
-		options := make([]AskUserOption, 0, len(opts))
-		for _, o := range opts {
-			om, _ := o.(map[string]any)
-			detail, _ := om["detail"].(string)
-			options = append(options, AskUserOption{
-				Label:  fmt.Sprint(om["label"]),
-				Detail: detail,
-			})
+	out := make([]AskUserQuestion, 0, len(parsed))
+	for i, q := range parsed {
+		var rawOpts []any
+		if i < len(raw) {
+			qm, _ := raw[i].(map[string]any)
+			rawOpts, _ = qm["options"].([]any)
 		}
-		header, _ := qm["header"].(string)
-		out = append(out, AskUserQuestion{
-			Header:   header,
-			Question: fmt.Sprint(qm["question"]),
-			Options:  options,
-		})
+		options := make([]AskUserOption, 0, len(q.Options))
+		for j, label := range q.Options {
+			var detail string
+			if j < len(rawOpts) {
+				om, _ := rawOpts[j].(map[string]any)
+				detail, _ = om["detail"].(string)
+			}
+			options = append(options, AskUserOption{Label: label, Detail: detail})
+		}
+		out = append(out, AskUserQuestion{Header: q.Header, Question: q.Question, Options: options})
 	}
 	return out, nil
 }
