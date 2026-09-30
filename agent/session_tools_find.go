@@ -237,7 +237,11 @@ func parseFindFilters(args map[string]any) (findFilters, error) {
 		return findFilters{}, fmt.Errorf("invalid_request: unknown kind %q: use root, subagent, fork, or any", kind)
 	}
 
-	f.hasChildren = optionalBoolArg(args, "has_children")
+	hasChildren, err := optionalBoolArg(args, "has_children")
+	if err != nil {
+		return findFilters{}, err
+	}
+	f.hasChildren = hasChildren
 	minTurns, err := optionalWholeIntArg(args, "min_turns")
 	if err != nil {
 		return findFilters{}, err
@@ -267,27 +271,37 @@ func parseFindFilters(args map[string]any) (findFilters, error) {
 	return f, nil
 }
 
-// optionalBoolArg extracts an optional boolean pointer from tool arguments.
-func optionalBoolArg(args map[string]any, key string) *bool {
-	if v, ok := args[key].(bool); ok {
-		return &v
-	}
-	return nil
-}
-
-// optionalWholeIntArg extracts an optional integer argument, rejecting a
-// non-integral JSON number with invalid_request rather than truncating it, so
-// min_turns:5.9 is an error and not a silent >= 5 filter.
-func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
-	v, ok := args[key].(float64)
-	if !ok {
+// optionalBoolArg extracts an optional boolean argument, rejecting a
+// present-but-wrong-type value rather than silently ignoring it.
+func optionalBoolArg(args map[string]any, key string) (*bool, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
 		return nil, nil
 	}
-	if v != math.Trunc(v) {
-		return nil, fmt.Errorf("invalid_request: %s must be a whole number, got %v", key, v)
+	b, ok := v.(bool)
+	if !ok {
+		return nil, fmt.Errorf("invalid_request: %s must be a boolean, got %T", key, v)
 	}
-	n := int(v)
-	return &n, nil
+	return &b, nil
+}
+
+// optionalWholeIntArg extracts an optional non-negative integer argument,
+// rejecting a fractional, negative, out-of-range, or wrong-typed value with
+// invalid_request rather than silently reshaping or ignoring it.
+func optionalWholeIntArg(args map[string]any, key string) (*int, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	n, ok := v.(float64)
+	if !ok {
+		return nil, fmt.Errorf("invalid_request: %s must be a whole number, got %T", key, v)
+	}
+	if n != math.Trunc(n) || n < 0 || n >= math.MaxInt {
+		return nil, fmt.Errorf("invalid_request: %s must be a non-negative whole number, got %v", key, n)
+	}
+	i := int(n)
+	return &i, nil
 }
 
 // optionalTimeArg extracts an optional RFC3339 timestamp from tool arguments.
@@ -664,22 +678,24 @@ func matchCandidate(c findCandidate, query, needle string, scanned *int, scanTru
 	return snips, true
 }
 
+// metadataSnippetSeq marks a metadata-only snippet's seq as not a turn address.
+// The metadata-only fast path deliberately opens no transcript, and a subagent
+// or fork can carry inherited context ahead of its own assignment, so the
+// matching text need not live at turn 0 — a metadata snippet cannot name a real
+// turn. The sentinel is negative so no caller can mistake it for one.
+const metadataSnippetSeq = -1
+
 // metadataSnippets renders a bounded evidence snippet for a metadata-only match
 // so the record is not context-free. The initial prompt is the strongest
 // evidence (it is what the user asked); the title is the fallback. A match on
 // another metadata field (id, model, parent, working dir) yields no snippet.
-//
-// Seq is a display coordinate, not necessarily a turn address: the metadata-only
-// fast path deliberately opens no transcript, and a subagent or fork can carry
-// inherited context ahead of its own assignment, so the matching text need not
-// live at turn 0. Callers must not feed this Seq to read_transcript's range or
-// expand_turn.
+// The seq is metadataSnippetSeq, not a turn address.
 func metadataSnippets(m schema.SessionMeta, query, needle string) []snippet {
 	if m.OriginalPrompt != "" && strings.Contains(strings.ToLower(m.OriginalPrompt), needle) {
-		return []snippet{{Seq: 0, Role: "user", Snippet: makeSnippet(m.OriginalPrompt, query, snippetWidth)}}
+		return []snippet{{Seq: metadataSnippetSeq, Role: "user", Snippet: makeSnippet(m.OriginalPrompt, query, snippetWidth)}}
 	}
 	if title := schema.SessionDisplayName(m); title != "" && strings.Contains(strings.ToLower(title), needle) {
-		return []snippet{{Seq: 0, Role: "title", Snippet: makeSnippet(title, query, snippetWidth)}}
+		return []snippet{{Seq: metadataSnippetSeq, Role: "title", Snippet: makeSnippet(title, query, snippetWidth)}}
 	}
 	return nil
 }

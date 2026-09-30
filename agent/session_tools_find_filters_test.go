@@ -190,6 +190,10 @@ func TestFind_FilterValidation(t *testing.T) {
 		{"unparsable timestamp", map[string]any{"updated_after": "not-a-time"}},
 		{"non-integral min_turns", map[string]any{"min_turns": float64(5.9)}},
 		{"non-integral max_turns", map[string]any{"max_turns": float64(2.5)}},
+		{"negative min_turns", map[string]any{"min_turns": float64(-1)}},
+		{"overflowing max_turns", map[string]any{"max_turns": 1e100}},
+		{"wrong-typed has_children", map[string]any{"has_children": "true"}},
+		{"wrong-typed min_turns", map[string]any{"min_turns": "5"}},
 	}
 	for _, c := range cases {
 		if _, err := execFindSessionTranscripts(deps, c.args); err == nil || !strings.Contains(err.Error(), "invalid_request") {
@@ -224,6 +228,9 @@ func TestFind_MetadataHitHasPromptSnippet(t *testing.T) {
 	}
 	if snips[0].Role != "user" {
 		t.Fatalf("metadata snippet role = %q, want user", snips[0].Role)
+	}
+	if snips[0].Seq != metadataSnippetSeq {
+		t.Fatalf("metadata snippet seq = %d, want the sentinel %d (not a turn address)", snips[0].Seq, metadataSnippetSeq)
 	}
 	if !strings.Contains(snips[0].Snippet, "mux") {
 		t.Fatalf("metadata snippet = %q, want the prompt text", snips[0].Snippet)
