@@ -18,7 +18,7 @@ func TestSessionActivityTranslatedPagesStayBounded(t *testing.T) {
 			offsets := map[string]int{"": 0}
 			source, calls := newScriptedRemote(t, sourceID, func(got string, raw json.RawMessage) scriptedReply {
 				if got != method {
-					return scriptedReply{wireErr: ptrActivityWireError(appwire.MethodNotFound(got))}
+					return scriptedReply{wireErr: new(appwire.MethodNotFound(got))}
 				}
 				var params appwire.SessionActivityListParams
 				if err := json.Unmarshal(raw, &params); err != nil {
@@ -55,7 +55,7 @@ func TestSessionActivityTranslatedPagesStayBounded(t *testing.T) {
 			})
 			cursor := ""
 			seen := map[string]bool{}
-			for pages := 0; pages < total; pages++ {
+			for range total {
 				params := appwire.SessionActivityListParams{Ref: sourceID + ":root", Limit: 200, Cursor: cursor}
 				value, page, ids := readActivitySizedPage(t, source, method, params)
 				raw, err := json.Marshal(value)

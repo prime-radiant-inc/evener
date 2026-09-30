@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"primeradiant.com/evener/agent/events"
+	"strconv"
 	"testing"
+
+	"primeradiant.com/evener/agent/events"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -32,7 +33,7 @@ func TestSessionActivityPublicRoutes(t *testing.T) {
 
 func TestSessionActivityLogicalReceiverInvalidation(t *testing.T) {
 	for _, descendant := range []bool{false, true} {
-		t.Run(fmt.Sprint(descendant), func(t *testing.T) {
+		t.Run(strconv.FormatBool(descendant), func(t *testing.T) {
 			s := NewServer(ServerConfig{})
 			s.SetAppIdentity("local", "root")
 			event := events.SessionEvent{Kind: events.EventSessionActivityChanged, SessionID: "root", Data: events.SessionActivityChangedData{ThreadID: "root", SessionID: "root", Ref: "local:root", Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, appwire.SessionActivityResourceWatches}}}

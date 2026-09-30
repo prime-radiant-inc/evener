@@ -6,12 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"primeradiant.com/evener/internal/appserver"
-	"primeradiant.com/evener/rendezvous"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -143,7 +144,7 @@ func TestSessionActivityRemoteSourceIsolation(t *testing.T) {
 			source, calls := newScriptedRemote(t, id, func(method string, raw json.RawMessage) scriptedReply {
 				var params appwire.SessionActivityListParams
 				if err := json.Unmarshal(raw, &params); err != nil {
-					return scriptedReply{wireErr: ptrActivityWireError(appwire.InvalidParams(err.Error()))}
+					return scriptedReply{wireErr: new(appwire.InvalidParams(err.Error()))}
 				}
 				activityContext := appwire.SessionActivityContext{Ref: params.Ref, SessionID: "same-id", RootRef: "local:root", Epoch: id, Availability: "live", AncestryKnown: true}
 				switch method {
@@ -156,7 +157,7 @@ func TestSessionActivityRemoteSourceIsolation(t *testing.T) {
 				case appwire.MethodEvenerThreadWatchesList:
 					return scriptedReply{result: appwire.SessionWatchesResponse{Context: activityContext}}
 				default:
-					return scriptedReply{wireErr: ptrActivityWireError(appwire.MethodNotFound(method))}
+					return scriptedReply{wireErr: new(appwire.MethodNotFound(method))}
 				}
 			})
 			for _, method := range []string{appwire.MethodEvenerThreadActivityRead, appwire.MethodEvenerThreadDelegatesList, appwire.MethodEvenerThreadJobsList, appwire.MethodEvenerThreadWatchesList} {
@@ -179,8 +180,6 @@ func TestSessionActivityRemoteSourceIsolation(t *testing.T) {
 		})
 	}
 }
-
-func ptrActivityWireError(err appwire.WireError) *appwire.WireError { return &err }
 
 func TestSessionActivityLocalReadCancellation(t *testing.T) {
 	ctx, finish := context.WithTimeout(t.Context(), 5*time.Second)

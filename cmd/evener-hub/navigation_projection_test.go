@@ -783,21 +783,6 @@ func deepNavigationNode(depth int) hubcore.TreeNode {
 	return node
 }
 
-func navigationDepth(rows []hubapi.NavigationSessionSummary) int {
-	maxDepth := 0
-	var visit func([]hubapi.NavigationSessionSummary, int)
-	visit = func(nodes []hubapi.NavigationSessionSummary, depth int) {
-		for _, node := range nodes {
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-			visit(node.Children, depth+1)
-		}
-	}
-	visit(rows, 1)
-	return maxDepth
-}
-
 // TestCloneNavigationLiveEntriesOwnsWatches proves the navigation-input clone
 // deep-copies each live entry's watch list. Without the Watches line the clone
 // shares the roster's backing slices, so mutating the original's delivery

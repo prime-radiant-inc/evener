@@ -2,11 +2,12 @@ package hub
 
 import (
 	"encoding/json"
-	"primeradiant.com/evener/hubapi"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"primeradiant.com/evener/hubapi"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"

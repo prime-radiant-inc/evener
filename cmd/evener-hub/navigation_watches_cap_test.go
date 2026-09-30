@@ -2,9 +2,10 @@ package hub
 
 import (
 	"fmt"
-	"primeradiant.com/evener/agent/schema"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/schema"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"

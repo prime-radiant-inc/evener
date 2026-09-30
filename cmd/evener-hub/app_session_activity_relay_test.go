@@ -118,7 +118,7 @@ func (a *activityRelayAdapter) Complete(ctx context.Context, req llm.Request) (l
 	return llm.Response{}, ctx.Err()
 }
 
-func awaitActivityRelaySignal(t *testing.T, ctx context.Context, signal <-chan struct{}, name string) {
+func awaitActivityRelaySignal(ctx context.Context, t *testing.T, signal <-chan struct{}, name string) {
 	t.Helper()
 	select {
 	case <-signal:
@@ -126,7 +126,7 @@ func awaitActivityRelaySignal(t *testing.T, ctx context.Context, signal <-chan s
 		t.Fatalf("%s: %v", name, ctx.Err())
 	}
 }
-func awaitActivityRelayNotice(t *testing.T, ctx context.Context, client *appwire.Client, target, owner string, resource appwire.SessionActivityResource) appwire.SessionActivityChangedParams {
+func awaitActivityRelayNotice(ctx context.Context, t *testing.T, client *appwire.Client, target, owner string, resource appwire.SessionActivityResource) appwire.SessionActivityChangedParams {
 	t.Helper()
 	for {
 		select {
@@ -233,14 +233,14 @@ func TestSessionActivityLiveProducerRelayAndIndependentSubscribers(t *testing.T)
 		signal chan struct{}
 		name   string
 	}{{adapter.rootReady, "root watch"}, {adapter.childReady, "child watch"}, {adapter.grandReady, "grandchild"}} {
-		awaitActivityRelaySignal(t, ctx, ready.signal, ready.name)
+		awaitActivityRelaySignal(ctx, t, ready.signal, ready.name)
 	}
 	initialWatches, initialErr := activity.ThreadWatchesList(ctx, appwire.SessionActivityListParams{Ref: rootRef})
 	if initialErr != nil || len(initialWatches.Watches) != 1 {
 		t.Fatalf("real initial root watch=%+v err=%v", initialWatches, initialErr)
 	}
 	for _, subscriber := range []*appwire.Client{activity, transcript} {
-		_ = awaitActivityRelayNotice(t, ctx, subscriber, rootID, rootID, appwire.SessionActivityResourceWatches)
+		_ = awaitActivityRelayNotice(ctx, t, subscriber, rootID, rootID, appwire.SessionActivityResourceWatches)
 	}
 	if got := hubServer.SubscriberCount(rootRef); got != 2 {
 		t.Fatalf("root owners=%d, want 2", got)
@@ -364,7 +364,7 @@ func TestSessionActivityLiveProducerRelayAndIndependentSubscribers(t *testing.T)
 		client *appwire.Client
 		target string
 	}{{activity, rootID}, {transcript, rootID}, {child, childID}} {
-		notice := awaitActivityRelayNotice(t, ctx, subscriber.client, subscriber.target, childID, appwire.SessionActivityResourceWatches)
+		notice := awaitActivityRelayNotice(ctx, t, subscriber.client, subscriber.target, childID, appwire.SessionActivityResourceWatches)
 		if notice.Ref != "local:"+subscriber.target {
 			t.Fatalf("routing ref=%+v", notice)
 		}
@@ -418,7 +418,7 @@ func TestSessionActivityLiveProducerRelayAndIndependentSubscribers(t *testing.T)
 	if watchChanges != 1 {
 		t.Fatalf("receiver/ancestor watch notices=%d, want one", watchChanges)
 	}
-	_ = awaitActivityRelayNotice(t, ctx, grand, grandID, grandID, appwire.SessionActivityResourceJobs)
+	_ = awaitActivityRelayNotice(ctx, t, grand, grandID, grandID, appwire.SessionActivityResourceJobs)
 	grandJobs, err := activity.ThreadJobsList(ctx, appwire.SessionActivityListParams{Ref: "local:" + grandID})
 	if err != nil {
 		t.Fatal(err)
@@ -442,8 +442,8 @@ func TestSessionActivityLiveProducerRelayAndIndependentSubscribers(t *testing.T)
 	}
 physicalConfirmed:
 	close(adapter.childSend)
-	_ = awaitActivityRelayNotice(t, ctx, activity, rootID, rootID, appwire.SessionActivityResourceWatches)
-	_ = awaitActivityRelayNotice(t, ctx, additive, rootID, rootID, appwire.SessionActivityResourceWatches)
+	_ = awaitActivityRelayNotice(ctx, t, activity, rootID, rootID, appwire.SessionActivityResourceWatches)
+	_ = awaitActivityRelayNotice(ctx, t, additive, rootID, rootID, appwire.SessionActivityResourceWatches)
 	watches, err := activity.ThreadWatchesList(ctx, appwire.SessionActivityListParams{Ref: rootRef})
 	if err != nil {
 		t.Fatal(err)
@@ -465,9 +465,9 @@ physicalConfirmed:
 		t.Fatalf("disposing activity removed transcript owner: %d", got)
 	}
 	close(adapter.clearRootWatch)
-	awaitActivityRelaySignal(t, ctx, adapter.rootCleared, "root watch clear")
-	_ = awaitActivityRelayNotice(t, ctx, transcript, rootID, rootID, appwire.SessionActivityResourceWatches)
-	_ = awaitActivityRelayNotice(t, ctx, additive, rootID, rootID, appwire.SessionActivityResourceWatches)
+	awaitActivityRelaySignal(ctx, t, adapter.rootCleared, "root watch clear")
+	_ = awaitActivityRelayNotice(ctx, t, transcript, rootID, rootID, appwire.SessionActivityResourceWatches)
+	_ = awaitActivityRelayNotice(ctx, t, additive, rootID, rootID, appwire.SessionActivityResourceWatches)
 	ended, err := transcript.ThreadWatchesList(ctx, appwire.SessionActivityListParams{Ref: rootRef})
 	if err != nil {
 		t.Fatal(err)

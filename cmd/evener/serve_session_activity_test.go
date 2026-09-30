@@ -61,12 +61,9 @@ func TestSessionActivityServeAliasReadFencedAcrossClear(t *testing.T) {
 			t.Errorf("old alias read after replacement = %v; want a recoverable stale incarnation", err)
 		}
 		encoded, _ := json.Marshal(wire.Data)
-		var data struct {
-			Info  string `json:"evenerErrorInfo"`
-			Retry string `json:"retryDisposition"`
-		}
+		var data appwire.ErrorData
 		_ = json.Unmarshal(encoded, &data)
-		if data.Info != "sessionActivityCursorStale" || data.Retry != "automatic" {
+		if data.EvenerErrorInfo != appwire.ErrorSessionActivityCursorStale || data.RetryDisposition != appwire.RetryDispositionAutomatic {
 			t.Errorf("incarnation error is not recoverable: %+v", wire)
 		}
 		current := state.session(1)

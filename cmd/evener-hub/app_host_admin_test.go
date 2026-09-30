@@ -546,9 +546,13 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/spawn/slashCatalog":               true, // discovery: the host's pre-session slash catalog
 		"evener/subagentPreview":                  false,
 		"evener/tasks/list":                       false,
+		"evener/thread/activity/read":             false,
+		"evener/thread/delegates/list":            false,
 		"evener/thread/forceStop":                 false,
+		"evener/thread/jobs/list":                 false,
 		"evener/thread/name/set":                  false,
 		"evener/thread/transcripts/list":          false,
+		"evener/thread/watches/list":              false,
 		"evener/update/apply":                     false,
 		"evener/update/check":                     false,
 		"evener/upgrade":                          false,

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"slices"
 	"unicode/utf8"
 
@@ -491,10 +490,6 @@ func navigationTaskProgressValid(tasks hubapi.NavigationTaskProgress) bool {
 // refuses rather than failing the whole resource over it.
 func navigationSubagentTallyValid(tally hubapi.NavigationSubagentTally) bool {
 	return navigationIntCount(tally.Running) && navigationIntCount(tally.Failed) && navigationIntCount(tally.Done)
-}
-
-func navigationCadenceSeconds(value float64) bool {
-	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
 }
 
 func navigationProjectSummaryValid(value hubapi.NavigationProjectSummary) bool {

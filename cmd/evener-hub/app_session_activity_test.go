@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -164,7 +163,7 @@ func TestSessionActivityRetainedPublicHierarchyAndSourceFences(t *testing.T) {
 	}
 	remote := appsource.NewRemoteHubSource("remote", nil, func(context.Context, string) (*appwire.Client, error) {
 		t.Error("read dialed a remote host")
-		return nil, fmt.Errorf("must not dial")
+		return nil, errors.New("must not dial")
 	})
 	remote.SetHostClientIfAttached(func(string) (*appwire.Client, bool) { return nil, false })
 	registry.Add(remote)
