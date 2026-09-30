@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -1028,6 +1029,7 @@ func TestShellToolCwdEscapingSandboxRootRejected(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	root := s.env.WorkingDirectory()
+	s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
 	// The "resolved" path per this kata is the joined+cleaned path (not a
 	// symlink-canonicalized one) — resolveShellWorkingDir joins raw against
 	// env.WorkingDirectory() and filepath.Clean's the result before validating.
@@ -1539,4 +1541,45 @@ func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+func TestShellToolSandboxOffCwdOutsideWorkingDirectory(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd is POSIX-only")
+	}
+	for _, explicit := range []bool{false, true} {
+		base := t.TempDir()
+		root := filepath.Join(base, "workspace")
+		if err := os.Mkdir(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		s := newSession(t, withDir(root), withoutGitSnapshot())
+		if explicit {
+			s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeOff}
+		}
+		want, err := filepath.EvalSymlinks(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, cwd := range []string{base, ".."} {
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{ID: "c1", Name: "shell", Arguments: json.RawMessage(fmt.Sprintf(`{"command":"pwd","cwd":%q}`, cwd))})
+			if res.IsError || !strings.Contains(res.Output, want) {
+				t.Fatalf("cwd %q returned error=%v, output=%q; want %s", cwd, res.IsError, res.Output, want)
+			}
+		}
+	}
+}
+
+func TestShellToolConfinedCwdOutsideWorkingDirectory(t *testing.T) {
+	t.Parallel()
+	for _, policy := range []sandbox.ResolvedPolicy{
+		{Mode: sandbox.ModeReadOnly}, {Mode: sandbox.ModeWorkspaceWrite}, {Mode: sandbox.ModeRestricted}, {Mode: sandbox.ModeOff, WriteBlocked: true},
+	} {
+		env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+		env.Sandbox = &policy
+		if _, err := resolveShellWorkingDir(env, t.TempDir()); err == nil {
+			t.Fatalf("policy %+v accepted external cwd", policy)
+		}
+	}
 }

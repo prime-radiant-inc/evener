@@ -1020,7 +1020,7 @@ export interface DemoFleet extends FleetAnswers {
 	// root for any other fleet session (demoSubagents.ts).
 	answerJobsList(params: { ref?: string; continuation?: string }): { data: unknown };
 	// Answers evener/jobs/output: a listed shell job's tail (demoSubagents.ts),
-	// found in whichever fleet session's tree holds it.
+	// only for the session that owns it (its ownerRef), as a hub answers.
 	answerJobsOutput(params: { ref?: string; jobId: string }): { data: unknown };
 }
 
@@ -1163,11 +1163,12 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
 		answerJobsOutput: (params) => {
 			// Read back as the phone reads the tree, so the job answered is the
-			// one the Activity list shows.
+			// one the Activity list shows, and only for the session that owns
+			// it, as a hub answers.
 			for (const raw of sessionsList) {
 				const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(raw)), startupMs).data);
 				const job = tree ? flattenActivity(tree).jobs.find((row) => row.id === params.jobId)?.job : undefined;
-				if (job) return demoJobOutput(job);
+				if (job && job.ownerRef === params.ref) return demoJobOutput(job);
 			}
 			throw new Error(`job not found: ${params.jobId}`);
 		},

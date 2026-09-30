@@ -16,7 +16,7 @@ package tool
 //     any divergence is a real nondeterminism bug).
 //
 // apply_patch reaches the filesystem through an execenv.FileMutator (here an
-// off-mode LocalExecutionEnvironment rooted at a real t.TempDir), which confines
+// explicitly confined LocalExecutionEnvironment rooted at a real t.TempDir), which confines
 // every mutation to that root — rejecting absolute paths and ".." traversal
 // outside it — so fuzzed patches cannot escape the sandbox.
 
@@ -134,13 +134,16 @@ type apatch_applyResult struct {
 // the fuzz test (the never-panic oracle).
 func apatch_runOnce(t *testing.T, patch, base string) (apatch_applyResult, map[string]string) {
 	t.Helper()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	// Seed a known file so update/delete ops that reference it hit their
 	// success branches instead of always failing at ReadFile.
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte(base), 0o644); err != nil {
 		t.Fatalf("seed file.txt: %v", err)
 	}
-	out, err := ApplyPatch(testMutator(root), patch)
+	out, err := ApplyPatch(confinedPatchMutator(t, root), patch)
 	errText := ""
 	if err != nil {
 		// Error messages can embed the absolute sandbox path (each run gets a
