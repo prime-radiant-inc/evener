@@ -235,6 +235,16 @@ it("says when the job wrote nothing, when its output can't be read, and when it'
 	expect(outputCalls().filter((call) => call.params.jobId === "j-test")).toHaveLength(3);
 });
 
+// A job that leaves the tree takes its output with it: the screen says it's
+// no longer listed and shows nothing it read before.
+it("drops the output it showed once the job leaves the tree", async () => {
+	const screen = await mount();
+	expect(renderedText(screen)).toContain("--- FAIL: TestSettle (0.01s)");
+	await treeChanges({ revision: 2, root: session("local:coord", COORDINATOR.title, []) });
+	expect(renderedText(screen)).toContain("This job is no longer listed.");
+	expect(renderedText(screen)).not.toContain("--- FAIL: TestSettle (0.01s)");
+});
+
 it("says when the kept output starts partway through", async () => {
 	output = () => ({ data: { ...TAIL, totalBytes: 9000, retainedStart: 8958, truncated: true, hasEarlier: true } });
 	expect(renderedText(await mount())).toContain("Showing the end of the output");

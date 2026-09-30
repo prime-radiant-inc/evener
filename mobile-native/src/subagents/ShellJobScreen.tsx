@@ -50,7 +50,13 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 		[job],
 	);
 	const output = useShellJobOutput(client, target);
-	const lines = useMemo(() => (output.status === "read" ? parseOutputLines(output.tail.tail) : []), [output]);
+	// Only a listed job shows output: one that left the tree shows none of
+	// what was read for it.
+	const listed = row !== undefined;
+	const lines = useMemo(
+		() => (listed && output.status === "read" ? parseOutputLines(output.tail.tail) : []),
+		[listed, output],
+	);
 
 	const quiet = { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid };
 	const gone = snapshot.tree
