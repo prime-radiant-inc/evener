@@ -154,24 +154,25 @@ func appendAskLog(path string, questions []agent.AskUserQuestion, answers []stri
 // readAskLog reads back the question/answer pairs respond appended to a
 // --log file, for the harness to attach to a probe's result. A missing or
 // unreadable log (no person: block, or a responder that never ran) is not
-// an error — the caller gets an empty slice.
-func readAskLog(path string) []askExchange {
+// an error — the caller gets an empty slice. malformed counts lines that did
+// not parse, so the caller can report them instead of losing them silently.
+func readAskLog(path string) (exchanges []askExchange, malformed int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
-	var out []askExchange
 	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		var exchange askExchange
 		if err := json.Unmarshal([]byte(line), &exchange); err != nil {
+			malformed++
 			continue
 		}
-		out = append(out, exchange)
+		exchanges = append(exchanges, exchange)
 	}
-	return out
+	return exchanges, malformed
 }
 
 // respondAnswerSchema is the JSON schema the model's answer must conform to
@@ -197,8 +198,9 @@ var respondModelCall = callRespondModel
 
 // callRespondModel resolves modelRef the same way the rest of this binary
 // does (splitModelRef) and asks it, through the harness's own client
-// loader (runnerLoadClient — never a key on the command line), for a single
-// JSON {"answer": "..."} object.
+// loader (runnerLoadClient — never a key on the command line), for a JSON
+// {"answers": [...]} object with one entry per question. The client carries
+// every configured provider; GenerateObject picks modelRef's per request.
 func callRespondModel(ctx context.Context, modelRef, systemPrompt, userPrompt string) ([]string, error) {
 	providerName, modelName, err := splitModelRef(modelRef)
 	if err != nil {

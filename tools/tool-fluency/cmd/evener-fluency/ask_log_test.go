@@ -54,6 +54,28 @@ func TestApplyAskExchangesNoopWithoutPerson(t *testing.T) {
 	}
 }
 
+// TestApplyAskExchangesReportsMalformedLogLines: a corrupt line in the ask
+// log is kept out of Asks but reported as an infra finding, so a short Asks
+// beside a full AskUserCalls is explained rather than silent.
+func TestApplyAskExchangesReportsMalformedLogLines(t *testing.T) {
+	dir := t.TempDir()
+	res := probeResult{WorkDir: filepath.Join(dir, "work"), CanonicalToolCounts: map[string]int{"ask_user": 2}}
+	if err := os.WriteFile(filepath.Join(dir, "asks.jsonl"), []byte(
+		`{"question":"Ship today?","answer":"Yes"}`+"\n"+
+			`{"question":"Which env?","answ`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	applyAskExchanges(&res, probeFile{Person: &personSpec{Brief: "b"}})
+
+	if len(res.Asks) != 1 {
+		t.Errorf("Asks = %+v, want the one well-formed pair", res.Asks)
+	}
+	if len(res.Findings) != 1 || res.Findings[0].Category != "infra" {
+		t.Fatalf("Findings = %+v, want one infra finding for the malformed line", res.Findings)
+	}
+}
+
 // TestApplyAskExchangesMissingLogIsNotAnError: when the responder never ran
 // (or the log was never created), the result gets a zero count and no asks,
 // not an error.

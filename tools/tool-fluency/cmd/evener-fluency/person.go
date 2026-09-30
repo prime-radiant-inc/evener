@@ -65,5 +65,13 @@ func applyAskExchanges(res *probeResult, probe probeFile) {
 	}
 	res.AskUserCalls = res.CanonicalToolCounts["ask_user"]
 	logPath := filepath.Join(filepath.Dir(res.WorkDir), "asks.jsonl")
-	res.Asks = readAskLog(logPath)
+	asks, malformed := readAskLog(logPath)
+	res.Asks = asks
+	if malformed > 0 {
+		res.Findings = append(res.Findings, finding{
+			Category: "infra",
+			Title:    "ask log has malformed lines",
+			Detail:   fmt.Sprintf("%d line(s) of %s did not parse and are missing from asks", malformed, logPath),
+		})
+	}
 }
