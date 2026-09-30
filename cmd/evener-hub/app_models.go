@@ -604,7 +604,11 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		// withScopedCodexAuth) so a custom root reads its own Codex
 		// record instead of the process default's.
 		listCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), instanceLiveListTimeout)
-		listing, listErr := client.Models(listCtx, inst.Name)
+		// The listing sends the instance's credential, so what the provider
+		// answers is recorded as a probe of it (#3539).
+		listing, listErr := s.auth.observeCredentialListing(inst.Name, func() (llm.ModelListing, error) {
+			return client.Models(listCtx, inst.Name)
+		})
 		cancel()
 		if listErr != nil {
 			continue

@@ -30,7 +30,7 @@ const instanceLiveListTimeout = 8 * time.Second
 // snapshot); the re-apply carries the listing forward instead of losing
 // it on the detached registry. An unsupported listing (ok == false)
 // carries no live facts, so it applies nothing.
-func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, name string) error {
+func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, auth *hubAuthController, name string) error {
 	// Paired atomically: the client is built from the same snapshot the
 	// token belongs to, so no Reload can slip between the two.
 	reg, tok, id := holder.BeginLiveFetchReg(name)
@@ -49,7 +49,15 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, na
 	// records under it. No lock is held across the request: fetches
 	// for different instances run fully concurrently again.
 	fetchCtx := withScopedCodexAuth(ctx, reg)
-	rows, ok, err := fetchInstanceLiveWith(fetchCtx, newLiveClient(reg), name)
+	var rows []registry.Model
+	var ok bool
+	// The listing sends the instance's credential, so what the provider
+	// answers is recorded as a probe of it (#3539).
+	_, err := auth.observeCredentialListing(name, func() (llm.ModelListing, error) {
+		var listErr error
+		rows, ok, listErr = fetchInstanceLiveWith(fetchCtx, newLiveClient(reg), name)
+		return llm.ModelListing{Live: ok}, listErr
+	})
 	if err != nil {
 		return err
 	}
@@ -131,7 +139,7 @@ func visibleModelFacts(reg *registry.Registry, name string) string {
 // never fails — the sheet reads whatever is cached. changed runs once when
 // at least one instance's visible listing differs from its before snapshot,
 // so the caller broadcasts once per pass instead of per row.
-func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry, changed func()) {
+func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry, auth *hubAuthController, changed func()) {
 	names := []string{}
 	before := map[string]string{}
 	// ONE snapshot for both: reading the holder twice would let a Reload
@@ -158,7 +166,7 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 			// call-scoped Codex value (so this goroutine's requests carry
 			// their own), and a token-validated publish. Failures are this
 			// pass's normal case — a dead endpoint keeps its catalog rows.
-			_ = fetchInstanceLive(ctx, holder, name)
+			_ = fetchInstanceLive(ctx, holder, auth, name)
 			if before[name] != visibleModelFacts(holder.Get(), name) {
 				mu.Lock()
 				anyChanged = true
@@ -178,9 +186,9 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 // client shows announces it once, so every browser refetches; a no-op pass
 // stays silent. Failures are silent — the next tick retries — and
 // cancellation stops the loop.
-func startLiveModelsPrefetch(ctx context.Context, holder *hubcore.ProviderRegistry, interval time.Duration, startBackground func(func()), changed func()) {
+func startLiveModelsPrefetch(ctx context.Context, holder *hubcore.ProviderRegistry, auth *hubAuthController, interval time.Duration, startBackground func(func()), changed func()) {
 	startPeriodicPrefetch(ctx, interval, startBackground, func() {
-		prefetchAllLiveModels(ctx, holder, changed)
+		prefetchAllLiveModels(ctx, holder, auth, changed)
 	})
 }
 

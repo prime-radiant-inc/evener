@@ -138,7 +138,7 @@ func newTraceMainTestDeps(t *testing.T) (string, Config, mainDeps) {
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, time.Duration, func(func()), func()) {
 		},
 		startLaunchPrefetch: func(context.Context, *WebServer, time.Duration, func(func())) {},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
@@ -431,7 +431,7 @@ func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, time.Duration, func(func()), func()) {
 		},
 		startLaunchPrefetch: func(context.Context, *WebServer, time.Duration, func(func())) {},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
@@ -491,7 +491,7 @@ func hermeticRegistryLoader(extra ...registry.Option) (*registry.Registry, *cred
 func TestRunMainPrefetchSeamStaysOffline(t *testing.T) {
 	root, cfg, deps := newTraceMainTestDeps(t)
 	var calls int32
-	deps.startLivePrefetch = func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+	deps.startLivePrefetch = func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, time.Duration, func(func()), func()) {
 		atomic.AddInt32(&calls, 1)
 	}
 	var launchCalls int32
@@ -549,7 +549,7 @@ func TestRunMainDegradesOnAnOldSchemaProvidersConfig(t *testing.T) {
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: credentials.LoadStore,
-		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, time.Duration, func(func()), func()) {
 		},
 		startLaunchPrefetch: func(context.Context, *WebServer, time.Duration, func(func())) {},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {

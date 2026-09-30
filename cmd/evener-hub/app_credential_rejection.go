@@ -14,7 +14,8 @@ import (
 // credential itself: an HTTP 401 or 403, or an llm authentication or
 // access-denied failure. It is the one rule for what "rejected" means: the
 // credential test's classifier uses it, and so does settleCredentialProbe,
-// through which every probe outcome is recorded. Rate
+// through which every probe outcome is recorded (Test connection, and the
+// hub's own model listings through observeCredentialListing). Rate
 // limits and quota (429), server errors, timeouts, network failures, a missing
 // endpoint and local configuration errors are not rejections: they say nothing
 // about whether the credential is good. status is the HTTP status when one is
@@ -174,6 +175,22 @@ func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, li
 	if changed && c.credentialRejectionChanged != nil {
 		c.credentialRejectionChanged(start.name)
 	}
+}
+
+// observeCredentialListing runs list, one model listing of name that sends
+// name's credential, as a probe of that credential: its outcome records or
+// clears name's rejection the way Test connection's does. The probe starts
+// before list, so list must build its client (which reads the credential)
+// inside. A nil controller only lists, for a caller with no hub credential
+// state to feed. The caller must not hold credMu.
+func (c *hubAuthController) observeCredentialListing(name string, list func() (llm.ModelListing, error)) (llm.ModelListing, error) {
+	if c == nil {
+		return list()
+	}
+	probe := c.beginCredentialProbe(name)
+	listing, err := list()
+	c.settleCredentialProbe(probe, listing, err)
+	return listing, err
 }
 
 // forgetCredentialRejection drops name's rejection and voids name's probes in
