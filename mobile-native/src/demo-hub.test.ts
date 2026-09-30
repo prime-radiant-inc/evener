@@ -13,7 +13,7 @@ import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } 
 import { DEMO_MODEL_LIST } from "./dev/demoSetup.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
-import { parseActivityTree } from "@evener/appwire-client";
+import { parseActivityTree, parseJobLogTail } from "@evener/appwire-client";
 import { readDocFile } from "@evener/appwire-client/docContent";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
 import { nativeDocPort } from "./nativeDocPort";
@@ -51,6 +51,24 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 				"done",
 				"Get PR 2138 Test Clean",
 			]);
+		});
+	});
+
+	// A shell job's detail reads its output from the session that owns it.
+	it("serves a listed shell job's output tail to the session that owns it", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const listed = await client.request("evener/jobs/list", { ref: PR2138 });
+			const tree = parseActivityTree((listed as { data: unknown }).data);
+			if (!tree) throw new Error("no tree");
+			const failed = flattenActivity(tree).jobs.find((row) => row.state === "failed");
+			if (!failed) throw new Error("no failed job");
+			const response = await client.request("evener/jobs/output", {
+				ref: failed.job.ownerRef,
+				jobId: failed.id,
+			});
+			const tail = parseJobLogTail((response as { data: unknown }).data);
+			expect(tail?.tail).toContain("FAIL");
+			expect(tail?.totalBytes).toBe(new TextEncoder().encode(tail?.tail ?? "").length);
 		});
 	});
 
