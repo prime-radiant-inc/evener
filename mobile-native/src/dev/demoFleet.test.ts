@@ -1026,8 +1026,9 @@ describe("demo fleet subagents", () => {
 			failed: 2,
 			completed: 21,
 		});
-		expect(subtree(pr2138)).toHaveLength(55);
-		expect(subtree(pr2138).find((row) => row.description === "Fix race in tree settle")).toMatchObject({
+		const rows = subtree(pr2138);
+		expect(rows).toHaveLength(55);
+		expect(rows.find((row) => row.description === "Fix race in tree settle")).toMatchObject({
 			outcome: "failed",
 			worktree: { branch: "fix-settle-race" },
 			usage: { totalTokens: 1_200_000 },

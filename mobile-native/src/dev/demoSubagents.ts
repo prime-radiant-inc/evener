@@ -68,7 +68,7 @@ export function demoTokens(label: string | undefined): number {
 
 const idOf = (ref: string) => ref.slice(ref.indexOf(":") + 1);
 const iso = (ms: number) => new Date(ms).toISOString();
-const MANDATE = (title: string) => `${title}. Report what you find; don't change unrelated code.`;
+const BRIEF = (title: string) => `${title}. Report what you find; don't change unrelated code.`;
 
 interface Counts {
 	active: number;
@@ -155,9 +155,8 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 			childRef: ref,
 			type: "delegate",
 			description: sub.title,
-			mandate: MANDATE(sub.title),
-			task: MANDATE(sub.title),
-			...(sub.model ? { resolvedModel: sub.model, model: sub.model } : {}),
+			task: BRIEF(sub.title),
+			...(sub.model ? { model: sub.model } : {}),
 			runStartedAt: iso(demoRunStartedAt(sub, startupMs)),
 			...(running
 				? { latestActivityAt: iso(lastEvent) }

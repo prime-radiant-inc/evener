@@ -1017,7 +1017,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				sessionRef(raw) === ref || findSubagent(rawChildren(raw), ref, (id) => hostSessionRef(hostId(raw.host), id)),
 		);
 		if (!owner) return null;
-		const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(owner)), startupMs).data);
+		const tree = parseActivityTree(demoActivityTree(coordinatorOf(owner), startupMs).data);
 		if (!tree) throw new Error("Invalid demonstration activity authority");
 		return { tree, availability: owner.state === "shutdown" ? "retained" : "live" };
 	}, `demo-activity-${startupMs}`);
@@ -1132,7 +1132,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 			// one the Activity list shows, and only for the session that owns
 			// it, as a hub answers.
 			for (const raw of sessionsList) {
-				const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(raw)), startupMs).data);
+				const tree = parseActivityTree(demoActivityTree(coordinatorOf(raw), startupMs).data);
 				const job = tree ? flattenJobs(tree, tree.root.label).find((row) => row.id === params.jobId)?.job : undefined;
 				if (job && job.ownerRef === params.ref) return demoJobOutput(job);
 			}
@@ -1141,31 +1141,21 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	};
 }
 
-// The fleet session or subagent a ref names, as the coordinator of the
-// subagents it started (demoSubagents.ts); nobody's, an empty tree. A
-// subagent's are its children, named as the Board's child rows and the
-// sessions' delegates name them.
-function coordinatorFor(sessions: readonly RawSession[], ref: string): DemoCoordinator {
-	for (const raw of sessions) {
-		const host = hostId(raw.host);
-		const subagentRef = (id: string) => hostSessionRef(host, id);
-		const model = raw.model ?? "";
-		if (sessionRef(raw) === ref) {
-			const command = runningCommand(raw);
-			return {
-				ref,
-				title: raw.title,
-				model,
-				subagents: rawChildren(raw),
-				jobs: raw.jobs,
-				...(command ? { runningJob: { id: raw.id, command } } : {}),
-				subagentRef,
-			};
-		}
-		const sub = findSubagent(rawChildren(raw), ref, subagentRef);
-		if (sub) return { ref, title: sub.title, model: sub.model ?? model, subagents: sub.children ?? [], subagentRef };
-	}
-	return { ref, title: "", model: "", subagents: [], subagentRef: (id) => id };
+// A fleet session as the coordinator of the subagents it started
+// (demoSubagents.ts), named as the Board's child rows and the sessions'
+// delegates name them.
+function coordinatorOf(raw: RawSession): DemoCoordinator {
+	const host = hostId(raw.host);
+	const command = runningCommand(raw);
+	return {
+		ref: sessionRef(raw),
+		title: raw.title,
+		model: raw.model ?? "",
+		subagents: rawChildren(raw),
+		jobs: raw.jobs,
+		...(command ? { runningJob: { id: raw.id, command } } : {}),
+		subagentRef: (id) => hostSessionRef(host, id),
+	};
 }
 
 function findSubagent(
