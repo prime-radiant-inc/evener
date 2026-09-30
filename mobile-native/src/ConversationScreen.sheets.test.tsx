@@ -1482,3 +1482,47 @@ it.each(["closed", "ended"] as const)("Find reads older history for a %s session
 	expect(renderedText(tree)).toContain("1 of 1");
 	act(() => tree.unmount());
 });
+
+it.each([
+	[false, false],
+	[true, false],
+	[false, true],
+])("handles pending history through a replacement connection (Find: %s, new binding: %s)", async (find, newBinding) => {
+	let attempts = 0;
+	const page = () => {
+		attempts += 1;
+		if (attempts === 1) throw new Error("temporary history failure");
+		return olderHistoryPage("replacement search needle");
+	};
+	const answers = olderHistoryAnswers(page);
+	const { tree } = mount(busy, answers);
+	await flush();
+	vi.useFakeTimers();
+	if (find) openFind(tree, "replacement search needle");
+	else sessionList(tree).drag(100);
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	let finishRead: ((value: unknown) => void) | undefined;
+	const read = new Promise((resolve) => {
+		finishRead = resolve;
+	});
+	const replacement = sessionClient(busy, { ...answers, "thread/read": () => read });
+	harness.connection = { ...screenConnection(replacement.client, "ready"), error: null, disconnect: () => {} };
+	act(() => tree.update(screen()));
+	await advanceHistory(0);
+	if (find) expect(renderedText(tree)).not.toContain("No matches");
+	await act(async () => {
+		finishRead?.(
+			newBinding
+				? olderHistoryAnswers(page, { ...busy, evener: { ...busy.evener, instanceId: "replacement-instance" } })[
+						"thread/read"
+					]
+				: answers["thread/read"],
+		);
+	});
+	await advanceHistory(10_000);
+	expect(attempts).toBe(newBinding ? 1 : 2);
+	expect(renderedText(tree).includes("replacement search needle")).toBe(!newBinding);
+	if (find) expect(renderedText(tree)).toContain("1 of 1");
+	act(() => tree.unmount());
+});

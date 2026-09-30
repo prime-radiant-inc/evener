@@ -11,11 +11,13 @@ export function useOlderHistory({
 	service,
 	active,
 	resetKey,
+	binding,
 }: {
 	store: { getState(): ConversationState };
 	service: ConversationService | null;
 	active: boolean;
 	resetKey: string;
+	binding: string | undefined;
 }) {
 	const [foreground, setForeground] = useState(AppState.currentState === "active");
 	useEffect(() => {
@@ -24,9 +26,14 @@ export function useOlderHistory({
 	}, []);
 	const serviceNow = useRef(service);
 	serviceNow.current = service;
+	// Reopening a connection temporarily clears the model, not the reader's
+	// demand. Only a known replacement binding retires that demand.
+	const lastBinding = useRef(binding);
+	if (binding !== undefined) lastBinding.current = binding;
+	const demandKey = `${resetKey}\u0000${lastBinding.current ?? ""}`;
 	// A different binding/session owns different demand; its late page cannot
 	// complete or block the new owner.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: resetKey identifies the conversation binding.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: demandKey identifies the conversation binding.
 	const paging = useMemo(
 		() =>
 			new HistoryPaging(
@@ -41,7 +48,7 @@ export function useOlderHistory({
 					if (result.status === "failed") throw result.error;
 				},
 			),
-		[store, resetKey],
+		[store, demandKey],
 	);
 	const state = useSyncExternalStore(paging.subscribe, paging.getSnapshot);
 	useEffect(() => (active && foreground ? paging.activate() : undefined), [paging, active, foreground]);

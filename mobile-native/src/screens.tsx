@@ -1480,7 +1480,8 @@ export function ConversationScreen({
 		store,
 		service,
 		active: Boolean(service) && connected && focused && snapshot.status === "open",
-		resetKey: `${route.params.hubId}\u0000${route.params.ref}\u0000${bindingInstance ?? ""}`,
+		resetKey: `${route.params.hubId}\u0000${route.params.ref}`,
+		binding: bindingInstance,
 	});
 	const findQuery = find?.query ?? "";
 	const findHits = useMemo(
@@ -1507,7 +1508,7 @@ export function ConversationScreen({
 	// the newest of all), loading one older page at a time until a match
 	// appears or history ends.
 	useEffect(() => {
-		if (!find?.seeking || !focused) return;
+		if (!find?.seeking || !focused || snapshot.status !== "open" || !conversation) return;
 		const next = stepMatch(findHits, findCurrent, -1);
 		if (next !== null) {
 			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
