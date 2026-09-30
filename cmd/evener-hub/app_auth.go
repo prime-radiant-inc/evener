@@ -1671,8 +1671,10 @@ func (c *hubAuthController) openAIInstanceStatusKeyed(key []byte, name string, r
 
 	source := "none"
 	var active authopenai.AuthStatus
+	refreshRejected := false
 	if hasRecord {
-		active = openAIStatusFromRecord(c.now(), record, authopenai.RefreshRejected(c.stateDir, name, record))
+		refreshRejected = authopenai.RefreshRejected(c.stateDir, name, record)
+		active = openAIStatusFromRecord(c.now(), record, refreshRejected)
 		source = authopenai.AuthSourceOAuth
 	}
 
@@ -1681,17 +1683,19 @@ func (c *hubAuthController) openAIInstanceStatusKeyed(key []byte, name string, r
 	modes := authModesFor(registry.AuthOAuthOpenAICodex)
 
 	status := appwire.AuthStatusResponse{
-		Provider:      name,
-		Supported:     true,
-		SignedIn:      active.SignedIn,
-		ActiveSource:  source,
-		AuthModes:     modes,
-		Email:         active.Email,
-		AccountID:     active.AccountID,
-		WorkspaceID:   active.WorkspaceID,
-		NeedsRefresh:  active.NeedsRefresh,
-		NeedsLogin:    active.NeedsLogin,
-		HasStoredFile: hasFile,
+		Provider:     name,
+		Supported:    true,
+		SignedIn:     active.SignedIn,
+		ActiveSource: source,
+		AuthModes:    modes,
+		Email:        active.Email,
+		AccountID:    active.AccountID,
+		WorkspaceID:  active.WorkspaceID,
+		NeedsRefresh: active.NeedsRefresh,
+		NeedsLogin:   active.NeedsLogin,
+		// The access token is not necessarily expired here (#2785).
+		RefreshRejected: refreshRejected,
+		HasStoredFile:   hasFile,
 		// An OAuth record is this instance's credential configuration; the
 		// revision is resolved here as it is for every other scheme, keyed with
 		// the caller's key and reusing a resolution the caller already made when

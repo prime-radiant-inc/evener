@@ -511,6 +511,7 @@ An embedded type contributes its own fields inline.
 | `workspaceId` | `string` | yes |  |
 | `needsRefresh` | `bool` | yes |  |
 | `needsLogin` | `bool` | yes |  |
+| `refreshRejected` | `bool` | yes |  |
 | `error` | `string` | yes |  |
 | `configRevision` | `string` | yes |  |
 

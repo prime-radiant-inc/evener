@@ -12,19 +12,20 @@ import (
 // env:<VAR>, oauth, adc or none (spec §10), and AuthModes names the sign-in
 // affordances the hub offers for this instance (spec §11.3).
 type authStatus struct {
-	Provider       string
-	Supported      bool
-	SignedIn       bool
-	ActiveSource   string
-	AuthModes      []string
-	HasStoredOAuth bool
-	Email          string
-	StoredEmail    string
-	AccountID      string
-	WorkspaceID    string
-	NeedsRefresh   bool
-	NeedsLogin     bool
-	Error          string
+	Provider        string
+	Supported       bool
+	SignedIn        bool
+	ActiveSource    string
+	AuthModes       []string
+	HasStoredOAuth  bool
+	Email           string
+	StoredEmail     string
+	AccountID       string
+	WorkspaceID     string
+	NeedsRefresh    bool
+	NeedsLogin      bool
+	RefreshRejected bool
+	Error           string
 }
 
 // authModeOffered reports whether the hub advertises one sign-in affordance
@@ -59,6 +60,12 @@ func authSourceLabel(status authStatus) string {
 		return "stored API key"
 	case "oauth":
 		switch {
+		case status.RefreshRejected:
+			// The access token is not necessarily expired: the issuer
+			// permanently refused the stored refresh token, so the session
+			// works until its next refresh needs one (#2785). Saying
+			// "expired" here would misreport a currently-working session.
+			return "OAuth refresh rejected"
 		case status.NeedsLogin:
 			return "OAuth expired"
 		case status.NeedsRefresh:

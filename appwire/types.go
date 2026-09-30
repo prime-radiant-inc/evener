@@ -3066,7 +3066,14 @@ type AuthStatusResponse struct {
 	WorkspaceID    string `json:"workspaceId,omitempty"`
 	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
 	NeedsLogin     bool   `json:"needsLogin,omitempty"`
-	Error          string `json:"error,omitempty"`
+	// RefreshRejected is true when the issuer permanently refused this
+	// instance's stored refresh token (authopenai.RefreshRejected, #2479):
+	// the access token may still be valid, but the session needs a fresh
+	// sign-in before its next refresh. It is why NeedsLogin can be true for a
+	// record whose access token has not expired, so a client must not read
+	// NeedsLogin alone as "the access token expired".
+	RefreshRejected bool   `json:"refreshRejected,omitempty"`
+	Error           string `json:"error,omitempty"`
 	// ConfigRevision is this instance's effective credential-configuration
 	// revision: a stable, keyed MAC the host re-resolves from the same state a
 	// credential write lands in (cmd/evener-hub/app_auth.go +
