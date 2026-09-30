@@ -25,6 +25,7 @@ export {
   isFailedJobOutcome,
   isTurnContainer,
   jobStatusDisplay,
+  parseActivityJob,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";

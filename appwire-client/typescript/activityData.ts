@@ -367,7 +367,11 @@ function copyOptionalInteger(
   return true;
 }
 
-function parseJob(raw: unknown): ActivityJob | null {
+// parseActivityJob validates one job payload against the ActivityJob wire
+// shape. The tree parser uses it per shell entry; the job log pane uses it for
+// the single-job read (evener/jobs/get), whose Data field crosses the wire
+// untyped like the tree's.
+export function parseActivityJob(raw: unknown): ActivityJob | null {
   if (!isPlainObject(raw)) return null;
   const jobId = readString(raw, "jobId");
   const ownerSessionId = readString(raw, "ownerSessionId");
@@ -454,7 +458,7 @@ function parseEntry(raw: unknown, depth: number): ParseResult<ActivityEntry> {
   if (!isPlainObject(raw)) return { value: null, incomplete: true };
   const kind = readString(raw, "kind");
   if (kind === "shell") {
-    const job = parseJob(raw.job);
+    const job = parseActivityJob(raw.job);
     return { value: job ? { kind: "shell", job } : null, incomplete: job === null };
   }
   if (kind === "delegate") {
@@ -527,7 +531,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     if (!copyOptionalInteger(raw, target, field, true)) return { value: null, incomplete: true };
   }
   if (Array.isArray(raw.turns)) {
-    const turns = raw.turns.map(parseJob);
+    const turns = raw.turns.map(parseActivityJob);
     if (turns.some((turn) => turn === null)) return { value: null, incomplete: true };
     delegate.turns = turns as ActivityJob[];
   } else if (typeof raw.turns !== "undefined" && raw.turns !== null) {

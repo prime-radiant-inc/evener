@@ -11,6 +11,7 @@ import {
   defaultExpandedIDs,
   delegateHasActiveWork,
   jobStatusDisplay,
+  parseActivityJob,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
@@ -1334,6 +1335,30 @@ describe("parseJob missing required fields", () => {
   it("rejects a job with non-boolean terminal", () => {
     const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture({ terminal: "yes" }) }]));
     expect(tree?.root.entries).toHaveLength(0);
+  });
+});
+
+describe("parseActivityJob", () => {
+  // The job log pane's single-job read (evener/jobs/get) carries the same
+  // ActivityJob shape the tree's shell entries do, so it reuses this validator.
+  it("accepts a job payload and keeps its untruncated command", () => {
+    expect(parseActivityJob(jobFixture({ command: "go test ./... -run Foo -count=1" }))).toMatchObject({
+      jobId: "job_1",
+      type: "shell",
+      command: "go test ./... -run Foo -count=1",
+    });
+  });
+
+  it("rejects a payload that is not a job object", () => {
+    expect(parseActivityJob(null)).toBeNull();
+    expect(parseActivityJob([])).toBeNull();
+    expect(parseActivityJob("job_1")).toBeNull();
+    expect(parseActivityJob(jobFixture({ jobId: undefined }))).toBeNull();
+  });
+
+  it("rejects a wrongly typed optional field", () => {
+    expect(parseActivityJob(jobFixture({ command: 7 }))).toBeNull();
+    expect(parseActivityJob(jobFixture({ exitCode: 1.5 }))).toBeNull();
   });
 });
 

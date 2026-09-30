@@ -1,17 +1,20 @@
-// JobLog renders a shell job's transcript - its output log - inside the
-// read-only transcript pane. A "job:<id>" ref is not a thread, so instead of
-// the thread engine (useTranscript/TurnBlock) it fetches the job's output
-// through evener/jobs/output against the OWNING session: the pane's parentRef,
-// which every producer that opens a job transcript (the activity tree's rows
-// and detail strips) already supplies.
+// JobLog renders a shell job's transcript - its full command plus its output
+// log - inside the read-only transcript pane. A "job:<id>" ref is not a thread,
+// so instead of the thread engine (useTranscript/TurnBlock) it makes two reads
+// against the OWNING session: the job's metadata (evener/jobs/get) for the
+// command line, and the job's output (evener/jobs/output) for the log. The
+// pane's parentRef is the owning session, which every producer that opens a
+// job transcript (the activity tree's rows and detail strips) already supplies.
 //
-// The first read is the bounded tail; while the server reports hasEarlier, a
-// "Load earlier output" button pages backwards (beforeBytes = the earliest
-// offset on screen) and prepends, so the whole log is reachable. Refresh
-// re-reads the tail and drops the paged prefix.
+// The output read starts at the bounded tail; while the server reports
+// hasEarlier, a "Load earlier output" button pages backwards (beforeBytes = the
+// earliest offset on screen) and prepends, so the whole log is reachable.
+// Refresh re-reads both and drops the paged prefix. The metadata read is
+// best-effort: a job whose command cannot be read (an older daemon, a rejected
+// call, a malformed payload) still renders its log without a command line.
 
-import type { JobLogTail } from "@evener/appwire-client";
-import { parseJobLogTail } from "@evener/appwire-client";
+import type { ActivityJob, JobLogTail } from "@evener/appwire-client";
+import { parseActivityJob, parseJobLogTail } from "@evener/appwire-client";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
@@ -23,9 +26,19 @@ import styles from "./transcript.module.css";
 
 const CLASS = {
   body: requireClass(styles.body, "transcript.module.css", "body"),
+  joblogCommand: requireClass(styles.joblogCommand, "transcript.module.css", "joblogCommand"),
   joblog: requireClass(styles.joblog, "transcript.module.css", "joblog"),
   joblogNote: requireClass(styles.joblogNote, "transcript.module.css", "joblogNote"),
 };
+
+// commandOf is the command line the pane pins above the log. It walks the same
+// fallback the activity strip's detail uses (command, else task, else
+// description), so the pane and the strip word a job identically; undefined
+// when the job carries none (or its payload could not be read).
+function commandOf(job: ActivityJob | null): string | undefined {
+  const command = job?.command?.trim() || job?.task?.trim() || job?.description?.trim();
+  return command ? command : undefined;
+}
 
 interface JobLogContent {
   content: string;
@@ -51,6 +64,41 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
   const [state, setState] = useState<JobLogState>({ status: "loading" });
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [refreshIndex, setRefreshIndex] = useState(0);
+  // The job's own metadata, for the command line above the log. Best-effort:
+  // a failed or malformed read leaves it null and the pane renders the log
+  // alone, exactly as an older daemon's answer would.
+  const [job, setJob] = useState<ActivityJob | null>(null);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshIndex is the Refresh button's re-run signal - the fetch inputs are unchanged by design
+  useEffect(() => {
+    // No owner, no read: the output effect reports the missing owner, and a
+    // job:<id> ref is only reachable through its owning session.
+    if (parentRef === undefined) return;
+    const ownerRef = parentRef;
+    let cancelled = false;
+    let started = false;
+    const start = () => {
+      if (started || connectionStore.getState().state !== "ready") return;
+      started = true;
+      threadsStore
+        .getState()
+        .jobGet(ownerRef, jobId)
+        .then(
+          (data) => {
+            if (!cancelled) setJob(parseActivityJob(data));
+          },
+          () => {
+            if (!cancelled) setJob(null);
+          },
+        );
+    };
+    start();
+    const unsubscribe = connectionStore.subscribe(start);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [parentRef, jobId, refreshIndex]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshIndex is the Refresh button's re-run signal - the fetch inputs are unchanged by design
   useEffect(() => {
@@ -144,39 +192,48 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
     </Button>
   );
 
+  const command = commandOf(job);
+
   return (
     <PaneScaffold title={jobId} actions={actions}>
-      {state.status === "loading" && <EmptyState title="Loading job output…" />}
-      {state.status === "error" && <EmptyState title="Job transcript unavailable" hint={state.message} />}
-      {state.status === "ready" && state.content === "" && (
-        <EmptyState title="No output yet" hint="This job hasn't written anything." />
-      )}
-      {state.status === "ready" && state.content !== "" && (
-        <div className={CLASS.body}>
-          {state.earliestStart > 0 && (
-            <span className={CLASS.joblogNote}>
-              {`Output truncated — showing the last ${state.totalBytes - state.earliestStart} of ${state.totalBytes} bytes`}
-              {state.hasEarlier && (
-                <>
-                  {" · "}
-                  <Button variant="quiet" size="xs" disabled={loadingEarlier} onClick={loadEarlier}>
-                    {loadingEarlier ? "Loading…" : "Load earlier output"}
-                  </Button>
-                </>
-              )}
-            </span>
-          )}
-          <pre className={CLASS.joblog} data-testid="joblog-content">
-            {lines.map((line, index) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: the parsed lines are a static split of the fetched log, never reordered
-              <Fragment key={index}>
-                {index > 0 ? "\n" : null}
-                <AnsiLineContent line={line} />
-              </Fragment>
-            ))}
-          </pre>
-        </div>
-      )}
+      <div className={CLASS.body}>
+        {command !== undefined && (
+          <code className={CLASS.joblogCommand} data-testid="joblog-command">
+            {command}
+          </code>
+        )}
+        {state.status === "loading" && <EmptyState title="Loading job output…" />}
+        {state.status === "error" && <EmptyState title="Job transcript unavailable" hint={state.message} />}
+        {state.status === "ready" && state.content === "" && (
+          <EmptyState title="No output yet" hint="This job hasn't written anything." />
+        )}
+        {state.status === "ready" && state.content !== "" && (
+          <>
+            {state.earliestStart > 0 && (
+              <span className={CLASS.joblogNote}>
+                {`Output truncated — showing the last ${state.totalBytes - state.earliestStart} of ${state.totalBytes} bytes`}
+                {state.hasEarlier && (
+                  <>
+                    {" · "}
+                    <Button variant="quiet" size="xs" disabled={loadingEarlier} onClick={loadEarlier}>
+                      {loadingEarlier ? "Loading…" : "Load earlier output"}
+                    </Button>
+                  </>
+                )}
+              </span>
+            )}
+            <pre className={CLASS.joblog} data-testid="joblog-content">
+              {lines.map((line, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: the parsed lines are a static split of the fetched log, never reordered
+                <Fragment key={index}>
+                  {index > 0 ? "\n" : null}
+                  <AnsiLineContent line={line} />
+                </Fragment>
+              ))}
+            </pre>
+          </>
+        )}
+      </div>
     </PaneScaffold>
   );
 }
