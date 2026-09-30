@@ -210,15 +210,25 @@ event, and its [waiting filter](../../mobile-native/src/outbox/outboxFlush.ts#L2
 excludes `blockedUnknown`. `outboxFlush.test.ts` tests these returned-blocked and
 unknown-state paths separately from storage retry.
 
-**Discuss.** Own bounded proof reads for needed unresolved targets, including
-sessions behind other screens. Reconcile before dispatch; retain mutation IDs,
-stop epochs, stale-client rejection and explicit Stop holds. An unknown result
-is a reason to establish the outcome, not to blindly resend.
+**Decision.** Keep reconciling queued and unconfirmed input automatically until
+it is delivered, confirmed already applied, explicitly stopped, or genuinely
+rejected and needs correction. Own recovery for unresolved targets while the
+app can communicate with the hub, including sessions behind other screens.
+Backoff bounds the request rate without an attempt limit; a failed proof read
+must not abandon the original send intent. Reconcile before dispatch and retain
+the original mutation identity: settle an already-applied operation without
+resending, and retry the original operation when authoritative state establishes
+that it was not accepted. Preserve stop epochs, stale-client rejection and
+explicit Stop or cancel holds. Unknown outcomes require reconciliation, not
+blind replay. Empty or fully settled outboxes need no added recovery polling.
+Implementation remains pending.
 
 **Acceptance.** Queue input, leave for Board, reconnect, fail the first proof
-read, then let reads succeed without another event. The original operation sends
-or settles exactly once. An already-applied operation settles without resending;
-Stop-held input stays held.
+read through a prolonged outage, then let reads succeed without another event.
+The original operation sends or settles exactly once, with its text and
+attachments intact. An already-applied operation settles without resending;
+Stop-held input stays held. A stale connection cannot release newer holds or
+dispatch input, and no recovery reads continue after the outbox settles.
 
 ### C06 Rejected image message recovery
 
