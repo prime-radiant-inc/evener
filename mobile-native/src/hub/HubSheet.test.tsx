@@ -20,6 +20,7 @@ vi.mock("./HubsPage", () => ({ HubsPage: () => null }));
 vi.mock("./HubDetailsPage", () => ({ HubDetailsPage: () => null }));
 vi.mock("./AddHubPage", () => ({ AddHubPage: () => null }));
 vi.mock("./ProvidersPage", () => ({ ProvidersPage: () => null }));
+vi.mock("./ProviderDetailPage", () => ({ ProviderDetailPage: () => null }));
 vi.mock("./HostsPage", () => ({ HostsPage: () => null }));
 vi.mock("./PluginsPage", () => ({ PluginsPage: () => null }));
 vi.mock("./MarketplacePage", () => ({ MarketplacePage: () => null }));
