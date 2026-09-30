@@ -388,16 +388,22 @@ test("this hub's credential error never marks a remote host's same-named row", a
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
-  fake.on("evener/host/request", () => HOST_LIST);
+  // Beta's own instance, named like this hub's.
+  fake.on("evener/host/request", () => ({
+    instances: [{ ...HOST_ROW, name: CONTROLLER_ROW.name }],
+    availableProviders: [],
+  }));
   fake.on("evener/auth/list", () => ({
-    providers: [CONTROLLER_ROW.name, HOST_ROW.name].map((provider) => ({
-      provider,
-      supported: true,
-      signedIn: true,
-      activeSource: "store",
-      hasStoredOAuth: false,
-      error: "The provider rejected this credential (HTTP 401). Replace the key or sign in again.",
-    })),
+    providers: [
+      {
+        provider: CONTROLLER_ROW.name,
+        supported: true,
+        signedIn: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+        error: "The provider rejected this credential (HTTP 401). Replace the key or sign in again.",
+      },
+    ],
   }));
 
   const select = await renderSettledScope();
@@ -408,7 +414,8 @@ test("this hub's credential error never marks a remote host's same-named row", a
 
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
-  const remote = await screen.findByText(HOST_ROW.name);
+  const remoteSection = await screen.findByRole("region", { name: "Providers on beta" });
+  const remote = await within(remoteSection).findByText(CONTROLLER_ROW.name);
   expect(remote.closest("li")?.textContent).not.toContain("Error");
 });
 
