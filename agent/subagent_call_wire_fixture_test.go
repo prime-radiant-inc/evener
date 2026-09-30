@@ -121,12 +121,11 @@ func (c subagentWireCall) arguments(t *testing.T) json.RawMessage {
 	return args
 }
 
-// run executes one call on the session the way its tool round does, with
-// the call's id in the context, failing the test on an error result.
+// run executes one call on the session the way its tool round does, failing
+// the test on an error result.
 func (c subagentWireCall) run(t *testing.T, s *Session) subagentWireCall {
 	t.Helper()
-	ctx := context.WithValue(context.Background(), ctxToolCallID, c.id)
-	res := s.reg.ExecuteCall(ctx, s.currentEnv(), llm.ToolCallData{ID: c.id, Name: c.tool, Arguments: c.arguments(t)})
+	res := executeDelegateTool(context.Background(), s, c.id, c.tool, c.args)
 	if res.IsError {
 		t.Fatalf("%s: the %s call failed: %s", c.id, c.tool, res.Output)
 	}
