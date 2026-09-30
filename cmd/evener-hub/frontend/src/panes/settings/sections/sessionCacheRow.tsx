@@ -21,6 +21,16 @@ export interface SessionCacheRowState {
   clear: () => Promise<void>;
 }
 
+// Tests invalidate in-flight actions: resetSessionCacheRowStoreForTests bumps
+// this counter, and every async action captures it before its await and
+// drops its sets if the counter moved. A completion that lands after a reset
+// belongs to a test that already ended - in the wedged-open test the count
+// settles only after the test (the adapter's watchdog is the sole failure
+// path), and writing its answer then would clobber the next test's state,
+// which is the full-suite isolation flake. Production never resets, so the
+// counter never moves and the guard is inert there.
+let storeGeneration = 0;
+
 // sessionCacheRowStore's shape is PINNED by sessionCacheRow.test.tsx, which
 // is written against it directly (the settingsOverview.ts convention): the
 // four-state status plus clearing and the two actions. Do not change this
@@ -37,7 +47,9 @@ export const sessionCacheRowStore = createStore<SessionCacheRowState>((set) => (
   status: "unavailable",
   clearing: false,
   refresh: async () => {
+    const generation = storeGeneration;
     const count = await countCachedSessions();
+    if (generation !== storeGeneration) return; // a reset retired this count: its answer must not write
     if (count === undefined) {
       set({ status: "unavailable" }); // never "empty": the remedy did not run
       return;
@@ -52,8 +64,10 @@ export const sessionCacheRowStore = createStore<SessionCacheRowState>((set) => (
     set((s) => ({ status: s.status === "cleared" ? "cleared" : "empty" }));
   },
   clear: async () => {
+    const generation = storeGeneration;
     set({ clearing: true });
     const result = await clearCachedSessions();
+    if (generation !== storeGeneration) return; // ditto: the reset restored clearing itself
     set({ status: result.committed ? "cleared" : "unavailable", clearing: false });
   },
 }));
@@ -74,6 +88,7 @@ export function useSessionCacheRowStore<T>(selector?: (state: SessionCacheRowSta
 // them isolated. No production code should ever call this (mirrors
 // settingsOverview.ts's resetSettingsOverviewStoreForTests).
 export function resetSessionCacheRowStoreForTests(): void {
+  storeGeneration += 1;
   sessionCacheRowStore.setState({ status: "unavailable", clearing: false });
 }
 

@@ -23,7 +23,7 @@ import { clearProjectionWorkForTests } from "../../../stores/projectionWork";
 import { SessionCacheIndexedDB } from "../../../stores/sessionCacheIndexedDB";
 import { neverSettlingRequest } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setSessionCacheAdapterForTests } from "../../../stores/threads";
-import { resetSessionCacheRowStoreForTests, SessionCacheRow } from "./sessionCacheRow";
+import { resetSessionCacheRowStoreForTests, SessionCacheRow, sessionCacheRowStore } from "./sessionCacheRow";
 
 // Checks the HTML disabled property — no jest-dom in this project.
 // Mirrors hubResidents.test.tsx's isDisabled helper.
@@ -201,5 +201,35 @@ describe("SessionCacheRow", () => {
       rerender(<SessionCacheRow />); // the settings pane rendering the row again
     });
     expect(await screen.findByText("cached")).toBeTruthy(); // the badge yielded
+  });
+
+  it("a reset invalidates an in-flight count, so a late answer cannot overwrite the fresh state", {
+    timeout: 3_000,
+  }, async () => {
+    // The full-suite isolation flake, pinned deterministically: a refresh
+    // whose count settles only after the NEXT test's reset must not write
+    // its stale answer over the state that reset just restored. The count is
+    // deferred through the seam — the adapter's own count, mocked to a
+    // manually-resolved promise — so the interleaving is scheduled, not
+    // hoped for.
+    const adapter = new SessionCacheIndexedDB();
+    installedAdapters.push(adapter);
+    let releaseCount!: (count: number) => void;
+    const deferred = new Promise<number>((resolve) => {
+      releaseCount = resolve;
+    });
+    vi.spyOn(adapter, "count").mockImplementation(() => deferred);
+    setSessionCacheAdapterForTests(adapter);
+
+    const { unmount } = render(<SessionCacheRow />);
+    // The mounted row's first refresh is parked on the deferred count, so the
+    // pre-count state holds.
+    expect(screen.getByText("unavailable")).toBeTruthy();
+    unmount(); // this test ends
+    resetSessionCacheRowStoreForTests(); // the next test's beforeEach runs
+    await act(async () => {
+      releaseCount(1); // the stale answer lands at last: would flip the row to "cached"
+    });
+    expect(sessionCacheRowStore.getState().status).toBe("unavailable"); // it wrote nothing
   });
 });
