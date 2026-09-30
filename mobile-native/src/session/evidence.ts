@@ -1,10 +1,10 @@
 // What a step in a run has to show when you tap it (spec 8.2): an edit's
 // diff, the file a write wrote, a command's output, a fetched page, the skill
-// an activation loaded, a task list, a tool's arguments and result, and an
-// error. Each
-// reads the words the tool printed, not the envelope around them (the
-// package's toolEvidence readers, which the web's bodies read too). Pure, so
-// the rules live apart from how StepEvidence draws them.
+// an activation loaded, a task list, what a message to a subagent sent and
+// what came back, a tool's arguments and result, and an error. Each reads the
+// words the tool printed, not the envelope around them (the package's
+// toolEvidence and delegateSteps readers, which the web's bodies read too).
+// Pure, so the rules live apart from how StepEvidence draws them.
 import {
 	diffStats,
 	editDiffText,
@@ -132,8 +132,9 @@ function jobStopInWords(text: string): string {
 // What a tool's output shows, by its family: a command without its exit
 // footer, a fetched page's answer, a skill's instructions, a task list as a
 // checklist, a transcript a read returned, what a worktree operation says it
-// did, an MCP or other tool's JSON pretty-printed; anything else as the tool
-// printed it.
+// did, a job check or watch in words, a message to a subagent as the message
+// and its reply, an MCP or other tool's JSON pretty-printed; anything else as
+// the tool printed it.
 function outputEvidence(label: string, detail: EvidenceSource["detail"]): Evidence[] {
 	const text = detail.output ?? "";
 	switch (toolFamily(label)) {
@@ -198,23 +199,41 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			const line = jobStatusDisplay(status, str(job, "reason"));
 			return rawOutput(description ? `${line} — ${description}` : line);
 		}
-		case "message":
-		case "mcp":
-		case "tool": {
-			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;
-			const result = text ? prettyJSON(text) : undefined;
-			// Arguments that aren't a JSON object or array show as they were
-			// sent, as the web's MCPToolArguments shows them.
-			const evidence: Evidence[] = args
-				? [{ kind: "json", label: "Arguments", text: args }]
-				: rawOutput(detail.arguments?.trim() ? detail.arguments : "");
-			if (result) evidence.push({ kind: "json", label: "Result", text: result });
-			else evidence.push(...rawOutput(text));
+		case "message": {
+			// A message to a subagent: what was sent, the delegate's reply when
+			// the send waited for one, and why a wait was ignored, as the web's
+			// DelegateSendBody shows the exchange. A call with no message and no
+			// reply (a malformed one) shows its JSON, as any other tool's does.
+			const message = str(parseArgs(detail.arguments), "message");
+			if (!message && detail.sendReply === undefined) return jsonEvidence(detail, text);
+			const evidence: Evidence[] = [];
+			if (message) evidence.push({ kind: "markdown", title: "Message", markdown: withoutImages(message) });
+			if (detail.sendReply !== undefined)
+				evidence.push({ kind: "markdown", title: "Reply", markdown: withoutImages(detail.sendReply) });
+			if (detail.sendWaitIgnored !== undefined)
+				evidence.push({ kind: "note", text: `Wait ignored: ${detail.sendWaitIgnored}` });
 			return evidence;
 		}
+		case "mcp":
+		case "tool":
+			return jsonEvidence(detail, text);
 		default:
 			return rawOutput(text);
 	}
+}
+
+// A tool's arguments and result, pretty-printed when they're JSON.
+function jsonEvidence(detail: ActivityDetail, text: string): Evidence[] {
+	const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;
+	const result = text ? prettyJSON(text) : undefined;
+	// Arguments that aren't a JSON object or array show as they were sent, as
+	// the web's MCPToolArguments shows them.
+	const evidence: Evidence[] = args
+		? [{ kind: "json", label: "Arguments", text: args }]
+		: rawOutput(detail.arguments?.trim() ? detail.arguments : "");
+	if (result) evidence.push({ kind: "json", label: "Result", text: result });
+	else evidence.push(...rawOutput(text));
+	return evidence;
 }
 
 /** The parts of a step its evidence comes from. */

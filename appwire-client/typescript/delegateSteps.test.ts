@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import { delegateSendResponse, delegateSendWaitIgnoredReason } from "./delegateSteps";
 import { subagentWireStep } from "./testing/subagentWireFixtures";
 import { toolStepSummary, toolStepWords } from "./toolSummaries";
 
@@ -50,4 +51,35 @@ test("reads a send's status from its footer's status field, and words the fallba
   expect(toolStepWords({ toolName: "delegate", argumentsJSON: "{}", description: "  " })).toEqual({
     verb: "Used delegate",
   });
+});
+
+// What a send exchanged, as both clients show it: the recorded waiting send's
+// reply, from its raw state, and none for the steer, whose output is only its
+// footer. Without a raw state the reply is what the tool printed above the
+// footer, or all of it when there is no footer.
+test("reads a send's reply from its raw state, else from above its footer", () => {
+  expect(delegateSendResponse(subagentWireStep("call_send_2"))).toBe(
+    "Yes: tree settle now waits for the drain, and a test pins the order.",
+  );
+  expect(delegateSendResponse(subagentWireStep("call_send_1"))).toBeUndefined();
+  expect(delegateSendResponse({ output: "Done.\nAll green.\n[delegate_id dlg_x · completed · completed]" })).toBe(
+    "Done.\nAll green.",
+  );
+  expect(delegateSendResponse({ output: "[delegate_id dlg_x · steered · running]" })).toBeUndefined();
+  expect(delegateSendResponse({ output: "no footer" })).toBe("no footer");
+  expect(delegateSendResponse({})).toBeUndefined();
+});
+
+// A wait the send couldn't honour says why, from its raw state first, then
+// its footer; a send that waited, or didn't ask to, has no reason.
+test("reads why a send's wait was ignored from its raw state, else its footer", () => {
+  const raw = { action: "steered", running_in_background: true, wait_ignored_reason: " delegate is already running " };
+  expect(delegateSendWaitIgnoredReason({ raw, output: "" })).toBe("delegate is already running");
+  expect(
+    delegateSendWaitIgnoredReason({
+      output: "[delegate_id dlg_x · steered · running · running in background · wait ignored: delegate is busy]",
+    }),
+  ).toBe("delegate is busy");
+  expect(delegateSendWaitIgnoredReason(subagentWireStep("call_send_2"))).toBeUndefined();
+  expect(delegateSendWaitIgnoredReason({ output: "[delegate_id dlg_x · steered · running]" })).toBeUndefined();
 });

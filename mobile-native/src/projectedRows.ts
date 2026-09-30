@@ -59,6 +59,9 @@ import {
 	stripSystemReminder,
 	systemEventWords,
 	composeStepWords,
+	delegateSendResponse,
+	delegateSendWaitIgnoredReason,
+	toolFamily,
 	toolStepWords,
 	warningWords,
 } from "@evener/appwire-client";
@@ -141,6 +144,14 @@ export interface ActivityDetail {
 	// jobWatchEvidence): "" when its line says it all. Absent for every other
 	// step, and for a watch result this build can't read.
 	watchEvidence?: string;
+	// A message to a subagent's reply and the reason its wait was ignored,
+	// read once here from the item's raw state or, failing that, what the tool
+	// printed (the package's delegateSendResponse and
+	// delegateSendWaitIgnoredReason, which the web's body reads too). Absent
+	// for every other step, and when the send got no reply or its wait was
+	// honoured.
+	sendReply?: string;
+	sendWaitIgnored?: string;
 }
 
 // A task as a step's detail carries it: only what the checklist draws. The
@@ -603,6 +614,9 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 			? parseTaskListData(it.raw)?.map(({ id, status, description }) => ({ id, status, description }))
 			: undefined;
 	const watchEvidence = it.toolName === "job_watch" ? jobWatchEvidence(it) : undefined;
+	const send = toolFamily(it.toolName ?? "") === "message";
+	const sendReply = send ? delegateSendResponse(it) : undefined;
+	const sendWaitIgnored = send ? delegateSendWaitIgnoredReason(it) : undefined;
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,
@@ -615,6 +629,8 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 		endedAtMs: end,
 		...(tasks ? { tasks } : {}),
 		...(watchEvidence !== undefined ? { watchEvidence } : {}),
+		...(sendReply !== undefined ? { sendReply } : {}),
+		...(sendWaitIgnored !== undefined ? { sendWaitIgnored } : {}),
 	};
 }
 
@@ -1338,6 +1354,8 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	const output = detail.output ? bound(detail.output) : detail.output;
 	const error = detail.error ? bound(detail.error) : detail.error;
 	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
+	const sendReply = detail.sendReply ? bound(detail.sendReply) : detail.sendReply;
+	const sendWaitIgnored = detail.sendWaitIgnored ? bound(detail.sendWaitIgnored) : detail.sendWaitIgnored;
 	// Nothing was cut: hand back the source detail so a settled row keeps its
 	// identity across publishes (see truncateItem).
 	if (
@@ -1347,7 +1365,9 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		args === detail.arguments &&
 		output === detail.output &&
 		error === detail.error &&
-		watchEvidence === detail.watchEvidence
+		watchEvidence === detail.watchEvidence &&
+		sendReply === detail.sendReply &&
+		sendWaitIgnored === detail.sendWaitIgnored
 	) {
 		return detail;
 	}
@@ -1360,6 +1380,8 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		output,
 		error,
 		watchEvidence,
+		sendReply,
+		sendWaitIgnored,
 	};
 }
 

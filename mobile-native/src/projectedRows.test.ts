@@ -16,6 +16,7 @@ import type {
 	Turn,
 } from "@evener/appwire-client";
 import {
+	activityDetail,
 	boundQuestion,
 	liveAsksFor,
 	MAX_ITEM_BYTES,
@@ -1834,6 +1835,34 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 		const out = truncateItem(row, bound);
 		expect(out).not.toBe(row);
 		if (out.kind === "activity") expect(out.detail?.watchEvidence?.length).toBeLessThan(big.length);
+	});
+
+	it("bounds a message to a subagent's reply and wait note like the rest of a step's text", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "delegate_send",
+			family: "tool",
+			state: "completed",
+			detail: { sendReply: big, sendWaitIgnored: big },
+		};
+		const out = truncateItem(row, bound);
+		expect(out).not.toBe(row);
+		if (out.kind === "activity") {
+			expect(out.detail?.sendReply?.length).toBeLessThan(big.length);
+			expect(out.detail?.sendWaitIgnored?.length).toBeLessThan(big.length);
+		}
+	});
+
+	// Only a message to a subagent carries a reply: any other step's output
+	// would otherwise read as one, since a reply is the output above a send's
+	// footer, and all of an output that has none.
+	it("reads a reply only for a message to a subagent", () => {
+		const detail = activityDetail(toolWireStep("call_shell"));
+		expect(detail.output).toBeTruthy();
+		expect(detail).not.toHaveProperty("sendReply");
+		expect(detail).not.toHaveProperty("sendWaitIgnored");
 	});
 
 	it("keeps boundQuestion's identity and the bounded question's replacement in step", () => {

@@ -62,9 +62,15 @@ const KNOWN_DELEGATE_SEND_STATUSES = new Set([
 
 /** A delegate_send footer: its text inside the brackets, the index of its
  * line in the output, its status field when it has one ("running",
- * "delivered", "not_delivered", …), and whether it says the delegate runs in
- * the background. */
-export type DelegateSendFooterInfo = { text: string; index: number; status?: string; runningInBackground: boolean };
+ * "delivered", "not_delivered", …), whether it says the delegate runs in the
+ * background, and why its wait was ignored when it says so. */
+export type DelegateSendFooterInfo = {
+  text: string;
+  index: number;
+  status?: string;
+  runningInBackground: boolean;
+  waitIgnoredReason?: string;
+};
 
 /** The footer a delegate_send printed, when its output ends in one (after any
  * structured_result and watch lines); undefined when the output has none, or
@@ -119,13 +125,48 @@ export function delegateSendFooter(output: string): DelegateSendFooterInfo | und
   }
 
   const waitIgnoredField = fields[fieldIndex] ?? "";
+  let waitIgnoredReason: string | undefined;
   if (waitIgnoredField.startsWith("wait ignored: ")) {
-    if (waitIgnoredField.slice("wait ignored: ".length).trim() === "") return undefined;
+    waitIgnoredReason = waitIgnoredField.slice("wait ignored: ".length).trim();
+    if (waitIgnoredReason === "") return undefined;
     fieldIndex += 1;
   }
 
   if (fieldIndex !== fields.length) return undefined;
-  return { text: footer, index, status, runningInBackground };
+  return { text: footer, index, status, runningInBackground, waitIgnoredReason };
+}
+
+/** The parts of a delegate_send step its exchange reads: its result's raw
+ * state and printed output. */
+export type DelegateSendResult = Pick<ItemModel, "raw" | "output">;
+
+/** The delegate's reply to a send that waited for one: the raw state's
+ * output, else what the tool printed above its footer (all of it when there
+ * is no footer). Undefined when the send got none, as a steer doesn't. */
+export function delegateSendResponse(step: DelegateSendResult): string | undefined {
+  if (isDelegateSendResult(step.raw)) {
+    const rawOutput = step.raw.output;
+    if (rawOutput !== undefined && rawOutput.trim() !== "") return rawOutput;
+  }
+
+  const output = step.output ?? "";
+  if (output === "") return undefined;
+  const footer = delegateSendFooter(output);
+  if (footer === undefined) return output;
+
+  const response = output.trimEnd().split("\n").slice(0, footer.index).join("\n");
+  return response.trim() === "" ? undefined : response;
+}
+
+/** Why a send's wait was ignored (it asked to wait on a delegate that was
+ * already running): the raw state's reason, else the footer's "wait
+ * ignored:" field. Undefined when the wait was honoured or not asked for. */
+export function delegateSendWaitIgnoredReason(step: DelegateSendResult): string | undefined {
+  if (isDelegateSendResult(step.raw)) {
+    const reason = step.raw.wait_ignored_reason?.trim();
+    if (reason) return reason;
+  }
+  return delegateSendFooter(step.output ?? "")?.waitIgnoredReason;
 }
 
 /** Who a send addressed: `to`, the live argument, or `target`, the retired

@@ -24,6 +24,8 @@ const DETAIL_FIELDS = [
 	"endedAtMs",
 	"tasks",
 	"watchEvidence",
+	"sendReply",
+	"sendWaitIgnored",
 ] as const satisfies readonly (keyof ActivityDetail)[];
 
 // Fails to compile when ActivityDetail gains a field DETAIL_FIELDS doesn't name.
