@@ -4864,7 +4864,7 @@ Ruling 12 keeps today's administration screens on the phone, so this task delete
 **Requirements:**
 1. `DESIGN.md` describes the two sheets:
    - the grouped list and its rules (glyphs in `inkMid`, amber only where a human is needed, the gray drift tag);
-   - the New session's chips, rows and pickers;
+   - the New session's rows and pickers;
    - the Hub's pages, and its MORE group of today's administration screens, which keep their own look until #2539;
    - the calm connection line.
 

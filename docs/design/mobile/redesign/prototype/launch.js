@@ -1,4 +1,4 @@
-// New session: prompt first, and the host / project / model /
+// New session: prompt first, then the host / project / model /
 // effort / plugins / access / branch pickers.
 (function () {
   const EV = window.EV;
