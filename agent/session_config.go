@@ -361,6 +361,11 @@ type testConfig struct {
 	// the drive claim is held. Tests use it to drive the child at exactly that
 	// point and assert the committed start refuses a second turn.
 	delegateSendStartCommitted func(*subagent)
+	// delegateSendChildResolved observes a send once it has resolved (and,
+	// cold, restored) its child, just before it takes the child's drive
+	// guard. Tests use it to make the child busy at that point. Nil in
+	// production.
+	delegateSendChildResolved func(*subagent)
 	// delegateSendStartClaimed observes the committed send start at the earliest
 	// point in the window: immediately after ReserveStart and before CommitStart,
 	// when the id-keyed claim has been taken but restoreIdleForSend has NOT yet

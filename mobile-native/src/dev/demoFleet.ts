@@ -39,7 +39,7 @@ import {
 	demoJobOutput,
 } from "./demoSubagents.js";
 import { parseActivityTree } from "@evener/appwire-client";
-import { flattenActivity } from "../subagents/subagentModel.js";
+import { flattenJobs } from "../subagents/subagentModel.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireV2 response must carry the exact same id:
@@ -1179,7 +1179,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 			// it, as a hub answers.
 			for (const raw of sessionsList) {
 				const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(raw)), startupMs).data);
-				const job = tree ? flattenActivity(tree).jobs.find((row) => row.id === params.jobId)?.job : undefined;
+				const job = tree ? flattenJobs(tree).find((row) => row.id === params.jobId)?.job : undefined;
 				if (job && job.ownerRef === params.ref) return demoJobOutput(job);
 			}
 			throw new Error(`job not found: ${params.jobId}`);
