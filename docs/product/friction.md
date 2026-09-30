@@ -789,13 +789,21 @@ reads it. [RefreshModels](../../cmd/evener-hub/app_instances.go#L2227) fetches i
 the held registry without reloading configuration. Startup, selected auth paths
 and successful writes provide other reload triggers.
 
-**Discuss.** Revalidate changed source configuration or own bounded retry for a
-failed load. Keep usable prior state where valid, surface precise parse context,
-and preserve malformed bytes rather than silently replacing user configuration.
+**Decision.** Detect provider-configuration changes and automatically adopt a
+valid repair. Clear the stale load error and update open settings and launch
+forms without requiring a restart, manual reload or unrelated save. While an
+edit is invalid, keep usable previous configuration active where available,
+preserve the edited file and show the specific problem. Make clear when running
+configuration differs from an invalid edit, then converge as soon as the
+replacement validates. Failed loads retain a recovery owner rather than
+remaining cached indefinitely. Implementation remains pending.
 
 **Acceptance.** Start with malformed provider configuration, repair it on disk,
-and use the same open settings/launch surface. The repaired instances appear
-without restarting or invoking an unrelated save.
+and keep the same settings/launch surface open. The repaired instances appear
+and the stale error clears without another user action. Also make an invalid
+intermediate edit to a previously usable configuration: working providers remain
+available, the edited bytes are preserved, and a valid replacement is adopted
+automatically with the updated settings accurately reflected.
 
 ### H07 Proven no-op teardown remnants
 
