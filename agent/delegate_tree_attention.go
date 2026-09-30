@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -381,18 +382,16 @@ func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID strin
 	// the delegate's attempts over, as new attention does.
 	delete(c.attentionParked, delegateID)
 	delete(c.attentionRestoreFailures, delegateID)
-	if delegateID == "" || len(attentionIDs) == 0 {
-		delete(c.attentionWakeIDs, delegateID)
-		return
-	}
 	ids := make(map[string]struct{}, len(attentionIDs))
 	for _, attentionID := range attentionIDs {
 		if attentionID != "" {
 			ids[attentionID] = struct{}{}
 		}
 	}
-	if len(ids) == 0 {
+	if delegateID == "" || len(ids) == 0 {
+		// It owes nothing now, so it leaves the drive's line too.
 		delete(c.attentionWakeIDs, delegateID)
+		delete(c.attentionDriveTurns, delegateID)
 		return
 	}
 	c.attentionWakeIDs[delegateID] = ids
@@ -534,17 +533,12 @@ func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, stri
 	if len(delegateIDs) == 0 {
 		return "", "", false
 	}
-	// Turns: a delegate the drive has not picked yet first, in sorted order,
+	// Turns: a delegate the drive has not picked yet first, in id order,
 	// then the one it picked longest ago. One delegate that can't be restored,
 	// or whose drive keeps declining, must not hold every sibling back.
-	sort.Slice(delegateIDs, func(i, j int) bool {
-		left, right := c.attentionDriveTurns[delegateIDs[i]], c.attentionDriveTurns[delegateIDs[j]]
-		if left != right {
-			return left < right
-		}
-		return delegateIDs[i] < delegateIDs[j]
+	delegateID := slices.MinFunc(delegateIDs, func(left, right string) int {
+		return cmp.Or(cmp.Compare(c.attentionDriveTurns[left], c.attentionDriveTurns[right]), cmp.Compare(left, right))
 	})
-	delegateID := delegateIDs[0]
 	attentionIDs := make([]string, 0, len(c.attentionWakeIDs[delegateID]))
 	for attentionID := range c.attentionWakeIDs[delegateID] {
 		attentionIDs = append(attentionIDs, attentionID)
