@@ -141,6 +141,31 @@ That owner coalesces collection demand and reads. Separate store instances
 share wire subscription membership through leases; they do not share a second
 collection cache or RPC registry.
 
+`projectSessionActivity(snapshot)` is a pure projection of loaded activity into
+the shared `ActivityTree` rendering model. It returns `tree`, `context`,
+`summary`, domain `watches`, `complete`, `pending`, and `issues`. Summary known
+counts remain independent of the tree's loaded-row counts. Missing parents
+leave loaded descendants visible with incomplete evidence until their parent
+arrives. Optional logical session IDs are preserved when supplied; opaque refs
+are never parsed into IDs. The tree's revision is rendering-only, never a
+response ordering authority.
+
+`activityNodeID` qualifies session identity by ref, delegate identity by child
+ref plus delegate ID, and job identity by owner ref plus job ID.
+`indexActivityEntities` and `buildEntityView` use those same IDs. Entity views
+also carry their original `logicalId` and `ownerRef` for actions and transcript
+resolution. `findEntityView(entities, kind, logicalId, ownerRef)` finds a
+transcript reference within its owning session and returns no result for
+ambiguous evidence. API actions use the raw IDs/refs held by the row.
+
+Watch presentation consumes `SessionWatch`, preserving receiver identity and
+explicit `armed`, `ended`, or `unknown` state. The nested `watch` contains the
+domain `EvenerWatchInfo` cadence, delivery ring/count, note, source/target and end
+reason. Cadence functions take `EvenerWatchCadence`; `watchArmedLabel` takes
+`SessionWatchState`. `buildWatchRows` namespaces row IDs by receiver ref and watch
+ID. Unknown runtime state remains unknown even if retained watch data carries
+an inactive boolean.
+
 `getSnapshot()` returns `context`, `summary`, `summaryState`, and collection
 states `delegates`, `jobs`, `watches`. Collection states expose typed `rows`,
 `context`, `loading`, `pending`, `complete`, `hasMore`, `issues`, `error`,

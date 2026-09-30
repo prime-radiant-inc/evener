@@ -643,9 +643,13 @@ describe("parseActivityTree", () => {
 
 describe("activityNodeID", () => {
   it("builds stable typed ids for sessions, delegates, and jobs", () => {
-    expect(activityNodeID({ kind: "session", sessionId: "root" })).toBe("session:root");
-    expect(activityNodeID({ kind: "delegate", delegateId: "dlg_1" })).toBe("delegate:dlg_1");
-    expect(activityNodeID({ kind: "shell", jobId: "job_1" })).toBe("job:job_1");
+    expect(activityNodeID({ kind: "session", ref: "root" })).toBe("session:root");
+    expect(activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" })).toBe(
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+    );
+    expect(activityNodeID({ kind: "shell", ownerRef: "ref_root", jobId: "job_1" })).toBe(
+      `job:${JSON.stringify(["ref_root", "job_1"])}`,
+    );
   });
 });
 
@@ -695,7 +699,11 @@ describe("activityDelegateDiagnostics", () => {
 describe("defaultExpandedIDs", () => {
   it("expands the root and every ancestor of active work, but not completed-only branches", () => {
     const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
-    expect(defaultExpandedIDs(tree)).toEqual(["session:sess_root", "delegate:dlg_1", "session:sess_child"]);
+    expect(defaultExpandedIDs(tree)).toEqual([
+      "session:ref_root",
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+      "session:ref_child",
+    ]);
   });
 
   it("uses active turns for turn-container expansion even after the container closes", () => {
@@ -725,7 +733,9 @@ describe("defaultExpandedIDs", () => {
     const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
     if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
     expect(delegateHasActiveWork(entry.delegate)).toBe(true);
-    expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
+    expect(defaultExpandedIDs(tree)).toContain(
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+    );
   });
 
   // The same shape as the closed container below, minus the type the wire is
@@ -740,7 +750,9 @@ describe("defaultExpandedIDs", () => {
     const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
     if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
     expect(delegateHasActiveWork(entry.delegate)).toBe(true);
-    expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
+    expect(defaultExpandedIDs(tree)).toContain(
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+    );
   });
 
   it("does not expand an empty closed turn container", () => {
@@ -751,7 +763,9 @@ describe("defaultExpandedIDs", () => {
     const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
     if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
     expect(delegateHasActiveWork(entry.delegate)).toBe(false);
-    expect(defaultExpandedIDs(tree)).not.toContain("delegate:dlg_1");
+    expect(defaultExpandedIDs(tree)).not.toContain(
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+    );
   });
 });
 
@@ -763,7 +777,7 @@ describe("reconcileActivityState", () => {
     expect(
       reconcileActivityState(
         {
-          expandedIDs: ["session:sess_root"],
+          expandedIDs: ["session:ref_root"],
           selectedID: undefined,
           selectionPruned: false,
           tree: previous,
@@ -771,7 +785,7 @@ describe("reconcileActivityState", () => {
         next,
       ),
     ).toEqual({
-      expandedIDs: ["session:sess_root"],
+      expandedIDs: ["session:ref_root"],
       selectedID: undefined,
       selectionPruned: false,
     });
@@ -799,7 +813,7 @@ describe("reconcileActivityState", () => {
     expect(
       reconcileActivityState(
         {
-          expandedIDs: ["session:sess_root"],
+          expandedIDs: ["session:ref_root"],
           selectedID: undefined,
           selectionPruned: false,
           tree: previous,
@@ -807,7 +821,11 @@ describe("reconcileActivityState", () => {
         next,
       ),
     ).toEqual({
-      expandedIDs: ["session:sess_root", "delegate:dlg_1", "session:sess_child"],
+      expandedIDs: [
+        "session:ref_root",
+        activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+        "session:ref_child",
+      ],
       selectedID: undefined,
       selectionPruned: false,
     });
@@ -948,25 +966,28 @@ describe("reconcileActivityState", () => {
     expect(
       reconcileActivityState(
         {
-          expandedIDs: ["session:sess_root", "delegate:dlg_keep"],
-          selectedID: "session:sess_keep",
+          expandedIDs: [
+            "session:ref_root",
+            activityNodeID({ kind: "delegate", childRef: "ref_keep", delegateId: "dlg_keep" }),
+          ],
+          selectedID: "session:ref_keep",
           selectionPruned: false,
         },
         next,
       ),
     ).toEqual({
       expandedIDs: [
-        "session:sess_root",
-        "delegate:dlg_keep",
-        "session:sess_keep",
-        "delegate:dlg_new_active",
-        "session:sess_new",
+        "session:ref_root",
+        activityNodeID({ kind: "delegate", childRef: "ref_keep", delegateId: "dlg_keep" }),
+        "session:ref_keep",
+        activityNodeID({ kind: "delegate", childRef: "ref_new", delegateId: "dlg_new_active" }),
+        "session:ref_new",
       ],
-      selectedID: "session:sess_keep",
+      selectedID: "session:ref_keep",
       selectionPruned: false,
     });
 
-    expect(defaultExpandedIDs(previous)).toEqual(["session:sess_root"]);
+    expect(defaultExpandedIDs(previous)).toEqual(["session:ref_root"]);
   });
 
   it("falls a pruned selection back to the nearest surviving owner and marks selectionPruned", () => {
@@ -974,15 +995,23 @@ describe("reconcileActivityState", () => {
     expect(
       reconcileActivityState(
         {
-          expandedIDs: ["session:sess_root", "delegate:dlg_1", "session:sess_child"],
-          selectedID: "job:job_missing",
+          expandedIDs: [
+            "session:ref_root",
+            activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+            "session:ref_child",
+          ],
+          selectedID: activityNodeID({ kind: "shell", ownerRef: "ref_root", jobId: "job_missing" }),
           selectionPruned: false,
         },
         next,
       ),
     ).toEqual({
-      expandedIDs: ["session:sess_root", "delegate:dlg_1", "session:sess_child"],
-      selectedID: "session:sess_root",
+      expandedIDs: [
+        "session:ref_root",
+        activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+        "session:ref_child",
+      ],
+      selectedID: "session:ref_root",
       selectionPruned: true,
     });
   });
@@ -1495,8 +1524,11 @@ describe("reconcileActivityState with previous tree", () => {
     if (!prevTree) return;
 
     const prevState: ActivityDisclosureState = {
-      expandedIDs: ["delegate:dlg_old", "session:sess_child"],
-      selectedID: "session:sess_child",
+      expandedIDs: [
+        activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_old" }),
+        "session:ref_child",
+      ],
+      selectedID: "session:ref_child",
       selectionPruned: false,
       tree: prevTree,
     };
@@ -1514,9 +1546,9 @@ describe("reconcileActivityState with previous tree", () => {
     if (!nextTree) return;
 
     const result = reconcileActivityState(prevState, nextTree);
-    // The selectedID (session:sess_child) is gone; the nearest surviving
+    // The selectedID (session:ref_child) is gone; the nearest surviving
     // owner (delegate:dlg_old) should be selected
-    expect(result.selectedID).toBe("delegate:dlg_old");
+    expect(result.selectedID).toBe(activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_old" }));
     expect(result.selectionPruned).toBe(true);
   });
 
@@ -1537,7 +1569,7 @@ describe("reconcileActivityState with previous tree", () => {
     if (!nextTree) return;
 
     const result = reconcileActivityState(prevState, nextTree);
-    expect(result.selectedID).toBe("session:sess_root");
+    expect(result.selectedID).toBe("session:ref_root");
     expect(result.selectionPruned).toBe(true);
   });
 
@@ -1547,8 +1579,8 @@ describe("reconcileActivityState with previous tree", () => {
     if (!prevTree) return;
 
     const prevState: ActivityDisclosureState = {
-      expandedIDs: ["session:sess_root"],
-      selectedID: "session:sess_root",
+      expandedIDs: ["session:ref_root"],
+      selectedID: "session:ref_root",
       selectionPruned: false,
       tree: prevTree,
     };
@@ -1558,7 +1590,7 @@ describe("reconcileActivityState with previous tree", () => {
     if (!nextTree) return;
 
     const result = reconcileActivityState(prevState, nextTree);
-    expect(result.selectedID).toBe("session:sess_root");
+    expect(result.selectedID).toBe("session:ref_root");
     expect(result.selectionPruned).toBe(false);
   });
 
@@ -1590,12 +1622,12 @@ describe("reconcileActivityState with previous tree", () => {
 
     const prevState: ActivityDisclosureState = {
       expandedIDs: [],
-      selectedID: "session:sess_root",
+      selectedID: "session:ref_root",
       selectionPruned: false,
       tree: null,
     };
 
     const result = reconcileActivityState(prevState, nextTree);
-    expect(result.selectedID).toBe("session:sess_root");
+    expect(result.selectedID).toBe("session:ref_root");
   });
 });

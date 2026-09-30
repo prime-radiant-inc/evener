@@ -190,7 +190,7 @@ export { diffStats, editDiffText } from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
-export { buildEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./entityView";
+export { buildEntityView, entityOpenTarget, findEntityView, watchFoldKey, watchItems } from "./entityView";
 export {
   ClientNotReadyError,
   ConnectionClosedError,
@@ -455,6 +455,7 @@ export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQu
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export type { QuietState } from "./sessionActivity";
 export { decodeActivityRead, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
+export { projectSessionActivity, type SessionActivityPresentation } from "./sessionActivityPresentation";
 export type {
   SessionActivityClient,
   SessionActivityClock,
