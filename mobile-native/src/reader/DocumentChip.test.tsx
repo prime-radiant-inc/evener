@@ -121,7 +121,7 @@ it("shows no age for a file the session only named", async () => {
 });
 
 // A chip that grew when its summary landed would move every row below it,
-// and the rows above the reader must keep their height (scroll cause 7).
+// and the rows above the reader must keep their height.
 it("keeps its two lines from the start, so it never grows when its summary lands", async () => {
 	const lines = (tree: ReactTestRenderer) =>
 		button(tree)?.findAll((node) => String(node.type) === "Text" && node.props.numberOfLines === 1);
