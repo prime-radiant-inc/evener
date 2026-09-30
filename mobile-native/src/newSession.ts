@@ -391,12 +391,14 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			const current = service;
 			const { cwd, source } = get();
 			// Only a list on screen for the form's host and project can be kept
-			// up; a load in flight is already reading.
-			if (!current || loadedContext !== modelContext(source, cwd) || get().loadingModels) return;
+			// up; a load in flight is already reading, and a start takes the form
+			// as it was sent, the way every other list change waits for it.
+			if (!current || loadedContext !== modelContext(source, cwd) || get().loadingModels || get().submitting)
+				return;
 			const generation = ++catalog;
 			try {
 				const result = await current.models(cwd.trim() ? { cwd: cwd.trim() } : {}, source);
-				if (generation === catalog) listModels(result, get().model, get().reasoning);
+				if (generation === catalog && !get().submitting) listModels(result, get().model, get().reasoning);
 			} catch {
 				// A failed refresh keeps the list the hub last served.
 			}

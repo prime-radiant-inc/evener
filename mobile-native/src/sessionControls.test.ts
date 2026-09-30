@@ -336,6 +336,35 @@ describe("conversation-owned session controls", () => {
 			catalog: { data: [{ displayName: "Model One 2" }] },
 		});
 	});
+	// Two announcements close together: the list the later read brings is the
+	// one that stays, whichever read answers last.
+	it("keeps the newest refresh's catalog when two overlap", async () => {
+		let reads = 0;
+		const first = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					const read = reads;
+					if (read === 2) await first.promise;
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${read}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const older = controls.refreshModels();
+		const newer = controls.refreshModels();
+		await newer;
+		first.resolve();
+		await older;
+		expect(reads).toBe(3);
+		expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3");
+	});
 	it("refreshes nothing before a catalog is loaded", async () => {
 		let reads = 0;
 		const controls = new SessionControls(

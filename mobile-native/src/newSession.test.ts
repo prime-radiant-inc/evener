@@ -288,6 +288,31 @@ it("refreshes a loaded model list in place", async () => {
 	expect(store.getState()).toMatchObject({ models: [model, added], modelError: null, loadingModels: false });
 });
 
+// A start takes the form as it was sent: a refreshed list landing while it is
+// out changes nothing on the form, the way every other list change waits for
+// the start to finish.
+it("leaves a form that is starting alone when a refreshed list lands", async () => {
+	const { store, calls } = setup();
+	const initial = store.getState().setCwd("/project");
+	calls[0]?.response.resolve({ data: [model] });
+	await initial;
+	store.getState().selectModel(model);
+	store.getState().setReasoning("high");
+	store.getState().setPrompt("go");
+
+	const refresh = store.getState().refreshModels();
+	const start = store.getState().submit();
+	expect(store.getState().submitting).toBe(true);
+	calls.find((call) => call.method === "model/list" && call !== calls[0])?.response.resolve({ data: [] });
+	await refresh;
+	expect(store.getState()).toMatchObject({ model, reasoning: "high", models: [model] });
+	calls.find((call) => call.method === "thread/start")?.response.resolve({
+		thread: { id: "t", evener: { ref: "canonical/t" } },
+		turn: {},
+	});
+	await start;
+});
+
 it("refreshes nothing before the form's list is loaded", async () => {
 	const { store, calls } = setup();
 	void store.getState().setCwd("/project");

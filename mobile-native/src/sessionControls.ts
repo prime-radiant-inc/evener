@@ -41,6 +41,8 @@ export class SessionControls {
 	};
 	private listeners = new Set<() => void>();
 	private disposed = false;
+	// Counts refreshModels reads, so only the newest one publishes.
+	private refreshes = 0;
 	constructor(
 		private service: Pick<ConversationService, Exclude<Operation, "forceStop" | "resume">> &
 			ConversationRecoveryActions &
@@ -131,23 +133,17 @@ export class SessionControls {
 	/** Reads a loaded catalog again after the hub announced a refreshed list
 	 * (evener/auth/updated), replacing it in place. Unlike a load, a failed
 	 * read keeps the catalog: the list the hub last served still stands. With
-	 * no catalog loaded there is nothing on screen to refresh. */
+	 * no catalog loaded there is nothing on screen to refresh, and a load in
+	 * flight is already reading. Each announcement reads again, and the
+	 * newest read's catalog is the one that stays. */
 	async refreshModels() {
-		if (
-			this.disposed ||
-			!this.isCurrent() ||
-			!this.state.catalog ||
-			this.state.loadingModels ||
-			this.state.pending
-		)
-			return;
-		this.publish({ loadingModels: true });
+		if (this.disposed || !this.isCurrent() || !this.state.catalog || this.state.loadingModels) return;
+		const read = ++this.refreshes;
 		try {
 			const catalog = await this.service.models();
-			if (this.disposed) return;
-			this.publish(this.isCurrent() ? { catalog, loadingModels: false } : { loadingModels: false });
+			if (!this.disposed && read === this.refreshes && this.isCurrent()) this.publish({ catalog });
 		} catch {
-			if (!this.disposed) this.publish({ loadingModels: false });
+			// A failed refresh keeps the catalog on screen.
 		}
 	}
 	changeModel(provider: string, model: string): Promise<boolean> {
