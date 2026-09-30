@@ -1197,7 +1197,7 @@ func (s *Session) countDelegateAttentionRestoreFailure(delegateID string, err er
 	if err == nil || isTransientStartFailure(err) {
 		return
 	}
-	if s.delegateController.countDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
+	if s.delegateController.recordDelegateAttentionRestoreFailure(delegateID) >= s.delegateAttentionGiveUpAfter() {
 		s.giveUpDelegateAttention(delegateID, err)
 	}
 }

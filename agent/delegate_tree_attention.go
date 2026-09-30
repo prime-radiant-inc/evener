@@ -305,9 +305,9 @@ func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, atten
 	}
 }
 
-// countDelegateAttentionRestoreFailure records one more counted restore
+// recordDelegateAttentionRestoreFailure records one more counted restore
 // failure for delegateID and returns the consecutive count.
-func (c *delegateTreeController) countDelegateAttentionRestoreFailure(delegateID string) int {
+func (c *delegateTreeController) recordDelegateAttentionRestoreFailure(delegateID string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.attentionRestoreFailures == nil {
