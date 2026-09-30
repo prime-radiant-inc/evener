@@ -1538,6 +1538,22 @@ it("says an open edit wasn't saved when its provider leaves the list", async () 
 	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
 });
 
+// Nor does it sit above a new provider's form: opening Add clears it.
+it("clears an unsaved-edit notice when Add opens", async () => {
+	const fake = providersHub([instance({ authModes: ["apiKey"], hasStoredFile: true })]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	await openWork(tree);
+	press(tree, (label) => label === "Edit");
+	await act(async () => {});
+	await workLeavesList(fake);
+	expect(renderedText(tree)).toContain(providerGoneWhileEditing("work"));
+	press(tree, (label) => label === "Add provider");
+	await act(async () => {});
+	expect(tree.root.findAllByType(ProviderEditor)).toHaveLength(1);
+	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+});
+
 // Only an edit its provider left behind says it wasn't saved: a cancelled
 // edit and a saved one say nothing of the kind.
 it("says nothing of an unsaved edit after a Cancel or a save", async () => {

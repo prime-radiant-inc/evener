@@ -785,6 +785,8 @@ function Providers({
 								disabled={writeHeld}
 								onPress={whenReady(canUseConnection, () => {
 									close();
+									// A warning about another provider doesn't sit above a new form.
+									setActionWarning(null);
 									setConfiguration("create");
 								})}
 							/>
