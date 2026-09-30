@@ -7,9 +7,8 @@
 // never offers Refresh, and it offers no Stop.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useMemo } from "react";
-import { FlatList, Text, View } from "react-native";
-import { AnsiOutputLine } from "../AnsiOutputLine";
-import { parseOutputLines } from "../ansiOutputStyles";
+import { Text, View } from "react-native";
+import { AnsiOutputList } from "../AnsiOutputList";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -31,7 +30,6 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
 	const now = useMemo(() => Date.now(), [snapshot]);
 	const output = useShellJobOutput(client, row?.job ?? null);
-	const lines = useMemo(() => (output.status === "read" ? parseOutputLines(output.tail.tail) : []), [output]);
 
 	const quiet = { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid };
 	const gone = snapshot.tree
@@ -54,11 +52,10 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 	);
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
-			<FlatList
-				data={lines}
-				ListHeaderComponent={header}
+			<AnsiOutputList
+				text={output.status === "read" ? output.tail.tail : ""}
+				header={header}
 				contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
-				renderItem={({ item }) => <AnsiOutputLine line={item} />}
 			/>
 		</View>
 	);
