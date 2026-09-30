@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -683,13 +684,7 @@ func TestReloadDoesNotCarryRowsIntoANewIncarnation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GROQ_API_KEY", "")
 	h := NewProviderRegistry(hermeticLoader)
-	if err := h.Reload(); err != nil {
-		t.Fatalf("Reload: %v", err)
-	}
-	if _, ok := h.Get().Instance("groq"); ok {
-		t.Fatal("groq exists before its key does, so this test proves nothing")
-	}
-	// The key appears, and a broken file parks the holder on the fallback,
+	// The key appears, and a broken file at startup loads the fallback,
 	// which knows groq implicitly. Live rows for it land there.
 	t.Setenv("GROQ_API_KEY", "gk")
 	if err := os.WriteFile(path, []byte("default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
@@ -738,10 +733,7 @@ func TestReloadForgetsSnapshotsForRecreatedNames(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GROQ_API_KEY", "")
 	h := NewProviderRegistry(hermeticLoader)
-	if err := h.Reload(); err != nil {
-		t.Fatalf("Reload: %v", err)
-	}
-	// The key appears, a broken file parks the holder on the fallback, and a
+	// The key appears, a broken file at startup loads the fallback, and a
 	// fetch lands rows for the implicit instance there.
 	t.Setenv("GROQ_API_KEY", "gk")
 	if err := os.WriteFile(path, []byte("default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
@@ -774,10 +766,8 @@ func TestReloadForgetsSnapshotsForRecreatedNames(t *testing.T) {
 }
 
 func TestReloadFailurePreservesLiveForRestoredInstances(t *testing.T) {
-	// A failed reload parks the holder on the implicit-only fallback;
-	// when the file is fixed and the last-good registry comes back,
-	// live-only ids for its explicit instances must come back too —
-	// not just the ids the fallback knew.
+	// An invalid edit keeps explicit instances and their live inventory;
+	// repairing it must preserve that inventory too.
 	t.Setenv("GROQ_API_KEY", "gk")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "providers.toml")
@@ -795,8 +785,7 @@ func TestReloadFailurePreservesLiveForRestoredInstances(t *testing.T) {
 	if got := h.Get().LiveModels("gw"); len(got) == 0 {
 		t.Fatal("no live rows before failure")
 	}
-	// Break the file: the holder falls back to implicit-only, which
-	// knows no gw at all.
+	// Break the file while retaining gw and its live inventory.
 	if err := os.WriteFile(path, []byte("default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1074,5 +1063,48 @@ func TestProviderRegistryOrdersConcurrentReloads(t *testing.T) {
 	}
 	if _, ok := holder.Get().Instance("work"); ok {
 		t.Fatal("the holder still serves the instance only the older file has")
+	}
+}
+
+func TestReloadInvalidEditRetainsUsableRegistry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	valid := []byte("[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key = \"sk\"\n")
+	if err := os.WriteFile(path, valid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	h := NewProviderRegistry(hermeticLoader)
+	if err := h.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	previous := h.Get()
+	broken := []byte("[providers.gw\n")
+	if err := os.WriteFile(path, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Reload(); err == nil {
+		t.Fatal("invalid edit loaded")
+	}
+	if h.Get() != previous {
+		t.Fatal("invalid edit replaced the usable provider registry")
+	}
+	if !h.WritesRefused() {
+		t.Fatal("invalid edit permits overwriting edited bytes")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, broken) {
+		t.Fatalf("edited bytes = %q, err = %v", got, err)
+	}
+	if err := os.WriteFile(path, valid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Reload(); err != nil || h.WritesRefused() {
+		t.Fatalf("repair did not clear refusal: %v", err)
+	}
+	if _, ok := h.Get().Instance("gw"); !ok {
+		t.Fatal("repair lost provider identity")
 	}
 }

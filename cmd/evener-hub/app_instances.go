@@ -41,6 +41,8 @@ type hubInstancesController struct {
 	// of another. Every controller lock is taken in the order mu then
 	// auth.credMu, List included, so the read side adds no ordering.
 	mu sync.RWMutex
+	// providerFileSignature is the last external file observation, guarded by mu.
+	providerFileSignature string
 	// beforeCredentialLock, when set, runs after a removal's pre-lock work and
 	// just before it takes auth.credMu. A race test uses it as a barrier: the
 	// test holds the credential lock, waits for this signal, and only then

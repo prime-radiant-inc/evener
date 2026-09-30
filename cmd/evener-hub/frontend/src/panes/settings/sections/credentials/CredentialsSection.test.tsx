@@ -2850,3 +2850,33 @@ describe("rename from the sheet", () => {
     expect(screen.getByRole("dialog", { name: "work" })).toBeTruthy();
   });
 });
+
+test("open settings adopt provider-file repair and retain rows during invalid edits", async () => {
+  const fake = connectFakeClient();
+  const error = "providers.toml: invalid fixture edit; active configuration retained";
+  let listing: InstanceListResponse = {
+    instances: [],
+    availableProviders: [],
+    writesRefused: true,
+    diagnostics: [error],
+  };
+  fake.on("evener/instance/list", () => listing);
+  render(<CredentialsSection sectionId="credentials" fullEditor />);
+  await screen.findByText(error);
+  const add = () => screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement;
+  expect(add().disabled).toBe(true);
+  listing = LIST;
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await screen.findByText("work");
+  await waitFor(() => expect(add().disabled).toBe(false));
+  expect(screen.queryByText(error)).toBeNull();
+  listing = { ...LIST, writesRefused: true, diagnostics: [error] };
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await screen.findByText(error);
+  expect(screen.getByText("work")).toBeTruthy();
+  expect(add().disabled).toBe(true);
+  listing = LIST;
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await waitFor(() => expect(add().disabled).toBe(false));
+  expect(screen.queryByText(error)).toBeNull();
+});

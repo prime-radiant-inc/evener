@@ -9896,3 +9896,21 @@ test("a ?host=local prefill overrides the draft's last-chosen host for the same 
   expect(spawnDraftsStore.getState().current?.fields.getState().source).toBe("local");
   window.history.replaceState({}, "", "/");
 });
+
+test("an open launch picker adopts a provider-file repair notification", async () => {
+  const user = setupUser();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await user.click(modelTrigger());
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.clear(combo);
+  await user.type(combo, "repaired-model");
+  expect(screen.queryByText("work/repaired-model")).toBeNull();
+  modelListOverride = [
+    { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+    { provider: "work", model: "repaired-model", displayName: "work/repaired-model" },
+  ];
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await screen.findByText("work/repaired-model");
+});
