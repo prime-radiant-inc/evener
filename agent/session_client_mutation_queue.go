@@ -349,7 +349,16 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 				err = errors.Join(err, fmt.Errorf("return queued input: %w", restoreErr))
 			}
 		}
-		return result, true, err
+		// A steering carrier that stood down ran no model turn -- its steer was
+		// already gone, or its skill selection failed and nothing was carried.
+		// Report ran=false so the caller clears the interrupt runner it armed
+		// on the claim instead of leaving it pointed at a turn that never
+		// started (issue #185 item 3).
+		ran := true
+		if queued.SteeringCarrier && s.steeringCarrierStoodDown(queued.StableTurnID) {
+			ran = false
+		}
+		return result, ran, err
 	}
 	return "", false, nil
 }
@@ -503,6 +512,30 @@ func (s *Session) carrierSteerOutcome(identity queuedClientMutationIdentity) car
 		return carrierSteerUndelivered
 	}
 	return carrierSteerDelivered
+}
+
+// markSteeringCarrierStoodDown records that the carrier turn named turnID
+// stood down without running a model turn, so ProcessPendingUserInput can
+// report ran=false truthfully instead of claiming it ran a turn that never
+// started (issue #185 item 3).
+func (s *Session) markSteeringCarrierStoodDown(turnID string) {
+	if turnID == "" {
+		return
+	}
+	s.mu.Lock()
+	s.steeringCarrierStoodDownTurnID = turnID
+	s.mu.Unlock()
+}
+
+// steeringCarrierStoodDown reports whether the carrier turn named turnID stood
+// down, consuming the marker. Keyed by turn id so a stand-down of a different
+// carrier drained in the same input cannot false-positive on this one.
+func (s *Session) steeringCarrierStoodDown(turnID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stoodDown := turnID != "" && s.steeringCarrierStoodDownTurnID == turnID
+	s.steeringCarrierStoodDownTurnID = ""
+	return stoodDown
 }
 
 // AcceptClientMutationQueue durably accepts or replays one client-authored

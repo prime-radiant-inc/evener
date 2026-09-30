@@ -1597,10 +1597,11 @@ func TestAskUser_RecordFailedSteeringSelectionTagsSteeringCarrierForAnAnsweringS
 		t.Fatalf("AcceptClientMutationSteer: %v", err)
 	}
 	// errSteeringCarrierStoodDown is swallowed by processOneInput's own
-	// dispatch (session_lifecycle.go:1944) -- a graceful stand-down, not a
-	// visible failure -- so only ran is asserted here.
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); !ran || err != nil {
-		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=true err=nil", ran, err)
+	// dispatch -- a graceful stand-down, not a visible failure -- but the
+	// carrier ran no model turn, so ProcessPendingUserInput must report
+	// ran=false (issue #185 item 3).
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); ran || err != nil {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=false err=nil", ran, err)
 	}
 
 	if got := sess.askPendingCount(); got != 0 {
