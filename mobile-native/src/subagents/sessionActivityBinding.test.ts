@@ -232,3 +232,47 @@ test("alias replacement retires the model and fences a pending same-client follo
 	expect(tree.getSnapshot().coordinatorModel).toBeNull();
 	await tree.setClient(null);
 });
+
+test("final release and same-client remount fence an admitted obsolete follow reply", async () => {
+	const { subagentTree, holdSubagentTree, forgetSubagentTrees } = await import("./subagentTree");
+	const client = hub();
+	const tree = subagentTree("remount-hub", context.ref, "root");
+	const release = holdSubagentTree(tree);
+	await tree.setClient(client);
+	await tree.follow();
+	expect(tree.getSnapshot().coordinatorModel).toBe("scripted");
+	let admit = () => {};
+	const admitted = new Promise<void>((resolve) => {
+		admit = resolve;
+	});
+	let answer: (result: unknown) => void = () => {};
+	client.on("thread/read", () => {
+		admit();
+		return new Promise((resolve) => {
+			answer = resolve;
+		}) as never;
+	});
+	const obsolete = tree.follow();
+	await admitted;
+	const unsubscribed = new Promise<void>((resolve) =>
+		client.on("thread/unsubscribe", () => {
+			resolve();
+			return {};
+		}),
+	);
+	release();
+	await unsubscribed;
+	expect(tree.getSnapshot().coordinatorModel).toBe("scripted");
+	const remounted = subagentTree("remount-hub", context.ref, "root");
+	expect(remounted).toBe(tree);
+	const releaseRemount = holdSubagentTree(remounted);
+	client.on("thread/read", () => ({ thread: { id: "root", modelProvider: "current" } }) as never);
+	await remounted.setClient(client);
+	await remounted.follow();
+	expect(tree.getSnapshot().coordinatorModel).toBe("current");
+	answer({ thread: { id: "root", modelProvider: "obsolete" } });
+	await obsolete;
+	expect(tree.getSnapshot().coordinatorModel).toBe("current");
+	releaseRemount();
+	forgetSubagentTrees("remount-hub");
+});

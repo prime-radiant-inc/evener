@@ -53,6 +53,7 @@ export class SubagentTree {
 	};
 	setClient(client: ConversationClientLike | null): Promise<void> {
 		if (client === this.client) return Promise.resolve();
+		this.modelGeneration += 1;
 		this.detachStore?.();
 		this.detachStore = null;
 		this.stopActivity.forEach((stop) => stop());

@@ -4226,7 +4226,39 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
 		expect(renderedText(tree)).toContain("Stop requested");
-		expect(stopRequests("hub-1").direct({ id: "d-fix" } as never)).toBe(true);
+		const [stoppedRow] = flattenSubagents(subagentTree() as never);
+		if (!stoppedRow) throw new Error("no row");
+		expect(stopRequests("hub-1").direct(stoppedRow)).toBe(true);
+	});
+
+	it("keeps another root's colliding stop evidence separate from the actual direct stop target", async () => {
+		const [current] = flattenSubagents(subagentTree() as never);
+		if (!current) throw new Error("no row");
+		const other = {
+			...current,
+			ref: "remote:other-child",
+			delegate: {
+				...current.delegate,
+				childRef: "remote:other-child",
+				rootRef: "remote:other-root",
+			},
+		};
+		stopRequests("hub-1").request("remote:other-root", other, 1000, { direct: true });
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
+		expect(stopRequests("hub-1").view(other)).toBe("requested");
+		expect(stopRequests("hub-1").direct(current)).toBe(true);
 	});
 
 	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {

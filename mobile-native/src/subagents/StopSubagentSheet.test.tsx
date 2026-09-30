@@ -263,7 +263,14 @@ it("steers a working coordinator, records the request, and closes", async () => 
 		ref: COORDINATOR.ref,
 		input: [{ type: "text", text: "Stop subagent “Fix race in tree settle”: it's no longer needed." }],
 	});
-	expect(stopRequests("hub-1").view({ id: "d-fix", active: true, state: "running" } as never)).toBe("requested");
+	expect(
+		stopRequests("hub-1").view({
+			id: "d-fix",
+			active: true,
+			state: "running",
+			delegate: { delegateId: "d-fix", childRef: "local:fix" },
+		} as never),
+	).toBe("requested");
 	expect(sheetNavigation.goBack).toHaveBeenCalled();
 });
 
