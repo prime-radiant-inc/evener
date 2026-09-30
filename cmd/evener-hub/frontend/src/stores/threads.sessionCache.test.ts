@@ -782,6 +782,53 @@ describe("cached shell load seam", () => {
     expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1); // one hydration, one read
   });
 
+  it("join after the deadline: a second ensureThread arriving once the lookup lost its own race joins the pending hydration (Review Focus 5)", async () => {
+    // The plan's Review Focus 5 case, literally (plan line 37): the second
+    // caller arrives AFTER the 250 ms deadline resolved the wedged lookup as
+    // a miss, so the shared lookup is already gone — what must join is the
+    // cold hydration the first caller armed (ensureThread's inflightHydrates
+    // guard skips the lookup block and awaits the shared hydration), never a
+    // second wedged open. The spied get is the witness: joinCacheLookup is
+    // exactly one adapter.get per lookup, so a second lookup would be a
+    // second get call.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const wedged = new SessionCacheIndexedDB({ indexedDB: neverSettlingFactory() });
+      const getSpy = vi.spyOn(wedged, "get");
+      setSessionCacheAdapterForTests(wedged);
+      const fake = connectFakeClient();
+      let resolveRead: ((value: ThreadReadResponse) => void) | undefined;
+      let readGeneration: number | undefined;
+      fake.on("thread/read", (params) => {
+        readGeneration = params.requestGeneration;
+        return new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        });
+      });
+      const first = threadsStore.getState().ensureThread("local:thr_1");
+      await vi.advanceTimersByTimeAsync(250); // the lookup loses its own deadline race; the cold read arms parked
+      if (resolveRead === undefined) throw new Error("the cold read must be armed within the bound");
+      expect(getSpy).toHaveBeenCalledTimes(1); // the first caller's lookup — the only adapter.get so far
+      const second = threadsStore.getState().ensureThread("local:thr_1"); // arrives after the race was lost
+      expect(getSpy).toHaveBeenCalledTimes(1); // joined the pending hydration, never a second wedged lookup
+      resolveRead(readResponse("local:thr_1", { requestGeneration: readGeneration }));
+      // Both callers settle from the one read. A second caller that had
+      // started its own wedged lookup would still be parked behind a fresh
+      // 250 ms deadline this test never advances — the await would hang.
+      await Promise.all([first, second]);
+      expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1); // never double-armed
+      expect(threadsStore.getState().threads.get("local:thr_1")?.history?.incarnation).toBe("inc-1"); // the one read published
+      expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false); // the cold path: no shell ever
+    } finally {
+      vi.useRealTimers();
+      // The wedged lookup's open never settles, so the storage work it
+      // registered can never settle either: forget it (the tracker's own
+      // reset contract) — the deadline test's own cleanup discipline.
+      clearProjectionWorkForTests();
+      restoreCacheAdapter();
+    }
+  });
+
   it("release during the lookup publishes nothing", async () => {
     const { gate, adapter } = cacheTestBed({ gated: true });
     await seedCache(adapter, "local:thr_1");
