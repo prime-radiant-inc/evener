@@ -2913,7 +2913,7 @@ Expected: PASS.
    - A "MANAGE" group keeps today's Edit, Make default, Clear stored key, Clear credentials and Remove, with their confirmations, as accent and danger rows (ruling 12).
    - Errors and warnings show as danger and attention footers.
 4. **Deep links.** With `focus`, the page opens that instance's detail once on mount. With `signIn` too, it starts the sign-in flow as the detail's Sign in does. Then it clears both params.
-5. **The Hub's home:** Providers pushes `Providers`, valued with the number of instances, plus an amber `Tag` "N to sign in" when any is "Sign-in expired".
+5. **The Hub's home:** Providers pushes `Providers`, valued with the number of instances. (It first carried an amber `Tag` "N to sign in"; Jesse ruled on 2026-09-30 that the row shows the count alone, ruling 6.)
 6. **The Board's sign-in notice** becomes `navigation.navigate("Hub", { screen: "Providers", params: { hubId, focus: provider, signIn: true }, initial: false })` (ruling 25).
 
 - [ ] **Step 1: Write the failing tests.**
@@ -4819,7 +4819,7 @@ Run the demo hub with `EVENER_DEMO_FLEET=1` and a Release simulator build (iPhon
 22. The model picker: Hub default, Recent, then the provider groups.
 23. The Hub's home, taken with `EVENER_DEMO_FLEET_OFFLINE_HOST=1`:
     - "Hosts" with its "1 offline" tag;
-    - "Providers" with "1 to sign in";
+    - "Providers" with its count alone (ruling 6);
     - Plugins, Display, Hubs and About.
     - The spec's "plugins (one update)" can't show (ruling 7), and the PR says so.
 24. paradise-park's detail, offline: its status, the "Hub runs 0.9.412" tag, its last error, Connect, and the offline footer.

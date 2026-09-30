@@ -29,7 +29,7 @@ export function providerStatus(
 	return { word: "Key set", tone: "ink" };
 }
 
-/** A provider's state for the list, the Hub home and the detail: null while
+/** A provider's state for the list and the detail: null while
  * the hub's statuses haven't been read and the provider signs in with an
  * account, whose "Signed in" or "Sign-in expired" only the statuses can tell
  * apart. A key's state is on its row. */

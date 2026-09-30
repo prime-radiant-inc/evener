@@ -204,19 +204,6 @@ it("opens Providers inside the sheet, counting them with no sign-in count (spec 
 	expect(providers.calls.map((call) => call.method)).not.toContain("evener/auth/list");
 });
 
-it("reads no providers while the connection can't be used, even when it says ready", async () => {
-	// A re-key window: the client may still be the previous hub's.
-	const providers = providersHub(["codex-jesse-fsck.com"], [{ provider: "codex-jesse-fsck.com", needsLogin: true }]);
-	await mount({ providers, usable: false });
-	expect(providers.calls.map((call) => call.method)).not.toContain("evener/auth/list");
-});
-
-it("counts providers with no tag when none needs signing in", async () => {
-	const providers = providersHub(["lunaroute", "meta"], []);
-	const { find } = await mount({ providers });
-	expect(find("Providers, 2")).not.toBeNull();
-});
-
 it("reads a count of none to VoiceOver as it shows it", async () => {
 	const providers = providersHub([], []);
 	const { find } = await mount({ providers });
