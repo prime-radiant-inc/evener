@@ -29,6 +29,10 @@ Brief:
 
 // askExchange is one logged question/answer pair (--log's JSON-lines
 // shape), read back by the harness into probeResult.Asks (readAskLog).
+// Answer is the person's whole reply to the round the question came in:
+// when one ask_user call carries several questions the reply answers them
+// all, numbered, and is not split, because cutting a model's reply at its
+// numbers is a guess.
 type askExchange struct {
 	Question string `json:"question"`
 	Answer   string `json:"answer"`

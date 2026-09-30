@@ -36,6 +36,13 @@ func personAskResponderCommand(cfg runConfig, probe probeFile, res probeResult) 
 	if model == "" {
 		model = cfg.model
 	}
+	// A bare model (as --fast-cheap-model allows) means the main model's
+	// provider; respond --model needs provider/model.
+	if !strings.Contains(model, "/") {
+		if provider, _, ok := strings.Cut(cfg.model, "/"); ok {
+			model = provider + "/" + model
+		}
+	}
 
 	self, err := evenerFluencyExecutablePath()
 	if err != nil {

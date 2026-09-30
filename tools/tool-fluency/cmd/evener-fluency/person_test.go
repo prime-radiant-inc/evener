@@ -77,6 +77,29 @@ func TestCliProbeArgsDefaultsPersonModelToFastCheapModel(t *testing.T) {
 	}
 }
 
+// TestCliProbeArgsQualifiesBareFastCheapModel: --fast-cheap-model accepts a
+// bare model meaning "on the main model's provider", but respond --model
+// needs provider/model, so a bare fallback gets the main model's provider.
+func TestCliProbeArgsQualifiesBareFastCheapModel(t *testing.T) {
+	oldSelf := evenerFluencyExecutablePath
+	t.Cleanup(func() { evenerFluencyExecutablePath = oldSelf })
+	evenerFluencyExecutablePath = func() (string, error) { return "/path/to/evener-fluency", nil }
+
+	dir := t.TempDir()
+	res := probeResult{WorkDir: filepath.Join(dir, "work"), StateDir: filepath.Join(dir, "state")}
+	probe := probeFile{Prompt: "p", Person: &personSpec{Brief: "brief"}}
+	cfg := runConfig{model: "lunarouter/glm-5.3", fastCheapModel: "deepseek-4.1-flash"}
+
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
+	command := findFlagValue(t, args, "--ask-responder")
+	if got := extractFlagValue(t, command, "--model"); got != "lunarouter/deepseek-4.1-flash" {
+		t.Errorf("command model = %q, want the bare fast-cheap model on the main model's provider", got)
+	}
+}
+
 // TestCliProbeArgsOmitsAskResponderWithoutPerson: a task with no person:
 // block runs exactly as it did before this feature.
 func TestCliProbeArgsOmitsAskResponderWithoutPerson(t *testing.T) {
