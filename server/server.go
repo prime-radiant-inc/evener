@@ -426,6 +426,7 @@ type Server struct {
 	nameFunc                 func(string) error
 	reasoningEffortFunc      func(string) error
 	listModelsFunc           func(context.Context) ([]appwire.ModelDescriptor, error)
+	appSessionActivity       sessionActivityHooks
 	tasksFn                  func() any
 	jobsFn                   func(appwire.JobsListParams) (any, error)
 	jobOutputFn              func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)

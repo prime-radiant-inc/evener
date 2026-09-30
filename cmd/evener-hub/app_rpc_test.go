@@ -13254,3 +13254,19 @@ func TestHubRPCUrlsRemoveGatedByCapability(t *testing.T) {
 		t.Fatalf("wire=%+v", wire)
 	}
 }
+
+func (s *relayLifecycleSource) ThreadActivityRead(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+	return appwire.SessionActivitySummary{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *relayLifecycleSource) ThreadDelegatesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+	return appwire.SessionDelegatesResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *relayLifecycleSource) ThreadJobsList(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+	return appwire.SessionJobsResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *relayLifecycleSource) ThreadWatchesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+	return appwire.SessionWatchesResponse{}, appwire.Unavailable("test source does not read session activity")
+}

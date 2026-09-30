@@ -571,6 +571,29 @@ func (s *RemoteHubSource) translateOut(out any) error {
 		for index := range response.Items {
 			rewriteItemImageURLs(s.id, &response.Items[index])
 		}
+	case *appwire.SessionActivitySummary:
+		return s.translateSessionActivity(&response.Context, nil)
+	case *appwire.SessionDelegatesResponse:
+		refs := make([]*string, 0, 3*len(response.Delegates))
+		for i := range response.Delegates {
+			row := &response.Delegates[i]
+			refs = append(refs, &row.OwnerRef, &row.RootRef, &row.ChildRef)
+		}
+		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
+	case *appwire.SessionJobsResponse:
+		refs := make([]*string, 0, 2*len(response.Jobs))
+		for i := range response.Jobs {
+			row := &response.Jobs[i]
+			refs = append(refs, &row.OwnerRef, &row.TranscriptRef)
+		}
+		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
+	case *appwire.SessionWatchesResponse:
+		refs := make([]*string, 0, 2*len(response.Watches))
+		for i := range response.Watches {
+			row := &response.Watches[i]
+			refs = append(refs, &row.OwnerRef, &row.ReceiverRef)
+		}
+		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
 	case *appwire.JobsListResponse:
 		response.Data = s.translateActivityRefs(response.Data)
 	}

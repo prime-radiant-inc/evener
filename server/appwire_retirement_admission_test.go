@@ -82,6 +82,11 @@ func TestRetirementAdmissionFailsClosedForUnclassifiedMethod(t *testing.T) {
 
 func TestRetirementAdmissionCatalogCoverage(t *testing.T) {
 	expected := map[string]string{
+		appwire.MethodEvenerThreadActivityRead:  "read",
+		appwire.MethodEvenerThreadDelegatesList: "read",
+		appwire.MethodEvenerThreadJobsList:      "read",
+		appwire.MethodEvenerThreadWatchesList:   "read",
+
 		appwire.MethodThreadList: "read", appwire.MethodThreadRead: "read", appwire.MethodThreadUnsubscribe: "read", appwire.MethodThreadTurnsList: "read", appwire.MethodEvenerTasksList: "read", appwire.MethodEvenerJobsList: "read", appwire.MethodEvenerJobsOutput: "read", appwire.MethodModelList: "read",
 		appwire.MethodThreadClear: "mutation", appwire.MethodThreadModelSet: "mutation", appwire.MethodEvenerThreadNameSet: "mutation", appwire.MethodThreadReasoningEffortSet: "mutation", appwire.MethodThreadVisionModelSet: "mutation", appwire.MethodThreadCompactStart: "mutation", appwire.MethodTurnStart: "mutation", appwire.MethodTurnSteer: "mutation", appwire.MethodTurnInterrupt: "mutation", appwire.MethodTurnQueue: "mutation", appwire.MethodTurnDrainAsSteer: "mutation", appwire.MethodTurnPromoteQueuedAsSteer: "mutation", appwire.MethodTurnCancelQueued: "mutation", appwire.MethodGoalSet: "mutation", appwire.MethodEvenerSandboxEscalationResolve: "mutation", appwire.MethodEvenerDelegateStop: "mutation", appwire.MethodNotesHumanSet: "mutation", appwire.MethodUrlsRemove: "mutation", appwire.MethodThreadShutdown: "control", appwire.MethodEvenerDaemonStatus: "control", appwire.MethodEvenerDaemonRetire: "control", appwire.MethodEvenerDaemonIdleTimeoutSet: "control",
 	}

@@ -11,12 +11,17 @@ import (
 // daemonRetirementAccess is exhaustive for the daemon catalog. Connection
 // methods are intentionally not runtime borrowers.
 var daemonRetirementAccessKinds = map[string]string{
-	appwire.MethodThreadList:                     "read",
-	appwire.MethodThreadRead:                     "read",
-	appwire.MethodThreadUnsubscribe:              "read",
-	appwire.MethodThreadTurnsList:                "read",
-	appwire.MethodEvenerTasksList:                "read",
-	appwire.MethodEvenerJobsList:                 "read",
+	appwire.MethodThreadList:                "read",
+	appwire.MethodThreadRead:                "read",
+	appwire.MethodThreadUnsubscribe:         "read",
+	appwire.MethodThreadTurnsList:           "read",
+	appwire.MethodEvenerTasksList:           "read",
+	appwire.MethodEvenerJobsList:            "read",
+	appwire.MethodEvenerThreadActivityRead:  "read",
+	appwire.MethodEvenerThreadDelegatesList: "read",
+	appwire.MethodEvenerThreadJobsList:      "read",
+	appwire.MethodEvenerThreadWatchesList:   "read",
+
 	appwire.MethodEvenerJobsOutput:               "read",
 	appwire.MethodModelList:                      "read",
 	appwire.MethodThreadClear:                    "mutation",
