@@ -136,9 +136,12 @@ one cache lookup before arming the hydration. Two properties are load-bearing:
   (`STORAGE_WAIT_MS = 10_000`). It captures the current clear epoch when
   it starts — the durable epoch row read in the lookup's own transaction,
   never the in-memory view, which a tab that has not yet received the
-  clear's channel message cannot trust — and compares it before
-  publishing: a lookup that began before a clear and resolves after it
-  discards its result, so a cleared cache cannot resurrect a shell. The
+  clear's channel message cannot trust — and re-reads the durable epoch
+  row immediately before publishing, in the same synchronous step with
+  no await between, discarding on any difference: a lookup that began
+  before a clear, or whose clear committed between the lookup's
+  transaction and its publish, discards its result, so a cleared cache
+  cannot resurrect a shell. The
   same captured value is the lease's epoch: the arming records it, and
   the clear's suppression uses it to tell a lease that predates a
   clear from one opened after it (the clear section). On deadline, open failure, miss, or an epoch
@@ -260,8 +263,9 @@ it fires. The gates:
   whose presence means the next latest-window response replaces rather
   than merges (the same single-field test the reducer's own liveness
   check makes). The markers travel together — the reducer's invalidation
-  entry sets `invalidatedAtGeneration`, `awaited`, and `pendingIncarnation`
-  as one unit, and its deferred pages accumulate only inside that state —
+  entry always sets `invalidatedAtGeneration` and `awaited`, adding
+  `pendingIncarnation` only when the invalidation names a different
+  incarnation, and its deferred pages accumulate only inside that state —
   so an invalidated, reconnect-resyncing, or identity-awaiting history is
   never persisted until the resync read settles it. A settled-but-stale
   pair is ordinary cache content; a mid-transition one is not,
@@ -499,11 +503,16 @@ involved.
   channel message that carries the epoch to sibling tabs is a latency
   optimization, not the guard — delivery can lag arbitrarily, and the
   in-transaction read is what makes a pre-clear write harmless.
-  A write transaction that observes a newer durable epoch also updates
-  the tab's in-memory epoch view, so a tab that has not yet received
-  the channel message learns the new epoch from storage on its next
-  aborted write and its next scheduled write carries the right one:
-  the message speeds the view up, but no lease waits on it.
+  A write transaction that observes a newer durable epoch updates the
+  tab's in-memory epoch view and arms the suppression the missed
+  channel message would have armed: every open lease whose captured
+  epoch predates the observed one is suppressed through its final
+  release, so a tab that never receives the message still cannot
+  re-persist pre-clear content — the aborted write is itself the
+  tab's proof that a clear happened, and a deliberate re-open after
+  release starts a fresh lease and caches again, exactly as if the
+  message had arrived. The message speeds the view up, but no lease
+  waits on it.
 - Cross-tab: last write wins per ref. A tab holding only the window can
   replace a sibling's deeper record; the dropped pages simply re-fetch on
   a later reload. This design deliberately rejects a no-shrink comparison
@@ -725,38 +734,47 @@ Store integration (`stores/threads.test.ts` additions and a new
     `ensureThread` (which joins the shared lookup, never double-arms), a
     release during the lookup (publishes nothing), a lookup that lost its
     own deadline race resolving late (publishes nothing, arms nothing),
-    and hydration still completing within the 250 ms bound.
-14. Deletion and clearing: a `deleteSession` success removes the record
-    and cancels the ref's pending debounce timer; the deletion propagates
-    through the channel, and a sibling tab holding the session open —
-    continuously receiving `history/updated` and scheduling writes —
-    stops writing without a reload and never re-creates the record; a
-    write scheduled before the fence or delete and firing after it is
-    refused by the `deletedRefs` gate; the deletion fence removes the
-    record on a fenced read; the release flush skips a ref closed by
-    deletion; the settings clear empties the
-    adapter in the specified order (in-memory epoch and timer
-    cancellation before the awaited transaction) — a write scheduled under
-    an older epoch skips itself, including a timer armed before the clear
-    and firing after it — the suppression reaches sibling tabs through the
-    channel carrying the epoch, ends with the final release of each open
-    ref, and a deliberate re-open of a cleared ref starts caching again;
-    an open pane's post-clear notification write is refused by the
-    suppression gate; a write whose transaction runs after the clear's
-    aborts itself on the in-transaction epoch read; a sibling tab armed
-    by the clear's channel message refuses its next scheduled
-    `history/updated` write without a reload, while a ref the sibling
-    closed before the clear and re-opened after its transaction
-    committed is not suppressed — its lease captured the clear's epoch —
-    and caches again; a deletion message received by a sibling holding
-    the ref open both suppresses its writes and deletes the record a
-    racing write re-created before the message arrived; in the deleting
-    tab, a debounce callback whose task was already queued when the
-    action's success handler ran is refused by its own `deletedRefs`
-    arming, and a write whose transaction was already open commits
-    first only for the deletion serialized after it to remove it; a
-    record delete whose transaction aborted is retried by the fence's
-    next firing and costs at most one stale shell on a re-open.
+    a clear committing between the lookup's transaction and its publish
+    discarding the result through the second durable read, and
+    hydration still completing within the 250 ms bound.
+14. Deletion and clearing, one focused test per interleaving rather
+    than one bundling them (the per-test ceiling makes a monolith opaque
+    and its failures unreadable). (a) Deletion — a `deleteSession`
+    success removes the record and cancels the ref's pending debounce
+    timer; the deletion propagates through the channel, and a sibling
+    tab holding the session open — continuously receiving
+    `history/updated` and scheduling writes — stops writing without a
+    reload and never re-creates the record; a write scheduled before
+    the fence or delete and firing after it is refused by the
+    `deletedRefs` gate; the deletion fence removes the record on a
+    fenced read; the release flush skips a ref closed by deletion; in
+    the deleting tab, a debounce callback whose task was already
+    queued when the action's success handler ran is refused by its own
+    `deletedRefs` arming, and a write whose transaction was already
+    open commits first only for the deletion serialized after it to
+    remove it; a record delete whose transaction aborted is retried by
+    the fence's next firing and costs at most one stale shell on a
+    re-open; a deletion message received by a sibling holding the ref
+    open both suppresses its writes and deletes the record a racing
+    write re-created before the message arrived. (b) Clear ordering —
+    the settings clear empties the adapter in the specified order
+    (in-memory epoch and timer cancellation before the awaited
+    transaction); a write scheduled under an older epoch skips itself,
+    including a timer armed before the clear and firing after it; a
+    write whose transaction runs after the clear's aborts itself on
+    the in-transaction epoch read. (c) Suppression lifecycle — an open
+    pane's post-clear notification write is refused by the suppression
+    gate; a sibling tab armed by the clear's channel message refuses
+    its next scheduled `history/updated` write without a reload; a ref
+    the sibling closed before the clear and re-opened after its
+    transaction committed is not suppressed — its lease captured the
+    clear's epoch — and caches again; the suppression ends with the
+    final release of each open ref, and a deliberate re-open of a
+    cleared ref starts caching again. (d) The missed message —
+    repeated notifications between a tab's first aborted stale write
+    and the delayed channel delivery never re-persist the ref: the
+    aborted write armed the suppression itself, so a tab that never
+    hears the message still stops.
 15. Write gating: `failed` history writes nothing; an invalidated
     history — `invalidatedAtGeneration` set, with `awaited`,
     `pendingIncarnation`, and a deferred page present — writes nothing
