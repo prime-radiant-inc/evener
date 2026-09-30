@@ -148,7 +148,9 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
    - An OAuth credential: "Signed in".
    - A key from any source: "Key set".
    - No credential: "Not signed in" for an OAuth provider, "No key" for a key provider, "No sign-in needed" when none is required.
+   - `evener/auth/list` reporting an `error` (a credential the provider rejected, or one the hub could not read; #3539): "Error", a red tag, with the hub's sentence on the detail. "Sign-in expired" wins when both apply.
    - Only "Sign-in expired" is amber.
+   - The Hub home's Providers row shows only the number of providers, with no "N to sign in" or error count (Jesse, 2026-09-30).
    - "Expires in 3d" waits for the sign-in expiry the hub doesn't expose (S11b, the server plan's PR 23). Jesse's answer on S11 notes that no refresh-token lifetime exists anywhere, so the hub may never report one. Until it does, a signed-in provider shows no expiry.
    - #2483 (on main) sets `needsLogin` only when the access token has expired and no refresh token can renew it. A rejected refresh isn't recorded until #2479, and until then the phone can't say so.
 7. **Plugins show no update badge.** `PluginEntry` carries no available version (`appwire/types.go`). Upgrade stays in a plugin's detail. Its result says "Already up to date" when version and commit didn't change, or "Upgraded to <version>".
