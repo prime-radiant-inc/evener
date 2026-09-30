@@ -5,7 +5,8 @@
 // Hosts page over the edit, which is the accepted trade-off: no one can tap a
 // notice over the Hub today (#3524). This pins, on the Hub's own shape with
 // React Navigation's real core (as HubSheet.unsavedEdit.test.tsx does), that
-// a guarded page is never dropped by a link.
+// a guarded page is never dropped by a link: the host notice's, the sign-in
+// notice's, or a sign-in error's.
 import {
 	BaseNavigationContainer,
 	createNavigatorFactory,
@@ -19,7 +20,7 @@ import { createRef, Fragment, type ReactNode } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { render } from "../renderNative.testkit";
-import { openNotice } from "./BoardNotices";
+import { openNotice, openProviders } from "./BoardNotices";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -42,9 +43,10 @@ const createTestStack = createNavigatorFactory(TestStack);
 const Root = createTestStack();
 const Hub = createTestStack();
 
-// An edit with unsaved input: its guard holds any removal React Navigation
-// runs through beforeRemove.
-function UnsavedHostEdit() {
+// A page holding unsaved input (a host edit, a provider detail with a pasted
+// key): its guard holds any removal that runs through beforeRemove. The
+// callback does nothing; the stack's shape after the link is the assertion.
+function Guarded() {
 	usePreventRemove(true, () => {});
 	return null;
 }
@@ -55,12 +57,15 @@ function HubSheet() {
 			<Hub.Screen name="HubHome" component={() => null} />
 			<Hub.Screen name="Hosts" component={() => null} />
 			<Hub.Screen name="HostDetail" component={() => null} />
-			<Hub.Screen name="HostEdit" component={UnsavedHostEdit} />
+			<Hub.Screen name="HostEdit" component={Guarded} />
+			<Hub.Screen name="Providers" component={() => null} />
+			<Hub.Screen name="ProviderDetail" component={Guarded} />
 		</Hub.Navigator>
 	);
 }
 
-it("never drops an unsaved host edit when a host notice's link arrives", async () => {
+/** The app with the Hub open at `pages` (after its home), and the Hub's stack. */
+async function hubOpenAt(pages: string[]) {
 	const navigation = createRef<NavigationContainerRef<ParamListBase>>();
 	render(
 		<BaseNavigationContainer ref={navigation}>
@@ -71,21 +76,25 @@ it("never drops an unsaved host edit when a host notice's link arrives", async (
 		</BaseNavigationContainer>,
 	);
 	await act(async () => {});
+	const [first, ...rest] = pages;
+	await act(async () => navigation.current?.navigate("Hub", { screen: first, params: { hubId: "hub-1" }, initial: false }));
+	for (const page of rest) {
+		await act(async () => navigation.current?.navigate("Hub", { screen: page, params: { name: "x" } }));
+	}
 	const hub = () => {
-		const route = navigation.current?.getRootState()?.routes.at(-1);
-		const routes = route?.state?.routes;
+		const routes = navigation.current?.getRootState()?.routes.at(-1)?.state?.routes;
 		if (!routes) throw new Error("the Hub has no stack yet");
 		return routes.map((entry) => entry.name);
 	};
-	await act(async () =>
-		navigation.current?.navigate("Hub", { screen: "Hosts", params: { hubId: "hub-1" }, initial: false }),
-	);
-	await act(async () => navigation.current?.navigate("Hub", { screen: "HostDetail", params: { name: "studio" } }));
-	await act(async () => navigation.current?.navigate("Hub", { screen: "HostEdit", params: { name: "studio" } }));
-	expect(hub()).toEqual(["HubHome", "Hosts", "HostDetail", "HostEdit"]);
+	expect(hub()).toEqual(["HubHome", ...pages]);
+	// The Board's navigation object, as openNotice and openProviders get it.
+	return { links: navigation.current as never, hub };
+}
 
+it("never drops an unsaved host edit when a host notice's link arrives", async () => {
+	const { links, hub } = await hubOpenAt(["Hosts", "HostDetail", "HostEdit"]);
 	await act(async () =>
-		openNotice(navigation.current as never, "hub-1", {
+		openNotice(links, "hub-1", {
 			key: "host:studio",
 			text: "Studio Mac is offline",
 			kind: "host",
@@ -95,4 +104,24 @@ it("never drops an unsaved host edit when a host notice's link arrives", async (
 	);
 	// The edit is still in the stack, under the Hosts page the link opened.
 	expect(hub()).toEqual(["HubHome", "Hosts", "HostDetail", "HostEdit", "Hosts"]);
+});
+
+it("never drops a provider detail holding a pasted key when a sign-in notice's link arrives", async () => {
+	const { links, hub } = await hubOpenAt(["Providers", "ProviderDetail"]);
+	await act(async () =>
+		openNotice(links, "hub-1", {
+			key: "signIn:codex",
+			text: "codex sign-in expired",
+			kind: "signIn",
+			action: "Sign in",
+			providerId: "codex",
+		}),
+	);
+	expect(hub()).toEqual(["HubHome", "Providers", "ProviderDetail", "Providers"]);
+});
+
+it("never drops a provider detail holding a pasted key when a sign-in error opens Providers", async () => {
+	const { links, hub } = await hubOpenAt(["Providers", "ProviderDetail"]);
+	await act(async () => openProviders(links, "hub-1"));
+	expect(hub()).toEqual(["HubHome", "Providers", "ProviderDetail", "Providers"]);
 });

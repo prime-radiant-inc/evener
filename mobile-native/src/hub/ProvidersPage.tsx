@@ -556,9 +556,8 @@ function Providers({
 		<GroupedPage>
 			<SheetStatus />
 			<ProviderFacts
-				// A notice or focus can swap the detail to another provider while
-				// the page stays mounted; keying by name remounts the facts so a
-				// search typed on one provider never filters another (issue #3279).
+				// Keyed by name, so a model search typed on one provider never
+				// filters another's (issue #3279).
 				key={instance.name}
 				instance={instance}
 				auth={auth}

@@ -26,11 +26,7 @@ export function openNotice(
 		});
 	else if (notice.kind === "host")
 		// Ruling 25: the Hub opens at that host, its home kept under the page.
-		navigation.navigate("Hub", {
-			screen: "Hosts",
-			params: { hubId, focus: notice.sourceId },
-			initial: false,
-		});
+		navigation.navigate("Hub", { screen: "Hosts", params: { hubId, focus: notice.sourceId }, initial: false });
 	else {
 		// Ruling 25 again: the Hub opens at Plugins with that plugin's detail.
 		navigation.navigate("Hub", {
@@ -39,6 +35,12 @@ export function openNotice(
 			initial: false,
 		});
 	}
+}
+
+/** Opens the Hub at Providers, its home kept under the page: where a sign-in
+ * error that names no provider sends you. No `pop`, as openNotice says. */
+export function openProviders(navigation: Pick<NativeStackNavigationProp<Routes>, "navigate">, hubId: string): void {
+	navigation.navigate("Hub", { screen: "Providers", params: { hubId }, initial: false });
 }
 
 /** The Board's notices, one row each under the chips (spec 7.1). */

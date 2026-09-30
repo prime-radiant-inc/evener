@@ -54,6 +54,7 @@ import {
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
+import { openProviders } from "./board/BoardNotices";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
@@ -2398,9 +2399,8 @@ export function ConversationScreen({
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();
 			else if (errorAction === "signIn")
-				// The error doesn't name the provider, so the Hub opens at Providers
-				// (openNotice says why it names no `pop`).
-				navigation.navigate("Hub", { screen: "Providers", params: { hubId: route.params.hubId }, initial: false });
+				// The error doesn't name the provider, so the Hub opens at Providers.
+				openProviders(navigation, route.params.hubId);
 			else void retryFailedTurn();
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
