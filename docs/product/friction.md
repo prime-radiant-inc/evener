@@ -1329,7 +1329,8 @@ These are useful patterns and preservation checks, rather than new fix requests.
   paced rather than reporting a fetch failure. Native session memory also retains pending demand
   across route disposal without holding a closed store or service. Mounted native views keep independent demand; a detached pending owner is
   adopted once when the reader commits, preserving its requested page and Find
-  match boundary. Browser revisit retains demand; Jump to live cancels the
+  match boundary. Committed native adoption retires superseded detached intent;
+  mounted readers remain independent. Browser revisit retains demand; Jump to live cancels the
   returned pane and its removed predecessors while another open pane retains
   its own.
 - Browser [`loadOlderTurns`](../../cmd/evener-hub/frontend/src/stores/threads.ts)

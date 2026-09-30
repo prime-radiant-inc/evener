@@ -8,7 +8,7 @@ import { createActivityStore } from "../../../mobile/src/state/activity";
 import { createConversationStore } from "../../../mobile/src/state/conversation";
 import { render, renderHook } from "../renderNative.testkit";
 import { type FindState, newFind } from "./findInSession";
-import { forgetHistoryForHub, historyForSession } from "./historyMemory";
+import { attachHistory, forgetHistoryForHub, historyForSession } from "./historyMemory";
 import { useOlderHistory } from "./useOlderHistory";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
@@ -465,6 +465,129 @@ it("claims detached intent only once when two same-session screens render togeth
 	} finally {
 		act(() => tree.unmount());
 	}
+});
+
+it("does not resurrect an older detached Find after closing the latest adopted Find", async () => {
+	const first = await openedReader();
+	const second = await openedReader();
+	first.client.on("thread/turns/list", () => {
+		throw new Error("first temporary");
+	});
+	second.client.on("thread/turns/list", () => {
+		throw new Error("second temporary");
+	});
+	vi.useFakeTimers();
+	const older = renderHook(() => useOlderHistory({ ...first.input, find: newFind("older query") }));
+	const latest = renderHook(() => useOlderHistory({ ...second.input, find: newFind("latest query") }));
+	act(() => {
+		older.result.current.findOlder();
+		latest.result.current.findOlder();
+	});
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(0);
+	});
+	expect(older.result.current.state.pending).toBe(true);
+	expect(latest.result.current.state.pending).toBe(true);
+	latest.unmount();
+	older.unmount();
+	expect(vi.getTimerCount()).toBe(0);
+	const returned = await openedReader();
+	returned.input.active = false;
+	const reopened = renderHook(() => {
+		const [find, setFind] = useState(() => historyForSession("hub", "history")?.find ?? null);
+		return { history: useOlderHistory({ ...returned.input, find, setFind }), find, setFind };
+	});
+	expect(reopened.result.current.find?.query).toBe("latest query");
+	act(() => {
+		reopened.result.current.history.cancelFind();
+		reopened.result.current.setFind(null);
+	});
+	reopened.unmount();
+	expect(historyForSession("hub", "history")).toBeUndefined();
+});
+
+it.each(["resolve", "reject"])("retires superseded detached demand before its old page can %s", async (outcome) => {
+	const first = await openedReader();
+	const second = await openedReader();
+	second.input.active = false;
+	let resolvePage: ((value: { data: []; nextCursor?: string }) => void) | undefined;
+	let rejectPage: ((error: Error) => void) | undefined;
+	first.client.on(
+		"thread/turns/list",
+		() =>
+			new Promise((resolve, reject) => {
+				resolvePage = resolve;
+				rejectPage = reject;
+			}),
+	);
+	vi.useFakeTimers();
+	const older = renderHook(() => useOlderHistory({ ...first.input, find: newFind("older query") }));
+	const latest = renderHook(() => useOlderHistory({ ...second.input, find: newFind("latest query") }));
+	act(() => {
+		older.result.current.findOlder();
+		latest.result.current.findOlder();
+	});
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(0);
+	});
+	older.unmount();
+	first.store.getState().close();
+	const obsolete = historyForSession("hub", "history");
+	expect(obsolete?.paging.getSnapshot().loading).toBe(true);
+	latest.unmount();
+	const selected = historyForSession("hub", "history");
+	expect(selected?.find?.query).toBe("latest query");
+	const returned = await openedReader();
+	returned.input.active = false;
+	const reopened = renderHook(() => {
+		const [find, setFind] = useState(selected?.find ?? null);
+		return { history: useOlderHistory({ ...returned.input, find, setFind }), setFind };
+	});
+	expect(obsolete?.retired).toBe(true);
+	expect(obsolete?.paging.getSnapshot().pending).toBe(false);
+	await act(async () => {
+		if (outcome === "resolve") resolvePage?.({ data: [] });
+		else rejectPage?.(new Error("late old page failure"));
+		await vi.advanceTimersByTimeAsync(60_000);
+	});
+	expect(reopened.result.current.history.state).toMatchObject({ pending: true, loading: false, error: null });
+	expect(selected?.find?.query).toBe("latest query");
+	expect(returned.store.getState().olderCursor).toBe("page");
+	expect(first.client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+	expect(returned.client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+	expect(vi.getTimerCount()).toBe(0);
+	act(() => {
+		reopened.result.current.history.cancelFind();
+		reopened.result.current.setFind(null);
+	});
+	reopened.unmount();
+	expect(historyForSession("hub", "history")).toBeUndefined();
+});
+
+it("a rejected claim cannot retire another detached reader's Find", async () => {
+	const first = await openedReader();
+	const second = await openedReader();
+	first.input.active = false;
+	second.input.active = false;
+	const older = renderHook(() => useOlderHistory({ ...first.input, find: newFind("older query") }));
+	const latest = renderHook(() => useOlderHistory({ ...second.input, find: newFind("latest query") }));
+	act(() => {
+		older.result.current.findOlder();
+		latest.result.current.findOlder();
+	});
+	latest.unmount();
+	const claimed = historyForSession("hub", "history");
+	const returned = renderHook(() => useOlderHistory({ ...second.input, find: claimed?.find }));
+	older.unmount();
+	const detached = historyForSession("hub", "history");
+	if (!claimed) throw new Error("missing claimed reader");
+	expect(attachHistory(claimed, second.store, second.service, Symbol("rejected"))).toBe(false);
+	second.input.service = null;
+	returned.rerender();
+	expect(detached?.retired).toBe(false);
+	expect(detached?.find?.query).toBe("older query");
+	expect(detached?.paging.getSnapshot().pending).toBe(true);
+	returned.unmount();
 });
 
 it("forgets the saved page boundary when a reopened reader authoritatively has no older history", async () => {

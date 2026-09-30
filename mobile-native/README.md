@@ -81,6 +81,10 @@ the query and saved match boundary needed to continue an older search. Find stay
 incomplete until a match or authoritative history end, with accurate permanent
 failure explanations.
 
+When several readers have left pending intent for the same session, committed
+reopening selects the latest detached intent and retires its detached predecessors.
+Readers that remain mounted keep their own demand and Find state.
+
 Closing Find and jumping live cancel only their corresponding consumer. Hub
 removal and confirmed new bindings retire old demand; settled or cancelled
 unobserved sessions are reclaimed. Existing conversation stores and reader-position
