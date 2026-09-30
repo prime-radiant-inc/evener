@@ -301,6 +301,60 @@ describe("conversation-owned session controls", () => {
 		expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 2");
 	});
 
+	// The hub announces a refreshed model list on evener/auth/updated (#3539):
+	// a loaded catalog is read again and replaced in place, and a failed read
+	// keeps it, since the list the hub last served still stands.
+	it("refreshes a loaded catalog in place and keeps it when the read fails", async () => {
+		let reads = 0;
+		let failing = false;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					if (failing) throw new Error("hub unavailable");
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${reads}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		await controls.refreshModels();
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: false,
+			modelError: null,
+			catalog: { data: [{ displayName: "Model One 2" }] },
+		});
+		failing = true;
+		await controls.refreshModels();
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: false,
+			modelError: null,
+			catalog: { data: [{ displayName: "Model One 2" }] },
+		});
+	});
+	it("refreshes nothing before a catalog is loaded", async () => {
+		let reads = 0;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					return { data: [] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.refreshModels();
+		expect(reads).toBe(0);
+	});
+
 	// A screen that binds a session again hands its new controls the catalog
 	// it already knows, so the label doesn't wait on a read to name the model.
 	it("starts from the catalog it is given", async () => {

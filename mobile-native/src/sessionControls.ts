@@ -128,6 +128,28 @@ export class SessionControls {
 			);
 		}
 	}
+	/** Reads a loaded catalog again after the hub announced a refreshed list
+	 * (evener/auth/updated), replacing it in place. Unlike a load, a failed
+	 * read keeps the catalog: the list the hub last served still stands. With
+	 * no catalog loaded there is nothing on screen to refresh. */
+	async refreshModels() {
+		if (
+			this.disposed ||
+			!this.isCurrent() ||
+			!this.state.catalog ||
+			this.state.loadingModels ||
+			this.state.pending
+		)
+			return;
+		this.publish({ loadingModels: true });
+		try {
+			const catalog = await this.service.models();
+			if (this.disposed) return;
+			this.publish(this.isCurrent() ? { catalog, loadingModels: false } : { loadingModels: false });
+		} catch {
+			if (!this.disposed) this.publish({ loadingModels: false });
+		}
+	}
 	changeModel(provider: string, model: string): Promise<boolean> {
 		if (!this.state.catalog?.data.some((entry) => entry.provider === provider && entry.model === model))
 			return Promise.resolve(false);

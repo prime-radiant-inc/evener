@@ -263,6 +263,39 @@ it("retains available model and reasoning when refreshing the same project", asy
 	expect(store.getState().model).toBeNull();
 });
 
+// The hub announces a refreshed model list on evener/auth/updated (#3539). The
+// form's list is read again in place: the picker keeps showing it (no loading
+// state, no emptied list) until the new one lands, the chosen model stays when
+// it is still listed, and a failed read keeps the list.
+it("refreshes a loaded model list in place", async () => {
+	const { store, calls } = setup();
+	const initial = store.getState().setCwd("/project");
+	calls[0]?.response.resolve({ data: [model] });
+	await initial;
+	store.getState().selectModel(model);
+	store.getState().setReasoning("high");
+
+	const refresh = store.getState().refreshModels();
+	expect(store.getState()).toMatchObject({ loadingModels: false, models: [model] });
+	const added = { provider: "p", model: "b" };
+	calls[1]?.response.resolve({ data: [model, added] });
+	await refresh;
+	expect(store.getState()).toMatchObject({ models: [model, added], model, reasoning: "high", modelError: null });
+
+	const failed = store.getState().refreshModels();
+	calls[2]?.response.reject(new Error("hub unavailable"));
+	await failed;
+	expect(store.getState()).toMatchObject({ models: [model, added], modelError: null, loadingModels: false });
+});
+
+it("refreshes nothing before the form's list is loaded", async () => {
+	const { store, calls } = setup();
+	void store.getState().setCwd("/project");
+	const before = calls.length;
+	await store.getState().refreshModels();
+	expect(calls).toHaveLength(before);
+});
+
 it("starts with per-launch overrides using the web scalar precedence without saving defaults", async () => {
 	const { store, calls } = setup();
 	const loading = store.getState().setCwd("/project");

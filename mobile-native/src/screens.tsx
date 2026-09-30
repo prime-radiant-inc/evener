@@ -2162,6 +2162,18 @@ export function ConversationScreen({
 	useEffect(() => {
 		if (controls && hasConversation && sessionOpen) void controls.loadModels();
 	}, [controls, hasConversation, sessionOpen]);
+	// The hub announces a refreshed model list on evener/auth/updated (it
+	// serves a stale list at once and refreshes it behind the request), so a
+	// loaded catalog is read again in place (#3539).
+	useEffect(
+		() =>
+			controls
+				? client?.onNotification((notification) => {
+						if (notification.method === "evener/auth/updated") void controls.refreshModels();
+					})
+				: undefined,
+		[client, controls],
+	);
 	// The screen keeps what the current controls know of the catalog, so the
 	// controls made after a pushed screen closes start from it: a catalog they
 	// read, or none after a failed read cleared it.
