@@ -662,6 +662,7 @@ Each hue has one job, including in the details: switches are accent, not the wor
 | Row title | SF Pro semibold | 17/22 | Dynamic Type: Headline |
 | Why line | SF Pro | 15/20 | Subheadline |
 | Meta, captions | SF Pro | 13/18, 12/16 | Footnote, Caption; tabular figures |
+| Page status line | SF Pro | 14/20 | the Hub's connection and version line; the prototype's Live summary uses the same 14/20 |
 | Your messages | Source Serif 4 | 17/25 | as on the web |
 | Controls | SF Pro | 17/24 | Body |
 | Sheet titles | SF Pro semibold | 17 | Headline |

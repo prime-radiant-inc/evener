@@ -10,8 +10,10 @@ vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	useConnectionStatusText: () => status.line,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: status.state, fatal: status.fatal }) }));
+const screen = vi.hoisted(() => ({ fontScale: 1 }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ fontScale: screen.fontScale, scale: 2, width: 390, height: 844 }),
 }));
 
 it("shows nothing while live, and the line with no button while not", () => {
@@ -37,6 +39,20 @@ it("sets its line in the Footnote role and a first load's sentence in Subheadlin
 	status.state = "connecting";
 	const first = render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />).root.findByType("Text" as never);
 	expect(first.props.style).toMatchObject(uiType.subheadline);
+});
+
+// Dynamic Type grows both roles, line height with the size.
+it("scales both roles with the text size", () => {
+	screen.fontScale = 1.5;
+	status.state = "reconnecting";
+	status.line = "Reconnecting…";
+	const line = render(<SheetStatus />).root.findByType("Text" as never);
+	expect(line.props.style).toMatchObject({ fontSize: 19.5, lineHeight: 27 });
+	status.line = null;
+	status.state = "connecting";
+	const first = render(<FirstLoad hubName="magic-kingdom" label="Loading hosts" />).root.findByType("Text" as never);
+	expect(first.props.style).toMatchObject({ fontSize: 22.5, lineHeight: 30 });
+	screen.fontScale = 1;
 });
 
 it.each(["connecting", "reconnecting"])("says a never-loaded page is connecting while %s", (state) => {
