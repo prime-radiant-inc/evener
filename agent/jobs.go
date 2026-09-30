@@ -65,10 +65,12 @@ func (e *terminalRecordPersistError) Unwrap() error {
 type jobManager struct {
 	// retirementOwner is installed before publication and never rebound. Unlike
 	// stable-parent routing, process admission follows the Session's atomic pointer.
-	retirementOwner *Session
-	mu              sync.Mutex
-	watchNotifyMu   sync.Mutex
-	watchPersistMu  sync.Mutex
+	retirementOwner        *Session
+	mu                     sync.Mutex
+	watchActivityMu        sync.Mutex
+	watchActivityReceivers map[string]struct{}
+	watchNotifyMu          sync.Mutex
+	watchPersistMu         sync.Mutex
 	// watchPersistDone is non-nil while one watch-journal transition owns the
 	// process-local serialization token. Waiters observe it under watchPersistMu
 	// and wait only after releasing that mutex.
@@ -1714,6 +1716,7 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 // EventJobNotificationPending or enqueue an owner notification — the model
 // already received the complete result inline (spec §6.4d).
 func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, reason string, exitCode *int) error {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	terminal := run.terminal
 	jm.mu.Unlock()
@@ -2028,6 +2031,7 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 }
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()

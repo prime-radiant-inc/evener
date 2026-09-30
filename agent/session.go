@@ -58,6 +58,9 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 		}
 	}
 	s.emitWithProvenance(kind, data, p)
+	if kind == events.EventJobStarted || kind == events.EventJobFinished {
+		s.emitSessionActivityChanged(s.ID(), appwire.SessionActivityResourceJobs)
+	}
 }
 
 // noteJobTreeShapeChange moves the activity clock for a change that adds or

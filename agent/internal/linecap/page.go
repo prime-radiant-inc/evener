@@ -11,8 +11,11 @@ import (
 // JournalCursor is disposable reader state, never a journal write authority.
 // Offset includes a partial line already read; Pending carries it until complete.
 type JournalCursor struct {
-	Offset  int64
-	Pending []byte
+	Offset    int64
+	Pending   []byte
+	ReadBytes int64
+	ReadLines int
+	Info      os.FileInfo
 }
 
 type JournalLine struct {
@@ -47,7 +50,8 @@ func ReadJournalPage(ctx context.Context, path string, cursor *JournalCursor, by
 	if _, err := file.Seek(next.Offset, io.SeekStart); err != nil {
 		return nil, false, err
 	}
-	reader := bufio.NewReader(io.LimitReader(file, byteLimit))
+	input := &journalPageInput{Reader: io.LimitReader(file, byteLimit)}
+	reader := bufio.NewReader(input)
 	var lines []JournalLine
 	var used int64
 	for len(lines) < lineLimit && used < byteLimit {
@@ -76,6 +80,21 @@ func ReadJournalPage(ctx context.Context, path string, cursor *JournalCursor, by
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
+	next.ReadBytes = input.readBytes
+	next.ReadLines = len(lines)
+	next.Info = info
 	*cursor = next
 	return lines, next.Offset >= info.Size() && len(next.Pending) == 0, nil
+}
+
+// journalPageInput accounts for bufio prefetch as well as consumed record bytes.
+type journalPageInput struct {
+	io.Reader
+	readBytes int64
+}
+
+func (input *journalPageInput) Read(buffer []byte) (int, error) {
+	n, err := input.Reader.Read(buffer)
+	input.readBytes += int64(n)
+	return n, err
 }

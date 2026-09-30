@@ -38,6 +38,8 @@ func ReadPage(ctx context.Context, path string, cursor *PageCursor, maxBytes int
 		return nil, false, errors.New("delegatestore: positive page limits required")
 	}
 	next := *cursor
+	next.Journal.ReadBytes = 0
+	next.Journal.ReadLines = 0
 	next.EventEnds = nil
 	next.Lines = append([]linecap.JournalLine(nil), cursor.Lines...)
 	if len(next.Lines) == 0 && len(next.Batch) == 0 {

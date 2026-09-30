@@ -558,6 +558,7 @@ func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchC
 // too, so frames that never settle stay bounded — and the latch keeps the two
 // to one teardown.
 func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
+	defer jm.publishWatchActivity()
 	delivered := state
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
 		Kind:      jobstore.EventWatchSendDelivered,
@@ -723,6 +724,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 }
 
 func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureHooks) (watchResult, error) {
+	defer jm.publishWatchActivity()
 	release, err := jm.beginRetirementMutation("watch")
 	if err != nil {
 		return watchResult{}, err
@@ -1586,6 +1588,7 @@ func watchSendKeyLess(a, b jobstore.WatchSendKey) bool {
 }
 
 func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
+	defer jm.publishWatchActivity()
 	var targets []watchConfigTerminalSnapshot
 	jm.mu.Lock()
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch cleared", jm.now())
@@ -1644,6 +1647,7 @@ func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchCo
 // as a parameter: a one-shot timer retires through the same sequence but is
 // recorded as "fired" rather than "cleared".
 func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow func(*watchConfig) bool, allowDurable bool, endReason string) (watchResult, error) {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	key, cfg, ok := jm.watchConfigByIDLocked(watchID)
 	if ok && !allow(cfg) {
@@ -1905,6 +1909,7 @@ func (jm *jobManager) countWatchDeliveryLocked(cfg *watchConfig) {
 		return
 	}
 	cfg.deliveries++
+	jm.noteWatchActivity(cfg.receiverSessionID)
 	now := jm.now()
 	if len(cfg.deliveryTimes) == watchDeliveryTimeCap {
 		copy(cfg.deliveryTimes, cfg.deliveryTimes[1:])
@@ -1958,6 +1963,7 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 // cfg is detached, a later in-flight settle that increments past the budget
 // finds no live key and returns without re-notifying.
 func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jobNotification, bool) {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	key, ok := watchKeyForConfigLocked(jm, cfg)
 	if !ok {
@@ -2279,12 +2285,17 @@ func (jm *jobManager) appendWatchRegistryEvents(events []jobstore.Event) error {
 		return nil
 	}
 	if jm.appendEvents != nil {
-		return jm.appendEvents(events)
+		if err := jm.appendEvents(events); err != nil {
+			return err
+		}
+		jm.noteAcceptedWatchEvents(events)
+		return nil
 	}
 	for _, event := range events {
 		if err := jm.appendEvent(event); err != nil {
 			return err
 		}
+		jm.noteAcceptedWatchEvents([]jobstore.Event{event})
 	}
 	return nil
 }
@@ -2321,6 +2332,7 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 	if cfg == nil {
 		return
 	}
+	jm.noteWatchActivity(cfg.receiverSessionID)
 	sendTo := key.SendTo
 	if cfg.receiverDelegateID != "" {
 		sendTo = ""
@@ -3212,6 +3224,7 @@ func watchEventFilterSummary(filter *watchEventFilter) string {
 }
 
 func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
+	defer jm.publishWatchActivity()
 	kind := ev.Kind
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
@@ -3508,6 +3521,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64)
 }
 
 func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, endOffset int64, p *provenance.Causal) {
+	defer jm.publishWatchActivity()
 	if len(chunk) == 0 {
 		return
 	}
@@ -3635,6 +3649,7 @@ func (jm *jobManager) completeAttachScan(cfg *watchConfig, jobID string, data []
 // runs after jm.mu is released.
 // Returns whether the scan fired.
 func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte) bool {
+	defer jm.publishWatchActivity()
 	last, matched := cfg.outputMatcher.ScanRetained(data)
 	if !matched {
 		return false
@@ -4097,6 +4112,7 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 }
 
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
+	defer jm.publishWatchActivity()
 	release, err := jm.beginRetirementMutation("watch")
 	if err != nil {
 		// Refusal must not consume the firing or end its registration. If a
@@ -5491,12 +5507,17 @@ func (jm *jobManager) appendWatchSendEvents(events []jobstore.Event) error {
 	// and fault-injection harnesses stubbing only appendEvent keep intercepting
 	// settle/drop/pending writes (same shape as appendJobEvents).
 	if len(events) > 1 && jm.appendEvents != nil {
-		return jm.appendEvents(events)
+		if err := jm.appendEvents(events); err != nil {
+			return err
+		}
+		jm.noteAcceptedWatchEvents(events)
+		return nil
 	}
 	for _, e := range events {
 		if err := jm.appendEvent(e); err != nil {
 			return err
 		}
+		jm.noteAcceptedWatchEvents([]jobstore.Event{e})
 	}
 	return nil
 }

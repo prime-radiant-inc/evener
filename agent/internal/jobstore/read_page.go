@@ -20,6 +20,8 @@ type PageCursor struct {
 // historical full-read contract. No outcome is authoritative until complete.
 func ReadPage(ctx context.Context, path string, cursor *PageCursor, maxBytes int64, maxEvents int) ([]Event, bool, error) {
 	next := *cursor
+	next.Journal.ReadBytes = 0
+	next.Journal.ReadLines = 0
 	next.EventEnds = nil
 	lines, complete, err := linecap.ReadJournalPage(ctx, path, &next.Journal, maxBytes, maxEvents, DefaultMaxLineBytes)
 	if err != nil {

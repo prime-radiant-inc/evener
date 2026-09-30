@@ -80,3 +80,19 @@ func TestReadJournalPageRecordsAbsoluteEnds(t *testing.T) {
 		t.Fatalf("absolute record boundaries=%v", ends)
 	}
 }
+
+func TestReadJournalPageAccountsForPrefetch(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "journal")
+	if err := os.WriteFile(path, []byte("a\n"+strings.Repeat("b", 6000)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var cursor JournalCursor
+	lines, _, err := ReadJournalPage(t.Context(), path, &cursor, 5000, 1, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || cursor.Offset != 2 || cursor.ReadBytes <= cursor.Offset || cursor.ReadBytes > 5000 {
+		t.Fatalf("prefetch accounting offset=%d read=%d", cursor.Offset, cursor.ReadBytes)
+	}
+}
