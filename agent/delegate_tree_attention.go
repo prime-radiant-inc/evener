@@ -452,7 +452,8 @@ func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID 
 // hasRunnableDelegateAttention reports whether the root driver has actionable
 // attention work: a wake it may commit, or attention it must escalate because
 // a permanently closed ancestor fences the wake off forever. Attention parked
-// under a transient ancestor stop is pending, not runnable.
+// under a transient ancestor stop, or under an ancestor chain its restore
+// cannot make resident yet, is pending, not runnable.
 func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 	if c == nil {
 		return false
@@ -463,9 +464,7 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		parentID := c.durable[delegateID].Descriptor.ParentDelegateID
-		blocked, closedAncestorID := c.ancestorFenceLocked(parentID)
-		if closedAncestorID != "" || !blocked && c.ancestorChainRestorableLocked(parentID) {
+		if ready, closedAncestorID := c.attentionWakeAncestorGateLocked(delegateID); ready || closedAncestorID != "" {
 			return true
 		}
 	}
@@ -512,6 +511,17 @@ func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, 
 	return delegateID, attentionID, true
 }
 
+// attentionWakeAncestorGateLocked is the ancestor side of an attention wake,
+// shared by every wake-cache scan so the runnable check, selection, and
+// escalation cannot disagree. ready means no ancestor fences the wake and the
+// cold restore can make the owner chain resident; closedAncestorID names a
+// permanently closed ancestor, whose fence escalates rather than waits.
+func (c *delegateTreeController) attentionWakeAncestorGateLocked(delegateID string) (ready bool, closedAncestorID string) {
+	parentID := c.durable[delegateID].Descriptor.ParentDelegateID
+	blocked, closedAncestorID := c.ancestorFenceLocked(parentID)
+	return !blocked && c.ancestorChainRestorableLocked(parentID), closedAncestorID
+}
+
 // ancestorChainRestorableLocked reports whether a child's cold restore can
 // make its owner chain resident: walking up from parentID, each ancestor is
 // either resident already or idle and restorable, the two conditions the
@@ -537,8 +547,7 @@ func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, stri
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		parentID := c.durable[delegateID].Descriptor.ParentDelegateID
-		if blocked, _ := c.ancestorFenceLocked(parentID); blocked || !c.ancestorChainRestorableLocked(parentID) {
+		if ready, _ := c.attentionWakeAncestorGateLocked(delegateID); !ready {
 			continue
 		}
 		delegateIDs = append(delegateIDs, delegateID)
@@ -587,11 +596,10 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		aggregate := c.durable[delegateID]
-		blocked, closedAncestorID := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID)
-		if !blocked || closedAncestorID == "" {
+		if _, closedAncestorID := c.attentionWakeAncestorGateLocked(delegateID); closedAncestorID == "" {
 			continue
 		}
+		aggregate := c.durable[delegateID]
 		plans = append(plans, c.escalationPlanLocked(delegateID, aggregate, ids))
 	}
 	sort.Slice(plans, func(i, j int) bool { return plans[i].delegateID < plans[j].delegateID })
