@@ -103,13 +103,14 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 		const childEntries: unknown[] = [];
 		const childCounts = noCounts();
 		if (running && sub.line?.startsWith("Running ")) {
+			const command = sub.line.slice("Running ".length);
 			childEntries.push(
 				shellEntry(sessionId, ref, {
 					jobId: `job-${sub.id}`,
 					status: "running",
 					terminal: false,
-					description: sub.line,
-					command: sub.line.slice("Running ".length),
+					description: command,
+					command,
 					startedAt: iso(startupMs - 42_000),
 				}),
 			);
