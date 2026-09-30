@@ -403,7 +403,7 @@ export function lastLine(
 	if (row.project && row.project !== usual.project) line.project = row.project;
 	if (row.host_id !== usual.host) line.host = hostLabel(row.host_id);
 	if (showModel && row.model_name) line.model = row.model_name;
-	return line.task || line.project || line.host || line.model ? line : null;
+	return Object.keys(line).length > 0 ? line : null;
 }
 
 /** Names a host by its manifest source's label. A host the manifest doesn't
