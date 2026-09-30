@@ -24,66 +24,54 @@ import { parseArgs, str } from "./toolCallText";
 /** The parts of a housekeeping step its words read. */
 export type HousekeepingStep = Pick<ItemModel, "argumentsJSON" | "output">;
 
-/** A housekeeping tool's words, done and while running. */
-export interface HousekeepingWords {
-  words: (step: HousekeepingStep) => StepWords;
-  progress: (step: Pick<HousekeepingStep, "argumentsJSON">) => string;
+type StepArgs = Pick<HousekeepingStep, "argumentsJSON">;
+
+// A housekeeping tool's words. Its action is what it did, as a run's line
+// says it ("updated its note once"): one phrase per tool, the same whatever
+// the call's arguments. A step's line starts from the same phrase,
+// capitalized (did), and says more where the call can.
+interface HousekeepingTool {
+  action: string;
+  words: (step: HousekeepingStep, did: string) => StepWords;
+  progress: (step: StepArgs) => string;
 }
 
-const noteCleared = (step: Pick<HousekeepingStep, "argumentsJSON">) =>
-  (str(parseArgs(step.argumentsJSON), "note") ?? "").trim() === "";
+const noteCleared = (step: StepArgs) => (str(parseArgs(step.argumentsJSON), "note") ?? "").trim() === "";
 
 // A link is named by its label, else its URL.
-const linkName = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
+const linkName = (step: StepArgs) => {
   const args = parseArgs(step.argumentsJSON);
   return str(args, "label")?.trim() || str(args, "url")?.trim() || undefined;
 };
 
 // The goal's new status as the tool takes it: complete or blocked.
-const goalStatus = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
+const goalStatus = (step: StepArgs) => {
   const status = str(parseArgs(step.argumentsJSON), "status");
   return status === "complete" || status === "blocked" ? status : undefined;
 };
 
-const nextPage = (step: Pick<HousekeepingStep, "argumentsJSON">) =>
-  Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
+const nextPage = (step: StepArgs) => Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
 
-// What each tool did, as a run's line says it ("updated its note once"): one
-// phrase per tool, the same whatever the call's arguments. A step's line
-// starts from the same phrase, capitalized, and says more where the call can.
-const ACTIONS = {
-  notes_agent_set: "updated its note",
-  notes_read: "read the session notes",
-  urls_add: "added a link",
-  urls_remove: "removed a link",
-  update_goal: "updated the goal",
-  compact_context: "asked for a context compaction",
-  model_list: "listed the available models",
-  doctor_evener: "checked evener's records",
-  communicate: "reported to its parent",
-} as const;
+const selectorOf = (step: StepArgs) => str(parseArgs(step.argumentsJSON), "selector")?.trim();
 
 const sentence = (phrase: string) => phrase.charAt(0).toUpperCase() + phrase.slice(1);
 
-/** What a housekeeping tool did, as a run's line says it ("updated its
- * note"); undefined for any other tool. */
-export function housekeepingAction(toolName: string): string | undefined {
-  return Object.hasOwn(ACTIONS, toolName) ? ACTIONS[toolName as keyof typeof ACTIONS] : undefined;
-}
-
-const HOUSEKEEPING_WORDS: Record<keyof typeof ACTIONS, HousekeepingWords> = {
+const HOUSEKEEPING: Record<string, HousekeepingTool> = {
   notes_agent_set: {
-    words: (step) => ({ verb: noteCleared(step) ? "Cleared its note" : sentence(ACTIONS.notes_agent_set) }),
+    action: "updated its note",
+    words: (step, did) => ({ verb: noteCleared(step) ? "Cleared its note" : did }),
     progress: (step) => (noteCleared(step) ? "Clearing its note" : "Updating its note"),
   },
   notes_read: {
-    words: () => ({ verb: sentence(ACTIONS.notes_read) }),
+    action: "read the session notes",
+    words: (_step, did) => ({ verb: did }),
     progress: () => "Reading the session notes",
   },
   urls_add: {
-    words: (step) => {
+    action: "added a link",
+    words: (step, did) => {
       const name = linkName(step);
-      return name ? { verb: "Added link", target: name } : { verb: sentence(ACTIONS.urls_add) };
+      return name ? { verb: "Added link", target: name } : { verb: did };
     },
     progress: (step) => {
       const name = linkName(step);
@@ -91,13 +79,15 @@ const HOUSEKEEPING_WORDS: Record<keyof typeof ACTIONS, HousekeepingWords> = {
     },
   },
   urls_remove: {
-    words: () => ({ verb: sentence(ACTIONS.urls_remove) }),
+    action: "removed a link",
+    words: (_step, did) => ({ verb: did }),
     progress: () => "Removing a link",
   },
   update_goal: {
-    words: (step) => {
+    action: "updated the goal",
+    words: (step, did) => {
       const status = goalStatus(step);
-      const verb = status ? `Marked the goal ${status}` : sentence(ACTIONS.update_goal);
+      const verb = status ? `Marked the goal ${status}` : did;
       return step.output?.startsWith("No goal is active") ? { verb, detail: "no goal set" } : { verb };
     },
     progress: (step) => {
@@ -106,53 +96,58 @@ const HOUSEKEEPING_WORDS: Record<keyof typeof ACTIONS, HousekeepingWords> = {
     },
   },
   compact_context: {
-    words: (step) => ({
+    action: "asked for a context compaction",
+    words: (step, did) => ({
       // The whole line: an empty note that still asks for a compaction also
       // starts "Note cleared."
-      verb:
-        step.output?.trim() === "Note cleared. No compaction requested."
-          ? "Cleared its compaction note"
-          : sentence(ACTIONS.compact_context),
+      verb: step.output?.trim() === "Note cleared. No compaction requested." ? "Cleared its compaction note" : did,
     }),
     progress: () => "Asking for a context compaction",
   },
   model_list: {
-    words: (step) => ({ verb: nextPage(step) ? "Listed more models" : sentence(ACTIONS.model_list) }),
+    action: "listed the available models",
+    words: (step, did) => ({ verb: nextPage(step) ? "Listed more models" : did }),
     progress: (step) => (nextPage(step) ? "Listing more models" : "Listing the available models"),
   },
   doctor_evener: {
-    words: (step) => {
-      const args = parseArgs(step.argumentsJSON);
-      const selector = str(args, "selector")?.trim();
-      const command = str(args, "command")?.trim();
+    action: "checked evener's records",
+    words: (step, did) => {
+      const selector = selectorOf(step);
+      const command = str(parseArgs(step.argumentsJSON), "command")?.trim();
       return {
-        verb: sentence(ACTIONS.doctor_evener),
+        verb: did,
         ...(selector ? { target: selector } : {}),
         ...(command ? { detail: command } : {}),
       };
     },
     progress: (step) => {
-      const selector = str(parseArgs(step.argumentsJSON), "selector")?.trim();
+      const selector = selectorOf(step);
       return selector ? `Checking evener's records ${selector}` : "Checking evener's records";
     },
   },
   communicate: {
-    words: (step) =>
-      parseArgs(step.argumentsJSON).end_turn === true
-        ? { verb: sentence(ACTIONS.communicate), detail: "done" }
-        : { verb: sentence(ACTIONS.communicate) },
+    action: "reported to its parent",
+    words: (step, did) =>
+      parseArgs(step.argumentsJSON).end_turn === true ? { verb: did, detail: "done" } : { verb: did },
     progress: () => "Reporting to its parent",
   },
 };
 
-function housekeepingTool(toolName: string | undefined): HousekeepingWords | undefined {
+function housekeepingTool(toolName: string | undefined): HousekeepingTool | undefined {
   const name = toolName ?? "";
-  return Object.hasOwn(HOUSEKEEPING_WORDS, name) ? HOUSEKEEPING_WORDS[name as keyof typeof ACTIONS] : undefined;
+  return Object.hasOwn(HOUSEKEEPING, name) ? HOUSEKEEPING[name] : undefined;
+}
+
+/** What a housekeeping tool did, as a run's line says it ("updated its
+ * note"); undefined for any other tool. */
+export function housekeepingAction(toolName: string): string | undefined {
+  return housekeepingTool(toolName)?.action;
 }
 
 /** A housekeeping step's words; undefined for any other tool. */
 export function housekeepingWords(step: Pick<ItemModel, "toolName"> & HousekeepingStep): StepWords | undefined {
-  return housekeepingTool(step.toolName)?.words(step);
+  const tool = housekeepingTool(step.toolName);
+  return tool?.words(step, sentence(tool.action));
 }
 
 /** What a running housekeeping step is doing; undefined for any other tool. */
