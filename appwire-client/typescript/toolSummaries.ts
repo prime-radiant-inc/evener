@@ -10,7 +10,7 @@
 import { parseAskUserQuestions } from "./askShared";
 import { delegateSendTarget, delegateSendWords } from "./delegateSteps";
 import { diffStats, editDiffText } from "./editDiff";
-import { HOUSEKEEPING_WORDS } from "./housekeepingSteps";
+import { housekeepingProgress, housekeepingWords } from "./housekeepingSteps";
 import { jobListWords, jobProgress, jobStatusWords, jobStopWords } from "./jobSteps";
 import { jobWatchWords } from "./jobWatchSteps";
 import type { ItemModel } from "./model";
@@ -445,8 +445,9 @@ function progressFor(
       return target ? `Sending a message to delegate ${target}` : "Sending a message to a delegate";
     }
     case "mcp":
-    case "tool":
       return `Using ${toolInWords(name)}`;
+    case "tool":
+      return housekeepingProgress(step) ?? `Using ${toolInWords(name)}`;
   }
 }
 
@@ -457,9 +458,6 @@ type WordsOf = (step: ToolStep, ctx?: ToolSummaryContext) => StepWords;
 interface ToolEntry {
   family: ToolFamily;
   words: WordsOf;
-  // The running line, for a tool whose family has no running words of its
-  // own to say what it's doing.
-  progress?: (step: Pick<ToolStep, "toolName" | "argumentsJSON">) => string;
 }
 
 const TOOLS: Record<string, ToolEntry> = {
@@ -496,14 +494,6 @@ const TOOLS: Record<string, ToolEntry> = {
   // The retired name for sending a delegate a message; old transcripts still
   // carry it.
   job_send_message: { family: "message", words: delegateSendWords },
-  // The session's housekeeping tools count as plain tool steps, each worded
-  // on its own (housekeepingSteps).
-  ...Object.fromEntries(
-    Object.entries(HOUSEKEEPING_WORDS).map(([name, { words, progress }]) => [
-      name,
-      { family: "tool", words, progress },
-    ]),
-  ),
 };
 
 // A delegate call's line is its intent, the model's own words for the
@@ -553,7 +543,10 @@ export function toolFamily(toolName: string): ToolFamily {
  * (the target a client can set apart), and what it found. */
 export function toolStepWords(step: ToolStep, ctx?: ToolSummaryContext): StepWords {
   const entry = entryFor(step.toolName ?? "");
-  return entry ? entry.words(step, ctx) : { verb: fallbackToolSummary(step) };
+  if (entry) return entry.words(step, ctx);
+  // The session's housekeeping tools are plain tool steps, each worded on its
+  // own (housekeepingSteps); any other tool reads by its name.
+  return housekeepingWords(step) ?? { verb: fallbackToolSummary(step) };
 }
 
 /** A step's one-line summary, for any tool: its words composed. */
@@ -564,6 +557,5 @@ export function toolStepSummary(step: ToolStep, ctx?: ToolSummaryContext): strin
 /** What a running step is doing, for any tool: "Reading agent/tree.go",
  * "Running go test ./...", "Using github: create issue". */
 export function toolStepProgress(step: Pick<ToolStep, "toolName" | "argumentsJSON">, ctx?: ToolSummaryContext): string {
-  const progress = entryFor(step.toolName ?? "")?.progress;
-  return progress ? progress(step) : progressFor(toolFamily(step.toolName ?? ""), step, ctx);
+  return progressFor(toolFamily(step.toolName ?? ""), step, ctx);
 }

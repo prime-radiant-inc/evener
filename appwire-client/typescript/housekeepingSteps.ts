@@ -71,8 +71,7 @@ export function housekeepingAction(toolName: string): string | undefined {
   return Object.hasOwn(ACTIONS, toolName) ? ACTIONS[toolName as keyof typeof ACTIONS] : undefined;
 }
 
-/** Each housekeeping tool's words, by tool name. */
-export const HOUSEKEEPING_WORDS: Record<keyof typeof ACTIONS, HousekeepingWords> = {
+const HOUSEKEEPING_WORDS: Record<keyof typeof ACTIONS, HousekeepingWords> = {
   notes_agent_set: {
     words: (step) => ({ verb: noteCleared(step) ? "Cleared its note" : sentence(ACTIONS.notes_agent_set) }),
     progress: (step) => (noteCleared(step) ? "Clearing its note" : "Updating its note"),
@@ -145,3 +144,18 @@ export const HOUSEKEEPING_WORDS: Record<keyof typeof ACTIONS, HousekeepingWords>
     progress: () => "Reporting to its parent",
   },
 };
+
+function housekeepingTool(toolName: string | undefined): HousekeepingWords | undefined {
+  const name = toolName ?? "";
+  return Object.hasOwn(HOUSEKEEPING_WORDS, name) ? HOUSEKEEPING_WORDS[name as keyof typeof ACTIONS] : undefined;
+}
+
+/** A housekeeping step's words; undefined for any other tool. */
+export function housekeepingWords(step: Pick<ItemModel, "toolName"> & HousekeepingStep): StepWords | undefined {
+  return housekeepingTool(step.toolName)?.words(step);
+}
+
+/** What a running housekeeping step is doing; undefined for any other tool. */
+export function housekeepingProgress(step: Pick<ItemModel, "toolName" | "argumentsJSON">): string | undefined {
+  return housekeepingTool(step.toolName)?.progress(step);
+}
