@@ -120,12 +120,6 @@ test("codec refuses a non-boolean approval flag on a session row", () => {
   expectContentFreeRejection(key, snapshot);
 });
 
-// needs_you_subagents is the flat lists' replacement for the needs-you
-// bubble-up the nested children gave: an optional safe non-negative count the
-// hub computes at projection time (countNeedsYouSubagents in
-// cmd/evener-hub/navigation_projection.go). Any resource kind's session row
-// may carry it; a malformed count is a schema error.
-
 // approval_tool is an identity (at most 1024 UTF-8 bytes) and approval_target a
 // label (at most 512 characters), as the hub bounds them. A value at a bound is
 // kept; past one, or of the wrong type, it is a schema error that names none of

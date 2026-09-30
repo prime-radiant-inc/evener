@@ -143,7 +143,7 @@ func TestClientNavigationReadRoundTrip(t *testing.T) {
 		t.Fatalf("params decode: %v", err)
 	}
 	if params.Resource != "section" || params.Section != "live" || params.RepresentationVersion != 3 {
-		t.Fatalf("params = %+v, want section/live with representationVersion 2", params)
+		t.Fatalf("params = %+v, want section/live with representationVersion 3", params)
 	}
 	if params.Base == nil || params.Base.GenerationID != "generation-a" || params.Base.Revision != 4 || params.Base.ETag != "etag-a" {
 		t.Fatalf("params = %+v, want v3 base", params)

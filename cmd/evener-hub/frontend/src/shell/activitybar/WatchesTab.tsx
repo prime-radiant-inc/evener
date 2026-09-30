@@ -1,8 +1,7 @@
 import { ActivityPageBoundary } from "./ActivityPageBoundary";
-// The Watches tab: the scope's watches with the shared cadence/meta wording,
-// plus the honest "+N more · M armed" line when the hub omitted rows (the
-// rail's watchCountLabel grammar, so the two surfaces cannot disagree). The
-// clock is the shared useNowTick, ticking only while this tab is mounted.
+// The Watches tab observes the shared session watch collection and admits
+// continuation pages at its visible boundary. Cadence and delivery labels use
+// the shared clock, which ticks only while this tab is mounted.
 
 import { useNowTick } from "../../panes/session/liveness";
 import { useSessionActivity } from "../../stores/sessionActivity";
