@@ -426,10 +426,36 @@ describe("shell jobs in the Activity list", () => {
 			job: { ...finished.job, status: "completed", outcome: "success" },
 		};
 		expect(shellJobLabel(clean, NOW)).toBe(
-			"Shell job, go test ./agent/..., Done, 1 minute, under Fix race in tree settle",
+			"Shell job, go test ./agent/..., completed, 1 minute, under Fix race in tree settle",
 		);
 		const untimed = { ...clean, job: { ...clean.job, endedAt: undefined } };
-		expect(shellJobMeta(untimed, NOW)).toBe("Done");
-		expect(shellJobLabel(untimed, NOW)).toBe("Shell job, go test ./agent/..., Done, under Fix race in tree settle");
+		expect(shellJobMeta(untimed, NOW)).toBe("completed");
+		expect(shellJobLabel(untimed, NOW)).toBe(
+			"Shell job, go test ./agent/..., completed, under Fix race in tree settle",
+		);
+	});
+
+	// The status words are the shared package's (jobStatusDisplay): the phone
+	// once capitalized "stopped"/"cancelled" and said "Done"/"Failed", drifting
+	// from the web's rows. One vocabulary now.
+	it("words an ended job's status the way the web's rows do", () => {
+		const stopped = job(true, { status: "stopped", reason: "runtime_lost", endedAt: ago(MIN) });
+		const { jobs } = flattenActivity({ revision: 1, root: session("local:coord", [shell(stopped)]) });
+		const [row] = jobs;
+		if (!row) throw new Error("no job");
+		expect(row.state).toBe("done");
+		expect(shellJobMeta(row, NOW)).toBe("stopped · 1m");
+		expect(shellJobLabel(row, NOW)).toContain(", stopped, ");
+	});
+
+	// A completed status over a failure outcome is a failure (jobIsFailed), not a
+	// clean finish: its status stays on the row instead of being left to the hue.
+	it("leaves a job that ended badly, even under a completed status, un-clean", () => {
+		const bad = job(true, { status: "completed", outcome: "failure", endedAt: ago(MIN) });
+		const { jobs } = flattenActivity({ revision: 1, root: session("local:coord", [shell(bad)]) });
+		const [row] = jobs;
+		if (!row) throw new Error("no job");
+		expect(row.state).toBe("failed");
+		expect(shellJobMeta(row, NOW)).toBe("completed · 1m");
 	});
 });
