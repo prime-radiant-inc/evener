@@ -105,11 +105,73 @@ func TestFind_MetadataFilters(t *testing.T) {
 	if got := findRefSet(t, deps, map[string]any{"updated_after": after}); len(got) != 2 || !got[refFor("", forkID)] || !got[refFor("", loneID)] {
 		t.Fatalf("updated_after=%s refs = %v, want fork+lone", after, got)
 	}
+	before := now.Add(-150 * time.Minute).Format(time.RFC3339)
+	if got := findRefSet(t, deps, map[string]any{"updated_before": before}); len(got) != 2 || !got[refFor("", rootID)] || !got[refFor("", childID)] {
+		t.Fatalf("updated_before=%s refs = %v, want root+child", before, got)
+	}
 
 	// A content query must respect the same filters: kind=root drops the
 	// subagent even though its body matches.
 	if got := findRefSet(t, deps, map[string]any{"query": "body", "kind": "root"}); len(got) != 2 || !got[refFor("", rootID)] || !got[refFor("", loneID)] {
 		t.Fatalf("query+kind=root refs = %v, want root+lone", got)
+	}
+}
+
+// TestFind_TimeBoundsInclusive pins that updated_after/updated_before are
+// inclusive at the boundary and that fractional-second (RFC3339Nano)
+// timestamps parse instead of erroring.
+func TestFind_TimeBoundsInclusive(t *testing.T) {
+	t.Parallel()
+	dir := newBucket(t)
+	at := time.Now().UTC().Truncate(time.Second)
+	id := identifier.MustNewSessionID()
+	writeFindSession(t, dir, findMetaSpec{id: id, name: "at", updated: at, turnCount: 3}, "body")
+	deps := &toolDeps{stateDir: dir}
+	stamp := at.Format(time.RFC3339)
+	for _, args := range []map[string]any{
+		{"updated_after": stamp, "updated_before": stamp},
+		{"updated_after": stamp},
+		{"updated_before": stamp},
+	} {
+		if got := findRefSet(t, deps, args); len(got) != 1 || !got[refFor("", id)] {
+			t.Fatalf("bounds %v refs = %v, want the session updated exactly at the bound", args, got)
+		}
+	}
+	// A fractional-second bound strictly after the session excludes it, proving
+	// RFC3339Nano parsing accepts the fractional form rather than erroring.
+	frac := at.Add(500 * time.Millisecond).Format(time.RFC3339Nano)
+	if got := findRefSet(t, deps, map[string]any{"updated_after": frac}); len(got) != 0 {
+		t.Fatalf("updated_after=%s refs = %v, want none (session is older)", frac, got)
+	}
+}
+
+// TestFind_ChildrenOfComposesWithFilters pins that the metadata filters apply
+// under children_of (which is a filter, not a separate mode) and that invalid
+// filters are still rejected there.
+func TestFind_ChildrenOfComposesWithFilters(t *testing.T) {
+	t.Parallel()
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	rootID := identifier.MustNewSessionID()
+	subID := identifier.MustNewSessionID()
+	forkID := identifier.MustNewSessionID()
+	writeFindSession(t, dir, findMetaSpec{id: rootID, name: "root", updated: now.Add(-3 * time.Hour), turnCount: 10}, "root body")
+	writeFindSession(t, dir, findMetaSpec{id: subID, name: "sub", isSubagent: true, parentSessionID: rootID, updated: now.Add(-2 * time.Hour), turnCount: 4}, "sub body")
+	writeFindSession(t, dir, findMetaSpec{id: forkID, name: "fork", parentSessionID: rootID, divergenceTurn: 1, updated: now.Add(-1 * time.Hour), turnCount: 40}, "fork body")
+	deps := &toolDeps{stateDir: dir}
+	rootRef := refFor("", rootID)
+
+	if got := findRefSet(t, deps, map[string]any{"children_of": rootRef}); len(got) != 2 {
+		t.Fatalf("children_of refs = %v, want sub+fork", got)
+	}
+	if got := findRefSet(t, deps, map[string]any{"children_of": rootRef, "kind": "subagent"}); len(got) != 1 || !got[refFor("", subID)] {
+		t.Fatalf("children_of+kind=subagent refs = %v, want only sub", got)
+	}
+	if got := findRefSet(t, deps, map[string]any{"children_of": rootRef, "min_turns": float64(20)}); len(got) != 1 || !got[refFor("", forkID)] {
+		t.Fatalf("children_of+min_turns refs = %v, want only fork", got)
+	}
+	if _, err := execFindSessionTranscripts(deps, map[string]any{"children_of": rootRef, "kind": "bogus"}); err == nil || !strings.Contains(err.Error(), "invalid_request") {
+		t.Fatalf("children_of+bogus kind err = %v, want invalid_request", err)
 	}
 }
 

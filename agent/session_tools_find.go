@@ -195,12 +195,14 @@ func execFindSessionTranscripts(deps *toolDeps, args map[string]any) (any, error
 	query := strings.TrimSpace(stringArg(args, "query"))
 	childrenOf := strings.TrimSpace(stringArg(args, "children_of"))
 	limit := clampFindLimit(optionalIntArg(args, "limit"))
-	if childrenOf != "" {
-		return execFindChildren(deps, childrenOf, limit) // precedes query per spec
-	}
+	// Filters are parsed (and validated) before the children_of branch so they
+	// compose with it: children_of is a filter, not a separate mode.
 	filters, err := parseFindFilters(args)
 	if err != nil {
 		return nil, err
+	}
+	if childrenOf != "" {
+		return execFindChildren(deps, childrenOf, limit, filters) // precedes query per spec
 	}
 	scope := strings.TrimSpace(stringArg(args, "scope"))
 	if scope == "" {
@@ -271,7 +273,9 @@ func optionalTimeArg(args map[string]any, key string) (*time.Time, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	t, err := time.Parse(time.RFC3339, raw)
+	// RFC3339Nano also accepts a plain RFC3339 timestamp, so this admits both
+	// whole-second and fractional-second bounds.
+	t, err := time.Parse(time.RFC3339Nano, raw)
 	if err != nil {
 		return nil, fmt.Errorf("invalid_request: %s must be an RFC3339 timestamp: %w", key, err)
 	}
@@ -470,8 +474,9 @@ func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int, filt
 
 // execFindChildren resolves the parent ref (metadata only — no transcript open),
 // then lists all candidates in the parent's bucket and returns those whose
-// ParentSessionID matches the parent.
-func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
+// ParentSessionID matches the parent. The metadata filters apply here too, over
+// the whole bucket so a has_children filter still sees the parent relation.
+func execFindChildren(deps *toolDeps, ref string, limit int, filters findFilters) (any, error) {
 	bucketDir, parentID, scopeApplied, err := parentBucketAndID(ref, deps.stateDir, deps.sessionID)
 	if err != nil {
 		return nil, err
@@ -479,6 +484,7 @@ func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
 	currentID := deps.sessionID
 
 	candidates := collectCandidates([]string{bucketDir}, deps.stateDir)
+	candidates = filterCandidates(candidates, filters, currentID, deps.currentMeta)
 
 	// Keep only direct children of parentID.
 	var children []findCandidate

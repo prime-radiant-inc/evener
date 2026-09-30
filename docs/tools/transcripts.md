@@ -101,8 +101,20 @@ Cross-session discovery, and nothing else. Composable filters, **one** response 
 - `children_of` — a `transcript_ref`; restrict results to the sessions that ref spawned
   (its subagents and forks). This is the "what did this session spawn" view — a filter,
   not a separate mode or a thing that gets read.
+- `kind` — `root`, `subagent`, `fork`, or `any` (default): keep only sessions of that
+  lineage kind.
+- `has_children` — boolean: keep sessions that spawned children (`true`) or that spawned
+  none (`false`).
+- `min_turns` / `max_turns` — keep sessions with at least / at most that many turns.
+- `updated_after` / `updated_before` — RFC3339 bounds on a session's updated time.
 - `scope` — `current_project` (default) or `all_projects`.
 - `limit` — max matches (default 10, hard max 50).
+
+The metadata filters are applied before any transcript is opened, so they never
+consume the content-scan budget, and they compose with `query` and `children_of`
+alike. An out-of-range pair (`min_turns` over `max_turns`, `updated_after` after
+`updated_before`), an unknown `kind`, or an unparsable timestamp returns
+`invalid_request` rather than being silently ignored.
 
 Registered `strict:false`, so the model omits the filters it isn't using. There is no
 session-selector parameter and no mode switch: catalog, content search, and
@@ -124,6 +136,11 @@ children-of-a-parent are just which filters you set, and all return the same rec
 - With a **`query`**, it matches metadata first, then opens transcripts for a **bounded**
   raw-text scan (200 newest). When the scan stops early, `scan_truncated:true` reports the
   partial coverage; `snippets` carries the matching excerpts (search results only).
+- A metadata-only match (a hit on the title or original prompt) carries one bounded
+  `snippet`: role `user` at `seq 0` when the prompt matched (the first user turn), or
+  role `title` when only the title matched. A `title` snippet's `seq 0` is a display
+  coordinate, not a turn address — do not pass it to `read_transcript`'s `range` or
+  `expand_turn`.
 - With **`children_of`**, results are restricted to sessions whose parent is that ref's
   session. A `local:` or `proj:` ref resolves the parent's bucket and ID from the ref
   alone — **no transcript is opened, not even the parent's** — and children are looked up
