@@ -461,7 +461,6 @@ describe("a finished subagent's outcome (audit G13)", () => {
 	afterEach(() => {
 		for (const screen of screens.splice(0)) act(() => screen.unmount());
 		forgetSubagentTrees("hub-1");
-		vi.useRealTimers();
 	});
 
 	it("says Finished until the tree comes, then the report's opening line", async () => {
@@ -543,7 +542,6 @@ describe("a finished subagent's outcome (audit G13)", () => {
 	});
 
 	it("reads the report once the subagent finishes while the tree is held", async () => {
-		vi.useFakeTimers();
 		const recorded = subagentOutcomesResponse() as { data: { revision: number; root: { entries: unknown[] } } };
 		// The first read lands a revision earlier, while the subagent still runs:
 		// no outcome, no report.
@@ -581,7 +579,6 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		["reads again when a subagent's screen comes back to the front", false, 2],
 		["leaves a coordinator's own screen to its delegates' updates", true, 1],
 	] as const)("%s", async (_name, receivesUpdates, reads) => {
-		vi.useFakeTimers();
 		const client = hub();
 		const delegates = [finished("dlg_reported")];
 		const screen = transcript({ delegates, receivesUpdates });
