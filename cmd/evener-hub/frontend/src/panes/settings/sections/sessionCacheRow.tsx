@@ -30,7 +30,11 @@ export interface SessionCacheRowState {
 // render through refresh(), so a cleared badge never outlives the next
 // render (spec, "The clear-cached-sessions setting").
 export const sessionCacheRowStore = createStore<SessionCacheRowState>((set) => ({
-  status: "empty",
+  // The pre-count state: no count has answered yet, and unknown renders as
+  // unavailable — never empty (spec: unavailable is "never shown as empty,
+  // so the privacy remedy cannot silently claim to have worked"). The first
+  // count replaces it at once: zero records is empty, records are cached.
+  status: "unavailable",
   clearing: false,
   refresh: async () => {
     const count = await countCachedSessions();
@@ -70,7 +74,7 @@ export function useSessionCacheRowStore<T>(selector?: (state: SessionCacheRowSta
 // them isolated. No production code should ever call this (mirrors
 // settingsOverview.ts's resetSettingsOverviewStoreForTests).
 export function resetSessionCacheRowStoreForTests(): void {
-  sessionCacheRowStore.setState({ status: "empty", clearing: false });
+  sessionCacheRowStore.setState({ status: "unavailable", clearing: false });
 }
 
 /** The storage row's "Cached session content" entry: the cache's state word
