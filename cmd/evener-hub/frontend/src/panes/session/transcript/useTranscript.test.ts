@@ -693,6 +693,60 @@ test("returning Jump to live cancels demand before the removed pane's in-flight 
 });
 
 test.each([false, true])(
+  "concurrent workspace readers can cancel an in-flight page after one leaves (first already cancelled: %s)",
+  async (cancelFirst) => {
+    vi.useFakeTimers();
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "page" }));
+    await act(async () => {
+      await threadsStore.getState().ensureThread("ref_a");
+    });
+    let rejectRead!: (error: Error) => void;
+    let attempts = 0;
+    fake.on("thread/turns/list", () => {
+      attempts += 1;
+      return new Promise<ThreadTurnsListResponse>((_resolve, reject) => {
+        rejectRead = reject;
+      });
+    });
+    const firstId = workspaceStore.getState().openPane("session", { ref: "ref_a" });
+    const first = mountWorkspaceTranscript("ref_a", firstId);
+    const secondId = workspaceStore.getState().openPane("transcript", { ref: "ref_a" });
+    const second = mountWorkspaceTranscript("ref_a", secondId);
+    let firstRead!: Promise<void>;
+    await act(async () => {
+      firstRead = first.result.current.transcript.loadOlder().catch(() => {});
+      await flushUntil(() => attempts === 1);
+    });
+    if (cancelFirst) act(() => first.result.current.flow.jumpToBottom());
+    let secondRead!: Promise<void>;
+    act(() => {
+      secondRead = second.result.current.transcript.loadOlder().catch(() => {});
+    });
+    expect(first.result.current.transcript.loadingOlder).toBe(true);
+    expect(second.result.current.transcript.loadingOlder).toBe(true);
+    expect(attempts).toBe(1);
+    workspaceStore.getState().closePane(firstId);
+    first.unmount();
+    act(() => second.result.current.flow.jumpToBottom());
+    await act(async () => {
+      rejectRead(new Error("temporary"));
+      await Promise.all([firstRead, secondRead]);
+    });
+    fake.on("thread/turns/list", () => {
+      attempts += 1;
+      return { data: [{ id: "older", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(attempts).toBe(1);
+    expect(second.result.current.transcript.model?.turns).toEqual([]);
+    second.unmount();
+  },
+);
+
+test.each([false, true])(
   "retains failed demand across client replacement (temporary null: %s)",
   async (clearClient) => {
     vi.useFakeTimers();
