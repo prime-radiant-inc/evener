@@ -11,8 +11,7 @@ const READING: ShellJobOutput = { status: "reading" };
 
 /** How often a running job's tail is read again while its detail is in
  * front. The hub announces a job's start and finish but nothing as it
- * writes, so the detail polls: often enough to read as live, rarely enough
- * that a large tail doesn't crowd other reads off the connection. */
+ * writes, so the detail polls, often enough to read as live. */
 export const JOB_OUTPUT_REREAD_MS = 2_000;
 
 /** The tail of a shell job's output through `client`, read again whenever
