@@ -1075,14 +1075,21 @@ Existing `TestLocalExecutionEnvironment_WriteFile_OutsideRoot_Rejected`,
 `TestLocalExecutionEnvironment_ExecCommand_WorkingDirOutsideRoot_Rejected` specify
 the root restriction.
 
-**Discuss.** Define what off and the selected working scope mean consistently
-across tools. This is a product policy choice, not a recommendation to silently
-widen a sandbox the user chose. Ordinary off-path errors also lack the typed
-sandbox-approval route.
+**Decision.** Sandbox off applies no Evener-imposed workspace path restriction
+to file-writing and editing tools or shell working directories. The working
+directory supplies the default location for relative paths; it does not prevent
+authorized work in another directory. Operating-system permissions and the
+user's instructions still apply. Explicit sandbox policies retain their stated
+boundaries. Removing the extra wrong-path guard from the built-in tools is an
+accepted tradeoff for consistent access across tools. Implementation remains
+pending.
 
-**Acceptance.** A user-authorized edit and command outside the launch directory
-behave consistently with the chosen mode, without tool substitution. Explicit
-scoped sandbox behavior remains consistent with its stated contract.
+**Acceptance.** With sandbox off, an authorized edit in a neighboring repository
+or home-configuration directory and a command using an outside working directory
+succeed through their ordinary tools without substitution. Relative paths still
+resolve against the working directory, and operating-system permission errors
+remain accurate. Explicit confined and read-only policies continue enforcing
+their stated boundaries.
 
 ### T04 Read-only directory symlinks
 
