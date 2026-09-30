@@ -400,9 +400,12 @@ export function NotificationCard({
           (part) => part !== undefined && part !== "",
         )
       : undefined;
+  // The ending composed onto the head is the packet frame's display prose
+  // (`ending`, delegateEndingText); a legacy attribute frame's `reason` is a
+  // raw producer code and never reaches the head.
   const delegateEnding =
     delegateLabel !== undefined && (notification.tone === "error" || notification.tone === "warning")
-      ? notification.reason
+      ? notification.ending
       : undefined;
   // A delegate head whose body would render nothing - a machinery stop, a
   // failure whose whole error is its ending (mockups 24-delegate-complete §C)

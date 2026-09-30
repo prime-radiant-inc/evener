@@ -354,7 +354,10 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
     error: text(metadata.error),
     name: text(metadata.name),
     description: text(metadata.description),
-    structuredResult: parsed.structured_result ?? undefined,
+    // Presence, not truthiness: a validated explicit null result is a present
+    // result (the daemon captures output: null as json.RawMessage("null"),
+    // session_tools_communicate.go), so it must not collapse into "absent".
+    structuredResult: "structured_result" in parsed ? parsed.structured_result : undefined,
     structuredResultValid:
       typeof parsed.structured_result_valid === "boolean" ? parsed.structured_result_valid : undefined,
     structuredResultReason: text(parsed.structured_result_reason) || undefined,
@@ -367,12 +370,13 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
 // result schema. The envelope's message is the subagent's report; its data is
 // the schema output - the same object the packet's structured_result field
 // carries on a current daemon, and the only copy on a frame recorded before
-// that field existed. JSON that is not an envelope (no string `message`) is
-// the subagent's own text, whatever it looks like, and stays whole.
-function parsePacketEnvelope(text: string): { message: string; data?: Record<string, unknown> } | null {
+// that field existed - in whatever shape the caller's fields took, not only
+// objects. JSON that is not an envelope (no string `message`) is the
+// subagent's own text, whatever it looks like, and stays whole.
+function parsePacketEnvelope(text: string): { message: string; data?: unknown } | null {
   const parsed = tryParseJsonRecord(text);
   if (parsed === null || typeof parsed.message !== "string") return null;
-  return { message: parsed.message.trim(), data: isPlainObject(parsed.data) ? parsed.data : undefined };
+  return { message: parsed.message.trim(), data: "data" in parsed ? parsed.data : undefined };
 }
 
 // The default communicate output envelope's keys
@@ -387,14 +391,18 @@ const DEFAULT_ENVELOPE_KEYS = new Set(["message", "data", "artifacts"]);
 // validating, agent/subagents.go). The frame then carries the caller's fields
 // nested inside structured_result.data - one copy of the very envelope the
 // message field already parses - so the exact default shape, its message the
-// same string the message field carries, means the card wants the data, not
-// Message/Data/Artifacts wrapper rows with the message duplicated and the
-// data blob truncated.
-function isDefaultEnvelopeCopy(
-  result: Record<string, unknown>,
-  envelope: { message: string; data?: Record<string, unknown> } | null,
-): boolean {
-  if (envelope === null || typeof result.message !== "string" || result.message !== envelope.message) return false;
+// same string the message field carries (or the zero-filled empty string a
+// report whose message rode the call's top level captures), means the card
+// wants the data, not Message/Data/Artifacts wrapper rows with the message
+// duplicated and the data blob truncated.
+function isDefaultEnvelopeCopy(result: Record<string, unknown>, envelope: { message: string } | null): boolean {
+  if (envelope === null || typeof result.message !== "string") return false;
+  // The daemon captures the raw `output` argument, which repair has already
+  // zero-filled (fillCommunicateEnvelope mutates args in place), while the
+  // packet's message rides the canonical envelope of effectiveOutput - its
+  // message backfilled from the call's top-level message. A zero-filled empty
+  // capture message is that documented call shape, so it unwraps too.
+  if (result.message !== "" && result.message !== envelope.message) return false;
   if (!isPlainObject(result.data) || !Array.isArray(result.artifacts)) return false;
   return Object.keys(result).every((key) => DEFAULT_ENVELOPE_KEYS.has(key));
 }
@@ -441,10 +449,10 @@ function delegatePacketNotification(
   // authoritative table either - only a valid verdict's data does, from
   // whichever copy the frame carries, and a no-schema delegate's
   // default-envelope capture unwraps to its data (isDefaultEnvelopeCopy).
-  // A result with no record shape (a top-level array or scalar schema) passes
-  // through as-is for the card's value grammar.
+  // A result with no record shape (a top-level array or scalar schema, or an
+  // explicit null) passes through as-is for the card's value grammar.
   const reported = packet.kind === "reported";
-  const captured = packet.structuredResult ?? envelope?.data;
+  const captured = packet.structuredResult !== undefined ? packet.structuredResult : envelope?.data;
   const structuredResult =
     reported && packet.structuredResultValid !== false
       ? isPlainObject(captured) && isDefaultEnvelopeCopy(captured, envelope)

@@ -1468,8 +1468,69 @@ test("a schema result that merely neighbors the envelope's keys stays whole", ()
   expect(n?.structuredResult).toEqual({ message: "Read the fixture.", data: { rows: 3 } });
 });
 
+// Repair zero-fills a missing output.message with "" before the daemon
+// captures the raw `output` (fillCommunicateEnvelope mutates args in place,
+// session_tools_communicate.go), while the packet's message rides the
+// canonical envelope of effectiveOutput - its message backfilled from the
+// call's top-level message. A report whose message rode the top level is a
+// documented call shape, so the zero-filled capture unwraps too.
+test("a report whose message rode the top level still unwraps", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "Rebased and pushed.", data: { rebased: "main" }, artifacts: [] }),
+        structured_result: { message: "", data: { rebased: "main" }, artifacts: [] },
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task5-topline" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Rebased and pushed.");
+  expect(n?.structuredResult).toEqual({ rebased: "main" });
+});
+
+// A custom schema may allow an explicit null (the daemon captures output: null
+// as json.RawMessage("null") and marks it present and valid,
+// session_communicate_atomic_test.go's "custom schema explicit null"). The
+// null is a present result: it parses through so the card can say "(none)"
+// instead of rendering nothing.
+test("a validated explicit null result parses through", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: "The schema allowed null.",
+        structured_result: null,
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task6-null" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toBeNull();
+  expect(n?.structuredResultValid).toBe(true);
+});
+
+// Frames recorded before structured_result carried the schema output inside
+// the message envelope's data - whatever shape the caller's fields took, not
+// only objects.
+test("a legacy envelope's array data parses through", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify({ message: "Swept.", data: ["alpha", "beta"] }),
+        metadata: { outcome: "completed", name: "task7-sweep" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Swept.");
+  expect(n?.structuredResult).toEqual(["alpha", "beta"]);
+});
+
 // A result schema may top at an array or a scalar, and the daemon validates
 // and stores such a result as-is (validateStructuredResult compiles the
+// caller's schema; only the parser's isPlainObject used to reject it). The
 // value parses through so the card can render it through its value grammar
 // instead of a validated result silently vanishing.
 test("a validated non-object result parses through", () => {

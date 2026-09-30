@@ -423,6 +423,7 @@ test("a machinery stop renders its ending on a static head with nothing to expan
         secondary: "docs-index · stopped by its coordinator",
         delegateId: "dlg_d",
         reason: "stopped by its coordinator",
+        ending: "stopped by its coordinator",
       })}
     />,
   );
@@ -476,6 +477,48 @@ test("a validated non-record result renders through the value grammar", () => {
     />,
   );
   expect(screen.getByTestId("notification-structured-json").textContent).toContain("alpha, beta");
+});
+
+// A validated explicit null result is present: the card says "(none)" through
+// the value grammar rather than rendering nothing.
+test("a validated null result renders as none", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        tone: "success",
+        name: "null-report",
+        secondary: "null-report",
+        delegateId: "dlg_n",
+        structuredResult: null,
+        structuredResultValid: true,
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-structured-json").textContent).toContain("(none)");
+});
+
+// A legacy attribute frame's `reason` is a raw producer code (exit_nonzero):
+// the head composes the packet's `ending` words, never the code.
+test("a legacy failed frame's raw reason code never reaches the head", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        tone: "error",
+        title: "Delegate failed",
+        name: "split-retry",
+        secondary: "split-retry",
+        delegateId: "dlg_2",
+        reason: "exit_nonzero",
+        message: "The retry loop needs a fixed seed.",
+      })}
+    />,
+  );
+  const head = screen.getByTestId("notification-card");
+  expect(head.textContent).toContain("split-retry");
+  expect(head.textContent).not.toContain("exit_nonzero");
 });
 
 test("collapses to a single row by default; card chrome appears on expand", () => {
