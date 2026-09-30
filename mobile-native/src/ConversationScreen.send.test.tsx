@@ -1138,6 +1138,39 @@ it("restores a reading position once, however its row's measured y moves after",
 	]);
 });
 
+// A frame's layout events arrive together: the rows' layouts, then the
+// content size they add up to. The restore waits for all of them, so a row
+// measured before the content size is known never lands the list short of it.
+it("restores a reading position once the frame's layouts are all in", async () => {
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-restore-frame": {
+				hubId: "hub-1",
+				sessionRef: "ref-restore-frame",
+				itemKey: "a-turn_2",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_2",
+			},
+		}),
+	);
+	const { tree } = await mount(twoTurns("ref-restore-frame"));
+	act(() =>
+		transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
+	);
+	await settle();
+	flatListCalls.length = 0;
+	act(() => {
+		layOutRow(tree, 3, 9_523);
+		transcriptList(tree).props.onContentSizeChange(390, 20_000);
+	});
+	await settle();
+	expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+		{ method: "scrollToOffset", args: { offset: 9_523, animated: false } },
+	]);
+});
+
 it("waits for the bottom bar to lay out before restoring a reading position", async () => {
 	harness.kv.set(
 		"evener.reader-positions",
