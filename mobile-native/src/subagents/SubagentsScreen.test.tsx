@@ -291,7 +291,7 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	const labels = tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Shell job,"));
 	expect(new Set(labels.map((node) => node.props.accessibilityLabel))).toEqual(
 		new Set([
-			`Shell job, npm run lint, 2m, under ${COORDINATOR.title}`,
+			`Shell job, npm run lint, Command failed · 2m, under ${COORDINATOR.title}`,
 			"Shell job, Serving the docs, running · 3m, under Only one",
 		]),
 	);
@@ -299,6 +299,16 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	act(() => pressable(tree, "Failed, 1")?.props.onPress());
 	expect(text(tree)).toContain("npm run lint");
 	expect(text(tree)).not.toContain("Serving the docs");
+});
+
+// The Session's menu offers Activity whenever it's connected, so a session
+// with nothing to list says so plainly.
+it("says there is nothing yet when the session has no subagents or shell jobs", async () => {
+	client = hub(() => ({ revision: 1, root: session("local:coord", COORDINATOR.title, []) }));
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(text(tree)).toContain("No subagents or shell jobs yet.");
+	expect(headerTitle()).toBe("Activity · 0 Get PR 2138 Test Clean");
 });
 
 it("opens the done fold in place", async () => {
@@ -409,6 +419,7 @@ it("shows three quiet rows until the first read answers, and never offers Retry,
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	expect(tree.root.findAll((node) => node.props.testID === "subagent-skeleton")).toHaveLength(3);
+	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading activity")).not.toEqual([]);
 	for (const word of ["Retry", "Refresh", "Reconnect"]) expect(text(tree)).not.toContain(word);
 	await act(async () => answer(specTree()));
 	await settle();
@@ -429,7 +440,7 @@ it("says the count is partial and whose subagents are missing when a later page 
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	expect(headerTitle()).toBe("Activity · 2+ Get PR 2138 Test Clean");
-	expect(text(tree)).toContain("Some subagents under “Get PR 2138 Test Clean” aren't listed.");
+	expect(text(tree)).toContain("Some activity under “Get PR 2138 Test Clean” isn't listed.");
 });
 
 it.each([

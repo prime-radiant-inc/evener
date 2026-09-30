@@ -2,8 +2,9 @@
 // coordinator's subagents and the shell jobs it and they started, read whole
 // from its activity tree. The strip says how many subagents are failed,
 // running and done, and the chips count jobs too; the list shows failures
-// first, then what's running, then what's done folded away. It reads again on its own (on focus, on reconnect, on the tree's
-// notifications) and never offers Retry, Refresh or Reconnect.
+// first, then what's running, then what's done folded away. It reads again
+// on its own (on focus, on reconnect, on the tree's notifications) and never
+// offers Retry, Refresh or Reconnect.
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
@@ -125,7 +126,9 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		paddingTop: 16,
 	};
 	const notice = snapshot.tree
-		? null
+		? listTally.total === 0 && snapshot.missing.length === 0
+			? "No subagents or shell jobs yet."
+			: null
 		: snapshot.failed
 			? "The activity couldn't be listed right now."
 			: snapshot.unsupported
@@ -343,7 +346,7 @@ function MissingLine({ title }: { title: string }) {
 			allowFontScaling={allowFontScaling}
 			style={{ padding: 16, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 		>
-			{`Some subagents under “${title}” aren't listed.`}
+			{`Some activity under “${title}” isn't listed.`}
 		</Text>
 	);
 }
@@ -352,7 +355,7 @@ function MissingLine({ title }: { title: string }) {
 function Skeleton() {
 	const { palette } = useColors();
 	return (
-		<View accessible accessibilityLabel="Loading subagents" style={{ gap: 8, paddingTop: 8 }}>
+		<View accessible accessibilityLabel="Loading activity" style={{ gap: 8, paddingTop: 8 }}>
 			{[0, 1, 2].map((index) => (
 				<View
 					key={index}

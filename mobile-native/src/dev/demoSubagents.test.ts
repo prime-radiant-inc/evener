@@ -115,7 +115,7 @@ describe("the demo fleet's subagents", () => {
 		const { jobs } = flattenActivity(tree as NonNullable<typeof tree>);
 		const shown = jobs.map((row) => [row.title, row.state, row.owner, shellJobMeta(row, NOW)]);
 		expect(shown).toContainEqual(["go build ./...", "done", "Get PR 2138 Test Clean", "40s"]);
-		expect(shown).toContainEqual(["go test", "failed", "Fix race in tree settle", "1m"]);
+		expect(shown).toContainEqual(["go test", "failed", "Fix race in tree settle", "Command failed · 1m"]);
 		expect(shown).toContainEqual(["go test ./agent/...", "running", "Running subagent 0", "running · 42s"]);
 		expect(jobs.find((row) => row.state === "failed")?.job.exitCode).toBe(1);
 	});

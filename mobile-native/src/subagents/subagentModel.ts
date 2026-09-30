@@ -379,7 +379,8 @@ export function subagentLastLine(
 	return Object.keys(line).length > 0 ? line : null;
 }
 
-/** The list offers its search field past this many subagents (ruling 8). */
+/** The Activity list offers its search field past this many rows,
+ * subagents and shell jobs together (ruling 8). */
 export const SEARCH_AFTER = 8;
 
 /** The search field's filter (spec 9): the title, ignoring case, and for a
@@ -391,19 +392,33 @@ export function matchesSearch(row: ActivityListRow, query: string): boolean {
 	return words.some((text) => text.toLowerCase().includes(needle));
 }
 
+/** How an ended shell job ended, in words: "Command failed" or "Command
+ * killed" (jobStatusDisplay), "Stopped" or "Cancelled", else its state's word
+ * ("Failed", "Done"). */
+export function shellJobEnding(row: ShellJobRow): string {
+	const { status, reason } = row.job;
+	const display = jobStatusDisplay(status, reason);
+	if (display !== status) return display;
+	if (status === "stopped") return "Stopped";
+	if (status === "cancelled") return "Cancelled";
+	return subagentStateWord(row.state);
+}
+
 /** A shell job's trailing words (the web's ActivityTree meta): while it runs,
- * its status in words (jobStatusDisplay, never a raw code) and how long it has
- * been quiet; once it ends, how long it ran (its status in words when the
- * times are unknown). */
+ * its status (jobStatusDisplay) and how long it has been quiet; once it ends,
+ * how it ended and how long it ran. A job that finished well shows only how
+ * long it ran, since its hue already says done. */
 export function shellJobMeta(row: ShellJobRow, now: number): string {
 	const { job } = row;
-	const status = jobStatusDisplay(job.status, job.reason);
 	if (!job.terminal) {
+		const status = jobStatusDisplay(job.status, job.reason);
 		const since = time(job.lastOutputAt) ?? time(job.startedAt);
 		return since === null ? status : `${status} · ${compactDuration(Math.max(0, now - since))}`;
 	}
-	// Once it ends, the glyph's hue carries the outcome, as on the web.
+	const ending = shellJobEnding(row);
 	const started = time(job.startedAt);
 	const ended = time(job.endedAt);
-	return started === null || ended === null ? status : compactDuration(Math.max(0, ended - started));
+	if (started === null || ended === null) return ending;
+	const ran = compactDuration(Math.max(0, ended - started));
+	return ending === subagentStateWord("done") ? ran : `${ending} · ${ran}`;
 }

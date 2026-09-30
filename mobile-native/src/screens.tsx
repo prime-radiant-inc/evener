@@ -1024,8 +1024,6 @@ export function ConversationScreen({
 		});
 	}
 	const menuLevel = currentLevel(chosenLevel, hubDisplayConfig);
-	// The menu offers Subagents exactly when its chip shows.
-	const hasSubagents = chips.some((chip) => chip.kind === "subagents");
 	const canAside = connected && service !== null && !!conversation?.capabilities.forkFromTurn;
 	const canShutDown =
 		controls !== null && !!conversation?.capabilities.shutdown && !SHUT_DOWN.has(conversation.status.type);
@@ -1177,7 +1175,6 @@ export function ConversationScreen({
 				hasConversation
 					? sessionMenu({
 							current: menuLevel,
-							hasSubagents,
 							hasDocuments: documents.length > 0,
 							connected,
 							sharedNotes: !!conversation?.capabilities.sharedNotes,
@@ -1223,7 +1220,6 @@ export function ConversationScreen({
 		hasNext,
 		othersWaitingCount,
 		menuLevel,
-		hasSubagents,
 		documents.length,
 		conversation?.capabilities.sharedNotes,
 		canAside,

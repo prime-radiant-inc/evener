@@ -394,6 +394,6 @@ describe("shell jobs in the Activity list", () => {
 		const [running, finished] = jobs;
 		if (!running || !finished) throw new Error("no jobs");
 		expect(shellJobMeta(running, NOW)).toBe("running · 2m");
-		expect(shellJobMeta(finished, NOW)).toBe("1m");
+		expect(shellJobMeta(finished, NOW)).toBe("Command failed · 1m");
 	});
 });

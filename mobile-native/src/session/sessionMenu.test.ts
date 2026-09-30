@@ -13,7 +13,6 @@ function menu(over: Partial<SessionMenuInput> = {}) {
 	const chosen: SessionMenuAction[] = [];
 	const items = sessionMenu({
 		current: "intent",
-		hasSubagents: true,
 		hasDocuments: true,
 		connected: true,
 		sharedNotes: true,
@@ -126,8 +125,6 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 
 	it.each([
 		["hasDocuments", "Files & artifacts"],
-		["hasSubagents", "Activity"],
-		["connected", "Tasks"],
 		["sharedNotes", "Notes & links"],
 		["canAside", "Ask aside…"],
 		["canShutDown", "Shut down"],
@@ -135,6 +132,14 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		const entries = only(menu({ [condition]: false }).items).menu.items;
 		expect(labels(entries)).not.toContain(label);
 		expect(entries).toHaveLength(11);
+	});
+
+	// Activity and Tasks both read the hub live, so both wait for a connection.
+	it("shows neither Activity nor Tasks while disconnected", () => {
+		const entries = only(menu({ connected: false }).items).menu.items;
+		expect(labels(entries)).not.toContain("Activity");
+		expect(labels(entries)).not.toContain("Tasks");
+		expect(entries).toHaveLength(10);
 	});
 
 	it("opens Files & artifacts", () => {

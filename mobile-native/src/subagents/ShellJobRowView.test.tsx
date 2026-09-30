@@ -3,6 +3,7 @@
 // status with its age while running or its duration once finished.
 import type { ActivityJob } from "@evener/appwire-client";
 import { describe, expect, it, vi } from "vitest";
+import { paletteFor } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
 import type { ShellJobRow } from "./subagentModel";
 import { ShellJobRowView } from "./ShellJobRowView";
@@ -35,6 +36,9 @@ const row = (state: ShellJobRow["state"], over: Partial<ActivityJob> = {}): Shel
 	job: job(over),
 	order: 0,
 });
+const palette = paletteFor("light");
+const label = (tree: ReturnType<typeof render>) =>
+	tree.root.find((node) => typeof node.props.accessibilityLabel === "string").props.accessibilityLabel;
 const glyphColor = (tree: ReturnType<typeof render>) =>
 	tree.root.find((node) => String(node.type) === "Text" && node.props.children === "$").props.style.color;
 
@@ -44,25 +48,36 @@ describe("a shell job's row", () => {
 		expect(renderedText(tree)).toContain("Serving the docs");
 		expect(renderedText(tree)).toContain("under Fix race in tree settle");
 		expect(renderedText(tree)).toContain("running · 1m");
-		expect(glyphColor(tree)).toBe("#12763B");
+		expect(glyphColor(tree)).toBe(palette.aliveInk);
 	});
 
-	it("says how long a finished one ran, its hue carrying the outcome", () => {
-		const failed = render(
-			<ShellJobRowView
-				row={row("failed", { terminal: true, status: "command_exited_nonzero", endedAt: ago(60_000) })}
-				now={NOW}
-			/>,
-		);
-		expect(renderedText(failed)).toContain("3m");
-		expect(glyphColor(failed)).toBe("#C51D23");
-		const done = render(<ShellJobRowView row={row("done", { terminal: true, endedAt: ago(60_000) })} now={NOW} />);
-		expect(glyphColor(done)).toBe("#6D6D64");
+	// An ended job says how it ended in words as well as in its hue, so a
+	// failed, killed, stopped and finished job never read the same.
+	it("says how a finished one ended and how long it ran, its hue carrying the outcome too", () => {
+		const ended = (state: ShellJobRow["state"], status: string, outcome: string) =>
+			render(
+				<ShellJobRowView
+					row={row(state, { terminal: true, status, outcome, endedAt: ago(60_000) })}
+					now={NOW}
+				/>,
+			);
+		const failed = ended("failed", "command_exited_nonzero", "failure");
+		expect(renderedText(failed)).toContain("Command failed · 3m");
+		expect(label(failed)).toBe("Shell job, Serving the docs, Command failed · 3m, under Fix race in tree settle");
+		expect(glyphColor(failed)).toBe(palette.dangerInk);
+		expect(label(ended("failed", "command_killed", "failure"))).toContain("Command killed · 3m");
+		expect(label(ended("failed", "exhausted", "failure"))).toContain("Failed · 3m");
+		expect(label(ended("done", "stopped", "neutral"))).toContain("Stopped · 3m");
+		const done = ended("done", "completed", "success");
+		expect(renderedText(done)).toContain("3m");
+		expect(renderedText(done)).not.toContain("Done");
+		expect(label(done)).toBe("Shell job, Serving the docs, Done, 3m, under Fix race in tree settle");
+		expect(glyphColor(done)).toBe(palette.inkLow);
 	});
 
 	it("reads to VoiceOver as one sentence", () => {
 		const tree = render(<ShellJobRowView row={row("running")} now={NOW} />);
-		expect(tree.root.find((node) => typeof node.props.accessibilityLabel === "string").props.accessibilityLabel).toBe(
+		expect(label(tree)).toBe(
 			"Shell job, Serving the docs, running · 4m, under Fix race in tree settle",
 		);
 	});
