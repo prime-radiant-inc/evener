@@ -620,7 +620,7 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	// reported quiescence, so it can't take another generation yet. Refusing
 	// here, under the lock the start commits under, leaves nothing written.
 	if live := c.live[delegateID]; live != nil && live.finalizing != nil && live.finalizing.runtime == live.runtime {
-		return nil, errDelegateTargetBusy
+		return nil, delegateFinalizingError{released: live.finalizing.released}
 	}
 	for _, existing := range c.reservations {
 		if existing.delegateID == delegateID {

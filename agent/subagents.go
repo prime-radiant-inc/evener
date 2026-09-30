@@ -1997,9 +1997,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		var plans delegateMutationPlans
 		var finishErr error
 		if noActionClaim != nil {
-			plans, finishErr = a.sess.delegateController.FinishNoAction(noActionClaim)
+			plans, finishErr = a.sess.delegateController.FinishNoActionForTail(noActionClaim)
 		} else {
-			plans, finishErr = a.sess.delegateController.FinishGeneration(lease, finish)
+			plans, finishErr = a.sess.delegateController.FinishGenerationForTail(lease, finish)
 		}
 		if executeErr := a.sess.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
@@ -2027,16 +2027,26 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 	}
 
+	if stableRun && a.sess.delegateController != nil {
+		// The generation is announced (its idle snapshot, and its result to
+		// the parent and any waiting send) only now, and released right
+		// after, whatever the announcing does: nothing hears it finished
+		// before the delegate is ready for a send. Both precede done, so a
+		// run that has closed done has announced and released its generation.
+		announce := func(plans delegateMutationPlans) error {
+			if err := a.sess.executeDelegateMutationPlans(plans); err != nil {
+				a.sess.emit(events.EventWarning, warningDataFromError("delegate result delivery incomplete", err))
+			}
+			return nil
+		}
+		if reportErr := a.sess.delegateController.announceAndReleaseFinalization(lease, a.sess, announce); reportErr != nil {
+			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
+		}
+	}
 	if done != nil {
 		close(done)
 	}
 	if stableRun && a.sess.delegateController != nil {
-		if reportErr := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); reportErr != nil {
-			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
-		}
-		if hook := a.sess.cfg.testOnly.subagentAfterFinalizationQuiesced; hook != nil {
-			hook(a)
-		}
 		// The schedule is armed whether or not the quiescence report
 		// succeeded, and that is load-bearing: a failed report is
 		// stale-shaped — this generation superseded, the resident runtime

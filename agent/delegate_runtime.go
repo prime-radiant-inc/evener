@@ -1255,13 +1255,45 @@ func (s *Session) childStartBlocked(childID string) bool {
 	return sub.startBlockedLocked()
 }
 
+// delegateFinalizationWaitCeiling bounds how long a send waits for a finished
+// generation's finalize tail to release the delegate.
+//
+// TRIPWIRE: a hang guard only. The release is the tail's last local step
+// (announce the result, then release), so it follows within milliseconds;
+// this fires only when a tail never releases, and the send then refuses
+// cleanly with target_busy.
+const delegateFinalizationWaitCeiling = 10 * time.Second
+
+// awaitDelegateFinalization waits for released to close, bounded by ctx and
+// by delegateFinalizationWaitCeiling, and reports whether it closed.
+func (s *Session) awaitDelegateFinalization(ctx context.Context, released <-chan struct{}) bool {
+	ceiling := delegateFinalizationWaitCeiling
+	if override := s.cfg.testOnly.delegateFinalizationWaitCeiling; override != nil {
+		ceiling = *override
+	}
+	timer := s.sclock().NewTimer(ceiling)
+	defer timer.Stop()
+	if observe := s.cfg.testOnly.delegateSendAwaitingFinalization; observe != nil {
+		observe()
+	}
+	select {
+	case <-released:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-timer.C():
+		return false
+	}
+}
+
 // finishUnlaunchedGeneration fails a generation whose input was admitted but
 // whose run never launched (launch_failed). No run finalizes its runtime, so
-// it reports that runtime quiesced itself, whether or not the finish
-// succeeded, or the delegate would stay refused as still finalizing.
-func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, runtime *Session, cause error) (delegateMutationPlans, error) {
-	plans, err := c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
-	return plans, errors.Join(err, c.ReportFinalizationQuiesced(lease, runtime))
+// release must be called once the returned plans (which carry the
+// generation's idle snapshot and result) have been executed, whether or not
+// that failed, or the delegate stays refused as still finalizing.
+func (c *delegateTreeController) finishUnlaunchedGeneration(lease delegateLease, runtime *Session, cause error) (plans delegateMutationPlans, release func() error, err error) {
+	plans, err = c.FinishGeneration(lease, delegatePermanentStartFailure(cause, "launch_failed"))
+	return plans, func() error { return c.ReportFinalizationQuiesced(lease, runtime) }, err
 }
 
 func (runtime delegateRuntime) send(ctx context.Context, delegateID, message string, maxWaitMS int) stableDelegateSendOutcome {
@@ -1318,6 +1350,16 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 	}
 	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
+	// A delegate whose finished generation is still finalizing is announced
+	// idle only as its finalize tail's last step, so a send that heard it
+	// waits out that step and reserves once more.
+	var finalizing delegateFinalizingError
+	if errors.As(err, &finalizing) {
+		if !s.awaitDelegateFinalization(ctx, finalizing.released) {
+			return failed(errDelegateTargetBusy)
+		}
+		reservation, err = s.delegateController.ReserveStart(actor, delegateID)
+	}
 	if err != nil {
 		return failed(err)
 	}
@@ -1513,8 +1555,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		s.sendersWG.Done()
-		failurePlans, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, sub.sess, err)
-		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr))
+		failurePlans, release, finishErr := s.delegateController.finishUnlaunchedGeneration(started.lease, sub.sess, err)
+		// The release runs once the failure is announced, whatever that did.
+		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, failurePlans, errors.Join(err, finishErr), func() {
+			if releaseErr := release(); releaseErr != nil {
+				s.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", releaseErr))
+			}
+		})
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
