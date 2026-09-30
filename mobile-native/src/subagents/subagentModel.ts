@@ -132,8 +132,9 @@ export interface ShellJobRow {
 	id: string;
 	/** Its description, else its command's first line. */
 	title: string;
-	/** Who started it: its session's title, or the subagent's. */
-	owner: string;
+	/** Who started it: its session's title, or the subagent's. Absent while
+	 * that subagent's row isn't loaded. */
+	owner?: string;
 	state: SubagentState;
 	job: ActivityJob;
 	/** Its place in the tree's depth-first walk, shared with the subagents. */
@@ -172,11 +173,15 @@ export function flattenActivity(tree: ActivityTree, coordinatorTitle: string): A
 				if (seen.has(key)) continue;
 				seen.add(key);
 				const job = entry.job;
+				// At the top of the tree, only the coordinator's own job has an
+				// owner to name; any other sits there because its subagent's row
+				// isn't loaded.
+				const owner = parentTitle ?? (job.ownerRef === tree.root.ref ? coordinatorTitle : undefined);
 				rows.push({
 					kind: "job",
 					id: job.jobId,
 					title: job.description.trim() || firstLine(job.command ?? "", 80) || job.jobId,
-					owner: parentTitle ?? coordinatorTitle,
+					...(owner === undefined ? {} : { owner }),
 					state: shellJobState(job),
 					job,
 					order: order++,
@@ -438,7 +443,7 @@ export const SEARCH_AFTER = 8;
 export function matchesSearch(row: ActivityListRow, query: string): boolean {
 	const needle = query.trim().toLowerCase();
 	if (needle === "") return true;
-	const words = row.kind === "job" ? [row.title, row.job.command ?? "", row.owner] : [row.title];
+	const words = row.kind === "job" ? [row.title, row.job.command ?? "", row.owner ?? ""] : [row.title];
 	return words.some((text) => text.toLowerCase().includes(needle));
 }
 
@@ -467,6 +472,13 @@ function shellJobStatus(row: ShellJobRow, now: number): { words: string; clean: 
 	};
 }
 
+/** Who started a shell job, as its row, its spoken label and its detail say
+ * it: "under" its session's or subagent's title, or, while that subagent's
+ * row isn't loaded, that its subagent isn't listed. */
+export function shellJobOwner(row: ShellJobRow): string {
+	return `under ${row.owner ?? "a subagent that isn't listed"}`;
+}
+
 /** A shell job's trailing words (the web's ActivityTree meta): "running ·
  * 2m", "Command failed · 1m", or for a job that finished well just "1m". */
 export function shellJobMeta(row: ShellJobRow, now: number): string {
@@ -479,5 +491,5 @@ export function shellJobMeta(row: ShellJobRow, now: number): string {
  * how it ended (a clean finish too), the time in words, and who started it. */
 export function shellJobLabel(row: ShellJobRow, now: number): string {
 	const { words, ms } = shellJobStatus(row, now);
-	return ["Shell job", row.title, words, ...(ms === null ? [] : [spokenDuration(ms)]), `under ${row.owner}`].join(", ");
+	return ["Shell job", row.title, words, ...(ms === null ? [] : [spokenDuration(ms)]), shellJobOwner(row)].join(", ");
 }

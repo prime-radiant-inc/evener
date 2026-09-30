@@ -304,6 +304,41 @@ it("lists shell jobs in their states' sections, counting them in the title and c
 	expect(text(tree)).not.toContain("Serving the docs");
 });
 
+// A job whose subagent's row is on a later page sits at the top of the tree
+// until that page loads. It says its subagent isn't listed rather than
+// naming the coordinator, then names the subagent once its row arrives.
+it("says a job's subagent isn't listed until that subagent's page loads, then names it", async () => {
+	client = hub((continuation) =>
+		continuation === "page-2"
+			? { revision: 1, root: session("local:coord", COORDINATOR.title, [runningOne("later", "Later one")]) }
+			: {
+					revision: 1,
+					root: session(
+						"local:coord",
+						COORDINATOR.title,
+						[
+							runningOne("first", "First one"),
+							shellJob("j-later", "Serving the docs", { ownerRef: "local:later", ownerSessionId: "later" }),
+						],
+						{ truncated: true, continuation: "page-2" },
+					),
+				},
+	);
+	harness.connection = screenConnection(client, "ready");
+	const screen = await mount();
+	const jobLabel = () =>
+		screen.root.find((node) => String(node.props.accessibilityLabel).startsWith("Shell job, Serving the docs")).props
+			.accessibilityLabel;
+	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under a subagent that isn't listed");
+	expect(text(screen)).toContain("under a subagent that isn't listed");
+	expect(text(screen)).not.toContain(`under ${COORDINATOR.title}`);
+	await act(async () => {
+		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
+	});
+	await settle();
+	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under Later one");
+});
+
 // The Session's menu offers Activity whenever it's connected, so a session
 // with nothing to list says so plainly.
 it("says there is nothing yet when the session has no subagents or shell jobs", async () => {
