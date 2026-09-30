@@ -397,6 +397,49 @@ func TestHubSearchInSessionsFollowsTheScope(t *testing.T) {
 	}
 }
 
+// An orphaned live subagent is not a navigation row — the roots-only tree
+// gives a subagent no top-level row and lets an orphan (its parent not live)
+// vanish (#3082). Search's Live group mirrors the Board's Live section, so it
+// must not offer that subagent as a top-level hit either: before, hubSearch
+// listed every roster entry, and the subagent's raw "awaiting" state reached
+// the palette as a needs-you dot, attention a turn-ended delegate never needs.
+// Its own meta, not its parent's liveness, is what marks it a subagent.
+func TestHubSearchOmitsALiveSubagentFromTheLiveGroup(t *testing.T) {
+	now := time.Now()
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+	subagentID := hubtest.SessionID(t)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: subagentID, UpdatedAt: now, Name: "Refactor the frobnitz queue",
+		ParentSessionID: "02wMz5TxvParentAbsent", IsSubagent: true,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	// The subagent has its own live daemon and its normal turn-ended resting
+	// state ("awaiting"), with no real ask_pending; its parent is not live.
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		PID: 1, WorkingDir: "/projects/alpha", SessionID: subagentID, Status: appwire.ThreadStatusAwaiting,
+	})
+
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := searchIDs(resp.Live); len(got) != 0 {
+		t.Fatalf("live = %v, want no live result: an orphaned subagent is not a top-level search hit", got)
+	}
+	if prev, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz", Scope: appwire.SearchScopeLive}, now); err != nil {
+		t.Fatal(err)
+	} else if got := searchIDs(prev.Live); len(got) != 0 {
+		t.Fatalf("live scope: live = %v, want no result either", got)
+	}
+}
+
 // The primary production configuration (a roster and a message index both
 // configured) must find a live session whose only match is its message text:
 // it is listed once, in Live order ahead of ended sessions, not duplicated as
