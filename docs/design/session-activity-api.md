@@ -155,6 +155,14 @@ as a complete current outcome. Warm reads use the derived index and bounded row
 projection. Cache loss or journal replacement produces a typed stale-cursor
 result and transparent client restart, never a destructive journal repair.
 
+The input byte budget counts newly read journal bytes. Decode a stored batch one
+event at a time so a large batch cannot bypass the work budget by allocating all
+of its events before paging them. A single event is an atomic decoding unit,
+bounded by its store's existing record-size limit; cancellation is checked before
+and after that decode. These are input and work bounds, not a hard wall-clock or
+CPU-time guarantee. Large individual events may accumulate across input pages;
+they are not rejected merely because they exceed one page's input budget.
+
 In-memory controller membership inspection is allowed; recursive visits to all
 descendant runtimes and unbounded journal reads are not a summary implementation.
 Do not allocate or sort a full historical recursive activity tree to answer a
