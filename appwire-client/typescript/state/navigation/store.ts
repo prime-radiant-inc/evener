@@ -131,6 +131,7 @@ export interface NavigationStoreState {
     limit?: number,
   ): Promise<ResourceState<NavigationProjectPage>>;
   lookupLocation(ref: string): Promise<ResourceState<NavigationSessionLocation>>;
+  loadSubagents(ref: string, offset?: number, limit?: number): Promise<ResourceState<NavigationSectionResource>>;
   setExpanded(projectKey: string, expanded: boolean): void;
   toggleExpanded(projectKey: string): void;
   awaitNavigationTargets(targets: NavigationInvalidationTarget[], generationID?: string): Promise<void>;
@@ -216,6 +217,7 @@ function assertNavigationPageProgress(k: ResourceKey, value: unknown): void {
     case "section":
     case "pin_section":
     case "project_page":
+    case "subagents":
       rows = Array.isArray(value.sessions) ? value.sessions.length : 0;
       remaining = count(value.remaining) ? value.remaining : 0;
       break;
@@ -265,6 +267,8 @@ function paramsFor(k: ResourceKey, base: NavigationReadBase | undefined): Naviga
         limit: k.limit,
         ...conditional,
       };
+    case "subagents":
+      return { resource: "subagents", ref: k.ref, offset: k.offset, limit: k.limit, ...conditional };
     case "location":
       return { resource: "location", ref: k.ref, ...conditional };
   }
@@ -546,6 +550,8 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       loadProjectPage: (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = PAGE_LIMIT) =>
         load<NavigationProjectPage>({ kind: "project_page", projectKey, tier, offset, limit }),
       lookupLocation: (ref: string) => load<NavigationSessionLocation>({ kind: "location", ref }),
+      loadSubagents: (ref: string, offset = 0, limit = PAGE_LIMIT) =>
+        load<NavigationSectionResource>({ kind: "subagents", ref, offset, limit }),
       awaitNavigationTargets: (targets: NavigationInvalidationTarget[], generationID?: string) => {
         if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
         return revalidator.waitForTargets(targets, generationID);

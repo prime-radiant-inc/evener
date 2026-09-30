@@ -383,6 +383,7 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
     if (params.resource === "pin_catalog") return wireV2(params, { pin_sections: [], remaining: 0 });
     if (params.resource === "pin_section") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
     if (params.resource === "catalog") return wireV2(params, { projects: [], remaining: 0 });
+    if (params.resource === "subagents") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
     if (params.resource === "project_page")
       return wireV2(params, { key: "p/a ?", tier: "recent", offset: 6, sessions: [], remaining: 0, truncated: false });
     if (params.resource === "project")
@@ -403,6 +404,7 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
   await s.loadProject("p/a ?");
   await s.loadProjectPage("p/a ?", "recent", 6, 11);
   await s.lookupLocation("r/a ?");
+  await s.loadSubagents("r/a ?", 12, 13);
   expect(client.calls.map((call) => call.params)).toEqual([
     { resource: "manifest", representationVersion: 2 },
     { resource: "section", section: "needs_you", offset: 3, limit: 7, representationVersion: 2 },
@@ -412,6 +414,7 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
     { resource: "project", projectKey: "p/a ?", representationVersion: 2 },
     { resource: "project_page", projectKey: "p/a ?", tier: "recent", offset: 6, limit: 11, representationVersion: 2 },
     { resource: "location", ref: "local:r/a ?", representationVersion: 2 },
+    { resource: "subagents", ref: "local:r/a ?", offset: 12, limit: 13, representationVersion: 2 },
   ]);
   const callCount = client.calls.length;
   await s.loadSection("needs_you", 3, 7);
@@ -514,6 +517,48 @@ test("bare and canonical local location aliases coalesce through canonical v2 re
   expect(bare.normalized?.key).toEqual(canonicalKey);
   expect(bare.normalized?.graph.containers.has(navigationRootContainerKey(canonicalKey, "session"))).toBe(true);
   expect(selectLocation("v2-session")(store.getState())).toBe(bare);
+});
+
+// A session's subagents page reads like the location beside it: a bare local
+// ref canonicalizes to the same key the qualified ref builds, so the two
+// forms coalesce into one request and one resource - and the page keeps the
+// child tree the flat lists no longer carry.
+test("bare and canonical local subagents refs coalesce, and the page carries its child tree", async () => {
+  const canonicalKey = { kind: "subagents", ref: "local:v2-session", offset: 0, limit: 50 } as const;
+  const requested: string[] = [];
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource !== "subagents") throw new Error(`unexpected resource ${params.resource}`);
+    if (params.ref !== canonicalKey.ref) throw new Error(`uncanonical subagents ref ${params.ref}`);
+    requested.push(params.ref);
+    return wireV2(params, {
+      sessions: [
+        completeSession({
+          ref: "local:child",
+          kind: "subagent",
+          needs_you_subagents: 1,
+          children: [completeSession({ ref: "local:grandchild", kind: "subagent" })],
+        }),
+      ],
+      remaining: 2,
+      truncated: false,
+    });
+  });
+  store.init(client, capability());
+  await flush();
+
+  const bare = await store.getState().loadSubagents("v2-session");
+  const canonical = await store.getState().loadSubagents(canonicalKey.ref);
+
+  expect(requested).toEqual([canonicalKey.ref]);
+  expect(bare).toBe(canonical);
+  expect(bare).toMatchObject({ key: canonicalKey, error: null });
+  const page = bare.data;
+  expect(page?.remaining).toBe(2);
+  expect(page?.sessions[0]?.ref).toBe("local:child");
+  expect(page?.sessions[0]?.needs_you_subagents).toBe(1);
+  expect(page?.sessions[0]?.children[0]?.ref).toBe("local:grandchild");
 });
 
 test("pin catalog page loading preserves every assignment target", async () => {

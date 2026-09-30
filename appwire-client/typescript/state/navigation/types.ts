@@ -30,6 +30,7 @@ export type ResourceKey =
   | { kind: "catalog"; catalog: "projects" | "archived_projects" | "test_runs"; offset: number; limit: number }
   | { kind: "project"; projectKey: string }
   | { kind: "project_page"; projectKey: string; tier: "current" | "recent" | "archived"; offset: number; limit: number }
+  | { kind: "subagents"; ref: string; offset: number; limit: number }
   | { kind: "location"; ref: string };
 
 function rawBase64URL(value: string): string {
@@ -53,8 +54,8 @@ function canonicalNavigationLimit(limit: number, maximum: number): number {
 }
 
 export function canonicalResourceKey(key: ResourceKey): ResourceKey {
-  if (key.kind !== "location" || key.ref.includes(":")) return key;
-  return { kind: "location", ref: `local:${key.ref}` };
+  if ((key.kind !== "location" && key.kind !== "subagents") || key.ref.includes(":")) return key;
+  return { ...key, ref: `local:${key.ref}` };
 }
 
 /** The resource a read's parameters identify. The inverse of the params a
@@ -94,6 +95,8 @@ export function navigationParamsToResourceKey(params: NavigationReadParams): Res
         tier: params.tier as "current" | "recent" | "archived",
         ...paged(NAVIGATION_SECTION_LIMIT),
       };
+    case "subagents":
+      return { kind: "subagents", ref: params.ref as string, ...paged(NAVIGATION_SECTION_LIMIT) };
     case "location":
       return { kind: "location", ref: params.ref as string };
     default: {
@@ -137,6 +140,11 @@ export function navigationViewScope(key: ResourceKey): string {
     case "project_page":
       projectKey = key.projectKey;
       tier = key.tier;
+      offset = key.offset;
+      limit = canonicalNavigationLimit(key.limit, NAVIGATION_SECTION_LIMIT);
+      break;
+    case "subagents":
+      id = key.ref;
       offset = key.offset;
       limit = canonicalNavigationLimit(key.limit, NAVIGATION_SECTION_LIMIT);
       break;

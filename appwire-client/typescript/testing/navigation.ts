@@ -88,6 +88,7 @@ const ROOT_SLOT: Record<ResourceKey["kind"], string | undefined> = {
   catalog: "projects",
   project: undefined,
   project_page: "sessions",
+  subagents: "sessions",
   location: "session",
 };
 
@@ -134,7 +135,12 @@ export const wireV2 = (
   const rootSlot = ROOT_SLOT[key.kind];
   if (key.kind === "manifest") {
     metadata = body;
-  } else if (key.kind === "section" || key.kind === "pin_section" || key.kind === "project_page") {
+  } else if (
+    key.kind === "section" ||
+    key.kind === "pin_section" ||
+    key.kind === "project_page" ||
+    key.kind === "subagents"
+  ) {
     const sessions = Array.isArray(body.sessions) ? (body.sessions as Record<string, unknown>[]) : [];
     rootChildren.push(...sessions.map((session) => addSessionTree(session)));
     metadata = {

@@ -2491,6 +2491,14 @@ export interface NavigationSessionSummary {
   subagents?: NavigationSubagentTally;
   omitted_descendants?: number;
   /**
+   * NeedsYouSubagents counts the row's subagent descendants (every depth)
+   * waiting on a person - an unanswered question or a blocked approval - as
+   * the hub computes it from the tree at projection time. It is the flat
+   * lists' replacement for the needs-you bubble-up the nested children used
+   * to provide before lists stopped carrying them.
+   */
+  needs_you_subagents?: number;
+  /**
    * TurnEndedAt is when a live session's last turn ended, stamped by its
    * daemon (S4). It is present only on a live row whose daemon reported one.
    * A client that marks the row seen echoes it back as seenThrough.

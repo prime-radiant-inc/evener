@@ -272,6 +272,7 @@ const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
     more_subagents: "optional",
     subagents: "optional",
     omitted_descendants: "optional",
+    needs_you_subagents: "optional",
     omitted_watches: "optional",
     omitted_armed_watches: "optional",
     running_jobs: "optional",
@@ -487,6 +488,7 @@ function sessionFieldsValue(value: unknown): value is Record<string, unknown> & 
     optional(value.more_subagents, count) &&
     optional(value.subagents, subagentTallyValue) &&
     optional(value.omitted_descendants, count) &&
+    optional(value.needs_you_subagents, count) &&
     optional(value.omitted_watches, count) &&
     optional(value.omitted_armed_watches, count) &&
     omittedArmedWithinOmitted(value) &&
@@ -699,6 +701,7 @@ function resourceKeyValid(key: ResourceKey): boolean {
       selector(key.offset) &&
       selector(key.limit)
     );
+  if (key.kind === "subagents") return identity(key.ref) && selector(key.offset) && selector(key.limit);
   return identity(key.ref);
 }
 
@@ -715,7 +718,7 @@ function validateResourceMetadata(metadata: unknown, key: ResourceKey, versionVa
     throw schemaError("resource metadata");
   let valid = false;
   if (key.kind === "manifest") valid = manifestMetadata(metadata);
-  else if (key.kind === "section" || key.kind === "pin_section")
+  else if (key.kind === "section" || key.kind === "pin_section" || key.kind === "subagents")
     valid =
       exactKeys(metadata, ["generation_id", "revision", "offset", "limit", "remaining", "truncated"]) &&
       metadata.offset === key.offset &&
@@ -767,7 +770,8 @@ function validateResourceMetadata(metadata: unknown, key: ResourceKey, versionVa
 
 function expectedRootSlot(key: ResourceKey): string | undefined {
   if (key.kind === "manifest") return "manifest";
-  if (key.kind === "section" || key.kind === "pin_section" || key.kind === "project_page") return "sessions";
+  if (key.kind === "section" || key.kind === "pin_section" || key.kind === "project_page" || key.kind === "subagents")
+    return "sessions";
   if (key.kind === "pin_catalog") return "pin_sections";
   if (key.kind === "catalog") return "projects";
   if (key.kind === "location") return "session";
@@ -1177,7 +1181,8 @@ export function materializeNavigationResource(resource: NormalizedResource): Mat
     }
     case "section":
     case "pin_section":
-    case "project_page": {
+    case "project_page":
+    case "subagents": {
       const sessions = root("sessions");
       return cacheResource([sessions.container, sessions.children], () =>
         Object.freeze({ ...graph.metadata, sessions: sessions.children }),
