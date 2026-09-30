@@ -12,12 +12,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // failedOn is a live session resting on a failed turn with cause.
@@ -37,12 +39,17 @@ func newSessionWatch(c *hubAuthController) *sessionCredentialWatch {
 	return w
 }
 
+// listing is a roster listing of entries, in observe's shape.
+func listing(entries ...hubcore.LiveEntry) func() []hubcore.LiveEntry {
+	return func() []hubcore.LiveEntry { return entries }
+}
+
 func TestSessionCredentialWatch_ARejectedTurnProbesTheInstance(t *testing.T) {
 	for _, status := range []int{401, 403} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", status, "refused", nil, nil)}
 			c, _ := newRejectionController(t, client)
-			newSessionWatch(c).observe([]hubcore.LiveEntry{failedOn("s1", providerCause("gateway", status))})
+			newSessionWatch(c).observe(listing(failedOn("s1", providerCause("gateway", status))))
 			if client.callCount() != 1 {
 				t.Fatalf("probes = %d, want one", client.callCount())
 			}
@@ -59,14 +66,14 @@ func TestSessionCredentialWatch_ProbesOncePerFailure(t *testing.T) {
 	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
 	c, _ := newRejectionController(t, client)
 	w := newSessionWatch(c)
-	failed := []hubcore.LiveEntry{failedOn("s1", providerCause("gateway", 401))}
+	failed := listing(failedOn("s1", providerCause("gateway", 401)))
 	w.observe(failed)
 	w.observe(failed)
 	if client.callCount() != 1 {
 		t.Fatalf("probes = %d after two observations of one failure, want one", client.callCount())
 	}
 	// The session runs again and fails again: a new failure, a new probe.
-	w.observe([]hubcore.LiveEntry{{SessionID: "s1"}})
+	w.observe(listing(hubcore.LiveEntry{SessionID: "s1"}))
 	w.observe(failed)
 	if client.callCount() != 2 {
 		t.Fatalf("probes = %d after the session failed a second time, want two", client.callCount())
@@ -77,10 +84,10 @@ func TestSessionCredentialWatch_ProbesOncePerFailure(t *testing.T) {
 func TestSessionCredentialWatch_OneProbePerInstance(t *testing.T) {
 	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
 	c, _ := newRejectionController(t, client)
-	newSessionWatch(c).observe([]hubcore.LiveEntry{
+	newSessionWatch(c).observe(listing(
 		failedOn("s1", providerCause("gateway", 401)),
 		failedOn("s2", providerCause("gateway", 403)),
-	})
+	))
 	if client.callCount() != 1 {
 		t.Fatalf("probes = %d, want one for the instance", client.callCount())
 	}
@@ -94,15 +101,15 @@ func TestSessionCredentialWatch_OtherFailuresProbeNothing(t *testing.T) {
 	c, _ := newRejectionController(t, client)
 	crashed := failedOn("s6", providerCause("gateway", 401))
 	crashed.Crashed = true
-	newSessionWatch(c).observe([]hubcore.LiveEntry{
+	newSessionWatch(c).observe(listing(
 		failedOn("s1", providerCause("gateway", 429)),
 		failedOn("s2", providerCause("gateway", 500)),
 		failedOn("s3", &appwire.DiagnosticCause{Kind: "signInRequired", Provider: "gateway"}),
 		failedOn("s4", providerCause("", 401)),
 		failedOn("s5", nil),
 		crashed,
-		{SessionID: "s7"},
-	})
+		hubcore.LiveEntry{SessionID: "s7"},
+	))
 	if client.callCount() != 0 {
 		t.Fatalf("probes = %d, want none", client.callCount())
 	}
@@ -133,7 +140,7 @@ func TestSessionCredentialWatch_NeverMintsACredentialCommand(t *testing.T) {
 	}
 	c := newTestAuthController(t, dir, t.TempDir(), tomlPath)
 
-	newSessionWatch(c).observe([]hubcore.LiveEntry{failedOn("s1", providerCause("gw", 401))})
+	newSessionWatch(c).observe(listing(failedOn("s1", providerCause("gw", 401))))
 
 	if runs != 0 || requests != 0 {
 		t.Fatalf("a session failure ran the credential command %d time(s) and sent %d request(s), want none", runs, requests)
@@ -146,7 +153,7 @@ func TestSessionCredentialWatch_WaitsForItsRunner(t *testing.T) {
 	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
 	c, _ := newRejectionController(t, client)
 	w := &sessionCredentialWatch{auth: c}
-	failed := []hubcore.LiveEntry{failedOn("s1", providerCause("gateway", 401))}
+	failed := listing(failedOn("s1", providerCause("gateway", 401)))
 	w.observe(failed)
 	if client.callCount() != 0 {
 		t.Fatalf("probes = %d before the runner was set, want none", client.callCount())
@@ -155,5 +162,77 @@ func TestSessionCredentialWatch_WaitsForItsRunner(t *testing.T) {
 	w.observe(failed)
 	if client.callCount() != 1 {
 		t.Fatalf("probes = %d once the runner was set, want one", client.callCount())
+	}
+}
+
+// Each (session, instance) failure is its own: a session already failed on
+// one instance that then fails on another (a model switch) probes the other.
+func TestSessionCredentialWatch_ASecondInstanceOnTheSameSessionIsProbed(t *testing.T) {
+	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	c, _ := newRejectionController(t, client)
+	w := newSessionWatch(c)
+	w.observe(listing(failedOn("s1", providerCause("gateway", 401))))
+	w.observe(listing(failedOn("s1", providerCause("other", 401))))
+	if client.callCount() != 2 {
+		t.Fatalf("probes = %d, want one for each instance the session failed on", client.callCount())
+	}
+}
+
+// A session that leaves the roster and comes back failed is a new failure.
+func TestSessionCredentialWatch_ASessionThatReturnsFailedIsProbedAgain(t *testing.T) {
+	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	c, _ := newRejectionController(t, client)
+	w := newSessionWatch(c)
+	failed := listing(failedOn("s1", providerCause("gateway", 401)))
+	w.observe(failed)
+	w.observe(listing())
+	w.observe(failed)
+	if client.callCount() != 2 {
+		t.Fatalf("probes = %d, want two", client.callCount())
+	}
+}
+
+// Once the hub is shutting down, a roster change starts no probe.
+func TestSessionCredentialWatch_ProbesNothingAfterShutdown(t *testing.T) {
+	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	c, _ := newRejectionController(t, client)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w := &sessionCredentialWatch{auth: c}
+	w.start(ctx, func(fn func()) { fn() })
+	w.observe(listing(failedOn("s1", providerCause("gateway", 401))))
+	if client.callCount() != 0 {
+		t.Fatalf("probes = %d after shutdown, want none", client.callCount())
+	}
+}
+
+// The path the hub runs: a real roster refresh whose daemon reports a turn
+// the provider refused fires the roster's change hook, the watch attached
+// there probes on the background runner, and the rejection is recorded.
+func TestSessionCredentialWatch_ARosterRefreshProbesInTheBackground(t *testing.T) {
+	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "refused", nil, nil)}
+	c, _ := newRejectionController(t, client)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, residentEntryForTest(t, 6201))
+	prober := forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{
+			OK: true, SessionID: e.SessionID, Status: "systemError",
+			Failure: &appwire.ThreadFailure{Title: "Turn failed", Cause: providerCause("gateway", 401)},
+		}
+	})
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	var background sync.WaitGroup
+	w := &sessionCredentialWatch{auth: c}
+	w.start(t.Context(), func(fn func()) { background.Go(fn) })
+	roster.SetOnChange(w.observer(roster))
+
+	roster.Refresh()
+	background.Wait()
+
+	if client.callCount() != 1 {
+		t.Fatalf("probes = %d after the refresh, want one", client.callCount())
+	}
+	if gatewayError(t, c) == "" {
+		t.Fatal("the background probe's rejection was not recorded")
 	}
 }

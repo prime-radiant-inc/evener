@@ -771,10 +771,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// instance's credential at once (#3539); the watch starts probing once the
 	// background runner exists, below.
 	sessionCredentials := &sessionCredentialWatch{auth: web.auth}
+	observeSessionCredentials := sessionCredentials.observer(roster)
 	roster.SetOnChange(func() {
 		bump()
 		web.navigation.Invalidate(navigationChangeHint{})
-		sessionCredentials.observe(roster.List())
+		observeSessionCredentials()
 	})
 	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })

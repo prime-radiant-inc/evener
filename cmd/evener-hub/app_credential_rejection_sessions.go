@@ -22,7 +22,10 @@ import (
 // The roster reports each live session's failed turn (LiveEntry.Failure);
 // observe runs on every roster change and probes each instance a session has
 // newly failed on. A session resting on its failure is one failure, not one
-// per roster change.
+// per roster change. The roster's failure carries no turn id, so a turn
+// retried and refused again with the same cause between two roster refreshes
+// reads as the same failure; the probe that the first one triggered already
+// recorded the rejection.
 type sessionCredentialWatch struct {
 	auth *hubAuthController
 
@@ -33,8 +36,8 @@ type sessionCredentialWatch struct {
 	// once it can probe.
 	ctx context.Context
 	run func(func())
-	// failed is the sessions the last observe saw resting on a refused
-	// credential.
+	// failed is the (session, instance) pairs the last observe saw resting on
+	// a refused credential, keyed session + "\x00" + instance.
 	failed map[string]bool
 }
 
@@ -45,24 +48,33 @@ func (w *sessionCredentialWatch) start(ctx context.Context, run func(func())) {
 	w.ctx, w.run = ctx, run
 }
 
+// observer is the roster change hook that runs observe over roster's
+// listing.
+func (w *sessionCredentialWatch) observer(roster *hubcore.Roster) func() {
+	return func() { w.observe(roster.List) }
+}
+
 // observe probes, in the background, every instance a session has newly
-// failed on with a refused credential, once per instance per observe.
-func (w *sessionCredentialWatch) observe(entries []hubcore.LiveEntry) {
+// failed on with a refused credential, once per instance per observe. It
+// reads the listing under its own lock, so two roster changes observed at
+// once cannot apply their listings out of order.
+func (w *sessionCredentialWatch) observe(list func() []hubcore.LiveEntry) {
 	w.mu.Lock()
 	ctx, run := w.ctx, w.run
-	if run == nil {
+	if run == nil || ctx.Err() != nil {
 		w.mu.Unlock()
 		return
 	}
 	failed := map[string]bool{}
 	var instances []string
-	for _, entry := range entries {
+	for _, entry := range list() {
 		instance, ok := refusedCredential(entry)
 		if !ok {
 			continue
 		}
-		failed[entry.SessionID] = true
-		if !w.failed[entry.SessionID] && !slices.Contains(instances, instance) {
+		key := entry.SessionID + "\x00" + instance
+		failed[key] = true
+		if !w.failed[key] && !slices.Contains(instances, instance) {
 			instances = append(instances, instance)
 		}
 	}
