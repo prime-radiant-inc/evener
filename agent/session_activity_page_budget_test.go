@@ -2,12 +2,79 @@ package agent
 
 import (
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 )
+
+type sessionActivityCountedRow struct {
+	calls *int
+	text  string
+}
+
+func (row sessionActivityCountedRow) MarshalJSON() ([]byte, error) {
+	*row.calls++
+	return json.Marshal(row.text)
+}
+
+func TestSessionActivityPageBudgetEncodesEachCandidateOnce(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	response := struct {
+		Rows []sessionActivityCountedRow `json:"rows"`
+	}{Rows: []sessionActivityCountedRow{}}
+	budget := newSessionActivityPageBudget(response)
+	for range 200 {
+		row := sessionActivityCountedRow{calls: &calls, text: "candidate"}
+		response.Rows = append(response.Rows, row)
+		if !budget.fits(row, response) {
+			t.Fatal("compact page failed to fit")
+		}
+	}
+	if calls != 200 {
+		t.Fatalf("200 candidates caused %d row encodings; want 200", calls)
+	}
+	row := sessionActivityCountedRow{calls: &calls, text: strings.Repeat("x", sessionActivityPageBytes)}
+	response.Rows = append(response.Rows, row)
+	if budget.fits(row, response) || calls != 201 {
+		t.Fatalf("rejected row re-encoded earlier candidates: calls=%d", calls)
+	}
+}
+
+func TestSessionActivityPageBudgetPreservesMarshalFailureFallback(t *testing.T) {
+	t.Parallel()
+	for _, invalid := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		response := appwire.SessionWatchesResponse{}
+		budget := newSessionActivityPageBudget(response)
+		for _, row := range []appwire.SessionWatch{
+			{Watch: appwire.EvenerWatchInfo{ID: "healthy"}},
+			{Watch: appwire.EvenerWatchInfo{ID: "invalid", Cadence: []appwire.EvenerWatchCadence{{Kind: "every", Seconds: invalid}}}},
+			{Watch: appwire.EvenerWatchInfo{ID: "large", Note: strings.Repeat("x", sessionActivityPageBytes)}},
+		} {
+			response.Watches = append(response.Watches, row)
+			encoded, _ := json.Marshal(response)
+			want := len(encoded) <= sessionActivityPageBytes-2048
+			if got := budget.fits(row, response); got != want || budget.bytes != len(encoded) {
+				t.Fatalf("marshal fallback diverged: fit=%v want=%v bytes=%d encoded=%d", got, want, budget.bytes, len(encoded))
+			}
+		}
+	}
+	// An unencodable fixed envelope must also use the original whole-page probe.
+	response := struct {
+		Number float64  `json:"number"`
+		Rows   []string `json:"rows"`
+	}{Number: math.NaN(), Rows: []string{}}
+	budget := newSessionActivityPageBudget(response)
+	row := strings.Repeat("x", sessionActivityPageBytes)
+	response.Rows = append(response.Rows, row)
+	encoded, _ := json.Marshal(response)
+	if !budget.fits(row, response) || budget.bytes != len(encoded) {
+		t.Fatal("unencodable envelope changed the error-ignored fit result")
+	}
+}
 
 func TestSessionActivityPageBudgetMatchesTypedEncoding(t *testing.T) {
 	t.Parallel()
@@ -87,37 +154,53 @@ func assertSessionActivityPageEncoding[T any](t *testing.T, candidates []T, resp
 
 func TestSessionActivityPageBudgetBoundaryAndRejectedRow(t *testing.T) {
 	t.Parallel()
-	response := appwire.SessionJobsResponse{}
-	for _, delta := range []int{-1, 0, 1} {
-		t.Run(strconv.Itoa(delta), func(t *testing.T) {
-			budget := newSessionActivityPageBudget(response)
-			row := appwire.JobActivityJob{JobID: "boundary"}
-			full := response
-			full.Jobs = []appwire.JobActivityJob{row}
-			encoded, err := json.Marshal(full)
-			if err != nil {
-				t.Fatal(err)
-			}
-			row.Description = strings.Repeat("x", sessionActivityPageBytes-2048+delta-len(encoded))
-			full.Jobs[0] = row
-			encoded, err = json.Marshal(full)
-			if err != nil || len(encoded) != sessionActivityPageBytes-2048+delta {
-				t.Fatalf("boundary fixture bytes=%d err=%v", len(encoded), err)
-			}
-			before := budget.bytes
-			if got := budget.fits(row, full); got != (delta <= 0) {
-				t.Fatalf("boundary delta=%d fit=%v", delta, got)
-			}
-			if delta > 0 {
-				if budget.bytes != before {
-					t.Fatal("rejected row changed admitted bytes")
-				}
-				row.Description = "small replacement"
-				full.Jobs[0] = row
-				encoded, _ = json.Marshal(full)
-				if !budget.fits(row, full) || budget.bytes != len(encoded) {
-					t.Fatal("rejected candidate polluted the following probe")
-				}
+	for _, resource := range []struct {
+		name      string
+		empty     any
+		candidate func(string) (any, any)
+	}{
+		{"delegates", appwire.SessionDelegatesResponse{}, func(text string) (any, any) {
+			row := appwire.SessionDelegate{DelegateID: "boundary", Description: text}
+			return row, appwire.SessionDelegatesResponse{Delegates: []appwire.SessionDelegate{row}}
+		}},
+		{"jobs", appwire.SessionJobsResponse{}, func(text string) (any, any) {
+			row := appwire.JobActivityJob{JobID: "boundary", Description: text}
+			return row, appwire.SessionJobsResponse{Jobs: []appwire.JobActivityJob{row}}
+		}},
+		{"watches", appwire.SessionWatchesResponse{}, func(text string) (any, any) {
+			row := appwire.SessionWatch{Watch: appwire.EvenerWatchInfo{ID: "boundary", Note: text}}
+			return row, appwire.SessionWatchesResponse{Watches: []appwire.SessionWatch{row}}
+		}},
+	} {
+		t.Run(resource.name, func(t *testing.T) {
+			for _, delta := range []int{-1, 0, 1} {
+				t.Run(strconv.Itoa(delta), func(t *testing.T) {
+					budget := newSessionActivityPageBudget(resource.empty)
+					_, full := resource.candidate("x")
+					encoded, err := json.Marshal(full)
+					if err != nil {
+						t.Fatal(err)
+					}
+					row, full := resource.candidate(strings.Repeat("x", sessionActivityPageBytes-2048+delta-len(encoded)+1))
+					encoded, err = json.Marshal(full)
+					if err != nil || len(encoded) != sessionActivityPageBytes-2048+delta {
+						t.Fatalf("boundary fixture bytes=%d err=%v", len(encoded), err)
+					}
+					before := budget.bytes
+					if got := budget.fits(row, full); got != (delta <= 0) {
+						t.Fatalf("boundary delta=%d fit=%v", delta, got)
+					}
+					if delta > 0 {
+						if budget.bytes != before {
+							t.Fatal("rejected row changed admitted bytes")
+						}
+						row, full = resource.candidate("small replacement")
+						encoded, _ = json.Marshal(full)
+						if !budget.fits(row, full) || budget.bytes != len(encoded) {
+							t.Fatal("rejected candidate polluted the following probe")
+						}
+					}
+				})
 			}
 		})
 	}
