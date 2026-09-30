@@ -2,27 +2,34 @@
 // spec 9's subagent rows): a $ glyph whose hue is the job's state, its
 // description, the session or subagent that started it, and its status with
 // its quiet age while it runs or how long it ran once it ends (shellJobMeta).
+// Pressing it opens the job's detail (ShellJobScreen).
 import { memo } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type ShellJobRow, shellJobEnding, shellJobMeta } from "./subagentModel";
+import { type ShellJobRow, shellJobLabel, shellJobMeta } from "./subagentModel";
 
-export const ShellJobRowView = memo(function ShellJobRowView({ row, now }: { row: ShellJobRow; now: number }) {
+export const ShellJobRowView = memo(function ShellJobRowView({
+	row,
+	now,
+	onOpen,
+}: {
+	row: ShellJobRow;
+	now: number;
+	onOpen: (row: ShellJobRow) => void;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const meta = shellJobMeta(row, now);
 	const owner = `under ${row.owner}`;
-	// The meta names every other ending; VoiceOver hears a clean finish too.
-	const ending = row.job.terminal ? shellJobEnding(row) : "";
-	const spoken = ending !== "" && !meta.startsWith(ending) ? [ending, meta] : [meta];
 	const hue = row.state === "running" ? palette.aliveInk : row.state === "failed" ? palette.dangerInk : palette.inkLow;
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	return (
-		<View
-			accessible
-			accessibilityLabel={["Shell job", row.title, ...spoken, owner].join(", ")}
-			style={{
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={shellJobLabel(row, now)}
+			onPress={() => onOpen(row)}
+			style={({ pressed }) => ({
 				flexDirection: "row",
 				alignItems: "flex-start",
 				columnGap: 10,
@@ -30,8 +37,8 @@ export const ShellJobRowView = memo(function ShellJobRowView({ row, now }: { row
 				paddingTop: 11,
 				paddingBottom: 12,
 				minHeight: 44,
-				backgroundColor: palette.page,
-			}}
+				backgroundColor: pressed ? palette.pressed : palette.page,
+			})}
 		>
 			<View style={{ width: 28, height: 22 * scale, alignItems: "center", justifyContent: "center" }}>
 				<Text
@@ -64,6 +71,6 @@ export const ShellJobRowView = memo(function ShellJobRowView({ row, now }: { row
 					{owner}
 				</Text>
 			</View>
-		</View>
+		</Pressable>
 	);
 });

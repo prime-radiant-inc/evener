@@ -714,19 +714,28 @@ func pfsAssertOffMutator(t *testing.T) {
 
 	outside := filepath.Join(outsideRoot, "sentinel.txt")
 	pfsWriteFixtureFile(t, outside, "PFS_OFF_OUTSIDE\n", 0o600)
-	if _, err := env.ReadFileRaw(outside); err == nil {
-		t.Fatal("off mutator read escaped its root")
+	got, err = env.ReadFileRaw(outside)
+	if err != nil || string(got) != "PFS_OFF_OUTSIDE\n" {
+		t.Fatalf("off outside read = %q, %v", got, err)
 	}
-	if err := env.WriteFileRaw(outside, []byte("PFS_ATTACK\n"), 0o600); err == nil {
-		t.Fatal("off mutator write escaped its root")
+	if err := env.WriteFileRaw(outside, []byte("PFS_OFF_UPDATED\n"), 0o600); err != nil {
+		t.Fatalf("off outside write: %v", err)
 	}
-	if err := env.RemovePath(outside); err == nil {
-		t.Fatal("off mutator remove escaped its root")
+	pfsAssertFixtureBytes(t, outside, "PFS_OFF_UPDATED\n", "off outside write")
+	if err := env.WriteFileRaw("rename-source.txt", []byte("PFS_OFF_MOVED\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if err := env.RenamePath("moved/destination.txt", outside); err == nil {
-		t.Fatal("off mutator rename escaped its root")
+	if err := env.RenamePath("rename-source.txt", outside); err != nil {
+		t.Fatalf("off outside rename: %v", err)
 	}
-	pfsAssertFixtureBytes(t, outside, "PFS_OFF_OUTSIDE\n", "off outside")
+	pfsAssertFixtureBytes(t, outside, "PFS_OFF_MOVED\n", "off outside rename")
+	if err := env.RemovePath(outside); err != nil {
+		t.Fatalf("off outside remove: %v", err)
+	}
+	if _, err := os.Stat(outside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("off outside removal = %v", err)
+	}
+
 }
 
 func pfsRunGrant(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, model *pfsModel, mode sandbox.Mode, a, b byte) {

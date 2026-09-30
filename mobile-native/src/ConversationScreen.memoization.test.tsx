@@ -28,10 +28,18 @@ const navigationState = vi.hoisted(() => ({
 
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
 
+// How many times the screen has rendered: the transcript list renders with it.
+const screen = vi.hoisted(() => ({ listRenders: 0 }));
+
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
+	const List = mock.FlatList;
 	return {
 		...mock,
+		FlatList: (props: ComponentProps<typeof List>) => {
+			screen.listRenders += 1;
+			return createElement(List, props);
+		},
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
@@ -352,4 +360,32 @@ it("re-renders no transcript row when the bottom bar re-lays out as the keyboard
 	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 500, width: 390, height: 260 } } }));
 	await settle();
 	expect(rows.renders).toBe(0);
+});
+
+// Each transcript cell reports its layout as it mounts or reflows, and the
+// list its content size with them. They feed the reading-position restore,
+// which reads them from refs; re-rendering the whole screen for each one was
+// a commit per cell per frame while streaming or scrolling (G15).
+it("re-renders the screen for no cell layout or content size change", async () => {
+	const { tree } = await mount(twoTurns("ref-memo-layout"));
+	const list = () => transcriptList(tree);
+	act(() => list().props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	const cells = () =>
+		list()
+			.findAll((node) => String(node.type) === "Item")
+			.map((item) => item.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0]);
+	const layOut = (height: number) =>
+		cells().forEach((cell, index) =>
+			act(() => cell?.props.onLayout({ nativeEvent: { layout: { x: 0, y: index * height, width: 390, height } } })),
+		);
+	// The rows measure and the session opens at its end.
+	layOut(150);
+	await settle();
+	expect(cells()).toHaveLength(4);
+	screen.listRenders = 0;
+	// They reflow (a text size change, a chip landing) and the content grows.
+	layOut(180);
+	act(() => list().props.onContentSizeChange(390, 800));
+	await settle();
+	expect(screen.listRenders).toBe(0);
 });
