@@ -1571,6 +1571,15 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if !registry.ValidInstanceName(name) {
 		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
+	// The instance's credential is gone only once the removal has succeeded:
+	// a removal that fails after its cleanup puts the credential back, and a
+	// provider's rejection of it still stands (removeCredentials only voids
+	// the probes in flight).
+	defer func() {
+		if err == nil {
+			c.auth.forgetCredentialRejection(name)
+		}
+	}()
 
 	// The fingerprint key is resolved once, before either lock is taken:
 	// resolving it can repair the key file (an inter-process lock and a write),
@@ -2143,9 +2152,10 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	if removedRecord {
 		c.applied.markApplied()
 	}
-	// Only a removal that finished takes the credential away: a failed one is
-	// restored by the caller, and its rejection still describes it.
-	c.auth.forgetCredentialRejection(name)
+	// No probe that dialed the deleted credential may settle. The rejection
+	// itself stays until Remove knows the removal stands: a later failure
+	// puts the credential back.
+	c.auth.voidCredentialProbes(name)
 	return deleted, nil
 }
 

@@ -60,7 +60,7 @@ func newRejectionController(t *testing.T, client credentialProbeClient) (*hubAut
 	clearProviderKeysFromEnvironment(t)
 	stateDir := t.TempDir()
 	// The store sits in a directory of its own, so a test can make its saves
-	// fail (breakCredentialsStore).
+	// fail (breakCredentialWrites).
 	store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "creds", "credentials.toml"))
 	if err != nil {
 		t.Fatal(err)
@@ -354,51 +354,79 @@ func TestCredentialRejection_TestRPCBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
-// Removing or renaming an instance moves or deletes its credential without a
-// credential write, so those paths drop the rejection too. Without that, the
-// record outlives the credential: putting the same key back under the same
-// name out of band (here, straight into the store) brings the old rejection
-// back with it.
-func TestCredentialRejection_InstanceRemovalAndRenameDropIt(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(*hubInstancesController) error
-		undo   func(*credentials.Store) error
-	}{
-		{
-			name: "remove",
-			mutate: func(c *hubInstancesController) error {
-				_, err := c.removeCredentials("gateway")
-				return err
-			},
-			undo: func(store *credentials.Store) error { return store.Set("gateway", rejectionSecret) },
-		},
-		{
-			name:   "rename",
-			mutate: func(c *hubInstancesController) error { return c.moveCredentials("gateway", "renamed") },
-			undo:   func(store *credentials.Store) error { return store.Move("renamed", "gateway") },
-		},
+// Renaming an instance moves its credential without a credential write, so
+// the rename drops the rejection too. Without that, the record outlives the
+// credential: moving the same key back under the old name out of band brings
+// the old rejection back with it.
+func TestCredentialRejection_InstanceRenameDropsIt(t *testing.T) {
+	c, _ := newRejectionController(t, &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil)})
+	testGateway(t, c)
+	if gatewayError(t, c) == "" {
+		t.Fatal("precondition: the 401 was not recorded")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			c, _ := newRejectionController(t, &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil)})
-			testGateway(t, c)
-			if gatewayError(t, c) == "" {
-				t.Fatal("precondition: the 401 was not recorded")
-			}
-			if err := tc.mutate(&hubInstancesController{auth: c}); err != nil {
-				t.Fatalf("mutate: %v", err)
-			}
-			if err := tc.undo(c.creds); err != nil {
-				t.Fatalf("undo: %v", err)
-			}
-			if err := c.reloadRegistry(); err != nil {
-				t.Fatalf("reload: %v", err)
-			}
-			if got := gatewayError(t, c); got != "" {
-				t.Fatalf("error = %q: the rejection outlived the %s", got, tc.name)
-			}
-		})
+	if err := (&hubInstancesController{auth: c}).moveCredentials("gateway", "renamed"); err != nil {
+		t.Fatalf("moveCredentials: %v", err)
+	}
+	if err := c.creds.Move("renamed", "gateway"); err != nil {
+		t.Fatalf("move back: %v", err)
+	}
+	if err := c.reloadRegistry(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := gatewayError(t, c); got != "" {
+		t.Fatalf("error = %q: the rejection outlived the rename", got)
+	}
+}
+
+// newRemovableRejection is an instances fixture holding "work", an instance
+// with a stored key the provider rejected, and a reader for work's error.
+func newRemovableRejection(t *testing.T) (*instancesFixture, func() string) {
+	t.Helper()
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-compatible", BaseURL: "http://provider.test/v1"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	probe := f.ctl.auth.beginCredentialProbe("work")
+	f.ctl.auth.settleCredentialProbe(probe, llm.ModelListing{}, llm.ErrorFromHTTPStatus("work", 401, "bad key", nil, nil))
+	workError := func() string {
+		t.Helper()
+		status, err := f.ctl.auth.Status(appwire.AuthStatusParams{Provider: "work"})
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		return status.Error
+	}
+	if workError() == "" {
+		t.Fatal("precondition: the 401 was not recorded")
+	}
+	return f, workError
+}
+
+// A removal that stands takes the rejection with the credential: recreating
+// the same instance and putting the same key back out of band does not bring
+// the old rejection back.
+func TestCredentialRejection_InstanceRemovalDropsIt(t *testing.T) {
+	f, workError := newRemovableRejection(t)
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-compatible", BaseURL: "http://provider.test/v1"}); err != nil {
+		t.Fatalf("Create again: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set again: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := workError(); got != "" {
+		t.Fatalf("error = %q: the rejection outlived the removal", got)
 	}
 }
 
@@ -423,20 +451,6 @@ func TestCredentialRejection_NoRevisionRecordsNothing(t *testing.T) {
 	}
 }
 
-// breakCredentialsStore makes every later save of c's credentials store fail:
-// its directory becomes a regular file, so the save can neither create it nor
-// write into it. The store then leaves its entries as they were.
-func breakCredentialsStore(t *testing.T, c *hubAuthController) {
-	t.Helper()
-	dir := filepath.Dir(c.creds.Path())
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dir, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // A removal or rename that fails leaves the rejected credential where it was,
 // so its rejection stands.
 func TestCredentialRejection_AFailedRemovalOrRenameKeepsIt(t *testing.T) {
@@ -452,12 +466,13 @@ func TestCredentialRejection_AFailedRemovalOrRenameKeepsIt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			requireWritableDirRefusal(t)
 			c, _ := newRejectionController(t, &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil)})
 			testGateway(t, c)
 			if gatewayError(t, c) == "" {
 				t.Fatal("precondition: the 401 was not recorded")
 			}
-			breakCredentialsStore(t, c)
+			breakCredentialWrites(t, c.creds.Path())
 			if err := tc.mutate(&hubInstancesController{auth: c}); err == nil {
 				t.Fatalf("%s succeeded on a store that cannot save", tc.name)
 			}
@@ -506,5 +521,36 @@ func TestCredentialRejection_AProbeOfAnOldConfigurationChangesNothing(t *testing
 	c.settleCredentialProbe(stale, llm.ModelListing{}, llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil))
 	if got := gatewayError(t, c); got != want {
 		t.Fatalf("a rejection of the old endpoint changed the error to %q, want %q", got, want)
+	}
+}
+
+// A removal can also fail after the credential is gone, on the config write
+// or the reload, and then put the credential back. The rejection must come
+// back with it: it is dropped only when the removal stands.
+func TestCredentialRejection_ARemovalRolledBackAfterTheCredentialWentKeepsIt(t *testing.T) {
+	f, workError := newRemovableRejection(t)
+	// The config write fails once the credential is already deleted: the
+	// OAuth deletion, the last step of that cleanup, replaces providers.toml
+	// with a directory, as
+	// TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails does.
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		if err := os.Remove(f.tomlPath); err != nil {
+			t.Errorf("Remove(%s): %v", f.tomlPath, err)
+		}
+		if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+			t.Errorf("Mkdir(%s): %v", f.tomlPath, err)
+		}
+		return originalDelete(dir, name)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err == nil {
+		t.Fatal("Remove = nil, want the config write failure")
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("precondition: stored key = %q, want the rollback to have restored it", v)
+	}
+	if workError() == "" {
+		t.Fatal("the rolled-back removal dropped the rejection of the key it put back")
 	}
 }

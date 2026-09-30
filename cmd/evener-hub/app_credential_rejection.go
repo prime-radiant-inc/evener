@@ -169,11 +169,23 @@ func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, li
 func (c *hubAuthController) forgetCredentialRejection(name string) {
 	c.rejections.mu.Lock()
 	defer c.rejections.mu.Unlock()
-	if c.rejections.writes == nil {
-		c.rejections.writes = map[string]uint64{}
-	}
-	c.rejections.writes[name]++
+	c.rejections.voidProbesLocked(name)
 	delete(c.rejections.byName, name)
+}
+
+// voidCredentialProbes voids name's probes in flight and keeps its rejection,
+// for a credential change that may still be rolled back.
+func (c *hubAuthController) voidCredentialProbes(name string) {
+	c.rejections.mu.Lock()
+	defer c.rejections.mu.Unlock()
+	c.rejections.voidProbesLocked(name)
+}
+
+func (r *credentialRejections) voidProbesLocked(name string) {
+	if r.writes == nil {
+		r.writes = map[string]uint64{}
+	}
+	r.writes[name]++
 }
 
 // credentialRejectionError is AuthStatusResponse.Error for name at revision:
