@@ -14,14 +14,15 @@ import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { createElement } from "react";
 import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
-import { beforeEach, expect, it, vi } from "vitest";
-import type { Thread } from "@evener/appwire-client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { type Thread, WireError } from "@evener/appwire-client";
 import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
+import { readerKey } from "./readerPosition";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 import { sheetKey } from "./sheet/sheetHosts";
 
@@ -37,6 +38,8 @@ const stack = vi.hoisted(() => ({
 
 // Every scrollToOffset the screen asks of its list, oldest first.
 const listScrolls = vi.hoisted(() => [] as { offset: number; animated?: boolean }[]);
+const endScrolls = vi.hoisted(() => vi.fn());
+const appStateListeners = vi.hoisted(() => new Set<(state: string) => void>());
 
 // One sqlite double per database name, keyed the way the singletons open them.
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
@@ -52,14 +55,17 @@ vi.mock("react-native", async () => {
 			useImperativeHandle(props.ref as never, () => ({
 				scrollToOffset: (options: { offset: number; animated?: boolean }) => listScrolls.push(options),
 				scrollToIndex: () => {},
-				getScrollResponder: () => ({ scrollToEnd: () => {} }),
+				getScrollResponder: () => ({ scrollToEnd: endScrolls }),
 			}));
 			return mock.FlatList(props);
 		},
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
-			addEventListener: () => ({ remove: () => {} }),
+			addEventListener: (event: string, listener: (state: string) => void) => {
+				if (event === "change") appStateListeners.add(listener);
+				return { remove: () => appStateListeners.delete(listener) };
+			},
 		},
 		Image: "Image",
 		Linking: { openURL: vi.fn() },
@@ -232,13 +238,13 @@ function sessionClient(read: Thread, answers: Answers) {
 		onStateChange: () => () => {},
 		request: async (method: string, params?: unknown) => {
 			requests.push({ method, params });
-			if (method === "thread/read") return { thread: read };
 			if (method in answers) {
 				const answer = answers[method];
 				if (typeof answer === "function") return answer(params);
 				if (answer instanceof Error) throw answer;
 				return answer;
 			}
+			if (method === "thread/read") return { thread: read };
 			return new Promise<never>(() => {});
 		},
 		onNotification: () => () => {},
@@ -1249,4 +1255,156 @@ it("marks its session seen through the read's turn end once it has loaded in fro
 		{ method: "evener/session/seen/set", params: { sessions: [{ ref, seenThrough: endedAt }] } },
 	]);
 	tree.unmount();
+});
+
+afterEach(() => vi.useRealTimers());
+
+function olderHistoryAnswers(page: () => unknown): Answers {
+	return {
+		"thread/read": {
+			thread: {
+				...busy,
+				turns: [
+					{
+						id: "current-turn",
+						status: "completed",
+						itemsView: "full",
+						items: [
+							{
+								id: "current-message",
+								turnId: "current-turn",
+								type: "userMessage",
+								status: "completed",
+								text: "loaded current message",
+							},
+						],
+					},
+				],
+			},
+			olderCursor: "older-page",
+		},
+		"thread/turns/list": page,
+	};
+}
+
+function olderHistoryPage(text: string) {
+	return {
+		data: [
+			{
+				id: "older-turn",
+				status: "completed",
+				itemsView: "full",
+				items: [{ id: "older-message", turnId: "older-turn", type: "userMessage", status: "completed", text }],
+			},
+		],
+		nextCursor: null,
+	};
+}
+
+async function advanceHistory(ms: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ms);
+	});
+}
+
+function openFind(tree: ReturnType<typeof render>, query: string) {
+	act(() => menuAction("Find in session").onPress());
+	const field = tree.root.find(
+		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+	);
+	act(() => field.props.onChangeText(query));
+}
+
+it("recovers prolonged older-history demand without a second scroll and keeps the reader away from live", async () => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 12) throw new Error("temporary history failure");
+			return olderHistoryPage("older sought message");
+		}),
+	);
+	await flush();
+	const reader = sessionList(tree);
+	const loaded = reader.list().props.data;
+	expect(loaded.length).toBeGreaterThan(0);
+	vi.useFakeTimers();
+	endScrolls.mockClear();
+	reader.drag(100);
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	expect(reader.list().props.data).toEqual(loaded);
+	await advanceHistory(999);
+	expect(attempts).toBe(1);
+	await advanceHistory(300_000);
+	expect(attempts).toBe(13);
+	expect(renderedText(tree)).toContain("older sought message");
+	expect(reader.list().props.data.length).toBeGreaterThan(loaded.length);
+	const keys = reader.list().props.data.map(readerKey);
+	expect(new Set(keys).size).toBe(keys.length);
+	const loadedKeys = loaded.map(readerKey);
+	expect(keys.filter((key: string) => loadedKeys.includes(key))).toEqual(loadedKeys);
+	expect(endScrolls).not.toHaveBeenCalled();
+	act(() => tree.unmount());
+});
+
+it("keeps Find incomplete through failure and an inactive screen, then finds the healed page on return", async () => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			if (attempts <= 2) throw new Error("temporary history failure");
+			return olderHistoryPage("unique search needle");
+		}),
+	);
+	await flush();
+	vi.useFakeTimers();
+	openFind(tree, "unique search needle");
+	await advanceHistory(0);
+	expect(attempts).toBe(1);
+	expect(renderedText(tree)).not.toContain("No matches");
+	expect(renderedText(tree)).toContain("Searching older messages");
+	act(() => {
+		for (const listener of appStateListeners) listener("background");
+	});
+	await advanceHistory(60_000);
+	expect(attempts).toBe(1);
+	act(() => {
+		for (const listener of appStateListeners) listener("active");
+	});
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await advanceHistory(60_000);
+	expect(attempts).toBe(1);
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await advanceHistory(10_000);
+	expect(attempts).toBe(3);
+	expect(renderedText(tree)).toContain("unique search needle");
+	expect(renderedText(tree)).toContain("1 of 1");
+	expect(renderedText(tree)).not.toContain("No matches");
+	act(() => tree.unmount());
+});
+
+it("explains a proven permanent older-history failure without claiming Find has no matches", async () => {
+	let attempts = 0;
+	const { tree } = mount(
+		busy,
+		olderHistoryAnswers(() => {
+			attempts += 1;
+			throw new WireError("Update this client to read history.", -32000, { evenerErrorInfo: "upgradeRequired" });
+		}),
+	);
+	await flush();
+	vi.useFakeTimers();
+	openFind(tree, "unknown needle");
+	await advanceHistory(0);
+	expect(renderedText(tree)).toContain("Search incomplete");
+	expect(renderedText(tree)).toContain("Update this client to read history.");
+	expect(renderedText(tree)).not.toContain("No matches");
+	await advanceHistory(300_000);
+	expect(attempts).toBe(1);
+	act(() => tree.unmount());
 });

@@ -102,6 +102,18 @@ The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
 
+## Older-history demand
+
+`HistoryPaging` retains a requested older page until history advances. Attach
+active readers with `activate()` and observe `getSnapshot()`/`subscribe()`;
+release readers while their view is inactive. `request()` coalesces concurrent
+reads and retries unresolved pages with exponential backoff capped at 30 seconds,
+without an attempt or duration limit. `retryNow()` is the explicit retry affordance.
+The supplied page key is an opaque cursor (including any trim boundary), `null`
+for confirmed history end, or `undefined` while history is unavailable. The
+existing history store remains responsible for merging pages and scroll anchors.
+Typed client-upgrade and deleted-target rejections remain explained failures.
+
 ## Published subpaths
 
 Besides the root, `package.json` `exports` publishes these subpaths:

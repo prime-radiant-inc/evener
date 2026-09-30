@@ -36,6 +36,7 @@ import {
 	type AskBatch,
 	type AskQuestionRef,
 	buildComposerInput,
+	errorText,
 	formatQuoteBlock,
 	mergeDraftText,
 	type ModelListResponse,
@@ -151,6 +152,7 @@ import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
+import { useOlderHistory } from "./session/useOlderHistory";
 import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
@@ -447,7 +449,6 @@ export function ConversationScreen({
 	const readerAnchor = useRef<ReaderAnchor | null>(null);
 	const appliedReaderRestore = useRef<AppliedRestore | null>(null);
 	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
-	const readerPageAttempts = useRef(new Set<string>());
 	const readerHeader = useRef(false);
 	// The latest settled turn while the list sat at its end (ruling 31). Every
 	// anchor carries it, so opening the session later can tell a newer reply
@@ -1352,7 +1353,6 @@ export function ConversationScreen({
 		restoreFrame.current = null;
 		readerHeader.current = false;
 		captureSuppressed.current = false;
-		readerPageAttempts.current = new Set<string>();
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(route.params.hubId, route.params.ref);
 		follow.dispatch({ type: "reset", following: readerAnchor.current === null });
@@ -1400,28 +1400,12 @@ export function ConversationScreen({
 			readerRestoreAttempts.current.reset();
 		}
 	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
-	// Loads the page above the loaded history once per cursor: a page that
-	// failed, or brought nothing new, stays guarded until the binding or route
-	// resets, so a failing page never loops. Both a reading position restored
-	// above the loaded rows and a scroll near the top ask for it.
-	function loadOlderPage() {
-		// Which page this is, for guarding repeat attempts; the store asks for it
-		// from its own cursor and trim boundary.
-		const pageKey = olderPage;
-		const pageAttempts = readerPageAttempts.current;
-		if (!service || !connected || !pageKey || snapshot.loadingOlder || pageAttempts.has(pageKey)) return;
-		pageAttempts.add(pageKey);
-		void store
-			.getState()
-			.loadOlder(service)
-			.then((result) => {
-				if (result.status === "ignored" || (result.status === "loaded" && result.itemKeys.length > 0))
-					pageAttempts.delete(pageKey);
-			})
-			.catch(() => {
-				// Keep failed page attempts guarded until a binding or route reset.
-			});
-	}
+	const { state: olderHistory, loadOlder: loadOlderPage } = useOlderHistory({
+		store,
+		service,
+		active: Boolean(service) && connected && focused && snapshot.status === "open",
+		resetKey: `${route.params.hubId}\u0000${route.params.ref}\u0000${bindingInstance ?? ""}`,
+	});
 	const findQuery = find?.query ?? "";
 	const findHits = useMemo(
 		() => findMatches(timelineRows, findQuery, conversation?.delegates),
@@ -1447,7 +1431,7 @@ export function ConversationScreen({
 	// the newest of all), loading one older page at a time until a match
 	// appears or history ends.
 	useEffect(() => {
-		if (!find?.seeking) return;
+		if (!find?.seeking || !focused) return;
 		const next = stepMatch(findHits, findCurrent, -1);
 		if (next !== null) {
 			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
@@ -1461,11 +1445,9 @@ export function ConversationScreen({
 			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
 			return;
 		}
-		// Offline, or this page already failed: stop, and the next step asks again.
-		if (!service || !connected || readerPageAttempts.current.has(pageKey)) {
-			setFind({ ...find, seeking: false });
-			return;
-		}
+		// Failure or disconnection leaves the search incomplete. Demand resumes
+		// when this reader is active, without another Find step.
+		if (!service || !connected || olderHistory.permanent) return;
 		// Paging older history reads away from the live end, so new rows stop
 		// pulling the list down while find looks.
 		if (follow.state.current.following) {
@@ -1528,10 +1510,6 @@ export function ConversationScreen({
 		if (findCurrent !== null) scrollToFindMatch(findCurrent);
 		return cancelFindRetry;
 	}, [findKey]);
-	// Leaving the screen closes find.
-	useEffect(() => {
-		if (!focused) setFind(null);
-	}, [focused]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
 	useEffect(() => {
 		const anchor = readerAnchor.current;
@@ -2915,7 +2893,16 @@ export function ConversationScreen({
 										label={
 											find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
 										}
-										searchingOlder={find.seeking && snapshot.loadingOlder}
+										searchingOlder={
+											find.seeking &&
+											!olderHistory.permanent &&
+											(olderHistory.pending ||
+												snapshot.loadingOlder ||
+												!connected ||
+												!service ||
+												(findHits.length === 0 && olderPage !== null))
+										}
+										error={find.seeking && olderHistory.permanent ? errorText(olderHistory.error) : undefined}
 										settled={!find.seeking}
 										onQuery={(query) => setFind(newFind(query))}
 										onStep={stepFind}

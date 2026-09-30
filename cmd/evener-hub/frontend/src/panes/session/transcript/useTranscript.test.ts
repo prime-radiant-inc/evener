@@ -2,7 +2,8 @@ import type { Thread, ThreadCapabilities, ThreadTurnsListResponse } from "@evene
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, expect, test } from "vitest";
+import { createElement, type PropsWithChildren, StrictMode } from "react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { useTranscript } from "./useTranscript";
@@ -335,4 +336,79 @@ test("a rejected loadOlder() propagates to the caller and still resets loadingOl
   });
 
   expect(result.current.loadingOlder).toBe(false);
+});
+
+afterEach(() => vi.useRealTimers());
+
+test("retains older-page demand through prolonged failure and heals without another gesture", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({
+    thread: testThread("ref_a", { turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] }),
+    olderCursor: "cursor_1",
+  }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  let attempts = 0;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    if (attempts <= 12) throw new Error("temporarily unavailable");
+    return { data: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+  });
+  const hook = renderHook(() => useTranscript("ref_a"));
+  await act(async () => {
+    hook.result.current.loadOlderReportingError();
+  });
+  expect(attempts).toBe(1);
+  expect(hook.result.current.model?.turns.map((turn) => turn.id)).toEqual(["turn_2"]);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(999);
+  });
+  expect(attempts).toBe(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300_000);
+  });
+  expect(hook.result.current.model?.turns.map((turn) => turn.id)).toEqual(["turn_1", "turn_2"]);
+  expect(attempts).toBe(13);
+  expect(hook.result.current.olderError).toBeNull();
+  hook.unmount();
+});
+
+test.each([false, true])("suspends older-page retries and resumes on return (StrictMode: %s)", async (strict) => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  let attempts = 0;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporarily unavailable");
+    return { data: [{ id: "older", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+  });
+  const first = renderHook(
+    () => useTranscript("ref_a"),
+    strict
+      ? {
+          wrapper: ({ children }: PropsWithChildren) => createElement(StrictMode, null, children),
+        }
+      : undefined,
+  );
+  await act(async () => {
+    first.result.current.loadOlderReportingError();
+  });
+  first.unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(attempts).toBe(1);
+  const returned = renderHook(() => useTranscript("ref_a"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(returned.result.current.model?.turns.map((turn) => turn.id)).toEqual(["older"]);
+  expect(attempts).toBe(2);
+  returned.unmount();
 });
