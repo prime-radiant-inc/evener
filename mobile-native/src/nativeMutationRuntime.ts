@@ -504,6 +504,8 @@ const SUBMITTED_HERE_LIMIT = 100;
 const SUBMITTED_TARGETS_LIMIT = 50;
 
 function createNativeMutationRuntime(): NativeMutationRuntime {
+	// Single-writer by construction: this one handle is memoized by
+	// getNativeMutationRuntime below; see sqliteSync's connection contract.
 	const database = openDatabaseSync("evener-mutations.db");
 	database.execSync("PRAGMA journal_mode = WAL");
 	return new NativeMutationRuntime(database as unknown as SqliteSync, {
