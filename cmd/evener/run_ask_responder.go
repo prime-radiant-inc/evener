@@ -17,14 +17,13 @@ import (
 
 // rejectAskResponderWithResume rejects --ask-responder combined with any
 // resume flag, in the style of rejectPluginSelectionWithResume
-// (plugin_selection_flag.go): a restored session keeps NonInteractive from
-// its persisted snapshot (RestoreSessionConfig, agent/session_init.go,
-// carries no override), and --resume-with's child config is a clone of the
-// source session's, restored the same way. A prior one-shot run's session is
-// non-interactive, so ask_user would stay unregistered. A restored session's
-// pending ask_user calls, if any, also carry no askPendingCallArgs
-// (live-only state, never rebuilt from the transcript). Either way the
-// combination would silently do nothing rather than ever answer a question.
+// (plugin_selection_flag.go): the restore path (RestoreSessionConfig, also
+// used for --resume-with's child) does not carry the process-only
+// AskResponderAttached, so a restored one-shot session stays unable to ask,
+// and a restored session's pending ask_user calls, if any, carry no
+// askPendingCallArgs (live-only state, never rebuilt from the transcript).
+// Either way the combination would silently do nothing rather than ever
+// answer a question.
 func rejectAskResponderWithResume(askResponder, resume, resumeWith string, resumeLast bool) error {
 	if askResponder == "" {
 		return nil

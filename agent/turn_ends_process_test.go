@@ -67,14 +67,32 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 	}
 }
 
-// TestOneShotRestoreIsNonInteractive: a session restored by a process whose
-// turn ends the process (a resumed `evener run`) has nobody to answer
-// ask_user, since --ask-responder refuses every resume flag. It restores
-// non-interactive even when the snapshot says interactive (a session first
-// run with --ask-responder, or one created under serve), so a question
-// cannot end the run with the task undone. A daemon restore keeps the
-// persisted value.
-func TestOneShotRestoreIsNonInteractive(t *testing.T) {
+// TestAskResponderAttachedIsLiveOnly: a responder belongs to the process that
+// attached it, not to the session. The flag offers ask_user in this process,
+// never reaches the snapshot, and leaves the persisted NonInteractive as the
+// session set it, so a resumed session is exactly what a plain run saves.
+func TestAskResponderAttachedIsLiveOnly(t *testing.T) {
+	t.Parallel()
+	cfg := SessionConfig{NonInteractive: true, AskResponderAttached: true}
+	if cfg.noOneToAsk() {
+		t.Error("a session with a responder attached reports nobody to ask")
+	}
+	snap := cfg.toSnapshot()
+	if !snap.NonInteractive {
+		t.Error("attaching a responder changed the persisted NonInteractive")
+	}
+	if configFromSnapshot(snap.Clone()).AskResponderAttached {
+		t.Error("AskResponderAttached survived the snapshot; a resume would think a responder is attached")
+	}
+	if !(SessionConfig{NonInteractive: true}).noOneToAsk() {
+		t.Error("a non-interactive session with no responder reports someone to ask")
+	}
+}
+
+// TestRestoreKeepsPersistedNonInteractive: restore takes NonInteractive from
+// the snapshot whoever restores, so a serve-created interactive session
+// resumed once by one-shot `evener run` is still interactive under serve.
+func TestRestoreKeepsPersistedNonInteractive(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name      string
@@ -82,7 +100,7 @@ func TestOneShotRestoreIsNonInteractive(t *testing.T) {
 		oneShot   bool
 		want      bool
 	}{
-		{name: "one-shot resuming an interactive session", persisted: false, oneShot: true, want: true},
+		{name: "one-shot resuming an interactive session", persisted: false, oneShot: true, want: false},
 		{name: "one-shot resuming a non-interactive session", persisted: true, oneShot: true, want: true},
 		{name: "serve resuming an interactive session", persisted: false, oneShot: false, want: false},
 		{name: "serve resuming a non-interactive session", persisted: true, oneShot: false, want: true},

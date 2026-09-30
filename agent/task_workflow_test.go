@@ -361,9 +361,10 @@ func TestTaskWorkflow_RootSessionPopulatesTasks(t *testing.T) {
 
 func TestTaskWorkflow_OneShotRunWithAskResponderPopulatesTasks(t *testing.T) {
 	t.Parallel()
-	// `evener run --ask-responder` is interactive (ask_user is registered) but
-	// still a one-shot run, so the agent's default tasks must be populated
-	// exactly as they are for the same run without a responder.
+	// `evener run --ask-responder` attaches a responder (ask_user is
+	// registered) but is still a one-shot, non-interactive session, so the
+	// agent's default tasks must be populated exactly as they are for the
+	// same run without a responder.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -374,10 +375,11 @@ func TestTaskWorkflow_OneShotRunWithAskResponderPopulatesTasks(t *testing.T) {
 	})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
-		AgentName:       "coordinator",
-		NonInteractive:  false,
-		TurnEndsProcess: true,
-		StateDir:        dir,
+		AgentName:            "coordinator",
+		NonInteractive:       true,
+		AskResponderAttached: true,
+		TurnEndsProcess:      true,
+		StateDir:             dir,
 	}))
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

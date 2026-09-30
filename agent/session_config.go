@@ -133,6 +133,14 @@ type SessionConfig struct {
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
 	NonInteractive bool `json:"non_interactive,omitempty"`
 
+	// AskResponderAttached says this process answers ask_user questions for a
+	// NonInteractive session (`evener run --ask-responder`), so ask_user is
+	// offered even though no human is present. It belongs to the process, not
+	// the session: it is never persisted, so a resumed session is exactly what
+	// a plain run saves and NonInteractive keeps its own meaning for tasks and
+	// the snapshot.
+	AskResponderAttached bool `json:"-"`
+
 	// TurnEndsProcess indicates the process exits when the current turn's work is
 	// drained, as in a one-shot `evener run`: there is no later turn in which a
 	// background job could report, so ending the turn kills it. Distinct from
@@ -1030,6 +1038,12 @@ func (c *SessionConfig) applyDefaults() {
 // schema.ConfigSnapshot, dropping the engine-only json:"-" fields that are never
 // serialized. The field set mirrors schema.ConfigSnapshot exactly; the converter
 // round-trip test guards against any field being dropped or misrouted.
+// noOneToAsk reports whether nobody can answer an ask_user question in this
+// session: no human, and no responder attached by this process.
+func (c SessionConfig) noOneToAsk() bool {
+	return c.NonInteractive && !c.AskResponderAttached
+}
+
 func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 	return schema.ConfigSnapshot{
 		MaxToolRoundsPerInput:       c.MaxToolRoundsPerInput,
