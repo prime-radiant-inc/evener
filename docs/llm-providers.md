@@ -354,6 +354,13 @@ a level the ladder does not list sends no effort name at all.
 
 ## `providers.toml`
 
+The hub observes external edits on its five-second notice interval. A valid
+repair is adopted automatically and updates open provider settings and launch
+forms. While an edit cannot load, the hub retains its active configuration,
+shows the specific load error, and refuses instance writes to preserve the
+edited bytes. An invalid file at startup uses implicit instances until repaired.
+
+
 ```toml
 default = "groq"
 

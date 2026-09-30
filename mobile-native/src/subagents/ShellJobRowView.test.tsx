@@ -44,7 +44,9 @@ const glyphColor = (tree: ReturnType<typeof render>) =>
 
 describe("a shell job's row", () => {
 	it("says what it is, who started it, and how long it has been quiet while it runs", () => {
-		const tree = render(<ShellJobRowView row={row("running", { lastOutputAt: ago(90_000) })} now={NOW} />);
+		const tree = render(
+			<ShellJobRowView row={row("running", { lastOutputAt: ago(90_000) })} now={NOW} onOpen={() => {}} />,
+		);
 		expect(renderedText(tree)).toContain("Serving the docs");
 		expect(renderedText(tree)).toContain("under Fix race in tree settle");
 		expect(renderedText(tree)).toContain("running · 1m");
@@ -55,23 +57,37 @@ describe("a shell job's row", () => {
 	// failed, killed, stopped and finished job never read the same.
 	it("says how a finished one ended and how long it ran, its hue carrying the outcome too", () => {
 		const ended = (state: ShellJobRow["state"], status: string, outcome: string) =>
-			render(<ShellJobRowView row={row(state, { terminal: true, status, outcome, endedAt: ago(60_000) })} now={NOW} />);
+			render(
+				<ShellJobRowView
+					row={row(state, { terminal: true, status, outcome, endedAt: ago(60_000) })}
+					now={NOW}
+					onOpen={() => {}}
+				/>,
+			);
 		const failed = ended("failed", "command_exited_nonzero", "failure");
 		expect(renderedText(failed)).toContain("Command failed · 3m");
-		expect(label(failed)).toBe("Shell job, Serving the docs, Command failed · 3m, under Fix race in tree settle");
+		expect(label(failed)).toBe("Shell job, Serving the docs, Command failed, 3 minutes, under Fix race in tree settle");
 		expect(glyphColor(failed)).toBe(palette.dangerInk);
-		expect(label(ended("failed", "command_killed", "failure"))).toContain("Command killed · 3m");
-		expect(label(ended("failed", "exhausted", "failure"))).toContain("Failed · 3m");
-		expect(label(ended("done", "stopped", "neutral"))).toContain("Stopped · 3m");
+		expect(label(ended("failed", "command_killed", "failure"))).toContain("Command killed, 3 minutes");
+		expect(label(ended("failed", "exhausted", "failure"))).toContain("Failed, 3 minutes");
+		expect(label(ended("done", "stopped", "neutral"))).toContain("Stopped, 3 minutes");
 		const done = ended("done", "completed", "success");
 		expect(renderedText(done)).toContain("3m");
 		expect(renderedText(done)).not.toContain("Done");
-		expect(label(done)).toBe("Shell job, Serving the docs, Done, 3m, under Fix race in tree settle");
+		expect(label(done)).toBe("Shell job, Serving the docs, Done, 3 minutes, under Fix race in tree settle");
 		expect(glyphColor(done)).toBe(palette.inkLow);
 	});
 
+	it("opens the job it shows", () => {
+		const onOpen = vi.fn();
+		const shown = row("running");
+		const tree = render(<ShellJobRowView row={shown} now={NOW} onOpen={onOpen} />);
+		tree.root.find((node) => String(node.type) === "Pressable").props.onPress();
+		expect(onOpen).toHaveBeenCalledWith(shown);
+	});
+
 	it("reads to VoiceOver as one sentence", () => {
-		const tree = render(<ShellJobRowView row={row("running")} now={NOW} />);
-		expect(label(tree)).toBe("Shell job, Serving the docs, running · 4m, under Fix race in tree settle");
+		const tree = render(<ShellJobRowView row={row("running")} now={NOW} onOpen={() => {}} />);
+		expect(label(tree)).toBe("Shell job, Serving the docs, running, 4 minutes, under Fix race in tree settle");
 	});
 });

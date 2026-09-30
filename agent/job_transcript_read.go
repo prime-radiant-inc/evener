@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -19,6 +20,22 @@ type localJobLocation struct {
 	StateDir       string
 	OwnerSessionID string
 	Record         *jobstore.JobRecord
+}
+
+// localJobTrustedRoot bounds the symlink check for a local job's paths. A
+// session with a state dir roots the check at that dir. A session with no state
+// dir stores its jobs under the evener-owned "evener-jobs" base in os.TempDir();
+// rooting at the temp dir keeps that base and the session dir inside the checked
+// range, leaving the temp dir itself as the trusted ancestor — the flat-layout
+// analogue of trusting a state dir's ancestors. Without it, an empty state dir
+// roots the check at "" and the walk ascends to the filesystem root, refusing
+// the read on a host whose temp dir sits behind a symlink (macOS /var →
+// /private/var).
+func localJobTrustedRoot(stateDir string) string {
+	if strings.TrimSpace(stateDir) == "" {
+		return os.TempDir()
+	}
+	return stateDir
 }
 
 type localJobProjectDirectory interface {
@@ -244,7 +261,7 @@ func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLoca
 	path := filepath.Join(jobsDir(stateDir, ownerSessionID), "jobs.jsonl")
 	// Reject symlinked sessions/ dirs before reading the job journal — a
 	// symlinked sessions/ could point outside the state root.
-	if err := symlinkErrorDeep(path, stateDir); err != nil {
+	if err := symlinkErrorDeep(path, localJobTrustedRoot(stateDir)); err != nil {
 		// If the journal file does not exist (even through the symlink),
 		// treat as not-found: the bucket is an unrelated symlinked dir
 		// with no target job, and the symlink error should not mask the
@@ -336,7 +353,7 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	outputPath := filepath.Join(jobsDir(location.StateDir, location.OwnerSessionID), "jobs", jobID+".log")
 	// Reject symlinked job output paths before reading — a symlinked
 	// sessions/ dir could expose output from outside the state root.
-	if err := symlinkErrorDeep(outputPath, location.StateDir); err != nil {
+	if err := symlinkErrorDeep(outputPath, localJobTrustedRoot(location.StateDir)); err != nil {
 		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: %w", jobID, err)
 	}
 	// Require a regular file: a FIFO or other non-regular non-symlink entry

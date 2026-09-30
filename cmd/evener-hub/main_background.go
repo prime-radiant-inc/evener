@@ -128,7 +128,9 @@ func watchHubNotices(ctx context.Context, web *WebServer) {
 	}
 	ticks, stop := hubTicker(noticeInterval)
 	defer stop()
-	runNoticeWatcher(ctx, ticks, web.notices.read, web.appRPC)
+	runNoticeWatcher(ctx, ticks, func(ctx context.Context) []appwire.HubNotice {
+		return web.notices.watchRead(ctx, web.appRPC)
+	}, web.appRPC)
 }
 
 // seedHubMarketplaces runs before the hub ever calls ListenAndServe (main.go

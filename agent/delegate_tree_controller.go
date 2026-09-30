@@ -82,6 +82,13 @@ type delegateTreeController struct {
 	quietClaims           map[uint64]*delegateQuietAttentionClaim
 	attentionWakeIDs      map[string]map[string]struct{}
 	attentionRestoreHolds map[string]int
+	// attentionDriveTurns records when the attention drive last selected each
+	// delegate (attentionDriveSeq order): the drive picks the delegate it
+	// has not picked yet, else the one picked longest ago, so eligible
+	// delegates take turns and none, failing or not, holds the others back.
+	// Process-local; cleared when the delegate stops owing attention.
+	attentionDriveTurns map[string]uint64
+	attentionDriveSeq   uint64
 	// attentionRestoreFailures counts, per delegate, the consecutive restores
 	// of its cold runtime that failed for a reason that is not transient
 	// (isTransientStartFailure); the drive gives up at
