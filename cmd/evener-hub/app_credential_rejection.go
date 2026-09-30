@@ -12,9 +12,9 @@ import (
 
 // credentialRejectionStatus reports whether err is the provider refusing the
 // credential itself: an HTTP 401 or 403, or an llm authentication or
-// access-denied failure. It is the one rule every source of a credential
-// rejection uses (the credential test, the hub's model listings, a session's
-// failed turn), so they cannot disagree about what "rejected" means. Rate
+// access-denied failure. It is the one rule for what "rejected" means: the
+// credential test's classifier uses it, and so does settleCredentialProbe,
+// through which every probe outcome is recorded. Rate
 // limits and quota (429), server errors, timeouts, network failures, a missing
 // endpoint and local configuration errors are not rejections: they say nothing
 // about whether the credential is good. status is the HTTP status when one is
@@ -76,10 +76,11 @@ func credentialRejectedMessage(status int) string {
 // the next probe that reaches the provider, or a restart.
 type credentialRejections struct {
 	mu sync.Mutex
-	// writes counts credential writes. A probe notes it when it starts and
-	// records its outcome only if no write landed since: the key a probe
-	// dialed may already be replaced by the time the provider answers.
-	writes uint64
+	// writes counts credential writes by instance name. A probe notes its
+	// instance's count when it starts and records its outcome only if no write
+	// to that instance landed since: the key a probe dialed may already be
+	// replaced by the time the provider answers.
+	writes map[string]uint64
 	byName map[string]credentialRejection
 }
 
@@ -89,7 +90,8 @@ type credentialRejection struct {
 }
 
 // credentialProbeStart is what a probe captures before it dials: the
-// instance, the configuration revision it is probing, and the write count.
+// instance, the configuration revision it is probing, and the instance's
+// write count.
 type credentialProbeStart struct {
 	name     string
 	revision string
@@ -97,21 +99,30 @@ type credentialProbeStart struct {
 }
 
 // beginCredentialProbe captures name's probe start. It resolves the
-// fingerprint key, which can repair the key file, so the caller must not hold
-// credMu.
+// configuration revision, so the caller must not hold credMu
+// (currentCredentialRevision).
 func (c *hubAuthController) beginCredentialProbe(name string) credentialProbeStart {
-	key, _ := resolveEndpointFingerprintKey(c.stateDir)
-	revision := c.credentialConfigRevisionForKey(key, name)
+	revision := c.currentCredentialRevision(name)
 	c.rejections.mu.Lock()
 	defer c.rejections.mu.Unlock()
-	return credentialProbeStart{name: name, revision: revision, writes: c.rejections.writes}
+	return credentialProbeStart{name: name, revision: revision, writes: c.rejections.writes[name]}
+}
+
+// currentCredentialRevision is name's credential configuration revision now,
+// the one its status reports. It resolves the fingerprint key, which can
+// repair the key file, so the caller must not hold credMu.
+func (c *hubAuthController) currentCredentialRevision(name string) string {
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	return c.credentialConfigRevisionForKey(key, name)
 }
 
 // settleCredentialProbe records what a probe's model listing says about the
 // credential: a rejection records one, a live listing clears one, and
 // anything else (an unreachable endpoint, a listing the provider did not
-// serve) says nothing and leaves the record as it was. A credential write
-// since the probe started voids its outcome. A change is announced through
+// serve) says nothing and leaves the record as it was. A credential write to
+// the instance since the probe started voids its outcome, and so does a change
+// to its configuration: the outcome is about a credential or an endpoint the
+// instance no longer has. A change is announced through
 // credentialRejectionChanged; the caller must not hold credMu, since the
 // announcement reads the instance's status.
 //
@@ -124,9 +135,12 @@ func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, li
 	if (!rejected && !verified) || start.revision == "" {
 		return
 	}
+	if c.currentCredentialRevision(start.name) != start.revision {
+		return
+	}
 	r := &c.rejections
 	r.mu.Lock()
-	if r.writes != start.writes {
+	if r.writes[start.name] != start.writes {
 		r.mu.Unlock()
 		return
 	}
@@ -149,13 +163,16 @@ func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, li
 	}
 }
 
-// forgetCredentialRejection drops name's rejection and voids every probe in
-// flight: a credential write landed, so no earlier probe describes the
+// forgetCredentialRejection drops name's rejection and voids name's probes in
+// flight: a credential write for it landed, so no earlier probe describes the
 // credential now stored.
 func (c *hubAuthController) forgetCredentialRejection(name string) {
 	c.rejections.mu.Lock()
 	defer c.rejections.mu.Unlock()
-	c.rejections.writes++
+	if c.rejections.writes == nil {
+		c.rejections.writes = map[string]uint64{}
+	}
+	c.rejections.writes[name]++
 	delete(c.rejections.byName, name)
 }
 

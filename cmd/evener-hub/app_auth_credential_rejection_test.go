@@ -37,11 +37,19 @@ const rejectionSecret = "sk-rejected-key-must-not-cross-boundary"
 // write that leaves the resolved source, and so the configuration revision,
 // unchanged: a test that clears the rejection by a write proves the write
 // cleared it, not a revision change.
+// A second instance, "other", is there to be written to while a gateway probe
+// is in flight.
 func rejectionInstances(baseURL string) map[string]registry.Provider {
-	return map[string]registry.Provider{"gateway": {
-		Base:      "openai-compatible",
-		Transport: registry.Transport{BaseURL: baseURL},
-	}}
+	return map[string]registry.Provider{
+		"gateway": {
+			Base:      "openai-compatible",
+			Transport: registry.Transport{BaseURL: baseURL},
+		},
+		"other": {
+			Base:      "openai-compatible",
+			Transport: registry.Transport{BaseURL: "http://other.test/v1"},
+		},
+	}
 }
 
 // newRejectionController is newCredentialProbeController over a registry whose
@@ -51,7 +59,9 @@ func newRejectionController(t *testing.T, client credentialProbeClient) (*hubAut
 	t.Helper()
 	clearProviderKeysFromEnvironment(t)
 	stateDir := t.TempDir()
-	store, err := credentials.LoadStore(t.TempDir() + "/credentials.toml")
+	// The store sits in a directory of its own, so a test can make its saves
+	// fail (breakCredentialsStore).
+	store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "creds", "credentials.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,5 +420,91 @@ func TestCredentialRejection_NoRevisionRecordsNothing(t *testing.T) {
 	testGateway(t, c)
 	if got := gatewayError(t, c); got != "" {
 		t.Fatalf("error = %q recorded with no configuration revision", got)
+	}
+}
+
+// breakCredentialsStore makes every later save of c's credentials store fail:
+// its directory becomes a regular file, so the save can neither create it nor
+// write into it. The store then leaves its entries as they were.
+func breakCredentialsStore(t *testing.T, c *hubAuthController) {
+	t.Helper()
+	dir := filepath.Dir(c.creds.Path())
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A removal or rename that fails leaves the rejected credential where it was,
+// so its rejection stands.
+func TestCredentialRejection_AFailedRemovalOrRenameKeepsIt(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*hubInstancesController) error
+	}{
+		{name: "remove", mutate: func(c *hubInstancesController) error {
+			_, err := c.removeCredentials("gateway")
+			return err
+		}},
+		{name: "rename", mutate: func(c *hubInstancesController) error { return c.moveCredentials("gateway", "renamed") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newRejectionController(t, &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil)})
+			testGateway(t, c)
+			if gatewayError(t, c) == "" {
+				t.Fatal("precondition: the 401 was not recorded")
+			}
+			breakCredentialsStore(t, c)
+			if err := tc.mutate(&hubInstancesController{auth: c}); err == nil {
+				t.Fatalf("%s succeeded on a store that cannot save", tc.name)
+			}
+			if _, stored := c.storedKey("gateway"); !stored {
+				t.Fatal("precondition: the failed mutation did not leave the key in place")
+			}
+			if got := gatewayError(t, c); got == "" {
+				t.Fatalf("the failed %s dropped the rejection of a key still in place", tc.name)
+			}
+		})
+	}
+}
+
+// Only a write to the probed instance can replace the key it dialed: a write
+// to another instance leaves the probe's outcome standing.
+func TestCredentialRejection_AnotherInstancesWriteKeepsTheProbe(t *testing.T) {
+	c, _ := newRejectionController(t, &credentialProbeFakeClient{})
+	probe := c.beginCredentialProbe("gateway")
+	if _, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "other", Value: "sk-other"}); err != nil {
+		t.Fatalf("ApiKeySet(other): %v", err)
+	}
+	c.settleCredentialProbe(probe, llm.ModelListing{}, llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil))
+	if got := gatewayError(t, c); got == "" {
+		t.Fatal("a write to another instance voided the gateway probe's rejection")
+	}
+}
+
+// A probe settles only if the instance still has the configuration it
+// probed: an outcome about the old endpoint must neither clear nor replace a
+// rejection recorded for the new one.
+func TestCredentialRejection_AProbeOfAnOldConfigurationChangesNothing(t *testing.T) {
+	client := &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 403, "forbidden", nil, nil)}
+	c, reconfigure := newRejectionController(t, client)
+	stale := c.beginCredentialProbe("gateway")
+	reconfigure(rejectionInstances("http://elsewhere.test/v1"))
+	testGateway(t, c)
+	want := gatewayError(t, c)
+	if want == "" {
+		t.Fatal("precondition: the new configuration's 403 was not recorded")
+	}
+
+	c.settleCredentialProbe(stale, llm.ModelListing{Live: true}, nil)
+	if got := gatewayError(t, c); got != want {
+		t.Fatalf("a success about the old endpoint changed the error to %q, want %q", got, want)
+	}
+	c.settleCredentialProbe(stale, llm.ModelListing{}, llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil))
+	if got := gatewayError(t, c); got != want {
+		t.Fatalf("a rejection of the old endpoint changed the error to %q, want %q", got, want)
 	}
 }

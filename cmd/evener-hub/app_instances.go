@@ -1401,10 +1401,6 @@ func removeApplied(err error) error {
 // the discriminator).
 // Nothing it calls takes credMu, which the caller still holds.
 func (c *hubInstancesController) moveCredentials(oldName, newName string) error {
-	// The credential leaves oldName and arrives under newName: neither name
-	// holds the credential a provider rejected any more.
-	c.auth.forgetCredentialRejection(oldName)
-	c.auth.forgetCredentialRejection(newName)
 	var problems []string
 	// A backstop for the rename flow's own up-front refusal: with no usable
 	// store there is no Move to make, and dereferencing the nil store would
@@ -1418,6 +1414,12 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	// the old name resolving a credential the config no longer names.
 	if err := c.auth.creds.Move(oldName, newName); err != nil {
 		problems = append(problems, fmt.Sprintf("stored key not copied: %v", err))
+	} else {
+		// The key left oldName and arrived under newName, so neither name
+		// holds a credential a provider rejected. A failed move left the key,
+		// and its rejection, where they were.
+		c.auth.forgetCredentialRejection(oldName)
+		c.auth.forgetCredentialRejection(newName)
 	}
 	record, err := c.auth.loadAuth(c.auth.stateDir, oldName)
 	switch {
@@ -2117,7 +2119,6 @@ func (e removalLeftoversError) Error() string { return e.problems }
 // in place - rewriting either would be a false alarm on a disk that is already
 // refusing writes.
 func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
-	c.auth.forgetCredentialRejection(name)
 	var deleted deletedCredentials
 	// A backstop for the removal flow's own up-front refusal (see
 	// requireCredentialStore): the read below must not dereference a nil store,
@@ -2142,6 +2143,9 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	if removedRecord {
 		c.applied.markApplied()
 	}
+	// Only a removal that finished takes the credential away: a failed one is
+	// restored by the caller, and its rejection still describes it.
+	c.auth.forgetCredentialRejection(name)
 	return deleted, nil
 }
 
