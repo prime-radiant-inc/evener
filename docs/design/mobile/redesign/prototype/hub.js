@@ -1,5 +1,5 @@
 // Hub: settings and fleet. Hosts, providers (with sign-in), plugins and
-// marketplaces, recipes, display, in-app alerts, hubs, about.
+// marketplaces, display, in-app alerts, hubs, about.
 (function () {
   const EV = window.EV;
   const { html, h, useState, Done, Cancel } = EV;
@@ -23,7 +23,6 @@
       <div class="group">
         ${h(EV.Gi, { icon: I.key({ s: 17 }), label: "Providers", value: html`${S.providers.length}${needSign ? html` <span class="tag amber">${needSign} to sign in</span>` : ""}`, chev: true, onClick: () => EV.openSheet("providers", {}) })}
         ${h(EV.Gi, { icon: I.puzzle({ s: 17 }), label: "Plugins", value: html`${S.plugins.length}${updates ? html` <span class="tag blue">${updates} update</span>` : ""}`, chev: true, onClick: () => EV.openSheet("plugins", {}) })}
-        ${h(EV.Gi, { icon: I.compose({ s: 17 }), label: "Recipes", value: S.recipes.length, chev: true, onClick: () => EV.openSheet("recipes", {}) })}
       </div>
       <div class="glabel">This phone</div>
       <div class="group">
@@ -160,16 +159,6 @@
       : tab === "Marketplaces" ? html`<div class="group" style="margin-top:14px">${S.marketplaces.map((mp) => h(EV.Gi, { key: mp.id, label: mp.id, sub: mp.source }))}</div>
         <div class="group" style="margin-top:16px">${h(EV.Gi, { label: "Add marketplace…", cls: "accent", onClick: () => EV.toast("Add by GitHub repo or URL") })}</div>`
       : html`<div class="group" style="margin-top:14px">${[["code-review", "claude-plugins-official", "Review changes for correctness"], ["pdf", "claude-plugins-official", "Read and write PDFs"], ["go-bench", "go-skills", "Benchmark and compare Go code"]].map(([id, mp, d]) => h(EV.Gi, { key: id, label: id, sub: mp + " · " + d, right: html`<button class="mini-btn" onClick=${() => { EV.log("plugin_install", { plugin: id }); EV.toast("Installing " + id + "…"); }}>Install</button>` }))}</div>`}
-    </${EV.Sheet}>`;
-  };
-
-  EV.sheets.recipes = function () {
-    const S = EV.S;
-    return html`<${EV.Sheet} title="Recipes" left=${Back("Hub")} size="stacked">
-      <div class="gfoot" style="padding-top:4px">Recipes set host, project, model, effort, plugins and access for a new session in one tap.</div>
-      <div class="group" style="margin-top:10px">${S.recipes.map((r) => h(EV.Gi, { key: r.id, label: r.name, sub: r.host + " · " + r.project + " · " + r.model + " · " + r.effort + " · " + r.plugins.length + " plugins",
-        right: html`<button class="mini-btn danger" onClick=${() => { S.recipes = S.recipes.filter((x) => x !== r); EV.log("recipe_delete", { name: r.name }); EV.update(); }}>Delete</button>` }))}</div>
-      <div class="gfoot">Save a recipe from the New session screen.</div>
     </${EV.Sheet}>`;
   };
 
