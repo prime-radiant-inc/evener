@@ -1134,11 +1134,14 @@ the limitation and does not imply that the unexamined content is absent.
 read_file, write_file and edit_file on a root session with an active subscriber.
 Batch patch, browsing and shell operations have no equivalent path here;
 delegates cannot escalate to the parent through it. Repeated approved file work
-can require repeated decisions.
+can require repeated decisions. A batch patch applies operations sequentially,
+so a permission error on a later operation can follow successful earlier edits.
 
 **Evidence.** [Invocation grant](../../agent/session_escalation.go#L58),
 [eligibility/tool gates](../../agent/session_escalation.go#L103), and
 [rerun](../../agent/session_escalation.go#L206) define the limit.
+The [ApplyPatch loop](../../agent/internal/tool/apply_patch.go#L18) applies each
+operation before checking the next and returns on the first error.
 This is a scoped mechanism, not a claim that every Evener permission flow has
 these restrictions.
 
@@ -1169,9 +1172,11 @@ new permission is genuinely needed is an accepted tradeoff. Implementation
 remains pending.
 
 **Discuss — tool coverage and one-shot commands.** Define usable batch and browse
-paths and how other tools honor the same grant. Decide how a one-shot command
-without a channel for receiving approval reports an unmet access need. The
-managed-chat decision does not require such a command to wait indefinitely.
+paths and how other tools honor the same grant. For batch operations, consider
+identifying missing access before writes, requesting it together and reconciling
+any effects before retrying a partially applied operation. Decide how a one-shot
+command without a channel for receiving approval reports an unmet access need.
+The managed-chat decision does not require such a command to wait indefinitely.
 Preserve the scope the user actually approved.
 
 **Acceptance.** A grant with clearly presented scope permits the intended
