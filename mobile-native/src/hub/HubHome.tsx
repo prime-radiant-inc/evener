@@ -97,8 +97,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				<Row
 					icon="key"
 					label="Providers"
-					value={providerCount === null ? undefined : String(providerCount)}
-					accessibilityLabel={providerCount !== null ? `Providers, ${providerCount}` : "Providers"}
+					value={providerCount ?? undefined}
 					chevron
 					onPress={() => navigation.navigate("Providers", { hubId })}
 				/>

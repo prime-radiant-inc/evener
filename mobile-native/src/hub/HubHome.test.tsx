@@ -69,7 +69,7 @@ function hub(check: UpdateCheckResponse | Error) {
 }
 
 /** A ready hub listing provider instances named `names`, with the sign-in
- * statuses `auth`. */
+ * statuses `auth` there for the home to prove it never reads them. */
 function providersHub(names: string[], auth: Pick<AuthStatusResponse, "provider" | "needsLogin">[]) {
 	const fake = new FakeClient("ready");
 	const instances = names.map(
