@@ -76,6 +76,17 @@ func gwError(t *testing.T, auth *hubAuthController) string {
 	return status.Error
 }
 
+// newListingWebServer is a web server over ctl's configuration, whose
+// picker records into its own auth controller.
+func newListingWebServer(ctl *hubInstancesController) *WebServer {
+	return NewWebServer(hubcore.WebConfig{
+		Registry:            ctl.reg,
+		ProvidersConfigPath: ctl.providersConfigPath,
+		HubStateRoot:        ctl.auth.stateDir,
+		CredsStore:          ctl.auth.creds,
+	})
+}
+
 const gwRejected = "The provider rejected this credential (HTTP 401)."
 
 func TestCredentialRejection_RefreshModelsRecordsAndClearsIt(t *testing.T) {
@@ -144,12 +155,7 @@ func TestCredentialRejection_TheLivePrefetchRecordsIt(t *testing.T) {
 // its outcome lands in the web server's auth controller.
 func TestCredentialRejection_ThePickersLiveListingRecordsIt(t *testing.T) {
 	ctl, _ := newListingController(t)
-	server := NewWebServer(hubcore.WebConfig{
-		Registry:            ctl.reg,
-		ProvidersConfigPath: ctl.providersConfigPath,
-		HubStateRoot:        ctl.auth.stateDir,
-		CredsStore:          ctl.auth.creds,
-	})
+	server := newListingWebServer(ctl)
 	// The picker dials the same configuration the hub holds.
 	oldLoadClient := liveModelLoadClient
 	liveModelLoadClient = func(string) (*llm.Client, error) { return LiveRegistryClient(ctl.reg.Get()), nil }
@@ -168,12 +174,7 @@ func TestCredentialRejection_ThePickersLiveListingRecordsIt(t *testing.T) {
 // recorded against the new one: each probe starts before the client exists.
 func TestCredentialRejection_ThePickerVoidsAListingOfAReplacedKey(t *testing.T) {
 	ctl, _ := newListingController(t)
-	server := NewWebServer(hubcore.WebConfig{
-		Registry:            ctl.reg,
-		ProvidersConfigPath: ctl.providersConfigPath,
-		HubStateRoot:        ctl.auth.stateDir,
-		CredsStore:          ctl.auth.creds,
-	})
+	server := newListingWebServer(ctl)
 	oldLoadClient := liveModelLoadClient
 	liveModelLoadClient = func(string) (*llm.Client, error) {
 		client := LiveRegistryClient(ctl.reg.Get())
