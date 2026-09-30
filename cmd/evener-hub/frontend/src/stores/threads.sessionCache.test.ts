@@ -27,6 +27,7 @@ import { WireError } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deleteSession } from "../shell/rail/actions";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "./projectionWork";
@@ -34,7 +35,9 @@ import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
 import {
   installHydrationRetrySchedulerForTests,
+  markCacheSessionsDeleted,
   resetThreadsStoreForTests,
+  setCacheChannelFactoryForTests,
   setSessionCacheAdapterForTests,
   threadsStore,
 } from "./threads";
@@ -142,14 +145,13 @@ interface SeedOverrides {
   issuedGeneration?: number;
 }
 
-// seedCache writes a CachedSessionRecord through a SessionCacheIndexedDB on
-// the global fake factory — until Task 6 lands the debounced write seam this
-// is how a "prior tab's" record exists at all. threadId is pinned to "thr_1"
-// (not the wire fixture's thr_<ref> derivation) because the replay assertion
-// fences a Clear on the CACHED thread id: the record is the authority the
-// shell paints, so its id is the one the test names.
-async function seedCache(adapter: SessionCacheIndexedDB, ref: string, overrides: SeedOverrides = {}): Promise<void> {
-  const record: CachedSessionRecord = {
+// seededRecord is the record literal every seed in this file agrees on: the
+// shape the store's own write seam persists, threadId pinned to "thr_1" (not
+// the wire fixture's thr_<ref> derivation) because the replay assertion fences
+// a Clear on the CACHED thread id — the record is the authority the shell
+// paints, so its id is the one the test names.
+function seededRecord(ref: string, overrides: SeedOverrides): CachedSessionRecord {
+  return {
     ref,
     threadId: "thr_1",
     name: "cached session",
@@ -167,6 +169,13 @@ async function seedCache(adapter: SessionCacheIndexedDB, ref: string, overrides:
       turns: overrides.turns ?? [turnFixture("turn_1")],
     },
   };
+}
+
+// seedCache writes a CachedSessionRecord through a SessionCacheIndexedDB on
+// the global fake factory — until Task 6 lands the debounced write seam this
+// is how a "prior tab's" record exists at all.
+async function seedCache(adapter: SessionCacheIndexedDB, ref: string, overrides: SeedOverrides = {}): Promise<void> {
+  const record = seededRecord(ref, overrides);
   const outcome = await adapter.put(record, 0, record.savedAt);
   expect(outcome.outcome).toBe("written");
 }
@@ -1663,5 +1672,287 @@ describe("scroll-back, the volume case", () => {
     await threadsStore.getState().loadOlderTurns("local:scroll");
     expect(listCalls).toHaveLength(1); // one page: the two already-held pages were never re-requested
     expect(listCalls[0]?.cursor).toBe("cur-settled"); // continues from where the settled window left off
+  });
+});
+
+// The deletion bed (Task 9; spec, "The write seam" deletion bullets): the
+// response-keyed hook, the deletion fence's cache re-arm, and cross-tab
+// propagation with its idempotent heal. fencedReadError builds the hub's
+// durable deletion-fence rejection exactly the way threads.test.ts's own
+// markThreadDeletedIfFenced coverage does (data.mutationOutcome ===
+// "targetDeleted" — cmd/evener-hub's deletionFenceError).
+function fencedReadError(ref: string): WireError {
+  return new WireError(`target has been deleted: ${ref}`, -32001, {
+    evenerErrorInfo: "actionUnavailable",
+    mutationOutcome: "targetDeleted",
+    retryDisposition: "none",
+  });
+}
+
+// seedCacheDirect writes a "prior tab's" record without the store: seedCache's
+// record through a throwaway adapter over the global fake factory — the same
+// database the singleton adapter and cacheRecord's reader share
+// (seedPositionedRecord's pattern).
+async function seedCacheDirect(ref: string, overrides: SeedOverrides = {}): Promise<void> {
+  const adapter = new SessionCacheIndexedDB();
+  try {
+    await seedCache(adapter, ref, overrides);
+  } finally {
+    adapter.close();
+  }
+}
+
+// healRecord is the record a racing write re-creates: the file's seed shape
+// for the named ref (seededRecord's literal is the model).
+function healRecord(ref: string): CachedSessionRecord {
+  return seededRecord(ref, {});
+}
+
+// holdCachePutTransaction parks the singleton adapter's next write
+// transaction over the cache's two stores — the debounced put's own —
+// mid-flight: the tree's holdNextWriteTransaction, itself built on
+// holdIndexedDBEvent.
+function holdCachePutTransaction(): ReturnType<typeof holdNextWriteTransaction> {
+  return holdNextWriteTransaction(["records", "meta"]);
+}
+
+// The faulted-delete adapter: beforeCommit("deleteRecords") throws until
+// clearDeleteFault, so the fence's delete transaction aborts and the record
+// survives one round — the stated residual — while reads stay clean (get
+// never passes the label).
+let deleteRecordsFaulted = false;
+
+function installFaultedDeleteAdapter(): void {
+  deleteRecordsFaulted = true;
+  installCacheAdapter(
+    new SessionCacheIndexedDB({
+      beforeCommit: (operation) => {
+        if (operation === "deleteRecords" && deleteRecordsFaulted) {
+          throw new Error("deleteRecords storage fault");
+        }
+      },
+    }),
+  );
+}
+
+function clearDeleteFault(): void {
+  deleteRecordsFaulted = false;
+}
+
+// driveSecondFencedRead re-delivers the fenced rejection through the same
+// hydrate path the first one took: refreshThread re-issues the pane's read —
+// it is not gated on deletedRefs (threads.test.ts's own fence coverage drives
+// the same second firing, and the pane claim outlives the retired lifecycle) —
+// so the rejection re-fires markThreadDeletedIfFenced, which is what retries
+// the aborted delete. The rejection itself is the expected outcome.
+async function driveSecondFencedRead(ref: string): Promise<void> {
+  await expect(threadsStore.getState().refreshThread(ref)).rejects.toThrow(/deleted/);
+}
+
+// TestBroadcastChannel is mutationOutbox.test.ts's shape: an EventTarget
+// subclass with a peers set, so posts from a "peer" tab reach every channel
+// of the same name — this tab's singleton handler included.
+class TestBroadcastChannel extends EventTarget {
+  constructor(
+    readonly name: string,
+    private readonly peers: Set<TestBroadcastChannel>,
+    private readonly onPosted?: (message: unknown) => void,
+  ) {
+    super();
+    this.peers.add(this);
+  }
+
+  postMessage(message: unknown): void {
+    this.onPosted?.(message);
+    for (const peer of this.peers) {
+      if (peer !== this && peer.name === this.name) {
+        peer.dispatchEvent(new MessageEvent("message", { data: message }));
+      }
+    }
+  }
+
+  close(): void {
+    this.peers.delete(this);
+  }
+}
+
+const CACHE_CHANNEL_NAME = "evener.session-cache.v1";
+
+// installTestCacheChannel mirrors the outbox's injected-factory pattern: the
+// singleton's channel is created inside the peers set (the factory seam), a
+// peer tab posts into it, and `posted` records everything this tab sent.
+function installTestCacheChannel(): { peer: { post(message: unknown): void }; posted: unknown[] } {
+  const peers = new Set<TestBroadcastChannel>();
+  const posted: unknown[] = [];
+  const peer = new TestBroadcastChannel(CACHE_CHANNEL_NAME, peers);
+  setCacheChannelFactoryForTests(
+    (name: string) =>
+      new TestBroadcastChannel(name, peers, (message: unknown) => {
+        posted.push(message);
+      }) as unknown as BroadcastChannel,
+  );
+  return { peer: { post: (message: unknown) => peer.postMessage(message) }, posted };
+}
+
+// installNoCacheChannel is the webview: the factory answers null, exactly as
+// the typeof BroadcastChannel guard does where the API is missing.
+function installNoCacheChannel(): void {
+  setCacheChannelFactoryForTests(() => null);
+}
+
+describe("deletion", () => {
+  it("a deleteSession success removes the record, cancels the pending timer, and arms deletedRefs", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:thr_1");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await cacheRecord("local:thr_1")).toBeDefined();
+      fake.on("evener/session/delete", () => ({
+        deleted: ["thr_1"],
+        skipped: [],
+        navigation: { generation_id: "generation_test", targets: [] },
+      }));
+      const gone = (await deleteSession(fake, "local:thr_1")).deleted;
+      const refs = gone.map((id) => (id.includes(":") ? id : `local:${id}`));
+      markCacheSessionsDeleted(refs); // what closePanesForDeletedSessions now calls
+      expect(threadsStore.getState().deletedRefs.has("local:thr_1")).toBe(true);
+      expect(await cacheRecord("local:thr_1")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a debounce task already queued when the deletion ran is refused by the fire-time deletedRefs gate", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:thr_2");
+      await resolveEverything(fake);
+      emitHistoryUpdated("local:thr_2", { fold: "turn_q" }); // write scheduled, timer not yet fired
+      markCacheSessionsDeleted(["local:thr_2"]); // the success handler's arm, before the queued task runs
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:thr_2")).toBeUndefined(); // the queued task's gates refused the ref
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a write whose transaction was already open commits first, and the deletion serialized after it removes the record", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:order");
+      await resolveEverything(fake);
+      const hold = holdCachePutTransaction(); // parks the debounced write's put transaction mid-flight
+      emitHistoryUpdated("local:order", { fold: "turn_p" });
+      await vi.advanceTimersByTimeAsync(1_000); // the write's transaction is open and parked
+      markCacheSessionsDeleted(["local:order"]); // the deletion's deleteRecords transaction queues behind it
+      hold.release(); // the write commits first, the deletion runs after it
+      await settleProjectionWorkForTests();
+      expect(await cacheRecord("local:order")).toBeUndefined(); // the two-orders invariant's second order: removed
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the deletion fence removes the record and propagates on a read-proven deletion", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { posted } = installTestCacheChannel();
+      await seedCacheDirect("local:fenced", { incarnation: "inc-1", length: 1, turns: [turnFixture("turn_1")] });
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => {
+        throw fencedReadError("local:fenced"); // mutationOutcome "targetDeleted"
+      });
+      await threadsStore.getState().ensureThread("local:fenced");
+      expect(threadsStore.getState().threads.has("local:fenced")).toBe(true); // the shell's content stays visible
+      expect(threadsStore.getState().deletedRefs.has("local:fenced")).toBe(true); // the fence armed
+      expect(await cacheRecord("local:fenced")).toBeUndefined(); // the fence deleted the record
+      expect(posted).toEqual([{ version: 1, sourceId: expect.any(String), kind: "deletion", refs: ["local:fenced"] }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a record delete whose transaction aborted is retried by the fence's next firing", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      installFaultedDeleteAdapter(); // beforeCommit("deleteRecords") throws on the first pass only
+      await seedCacheDirect("local:retry", { incarnation: "inc-1", length: 1, turns: [turnFixture("turn_1")] });
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => {
+        throw fencedReadError("local:retry");
+      });
+      await threadsStore.getState().ensureThread("local:retry");
+      expect(threadsStore.getState().deletedRefs.has("local:retry")).toBe(true); // the fence armed
+      expect(await cacheRecord("local:retry")).toBeDefined(); // the delete aborted: the record survived one round (the stated residual)
+      clearDeleteFault(); // the storage fault clears
+      await driveSecondFencedRead("local:retry"); // the fence's next firing retries idempotently
+      expect(await cacheRecord("local:retry")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+      restoreCacheAdapter();
+    }
+  });
+
+  it("the channel message: a sibling holding the ref open stops writing without a reload and never re-creates the record", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { peer } = installTestCacheChannel(); // TestBroadcastChannel: posts from a "peer" tab reach the handler
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:sib");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await cacheRecord("local:sib")).toBeDefined();
+      peer.post({ version: 1, sourceId: "other-tab", kind: "deletion", refs: ["local:sib"] });
+      emitHistoryUpdated("local:sib", { fold: "turn_w" }); // the sibling keeps receiving pushes
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:sib")).toBeUndefined(); // suppressed + healed: never re-created
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the heal: a message arriving after a racing write re-created the record deletes it in the same step", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { peer } = installTestCacheChannel();
+      await seedCacheDirect("local:heal", { incarnation: "inc-1", length: 1, turns: [turnFixture("turn_1")] });
+      markCacheSessionsDeleted(["local:heal"]); // the deleting tab removed it and broadcast (delivery delayed)
+      expect(await cacheRecord("local:heal")).toBeUndefined();
+      const sibling = new SessionCacheIndexedDB(); // the same global fake database the singleton uses
+      await sibling.put(healRecord("local:heal"), 0, Date.now());
+      await settleProjectionWorkForTests();
+      expect(await cacheRecord("local:heal")).toBeDefined(); // the racing write re-created the record
+      peer.post({ version: 1, sourceId: "other-tab", kind: "deletion", refs: ["local:heal"] });
+      await settleProjectionWorkForTests();
+      expect(await cacheRecord("local:heal")).toBeUndefined(); // the heal deleted the resurrection in the same step
+      sibling.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("BroadcastChannel absent: deletion still works locally and nothing throws (Review Focus 2)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      installNoCacheChannel(); // the factory answers null, as the typeof guard does in a webview
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:quiet");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1_000);
+      markCacheSessionsDeleted(["local:quiet"]);
+      expect(await cacheRecord("local:quiet")).toBeUndefined(); // local deletion intact, no channel needed
+      expect(threadsStore.getState().deletedRefs.has("local:quiet")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

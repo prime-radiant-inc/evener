@@ -76,6 +76,7 @@ import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
+import { makeSourceId } from "./transcriptDisplay/crossTabSync";
 
 export type { InputAttachment } from "@evener/appwire-client";
 
@@ -2000,17 +2001,18 @@ async function hydrateAndSubscribe(
 // sets and retires the lifecycle (settling any owner awaiting a first model
 // and cancelling its retry) instead of arming another read, and
 // ensureThread/watchThread's loops return on it. Recording the flag here is
-// what lets all three paths agree on one terminal deleted state.
+// what lets all three paths agree on one terminal deleted state. The cache
+// work the fence owes (spec, "The write seam") is delegated, never
+// duplicated: markCacheSessionsDeleted is exactly the effect set a
+// read-proven deletion owes the cache — join deletedRefs, cancel the
+// pending write, delete the record, propagate — and its idempotence IS the
+// retry contract: a later firing retries the delete a storage fault
+// aborted, instead of this hook growing a second copy of those lines.
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
   releaseSubagentRows(ref);
   discardCanceledMutations(ref);
-  threadsStore.setState((s) => {
-    if (s.deletedRefs.has(ref)) return s;
-    const deletedRefs = new Set(s.deletedRefs);
-    deletedRefs.add(ref);
-    return { deletedRefs };
-  });
+  markCacheSessionsDeleted([ref]);
 }
 
 // The removal half of a canceled row's lifecycle
@@ -5257,6 +5259,111 @@ function onCacheEpochObserved(observed: number): void {
   });
 }
 
+// Cross-tab propagation (spec, "The write seam" deletion bullet and the
+// eviction section): one BroadcastChannel message per action, the same
+// versioned-envelope discipline crossTabSync uses. A browser without
+// BroadcastChannel degrades to single-tab: the durable epoch and the
+// fire-time gates hold correctness without it.
+const CACHE_CHANNEL_NAME = "evener.session-cache.v1";
+const cacheSourceId = makeSourceId();
+type CacheChannelMessage =
+  | { version: 1; sourceId: string; kind: "deletion"; refs: string[] }
+  | { version: 1; sourceId: string; kind: "clear"; epoch: number };
+
+function isCacheChannelMessage(value: unknown): value is CacheChannelMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<CacheChannelMessage>;
+  return (
+    candidate.version === 1 &&
+    candidate.sourceId !== undefined &&
+    candidate.sourceId !== "" &&
+    ((candidate.kind === "deletion" && Array.isArray(candidate.refs)) ||
+      (candidate.kind === "clear" && typeof candidate.epoch === "number"))
+  );
+}
+
+let cacheChannel: BroadcastChannel | null = null;
+// In tests the default factory answers null: the jsdom window has no
+// BroadcastChannel, so the visible one is Node's own — which crosses worker
+// threads and keeps an open event loop alive, so a real channel would let one
+// test file's broadcasts reach another concurrently-running file's handler
+// (and stall its worker at exit). Tests that need a channel install one
+// through the seam; DEFAULT_OPEN_DIAGNOSTIC's MODE gate is the precedent.
+const defaultCacheChannelFactory = (name: string): BroadcastChannel | null =>
+  typeof BroadcastChannel !== "undefined" && import.meta.env.MODE !== "test" ? new BroadcastChannel(name) : null;
+let createCacheChannel: (name: string) => BroadcastChannel | null = defaultCacheChannelFactory;
+export function setCacheChannelFactoryForTests(factory: (name: string) => BroadcastChannel | null): void {
+  cacheChannel?.close();
+  cacheChannel = null;
+  createCacheChannel = factory;
+  // The installed factory's channel is attached at once: a peer's post must
+  // reach this tab's handler even before this tab ever broadcasts, which is
+  // the receiving half the channel exists for.
+  cacheChannelEnsure();
+}
+function cacheChannelEnsure(): BroadcastChannel | null {
+  if (cacheChannel === null) {
+    try {
+      cacheChannel = createCacheChannel(CACHE_CHANNEL_NAME);
+      cacheChannel?.addEventListener("message", onCacheChannelMessage);
+    } catch {
+      cacheChannel = null;
+    }
+  }
+  return cacheChannel;
+}
+function broadcastCacheMessage(message: CacheChannelMessage): void {
+  try {
+    cacheChannelEnsure()?.postMessage(message);
+  } catch {
+    // The channel is a latency optimization, never the guard.
+  }
+}
+
+function onCacheChannelMessage(event: MessageEvent<unknown>): void {
+  const message = isCacheChannelMessage(event.data) ? event.data : undefined;
+  if (message === undefined || message.sourceId === cacheSourceId) return;
+  if (message.kind === "deletion") {
+    // Two things, not one, in one step (spec): arm the suppression and heal
+    // the storage. The heal cannot be lost: IndexedDB serializes this delete
+    // transaction after any in-flight write's, so it always runs after the
+    // record it must remove.
+    threadsStore.setState((s) => {
+      const suppressed = new Set(s.cacheSuppressed);
+      for (const ref of message.refs) suppressed.add(ref);
+      return { cacheSuppressed: suppressed };
+    });
+    void currentSessionCache().deleteRecords(message.refs);
+  } else {
+    onCacheEpochObserved(message.epoch); // Task 10's clear arm: the same backstop the aborted write uses
+  }
+}
+
+// The tab listens from the moment the store loads, not from its first send:
+// a sibling's deletion must reach this tab even when this tab never deletes
+// anything itself, which is the common tab. A browser without
+// BroadcastChannel stays single-tab (the factory answers null); a failure to
+// attach stays single-tab too.
+cacheChannelEnsure();
+
+/** The deletion response's cache hook (spec, "The write seam"): keyed on the
+ * response, not the caller — any deletion response that reports removed
+ * thread ids reaches here through closePanesForDeletedSessions, whichever
+ * action produced it (session delete from the Rail or the chrome menu,
+ * project delete). Joins deletedRefs (the immediate arm), cancels each
+ * pending write, deletes each record, and propagates one message per action. */
+export function markCacheSessionsDeleted(refs: string[]): void {
+  if (refs.length === 0) return;
+  threadsStore.setState((s) => {
+    const deletedRefs = new Set(s.deletedRefs);
+    for (const ref of refs) deletedRefs.add(ref);
+    return { deletedRefs };
+  });
+  for (const ref of refs) cancelCacheWrite(ref);
+  void currentSessionCache().deleteRecords(refs);
+  broadcastCacheMessage({ version: 1, sourceId: cacheSourceId, kind: "deletion", refs });
+}
+
 // The live gap rule (spec, "The two serving paths, the live gap, and its
 // rule"): a cached-shell reconciling read that carries no changes and whose
 // fresh window starts above the shell's captured anchor replaces instead of
@@ -5383,6 +5490,10 @@ export function resetThreadsStoreForTests(): void {
   oversizeMemo.clear();
   cacheWriteDebounceMs = 1_000;
   cacheWriteMaxWaitMs = 5_000;
+  // The cache channel's module state: a test's installed factory and its
+  // channel go with the reset, so the next test attaches a fresh channel
+  // under the default factory (the seam's own close-and-reattach).
+  setCacheChannelFactoryForTests(defaultCacheChannelFactory);
   trackedHydrationCompletions.clear();
   pendingThreadHydrations.clear();
   pendingMutationReconciliations.clear();

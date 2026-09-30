@@ -1,3 +1,4 @@
+import { markCacheSessionsDeleted } from "../stores/threads";
 import { navigate, paneToURL, urlToPane } from "./routing";
 import { workspaceStore } from "./workspace";
 
@@ -20,6 +21,12 @@ import { workspaceStore } from "./workspace";
 // applies to this very field.
 export function closePanesForDeletedSessions(deletedIDs: string[]): void {
   const goneRefs = new Set(deletedIDs.map((id) => (id.includes(":") ? id : `local:${id}`)));
+  // The deletion response's one cache hook (spec, "The write seam"), keyed on
+  // the response, not the caller: every deletion path routes its removed ids
+  // through here, so joining deletedRefs, canceling the pending write,
+  // deleting the record, and propagating to sibling tabs happens exactly once
+  // per response, whichever action produced it.
+  markCacheSessionsDeleted([...goneRefs]);
   const workspace = workspaceStore.getState();
   for (const pane of workspace.panes) {
     const paneRef = (pane.params as { ref?: unknown }).ref;
