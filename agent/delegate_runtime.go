@@ -1109,6 +1109,8 @@ func (s *Session) escalateUnreachableDelegateAttention() bool {
 	}
 	if failed {
 		s.scheduleStableDelegateAttentionRetry()
+	} else if progressed {
+		s.resetStableDelegateAttentionRetryDelay()
 	}
 	return progressed
 }

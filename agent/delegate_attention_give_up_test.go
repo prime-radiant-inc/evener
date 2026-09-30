@@ -298,6 +298,36 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		fenced.closeParent(t)
 		return fenced
 	}
+	// stableRetry reads the root's stable attention retry: the delay it will
+	// wait next and whether it is armed.
+	stableRetry := func(fenced fencedGrandchildAttention) (time.Duration, bool) {
+		fenced.root.attentionMu.Lock()
+		defer fenced.root.attentionMu.Unlock()
+		return fenced.root.stableAttentionRetry.delay, fenced.root.stableAttentionRetry.active
+	}
+	// makeGrandchildTranscriptUnreadable sets the grandchild transcript aside
+	// and puts a directory in its place, which stats fine and fails the read.
+	// The returned func puts the transcript back.
+	makeGrandchildTranscriptUnreadable := func(t *testing.T, fenced fencedGrandchildAttention) (restore func()) {
+		t.Helper()
+		grandchildTranscript := transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)
+		setAside := grandchildTranscript + ".aside"
+		if err := os.Rename(grandchildTranscript, setAside); err != nil {
+			t.Fatalf("set the grandchild transcript aside: %v", err)
+		}
+		if err := os.Mkdir(grandchildTranscript, 0o755); err != nil {
+			t.Fatalf("put a directory in place of the grandchild transcript: %v", err)
+		}
+		return func() {
+			t.Helper()
+			if err := os.Remove(grandchildTranscript); err != nil {
+				t.Fatalf("remove the directory in the transcript's place: %v", err)
+			}
+			if err := os.Rename(setAside, grandchildTranscript); err != nil {
+				t.Fatalf("restore the grandchild transcript: %v", err)
+			}
+		}
+	}
 
 	t.Run("transcript present: handed to the root", func(t *testing.T) {
 		fenced := parkedUnderClosedParent(t)
@@ -336,10 +366,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		// The delegate already said it is undeliverable; its failed
 		// escalation must not re-arm the retry, or the drive re-runs it
 		// every backoff tick forever.
-		fenced.root.attentionMu.Lock()
-		retryArmed := fenced.root.stableAttentionRetry.active
-		fenced.root.attentionMu.Unlock()
-		if retryArmed {
+		if _, retryArmed := stableRetry(fenced); retryArmed {
 			t.Fatal("a parked delegate's failed escalation armed the stable attention retry")
 		}
 		if got := logged.String(); !strings.Contains(got, "delegate attention failed") || !strings.Contains(got, "no such file or directory") {
@@ -355,28 +382,42 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		fenced := parkedUnderClosedParent(t)
 		clk := agenttest.NewFakeClock()
 		fenced.root.clock = clk
-		grandchildTranscript := transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)
-		if err := os.Remove(grandchildTranscript); err != nil {
-			t.Fatalf("remove grandchild transcript: %v", err)
-		}
-		// A directory in the transcript's place stats fine and fails the read.
-		if err := os.Mkdir(grandchildTranscript, 0o755); err != nil {
-			t.Fatalf("put a directory in place of the grandchild transcript: %v", err)
-		}
+		makeGrandchildTranscriptUnreadable(t, fenced)
 
 		fenced.root.drivePendingStableDelegateAttention()
-		retryDelay := func() (time.Duration, bool) {
-			fenced.root.attentionMu.Lock()
-			defer fenced.root.attentionMu.Unlock()
-			return fenced.root.stableAttentionRetry.delay, fenced.root.stableAttentionRetry.active
-		}
-		if _, active := retryDelay(); !active {
+		if _, active := stableRetry(fenced); !active {
 			t.Fatal("a parked delegate's escalation failing on an unreadable transcript did not arm the retry")
 		}
 		clk.Advance(jobNotificationRetryInitialDelay)
 		clk.Drain()
-		if delay, _ := retryDelay(); delay != 2*jobNotificationRetryInitialDelay {
+		if delay, _ := stableRetry(fenced); delay != 2*jobNotificationRetryInitialDelay {
 			t.Fatalf("retry delay after one failed pass = %v, want it backed off to %v", delay, 2*jobNotificationRetryInitialDelay)
+		}
+	})
+
+	// Once the failing escalation succeeds, its backoff is over: the next,
+	// unrelated failure starts again from the initial delay.
+	t.Run("transcript readable again: the backoff resets", func(t *testing.T) {
+		t.Parallel()
+		fenced := parkedUnderClosedParent(t)
+		clk := agenttest.NewFakeClock()
+		fenced.root.clock = clk
+		restoreTranscript := makeGrandchildTranscriptUnreadable(t, fenced)
+		fenced.root.drivePendingStableDelegateAttention()
+		clk.Advance(jobNotificationRetryInitialDelay)
+		clk.Drain()
+		if backedOff, _ := stableRetry(fenced); backedOff != 2*jobNotificationRetryInitialDelay {
+			t.Fatalf("this test is not in the state it means to be: retry delay after one failed pass = %v, want %v", backedOff, 2*jobNotificationRetryInitialDelay)
+		}
+		restoreTranscript()
+
+		fenced.root.drivePendingStableDelegateAttention()
+
+		if owed, parked := fenced.owedAndParked(); owed || parked {
+			t.Fatalf("after escalation: owed=%t parked=%t, want neither", owed, parked)
+		}
+		if delay, _ := stableRetry(fenced); delay != jobNotificationRetryInitialDelay {
+			t.Fatalf("retry delay after the escalation succeeded = %v, want it reset to %v", delay, jobNotificationRetryInitialDelay)
 		}
 	})
 }
@@ -443,5 +484,46 @@ func TestOnlyAMissingTranscriptStandsAParkedEscalationDown(t *testing.T) {
 		if parkedEscalationStandsDown(err) {
 			t.Errorf("a transient hand-over failure (%v) stood the retry down", err)
 		}
+	}
+}
+
+// A successful escalation ends its backoff even while a retry for other work
+// is armed. The reset leaves that retry armed, and the retry's fire backs off
+// from the reset delay, not from the delay it was armed with.
+func TestABackoffResetHoldsAcrossAnArmedRetry(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	root, controller := quietHubTestSession(t, clk)
+	seedDelegateControllerIdle(t, controller, "dlg_pending", "")
+	if !controller.noteDelegateAttention("dlg_pending", "delegate:dlg_pending") {
+		t.Fatal("note attention")
+	}
+	if !controller.hasPendingDelegateAttention() {
+		t.Fatal("this test is not in the state it means to be: no attention is pending")
+	}
+	const staleDelay = 2 * time.Second
+	root.attentionMu.Lock()
+	root.stableAttentionRetry.delay = staleDelay
+	root.attentionMu.Unlock()
+	root.scheduleStableDelegateAttentionRetry()
+	root.attentionMu.Lock()
+	armedGeneration := root.stableAttentionRetry.generation
+	root.attentionMu.Unlock()
+
+	root.resetStableDelegateAttentionRetryDelay()
+
+	root.attentionMu.Lock()
+	active, generation := root.stableAttentionRetry.active, root.stableAttentionRetry.generation
+	root.attentionMu.Unlock()
+	if !active || generation != armedGeneration {
+		t.Fatalf("after the reset: active=%t generation=%d, want the armed retry kept (active, generation %d)", active, generation, armedGeneration)
+	}
+	clk.Advance(staleDelay)
+	clk.Drain()
+	root.attentionMu.Lock()
+	delay := root.stableAttentionRetry.delay
+	root.attentionMu.Unlock()
+	if delay != 2*jobNotificationRetryInitialDelay {
+		t.Fatalf("retry delay after the armed retry fired = %v, want %v backed off from the reset delay", delay, 2*jobNotificationRetryInitialDelay)
 	}
 }
