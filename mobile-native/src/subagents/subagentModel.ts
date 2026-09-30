@@ -160,8 +160,11 @@ export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[];
 	const visit = (session: ActivitySessionNode, owner: string, parentTitle: string | undefined) => {
 		for (const entry of session.entries) {
 			if (entry.kind === "shell") {
-				if (seen.has(entry.job.jobId)) continue;
-				seen.add(entry.job.jobId);
+				// Job ids and delegate ids are separate namespaces, keyed apart
+				// as subagentListKey keys their rows.
+				const key = `job:${entry.job.jobId}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
 				const job = entry.job;
 				jobs.push({
 					kind: "job",

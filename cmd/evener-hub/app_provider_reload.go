@@ -22,7 +22,7 @@ func (c *hubInstancesController) refreshProviderFile() bool {
 		defer c.auth.credMu.Unlock()
 	}
 	raw, err := os.ReadFile(c.providersConfigPath)
-	signature := fmt.Sprintf("%x", sha256.Sum256(raw))
+	signature := providerConfigSignature(raw)
 	if err != nil {
 		signature = err.Error()
 	}
@@ -34,4 +34,8 @@ func (c *hubInstancesController) refreshProviderFile() bool {
 	diagnostics := c.reg.Diagnostics()
 	_ = c.reg.Reload()
 	return generation != c.reg.Generation() || !slices.Equal(diagnostics, c.reg.Diagnostics())
+}
+
+func providerConfigSignature(raw []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(raw))
 }

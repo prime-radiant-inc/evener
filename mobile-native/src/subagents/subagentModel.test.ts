@@ -375,6 +375,18 @@ describe("shell jobs in the Activity list", () => {
 		expect(flattenSubagents(activityTree())).toEqual(subagents);
 	});
 
+	// A job id and a delegate id are different namespaces: one can't hide
+	// the other (subagentListKey keys them apart the same way).
+	it("keeps a job and a subagent that share an id", () => {
+		const tree: ActivityTree = {
+			revision: 1,
+			root: session("local:coord", [shell(job(false, { jobId: "same" })), entry(done("same"))]),
+		};
+		const { jobs, subagents } = flattenActivity(tree);
+		expect(jobs.map((row) => row.id)).toEqual(["same"]);
+		expect(subagents.map((row) => row.id)).toEqual(["same"]);
+	});
+
 	it("sorts jobs among subagents by state, and finds them by title, command or owner", () => {
 		const { jobs, subagents } = flattenActivity(activityTree());
 		const all = [...subagents, ...jobs];
