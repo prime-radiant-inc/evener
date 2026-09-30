@@ -441,7 +441,6 @@ export function ConversationScreen({
 	const readerAnchor = useRef<ReaderAnchor | null>(null);
 	const appliedReaderRestore = useRef<AppliedRestore | null>(null);
 	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
-	const readerHeader = useRef(false);
 	// The latest settled turn while the list sat at its end (ruling 31). Every
 	// anchor carries it, so opening the session later can tell a newer reply
 	// finished since.
@@ -1359,7 +1358,6 @@ export function ConversationScreen({
 		readerRestoreAttempts.current.reset();
 		if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 		restoreFrame.current = null;
-		readerHeader.current = false;
 		captureSuppressed.current = false;
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(route.params.hubId, route.params.ref);
@@ -1566,7 +1564,6 @@ export function ConversationScreen({
 	function scrollToFindMatch(index: number) {
 		findLeftTheEnd.current = false;
 		follow.dispatch({ type: "unfollow" });
-		readerHeader.current = false;
 		// The reading position follows the jump, so nothing pulls the list back.
 		captureSuppressed.current = false;
 		findJumping.current = true;
@@ -1590,7 +1587,6 @@ export function ConversationScreen({
 			!anchor ||
 			timelineRows.length === 0 ||
 			!focused ||
-			readerHeader.current ||
 			follow.state.current.following ||
 			follow.state.current.touch !== "none" ||
 			// Where the list can reach depends on the bar: restore once it has
@@ -2200,7 +2196,6 @@ export function ConversationScreen({
 	}
 	function jumpToLive() {
 		cancelReader();
-		readerHeader.current = false;
 		readerAnchor.current = null;
 		follow.dispatch({ type: "follow" });
 		captureSuppressed.current = false;
@@ -2899,7 +2894,6 @@ export function ConversationScreen({
 								landOpening();
 								follow.dispatch({ type: "dragBegin" });
 								pageOlderNear(event?.nativeEvent.contentOffset.y);
-								readerHeader.current = false;
 								captureSuppressed.current = false;
 								if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 								restoreFrame.current = null;
