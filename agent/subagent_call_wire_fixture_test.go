@@ -232,13 +232,17 @@ func awaitDelegateIdle(t *testing.T, s *Session, delegateID string) {
 	})
 }
 
-// subagentWireRunTimes matches the run times a delegate_send result carries,
-// which are the clock's.
-var subagentWireRunTimes = regexp.MustCompile(`"(run_started_at|latest_activity_at|run_ended_at)":"([^"]*)"`)
-
-// subagentWireRunFields are the run-time fields, in the order a run's times
-// must fall.
-var subagentWireRunFields = []string{"run_started_at", "latest_activity_at", "run_ended_at"}
+// subagentWireRunTimes are the run times a delegate_send result carries,
+// which are the clock's, in the order a run's times must fall, each with the
+// time after the fixture's start the fixture records it at.
+var subagentWireRunTimes = []struct {
+	field string
+	after time.Duration
+}{
+	{"run_started_at", time.Second},
+	{"latest_activity_at", 1500 * time.Millisecond},
+	{"run_ended_at", 2 * time.Second},
+}
 
 // subagentWireRunTimesFixed records each run time as a fixed time after the
 // fixture's start, by field, so two equal times can't swap places. It first
@@ -247,34 +251,29 @@ var subagentWireRunFields = []string{"run_started_at", "latest_activity_at", "ru
 // replacement can't reach.
 func subagentWireRunTimesFixed(t *testing.T, encoded string) string {
 	t.Helper()
-	for _, field := range subagentWireRunFields {
-		if strings.Contains(encoded, `\"`+field+`\"`) {
-			t.Fatalf("a %s appears escaped inside a string, where the fixture can't fix it", field)
+	var previous time.Time
+	for i, run := range subagentWireRunTimes {
+		if strings.Contains(encoded, `\"`+run.field+`\"`) {
+			t.Fatalf("a %s appears escaped inside a string, where the fixture can't fix it", run.field)
 		}
-	}
-	recorded := make(map[string]time.Time, len(subagentWireRunFields))
-	for _, match := range subagentWireRunTimes.FindAllStringSubmatch(encoded, -1) {
-		at, err := time.Parse(time.RFC3339Nano, match[2])
-		if err != nil {
-			t.Fatalf("%s %q isn't a time: %v", match[1], match[2], err)
+		pattern := regexp.MustCompile(`"` + run.field + `":"([^"]*)"`)
+		matches := pattern.FindAllStringSubmatch(encoded, -1)
+		if len(matches) == 0 {
+			t.Fatalf("the waiting send's result carries no %s", run.field)
 		}
-		recorded[match[1]] = at
-	}
-	for i, field := range subagentWireRunFields {
-		if _, ok := recorded[field]; !ok {
-			t.Fatalf("the waiting send's result carries no %s", field)
+		var recorded time.Time
+		for _, match := range matches {
+			at, err := time.Parse(time.RFC3339Nano, match[1])
+			if err != nil {
+				t.Fatalf("%s %q isn't a time: %v", run.field, match[1], err)
+			}
+			recorded = at
 		}
-		if i > 0 && recorded[field].Before(recorded[subagentWireRunFields[i-1]]) {
-			t.Fatalf("%s %v is before %s %v", field, recorded[field], subagentWireRunFields[i-1], recorded[subagentWireRunFields[i-1]])
+		if i > 0 && recorded.Before(previous) {
+			t.Fatalf("%s %v is before %s %v", run.field, recorded, subagentWireRunTimes[i-1].field, previous)
 		}
+		previous = recorded
+		encoded = pattern.ReplaceAllLiteralString(encoded, `"`+run.field+`":"`+wireFixtureStart.Add(run.after).Format(time.RFC3339Nano)+`"`)
 	}
-	fixed := map[string]time.Time{
-		"run_started_at":     wireFixtureStart.Add(time.Second),
-		"latest_activity_at": wireFixtureStart.Add(1500 * time.Millisecond),
-		"run_ended_at":       wireFixtureStart.Add(2 * time.Second),
-	}
-	return subagentWireRunTimes.ReplaceAllStringFunc(encoded, func(field string) string {
-		name := subagentWireRunTimes.FindStringSubmatch(field)[1]
-		return `"` + name + `":"` + fixed[name].Format(time.RFC3339Nano) + `"`
-	})
+	return encoded
 }
