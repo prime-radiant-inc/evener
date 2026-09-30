@@ -207,6 +207,31 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 	};
 }
 
+/** evener/jobs/output's answer for one of the demo tree's shell jobs: a
+ * short tail that reads like its command's output, the whole of it kept. */
+export function demoJobOutput(job: { status: string; terminal: boolean; exitCode?: number }): { data: unknown } {
+	const tail =
+		job.status === "command_exited_nonzero"
+			? [
+					"=== RUN   TestRetirementTreeSettleDrains",
+					"--- FAIL: TestRetirementTreeSettleDrains (0.42s)",
+					"    retirement_test.go:88: drained 3 of 4 delegates",
+					"\u001b[31mFAIL\u001b[0m",
+					`exit status ${job.exitCode ?? 1}`,
+					"",
+				].join("\n")
+			: job.terminal
+				? ""
+				: [
+						"=== RUN   TestRetirement",
+						"--- PASS: TestRetirement (0.08s)",
+						"=== RUN   TestRetirementTreeSettle",
+						"",
+					].join("\n");
+	const totalBytes = new TextEncoder().encode(tail).length;
+	return { data: { tail, totalBytes, retainedStart: 0 } };
+}
+
 /** A shell job in the tree, owned by the session it names. */
 function shellEntry(ownerSessionId: string, ownerRef: string, fields: Record<string, unknown>) {
 	return {
