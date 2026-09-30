@@ -556,3 +556,11 @@ test("phrases a housekeeping call as its step line does", () => {
   expect(housekeepingAction("notes_agent_set", {})).toBe("updated its note");
   expect(housekeepingAction("compact_context", {})).toBe("asked for a context compaction");
 });
+
+// A running call whose arguments the hub didn't send can't say it only
+// clears a note, so it says what the tool usually does, as its step and run
+// lines do.
+test("says a housekeeping call's usual running line when its arguments are missing", () => {
+  expect(toolStepProgress({ toolName: "notes_agent_set" })).toBe("Updating its note");
+  expect(toolStepProgress({ toolName: "compact_context" })).toBe("Asking for a context compaction");
+});

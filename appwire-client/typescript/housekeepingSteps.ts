@@ -38,7 +38,12 @@ interface HousekeepingTool {
   progress: (step: StepArgs) => string;
 }
 
-const noteCleared = (step: StepArgs) => (str(parseArgs(step.argumentsJSON), "note") ?? "").trim() === "";
+// Whether a notes_agent_set call cleared the note: an empty note. Only
+// arguments that are here can say so; a step without them (a summary-only
+// row, or a running call the hub sent none for) reads as the tool's usual
+// action, in its step, run and running lines alike.
+const noteCleared = (step: StepArgs) =>
+  step.argumentsJSON !== undefined && (str(parseArgs(step.argumentsJSON), "note") ?? "").trim() === "";
 
 // A link is named by its label, else its URL.
 const linkName = (step: StepArgs) => {
@@ -55,8 +60,10 @@ const goalStatus = (step: StepArgs) => {
 // Whether a compact_context call only clears its note, as the tool decides it
 // before it prints anything: an empty note, no compaction instructions, and no
 // reload_skills selection (absent or null; any other value, an empty array
-// included, asks for a compaction).
+// included, asks for a compaction). As with noteCleared, only arguments that
+// are here can say so.
 const onlyClearsNote = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
+  if (step.argumentsJSON === undefined) return false;
   const args = parseArgs(step.argumentsJSON);
   return (
     (str(args, "note_to_self") ?? "") === "" &&
@@ -74,7 +81,7 @@ const onlyClearsNote = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
 const clearedCompactionNote = (step: HousekeepingStep) => {
   const output = step.output?.trim();
   if (output) return output.startsWith("Note cleared. No compaction requested.");
-  return step.argumentsJSON !== undefined && onlyClearsNote(step);
+  return onlyClearsNote(step);
 };
 
 const nextPage = (step: StepArgs) => Boolean(str(parseArgs(step.argumentsJSON), "cursor"));
@@ -84,9 +91,7 @@ const selectorOf = (step: StepArgs) => str(parseArgs(step.argumentsJSON), "selec
 const HOUSEKEEPING: Record<string, HousekeepingTool> = {
   notes_agent_set: {
     action: "updated its note",
-    // Only arguments that are here can say the note was cleared: a step
-    // without them (a summary-only row) says what the tool usually does.
-    actionFor: (step) => (step.argumentsJSON !== undefined && noteCleared(step) ? "cleared its note" : undefined),
+    actionFor: (step) => (noteCleared(step) ? "cleared its note" : undefined),
     words: (_step, did) => ({ verb: did }),
     progress: (step) => (noteCleared(step) ? "Clearing its note" : "Updating its note"),
   },
