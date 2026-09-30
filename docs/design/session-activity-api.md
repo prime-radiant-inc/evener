@@ -116,14 +116,16 @@ the session has no work.
 
 `SessionDelegate` is a compact stable resource, with `delegateId`, `ownerRef`,
 `rootRef`, `childRef`, `parentDelegateId?`, `description`, `task`, `type`,
-`lifecycle`, `phase`, `status`, `outcome?`, `terminal`, `resumable`,
+`lifecycle`, `phase`, `status`, `outcome?`, `reason?`, `error?`, `terminal`, `resumable`,
 `notResumableReason?`, `model?`, `reasoningEffort?`, `runStartedAt?`, `runEndedAt?`,
 `latestActivityAt?`, `usage?`, and `worktree?`. Use existing domain projections and
 classifiers for these values. `childRef` remains addressable when retained child
 history exists. A missing child runtime does not erase its delegate. No nested
 `child` tree or activation-job identity is included. Optional usage and worktree
 data are included only when already available without transcript or filesystem
-walks. The existing delegate stop API remains the mutation authority.
+walks. Bounded reason and error text preserve the explanation of an unsuccessful
+outcome without embedding result payloads. The existing delegate stop API remains
+the mutation authority.
 
 Jobs reuse the typed `JobActivityJob` row, restricted to shell jobs. Their
 `ownerRef` is the logical session owner. Job output stays behind its existing
