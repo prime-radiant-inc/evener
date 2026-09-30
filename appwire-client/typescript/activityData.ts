@@ -367,6 +367,14 @@ function copyOptionalInteger(
   return true;
 }
 
+// jobCommandLabel is the one wording of what a job ran, for every surface that
+// shows it: the command, else the task, else the description. The command is
+// the record's own, untruncated; a blank or absent one falls through, so a job
+// that carries only a task still reads as something.
+export function jobCommandLabel(job: Pick<ActivityJob, "command" | "task" | "description">): string | undefined {
+  return job.command?.trim() || job.task?.trim() || job.description?.trim() || undefined;
+}
+
 // parseActivityJob validates one job payload against the ActivityJob wire
 // shape. The tree parser uses it per shell entry; the job log pane uses it for
 // the single-job read (evener/jobs/get), whose Data field crosses the wire

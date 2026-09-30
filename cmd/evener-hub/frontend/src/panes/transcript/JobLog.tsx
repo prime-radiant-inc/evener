@@ -14,7 +14,7 @@
 // call, a malformed payload) still renders its log without a command line.
 
 import type { ActivityJob, JobLogTail } from "@evener/appwire-client";
-import { parseActivityJob, parseJobLogTail } from "@evener/appwire-client";
+import { jobCommandLabel, parseActivityJob, parseJobLogTail } from "@evener/appwire-client";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
@@ -30,15 +30,6 @@ const CLASS = {
   joblog: requireClass(styles.joblog, "transcript.module.css", "joblog"),
   joblogNote: requireClass(styles.joblogNote, "transcript.module.css", "joblogNote"),
 };
-
-// commandOf is the command line the pane pins above the log. It walks the same
-// fallback the activity strip's detail uses (command, else task, else
-// description), so the pane and the strip word a job identically; undefined
-// when the job carries none (or its payload could not be read).
-function commandOf(job: ActivityJob | null): string | undefined {
-  const command = job?.command?.trim() || job?.task?.trim() || job?.description?.trim();
-  return command ? command : undefined;
-}
 
 interface JobLogContent {
   content: string;
@@ -69,14 +60,23 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
   // alone, exactly as an older daemon's answer would.
   const [job, setJob] = useState<ActivityJob | null>(null);
 
+  // Both reads share one ready-gate: the owning session ref is the only route
+  // to either, and the one client's handshake is the race Transcript's own
+  // ensureThread effect defers through. Refresh re-runs both, which also retries
+  // a metadata read that failed.
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshIndex is the Refresh button's re-run signal - the fetch inputs are unchanged by design
   useEffect(() => {
-    // No owner, no read: the output effect reports the missing owner, and a
-    // job:<id> ref is only reachable through its owning session.
-    if (parentRef === undefined) return;
+    // A pane without an owner (a producer bug, not a user state) says so
+    // instead of issuing a request that could only fail less clearly.
+    if (parentRef === undefined) {
+      setState({ status: "error", message: "the owning session is unknown" });
+      return;
+    }
     const ownerRef = parentRef;
     let cancelled = false;
     let started = false;
+    // Deferred until the one client is actually ready - the same handshake
+    // race Transcript's own ensureThread effect defers through.
     const start = () => {
       if (started || connectionStore.getState().state !== "ready") return;
       started = true;
@@ -91,32 +91,6 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
             if (!cancelled) setJob(null);
           },
         );
-    };
-    start();
-    const unsubscribe = connectionStore.subscribe(start);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [parentRef, jobId, refreshIndex]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshIndex is the Refresh button's re-run signal - the fetch inputs are unchanged by design
-  useEffect(() => {
-    // The owner session ref is the only route to the job's log; a pane
-    // without one (a producer bug, not a user state) says so instead of
-    // issuing a request that could only fail less clearly.
-    if (parentRef === undefined) {
-      setState({ status: "error", message: "the owning session is unknown" });
-      return;
-    }
-    const ownerRef = parentRef;
-    let cancelled = false;
-    let started = false;
-    // Deferred until the one client is actually ready - the same handshake
-    // race Transcript's own ensureThread effect defers through.
-    const start = () => {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
       threadsStore
         .getState()
         .jobOutput(ownerRef, jobId)
@@ -192,7 +166,10 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
     </Button>
   );
 
-  const command = commandOf(job);
+  // The shared label the activity strip's detail uses too, so the pane and the
+  // strip word a job identically; undefined when the job carries none (or its
+  // payload could not be read).
+  const command = job === null ? undefined : jobCommandLabel(job);
 
   return (
     <PaneScaffold title={jobId} actions={actions}>

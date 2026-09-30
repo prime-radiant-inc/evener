@@ -73,29 +73,43 @@ func jobOutputTailFromWindow(w jobOutputWindow) JobOutputTail {
 	}
 }
 
+// loadSessionJobRecord reads one local session's durable jobs.jsonl and folds
+// out one job's record, for the hub's past-session fallback. It is read-only.
+// found=false covers both a session with no jobs journal and a journal with no
+// such job; the caller proceeds on found alone.
+func loadSessionJobRecord(stateDir, sessionID, jobID string) (*jobstore.JobRecord, bool, error) {
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return nil, false, err
+	}
+	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
+	if _, err := historicalJobsStat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	events, err := jobstore.ReadEvents(path)
+	if err != nil {
+		return nil, false, err
+	}
+	rec := jobstore.Fold(events)[jobID]
+	if rec == nil {
+		return nil, false, nil
+	}
+	return rec, true, nil
+}
+
 // LoadSessionJobOutputTail reads one local session's durable jobs.jsonl and
 // returns a window of one job's output file, for the hub's past-session
 // fallback. It is read-only. found=false means no job with that id exists;
 // a found job with no output file yet is an empty tail, not an error.
 // beforeBytes has the same paging meaning as Session.JobOutputTail's.
 func LoadSessionJobOutputTail(stateDir, sessionID, jobID string, beforeBytes, maxBytes int64) (JobOutputTail, bool, error) {
-	if err := schema.ValidateSessionID(sessionID); err != nil {
-		return JobOutputTail{}, false, err
-	}
-	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	if _, err := historicalJobsStat(path); err != nil {
-		if os.IsNotExist(err) {
-			return JobOutputTail{}, false, nil
-		}
-		return JobOutputTail{}, false, err
-	}
-	events, err := jobstore.ReadEvents(path)
+	rec, found, err := loadSessionJobRecord(stateDir, sessionID, jobID)
 	if err != nil {
 		return JobOutputTail{}, false, err
 	}
-	recs := jobstore.Fold(events)
-	rec := recs[jobID]
-	if rec == nil {
+	if !found {
 		return JobOutputTail{}, false, nil
 	}
 	outPath := rec.OutputPath
@@ -148,24 +162,13 @@ func (s *Session) JobGet(jobID string) (JobActivityJob, bool, error) {
 // one job's record, for the hub's past-session fallback. It is read-only.
 // found=false means no job with that id exists.
 func LoadSessionJobGet(stateDir, sessionID, jobID string) (JobActivityJob, bool, error) {
-	if err := schema.ValidateSessionID(sessionID); err != nil {
-		return JobActivityJob{}, false, err
-	}
-	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	if _, err := historicalJobsStat(path); err != nil {
-		if os.IsNotExist(err) {
-			return JobActivityJob{}, false, nil
-		}
-		return JobActivityJob{}, false, err
-	}
-	events, err := jobstore.ReadEvents(path)
+	rec, found, err := loadSessionJobRecord(stateDir, sessionID, jobID)
 	if err != nil {
 		return JobActivityJob{}, false, err
 	}
-	recs := jobstore.Fold(events)
-	rec := recs[jobID]
-	if rec == nil {
+	if !found {
 		return JobActivityJob{}, false, nil
 	}
-	return projectActivityJob(rec, "local:"+sessionID), true, nil
+	ownerRef := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
+	return projectActivityJob(rec, ownerRef), true, nil
 }

@@ -10,6 +10,7 @@ import {
   activityNodeID,
   defaultExpandedIDs,
   delegateHasActiveWork,
+  jobCommandLabel,
   jobStatusDisplay,
   parseActivityJob,
   parseActivityTree,
@@ -1335,6 +1336,21 @@ describe("parseJob missing required fields", () => {
   it("rejects a job with non-boolean terminal", () => {
     const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture({ terminal: "yes" }) }]));
     expect(tree?.root.entries).toHaveLength(0);
+  });
+});
+
+describe("jobCommandLabel", () => {
+  it("prefers the command, then the task, then the description", () => {
+    expect(jobCommandLabel({ description: "make test-web" })).toBe("make test-web");
+    expect(jobCommandLabel({ description: "make test-web", task: "run the web gate" })).toBe("run the web gate");
+    expect(jobCommandLabel({ description: "make test-web", task: "run the web gate", command: "go test ./..." })).toBe(
+      "go test ./...",
+    );
+  });
+
+  it("falls through a blank field and returns undefined when nothing is left", () => {
+    expect(jobCommandLabel({ description: "make test-web", command: "   " })).toBe("make test-web");
+    expect(jobCommandLabel({ description: "  " })).toBeUndefined();
   });
 });
 

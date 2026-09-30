@@ -56,60 +56,68 @@ func pastJobsListResponse(ctx context.Context, cfg hubcore.WebConfig, params app
 	return appwire.JobsListResponse{Data: tree}, true, nil
 }
 
-// hubJobsOutput answers evener/jobs/output with the same live-first /
-// dead-session-fallback split. A job id absent from the persisted store is
-// invalid params — the caller guessed.
-func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
-	source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, "")
-	var resp appwire.JobsOutputResponse
+// hubJobRead runs one single-job read live-first: the owning source is
+// authoritative, and only the specific dead-session condition
+// (isDeadSessionError, app_tasks.go) falls back to the persisted jobs.jsonl
+// behind the past-index gate (pastEntryForRead). A job id the persisted store
+// has never heard of is invalid params — the caller guessed — not the
+// dead-session error that triggered the fallback. Both job reads share this
+// one policy; live is the source's own read and past loads the same job from
+// the journal.
+func hubJobRead[T any](
+	ctx context.Context,
+	cfg hubcore.WebConfig,
+	sources *appsource.Registry,
+	ref, jobID string,
+	live func(source appsource.Source) (T, error),
+	past func(stateDir, sessionID, jobID string) (T, bool, error),
+) (T, error) {
+	var zero T
+	source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, ref, "")
 	if err == nil {
-		resp, err = source.JobOutput(ctx, params)
-	}
-	if err == nil {
-		return resp, nil
+		out, liveErr := live(source)
+		if liveErr == nil {
+			return out, nil
+		}
+		err = liveErr
 	}
 	if !isDeadSessionError(err) {
-		return appwire.JobsOutputResponse{}, err
+		return zero, err
 	}
-	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref})
+	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: ref})
 	if !ok {
-		return appwire.JobsOutputResponse{}, err
+		return zero, err
 	}
-	tail, found, tailErr := agent.LoadSessionJobOutputTail(entry.StateDir, entry.Meta.ID, params.JobID, params.BeforeBytes, params.MaxBytes)
-	if tailErr != nil {
-		return appwire.JobsOutputResponse{}, tailErr
+	out, found, pastErr := past(entry.StateDir, entry.Meta.ID, jobID)
+	if pastErr != nil {
+		return zero, pastErr
 	}
 	if !found {
-		return appwire.JobsOutputResponse{}, appwire.InvalidParams("job not found: " + params.JobID)
+		return zero, appwire.InvalidParams("job not found: " + jobID)
 	}
-	return appwire.JobsOutputResponse{Data: tail}, nil
+	return out, nil
 }
 
-// hubJobsGet answers evener/jobs/get with the same live-first /
-// dead-session-fallback split as hubJobsOutput. A job id absent from the
-// persisted store is invalid params — the caller guessed.
+// hubJobsOutput answers evener/jobs/output through hubJobRead.
+func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	return hubJobRead(ctx, cfg, sources, params.Ref, params.JobID,
+		func(source appsource.Source) (appwire.JobsOutputResponse, error) {
+			return source.JobOutput(ctx, params)
+		},
+		func(stateDir, sessionID, jobID string) (appwire.JobsOutputResponse, bool, error) {
+			tail, found, err := agent.LoadSessionJobOutputTail(stateDir, sessionID, jobID, params.BeforeBytes, params.MaxBytes)
+			return appwire.JobsOutputResponse{Data: tail}, found, err
+		})
+}
+
+// hubJobsGet answers evener/jobs/get through the same hubJobRead policy.
 func hubJobsGet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
-	source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, "")
-	var resp appwire.JobsGetResponse
-	if err == nil {
-		resp, err = source.JobGet(ctx, params)
-	}
-	if err == nil {
-		return resp, nil
-	}
-	if !isDeadSessionError(err) {
-		return appwire.JobsGetResponse{}, err
-	}
-	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref})
-	if !ok {
-		return appwire.JobsGetResponse{}, err
-	}
-	job, found, getErr := agent.LoadSessionJobGet(entry.StateDir, entry.Meta.ID, params.JobID)
-	if getErr != nil {
-		return appwire.JobsGetResponse{}, getErr
-	}
-	if !found {
-		return appwire.JobsGetResponse{}, appwire.InvalidParams("job not found: " + params.JobID)
-	}
-	return appwire.JobsGetResponse{Data: job}, nil
+	return hubJobRead(ctx, cfg, sources, params.Ref, params.JobID,
+		func(source appsource.Source) (appwire.JobsGetResponse, error) {
+			return source.JobGet(ctx, params)
+		},
+		func(stateDir, sessionID, jobID string) (appwire.JobsGetResponse, bool, error) {
+			job, found, err := agent.LoadSessionJobGet(stateDir, sessionID, jobID)
+			return appwire.JobsGetResponse{Data: job}, found, err
+		})
 }
