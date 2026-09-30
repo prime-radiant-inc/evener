@@ -3,8 +3,10 @@
 // it ended, its exit code when that isn't 0, who started it) over the tail of
 // its output, drawn as the step output viewer draws terminal text. The tree
 // is the Activity list's own, so the job stays live, and the tail is read
-// again whenever the job writes more or changes state. Like the list, it
-// never offers Refresh, and it offers no Stop.
+// again when the tree shows the job changed and on a pace while a running
+// job's detail is in front. Like the list, it never offers Refresh, and it
+// offers no Stop.
+import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useMemo } from "react";
 import { Text, View } from "react-native";
@@ -29,12 +31,15 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 	// Taken when the tree changes, so the screen runs no clock (ruling 7).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
 	const now = useMemo(() => Date.now(), [snapshot]);
-	const output = useShellJobOutput(client, row?.job ?? null);
+	const output = useShellJobOutput(client, row?.job ?? null, useIsFocused());
 
 	const quiet = { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid };
 	const gone = snapshot.tree
 		? row === undefined
-			? "This job is no longer listed."
+			? // A partial tree may hold the job in the part it couldn't read.
+				snapshot.partial
+				? "This job can't be listed right now."
+				: "This job is no longer listed."
 			: null
 		: snapshot.failed
 			? "This job couldn't be read right now."

@@ -10,8 +10,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render, renderedText, screenConnection } from "../renderNative.testkit";
 import { forgetSubagentTrees } from "./subagentTree";
 import { ShellJobScreen } from "./ShellJobScreen";
+import { JOB_OUTPUT_REREAD_MS } from "./useShellJobOutput";
 
-const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
+const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, focused: true }));
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
@@ -19,7 +20,7 @@ vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
 		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, [effect]),
-		useIsFocused: () => true,
+		useIsFocused: () => harness.focused,
 	};
 });
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
@@ -88,11 +89,16 @@ let navigation: { setOptions: ReturnType<typeof vi.fn>; options: NativeStackNavi
 const mounted: ReactTestRenderer[] = [];
 
 beforeEach(() => {
+	harness.focused = true;
 	forgetSubagentTrees("hub-1");
 	tree = treeWith(shellJob("j-test"));
 	output = () => ({ data: TAIL });
 	client = new FakeClient("ready");
-	client.on("evener/jobs/list", async () => ({ data: tree }));
+	client.on("evener/jobs/list", async (params) => {
+		// A second page that can't be read leaves the tree partial.
+		if (params.continuation === "page-2") throw new Error("offline");
+		return { data: tree };
+	});
 	client.on("evener/jobs/output", async (params) => output(params) as never);
 	harness.connection = screenConnection(client, "ready");
 	const options: NativeStackNavigationOptions[] = [];
@@ -170,7 +176,10 @@ it("names no exit code for a job that is running or exited cleanly", async () =>
 	expect(renderedText(await mount())).not.toContain("Exited");
 });
 
+// Behind another screen the running job isn't read on a pace, so what reads
+// it again here is the tree showing the job changed.
 it("reads the output again when the job writes more or ends, and not when the tree changes elsewhere", async () => {
+	harness.focused = false;
 	tree = treeWith(
 		shellJob("j-test", {
 			status: "running",
@@ -243,6 +252,51 @@ it("drops the output it showed once the job leaves the tree", async () => {
 	await treeChanges({ revision: 2, root: session("local:coord", COORDINATOR.title, []) });
 	expect(renderedText(screen)).toContain("This job is no longer listed.");
 	expect(renderedText(screen)).not.toContain("--- FAIL: TestSettle (0.01s)");
+});
+
+// The hub announces a job's start and finish but not its output, so a
+// running job's tail is read again on a pace while the detail is in front;
+// an ended job's tail isn't.
+it("reads a running job's output again on its own, and an ended job's only once", async () => {
+	tree = treeWith(
+		shellJob("j-test", { status: "running", outcome: undefined, terminal: false, exitCode: undefined, endedAt: undefined }),
+	);
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+	try {
+		const screen = await mount();
+		expect(outputCalls()).toHaveLength(1);
+		output = () => ({ data: { ...TAIL, tail: `${TAIL.tail}still going\n`, totalBytes: 54 } });
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(JOB_OUTPUT_REREAD_MS);
+		});
+		await settle();
+		expect(outputCalls()).toHaveLength(2);
+		expect(renderedText(screen)).toContain("still going");
+		act(() => screen.unmount());
+		mounted.splice(mounted.indexOf(screen), 1);
+
+		forgetSubagentTrees("hub-1");
+		tree = treeWith(shellJob("j-test"));
+		await mount();
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(3 * JOB_OUTPUT_REREAD_MS);
+		});
+		expect(outputCalls()).toHaveLength(3);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+// A tree that couldn't be listed whole may hold the job in the part it
+// couldn't read, so the detail doesn't call the job gone.
+it("says the job can't be listed right now while the tree is partial, not that it's gone", async () => {
+	tree = {
+		revision: 1,
+		root: { ...session("local:coord", COORDINATOR.title, []), branch: { truncated: true, continuation: "page-2" } },
+	};
+	const screen = await mount();
+	expect(renderedText(screen)).not.toContain("This job is no longer listed.");
+	expect(renderedText(screen)).toContain("This job can't be listed right now.");
 });
 
 it("says when the kept output starts partway through", async () => {
