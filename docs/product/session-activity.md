@@ -117,6 +117,16 @@ can wake recovery. Proven missing resources, invalid requests and unsupported
 methods do not spin. Incomplete ancestry progresses at a paced interval instead
 of using failure backoff. Disposal cancels timers and ignores late results.
 
+Temporary source-access failures and an unfinished journal append carry
+`actionUnavailable` with `retryDisposition: "automatic"`. They use that same
+retry owner; generic unavailable results do not automatically acquire this
+meaning. A failed read preserves the last accepted journal cursor and fingerprint,
+so recovery can continue without accepting changed source data as cached history.
+Confirmed absence, source replacement and corrupt terminated records retain
+their distinct missing, stale or unavailable results. The
+[source-incarnation checks](../../agent/session_activity_cursor.go) and
+[public recovery tests](../../agent/session_activity_test.go) pin this boundary.
+
 A workspace alias can resolve to a replacement session. Resync fences pending
 responses, and a changed resolved session ID retires the former session's summary,
 rows and cursors together before publishing replacement evidence. A changed opaque
