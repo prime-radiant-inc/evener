@@ -346,6 +346,7 @@ it("filters by title, ignoring case and surrounding space", () => {
 // row with its state, its description, and the session or subagent that
 // started it, in the same flat list by state as the subagents.
 describe("shell jobs in the Activity list", () => {
+	const COORDINATOR = "Get PR 2138 Test Clean";
 	const shell = (j: ActivityJob): ActivityEntry => ({ kind: "shell", job: j });
 	const activityTree = (): ActivityTree => ({
 		revision: 1,
@@ -372,11 +373,11 @@ describe("shell jobs in the Activity list", () => {
 	});
 
 	it("lists every shell job with its state, its title and who started it", () => {
-		const jobs = flattenJobs(activityTree());
+		const jobs = flattenJobs(activityTree(), COORDINATOR);
 		const subagents = flattenSubagents(activityTree());
 		expect(subagents.map((row) => row.title)).toEqual(["Fix race in tree settle"]);
 		expect(jobs.map((row) => [row.id, row.state, row.title, row.owner])).toEqual([
-			["j-root", "running", "Serving the docs", "local:coord"],
+			["j-root", "running", "Serving the docs", COORDINATOR],
 			["j-child", "failed", "go test ./agent/...", "Fix race in tree settle"],
 		]);
 	});
@@ -384,7 +385,7 @@ describe("shell jobs in the Activity list", () => {
 	// One list in the tree's own walk order, jobs interleaved with the
 	// subagents that ran them, so the screen needs no join (issue #3446).
 	it("returns one list in walk order, jobs among the subagents", () => {
-		expect(flattenActivity(activityTree()).map((row) => row.id)).toEqual([
+		expect(flattenActivity(activityTree(), COORDINATOR).map((row) => row.id)).toEqual([
 			"j-root",
 			"Fix race in tree settle",
 			"j-child",
@@ -398,14 +399,14 @@ describe("shell jobs in the Activity list", () => {
 			revision: 1,
 			root: session("local:coord", [shell(job(false, { jobId: "same" })), entry(done("same"))]),
 		};
-		const jobs = flattenJobs(tree);
+		const jobs = flattenJobs(tree, COORDINATOR);
 		const subagents = flattenSubagents(tree);
 		expect(jobs.map((row) => row.id)).toEqual(["same"]);
 		expect(subagents.map((row) => row.id)).toEqual(["same"]);
 	});
 
 	it("sorts jobs among subagents by state, and finds them by title, command or owner", () => {
-		const all = flattenActivity(activityTree());
+		const all = flattenActivity(activityTree(), COORDINATOR);
 		const sections = subagentSections(all);
 		expect(sections.failed.map((row) => row.id)).toEqual(["j-child"]);
 		expect(sections.running.map((row) => row.id)).toEqual(["j-root"]);
@@ -418,7 +419,7 @@ describe("shell jobs in the Activity list", () => {
 	});
 
 	it("says a running job's status and quiet age, and a finished one's duration, in words", () => {
-		const [running, finished] = flattenJobs(activityTree());
+		const [running, finished] = flattenJobs(activityTree(), COORDINATOR);
 		if (!running || !finished) throw new Error("no jobs");
 		expect(shellJobMeta(running, NOW)).toBe("running · 2m");
 		expect(shellJobMeta(finished, NOW)).toBe("Command failed · 1m");
@@ -427,9 +428,9 @@ describe("shell jobs in the Activity list", () => {
 	// VoiceOver hears every ending, the clean one the meta leaves out included,
 	// and its durations in words, as a subagent row's.
 	it("reads a job to VoiceOver with how it ended, even a clean finish", () => {
-		const [running, finished] = flattenJobs(activityTree());
+		const [running, finished] = flattenJobs(activityTree(), COORDINATOR);
 		if (!running || !finished) throw new Error("no jobs");
-		expect(shellJobLabel(running, NOW)).toBe("Shell job, Serving the docs, running, 2 minutes, under local:coord");
+		expect(shellJobLabel(running, NOW)).toBe("Shell job, Serving the docs, running, 2 minutes, under Get PR 2138 Test Clean");
 		expect(shellJobLabel(finished, NOW)).toBe(
 			"Shell job, go test ./agent/..., Command failed, 1 minute, under Fix race in tree settle",
 		);
@@ -453,7 +454,7 @@ describe("shell jobs in the Activity list", () => {
 	// from the web's rows. One vocabulary now.
 	it("words an ended job's status the way the web's rows do", () => {
 		const stopped = job(true, { status: "stopped", reason: "runtime_lost", endedAt: ago(MIN) });
-		const jobs = flattenJobs({ revision: 1, root: session("local:coord", [shell(stopped)]) });
+		const jobs = flattenJobs({ revision: 1, root: session("local:coord", [shell(stopped)]) }, COORDINATOR);
 		const [row] = jobs;
 		if (!row) throw new Error("no job");
 		expect(row.state).toBe("done");
@@ -465,7 +466,7 @@ describe("shell jobs in the Activity list", () => {
 	// clean finish: its status stays on the row instead of being left to the hue.
 	it("leaves a job that ended badly, even under a completed status, un-clean", () => {
 		const bad = job(true, { status: "completed", outcome: "failure", endedAt: ago(MIN) });
-		const jobs = flattenJobs({ revision: 1, root: session("local:coord", [shell(bad)]) });
+		const jobs = flattenJobs({ revision: 1, root: session("local:coord", [shell(bad)]) }, COORDINATOR);
 		const [row] = jobs;
 		if (!row) throw new Error("no job");
 		expect(row.state).toBe("failed");
@@ -498,7 +499,7 @@ describe("qualified activity evidence", () => {
 				),
 			]),
 		};
-		expect(flattenActivity(t)).toHaveLength(6);
+		expect(flattenActivity(t, "Coordinator")).toHaveLength(6);
 		expect(subagentOutcome(t, "same", NOW, "local:parent-a")).toBe("left");
 		expect(subagentOutcome(t, "same", NOW, "local:parent-b")).toBe("right");
 		expect(subagentOutcome(t, "same", NOW, "local:unrelated")).toBeUndefined();

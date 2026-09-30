@@ -1137,7 +1137,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 			// it, as a hub answers.
 			for (const raw of sessionsList) {
 				const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(raw)), startupMs).data);
-				const job = tree ? flattenJobs(tree).find((row) => row.id === params.jobId)?.job : undefined;
+				const job = tree ? flattenJobs(tree, tree.root.label).find((row) => row.id === params.jobId)?.job : undefined;
 				if (job && job.ownerRef === params.ref) return demoJobOutput(job);
 			}
 			throw new Error(`job not found: ${params.jobId}`);
