@@ -898,22 +898,37 @@ holding process exits before saving succeeds.
 
 **Current behavior.** Install succeeds and the hub replies `Restarting: true`.
 A later install-lock, digest or exec failure only reaches stderr; the old hub
-keeps serving and the user lacks a precise final update result. Repeating apply
-begins a fresh update operation.
+keeps serving and the user lacks a precise final update result. The browser stops
+waiting after 30 seconds and asks the user to check logs, even when the old hub
+never stopped. Repeating apply begins a fresh update operation.
 
 **Evidence.** [Update response](../../cmd/evener-hub/app_update.go#L198) precedes
 [scheduleHubRestartAfterResponse](../../cmd/evener-hub/app_update.go#L344), whose
-abort path logs without publishing an operation outcome.
+abort path logs without publishing an operation outcome. Browser
+[restart polling](../../cmd/evener-hub/frontend/src/stores/hubUpdate.ts#L71)
+and [timeout presentation](../../cmd/evener-hub/frontend/src/panes/settings/sections/hubUpdates.tsx#L99)
+do not identify the failed restart step.
 `TestHubUpdateApplyReleasesLockWhenRestartExecFails` protects lock
 release, not client-visible final status.
 
-**Discuss.** Track installed/restart-pending/restart-failed state and make a safe
-restart-only retry available. Retain digest/lock validation and the working old
-hub; an update promise must not justify executing changed replacement bytes.
+**Decision.** Keep an update request pending until the requested version is
+confirmed running. Keep the working old hub available and accurately distinguish
+completed installation from a pending restart. Automatically retry recoverable
+restart failures, even when recovery occurs later than the initial attempt; the
+original update request authorizes that continuation. Retry the outstanding
+restart without downloading or installing again when the installed artifact
+still matches. Retain digest and installation-lock validation. If another update
+has replaced the file, reconcile the newer operation before restarting.
+Cancellation or a superseding request takes precedence over the pending update.
+Implementation remains pending.
 
 **Acceptance.** Fail delayed restart after a successful response. The client
-learns the exact installed-but-not-restarted outcome, retains access, and retries
-without a redundant download when the installed artifact still matches.
+learns the installed-but-not-restarted outcome and retains access to the working
+hub. Recovery after the initial polling window automatically completes the same
+request without a redundant download when the installed artifact still matches.
+Only confirmation of the requested running version completes the update. An
+artifact replaced by another update is reconciled before execution; cancellation
+or a newer request prevents stale restart attempts.
 
 ### H11 Remote bootstrap diagnostics
 
