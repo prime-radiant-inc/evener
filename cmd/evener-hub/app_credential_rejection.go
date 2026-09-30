@@ -14,8 +14,9 @@ import (
 // credential itself: an HTTP 401 or 403, or an llm authentication or
 // access-denied failure. It is the one rule for what "rejected" means: the
 // credential test's classifier uses it, and so does settleCredentialProbe,
-// through which every probe outcome is recorded (Test connection, and the
-// hub's own model listings). Rate
+// through which every probe outcome is recorded: Test connection, the hub's
+// own model listings, and the probe a session's refused turn triggers
+// (sessionCredentialWatch). Rate
 // limits and quota (429), server errors, timeouts, network failures, a missing
 // endpoint and local configuration errors are not rejections: they say nothing
 // about whether the credential is good. status is the HTTP status when one is
