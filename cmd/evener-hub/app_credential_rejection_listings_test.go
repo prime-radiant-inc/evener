@@ -132,8 +132,8 @@ func TestCredentialRejection_ARefreshThatFailsOtherwiseKeepsIt(t *testing.T) {
 	}
 }
 
-// The background prefetch lists every instance on a timer, so a rejected key
-// shows as an error without anyone pressing Test.
+// The startup prefetch lists every instance once, so a key rejected at hub
+// start shows as an error without anyone pressing Test.
 // It is announced from the prefetch's goroutine like any other change, so
 // clients re-read the status.
 func TestCredentialRejection_TheLivePrefetchRecordsIt(t *testing.T) {

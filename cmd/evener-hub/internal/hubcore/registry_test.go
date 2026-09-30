@@ -191,8 +191,8 @@ func TestReloadKeepsReadersUnblockedWhileItLoads(t *testing.T) {
 // TestBeginLiveFetchDoesNotMoveTheCacheGeneration pins the two clocks
 // apart. Generation is what readers record to cache derived inventory (the
 // model-list endpoint), and starting a fetch changes nothing a reader can
-// observe: the background prefetch begins a fetch per instance on every
-// pass, so counting starts there would defeat that cache's TTL outright.
+// observe: the startup prefetch begins a fetch per instance, so counting
+// starts there would defeat that cache's TTL outright.
 // Landing a listing still moves it.
 func TestBeginLiveFetchDoesNotMoveTheCacheGeneration(t *testing.T) {
 	h := NewProviderRegistry(hermeticLoader)

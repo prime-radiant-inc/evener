@@ -138,7 +138,7 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 	// ONE snapshot for both: reading the holder twice would let a Reload
 	// land between the reads, pairing a name set from one generation with
 	// before-facts from another — a just-created instance would be skipped
-	// for a whole interval, and a re-pointed one compared against a stale
+	// by the pass, and a re-pointed one compared against a stale
 	// before, which reads as a change and broadcasts spuriously.
 	if reg := holder.Get(); reg != nil {
 		for _, inst := range reg.Instances() {
