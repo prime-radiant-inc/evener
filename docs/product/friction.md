@@ -418,20 +418,20 @@ retried once and then dispatched directly as a plain RPC instead of failing
 closed, so sends keep working in a storage wedge. The fallback re-earns the
 dispatcher's admission and refuses when this tab can see an earlier undelivered
 or in-flight durable send for the same ref, but it carries none of the durable
-row's guarantees. Three gaps remain. (1) Per-ref ordering: the guard is
-process-local and populated only after a durable enqueue commits, so it cannot
-see a row written by another tab, a row from a previous session this page never
-read, or a concurrent enqueue still in flight; a later send can then reach the
-daemon ahead of an earlier undelivered one for the ref. (2) The cross-tab Stop
-fence: a fallback send carries no click-time stop epoch. The epoch is a
-commit-order comparison inside the enqueue transaction against the durable row
-that would have been written, not a wire parameter, so a send with no row has
-nothing to compare and a Stop landing in another tab during the wedge cannot
-cancel it. (3) Duplicate suppression across a human retry: the fallback's
-automatic wire retry reuses one `clientMutationId`, but if the RPC lands and its
-reply is lost the composer reports a failure and keeps the draft, and the
-person's re-send is a new intent with a new id, so the daemon can apply the send
-twice.
+row's guarantees. Three gaps remain. (1) Per-ref ordering: both guards are
+process-local and see only this tab's own enqueues, so they cannot see a durable
+row written by another tab, a row from a previous session this page never read,
+or a concurrent enqueue in another tab still in flight; a later send can then
+reach the daemon ahead of an earlier undelivered one for the ref. (2) The
+cross-tab Stop fence: a fallback send carries no click-time stop epoch. The
+epoch is a commit-order comparison inside the enqueue transaction against the
+durable row that would have been written, not a wire parameter, so a send with
+no row has nothing to compare and a Stop landing in another tab during the
+wedge cannot cancel it. (3) Duplicate suppression across a human retry: the
+fallback's automatic wire retry reuses one `clientMutationId`, but if the RPC
+lands and its reply is lost the composer reports a failure and keeps the draft,
+and the person's re-send is a new intent with a new id, so the daemon can apply
+the send twice.
 
 **Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2449)
 and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2538);
