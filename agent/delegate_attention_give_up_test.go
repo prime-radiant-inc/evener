@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -311,7 +314,13 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		}
 	})
 
-	t.Run("transcript gone: stays parked and owed", func(t *testing.T) {
+	// Not parallel: it swaps the default slog handler to capture the
+	// escalation's warning, which names the missing transcript.
+	t.Run("transcript gone: stays parked and owed, and the retry stands down", func(t *testing.T) {
+		var logged bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
 		fenced := parkedUnderClosedParent(t)
 		if err := os.Remove(transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)); err != nil {
 			t.Fatalf("remove grandchild transcript: %v", err)
@@ -321,6 +330,18 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 
 		if owed, parked := fenced.owedAndParked(); !owed || !parked {
 			t.Fatalf("after a failed strict escalation: owed=%t parked=%t, want the attention kept and parked", owed, parked)
+		}
+		// The delegate already said it is undeliverable; its failed
+		// escalation must not re-arm the retry, or the drive re-runs it
+		// every backoff tick forever.
+		fenced.root.attentionMu.Lock()
+		retryArmed := fenced.root.stableAttentionRetry.active
+		fenced.root.attentionMu.Unlock()
+		if retryArmed {
+			t.Fatal("a parked delegate's failed escalation armed the stable attention retry")
+		}
+		if got := logged.String(); !strings.Contains(got, "delegate attention failed") || !strings.Contains(got, "no such file or directory") {
+			t.Fatalf("daemon log = %q, want the escalation's failure naming the missing transcript", got)
 		}
 	})
 }
@@ -346,5 +367,23 @@ func TestAParkedDelegateWithALiveRuntimeCanReserveItsAttention(t *testing.T) {
 
 	if _, err := c.ReserveAttention(runtime, attentionID); err != nil {
 		t.Fatalf("ReserveAttention for a parked delegate that is resident again = %v, want the reservation", err)
+	}
+}
+
+// A parked delegate that nothing fences is not the cold-restore drive's
+// work, so it neither reads as runnable nor wakes the drive.
+func TestAParkedUnfencedDelegateIsNotRunnable(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateControllerIdle(t, c, "dlg_parked", "")
+	if !c.noteDelegateAttention("dlg_parked", "delegate:dlg_parked") {
+		t.Fatal("note attention")
+	}
+	if !c.hasRunnableDelegateAttention() {
+		t.Fatal("this test is not in the state it means to be: the unparked delegate is not runnable")
+	}
+	c.parkDelegateAttention("dlg_parked")
+	if c.hasRunnableDelegateAttention() {
+		t.Fatal("a parked, unfenced delegate reads as runnable")
 	}
 }

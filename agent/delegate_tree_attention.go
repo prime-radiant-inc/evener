@@ -437,9 +437,11 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 
 // delegateAttentionWakeEligibleLocked reports whether delegateID could accept
 // an attention wake or an escalation right now, before the ancestor fence is
-// consulted. It is the shared eligibility predicate for ReserveAttention and
-// every wake-cache scan, so the driver, the retry loop, and the escalation
-// collector cannot disagree about the same delegate.
+// consulted. ReserveAttention and every wake-cache scan start from it; the
+// cold-restore drive then also skips parked delegates
+// (coldRestoreDriveCandidateLocked), a park it does not know about, so a
+// parked delegate's own runtime can still reserve and the escalation still
+// reaches it.
 func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID string) bool {
 	if !c.idleRestorableLocked(delegateID) {
 		return false
