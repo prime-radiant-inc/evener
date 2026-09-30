@@ -117,7 +117,7 @@ Board (home)
 │   └── Queue, tasks, Notes & links → Reader | in-app browser (sheets)
 ├── New session (sheet)
 ├── Search (from the header)
-└── Hub (from the header button): hosts, providers, plugins, recipes, display, alerts, hubs, about
+└── Hub (from the header button): hosts, providers, plugins, display, alerts, hubs, about
 ```
 
 Movement:
@@ -522,7 +522,6 @@ Cancel          New session          Start
 │                                          │
 │ +                                        │
 └──────────────────────────────────────────┘
-[Same as last time] [Evener coordinator] [Quick question] [+ Save]
 Host        magic-kingdom                      ›
 Project     evener                             ›
 Model       GLM 5.3 Vision   via lunaroute     ›
@@ -535,7 +534,7 @@ More options                                   ›
 ```
 
 - **Prompt** first, focused on open, SF Pro 17; + attaches images. (Dictation works through the keyboard's own mic; the sheet doesn't say so.)
-- **Recipes:** chips for "Same as last time" (selected by default; the last setup used for the chosen project), saved recipes, and "+ Save" to save the current setup as a recipe. A recipe sets host, project, model, effort, plugins, access and branch, and the rows beneath show what it set. After any change a Custom chip lights up instead. ("Last used" was ambiguous to first-glance participants. A round-3 line spelling out what the recipe sets was later removed: all three critics found it repeated the rows directly beneath it.)
+- **Last setup:** the sheet opens on the newest setup used on this hub, kept on the phone, and the rows beneath show it.
 - **Host:** hosts; connected ones carry no mark, offline ones are disabled, marked "Offline" in amber, and offer "Connect". Changing host keeps the project when it exists on the new host; otherwise it switches to that host's most recent project and says so under the list.
 - **Project:** recent projects on the chosen host (name and path), then "Browse folders on <host>…" with path completion and "New folder".
 - **Model:** recent (up to five), then all models grouped by provider profile. Each row: display name, provider profile, capability icons (vision, tools), context size, price per million tokens. The launch row shows the provider as "via lunaroute"; a bare profile name meant nothing to first-glance participants.
@@ -555,7 +554,6 @@ Opened from the hub button. A large-detent sheet with a grouped list.
 - **Hosts:** each row shows name, state (Connected, Connecting, Offline · last seen 2d, Error), OS and architecture, version (a gray "Hub runs 0.9.412" tag when it differs from the hub), and live session count; no green dot for a connected host. Host detail: status in words ("Connected", "Connecting…", an amber "Offline"), version, sessions ("3 live", or "3 live, out of reach" while offline), roots, last error, and actions: Connect, only for a host the hub isn't attached to (an attached host that drops is retried by the hub on its own), showing "Connecting…" while it tries, then Edit and Remove (for every host the hub manages: `hub.toml` is machine-managed and rewritten in place, so no host is read-only — registry spec 08 §6), the same set the web offers. An offline host's footer leads with what's wrong and what to do: "This host is offline, so its sessions can't be reached.", then "The hub keeps trying to reach it." for an attached host (its status reads "Offline · reconnecting": the hub retries it at least every 30 seconds, so there is no force-retry) or "Connect to reach them." for one the hub isn't attached to. When a connected host's version differs from the hub's, the footer says instead: "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient." There is no Update button: the hub attaches a protocol-compatible host on its own build and logs the difference, and installs its own build on connect only when a deploy path is configured (`cmd/evener-hub/internal/sshconn/manager.go`), so the phone has nothing to call.
 - **Providers:** instances with sign-in status (Signed in, Expires in 3d, Sign-in expired in amber, Key set, Error). Detail: default model, models, Sign in (device code flow: the code, a copy button, "Open sign-in page", and automatic completion), Replace key (paste), Test. The hub's device flow hands the app only a page URL and a code (`AuthDeviceStartResponse`), so "Open sign-in page" copies the code on the way and opens the page in an in-app browser; the sheet says "this code is copied for you. Paste it when the page asks for it," and the waiting state repeats the code.
 - **Plugins:** Installed (on-by-default switch, update badge, Upgrade, Remove), Marketplaces (add by GitHub repo or URL, refresh, remove), Browse and Install.
-- **Recipes:** list, edit, reorder, delete.
 - **Display:** Appearance (System, Light, Dark), Reading font (Serif, Sans), Default detail level, Show model on Board rows.
 - **In-app alerts:** banners for failures (on), questions and approvals (on), finished results (off); hold alerts while reading (on); haptics (on).
 - **Hubs:** the connected hub, add a hub (scan pairing code or paste link), switch, remove.
@@ -736,7 +734,6 @@ Each has a fallback so the phone works before it lands.
 | S5 | Activity buckets per live session (events per minute, last 7 to 10 minutes) and last activity time | The pulse meter and "may be stuck" | Use `updated_at`; show a single bar |
 | S6 | Direct subagent stop | Stop a runaway subagent without asking the coordinator (section 9) | Steer the coordinator; a running subagent's screen holds Ask coordinator to stop it where its composer would be |
 | S7 | Image and document proxying for sessions on other hosts | Images and plans in remote sessions render | Show "Open on the host" notice |
-| S8 | Launch recipes stored on the hub (shared with the web) | Recipes follow you across devices | Phone-local recipes |
 | S9 | Document revision identity in doc reads | "Changes since you last read" | Diff against the phone's cached copy |
 | S10 | Push delivery (APNs sender, device registration, event payloads, Live Activity updates) | Phase 2 | In-app alerts |
 | S12 | Scoped approvals: "allow writes under this folder for the rest of this session" as an escalation resolution | A batch job (a 214-page mirror) doesn't ask 214 times | Allow once, repeatedly |
@@ -759,7 +756,7 @@ Each has a fallback so the phone works before it lands.
 
 - Prototype: `docs/design/mobile/redesign/prototype/` (a clickable HTML model of this spec with fixture data shaped like the real usage in section 2).
 - Harness and study materials: `docs/design/mobile/redesign/usability/`.
-- Findings and the changes they caused are recorded in `docs/design/mobile/redesign/usability/findings.md` and folded back into this spec. Round 1 (five participants, 27 of 29 tasks succeeded) changed: edge-zone row swipes, the Next bar, alert placement and timing, Continue reading, detail-level descriptions, scoped approvals, "Finished", host update while offline, and effort in the launch flow. Round 2 (23 of 23) fixed the long-press lift and the edge-swipe back inside scroll areas. Round 3 (9 of 9) split the Next bar into a list and Next, attached comments to list items, required an explicit review verdict, and led to "Same as last time", the sign-in copy, the host version note and edge-swipe back inside stacked sheets.
+- Findings and the changes they caused are recorded in `docs/design/mobile/redesign/usability/findings.md` and folded back into this spec. Round 1 (five participants, 27 of 29 tasks succeeded) changed: edge-zone row swipes, the Next bar, alert placement and timing, Continue reading, detail-level descriptions, scoped approvals, "Finished", host update while offline, and effort in the launch flow. Round 2 (23 of 23) fixed the long-press lift and the edge-swipe back inside scroll areas. Round 3 (9 of 9) split the Next bar into a list and Next, attached comments to list items, required an explicit review verdict, and led to the sign-in copy, the host version note and edge-swipe back inside stacked sheets.
 - Phase 2 moved from "can people do it" to "can people read it, and does it hold together": three design critics (an iOS design juror, an information designer, a brand and craft reviewer) scored 22 screens, a first-glance comprehension test asked three personas what each screen means, and the changes were checked by running both again. That phase produced the calmer Board (fleet meter, notices as rows, the Live summary line, color only on state words, the task line), the Next capsule, the slimmer docks, the serif conversation, one meter per view, three subagent states, and the color-discipline rules in 16.1.
 - Round 4 (four fresh participants on the tasks phase 2 touched most; 11 of 12 succeeded, one partial) made the note editor look and act like one, with a visible field and focus and a save on close confirmed by a toast; sent Next to whichever session alerted you most recently, named it, and kept Back returning to where you started; put comment markers on the list item they belong to; made "Stop requested" visibly complete; gave the Reader's Back a count; confirmed detail-level changes with a toast; quieted rows in pinned categories; and explained "Ask aside…" and "Restart needed".
 - Jesse's review of the native app (2026-09-26) added principle 2 (Calm) and reshaped the composer: one Send that queues while the agent works, Steer now on each queued message, Stop at the end of the status tray and only while the agent works, the composer anchored to the bottom of the screen, and reconnection that needs no button. The prototype still shows the earlier Steer and Queue buttons, the first-use hint and Stop in the composer; this spec wins where they differ.
