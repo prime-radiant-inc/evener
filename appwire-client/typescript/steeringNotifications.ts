@@ -418,15 +418,23 @@ function isDefaultEnvelopeCopy(result: Record<string, unknown>, envelope: { mess
 // The stub phrases a machinery ending writes as its packet message - fold.go's
 // bare stop packet ("stopped by parent"), delegate_user_stop.go's
 // delegateUserStopMessage, and context.Canceled's own error text - restate the
-// ending the head's reason line already says in words. So does a message that
-// IS the ending itself (a failed run's whole error is its ending's first
-// line; one that runs further keeps its full text, since the head shows only
-// that first line). None of those is a report, so none parses as the message.
+// ending the head's reason line already says in words, and only a stopped or
+// failed run writes them. A reported run's message is the subagent's own
+// report, however short: a completed delegate that really said one of them
+// keeps its words. So does a message that IS the ending itself (a failed
+// run's whole error is its ending's first line; one that runs further keeps
+// its full text, since the head shows only that first line). None of the
+// suppressed ones is a report, so none parses as the message.
 const MACHINERY_PACKET_MESSAGES = new Set(["stopped by parent", "Stopped by the user.", "context canceled"]);
 
-function packetBodyMessage(text: string, ending: string | undefined): string | undefined {
+function packetBodyMessage(
+  text: string,
+  ending: string | undefined,
+  outcome: NotificationOutcome | undefined,
+): string | undefined {
   const value = text.trim();
-  if (value === "" || MACHINERY_PACKET_MESSAGES.has(value)) return undefined;
+  if (value === "") return undefined;
+  if ((outcome === "failed" || outcome === "stopped") && MACHINERY_PACKET_MESSAGES.has(value)) return undefined;
   if (ending !== undefined && value === ending) return undefined;
   return value;
 }
@@ -443,7 +451,7 @@ function delegatePacketNotification(
   const outcome = DELEGATE_OUTCOMES.get(packet.outcome);
   const ending = delegateEndingText(packet);
   const envelope = parsePacketEnvelope(packet.message);
-  const message = packetBodyMessage(envelope?.message ?? packet.message, ending);
+  const message = packetBodyMessage(envelope?.message ?? packet.message, ending, outcome);
   // Both structured-result sources and their verdict fields are gated on the
   // reported kind: the daemon captures and validates a structured result on
   // the reported path only (captureDelegateStructuredResult runs inside the

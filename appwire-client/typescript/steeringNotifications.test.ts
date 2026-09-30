@@ -1571,6 +1571,23 @@ test("a plain JSON report with extra keys stays whole", () => {
   expect(n?.structuredResult).toBeUndefined();
 });
 
+// Only a stopped or failed run writes the machinery stub phrases (the fold's
+// bare stop, the user stop, context.Canceled's error text). A reported run's
+// message is the subagent's own report, however short: a completed delegate
+// that really said one of them keeps its words.
+test("a completed run whose report is exactly a machinery phrase keeps its message", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: "Stopped by the user.",
+        metadata: { outcome: "completed", name: "task9-literal" },
+      }),
+    ),
+  );
+  expect(n?.message).toBe("Stopped by the user.");
+});
+
 // The packet's ending is display prose - the one reason-shaped value a phone
 // line can say beneath a headline. A legacy attribute frame's `reason` is the
 // producer's raw code (exit_nonzero, stopped_by_parent) and never earns that
