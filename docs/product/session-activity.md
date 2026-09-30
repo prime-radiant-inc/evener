@@ -130,6 +130,20 @@ an observed summary so its counts can become known. A summary with
 `refreshPending` uses the same existing paced summary timer until established
 sources catch up; closing the last holder or going offline cancels that demand.
 
+A collection refresh preserves every displayed page while a fresh cursor walk
+rereads through the last displayed row's stable identity. Only a clean walk
+through that boundary, or authoritative completion, replaces membership and
+removes absent rows. Explicit paging during recovery extends the displayed
+boundary; provisional refresh rows do not. Source issues remain pending across
+clean continuation pages until a fresh root walk reconciles them.
+
+Refresh continuations yield for 100 ms between pages and stop when their view
+releases demand or the connection goes offline. The usual refresh rereads the
+displayed extent plus new rows and the final page's overhang. If the old boundary
+row was removed, the existing opaque cursor contract requires walking to the end
+to establish its absence. That worst case can read the whole collection; each
+page remains bounded and observed demand controls the walk.
+
 Transient failures retain useful collection rows and context and retry after 1, 2, 4, 8, 16 and then 30
 seconds, continuing at that cap while observed. Reconnect and explicit refresh
 can wake recovery. Proven missing resources, invalid requests and unsupported
