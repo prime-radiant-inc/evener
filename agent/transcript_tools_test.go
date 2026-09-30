@@ -443,7 +443,8 @@ func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 // --- TestFind_QuerySearch ---
 
 // TestFind_QuerySearch verifies that:
-//   - a query matching session metadata returns that session without snippets
+//   - a query matching session metadata returns that session (metadata hits now
+//     carry a bounded prompt/title snippet)
 //   - a query matching only transcript content returns that session with snippets
 //   - scanned is set when a content scan ran
 func TestFind_QuerySearch(t *testing.T) {

@@ -761,8 +761,20 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 			"properties": map[string]any{
 				"query":       map[string]any{"type": "string", "description": "Case-insensitive substring to match against session content (no regex/boolean). Omit for the plain catalog."},
 				"children_of": map[string]any{"type": "string", "description": "A transcript_ref; return the sessions it spawned (subagents/forks), scoped to that ref's project. Takes precedence over query."},
-				"scope":       map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
-				"limit":       map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
+				"kind":        map[string]any{"type": "string", "enum": []string{"root", "subagent", "fork", "any"}, "description": "Keep only sessions of this lineage kind. \"any\" or omitted applies no kind filter."},
+				"has_children": map[string]any{
+					"type":        "boolean",
+					"description": "Keep only sessions that spawned children (true) or that spawned none (false). Omit for no filter.",
+				},
+				"min_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at least this many turns."},
+				"max_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at most this many turns."},
+				"updated_after": map[string]any{"type": "string", "description": "RFC3339 timestamp; keep only sessions updated at or after it."},
+				"updated_before": map[string]any{
+					"type":        "string",
+					"description": "RFC3339 timestamp; keep only sessions updated at or before it.",
+				},
+				"scope": map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
+				"limit": map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
 			},
 		},
 	}
