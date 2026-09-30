@@ -601,9 +601,23 @@ working, not the remedy failing — while the durable epoch still kills
 anything scheduled before the
 clear. Deletion is the storage adapter's own operation so a wedged
 open degrades to the unavailable state rather than a failed button.
-An aborted clear transaction is a clean no-op in every tab, because IndexedDB
-commits the deletions and the epoch increment as one unit and the
-broadcast is commit-gated: nothing changed anywhere, so the row
+A clear that never reaches a definite commit is a clean no-op in every
+tab, because IndexedDB commits the deletions and the epoch increment
+as one unit and the broadcast is commit-gated: nothing changed
+anywhere. There is no third state to handle: an IndexedDB transaction
+has exactly two definite terminal states, an open or transaction
+creation that fails is an abort that happened before there was a
+transaction to abort, and every request settles — there is no
+timeout whose commit status is unknown, so the rule is simply revert
+unless a commit is observed. Even a revert taken over a commit that
+landed unobserved self-heals: the tab's in-memory epoch sits below the
+durable one, its next write aborts on the in-transaction read and
+arms the suppression, and the row's re-clear is an idempotent no-op.
+The one path with no terminal event at all — a wedged transaction,
+the same pathology as the wedged open above — degrades the same way:
+the row never hears its commit and stays **unavailable**, and the
+premature suppression decays with final release of each open ref —
+bounded staleness of a report, not a silently blocked cache. The row
 returns to **unavailable** with its retry and the
 clear action reverts what it did optimistically in memory — the epoch
 bump restores the durable value and the suppression it armed disarms,
@@ -805,9 +819,12 @@ Store integration (`stores/threads.test.ts` additions and a new
     including a timer armed before the clear and firing after it; a
     write whose transaction runs after the clear's aborts itself on
     the in-transaction epoch read; the channel message is observed only
-    after the transaction committed, and an aborted clear sends none,
-    so a sibling never arms suppression for a clear that did not
-    happen. (c) Suppression lifecycle — an open
+    after the transaction committed, and a clear that never reaches a
+    definite commit — an aborted transaction, a failed open, a
+    failed transaction creation — sends none and reverts its
+    in-memory effects the same way, so a sibling never arms
+    suppression for a clear that did not happen and this tab's open
+    refs resume caching. (c) Suppression lifecycle — an open
     pane's post-clear notification write is refused by the suppression
     gate; a sibling tab armed by the clear's channel message refuses
     its next scheduled `history/updated` write without a reload; a ref
