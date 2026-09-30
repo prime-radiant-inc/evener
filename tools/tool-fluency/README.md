@@ -372,6 +372,9 @@ or tool use then depends only on the Evener revision under test, not on who
 runs it. Pass `--inherit-operator-env` to restore the operator's real skills
 and plugins for debugging; `result.json`'s `env_mode` field
 (`"hermetic"` or `"inherit_operator_env"`) records which mode a run used.
+A hermetic CLI run refuses an evener older than `--enabled-plugins`
+(2026-08-25) before any probe runs; compare such a version with
+`--inherit-operator-env`.
 
 ## Result shape
 

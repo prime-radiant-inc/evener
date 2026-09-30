@@ -180,6 +180,8 @@ func TestRunMatrixCommandRunsEveryPairOnTheCLIHarness(t *testing.T) {
 // still needs its own copy to decide whether to add --enabled-plugins. Not
 // parallel: it replaces the package's suite runner.
 func TestRunMatrixCommandInheritOperatorEnvFlowsToEachCell(t *testing.T) {
+	// --inherit-operator-env unsets the variable; t.Setenv restores it.
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
 	var mu sync.Mutex
 	var got []runConfig
 	orig := runMatrixSuite
