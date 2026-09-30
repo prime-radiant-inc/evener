@@ -1,21 +1,23 @@
 import { act } from "@testing-library/react";
-import { activitySummaryStore } from "../../../stores/activitySummary";
+import { connectionStore } from "../../../stores/connection";
+import { acquireSessionActivity, sessionActivitySnapshot } from "../../../stores/sessionActivity";
 
-// A live composer's inline SessionChrome starts activity discovery on mount,
-// and its settle re-renders the chrome. Call this synchronously after render()
-// so the act() scope is open before the discovery request can settle: that
-// keeps the re-render inside act() instead of landing after a test that
-// asserts straight off the mount. A mount that started no discovery returns
-// at once.
+// Keep the actual committed summary publication within the caller's act scope.
 export async function settleActivityDiscovery(ref: string): Promise<void> {
   await act(async () => {
-    if (!activitySummaryStore.getState().entries.get(ref)?.loading) return;
-    await new Promise<void>((resolve) => {
-      const unsubscribe = activitySummaryStore.subscribe((state) => {
-        if (state.entries.get(ref)?.loading) return;
-        unsubscribe();
-        resolve();
+    const client = connectionStore.getState().client;
+    if (!client || !sessionActivitySnapshot(client, ref, "session")?.summaryState.loading) return;
+    const binding = acquireSessionActivity(client, ref);
+    try {
+      await new Promise<void>((resolve) => {
+        const stop = binding.store.subscribe(() => {
+          if (binding.store.getSnapshot().summaryState.loading) return;
+          stop();
+          resolve();
+        });
       });
-    });
+    } finally {
+      binding.release();
+    }
   });
 }

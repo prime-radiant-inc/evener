@@ -13,12 +13,7 @@
 // `subagents` (a whole-tree tally) and `needs_you_subagents`. The only branch
 // rows left are projects and host groups.
 
-import {
-  approvalWaiting,
-  type NavigationSessionSummary,
-  type NavigationWatchSummary,
-  type Source,
-} from "@evener/appwire-client";
+import { approvalWaiting, type NavigationSessionSummary, type SessionWatch, type Source } from "@evener/appwire-client";
 import {
   canonicalHostId,
   orderedHosts,
@@ -287,14 +282,14 @@ export function activeWatchCount(node: NavigationSessionSummary): number {
   // Include the armed rows the hub omitted: past the per-session cap they are
   // not on `node.watches`, but they are still this session's armed watches, and
   // counting only the retained rows understates the total.
-  return armedWatchCount(node.watches) + (node.omitted_armed_watches ?? 0);
+  return node.armed_watch_count ?? 0;
 }
 
 /** The same count read straight off the wire list, so the activity panel's
  * Watches header and the rail row's count cannot drift apart: both numbers are
  * one predicate, not two copies of one. */
-export function armedWatchCount(watches: readonly NavigationWatchSummary[] | undefined): number {
-  return (watches ?? []).filter((watch) => watch.active).length;
+export function armedWatchCount(watches: readonly SessionWatch[] | undefined): number {
+  return (watches ?? []).filter((watch) => watch.state === "armed").length;
 }
 
 /** The session's summary-line watch count. It reports ONE total per session -
@@ -359,7 +354,7 @@ export function subagentChildrenOf(session: NavigationSessionSummary): Navigatio
 // is current here too, never folded as inactive about the same node.
 export function subagentIsCurrent(child: NavigationSessionSummary): boolean {
   if (CURRENT_SUBAGENT_STATES.has(displayState(child))) return true;
-  if ((child.running_jobs ?? []).length > 0) return true;
+  if ((child.running_job_count ?? 0) > 0) return true;
   return child.children.some(subagentIsCurrent);
 }
 
@@ -417,19 +412,16 @@ export interface ActiveWorkSummary {
 }
 
 export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
-  let runningJobs = (node.running_jobs ?? []).length;
+  let runningJobs = node.running_job_count ?? 0;
   for (const child of node.children) {
     runningJobs += activeWorkSummary(child).runningJobs;
   }
   return { runningJobs };
 }
 
-// A session "wants you" either directly (its own state) or transitively (a
-// needs-you subagent, counted by the hub into needs_you_subagents - the flat
-// lists' replacement for the children walk) - either way it should sort
-// ahead of a quiet sibling within the same project.
+// The session's own attention state determines its position in the compact rail.
 function sessionWantsYou(n: RailSession): boolean {
-  return stateNeedsYou(displayState(n)) || (n.needs_you_subagents ?? 0) > 0;
+  return stateNeedsYou(displayState(n));
 }
 
 // Namespaced so a project branch's own id can never collide with a

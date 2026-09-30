@@ -6,7 +6,7 @@ import type { NavigationManifest } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { keyID, type ResourceKey, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
@@ -72,8 +72,8 @@ function install(ref: string, tasks?: { total: number; done: number; current?: s
   const root = summaryOf({ ref, title: "A", state: "active", tasks });
   const liveKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
   navigationStore.setState({
-    mode: "v2",
-    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
+    mode: "v3",
+    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [3] },
     clientGenerationID: "g1",
     manifest: resource({ kind: "manifest" }, manifest()) as ResourceState<NavigationManifest>,
     resources: new Map([
@@ -161,13 +161,13 @@ describe("TasksTab", () => {
     expect(screen.getByText("Loading tasks…")).toBeTruthy();
   });
 
-  test("mounting the tab subscribes to the session's thread (the body's data source)", () => {
+  test("mounting the tab subscribes to the session's thread (the body's data source)", async () => {
     const fake = new FakeClient("ready");
     connectionStore.getState().connect(fake);
     const ensure = vi.spyOn(threadsStore.getState(), "ensureThread").mockResolvedValue(undefined as never);
     try {
       install("local:a", { total: 5, done: 2 });
-      renderSidebar();
+      await act(async () => renderSidebar());
       expect(ensure).toHaveBeenCalledWith("local:a");
     } finally {
       ensure.mockRestore();

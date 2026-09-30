@@ -191,7 +191,7 @@ type mainDeps struct {
 	newSSHManager func(*hostreg.Registry, sshconn.Options) *sshconn.Manager
 	// startLivePrefetch warms the holder's live model cache: main wires it to
 	// the background runner and the broadcast, tests to a synchronous seam.
-	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func())
+	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, time.Duration, func(func()), func())
 	// startLaunchPrefetch warms the picker's cached launch model list so the
 	// first open after startup is instant: main wires it to the background
 	// runner, tests to a synchronous seam.
@@ -886,7 +886,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// browser refetches its list; a no-op pass stays silent.
 	// Through deps so hermetic runMain tests stay offline: the default
 	// warms the live cache from real provider endpoints.
-	deps.startLivePrefetch(ctx, hubReg, livePrefetchInterval, startBackground, func() {
+	deps.startLivePrefetch(ctx, hubReg, web.auth, livePrefetchInterval, startBackground, func() {
 		// A server-initiated pass has no originating client, so the broadcast
 		// names none: every client, including the one that may have just asked
 		// for the prefetch, reads it as an unowned list change and refetches.

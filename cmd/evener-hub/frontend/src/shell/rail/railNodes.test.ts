@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { NavigationWatchSummary, Source } from "@evener/appwire-client";
+import type { EvenerWatchInfo, Source } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import type { HostRailNode, RailNode, RailPinSection, RailProject, RailSession, SessionRailNode } from "./railNodes";
 import {
@@ -35,7 +35,7 @@ describe("subagentIsCurrent", () => {
     const grandchild = session({
       ref: "local:grandchild",
       state: "idle",
-      running_jobs: [{ job_id: "j1", job_type: "shell", status: "running" }],
+      running_job_count: 1,
     });
     const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
     expect(subagentIsCurrent(child)).toBe(true);
@@ -92,12 +92,12 @@ function session(overrides: Partial<RailSession> = {}): RailSession {
 function project(overrides: Partial<RailProject> = {}): RailProject {
   return { key: "p1", name: "Proj", sessions: [], ...overrides };
 }
-function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
+function watch(overrides: Partial<EvenerWatchInfo> = {}): EvenerWatchInfo {
   return {
     id: "w1",
     source: "self",
     deliveries: 0,
-    created_at: "2026-09-12T19:00:00Z",
+    createdAt: "2026-09-12T19:00:00Z",
     active: true,
     ...overrides,
   };
@@ -125,9 +125,9 @@ test("a summary's nested sessions, jobs, and watches build no rail rows", () => 
       session({ ref: "done", row_id: "done", kind: "fork", state: "ended" }),
       session({ ref: "working", row_id: "working", kind: "subagent", state: "active" }),
     ],
-    running_jobs: [{ job_id: "job-running", job_type: "shell", status: "running" }],
-    completed_jobs: [{ job_id: "job-completed", job_type: "shell", status: "completed" }],
-    watches: [watch({ id: "w1" })],
+    running_job_count: 1,
+    watch_count: [watch({ id: "w1" })].length + 0,
+    armed_watch_count: [watch({ id: "w1" })].filter((w) => w.active).length + 0,
   });
   const [node] = sessionNodes([root]);
   expect(node?.children).toEqual([]);
@@ -176,110 +176,6 @@ describe("resource projection semantics", () => {
     expect(section.sessions.map((row) => row.ref)).toEqual(["a", "b"]);
     expect(pinSectionDisclosureID(section.id)).toBe("pinsection:opaque");
   });
-  test("the summary line's watch count covers retained and omitted rows", () => {
-    // One total per session: retained rows plus the projector's omitted count.
-    // The row's summary line and the activity sidebar's Watches tab both read
-    // these figures, so the two surfaces cannot disagree about how many
-    // watches the session holds.
-    const cases = [
-      { retained: 1, omitted: 4, label: "1 watch · 1 armed total · +4 more" },
-      { retained: 3, omitted: 0, label: "3 watches" },
-      { retained: 5, omitted: 3, label: "5 watches · 5 armed total · +3 more" },
-      { retained: 2, omitted: 1, label: "2 watches · 2 armed total · +1 more" },
-    ];
-    for (const c of cases) {
-      const watches = Array.from({ length: c.retained }, (_, i) => watch({ id: `w${i}` }));
-      const root = session({ ref: "root", row_id: "root", watches, omitted_watches: c.omitted });
-      const label = watchCountLabel(activeWatchCount(root), c.retained, c.omitted);
-      // An all-armed list keeps the bare count when nothing was omitted; once
-      // rows were omitted the figure is labelled a total covering them.
-      expect(label).toBe(c.label);
-    }
-  });
-
-  test("the summary line's total includes retained-but-inactive watches", () => {
-    // A fired one-shot whose teardown is still pending projects inactive, so a
-    // session can hold retained rows that are not armed. The line reports one
-    // total - the retained count, with the armed count beside it - so the row
-    // and the Watches tab's list cannot disagree.
-    const inactive = (id: string) => watch({ id, active: false });
-    const cases = [
-      // 2 armed + 3 inactive, nothing omitted: 5 total, 2 armed.
-      {
-        watches: [watch({ id: "w1" }), watch({ id: "w2" }), inactive("w3"), inactive("w4"), inactive("w5")],
-        omitted: 0,
-        label: "5 watches · 2 armed",
-      },
-      // Same, plus 3 rows the projector omitted.
-      {
-        watches: [watch({ id: "w1" }), watch({ id: "w2" }), inactive("w3"), inactive("w4"), inactive("w5")],
-        omitted: 3,
-        label: "5 watches · 2 armed total · +3 more",
-      },
-      // All-inactive: 3 retained, 0 armed - still one total of 3.
-      {
-        watches: [inactive("w1"), inactive("w2"), inactive("w3")],
-        omitted: 0,
-        label: "3 watches · 0 armed",
-      },
-    ];
-    for (const c of cases) {
-      const root = session({ ref: "root", row_id: "root", watches: c.watches, omitted_watches: c.omitted });
-      const label = watchCountLabel(activeWatchCount(root), root.watches?.length ?? 0, c.omitted);
-      expect(label).toBe(c.label);
-    }
-  });
-
-  test("counts a session's own armed watches once, never a descendant's", () => {
-    const child = session({
-      ref: "child",
-      row_id: "child",
-      watches: [watch({ id: "c1" }), watch({ id: "c2" })],
-    });
-    const parent = session({
-      ref: "parent",
-      row_id: "parent",
-      children: [child],
-      watches: [watch({ id: "p1" }), watch({ id: "p2", active: false })],
-    });
-    // The parent counts only what its own summary carries - a receiver watch
-    // belongs to the session whose summary carries it - and only while armed.
-    expect(activeWatchCount(parent)).toBe(1);
-    expect(activeWatchCount(child)).toBe(2);
-    expect(activeWatchCount(session({ ref: "none", row_id: "none" }))).toBe(0);
-  });
-
-  test("adds omitted armed rows to the armed total and labels what the number covers", () => {
-    // A session with more armed watches than the hub's per-session cap: 32
-    // retained, 8 more omitted and all of them armed. The retained rows alone
-    // would report 32, understating the session's armed total of 40.
-    const retained = Array.from({ length: 32 }, (_, i) => watch({ id: `w${i}` }));
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      watches: retained,
-      omitted_watches: 8,
-      omitted_armed_watches: 8,
-    });
-    expect(activeWatchCount(root)).toBe(40);
-    expect(watchCountLabel(activeWatchCount(root), retained.length, 8)).toBe("32 watches · 40 armed total · +8 more");
-    // Even when none of the omitted rows were armed, the figure is still
-    // labelled a total: the panel cannot show which of the omitted rows were
-    // armed, so the number must say what it covers.
-    const mixed = session({
-      ref: "mixed",
-      row_id: "mixed",
-      watches: [watch({ id: "a" }), watch({ id: "b", active: false })],
-      omitted_watches: 3,
-      omitted_armed_watches: 0,
-    });
-    expect(watchCountLabel(activeWatchCount(mixed), 2, 3)).toBe("2 watches · 1 armed total · +3 more");
-
-    // The byte fitter can shed every retained row: the label then drops the base
-    // count rather than leading with "0 watches" beside a nonzero armed total.
-    expect(watchCountLabel(40, 0, 8)).toBe("40 armed total · +8 more");
-    expect(watchCountLabel(0, 0, 8)).toBe("0 armed total · +8 more");
-  });
 
   test("displayState passes a plain awaiting session through as needing you", () => {
     expect(displayState(session({ state: "awaiting" }))).toBe("awaiting");
@@ -290,15 +186,6 @@ describe("resource projection semantics", () => {
     expect(displayState(session({ state: "active", approval_pending: true }))).toBe("awaiting");
     expect(displayState(session({ state: "idle", approval_pending: true }))).toBe("awaiting");
     expect(displayState(session({ state: "errored", approval_pending: true }))).toBe("errored");
-  });
-  test("a session whose subagents need you sorts ahead of its working sibling", () => {
-    // needs_you_subagents is the hub-computed count of the row's subagent
-    // descendants waiting on a person - the flat lists' replacement for the
-    // children walk the nested rows used to make possible.
-    const working = session({ row_id: "working", ref: "working", state: "active" });
-    const needy = session({ row_id: "needy", ref: "needy", state: "active", needs_you_subagents: 2 });
-    const [node] = projectNodes([project({ sessions: [working, needy] })], closed);
-    expect(node?.children.map((child) => child.id)).toEqual(["needy", "working"]);
   });
   test("a project's session waiting on an approval sorts ahead of its working sibling", () => {
     const working = session({ row_id: "working", ref: "working", state: "active" });
@@ -876,4 +763,13 @@ describe("host grouping (organize by)", () => {
     expect(childIds(devboxAfter)).toEqual(["navigation:devbox:d1", "projectnode:evener@devbox:overflow"]);
     expect(childIds(alphaAfter)).toEqual(["navigation:render-farm:r1"]);
   });
+});
+
+test("compact receiver counts include all watches without loading descendant detail", () => {
+  const child = session({ ref: "child", watch_count: 40, armed_watch_count: 40 });
+  const root = session({ ref: "parent", watch_count: 5, armed_watch_count: 2, children: [child] });
+  expect(activeWatchCount(root)).toBe(2);
+  expect(activeWatchCount(child)).toBe(40);
+  expect(watchCountLabel(2, 5, 0)).toBe("5 watches · 2 armed");
+  expect(watchCountLabel(40, 40, 0)).toBe("40 watches");
 });

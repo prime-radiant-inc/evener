@@ -33,31 +33,33 @@ export interface ActivityTabSpec {
   Body: ComponentType<{ scope: ActivityScope }>;
 }
 
+const countText = (count: number | null) => (count === null ? "…" : String(count));
+
 export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
   {
     id: "agents",
     glyph: "⌘",
-    chipCount: (c) => `${c.activeSubagents}`,
-    chipLabel: (c) => `Agents, ${c.activeSubagents} active`,
-    tabLabel: (c) => `Agents ${c.activeSubagents}`,
+    chipCount: (c) => `${countText(c.activeSubagents)}`,
+    chipLabel: (c) => `Agents, ${countText(c.activeSubagents)} active`,
+    tabLabel: (c) => `Agents ${countText(c.activeSubagents)}`,
     chipVisible: () => true,
     Body: AgentsTab,
   },
   {
     id: "jobs",
     glyph: "$",
-    chipCount: (c) => `${c.runningJobs}`,
-    chipLabel: (c) => `Jobs, ${c.runningJobs} running`,
-    tabLabel: (c) => `Jobs ${c.runningJobs}`,
+    chipCount: (c) => `${countText(c.runningJobs)}`,
+    chipLabel: (c) => `Jobs, ${countText(c.runningJobs)} running`,
+    tabLabel: (c) => `Jobs ${countText(c.runningJobs)}`,
     chipVisible: () => true,
     Body: JobsTab,
   },
   {
     id: "watches",
     glyph: <WatchGlyph className={WATCH_GLYPH_CLASS} testId="activity-tab-watch-glyph" />,
-    chipCount: (c) => `${c.armedWatches}`,
-    chipLabel: (c) => `Watches, ${c.armedWatches} armed`,
-    tabLabel: (c) => `Watches ${c.armedWatches}`,
+    chipCount: (c) => `${countText(c.armedWatches)}`,
+    chipLabel: (c) => `Watches, ${countText(c.armedWatches)} armed`,
+    tabLabel: (c) => `Watches ${countText(c.armedWatches)}`,
     chipVisible: () => true,
     Body: WatchesTab,
   },

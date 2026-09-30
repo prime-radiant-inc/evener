@@ -18,15 +18,14 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { resetFocusedActivityScopeForTests } from "../../../shell/focusedSession";
 import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
+import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { topNotesStore } from "../../../stores/topNotes";
-import { ActivityPanelBody } from "./ActivityPanel";
 import { type SessionChromePlacement, SessionChrome as SessionChromeView } from "./SessionChrome";
 import { TopNotesPanel } from "./TopNotesPanel";
 
@@ -110,7 +109,7 @@ function setLocation(ref: string): void {
   const key = { kind: "location", ref } as const;
   const data = locationWithSession(ref);
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -159,7 +158,6 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivitySummaryStoreForTests();
   resetNavigationStoreForTests();
   resetTranscriptDisplayStoreForTests();
   topNotesStore.getState().resetForTests();
@@ -964,87 +962,6 @@ test("mobile chrome opens Sheets without changing workspace panes", async () => 
   }
 });
 
-// --- activity panel background refresh ---------------------------------------
-//
-// The panels stay mounted triggerless. Established summaries refresh in the
-// background for the menu's "Activity · N" label, while initial discovery is
-// an explicit opt-in at live-session chrome mounts.
-
-test("triggerless chrome refreshes an established Activity summary in the background", async () => {
-  const fake = connectFakeClient();
-  let fetches = 0;
-  fake.on("thread/read", () => readResponse("ref_activity_bg"));
-  fake.on("evener/jobs/list", () => {
-    fetches += 1;
-    return { data: emptyActivityTree() };
-  });
-  await threadsStore.getState().ensureThread("ref_activity_bg");
-  const initial = threadsStore.getState().threads.get("ref_activity_bg");
-  if (!initial) throw new Error("missing background activity model");
-  const model = { ...initial, jobsUpdatedAt: 1 };
-  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
-  activitySummaryStore.setState({
-    entries: new Map([
-      [
-        model.ref,
-        { counts: undefined, established: true, mountedBodies: 0, loading: false, lastFetchedBump: 0, requestID: 1 },
-      ],
-    ]),
-  });
-
-  render(<SessionChrome ref={model.ref} />);
-
-  // No trigger ever renders, yet the established summary refreshes against
-  // the newer bump - the menu's badge depends on exactly this.
-  await waitFor(() => expect(fetches).toBe(1));
-});
-
-test("desktop Activity waits for the body's first root attempt before owning later refreshes", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  let fetches = 0;
-  fake.on("thread/read", () => readResponse("ref_activity_fresh"));
-  fake.on("evener/jobs/list", () => {
-    fetches += 1;
-    const tree = emptyActivityTree();
-    tree.root.counts.active = fetches;
-    return { data: tree };
-  });
-  await threadsStore.getState().ensureThread("ref_activity_fresh");
-  const initial = threadsStore.getState().threads.get("ref_activity_fresh");
-  if (!initial) throw new Error("missing initial activity freshness model");
-  threadsStore.setState({ threads: new Map([[initial.ref, { ...initial, jobsUpdatedAt: 1 }]]) });
-
-  const chrome = render(<SessionChrome ref="ref_activity_fresh" />);
-  await act(async () => Promise.resolve());
-  expect(fetches).toBe(0);
-  expect(activitySummaryStore.getState().entries.get(initial.ref)?.established).not.toBe(true);
-
-  const body = render(<ActivityPanelBody sessionRef={initial.ref} model={initial} />);
-  await waitFor(() => expect(fetches).toBe(1));
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Activity · 1" })).toBeTruthy();
-  await user.keyboard("{Escape}");
-  body.unmount();
-
-  const current = threadsStore.getState().threads.get("ref_activity_fresh");
-  if (!current) throw new Error("missing activity freshness model");
-  act(() => {
-    threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
-  });
-  // Two more fetches, not one: the unmount hands refresh ownership back to
-  // the chrome, which first catches up on bump 1 (the body's attempt ran at
-  // a null bump), and bump 2 - arriving while that catch-up is in flight -
-  // is queued and re-issued rather than dropped (the old drop was the
-  // stale-badge bug: the UI would never have fetched bump 2's jobs at all).
-  await waitFor(() => expect(fetches).toBe(3));
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Activity · 3" })).toBeTruthy();
-  await Promise.resolve();
-  expect(fetches).toBe(3);
-  chrome.unmount();
-});
-
 // Mobile cadence relocation (2026-07-30-mobile-session-layout-design.md,
 // decision 3): the session header's liveness cadence moves into the footer
 // chrome row, because the pane header itself is hidden on mobile. Rendered
@@ -1126,4 +1043,36 @@ test("the inline chrome keeps its fixed actions outside the shrinkable status qu
   expect(inline?.[1]).toContain("min-width: 0");
   expect(inline?.[1]).not.toContain("container-type");
   expect(body?.[1]).toContain("container-type: inline-size");
+});
+
+test("triggerless chrome shares summary ownership and refreshes its menu on typed invalidation", async () => {
+  const fake = connectFakeClient(),
+    ref = "ref_activity_bg";
+  let active = 1;
+  fake.on("thread/read", () => readResponse(ref));
+  fake.on("evener/thread/activity/read", () => ({
+    ...activitySummary(ref),
+    delegates: { known: true, total: active, active, completed: 0, failed: 0 },
+    jobs: { known: true, total: 0, active: 0, completed: 0, failed: 0 },
+  }));
+  await threadsStore.getState().ensureThread(ref);
+  render(<SessionChrome ref={ref} />);
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/thread/activity/read")).toHaveLength(1));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Activity · 1" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  active = 3;
+  act(() =>
+    fake.emitNotification({
+      method: "evener/thread/activity/changed",
+      params: { ref, threadId: "owner", sessionId: "owner", resources: ["summary"] },
+    }),
+  );
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/thread/activity/read")).toHaveLength(2));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Activity · 3" })).toBeTruthy();
+  expect(
+    fake.calls.filter((c) => c.method === "evener/thread/jobs/list" || c.method === "evener/thread/delegates/list"),
+  ).toHaveLength(0);
 });

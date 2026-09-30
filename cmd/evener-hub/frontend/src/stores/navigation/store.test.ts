@@ -10,7 +10,7 @@
 import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { capability, manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { afterEach, expect, test, vi } from "vitest";
 import { EXPANSION_STORAGE_KEY } from "../../shell/rail/railExpansion";
@@ -41,14 +41,14 @@ const init = async (script: NavigationScript) => {
 };
 // The package's own suite exercises the full manifest/section/location
 // reconnect fixture (testing/navigation.ts); this file only ever reconnects
-// against a manifest read, so a plain wireV2 manifest response stands in for
+// against a manifest read, so a plain wireSnapshot manifest response stands in for
 // it instead of importing the whole apparatus. The generation is a
 // parameter, not the hardcoded default: a client booted with a capability
 // naming a different generation (a replacement, not a reconnect) needs its
 // manifest read to answer with that same generation, or the store's own
 // generation check rejects it and boot never installs anything.
 const reconnectManifestV2 = (params: NavigationReadParams, gen = generation): NavigationReadResponse =>
-  wireV2(params, emptyManifest({ revision: 11 }), '"manifest-v2"', 11, gen);
+  wireSnapshot(params, emptyManifest({ revision: 11 }), '"manifest-v2"', 11, gen);
 
 afterEach(() => {
   resetNavigationStoreForTests();
@@ -79,7 +79,7 @@ test("expansion survives a client replacement", async () => {
   await flush();
 
   try {
-    expect(navigationStore.getState().mode).toBe("v2");
+    expect(navigationStore.getState().mode).toBe("v3");
     expect(navigationStore.getState().manifest?.data).not.toBeNull();
     expect(navigationStore.getState().expanded).toBe(retainedExpansion);
     expect(navigationStore.getState().expanded.get("remembered-project")).toBe(true);
@@ -119,24 +119,24 @@ test("rail expansion persists through store reset, overrides defaults, and hydra
   let projectCalls = 0;
   await init((params) => {
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
     if (params.resource === "catalog" && params.catalog === "projects")
-      return wireV2(params, { projects: [{ key: "p", default_expanded: true }], remaining: 0 });
+      return wireSnapshot(params, { projects: [{ key: "p", default_expanded: true }], remaining: 0 });
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      return wireV2(params, {
+      return wireSnapshot(params, {
         key: "p",
         current: { sessions: [], remaining: 0 },
         recent: { sessions: [], remaining: 0 },
         archived: { sessions: [], remaining: 0 },
       });
     }
-    return wireV2(params, { sessions: [], remaining: 0 });
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
   expect(selectExpanded("p")(navigationStore.getState())).toBe(false);
   navigationStore.getState().setExpanded("p", true);
@@ -161,14 +161,14 @@ test("a persisted project-node key hydrates one v2 project root during boot", as
   client.on("evener/navigation/read", (params) => {
     calls.push(params);
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
     if (params.resource === "catalog")
-      return wireV2(params, { projects: [{ key: projectKey, default_expanded: false }], remaining: 0 });
+      return wireSnapshot(params, { projects: [{ key: projectKey, default_expanded: false }], remaining: 0 });
     throw new Error(`scripted project read ${params.resource}`);
   });
 
@@ -177,7 +177,7 @@ test("a persisted project-node key hydrates one v2 project root during boot", as
     await flush();
 
     expect(calls.filter((params) => params.resource === "project")).toEqual([
-      { resource: "project", projectKey, representationVersion: 2 },
+      { resource: "project", projectKey, representationVersion: 3 },
     ]);
   } finally {
     localStorage.removeItem(EXPANSION_STORAGE_KEY);
@@ -194,11 +194,11 @@ test("a malformed refresh response preserves the selected rail model identity", 
   let sectionCalls = 0;
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     if (params.resource !== "section") throw new Error("unexpected navigation resource");
     sectionCalls++;
     if (sectionCalls > 1) return refresh.promise;
-    return wireV2(params, { sessions: [{ ref: "local:stable", children: [] }], remaining: 0, truncated: false });
+    return wireSnapshot(params, { sessions: [{ ref: "local:stable", children: [] }], remaining: 0, truncated: false });
   });
   initNavigation(client, capability());
   await flush();

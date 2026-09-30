@@ -2,7 +2,7 @@
 // These pin the exact facts/meta shapes the brief specifies, built only from
 // real wire fields (never a fabricated instant, name, or count).
 
-import type { NavigationWatchSummary } from "@evener/appwire-client";
+import type { EvenerWatchInfo, SessionWatch } from "@evener/appwire-client";
 import {
   buildWatchRows,
   formatClockTime,
@@ -20,15 +20,16 @@ import { armedWatchCount } from "./railNodes";
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
 const CREATED = "2026-08-05T12:48:00Z";
 
-function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
-  return {
+function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
+  const info: EvenerWatchInfo = {
     id: "watch_1",
     source: "sess_root",
     deliveries: 0,
-    created_at: CREATED,
+    createdAt: CREATED,
     active: true,
     ...overrides,
   };
+  return { ownerRef: "ref_root", receiverRef: "ref_root", state: info.active ? "armed" : "ended", watch: info };
 }
 
 // armedLabel projects CREATED->NOW through the same helper the panel uses, so
@@ -43,8 +44,8 @@ function clock(iso: string): string {
 
 describe("watchRowID", () => {
   test("namespaces the watch id so expansion keys never collide with tree rows", () => {
-    expect(watchRowID("watch_ab12")).toBe("watch:watch_ab12");
-    expect(watchRowID("watch_ab12")).not.toBe("watch_ab12");
+    expect(watchRowID("ref_root", "watch_ab12")).toBe(`watch:${JSON.stringify(["ref_root", "watch_ab12"])}`);
+    expect(watchRowID("ref_root", "watch_ab12")).not.toBe("watch_ab12");
   });
 });
 
@@ -52,7 +53,7 @@ describe("buildWatchRows", () => {
   test("produces one top-level, default-open row per watch, in wire order", () => {
     const rows = buildWatchRows([watch({ id: "watch_a", note: "First" }), watch({ id: "watch_b", note: "Second" })]);
     expect(rows.map((row) => row.kind)).toEqual(["watch", "watch"]);
-    expect(rows.map((row) => row.id)).toEqual(["watch:watch_a", "watch:watch_b"]);
+    expect(rows.map((row) => row.id)).toEqual([watchRowID("ref_root", "watch_a"), watchRowID("ref_root", "watch_b")]);
     expect(rows.every((row) => row.level === 1)).toBe(true);
     expect(rows.every((row) => row.defaultDetailOpen)).toBe(true);
   });
@@ -88,7 +89,7 @@ describe("watchMeta", () => {
   test("scheduled with no deliveries carries the armed state", () => {
     const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 0, active: true });
     expect(watchMeta(w)).toBe("every 10m · armed");
-    expect(watchMeta({ ...w, active: false })).toBe("every 10m · not armed");
+    expect(watchMeta({ ...w, state: "ended", watch: { ...w.watch, active: false } })).toBe("every 10m · not armed");
   });
 
   test("a single delivery is singular", () => {
@@ -105,9 +106,9 @@ describe("watchMeta", () => {
   });
 
   test("output watches read on output plus armed state", () => {
-    const w = watch({ output_match: "/DONE/", cadence: [{ kind: "output" }], active: true });
+    const w = watch({ outputMatch: "/DONE/", cadence: [{ kind: "output" }], active: true });
     expect(watchMeta(w)).toBe("on output · armed");
-    expect(watchMeta({ ...w, active: false })).toBe("on output · not armed");
+    expect(watchMeta({ ...w, state: "ended", watch: { ...w.watch, active: false } })).toBe("on output · not armed");
   });
 
   test("event watches read on events plus armed state", () => {
@@ -128,7 +129,7 @@ describe("watchMeta", () => {
   test("a watch with an output match and a clock cadence names both", () => {
     const w = watch({
       target: "job_ab12",
-      output_match: "/DONE/",
+      outputMatch: "/DONE/",
       cadence: [{ kind: "output" }, { kind: "progress", seconds: 10 }],
       active: true,
     });
@@ -143,7 +144,7 @@ describe("watchMeta", () => {
     // the rail's watchGloss both named the event trigger too.
     const w = watch({
       target: "job_ab12",
-      output_match: "/DONE/",
+      outputMatch: "/DONE/",
       events: ["job.completed"],
       cadence: [{ kind: "output" }, { kind: "events" }],
       active: true,
@@ -153,7 +154,7 @@ describe("watchMeta", () => {
 
   test("a clock cadence with a derived next fire renders it with a tilde", () => {
     const w = watch({
-      cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+      cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }],
       deliveries: 0,
     });
     // 15:04:12 minus the pinned NOW (15:00:12) is four minutes, worded with "~".
@@ -162,12 +163,12 @@ describe("watchMeta", () => {
 
   test("an output or event watch renders no next fire even when the field is present", () => {
     const output = watch({
-      output_match: "/x/",
-      cadence: [{ kind: "output", derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+      outputMatch: "/x/",
+      cadence: [{ kind: "output", derivedNextFireAt: "2026-08-05T15:04:12Z" }],
     });
     const event = watch({
       events: ["a"],
-      cadence: [{ kind: "events", derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+      cadence: [{ kind: "events", derivedNextFireAt: "2026-08-05T15:04:12Z" }],
     });
     for (const label of [watchMeta(output, NOW), watchMeta(event, NOW)]) {
       expect(label).not.toMatch(/\bnext\b/i);
@@ -182,7 +183,7 @@ describe("watchMeta", () => {
 
   test("a derived instant already in the past renders no next fire", () => {
     const w = watch({
-      cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T14:00:00Z" }],
+      cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T14:00:00Z" }],
       deliveries: 0,
     });
     expect(watchMeta(w, NOW)).toBe("every 10m · armed");
@@ -190,7 +191,7 @@ describe("watchMeta", () => {
 
   test("a cadence kind this build does not know still names its trigger", () => {
     const w = watch({
-      cadence: [{ kind: "solar_flare", derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+      cadence: [{ kind: "solar_flare", derivedNextFireAt: "2026-08-05T15:04:12Z" }],
       deliveries: 0,
     });
     // The kind is named through the label's own fallback, and it gets no
@@ -205,7 +206,7 @@ describe("watchFacts", () => {
     const w = watch({
       cadence: [{ kind: "every", seconds: 600 }],
       deliveries: 3,
-      delivery_times: ["2026-08-05T14:50:00Z", "2026-08-05T14:58:00Z"],
+      deliveryTimes: ["2026-08-05T14:50:00Z", "2026-08-05T14:58:00Z"],
     });
     expect(watchFacts(w, NOW)).toBe(
       `Fires every 10m · armed ${armedLabel()} ago · 3 deliveries · last at ${clock("2026-08-05T14:58:00Z")}`,
@@ -232,7 +233,7 @@ describe("watchFacts", () => {
   test("output watches name the target and the match", () => {
     const w = watch({
       target: "job_ab12cd",
-      output_match: "/DONE/",
+      outputMatch: "/DONE/",
       cadence: [{ kind: "output" }],
       deliveries: 0,
     });
@@ -244,10 +245,10 @@ describe("watchFacts", () => {
   test("output watches with deliveries report the count", () => {
     const w = watch({
       target: "job_ab12cd",
-      output_match: "/DONE/",
+      outputMatch: "/DONE/",
       cadence: [{ kind: "output" }],
       deliveries: 4,
-      delivery_times: ["2026-08-05T14:58:00Z"],
+      deliveryTimes: ["2026-08-05T14:58:00Z"],
     });
     expect(watchFacts(w, NOW)).toBe(
       `Waiting on job_ab12cd, matching /DONE/ · armed ${armedLabel()} ago · 4 deliveries`,
@@ -275,14 +276,14 @@ describe("watchFacts", () => {
   });
 
   test("a wildcard event watch reads as session events", () => {
-    const w = watch({ wildcard_events: true, events: [], cadence: [{ kind: "events" }], deliveries: 0 });
+    const w = watch({ wildcardEvents: true, events: [], cadence: [{ kind: "events" }], deliveries: 0 });
     expect(watchFacts(w, NOW)).toBe(`Waiting on session events · armed ${armedLabel()} ago · no deliveries yet`);
   });
 
   test("a multi-trigger watch states every configured condition, not only its first", () => {
     const w = watch({
       target: "job_ab12",
-      output_match: "/DONE/",
+      outputMatch: "/DONE/",
       cadence: [{ kind: "output" }, { kind: "progress", seconds: 10 }],
       deliveries: 0,
     });
@@ -297,11 +298,13 @@ describe("watchFacts", () => {
   });
 
   test("an armed watch whose age cannot be computed still reads as armed", () => {
-    // created_at can arrive unparseable; the facts sentence must never drop the
+    // createdAt can arrive unparseable; the facts sentence must never drop the
     // one segment that reports the watch's armed state.
-    const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 0, created_at: "not-a-time" });
+    const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 0, createdAt: "not-a-time" });
     expect(watchFacts(w, NOW)).toBe("Fires every 10m · armed · no deliveries yet");
-    expect(watchFacts({ ...w, active: false }, NOW)).toBe("Fires every 10m · not armed · no deliveries yet");
+    expect(watchFacts({ ...w, state: "ended", watch: { ...w.watch, active: false } }, NOW)).toBe(
+      "Fires every 10m · not armed · no deliveries yet",
+    );
   });
 });
 
@@ -310,7 +313,7 @@ describe("watchIsScheduled", () => {
     expect(watchIsScheduled(watch({ cadence: [{ kind: "every", seconds: 600 }] }))).toBe(true);
     expect(watchIsScheduled(watch({ cadence: [{ kind: "after", seconds: 60 }] }))).toBe(true);
     expect(watchIsScheduled(watch({ cadence: [{ kind: "progress", seconds: 30 }] }))).toBe(true);
-    expect(watchIsScheduled(watch({ output_match: "/x/", cadence: [{ kind: "output" }] }))).toBe(false);
+    expect(watchIsScheduled(watch({ outputMatch: "/x/", cadence: [{ kind: "output" }] }))).toBe(false);
     expect(watchIsScheduled(watch({ events: ["a"], cadence: [{ kind: "events" }] }))).toBe(false);
   });
 
@@ -318,7 +321,7 @@ describe("watchIsScheduled", () => {
     // This is the case the no-schedule line is false for: it has a real period
     // and a real timeline, so it must not claim there is no schedule to draw.
     expect(
-      watchIsScheduled(watch({ output_match: "/x/", cadence: [{ kind: "output" }, { kind: "every", seconds: 600 }] })),
+      watchIsScheduled(watch({ outputMatch: "/x/", cadence: [{ kind: "output" }, { kind: "every", seconds: 600 }] })),
     ).toBe(true);
     expect(
       watchIsScheduled(watch({ events: ["a"], cadence: [{ kind: "events" }, { kind: "after", seconds: 60 }] })),
@@ -349,12 +352,9 @@ describe("forbidden vocabulary", () => {
   test("no rendered watch string hedges with 'about', claims a countdown, or mentions drops", () => {
     const strings = [
       watchMeta(watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3 })),
-      watchMeta(
-        watch({ cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T15:04:12Z" }] }),
-        NOW,
-      ),
+      watchMeta(watch({ cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }] }), NOW),
       watchFacts(watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3 }), NOW),
-      watchFacts(watch({ output_match: "/x/", target: "j", cadence: [{ kind: "output" }], deliveries: 0 }), NOW),
+      watchFacts(watch({ outputMatch: "/x/", target: "j", cadence: [{ kind: "output" }], deliveries: 0 }), NOW),
       watchFacts(watch({ events: ["a"], cadence: [{ kind: "events" }], deliveries: 0 }), NOW),
     ].join("\n");
     expect(strings).not.toMatch(/dropped/i);

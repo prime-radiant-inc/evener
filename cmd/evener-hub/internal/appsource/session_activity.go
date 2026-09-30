@@ -32,6 +32,13 @@ func (s *RemoteHubSource) ThreadActivityRead(ctx context.Context, params appwire
 	if err := s.call(ctx, appwire.MethodEvenerThreadActivityRead, params, &out); err != nil {
 		return appwire.SessionActivitySummary{}, err
 	}
+	fits, err := fitsSessionActivityEnvelope(out)
+	if err != nil {
+		return appwire.SessionActivitySummary{}, err
+	}
+	if !fits {
+		return appwire.SessionActivitySummary{}, appwire.Unavailable("qualified session activity response exceeds 256 KiB")
+	}
 	return out, nil
 }
 
@@ -141,17 +148,24 @@ func readTranslatedActivityPage[R any](ctx context.Context, source *RemoteHubSou
 		if err := source.call(ctx, method, params, &out); err != nil {
 			return zero, err
 		}
-		encoded, err := json.Marshal(out)
+		fits, err := fitsSessionActivityEnvelope(out)
 		if err != nil {
 			return zero, err
 		}
-		if len(encoded) <= 256<<10 {
+		if fits {
 			return out, nil
 		}
 		if limit <= 1 {
-			return zero, appwire.InternalError("qualified session activity response exceeds 256 KiB")
+			return zero, appwire.Unavailable("qualified session activity response exceeds 256 KiB")
 		}
 		limit = max(1, limit/2)
 		params.Limit = limit
 	}
+}
+
+// Source qualification expands every structural ref, including breadcrumbs.
+// Measure the intact final response rather than truncating identities to fit.
+func fitsSessionActivityEnvelope(response any) (bool, error) {
+	encoded, err := json.Marshal(response)
+	return len(encoded) <= 256<<10, err
 }

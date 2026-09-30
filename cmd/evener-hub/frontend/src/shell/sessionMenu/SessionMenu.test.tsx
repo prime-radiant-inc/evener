@@ -36,7 +36,7 @@ function seedPinCatalog(): void {
     generationID: generation,
   };
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     resources: new Map([[keyID(resource.key), resource]]),
   });
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });

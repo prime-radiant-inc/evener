@@ -14,10 +14,6 @@
 // and a pure focus switch re-renders the hook's readers (the workspace store
 // subscription does it; nothing reads a stale imperative value).
 
-import type { NavigationSessionLocation } from "@evener/appwire-client";
-import { useEffect } from "react";
-import { selectLocation } from "../stores/navigation/selectors";
-import { navigationStore, useNavigationStore } from "../stores/navigation/store";
 import { refParam } from "./routing";
 import { currentSessionRef, useWorkspaceStore, workspaceStore } from "./workspace";
 
@@ -39,42 +35,3 @@ export function useFocusedActivityScopeRef(): string | null {
 /** Test-only: kept for the reset symmetry the suite files expect; the store
  * has no memory to clear (the scope derives fresh from the workspace). */
 export function resetFocusedActivityScopeForTests(): void {}
-
-// The activity surfaces read the leaf's paged subagents resource; nothing
-// else fetches it (locations arrive through the rail's reveal and the pane
-// resolution machinery, so this hook never duplicates those). The StatusBar
-// calls this once for the focused scope (it is mounted on every desktop
-// route, so the open sidebar's reads are covered too). Two phases: the
-// leaf's page first, then the root's once the leaf's location names it - the
-// crumb walks the root's subagents rows. Each fetch fires only when no page
-// entry exists yet, so a scope change never re-fetches a loaded or
-// in-flight page. Rejections (pre-init, offline) are swallowed: the
-// surfaces render their loading states until a page lands.
-function subagentsPageExists(ref: string): boolean {
-  for (const resource of navigationStore.getState().resources.values()) {
-    if (resource.key.kind === "subagents" && resource.key.ref === ref) return true;
-  }
-  return false;
-}
-
-export function useEnsureActivityScopeResources(ref: string | null): void {
-  useEffect(() => {
-    if (ref === null || subagentsPageExists(ref)) return;
-    void navigationStore
-      .getState()
-      .loadSubagents(ref)
-      .catch(() => undefined);
-  }, [ref]);
-  const topLevelRef = useNavigationStore((state) => {
-    if (ref === null) return null;
-    const location = selectLocation(ref)(state)?.data as NavigationSessionLocation | undefined;
-    return location && location.top_level_ref !== ref ? location.top_level_ref : null;
-  });
-  useEffect(() => {
-    if (topLevelRef === null || subagentsPageExists(topLevelRef)) return;
-    void navigationStore
-      .getState()
-      .loadSubagents(topLevelRef)
-      .catch(() => undefined);
-  }, [topLevelRef]);
-}

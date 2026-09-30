@@ -83,7 +83,7 @@ func TestProviderFileObserverPublishesToOpenClients(t *testing.T) {
 	path := writeProvidersToml(t, dir, "[providers.work\n")
 	reg := hubcore.NewProviderRegistry(testRegistryLoader(dir, path, nil, map[string]string{}))
 	_ = reg.Reload()
-	server, _, _, n := newHubAppServerWithNavigationAndTrace(hubcore.WebConfig{Registry: reg, ProvidersConfigPath: path}, appsource.NewRegistry(), nil, nil, nil)
+	server, _, _, n, _ := newHubAppServerWithNavigationAndTrace(hubcore.WebConfig{Registry: reg, ProvidersConfigPath: path}, appsource.NewRegistry(), nil, nil, nil)
 	t.Cleanup(func() { server.Shutdown(context.Background()) })
 	if n.refreshProviders == nil {
 		t.Fatal("server did not retain the recovery owner")

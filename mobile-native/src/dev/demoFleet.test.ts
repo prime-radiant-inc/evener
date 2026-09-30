@@ -52,6 +52,15 @@ function findRow(rows: NavigationSessionSummary[], slug: string): NavigationSess
 	return row;
 }
 
+it("summarizes the same coordinator running job in navigation and typed activity", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+	const row = findRow(liveRows(fleet), "s-tasklist");
+	const jobs = fleet.answerSessionJobsList({ ref: row.ref });
+	expect(jobs.jobs).toHaveLength(row.running_job_count ?? 0);
+	expect(jobs.jobs[0]?.command).toBe(row.running_job_command);
+	expect(fleet.answerActivityRead({ ref: row.ref }).jobs).toMatchObject({ known: true, total: 1, active: 1 });
+});
+
 describe("the tool families session (EVENER_DEMO_FLEET_TOOLS)", () => {
 	it("adds Show Every Tool Family to Live, finished, only when asked for", () => {
 		const row = findRow(liveRows(createDemoFleet({ now: STARTUP, toolFamilies: true })), "s-tools");

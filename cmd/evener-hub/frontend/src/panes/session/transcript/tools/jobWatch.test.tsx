@@ -211,7 +211,7 @@ test("list watch IDs are full-id entity triggers with no open control or navigat
     ended: false,
   });
   render(
-    <TranscriptRenderProvider entities={entities}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={entities}>
       <Body item={listed} live={false} />
     </TranscriptRenderProvider>,
   );
@@ -244,7 +244,7 @@ test("detail-bearing watch IDs are embedded triggers and the row remains the dis
     ended: false,
   });
   render(
-    <TranscriptRenderProvider entities={entities}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={entities}>
       <Body item={listed} live={false} />
     </TranscriptRenderProvider>,
   );

@@ -565,6 +565,10 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 	}
 	s.liveModels.mu.Unlock()
 
+	// Each listing sends its instance's credential, so what the provider
+	// answers is recorded as a probe of it (#3539). The client reads every
+	// credential when it is built, so every probe begins before it.
+	probes := s.beginListingProbes()
 	client, err := liveModelLoadClient("")
 	if err != nil || client == nil {
 		return nil
@@ -606,6 +610,9 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		listCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), instanceLiveListTimeout)
 		listing, listErr := client.Models(listCtx, inst.Name)
 		cancel()
+		// An instance the hub's registry does not hold has no probe here,
+		// and its zero start settles to nothing.
+		s.auth.settleCredentialProbe(probes[inst.Name], listing, listErr)
 		if listErr != nil {
 			continue
 		}
@@ -625,6 +632,23 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 	s.liveModels.gen = gen
 	s.liveModels.mu.Unlock()
 	return out
+}
+
+// beginListingProbes begins a credential probe for every instance the hub's
+// registry holds, by name, for the picker's live pass to settle.
+func (s *WebServer) beginListingProbes() map[string]credentialProbeStart {
+	probes := map[string]credentialProbeStart{}
+	if s.auth == nil || s.cfg.Registry == nil {
+		return probes
+	}
+	reg := s.cfg.Registry.Get()
+	if reg == nil {
+		return probes
+	}
+	for _, inst := range reg.Instances() {
+		probes[inst.Name] = s.auth.beginCredentialProbe(inst.Name)
+	}
+	return probes
 }
 
 // liveModelsGeneration reports the holder generation the model cache is

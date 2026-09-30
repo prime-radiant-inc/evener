@@ -1167,7 +1167,7 @@ function MockupsPage(): JSX.Element {
     // host list and RailRow's host-label lookups read the manifest through
     // it. The capability matches shellguard's scripted shape (v1 capability,
     // v2 reads).
-    initNavigation(fake, { version: 1, readVersions: [2], generationId: GENERATION, sequence: 0 });
+    initNavigation(fake, { version: 1, readVersions: [3], generationId: GENERATION, sequence: 0 });
     void navigationStore
       .getState()
       .loadManifest()

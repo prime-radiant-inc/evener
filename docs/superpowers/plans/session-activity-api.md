@@ -118,12 +118,12 @@ event type/payload after its first commit.
 
 **Interfaces:** Consume Task 1's typed methods and Task 2's agent functions. Add typed context-bearing server hooks for all four reads. Add source methods matching the Go client names and responses. All four methods route through the existing deletion/source fences and descendant read resolution; retained fallback is only for known local ended sessions. Map Task 2's activity event to `SessionActivityChangedParams` and route logical receiver/session references correctly.
 
-- [ ] Add `TestSessionActivityPublicRoutes` with real registered daemon and hub routers and scripted session state, including a root with descendants absent from navigation.
-- [ ] Add alias/clear, live-child, ended-local, unavailable-remote, and same-ID-on-two-sources cases. Assert the response's resolved session/context and every nested reference, not only the top-level ref.
-- [ ] Add cancellation propagation and watch-change notification tests. Verify following activity does not replace or unsubscribe a transcript's thread subscription.
-- [ ] Run `go test ./server ./cmd/evener-hub ./cmd/evener-hub/internal/appsource -run 'TestSessionActivity' -count=1`; record the intended red results.
-- [ ] Wire context-bearing handlers and source methods, exact reference translation, retained reads, and notification forwarding. Resolve live session methods per call so thread/clear does not retain the old session. Never answer a child request with the root's rows.
-- [ ] Run focused tests plus existing source reference-translation and method-registration tests. Report any generated changes needed to Task 1 through the controller, then commit.
+- [x] Add `TestSessionActivityPublicRoutes` with real registered daemon and hub routers and scripted session state, including a root with descendants absent from navigation.
+- [x] Add alias/clear, live-child, ended-local, unavailable-remote, and same-ID-on-two-sources cases. Assert the response's resolved session/context and every nested reference, not only the top-level ref.
+- [x] Add cancellation propagation and watch-change notification tests. Verify following activity does not replace or unsubscribe a transcript's thread subscription.
+- [x] Run `go test ./server ./cmd/evener-hub ./cmd/evener-hub/internal/appsource -run 'TestSessionActivity' -count=1`; record the intended red results.
+- [x] Wire context-bearing handlers and source methods, exact reference translation, retained reads, and notification forwarding. Resolve live session methods per call so thread/clear does not retain the old session. Never answer a child request with the root's rows.
+- [x] Run focused tests plus existing source reference-translation and method-registration tests. Report any generated changes needed to Task 1 through the controller, then commit.
 
 ### Task 4: Shared recovering activity client
 
