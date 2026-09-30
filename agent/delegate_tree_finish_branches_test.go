@@ -203,6 +203,25 @@ func TestDelegateStoppedRunPacket(t *testing.T) {
 			t.Fatalf("got %#v, want the terminal-error packet untouched", got)
 		}
 	})
+
+	t.Run("null metadata is replaced, not panicked on", func(t *testing.T) {
+		rawMessage, err := json.Marshal("a report with null metadata")
+		if err != nil {
+			t.Fatalf("marshal message: %v", err)
+		}
+		got := delegateStoppedRunPacket(delegatestore.TerminalPacket{
+			Kind:     delegatestore.PacketReported,
+			Message:  rawMessage,
+			Metadata: json.RawMessage(`null`),
+		})
+		var metadata delegateTerminalPacketMetadata
+		if err := json.Unmarshal(got.Metadata, &metadata); err != nil {
+			t.Fatalf("metadata: %v (%s)", err, got.Metadata)
+		}
+		if metadata.Outcome != delegatestore.OutcomeStopped || metadata.Reason != delegatestore.ReasonStoppedByParent {
+			t.Fatalf("metadata = %+v, want outcome stopped, reason stopped_by_parent", metadata)
+		}
+	})
 }
 
 // foldedStopAfterReport folds the one sequence the hole needs: a root delegate

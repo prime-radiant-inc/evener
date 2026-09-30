@@ -495,6 +495,11 @@ func delegateStoppedRunPacket(packet delegatestore.TerminalPacket) delegatestore
 			metadata = map[string]json.RawMessage{}
 		}
 	}
+	// JSON null is valid terminal-packet metadata and unmarshals to a nil map;
+	// the assignments below would panic on it.
+	if metadata == nil {
+		metadata = map[string]json.RawMessage{}
+	}
 	metadata["outcome"], _ = json.Marshal(delegatestore.OutcomeStopped)
 	metadata["reason"], _ = json.Marshal(delegatestore.ReasonStoppedByParent)
 	if raw, err := json.Marshal(metadata); err == nil {
