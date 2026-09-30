@@ -139,7 +139,7 @@ func TestNavigationSubagentsPageCarriesTheChildTree(t *testing.T) {
 	}}
 	projection, err := buildNavigationProjection(navigationBuildInputs{
 		GenerationID: "generation", Revision: 2,
-		Tree:         hubcore.Tree{Live: []hubcore.TreeNode{parent}},
+		Tree: hubcore.Tree{Live: []hubcore.TreeNode{parent}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestNavigationSubagentsPagePagesAndAccounts(t *testing.T) {
 	parent := hubcore.TreeNode{ID: "session-parent", Title: "parent", Kind: "session", State: "active", Children: children}
 	projection, err := buildNavigationProjection(navigationBuildInputs{
 		GenerationID: "generation", Revision: 2,
-		Tree:         hubcore.Tree{Live: []hubcore.TreeNode{parent}},
+		Tree: hubcore.Tree{Live: []hubcore.TreeNode{parent}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +235,7 @@ func TestNavigationRowCountsNeedsYouSubagents(t *testing.T) {
 	}}
 	projection, err := buildNavigationProjection(navigationBuildInputs{
 		GenerationID: "generation", Revision: 2,
-		Tree:         hubcore.Tree{Live: []hubcore.TreeNode{parent}},
+		Tree: hubcore.Tree{Live: []hubcore.TreeNode{parent}},
 	})
 	if err != nil {
 		t.Fatal(err)
