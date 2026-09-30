@@ -817,13 +817,19 @@ workers and provably absent/already-restored artifacts are distinct cases.
 [cleanup handle resolution](../../cmd/evener-hub/app_host_teardown_ops.go#L747) show the
 ordering. Provenance checks still protect unrelated or foreign cleanup targets.
 
-**Discuss.** Run the same evidence-based no-op reconciliation automatically
-before rejecting ordinary connection. Do not turn an uncertain abandoned worker
-into permission to delete or overlap ownership.
+**Decision.** Automatically reconcile teardown leftovers as part of Connect
+before refusing the connection. When the recovery evidence establishes that the
+old target is gone or the relevant state is already restored, settle the
+bookkeeping and continue the original connection request without a separate
+retry/recover action. A stale record alone does not justify stopping a new
+process, removing unrelated files or treating uncertain cleanup as complete;
+those cases still require investigation. Implementation remains pending.
 
 **Acceptance.** Leave a teardown journal whose artifacts are demonstrably
-already restored/absent. One normal Connect reconciles it and succeeds;
-ambiguous live ownership and foreign artifacts remain preserved.
+already restored/absent. One normal Connect establishes the completed state,
+settles the record and succeeds without another user action. Ambiguous live
+ownership and foreign artifacts remain preserved while recovery investigates;
+the reconciliation does not stop a replacement process or repeat finished work.
 
 ### H08 OAuth refresh across processes
 
