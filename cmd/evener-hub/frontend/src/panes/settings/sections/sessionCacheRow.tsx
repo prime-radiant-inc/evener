@@ -3,7 +3,7 @@
 // machine — empty, cached, cleared, unavailable — plus the Clear action. The
 // row keeps its own module-scoped store, mirroring the settingsOverview
 // convention, because its state is this row's alone: the count is re-derived
-// per render, so no other pane's state can hold it stale.
+// on mount, unrelated renders, Retry, and this tab's committed writes.
 import { useEffect, useRef } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -36,9 +36,8 @@ let storeGeneration = 0;
 // four-state status plus clearing and the two actions. Do not change this
 // surface without checking that test.
 //
-// sessionCacheRow's store: the row's state machine. The count runs per
-// render through refresh(), so a cleared badge never outlives the next
-// render (spec, "The clear-cached-sessions setting").
+// sessionCacheRow's store: the row's state machine. The component triggers
+// refresh() for each external invalidation, not for its own status changes.
 export const sessionCacheRowStore = createStore<SessionCacheRowState>((set, get) => ({
   // The pre-count state: no count has answered yet, and unknown renders as
   // unavailable — never empty (spec: unavailable is "never shown as empty,
@@ -96,10 +95,9 @@ export function resetSessionCacheRowStoreForTests(): void {
 /** The storage row's "Cached session content" entry: the cache's state word
  * (never a byte or session estimate - the round-2 cut) plus the Clear
  * action, the privacy remedy that removes the cached content from this
- * browser only. The count runs on EVERY render - the effect has no
- * dependency array - which is the spec's own staleness rule: a cleared badge
- * yields the moment the pane renders the row again and the fresh count finds
- * records, and an unavailable row recovers on the next render or Retry. */
+ * browser only. Same-tab writes refresh a mounted row immediately. An
+ * unrelated render also recounts, bounding sibling-write staleness, while
+ * an uncertain Clear's own render preserves unavailable and its Retry. */
 export function SessionCacheRow() {
   const status = useSessionCacheRowStore((s) => s.status);
   const clearing = useSessionCacheRowStore((s) => s.clearing);
