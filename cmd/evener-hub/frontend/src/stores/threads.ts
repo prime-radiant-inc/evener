@@ -5161,46 +5161,43 @@ function clearOversizeMemo(ref: string): void {
   oversizeMemo.delete(ref);
 }
 
+// cancelCacheWrite ends the ref's schedule: both of the CURRENT entry's
+// timers cleared and the entry removed, so no live timer for the ref ever
+// survives outside the map and resetThreadsStoreForTests' walk always names
+// every armed timer. The entry resolves AT CALL TIME, never through a
+// closure's captured schedule object: the max-wait handle is inherited
+// across reschedules, so a firing timer's closure can name an older object
+// than the entry that now owns the handle — and the map's current entry is
+// always the owner of every live timer for the ref, so ending it is the one
+// correct fire action for either timer. (An identity-guarded retire was the
+// round-1 shape: a stale-closure max-wait wrote at its boundary but left the
+// newer entry holding its dead handle, inherited by every later reschedule —
+// a stream of sub-trailing publications then never wrote again.)
+function cancelCacheWrite(ref: string): void {
+  const current = cacheWriteSchedules.get(ref);
+  if (current === undefined) return;
+  clearTimeout(current.trailing);
+  clearTimeout(current.maxWait);
+  cacheWriteSchedules.delete(ref);
+}
+
 function scheduleCacheWrite(ref: string): void {
   const existing = cacheWriteSchedules.get(ref);
   if (existing) clearTimeout(existing.trailing); // trailing debounce: reschedule
-  // Either timer's fire retires the whole schedule — both of the entry's
-  // timers cleared, the entry removed — so no orphan timer survives its own
-  // fire (a trailing fire that left its max-wait armed would later fire into
-  // a fresh schedule's window, collapse it, and strand the fresh entry's own
-  // timers outside the map where resetThreadsStoreForTests cannot cancel
-  // them). And a fire retires only the entry that is still its own: the
-  // max-wait is reused across reschedules, so its closure can outlive the
-  // schedule object it was minted for — a stale fire must never delete, or
-  // leave armed, a newer schedule it does not own. The identity guard is
-  // what keeps `cacheWriteSchedules` an accurate ledger of armed timers.
-  const retire = (owned: CacheWriteSchedule): void => {
-    clearTimeout(owned.trailing);
-    clearTimeout(owned.maxWait);
-    if (cacheWriteSchedules.get(ref) === owned) cacheWriteSchedules.delete(ref);
-  };
-  // The definite-assignment assertion is projectionWork.ts's own pattern:
-  // `fire` only ever runs after the assignment below, but TypeScript cannot
-  // see that through a closure.
-  let schedule!: CacheWriteSchedule;
+  // Whichever timer fires, it ends the burst by cancelling the schedule the
+  // map holds at fire time and writing once. The next publication then arms a
+  // FRESH max-wait, so a burst of sub-trailing publications keeps its
+  // once-per-max-wait write even after a max-wait has fired once.
   const fire = () => {
-    retire(schedule);
+    cancelCacheWrite(ref);
     const model = threadsStore.getState().threads.get(ref);
     if (model !== undefined) writeCacheRecord(ref, model);
   };
-  schedule = {
+  const schedule: CacheWriteSchedule = {
     trailing: setTimeout(fire, cacheWriteDebounceMs),
     maxWait: existing?.maxWait ?? setTimeout(fire, cacheWriteMaxWaitMs), // max-wait: a streaming session never starves
   };
   cacheWriteSchedules.set(ref, schedule);
-}
-
-function cancelCacheWrite(ref: string): void {
-  const schedule = cacheWriteSchedules.get(ref);
-  if (schedule === undefined) return;
-  clearTimeout(schedule.trailing);
-  clearTimeout(schedule.maxWait);
-  cacheWriteSchedules.delete(ref);
 }
 
 /** The flush: fires a pending write NOW, its gates evaluated on the current

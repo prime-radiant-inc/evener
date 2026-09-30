@@ -1055,6 +1055,44 @@ describe("cached write seam", () => {
     }
   });
 
+  it("the max-wait keeps its guarantee across bursts: a stale-closure max-wait ends its burst and the next arms fresh (fix round 2)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const adapter = new SessionCacheIndexedDB();
+      const putSpy = vi.spyOn(adapter, "put");
+      installCacheAdapter(adapter);
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:starve");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1_000); // write #1: the hydration publish's own trailing window
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      // Phase 1: publications 700 ms apart keep resetting the trailing timer,
+      // so only the burst's max-wait (armed at the first fold, t = 1 s) can
+      // fire — at t = 6 s, while the map holds a schedule object SEVEN
+      // generations newer than the one the max-wait's closure captured.
+      for (let i = 0; i < 7; i += 1) {
+        emitHistoryUpdated("local:starve", { fold: `turn_a${i}` });
+        await vi.advanceTimersByTimeAsync(700);
+      }
+      await vi.advanceTimersByTimeAsync(200); // t = 6.1 s: the max-wait boundary fired
+      expect(putSpy).toHaveBeenCalledTimes(2); // write #2: the starved stream got its once-per-max-wait write
+      // Phase 2: the stream keeps publishing sub-trailing. The next burst must
+      // arm a FRESH max-wait — the stale-closure fire must not leave the
+      // current entry holding its dead handle for later reschedules to
+      // inherit — so another write lands within the next 5 s window.
+      for (let i = 0; i < 7; i += 1) {
+        emitHistoryUpdated("local:starve", { fold: `turn_b${i}` });
+        await vi.advanceTimersByTimeAsync(700);
+      }
+      await vi.advanceTimersByTimeAsync(200); // t = 11.2 s: the second burst's max-wait boundary (armed at t = 6.1 s)
+      expect(putSpy).toHaveBeenCalledTimes(3); // write #3: the guarantee survives its own first firing — not zero
+    } finally {
+      vi.useRealTimers();
+      restoreCacheAdapter();
+    }
+  });
+
   it("the connection gate: a write firing while the adapter is still opening skips, and the next publication retries", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
