@@ -1032,6 +1032,29 @@ describe("cached write seam", () => {
     }
   });
 
+  it("a fire retires its whole schedule: a stale max-wait never collapses a later window (fix round 1)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const adapter = new SessionCacheIndexedDB();
+      const putSpy = vi.spyOn(adapter, "put");
+      installCacheAdapter(adapter);
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:timer");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1_000); // the first trailing window closes: intended write #1
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      emitHistoryUpdated("local:timer", { fold: "turn_t1" }); // the fresh schedule: trailing at +1 s, max-wait at +5 s
+      await vi.advanceTimersByTimeAsync(4_000); // t = 5 s: past the FIRST schedule's original max-wait
+      expect(putSpy).toHaveBeenCalledTimes(2); // only the fresh trailing's own write: the stale max-wait never fired
+      await vi.advanceTimersByTimeAsync(2_000); // t = 7 s: past the fresh max-wait too — every timer is retired
+      expect(putSpy).toHaveBeenCalledTimes(2); // exactly the two intended writes, no orphans left to fire
+    } finally {
+      vi.useRealTimers();
+      restoreCacheAdapter();
+    }
+  });
+
   it("the connection gate: a write firing while the adapter is still opening skips, and the next publication retries", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
