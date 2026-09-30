@@ -139,7 +139,11 @@ func TestLaunchRefreshOfAnEvictedEntryAnnounces(t *testing.T) {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	// The refresh is waiting on the launch check; evict the entry under it.
+	deadline := time.Now().Add(5 * time.Second)
 	for spawner.callCount() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the stale read never started a refresh")
+		}
 		time.Sleep(time.Millisecond)
 	}
 	web.launchModels.mu.Lock()
