@@ -47,14 +47,16 @@ type SessionActivityAncestor struct {
 // SessionActivityContext separates the routing alias from the resolved session
 // identity. Epoch identifies the read source incarnation, not its recency.
 type SessionActivityContext struct {
-	Ref          string                    `json:"ref"`
-	SessionID    string                    `json:"sessionId"`
-	RootRef      string                    `json:"rootRef"`
-	ParentRef    string                    `json:"parentRef,omitempty"`
-	DelegateID   string                    `json:"delegateId,omitempty"`
-	Ancestors    []SessionActivityAncestor `json:"ancestors"`
-	Epoch        string                    `json:"epoch"`
-	Availability string                    `json:"availability"` // live | retained
+	Ref        string                    `json:"ref"`
+	SessionID  string                    `json:"sessionId"`
+	RootRef    string                    `json:"rootRef"`
+	ParentRef  string                    `json:"parentRef,omitempty"`
+	DelegateID string                    `json:"delegateId,omitempty"`
+	Ancestors  []SessionActivityAncestor `json:"ancestors"`
+	// AncestryKnown distinguishes proven root/lineage from bounded retained index progress.
+	AncestryKnown bool   `json:"ancestryKnown"`
+	Epoch         string `json:"epoch"`
+	Availability  string `json:"availability"` // live | retained
 }
 
 // SessionActivityCounts describes all retained data in the declared scope,

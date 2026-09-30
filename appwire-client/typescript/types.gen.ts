@@ -3156,6 +3156,10 @@ export interface SessionActivityContext {
   parentRef?: string;
   delegateId?: string;
   ancestors: SessionActivityAncestor[];
+  /**
+   * AncestryKnown distinguishes proven root/lineage from bounded retained index progress.
+   */
+  ancestryKnown: boolean;
   epoch: string;
   availability: string;
 }
