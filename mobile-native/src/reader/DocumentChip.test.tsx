@@ -10,11 +10,16 @@ import { DocumentMemory } from "./documentMemory";
 import { forgetDocumentSummaries } from "./documentSummaries";
 import type { SyncStringStorage } from "../syncStringStorage";
 
-const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, memory: null as unknown }));
+const harness = vi.hoisted(() => ({
+	connection: {} as Record<string, unknown>,
+	memory: null as unknown,
+	scheme: "light" as "light" | "dark",
+}));
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
+	useColorScheme: () => harness.scheme,
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
@@ -48,6 +53,7 @@ let answers: (() => Response)[];
 const trees: ReactTestRenderer[] = [];
 
 beforeEach(() => {
+	harness.scheme = "light";
 	forgetDocumentSummaries("studio");
 	harness.connection = { profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }], state: "ready" };
 	answers = [];
@@ -213,6 +219,27 @@ describe("since you last read it", () => {
 		expect(dots(tree)).toHaveLength(1);
 		expect(dots(tree)[0]?.props.tintColor).toBe(palettes.light.accent);
 		expect(renderedText(tree)).not.toContain("changed since you last read");
+		expect(button(tree)?.props.accessibilityLabel).toContain("changed since you last read");
+	});
+
+	it("takes the dark theme's blue for the dot", async () => {
+		harness.scheme = "dark";
+		read(OLDER);
+		const tree = chip({ updatedAt: NEWER });
+		await settle();
+		expect(dots(tree)[0]?.props.tintColor).toBe(palettes.dark.accent);
+	});
+
+	// A changed chip always has an age, since the write that changed it gives
+	// one; before its summary lands it has no length, and its fact line is the
+	// age alone, still on the chip's second line.
+	it("shows only its age before its summary lands", () => {
+		read(OLDER);
+		const tree = chip({ updatedAt: NEWER });
+		const lines = button(tree)?.findAll((node) => String(node.type) === "Text" && node.props.numberOfLines === 1);
+		expect(lines).toHaveLength(2);
+		const facts = lines?.[1]?.children.filter((child) => typeof child === "string").join("");
+		expect(facts).toMatch(/^\S+ ago$/);
 		expect(button(tree)?.props.accessibilityLabel).toContain("changed since you last read");
 	});
 
