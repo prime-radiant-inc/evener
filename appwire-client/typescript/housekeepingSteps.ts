@@ -52,13 +52,14 @@ const goalStatus = (step: StepArgs) => {
 
 // Whether a compact_context call only clears its note, as the tool decides it
 // before it prints anything: an empty note, no compaction instructions, and no
-// reload_skills key at all (its presence alone asks for a compaction).
+// reload_skills selection (absent or null; any other value, an empty array
+// included, asks for a compaction).
 const onlyClearsNote = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
   const args = parseArgs(step.argumentsJSON);
   return (
     (str(args, "note_to_self") ?? "") === "" &&
     (str(args, "compaction_instructions") ?? "") === "" &&
-    !Object.hasOwn(args, "reload_skills")
+    (args.reload_skills ?? null) === null
   );
 };
 
@@ -108,9 +109,12 @@ const HOUSEKEEPING: Record<string, HousekeepingTool> = {
   compact_context: {
     action: "asked for a context compaction",
     words: (step, did) => ({
-      // The whole line: an empty note that still asks for a compaction also
-      // starts "Note cleared."
-      verb: step.output?.trim() === "Note cleared. No compaction requested." ? "Cleared its compaction note" : did,
+      // The whole first line: an empty note that still asks for a compaction
+      // also starts "Note cleared.", and a repeated call gets the registry's
+      // repetition note after it.
+      verb: step.output?.trim().startsWith("Note cleared. No compaction requested.")
+        ? "Cleared its compaction note"
+        : did,
     }),
     progress: (step) => (onlyClearsNote(step) ? "Clearing its compaction note" : "Asking for a context compaction"),
   },

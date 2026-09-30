@@ -466,6 +466,29 @@ test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
     "Clearing its compaction note",
   ],
   [
+    // The tool reads a null reload_skills as no selection, like an absent one.
+    "a compaction note cleared with a null reload_skills",
+    housekeeping(
+      "compact_context",
+      { note_to_self: "", reload_skills: null },
+      "Note cleared. No compaction requested.",
+    ),
+    "Cleared its compaction note",
+    "Clearing its compaction note",
+  ],
+  [
+    // The registry's repetition note after a repeated identical call doesn't
+    // hide what the call did.
+    "a repeated compaction note clear",
+    housekeeping(
+      "compact_context",
+      { note_to_self: "" },
+      "Note cleared. No compaction requested.\n\nYou have now made this same call and received the identical result 2 times in a row.",
+    ),
+    "Cleared its compaction note",
+    "Clearing its compaction note",
+  ],
+  [
     "an empty note that reloads skills, which still compacts",
     housekeeping("compact_context", { note_to_self: "", reload_skills: ["go-testing"] }),
     "Asked for a context compaction",
