@@ -2249,5 +2249,5 @@ test("shows the hub's error for the instance's credential", () => {
     },
     { authError: error },
   );
-  expect(screen.getByRole("alert").textContent).toBe(error);
+  expect(screen.getByRole("status", { name: "Credential error" }).textContent).toBe(error);
 });

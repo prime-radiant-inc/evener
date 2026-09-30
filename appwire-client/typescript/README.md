@@ -198,8 +198,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   own-echo correlation, over a `request`/`onNotification` client port; with
   the stale-listing refusal and its `staleListingHeld` predicate, the
   `foreignListingChange` predicate both hosts gate a credential probe on, and
-  `listingEstablished` in the state. Resolves to
-  `state/credentials/index.ts`, a barrel.
+  `listingEstablished` in the state. `createAuthStatusesStore(client)` is the
+  hub's credential statuses (`evener/auth/list`) by provider, each with the
+  error the hub found with its credential, over the extensions stores'
+  lifecycle (it follows `evener/auth/updated` and re-reads on reconnect).
+  Resolves to `state/credentials/index.ts`, a barrel.
 - `@evener/appwire-client/state/mutation` - the mutation state layer: the
   durable record shapes both apps' outboxes store (`MutationIntent`,
   `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,

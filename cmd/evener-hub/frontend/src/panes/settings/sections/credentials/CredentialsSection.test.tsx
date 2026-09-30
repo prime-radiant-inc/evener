@@ -134,11 +134,30 @@ test("shows a rejected credential as Error until the hub reports it fixed", asyn
   render(<CredentialsSection sectionId="credentials" />);
   await waitFor(() => expect(screen.getByRole("button", { name: /work/ }).textContent).toContain("Error"));
   const sheet = await openSheet(user, "work");
-  expect(within(sheet).getByRole("alert").textContent).toBe(error);
+  expect(within(sheet).getByRole("status", { name: "Credential error" }).textContent).toBe(error);
 
   statuses = [{ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false }];
   act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
-  await waitFor(() => expect(within(sheet).queryByRole("alert")).toBeNull());
+  await waitFor(() => expect(within(sheet).queryByRole("status", { name: "Credential error" })).toBeNull());
+  // The open sheet hides the listing from the accessibility tree.
+  expect(screen.getByRole("button", { name: /work/, hidden: true }).textContent).not.toContain("Error");
+});
+
+// A listing kept from a replaced connection is another hub's until this one
+// reads its own: the errors read beside it are not shown against it.
+test("shows no credential errors against a listing from a previous connection", async () => {
+  const fake = connectFakeClient();
+  const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
+  fake.on("evener/instance/list", () => LIST);
+  fake.on("evener/auth/list", () => ({
+    providers: [
+      { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false, error },
+    ],
+  }));
+  render(<CredentialsSection sectionId="credentials" />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /work/ }).textContent).toContain("Error"));
+  act(() => credentialsStore.setState({ listingFromPreviousConnection: true }));
+  expect(screen.getByRole("button", { name: /work/ }).textContent).not.toContain("Error");
 });
 
 describe("initial load", () => {

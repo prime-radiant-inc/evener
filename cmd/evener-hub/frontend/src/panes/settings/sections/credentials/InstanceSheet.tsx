@@ -838,11 +838,14 @@ export function InstanceSheet({
               )}
             </form>
           )}
-          {authError !== undefined && authError !== "" && (
-            <p className={CLASS.formError} role="alert">
+          {/* A standing status of the credential, not a message about an
+              action just taken: a named status, which assistive tech reads
+              when the sheet is read rather than announcing it on open. */}
+          {authError ? (
+            <p className={CLASS.formError} role="status" aria-label="Credential error">
               {authError}
             </p>
-          )}
+          ) : null}
           {unconfigured !== null ? (
             <p className={CLASS.unconfigured}>{unconfigured}</p>
           ) : (

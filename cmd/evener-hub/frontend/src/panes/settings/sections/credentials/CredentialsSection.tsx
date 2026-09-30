@@ -257,7 +257,10 @@ export function CredentialsSection({
   useConnectedEffect(fetch, [fetch]);
   // The hub's credential statuses, for a provider whose credential it found an
   // error with (#3539); the store follows evener/auth/updated from here on.
-  const authStatuses = useAuthStatusesStore((state) => state.authStatuses);
+  // A listing kept from a replaced connection is another hub's until this one
+  // reads its own, so no error read beside it is shown against it.
+  const readAuthStatuses = useAuthStatusesStore((state) => state.authStatuses);
+  const authStatuses = listingFromPreviousConnection ? null : readAuthStatuses;
   const fetchAuthStatuses = useAuthStatusesStore((state) => state.fetchAuthStatuses);
   useConnectedEffect(fetchAuthStatuses, [fetchAuthStatuses]);
 
