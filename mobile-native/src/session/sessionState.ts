@@ -99,8 +99,8 @@ export interface ContextChip {
  * says one is new or changed since you last opened it. `subagents` supplies
  * authoritative summary counts; a transcript roster is never a count source,
  * only evidence that subagents exist while the count isn't known. A shut-down
- * session's count can stay unknown for good, so that chip shows no count
- * rather than an ellipsis that never resolves. */
+ * session's count can stay unknown for good, so the Subagents chip shows no
+ * count until the summary knows it. */
 export function contextChips(
 	session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">,
 	connected: boolean,
@@ -108,19 +108,20 @@ export function contextChips(
 	subagents: SessionActivityCounts | null = null,
 ): ContextChip[] {
 	const chips: ContextChip[] = [];
-	const known = subagents?.known === true;
-	if (connected && (known ? (subagents?.total ?? 0) > 0 : (session.delegates?.length ?? 0) > 0)) {
-		const failed = known && (subagents?.failed ?? 0) > 0 ? `${subagents?.failed} failed` : undefined;
+	const total = subagents?.known ? subagents.total : undefined;
+	if (connected && (total === undefined ? (session.delegates?.length ?? 0) > 0 : total > 0)) {
+		const failed = subagents?.known && subagents.failed > 0 ? `${subagents.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
-			label: known ? `Subagents ${subagents?.total}` : "Subagents",
+			label: total === undefined ? "Subagents" : `Subagents ${total}`,
 			failed,
 			attention: false,
-			accessibilityLabel: !known
-				? "Subagents, count unknown"
-				: failed
-					? `Subagents, ${subagents?.total}, ${failed}`
-					: `Subagents, ${subagents?.total}`,
+			accessibilityLabel:
+				total === undefined
+					? "Subagents, count unknown"
+					: failed
+						? `Subagents, ${total}, ${failed}`
+						: `Subagents, ${total}`,
 		});
 	}
 	if (files.count > 0)

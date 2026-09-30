@@ -191,22 +191,27 @@ describe("the Subagents chip", () => {
 		expect(subagentsChip(without, counts(0))).toBeUndefined();
 	});
 
+	const notKnown = [
+		["no summary yet", null],
+		["a summary that can't count", unknown],
+		["a summary that can't count, whatever numbers it carries", { ...unknown, total: 5, failed: 1 }],
+	] as const;
+
 	// A session with no subagents shows no chip while its summary is on the way
-	// (null) or can't count (unknown), so it never flashes "Subagents …".
-	it("hides while the count isn't known and the roster is empty", () => {
-		expect(subagentsChip(without, null)).toBeUndefined();
-		expect(subagentsChip(without, unknown)).toBeUndefined();
+	// or can't count.
+	it.each(notKnown)("hides with an empty roster and %s", (_name, summary) => {
+		expect(subagentsChip(without, summary)).toBeUndefined();
+		expect(subagentsChip({ ...without, delegates: undefined }, summary)).toBeUndefined();
 	});
 
 	// A shut-down session's summary can stay unknown for good, so the chip says
-	// "Subagents" with no count rather than an ellipsis that never resolves.
-	it("shows without a count while the count isn't known and the roster names subagents", () => {
-		for (const summary of [null, unknown])
-			expect(subagentsChip(withSubagents, summary)).toEqual({
-				kind: "subagents",
-				label: "Subagents",
-				attention: false,
-				accessibilityLabel: "Subagents, count unknown",
-			});
+	// "Subagents" with no count until the summary knows it.
+	it.each(notKnown)("shows without a count with a roster of subagents and %s", (_name, summary) => {
+		expect(subagentsChip(withSubagents, summary)).toEqual({
+			kind: "subagents",
+			label: "Subagents",
+			attention: false,
+			accessibilityLabel: "Subagents, count unknown",
+		});
 	});
 });
