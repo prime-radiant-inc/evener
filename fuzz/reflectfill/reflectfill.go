@@ -71,6 +71,13 @@ func Fill(r Reporter, v reflect.Value, path string) {
 			v.Set(reflect.ValueOf(errors.New(path)))
 			return
 		}
+		// Only the empty interface (any) can hold the generic container below.
+		// A method-bearing interface needs a value that implements it, which
+		// only the caller knows; report it loudly instead of panicking in Set.
+		if v.Type().NumMethod() != 0 {
+			r.Fatalf("%s: unhandled interface type %v — teach the filler this shape", path, v.Type())
+			return
+		}
 		// A generic `any` field (e.g. a json:",omitempty" structured payload)
 		// holds a JSON-serializable value.
 		v.Set(reflect.ValueOf(map[string]any{"populated": true}))

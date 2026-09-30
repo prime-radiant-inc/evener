@@ -48,7 +48,7 @@ type fixture struct {
 // unreachable by reflection.
 func TestFillPopulatesEveryField(t *testing.T) {
 	f := &fixture{}
-	reflectfill.Fill(&fakeReporter{}, reflect.ValueOf(f).Elem(), "fixture")
+	reflectfill.Fill(t, reflect.ValueOf(f).Elem(), "fixture")
 
 	if f.Str == "" || !f.Bool || f.Int == 0 || f.Uint == 0 || f.Float == 0 {
 		t.Fatalf("scalar field left zero: %+v", f)
@@ -88,5 +88,19 @@ func TestFillFailsLoudlyOnUnhandledKind(t *testing.T) {
 	reflectfill.Fill(r, reflect.ValueOf(&ch).Elem(), "chanField")
 	if !r.failed {
 		t.Fatal("filler silently skipped an unhandled kind instead of failing loudly")
+	}
+}
+
+type stringer interface{ String() string }
+
+// TestFillFailsLoudlyOnMethodBearingInterface pins that a non-empty interface
+// field reports through Fatalf instead of panicking in reflect.Value.Set: only
+// the empty `any` interface can be populated with the generic container value.
+func TestFillFailsLoudlyOnMethodBearingInterface(t *testing.T) {
+	r := &fakeReporter{}
+	var s stringer
+	reflectfill.Fill(r, reflect.ValueOf(&s).Elem(), "stringerField")
+	if !r.failed {
+		t.Fatal("filler panicked or skipped a method-bearing interface instead of failing loudly")
 	}
 }
