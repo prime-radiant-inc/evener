@@ -418,25 +418,46 @@ describe("cached shell load seam", () => {
     const { gate, adapter } = cacheTestBed({ gated: true });
     await seedCache(adapter, "local:thr_1");
     const fake = connectFakeClient();
+    // The read handler answers immediately: if the released pane wrongly arms
+    // a cold read, the answer settles the caller at once — the assertion
+    // below fails fast on the recorded call instead of hanging on a parked
+    // response nothing will ever resolve.
+    fake.on("thread/read", () => readResponse("local:thr_1"));
+    const first = threadsStore.getState().ensureThread("local:thr_1");
+    threadsStore.getState().releaseThread("local:thr_1"); // refcount zero while the lookup is in flight
+    gate.release();
+    await first;
+    expect(threadsStore.getState().threads.has("local:thr_1")).toBe(false); // never published, never armed
+    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false);
+    expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(0); // a closed pane sends no read
+  });
+
+  it("release after the shell published drops the shell-only cache metadata with the model", async () => {
+    const { adapter } = cacheTestBed();
+    await seedCache(adapter, "local:thr_1");
+    const fake = connectFakeClient();
     let resolveRead: ((value: ThreadReadResponse) => void) | undefined;
-    const readArmed = nextHandledRequest(
-      fake,
+    fake.on(
       "thread/read",
       () =>
         new Promise<ThreadReadResponse>((resolve) => {
           resolveRead = resolve;
         }),
     );
-    const first = threadsStore.getState().ensureThread("local:thr_1");
-    threadsStore.getState().releaseThread("local:thr_1"); // refcount zero while the lookup is in flight
-    gate.release();
-    const params = (await readArmed) as { heldSnapshot?: unknown };
-    expect(params.heldSnapshot).toBeUndefined(); // the hit armed nothing: no shell rode this read
-    if (resolveRead === undefined) throw new Error("the lookup's fall-through read must be armed to settle the owner");
+    const pending = threadsStore.getState().ensureThread("local:thr_1");
+    await vi.waitFor(() => expect(threadsStore.getState().threads.get("local:thr_1")).toBeDefined());
+    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(true); // the shell window is open
+    expect(threadsStore.getState().cacheAnchors.has("local:thr_1")).toBe(true);
+    threadsStore.getState().releaseThread("local:thr_1"); // final release before the authoritative read resolves
+    expect(threadsStore.getState().threads.has("local:thr_1")).toBe(false); // the model is gone
+    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false); // and no unverified shell remains named
+    expect(threadsStore.getState().cacheAnchors.has("local:thr_1")).toBe(false); // the anchor went with it
+    expect(threadsStore.getState().cacheLeases.has("local:thr_1")).toBe(true); // the lease is Task 10's, not the shell window's
+    if (resolveRead === undefined) throw new Error("the read must still be parked at release");
     resolveRead(readResponse("local:thr_1"));
-    await first;
-    expect(threadsStore.getState().threads.has("local:thr_1")).toBe(false); // never published, never armed
+    await pending; // the refused publish settles the owner without resurrecting anything
     expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false);
+    expect(threadsStore.getState().cacheAnchors.has("local:thr_1")).toBe(false);
   });
 
   it("a lookup that lost its own deadline race resolves late and publishes nothing", async () => {

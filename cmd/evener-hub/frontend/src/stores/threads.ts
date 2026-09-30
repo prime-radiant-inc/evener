@@ -744,6 +744,20 @@ function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId
 function removeThreadModel(ref: string): void {
   const removed = threadsStore.getState().threads.get(ref);
   if (removed) removeThreadModelIndex(threadsIndex, removed);
+  // The shell-only cache metadata leaves with the model: the fields' whole
+  // meaning is "this ref's CURRENT model is an unverified cached shell", so a
+  // final release must not leave a ref named with no model behind (Tasks 6/7
+  // read them). The lease (cacheLeases) is deliberately different — it names
+  // the durable epoch this tab's arming captured, which Task 10's clear
+  // suppression needs across the release.
+  threadsStore.setState((s) => {
+    if (!s.cacheShellRefs.has(ref) && !s.cacheAnchors.has(ref)) return s;
+    const cacheShellRefs = new Set(s.cacheShellRefs);
+    cacheShellRefs.delete(ref);
+    const cacheAnchors = new Map(s.cacheAnchors);
+    cacheAnchors.delete(ref);
+    return { cacheShellRefs, cacheAnchors };
+  });
   threadsStore.setState((s) => {
     if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
     const nextThreads = new Map(s.threads);
@@ -4289,8 +4303,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (!threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
       const found = await joinCacheLookup(ref);
       const state = threadsStore.getState();
-      const released = (refCounts.get(ref) ?? 0) === 0;
-      if (found !== undefined && !released && !state.deletedRefs.has(ref) && !state.threads.has(ref)) {
+      // The creator rechecks after the await: a pane that released while the
+      // lookup was in flight, or a ref the deletion fence durably rejected,
+      // publishes nothing and arms nothing — a closed pane must not send a
+      // cold read in its own name. (A concurrent holder that published while
+      // we looked keeps its model; the guard below just declines to arm the
+      // shell over it.)
+      if ((refCounts.get(ref) ?? 0) === 0 || state.deletedRefs.has(ref)) return;
+      if (found !== undefined && !state.threads.has(ref)) {
         const captured = found.epoch;
         const epochMatch = tabCacheEpoch === undefined || tabCacheEpoch === captured;
         tabCacheEpoch = captured; // adopt: the first observation, or a newer durable epoch, becomes the view
