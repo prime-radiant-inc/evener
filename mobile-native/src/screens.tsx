@@ -2679,6 +2679,7 @@ export function ConversationScreen({
 			quote,
 			liveRun,
 			conversation,
+			subagentTree,
 			openSubagent,
 			answerFor,
 			liveSendKind,

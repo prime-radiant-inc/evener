@@ -1,6 +1,7 @@
 import { createElement, type ReactNode } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { paletteFor } from "./design/tokens";
 import type { MobileTimelineItem } from "./projectedRows";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
@@ -756,8 +757,23 @@ describe("a system event", () => {
 	});
 });
 
+const palette = paletteFor("light");
+
+// The colour of the one rule an error or warning row draws down its left edge.
+function ruleColor(tree: ReturnType<typeof render>): unknown {
+	const rules = tree.root.findAll((node) => typeof node.type === "string" && node.props.style?.borderLeftWidth === 2);
+	expect(rules).toHaveLength(1);
+	return rules[0]?.props.style.borderLeftColor;
+}
+
+// The label VoiceOver reads for a row's title: a warning and an error differ
+// in more than colour.
+const titleLabels = (tree: ReturnType<typeof render>) =>
+	tree.root
+		.findAll((node) => typeof node.type === "string" && typeof node.props.accessibilityLabel === "string")
+		.map((node) => node.props.accessibilityLabel);
+
 describe("an error", () => {
-	const DANGER_INK = "#C51D23";
 	const failure = (detail: string, turnId = "turn_2"): TimelineRow => ({
 		kind: "failure",
 		id: `failure:${turnId}`,
@@ -788,9 +804,8 @@ describe("an error", () => {
 
 	it("draws a red rule, the title and the detail", () => {
 		const { tree } = show(failure("go test exited 1"));
-		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor).toBe(
-			DANGER_INK,
-		);
+		expect(ruleColor(tree)).toBe(palette.dangerInk);
+		expect(titleLabels(tree)).toContain("Error: The turn failed");
 		expect(texts(tree.root).find((node) => textOf(node) === "The turn failed")?.props.style).toMatchObject({
 			fontWeight: "600",
 			fontSize: 15,
@@ -816,5 +831,73 @@ describe("an error", () => {
 			"Retry",
 		]);
 		expect(show(failure("go test exited 1", "turn_1")).buttons).toEqual([]);
+	});
+});
+
+// A warning is amber (spec 8.2 and the state table: amber means a human is
+// needed; red means failed), with its hint as a quiet second line (#3387).
+describe("a warning", () => {
+	it("draws a daemon warning notice with an amber rule, its text, and its hint", () => {
+		const tree = render(
+			<TimelineItem
+				item={{
+					kind: "notice",
+					id: "w",
+					origin: "system",
+					family: "warning",
+					tone: "attention",
+					eventKind: "warning",
+					text: "inspect delegate attention: permission denied",
+					hint: "Check the state directory.",
+					turnId: "turn_2",
+				}}
+				hubId="hub"
+				sessionRef="warning"
+				errorActionFor={() => "retry"}
+				onErrorAction={() => {}}
+			/>,
+		);
+		expect(ruleColor(tree)).toBe(palette.attention);
+		expect(renderedText(tree)).toContain("inspect delegate attention: permission denied");
+		expect(renderedText(tree)).toContain("Check the state directory.");
+		expect(titleLabels(tree)).toContain("Warning: inspect delegate attention: permission denied");
+		// A warning reports; it offers no Retry or Resume of its own.
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
+	});
+
+	it("draws a warning item amber too, with no Resume or Retry even on a paused session", () => {
+		const tree = render(
+			<TimelineItem
+				item={{ kind: "failure", id: "w1", title: "Low disk", detail: "clean up", attention: true, turnId: "turn_2" }}
+				hubId="hub"
+				sessionRef="warning"
+				errorActionFor={(failed) =>
+					errorAction(failed, { resumeRequired: true, turns: [{ id: "turn_1" }, { id: "turn_2" }] as never }, true)
+				}
+				onErrorAction={() => {}}
+			/>,
+		);
+		expect(ruleColor(tree)).toBe(palette.attention);
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
+	});
+
+	it("keeps a loop detection red", () => {
+		const tree = render(
+			<TimelineItem
+				item={{
+					kind: "notice",
+					id: "l",
+					origin: "system",
+					family: "warning",
+					tone: "warning",
+					eventKind: "loop_detection",
+					text: "The agent repeated itself",
+				}}
+				hubId="hub"
+				sessionRef="warning"
+			/>,
+		);
+		expect(ruleColor(tree)).toBe(palette.dangerInk);
+		expect(titleLabels(tree)).toContain("Error: The agent repeated itself");
 	});
 });

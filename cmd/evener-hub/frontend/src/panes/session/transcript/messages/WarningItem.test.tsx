@@ -43,10 +43,12 @@ test("message-only (no title, no hint) still renders, with a generic label", () 
   expect(screen.queryByTestId("warning-hint")).toBeNull();
 });
 
-test("title-only (no message, no hint) renders the title with no message/hint lines", () => {
+// A warning's words show once each (warningWords), as the phone shows them:
+// a title-only warning's title is its message, under the generic chip.
+test("title-only (no message, no hint) reads the title as its message, under the generic chip", () => {
   render(<WarningItem item={item({ text: "", warning: { title: "Heads up" } })} turn={turn} live={false} />);
-  expect(screen.getByText("Heads up")).toBeTruthy();
-  expect(screen.queryByTestId("warning-message")).toBeNull();
+  expect(screen.getByTestId("warning-message").textContent).toBe("Heads up");
+  expect(screen.getByText("Warning")).toBeTruthy();
   expect(screen.queryByTestId("warning-hint")).toBeNull();
 });
 
