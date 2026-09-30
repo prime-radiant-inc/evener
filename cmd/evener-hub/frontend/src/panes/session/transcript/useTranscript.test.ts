@@ -1,8 +1,8 @@
 import type { Thread, ThreadCapabilities, ThreadTurnsListResponse } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { hydrateThread, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, renderHook } from "@testing-library/react";
-import { createElement, type PropsWithChildren, StrictMode } from "react";
+import { act, render, renderHook } from "@testing-library/react";
+import { createElement, type PropsWithChildren, StrictMode, Suspense, useEffect } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -528,4 +528,106 @@ test("does not transfer old demand into a different conversation binding at the 
   expect(attempts).toBe(1);
   hook.unmount();
   vi.useRealTimers();
+});
+
+test("abandoned first-binding renders cannot retire retained pre-hydration demand", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  const waiting = renderHook(() => useTranscript("ref_a"));
+  await act(async () => {
+    await waiting.result.current.loadOlder();
+  });
+  waiting.unmount();
+  const putModel = (id: string) =>
+    threadsStore.setState({
+      threads: new Map([
+        ["ref_a", hydrateThread({ thread: testThread("ref_a", { id }), olderCursor: "page" }, "ref_a", 1000)],
+      ]),
+    });
+  putModel("uncommitted-thread");
+  const never = new Promise<never>(() => {});
+  function AbandonedPane() {
+    useTranscript("ref_a");
+    throw never;
+  }
+  const abandoned = render(createElement(Suspense, { fallback: null }, createElement(AbandonedPane)));
+  abandoned.unmount();
+  putModel("committed-thread");
+  fake.on("thread/turns/list", () => ({ data: [], nextCursor: undefined }));
+  const returned = renderHook(() => useTranscript("ref_a"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+  expect(returned.result.current.olderError).toBeNull();
+  returned.unmount();
+});
+
+test("unavailable history stays pending while a hydrated model with no cursor confirms the end", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a") }));
+  const hook = renderHook(() => useTranscript("ref_a"));
+  await act(async () => {
+    await hook.result.current.loadOlder();
+  });
+  expect(hook.result.current.model).toBeUndefined();
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(hook.result.current.model?.olderCursor).toBeUndefined();
+  expect(hook.result.current.loadingOlder).toBe(false);
+  expect(hook.result.current.olderError).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+  hook.unmount();
+});
+
+test("a committed ref change routes automatic demand to that ref with another reader still active", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", (params) => ({ thread: testThread(params.ref), olderCursor: "page-1" }));
+  fake.on("thread/turns/list", () => ({ data: [], nextCursor: "page-2" }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().ensureThread("ref_b");
+  });
+  const other = renderHook(() => useTranscript("ref_a", "other-pane"));
+  const requestedRefs: string[] = [];
+  const reader = renderHook(
+    ({ ref }) => {
+      const transcript = useTranscript(ref, "switching-pane");
+      useEffect(() => {
+        requestedRefs.push(ref);
+        void transcript.loadOlder().catch(() => {});
+      }, [ref, transcript.loadOlder]);
+      return transcript;
+    },
+    { initialProps: { ref: "ref_a" } },
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(
+    fake.calls.filter(
+      (call) => call.method === "thread/turns/list" && (call.params as { ref: string }).ref === "ref_a",
+    ),
+  ).toHaveLength(1);
+  reader.rerender({ ref: "ref_b" });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(
+    fake.calls.filter(
+      (call) => call.method === "thread/turns/list" && (call.params as { ref: string }).ref === "ref_a",
+    ),
+  ).toHaveLength(1);
+  expect(
+    fake.calls.filter(
+      (call) => call.method === "thread/turns/list" && (call.params as { ref: string }).ref === "ref_b",
+    ),
+  ).toHaveLength(1);
+  expect(requestedRefs.at(-1)).toBe("ref_b");
+  reader.unmount();
+  other.unmount();
 });

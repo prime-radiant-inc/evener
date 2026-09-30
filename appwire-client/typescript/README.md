@@ -114,7 +114,9 @@ that identity drops only its demand. Inactivity releases the reader, preserving
 pending demand; explicitly leaving history cancels it. An in-flight page can still
 merge, but a late failure cannot revive cancelled demand.
 The supplied page key is an opaque cursor (including any trim boundary), `null`
-for confirmed history end, or `undefined` while history is unavailable. The
+for confirmed history end, or `undefined` while history is unavailable. Adapters
+translate their store's end marker: the browser's loaded model has an absent
+optional `olderCursor` at history end, while an unavailable model stays `undefined`. The
 existing history store remains responsible for merging pages and scroll anchors.
 Typed client-upgrade and deleted-target rejections remain explained failures.
 

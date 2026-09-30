@@ -4,7 +4,7 @@
 
 import type { ThreadModel } from "@evener/appwire-client";
 import { HistoryPaging, sessionActionError } from "@evener/appwire-client";
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { useConnectionStore } from "../../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 
@@ -27,45 +27,68 @@ export interface UseTranscriptResult {
 
 // A browser page serves one hub. Socket replacements retain demand for the
 // same ref and session binding; a new binding owns a separate history window.
-const pagingByRef = new Map<string, { binding: string | undefined; paging: HistoryPaging }>();
+interface TranscriptPaging {
+  ref: string;
+  binding: string | undefined;
+  paging: HistoryPaging;
+}
+const pagingByRef = new Map<string, TranscriptPaging>();
 
 // Tests reset the thread store between hub fixtures.
 export function resetTranscriptPagingForTests(): void {
   pagingByRef.clear();
 }
 
+function matchesBinding(entry: TranscriptPaging | undefined, binding: string | undefined): entry is TranscriptPaging {
+  return entry !== undefined && (binding === undefined || entry.binding === undefined || entry.binding === binding);
+}
+
+function createPaging(ref: string, binding: string | undefined): TranscriptPaging {
+  const entry: TranscriptPaging = {
+    ref,
+    binding,
+    paging: new HistoryPaging(
+      () => {
+        const current = threadsStore.getState().threads.get(ref);
+        if (current === undefined || (current.instanceId ?? current.threadId) !== entry.binding) return undefined;
+        // The loaded model's optional wire cursor is absent at history end.
+        // An unavailable model or binding is handled above, not as an end.
+        return current.olderCursor ?? null;
+      },
+      () => threadsStore.getState().loadOlderTurns(ref),
+      () => {
+        if (pagingByRef.get(ref) === entry) pagingByRef.delete(ref);
+      },
+    ),
+  };
+  return entry;
+}
+
 export function useTranscript(ref: string, viewId = ref): UseTranscriptResult {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const { state: connection } = useConnectionStore();
   const binding = model?.instanceId ?? model?.threadId;
-  const paging = useMemo(() => {
+  const [entry, setEntry] = useState(() => {
     const retained = pagingByRef.get(ref);
-    if (retained && (binding === undefined || retained.binding === undefined || retained.binding === binding)) {
-      if (binding !== undefined) retained.binding = binding;
-      return retained.paging;
-    }
-    const entry = {
-      binding,
-      paging: new HistoryPaging(
-        () => {
-          const current = threadsStore.getState().threads.get(ref);
-          if (current === undefined || (current.instanceId ?? current.threadId) !== entry.binding) return undefined;
-          return current.olderCursor ?? null;
-        },
-        () => threadsStore.getState().loadOlderTurns(ref),
-        () => {
-          if (pagingByRef.get(ref) === entry) pagingByRef.delete(ref);
-        },
-      ),
-    };
-    pagingByRef.set(ref, entry);
-    return entry.paging;
-  }, [ref, binding]);
+    return matchesBinding(retained, binding) ? retained : createPaging(ref, binding);
+  });
+  // Only committed readers can install or bind shared demand. A suspended
+  // first render must not retire a waiting reader's unknown binding.
+  useLayoutEffect(() => {
+    const retained = pagingByRef.get(ref);
+    let selected: TranscriptPaging;
+    if (matchesBinding(retained, binding)) selected = retained;
+    else selected = entry.ref === ref && matchesBinding(entry, binding) ? entry : createPaging(ref, binding);
+    if (binding !== undefined) selected.binding = binding;
+    pagingByRef.set(ref, selected);
+    if (selected !== entry) setEntry(selected);
+  }, [entry, ref, binding]);
+  const paging = entry.paging;
   const state = useSyncExternalStore(paging.subscribe, paging.getSnapshot);
   // Wait for hydration when a pane returns before resuming its demand.
   const ready = model !== undefined && connection === "ready";
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || pagingByRef.get(ref) !== entry) return;
     let release: (() => void) | undefined;
     const sync = () => {
       if (document.visibilityState === "hidden") {
@@ -79,17 +102,22 @@ export function useTranscript(ref: string, viewId = ref): UseTranscriptResult {
       document.removeEventListener("visibilitychange", sync);
       release?.();
     };
-  }, [paging, ready]);
+  }, [paging, ready, ref, entry]);
 
-  const loadOlder = useCallback(() => paging.request(viewId), [paging, viewId]);
-  const cancelOlder = useCallback(() => paging.cancel(viewId), [paging, viewId]);
+  // A layout commit can adopt another pane's owner before the state update
+  // renders. Automatic effects must already route to the committed ref.
+  const committedPaging = useCallback(() => pagingByRef.get(ref)?.paging ?? paging, [ref, paging]);
+  const loadOlder = useCallback(() => committedPaging().request(viewId), [committedPaging, viewId]);
+  const cancelOlder = useCallback(() => committedPaging().cancel(viewId), [committedPaging, viewId]);
   return {
     model,
     loadOlder,
     cancelOlder,
     loadingOlder: state.loading,
     loadOlderReportingError: () => {
-      void paging.retryNow(viewId).catch(() => {});
+      void committedPaging()
+        .retryNow(viewId)
+        .catch(() => {});
     },
     olderError: state.error === null ? null : sessionActionError("Couldn't load older turns", state.error),
   };
