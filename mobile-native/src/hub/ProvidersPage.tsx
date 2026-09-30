@@ -519,7 +519,7 @@ function Providers({
 					providers={core.availableProviders}
 					onCreate={surface.create}
 					onEdit={surface.edit}
-					disabled={surface.busy || core.writesRefused || stale || !ready}
+					disabled={writeHeld}
 					canUseConnection={canUseConnection}
 					onSaved={(name) => {
 						setConfiguration(null);
@@ -629,14 +629,14 @@ function Providers({
 					<Row
 						label="Edit"
 						tone="accent"
-						disabled={surface.busy || core.writesRefused || stale || !ready}
+						disabled={writeHeld}
 						onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
 					/>
 					{!instance.isDefault && (
 						<Row
 							label="Make default"
 							tone="accent"
-							disabled={surface.busy || core.writesRefused || stale || !ready}
+							disabled={writeHeld}
 							onPress={() => {
 								void act(() => surface.setDefault(instance.name));
 							}}
@@ -687,7 +687,7 @@ function Providers({
 						<Row
 							label="Remove"
 							tone="danger"
-							disabled={surface.busy || core.writesRefused || stale || !ready}
+							disabled={writeHeld}
 							onPress={() => {
 								if (fingerprintUnavailable(instance)) {
 									setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
