@@ -1611,19 +1611,19 @@ func TestHubSpawnerNoUserLayerFollowsTheLiveRegistry(t *testing.T) {
 		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want the path the hub is reading", got, ok)
 	}
 
-	// fixed → broken: the hub degrades mid-life, so the child must too.
+	// A broken edit retains the usable user layer for new children.
 	if err := os.WriteFile(f.tomlPath, []byte(broken), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.ctl.reg.Reload(); err == nil {
 		t.Fatal("the registry accepted an old-schema file")
 	}
-	if got, ok := childProvidersConfig(); !ok || got != "" {
-		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want present and empty: the hub is not reading this file", got, ok)
+	if got, ok := childProvidersConfig(); !ok || got == "" || got == f.tomlPath {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want a retained copy of the usable user file", got, ok)
 	}
 
 	// broken → fixed: the user repairs the file and a credential action
-	// reloads it, so the child gets the user layer back.
+	// reloads it, so the child returns to the source file.
 	if err := os.WriteFile(f.tomlPath, []byte(good), 0o644); err != nil {
 		t.Fatal(err)
 	}
