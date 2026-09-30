@@ -442,14 +442,22 @@ test("alias resync fences delayed pre-clear summary and collection replies", asy
     newSummary = deferred<SessionActivitySummary>();
   const oldDelegates = deferred<SessionDelegatesResponse>(),
     newDelegates = deferred<SessionDelegatesResponse>();
-  const entered = deferred<void>();
+  const entered = deferred<void>(),
+    summaryEntered = deferred<void>(),
+    delegatesEntered = deferred<void>();
   let summaryReads = 0,
     delegateReads = 0;
-  client.on("evener/thread/activity/read", () => (++summaryReads === 1 ? oldSummary.promise : newSummary.promise));
+  client.on("evener/thread/activity/read", () => {
+    if (++summaryReads === 1) return oldSummary.promise;
+    summaryEntered.resolve();
+    return newSummary.promise;
+  });
   client.on("evener/thread/delegates/list", () => {
     delegateReads += 1;
     entered.resolve();
-    return delegateReads === 1 ? oldDelegates.promise : newDelegates.promise;
+    if (delegateReads === 1) return oldDelegates.promise;
+    delegatesEntered.resolve();
+    return newDelegates.promise;
   });
   const ref = "remote:workspace";
   const store = new SessionActivityStore(client, ref);
@@ -465,7 +473,7 @@ test("alias resync fences delayed pre-clear summary and collection replies", asy
     delegates: [{ ...delegateFixture(), type: "delegate" }],
     page: { complete: true, issues: [] },
   });
-  for (let hop = 0; hop < 20; hop += 1) await Promise.resolve();
+  await Promise.all([summaryEntered.promise, delegatesEntered.promise]);
   expect(summaryReads).toBe(2);
   expect(delegateReads).toBe(2);
   expect(store.getSnapshot().summary).toBeNull();
@@ -669,4 +677,109 @@ test("alias resync rearms demanded reads after the former target became unavaila
   await activityState(store, () => store.getSnapshot().summary?.context.sessionId === context.sessionId);
   expect(store.getSnapshot().summaryState).toMatchObject({ error: null, permanent: false, unavailable: false });
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(0);
+});
+
+test("automatic source failures retain summary and rows, then use the paced retry owner", async () => {
+  const client = activityClient(),
+    store = owner(client);
+  store.start();
+  const leave = store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().jobs.complete);
+  const error = new WireError("session activity metadata unavailable", -32014, {
+    evenerErrorInfo: "actionUnavailable",
+    retryDisposition: "automatic",
+  });
+  client.on("evener/thread/activity/read", () => {
+    throw error;
+  });
+  client.on("evener/thread/jobs/list", () => {
+    throw error;
+  });
+  await Promise.all([store.refresh("summary"), store.refresh("jobs")]);
+  expect(store.getSnapshot().summaryState).toMatchObject({ permanent: false, unavailable: false, error });
+  expect(store.getSnapshot().jobs).toMatchObject({ permanent: false, unavailable: false, error });
+  expect(store.getSnapshot().summary?.jobs.total).toBe(201);
+  expect(store.getSnapshot().jobs.rows[0]?.jobId).toBe("shell-1");
+  await vi.advanceTimersByTimeAsync(999);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(2);
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    jobs: { known: true, total: 7, active: 1, failed: 0, completed: 6 },
+  }));
+  client.on("evener/thread/jobs/list", () => jobsFixture([jobFixture("healed")]));
+  await vi.advanceTimersByTimeAsync(1);
+  expect(store.getSnapshot().summary?.jobs.total).toBe(7);
+  expect(store.getSnapshot().summaryState).toMatchObject({ error: null, permanent: false, unavailable: false });
+  expect(store.getSnapshot().jobs.rows[0]?.jobId).toBe("healed");
+  expect(store.getSnapshot().jobs).toMatchObject({ error: null, complete: true });
+  await vi.advanceTimersByTimeAsync(120000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(3);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(3);
+  leave();
+});
+
+test("typed activity invalidation heals automatic source failure before its retry deadline", async () => {
+  const client = activityClient(),
+    store = owner(client);
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.complete);
+  client.on("evener/thread/jobs/list", () => {
+    throw new WireError("source unavailable", -32014, {
+      evenerErrorInfo: "actionUnavailable",
+      retryDisposition: "automatic",
+    });
+  });
+  await store.refresh("jobs");
+  client.on("evener/thread/jobs/list", () => jobsFixture([jobFixture("healed-invalidation")]));
+  activityChanged(client, ["jobs"]);
+  await activityState(store, () => store.getSnapshot().jobs.rows[0]?.jobId === "healed-invalidation");
+  expect(store.getSnapshot().jobs.error).toBeNull();
+  await vi.advanceTimersByTimeAsync(120000);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(3);
+});
+
+test("automatic source failure loses retry and invalidation demand when released", async () => {
+  const client = activityClient(),
+    store = owner(client);
+  const error = new WireError("source unavailable", -32014, {
+    evenerErrorInfo: "actionUnavailable",
+    retryDisposition: "automatic",
+  });
+  client.on("evener/thread/jobs/list", () => {
+    throw error;
+  });
+  const leave = store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.error !== null && !store.getSnapshot().jobs.loading);
+  leave();
+  client.on("evener/thread/jobs/list", () => jobsFixture());
+  activityChanged(client, ["jobs"]);
+  await vi.advanceTimersByTimeAsync(120000);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(1);
+  expect(store.getSnapshot().jobs.rows).toHaveLength(0);
+});
+
+test.each([
+  { evenerErrorInfo: "actionUnavailable" },
+  { evenerErrorInfo: "actionUnavailable", retryDisposition: "blocked" },
+  { evenerErrorInfo: "actionUnavailable", retryDisposition: "none" },
+  { evenerErrorInfo: "resourceNotFound", retryDisposition: "automatic" },
+  { evenerErrorInfo: "methodNotFound", retryDisposition: "automatic" },
+  { evenerErrorInfo: "actionUnavailable", mutationOutcome: "targetDeleted", retryDisposition: "automatic" },
+])("definitive unavailable activity remains parked with %o", async (data) => {
+  const client = activityClient(),
+    store = owner(client);
+  const error = new WireError("unavailable", -32014, data);
+  client.on("evener/thread/jobs/list", () => {
+    throw error;
+  });
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().jobs.permanent);
+  client.on("evener/thread/jobs/list", () => jobsFixture());
+  activityChanged(client, ["jobs"]);
+  client.emitStateChange("reconnecting");
+  client.emitReady();
+  await vi.advanceTimersByTimeAsync(120000);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(1);
+  expect(store.getSnapshot().jobs).toMatchObject({ permanent: true, unavailable: true, error });
 });
