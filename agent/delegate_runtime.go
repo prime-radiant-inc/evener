@@ -1389,7 +1389,8 @@ func (s *Session) reserveStartAfterFinalization(ctx context.Context, actor deleg
 	return reservation, err
 }
 
-// channelClosed reports whether ch is closed, without blocking.
+// channelClosed reports whether ch is closed, without blocking. A nil channel
+// is never closed.
 func channelClosed(ch <-chan struct{}) bool {
 	select {
 	case <-ch:
