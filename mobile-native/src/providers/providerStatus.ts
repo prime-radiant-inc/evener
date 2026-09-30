@@ -38,23 +38,6 @@ export function authByProvider(statuses: readonly AuthStatusResponse[]): Readonl
 	return new Map(statuses.map((status) => [status.provider, status]));
 }
 
-/** The account a provider signs in with, for its detail page: the hub's live
- * status's email, else the email its stored sign-in names (the status's, then
- * the instance row's), trimmed. Null when none names one, and for a provider
- * that isn't signed in with an account: a key in use leaves a stored
- * sign-in's email behind, which isn't the account it uses. */
-export function signedInAccount(
-	instance: Pick<InstanceEntry, "activeSource" | "storedEmail">,
-	auth: Pick<AuthStatusResponse, "email" | "storedEmail"> | undefined,
-): string | null {
-	if (instance.activeSource !== "oauth") return null;
-	for (const email of [auth?.email, auth?.storedEmail, instance.storedEmail]) {
-		const trimmed = email?.trim();
-		if (trimmed) return trimmed;
-	}
-	return null;
-}
-
 /** How a provider signs in, for its detail page: an account (OAuth), a key
  * (an API key or a credential file), or nothing. */
 export function signInKind(instance: Pick<InstanceEntry, "authModes">): "Account" | "API key" | "None" {

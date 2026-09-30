@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
-import { authByProvider, providerStatus, signedInAccount, signInKind, statusOf } from "./providerStatus";
+import { authByProvider, providerStatus, signInKind, statusOf } from "./providerStatus";
 
 type Facts = Pick<InstanceEntry, "activeSource" | "authModes" | "credentialRequired">;
 const instance = (over: Partial<Facts>): Facts => ({
@@ -55,29 +55,4 @@ it("says nothing of an account sign-in until the hub's statuses have been read",
 	// A key's state is on the row itself.
 	const key = { ...instance({ activeSource: "store", authModes: ["apiKey"] }), name: "lunaroute" };
 	expect(statusOf(key, null)).toEqual({ word: "Key set", tone: "ink" });
-});
-
-// The account a provider signs in with (settings audit M5): the hub's live
-// status first, then the account its stored sign-in names.
-it("names the signed-in account, from the live status first, then the stored sign-in", () => {
-	const oauth = { activeSource: "oauth" };
-	expect(signedInAccount(oauth, { email: "jesse@example.com", storedEmail: "old@example.com" })).toBe(
-		"jesse@example.com",
-	);
-	expect(signedInAccount(oauth, { storedEmail: "old@example.com" })).toBe("old@example.com");
-	expect(signedInAccount({ ...oauth, storedEmail: "row@example.com" }, undefined)).toBe("row@example.com");
-	expect(signedInAccount({ ...oauth, storedEmail: " " }, { email: "" })).toBeNull();
-	expect(signedInAccount(oauth, undefined)).toBeNull();
-});
-
-it("names the account without the padding around it", () => {
-	expect(signedInAccount({ activeSource: "oauth" }, { email: "  jesse@example.com " })).toBe("jesse@example.com");
-});
-
-// Only a provider signed in with an account names one: a key that is in use
-// leaves a stored sign-in's email behind unnamed.
-it("names no account for a provider whose key is in use, even with a stored sign-in", () => {
-	expect(
-		signedInAccount({ activeSource: "store", storedEmail: "old@example.com" }, { storedEmail: "old@example.com" }),
-	).toBeNull();
 });

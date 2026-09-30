@@ -30,7 +30,7 @@ import { isReady, whenReady } from "../connectionDisplay";
 import { useCredentialStore } from "../credentialStore";
 import { destructiveButton } from "../haptics";
 import { type LeaveGuard, ProviderEditor } from "../ProviderEditor";
-import { signedInAccount, signInKind, statusOf } from "../providers/providerStatus";
+import { signInKind, statusOf } from "../providers/providerStatus";
 import { useProviderSurface } from "../providerSurface";
 import { ProviderSignInSheet } from "../ProviderSignInSheet";
 import { ProviderSignIn } from "../providerSignIn";
@@ -767,9 +767,9 @@ function Providers({
 }
 
 /** What a provider is: its sign-in state (amber only when expired), its
- * type, how it signs in, the account it signs in with, where it points, where
- * its credential comes from, and the models it offers, each with a switch (as
- * on the web), and the action that asks the provider for new ones. */
+ * type, how it signs in and where it points, where its credential comes
+ * from, and the models it offers, each with a switch (as on the web), and
+ * the action that asks the provider for new ones. */
 function ProviderFacts({
 	instance,
 	auth,
@@ -794,7 +794,6 @@ function ProviderFacts({
 	onCheckModels(): void;
 }) {
 	const status = statusOf(instance, auth);
-	const account = signedInAccount(instance, auth?.get(instance.name));
 	const defaultTag = instance.isDefault ? ({ text: "Default", tone: "gray" } as const) : null;
 	const models = instance.models ?? [];
 	// A provider such as OpenRouter lists hundreds of models. The detail mounts
@@ -821,7 +820,6 @@ function ProviderFacts({
 					accessibilityLabel={defaultTag ? `Type, ${instance.providerId}, Default` : `Type, ${instance.providerId}`}
 				/>
 				<Row label="Sign-in" value={signInKind(instance)} />
-				{account ? <Row label="Signed in as" value={account} /> : null}
 				<Row label="Endpoint" sub={styleInfoText(instance)} machineSub />
 				{fromEnvironment(instance) ? <Row label="Defined in" value="Environment" /> : null}
 				{credentialLayers(instance).map((layer) =>

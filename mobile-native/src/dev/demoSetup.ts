@@ -566,5 +566,6 @@ function instanceEntry(
 		isDefault: index === 0,
 		models,
 		...SIGN_IN[provider.auth],
+		...(provider.email ? { storedEmail: provider.email } : {}),
 	};
 }

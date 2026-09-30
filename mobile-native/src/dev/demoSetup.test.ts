@@ -126,9 +126,13 @@ describe("providers", () => {
 		expect(statuses.filter((status) => status.needsLogin)).toHaveLength(1);
 	});
 
-	it("names the account a signed-in provider uses", () => {
+	// The hub names a stored sign-in's account on its instance row, which the
+	// detail's Credential row reads ("Configured via OAuth (email)").
+	it("names the account a signed-in provider's stored sign-in uses", () => {
 		const statuses = setup().answer("evener/auth/list", {}).providers;
 		expect(statuses.find((status) => status.provider === "codex-jesse-at-pr")?.email).toBe("jesse@example.com");
+		const instances = setup().answer("evener/instance/list", {}).instances;
+		expect(instances.find((instance) => instance.name === "codex-jesse-at-pr")?.storedEmail).toBe("jesse@example.com");
 	});
 });
 
