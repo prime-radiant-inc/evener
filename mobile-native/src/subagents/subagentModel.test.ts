@@ -447,4 +447,15 @@ describe("shell jobs in the Activity list", () => {
 		expect(shellJobMeta(row, NOW)).toBe("stopped · 1m");
 		expect(shellJobLabel(row, NOW)).toContain(", stopped, ");
 	});
+
+	// A completed status over a failure outcome is a failure (jobIsFailed), not a
+	// clean finish: its status stays on the row instead of being left to the hue.
+	it("leaves a job that ended badly, even under a completed status, un-clean", () => {
+		const bad = job(true, { status: "completed", outcome: "failure", endedAt: ago(MIN) });
+		const { jobs } = flattenActivity({ revision: 1, root: session("local:coord", [shell(bad)]) });
+		const [row] = jobs;
+		if (!row) throw new Error("no job");
+		expect(row.state).toBe("failed");
+		expect(shellJobMeta(row, NOW)).toBe("completed · 1m");
+	});
 });

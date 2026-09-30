@@ -412,7 +412,7 @@ function shellJobStatus(row: ShellJobRow, now: number): { words: string; clean: 
 	const ended = time(job.endedAt);
 	return {
 		words,
-		clean: job.status === "completed",
+		clean: job.status === "completed" && !jobIsFailed(job),
 		ms: started === null || ended === null ? null : Math.max(0, ended - started),
 	};
 }
