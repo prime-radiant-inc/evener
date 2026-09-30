@@ -278,8 +278,10 @@ function Providers({
 		if (!instance) {
 			// An edit open on a provider that left the hub had nothing left to be
 			// saved to: say so rather than drop the draft silently.
-			if (configuration === "edit" && selected !== null) setActionWarning(providerGoneWhileEditing(selected));
-			setConfiguration((value) => (value === "edit" ? null : value));
+			if (configuration === "edit") {
+				if (selected !== null) setActionWarning(providerGoneWhileEditing(selected));
+				setConfiguration(null);
+			}
 			setSelected(null);
 			setEditingCredential(null);
 			setCredentialTarget(null);
