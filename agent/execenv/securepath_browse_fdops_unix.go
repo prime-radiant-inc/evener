@@ -47,11 +47,25 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
-	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY, 0)
+	// Nonblocking + regular-file admission, the same contract readFile enforces:
+	// a read-only open of a FIFO entry (which WalkDir reaches as a non-directory
+	// and grep then fs.ReadFile's) would otherwise block the walk at open until a
+	// writer appears, and a never-ending special file would read without bound.
+	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: toFsErr(err)}
 	}
-	return os.NewFile(uintptr(fd), name), nil
+	file := os.NewFile(uintptr(fd), name)
+	info, serr := file.Stat()
+	if serr != nil {
+		_ = file.Close()
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: serr}
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fmt.Errorf("not a regular file")}
+	}
+	return file, nil
 }
 
 // ReadDir lists name through readDirChunked, the same helper boundedDirFS

@@ -3,6 +3,8 @@
 package execenv
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,5 +60,52 @@ func TestSandboxReadFileRefusesNonRegularWithoutBlocking(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "regular") {
 		t.Fatalf("readFile(FIFO) err = %v, want a not-regular refusal", err)
+	}
+}
+
+// TestSandboxGrepSkipsNonRegularWithoutBlocking pins the same admission contract
+// on the confined browse surface: secureDirFS.Open backs grep's per-file read
+// (and its .gitignore reads), so a FIFO entry in an allowed directory must be
+// refused at open rather than blocking the whole walk until a writer appears.
+func TestSandboxGrepSkipsNonRegularWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	s, _, worktree := newSB(t, sandbox.ModeRestricted)
+
+	if err := os.WriteFile(filepath.Join(worktree, "real.txt"), []byte("needle here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(filepath.Join(worktree, "pipe"), 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	out, err := grepOrFailFast(t, s, worktree)
+	if err != nil {
+		t.Fatalf("grepNative over a tree with a FIFO entry: %v", err)
+	}
+	if !strings.Contains(out, "needle here") {
+		t.Fatalf("grepNative output = %q, want the real file's match", out)
+	}
+}
+
+// grepOrFailFast runs the confined grep native walk and returns its result,
+// failing the test if it does not return within a few seconds so a FIFO entry
+// that blocks the walk surfaces as a visible timeout rather than a stuck suite.
+func grepOrFailFast(t *testing.T, s *sandboxFS, base string) (string, error) {
+	t.Helper()
+	type result struct {
+		out string
+		err error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		out, err := s.grepNative(context.Background(), "needle", base, "", false, 100, "")
+		resCh <- result{out, err}
+	}()
+	select {
+	case res := <-resCh:
+		return res.out, res.err
+	case <-time.After(5 * time.Second):
+		t.Fatalf("sandbox grepNative hung walking %q (a non-regular entry blocked the file open)", base)
+		return "", nil // unreachable
 	}
 }
