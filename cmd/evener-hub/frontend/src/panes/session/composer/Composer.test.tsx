@@ -9,6 +9,10 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import {
+  activitySidebarStore,
+  resetActivitySidebarStoreForTests,
+} from "../../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
@@ -750,32 +754,36 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
   expect(textarea().textContent).toBe("/goal Keep the session focused");
 });
 
-test("clicking the current task twice keeps one Tasks pane open and focuses it", async () => {
+// Desktop Tasks everywhere is the activity sidebar, preselected to its tasks
+// tab (the same retarget the rail row and the chrome menu share) - the
+// current-task button opens no sessionTasks pane. Mobile keeps the Sheet (the
+// mobile test below pins that).
+test("clicking the current task opens the activity sidebar's tasks tab, never a pane, on desktop", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     evener: currentWorkEvener({ task: true }),
   });
 
   await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
-  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
-  const tasksPane = workspaceStore
-    .getState()
-    .panes.find((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a");
-  if (!tasksPane) throw new Error("missing Tasks pane");
+  expect(activitySidebarStore.getState().open).toBe(true);
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
   // act(): the chrome subscribes to focus-derived state (its Activity check
   // reads currentSessionRef), so this raw store mutation re-renders it.
   act(() => {
     workspaceStore.setState({ focusedPaneId: null });
   });
-  expect(workspaceStore.getState().focusedPaneId).not.toBe(tasksPane.id);
 
+  // Idempotent: a second click keeps the sidebar on the tasks tab and still
+  // opens no pane.
   await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
+  expect(activitySidebarStore.getState().open).toBe(true);
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
   expect(
     workspaceStore
       .getState()
       .panes.filter((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a"),
-  ).toHaveLength(1);
-  expect(workspaceStore.getState().focusedPaneId).toBe(tasksPane.id);
+  ).toHaveLength(0);
 });
 
 test("clicking the current task opens the existing mobile tasks sheet for this session", async () => {
@@ -849,6 +857,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  resetActivitySidebarStoreForTests();
   resetActivityPanelStoreForTests();
   resetActivitySummaryStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real

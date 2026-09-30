@@ -58,12 +58,12 @@ import {
   useRef,
   useState,
 } from "react";
+import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
-import { workspaceStore } from "../../../shell/workspace";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import {
   controlsFor,
@@ -604,16 +604,19 @@ export function Composer({ ref, focused }: ComposerProps) {
   };
 
   const showTasks = (): void => {
+    // Desktop Tasks everywhere is the activity sidebar, preselected to its
+    // Tasks tab; on mobile there is no sidebar, so the per-session Sheet
+    // keeps its behavior.
     if (isMobile) tasksPanelRef.current?.open();
-    else workspaceStore.getState().openPane("sessionTasks", { ref }, { slot: "secondary" });
+    else activitySidebarStore.getState().openWith("tasks");
   };
 
   // Stable so the memoized chrome below skips re-rendering on every keystroke
   // of the draft.
   const toggleTasks = useCallback((): void => {
     if (isMobile) tasksPanelRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionTasks", { ref });
-  }, [isMobile, ref]);
+    else activitySidebarStore.getState().openWith("tasks");
+  }, [isMobile]);
 
   // A shared projection can outlive a Composer remount while its durable
   // discard is still being projected. Only auto-activate after this mount

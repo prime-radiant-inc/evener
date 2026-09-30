@@ -1577,6 +1577,14 @@ function NavigationRail({
             closeSessionActivityPanes(session.ref);
             activitySidebarStore.getState().openWith();
           }
+        } else if (pane === "tasks") {
+          // Desktop Tasks everywhere is the zoom system's sidebar, preselected
+          // to its Tasks tab and scoped by the just-focused session. On mobile
+          // there is no sidebar (the rail lives in the tree drawer), so the
+          // sessionTasks pane keeps its pre-sidebar behavior. Both idempotent
+          // opens: the rail navigates, it never toggles closed.
+          if (isMobile) workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+          else activitySidebarStore.getState().openWith("tasks");
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }

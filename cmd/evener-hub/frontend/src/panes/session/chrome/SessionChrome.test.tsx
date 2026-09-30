@@ -528,7 +528,11 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
   }
 });
 
-test("menu Tasks item toggles the sessionTasks workspace pane open and closed on desktop", async () => {
+// Desktop Tasks opens the activity sidebar preselected to its tasks tab (the
+// same retarget the rail row and the composer's current-task button share),
+// not a workspace pane. Mobile still opens the Sheet (the mobile tasks-panel
+// test below keeps that).
+test("desktop Tasks menu item opens the activity sidebar on the tasks tab, never a pane", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -538,11 +542,17 @@ test("menu Tasks item toggles the sessionTasks workspace pane open and closed on
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
 
-  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
+  expect(activitySidebarStore.getState().open).toBe(true);
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
 
+  // Idempotent open, like the menu's sibling pane openers: re-selecting keeps
+  // the sidebar on the tasks tab and still opens no pane.
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: /Tasks/ }));
-  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
+  expect(activitySidebarStore.getState().open).toBe(true);
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionTasks")).toBe(false);
 });
 
 test("menu offers Pin/Archive/Delete when the session is in the tree; omits them otherwise", async () => {
@@ -774,12 +784,12 @@ test("the activity panel fetches for the SAME ref passed to SessionChrome", asyn
 // --- panes through the menu (2026-08-05-unified-session-context-menu) --------
 //
 // Details/Tasks/Activity are the menu's leading group at every width and on
-// every host: desktop items toggle the workspace panes, mobile items open the
-// Sheets through the panels' imperative handles (openX branches on isMobile).
+// every host: on desktop Details toggles its workspace pane while Tasks and
+// Activity open the activity sidebar, and mobile items open the Sheets
+// through the panels' imperative handles (openX branches on isMobile).
 
 test.each([
   ["Details", "sessionDetails"],
-  ["Tasks", "sessionTasks"],
 ] as const)("desktop %s menu item opens and closes its pane for the SessionChrome ref", async (label, type) => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

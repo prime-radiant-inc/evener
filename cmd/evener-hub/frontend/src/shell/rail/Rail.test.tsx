@@ -1904,6 +1904,79 @@ describe("resource-backed Rail", () => {
     }
   });
 
+  test("a rail row's Tasks action opens the session and the sidebar's tasks tab, never the old pane", async () => {
+    // The chrome menu's twin: desktop Tasks everywhere is the activity
+    // sidebar, preselected to its Tasks tab. The rail NAVIGATES, idempotently:
+    // open the session pane, open the sidebar scoped to it, never toggle
+    // closed.
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Tasks" }));
+      await waitFor(() => {
+        expect(activitySidebarStore.getState().open).toBe(true);
+      });
+      expect(activitySidebarStore.getState().tab).toBe("tasks");
+      expect(
+        workspaceStore
+          .getState()
+          .panes.some((p) => p.type === "session" && (p.params as { ref?: string }).ref === "local:active"),
+      ).toBe(true);
+      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(false);
+    } finally {
+      restoreSessionPane();
+      // The reset updates a store the row subscribes to; unwrapped it lands
+      // outside act and the teardown console guard reports it on this test.
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
+  test("a rail row's Tasks action on mobile keeps the old pane (no sidebar exists there)", async () => {
+    // The sidebar is desktop chrome; on the phone the rail lives in the tree
+    // drawer and Tasks keeps its pre-sidebar behavior: the sessionTasks pane.
+    // The desktop retarget must not leak into the mobile rail.
+    const restoreViewport = installMobileViewport();
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    const restoreTasksPane = registerPaneForTests({
+      id: "sessionTasks",
+      title: () => "tasks",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Tasks" }));
+      await waitFor(() => {
+        expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(true);
+      });
+      expect(activitySidebarStore.getState().open).toBe(false);
+    } finally {
+      restoreViewport();
+      restoreSessionPane();
+      restoreTasksPane();
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
   test("the rail's Notes action rechecks the notes capability, refusing a stale menu", () => {
     topNotesStore.getState().resetForTests();
     const restoreSessionPane = registerPaneForTests({

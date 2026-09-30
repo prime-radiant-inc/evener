@@ -217,9 +217,13 @@ export function SessionChrome({
     else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
   };
   const openTasks = () => {
+    // Desktop: the activity sidebar, preselected to its Tasks tab (the same
+    // retarget the rail row and the composer's current-task button share).
+    // Mobile: the per-session Sheet, unchanged. An idempotent open - the
+    // chrome navigates, it does not toggle.
     if (onOpenTasks) onOpenTasks();
     else if (isMobile) tasksRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef });
+    else activitySidebarStore.getState().openWith("tasks");
   };
   const openActivity = () => {
     // Desktop: the activity sidebar (the zoom system's triage surface).
