@@ -375,6 +375,10 @@ export class SessionActivityStore {
           }
           const current = this.state[resource];
           const walk = read.refresh;
+          const last = page.rows[page.rows.length - 1];
+          // Admitted paging extends displayed coverage even while a partial
+          // root needs recovery. Automatic fresh-walk rows remain provisional.
+          if (!root && !walk && read.boundary && last) read.boundary = rowIdentity(resource, last);
           let reachedBoundary = false;
           if (walk) {
             reachedBoundary = page.page.complete;

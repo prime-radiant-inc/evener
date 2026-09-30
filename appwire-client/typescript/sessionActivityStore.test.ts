@@ -1235,3 +1235,54 @@ test("fresh accumulator replaces duplicate rows in their original order without 
   ]);
   expect(store.getSnapshot().jobs.issues).toEqual([]);
 });
+
+test.each([false, true])(
+  "explicit later-page coverage survives root recovery (queued during refresh: %s)",
+  async (queued) => {
+    const client = activityClient(),
+      store = owner(client);
+    client.on("evener/thread/jobs/list", () =>
+      jobsFixture([jobFixture("deleted"), jobFixture("boundary")], "old-rest"),
+    );
+    store.observe("jobs");
+    await activityState(store, () => !store.getSnapshot().jobs.loading && store.getSnapshot().jobs.hasMore);
+    const partial = deferred<SessionJobsResponse>(),
+      entered = deferred<void>();
+    client.on("evener/thread/jobs/list", ({ cursor }) => {
+      if (cursor) return jobsFixture([jobFixture("later")]);
+      entered.resolve();
+      return partial.promise;
+    });
+    const refresh = store.refresh("jobs");
+    await entered.promise;
+    const more = queued ? store.loadMore("jobs") : null;
+    partial.resolve({
+      ...jobsFixture([jobFixture("boundary")], "fresh-rest"),
+      page: { complete: false, nextCursor: "fresh-rest", issues: [{ ref: "remote:child", code: "sourceUnavailable" }] },
+    });
+    await refresh;
+    if (more) await more;
+    else await store.loadMore("jobs");
+    expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["deleted", "boundary", "later"]);
+    const published: string[][] = [];
+    store.subscribe(() => published.push(store.getSnapshot().jobs.rows.map((row) => row.jobId)));
+    client.on("evener/thread/jobs/list", ({ cursor }) =>
+      jobsFixture([jobFixture(cursor ? "later" : "boundary", "completed")], cursor ? undefined : "clean-rest"),
+    );
+    const recovery = store.refresh("jobs");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(store.getSnapshot().jobs.rows.map((row) => row.jobId)).toEqual(["boundary", "later"]);
+    await recovery;
+    expect(published.every((ids) => ids.includes("later"))).toBe(true);
+    expect(store.getSnapshot().jobs).toMatchObject({ complete: true, pending: false, issues: [] });
+    expect(
+      client.calls
+        .filter((call) => call.method === "evener/thread/jobs/list")
+        .slice(-2)
+        .map((call) => call.params),
+    ).toEqual([
+      { ref: activityRef, scope: "session" },
+      { ref: activityRef, scope: "session", cursor: "clean-rest" },
+    ]);
+  },
+);
