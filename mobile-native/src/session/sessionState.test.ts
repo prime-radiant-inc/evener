@@ -174,10 +174,7 @@ describe("the Subagents chip", () => {
 	const unknown = { ...counts(), known: false };
 	const withSubagents = { delegates: [delegate("running", 1)], tasks: null, goal: null, queue: null };
 	const without = { delegates: [], tasks: null, goal: null, queue: null };
-	const subagentsChip = (
-		session: Parameters<typeof contextChips>[0],
-		summary: Parameters<typeof contextChips>[3],
-	) =>
+	const subagentsChip = (session: Parameters<typeof contextChips>[0], summary: Parameters<typeof contextChips>[3]) =>
 		contextChips(session, true, noFiles, summary).find((chip) => chip.kind === "subagents");
 
 	it("counts from the whole-subtree summary, not the transcript's roster", () => {
