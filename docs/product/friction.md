@@ -42,7 +42,7 @@ and should not be presented as reproduced production incidents.
 | [C09](#c09-following-shell-job-output) | Medium | Job output stays static until Refresh; older output needs clicks | S02, S10, S12 |
 | [C10](#c10-quiet-task-panels) | Medium | A quiet Tasks panel remains failed until Try again | S02, S03, S05, S12 |
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
-| [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | Medium (deferred) | A storage wedge lets a web send reorder, escape a cross-tab Stop, or duplicate | S02, S11 |
+| [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web send reorder, escape a cross-tab Stop, or duplicate | S02, S11 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
 | [R03](#r03-watch-intent-after-restart) | High | Restart can end monitoring without informing the owning agent | S08, S12 |
@@ -441,8 +441,8 @@ mints one `clientMutationId` before its retry ladder; the missing fence is the
 the enqueue compares against. `threads.test.ts` pins the direct dispatch, the
 retry ladder, and the refusal to jump an undelivered or concurrent durable send;
 it does not pin the cross-tab, prior-session or human-retry cases above, which
-need the storage the wedge makes unreadable. Jesse's ruling (2026-09-29) keeps
-the in-memory guard and accepts the three gaps (issue #3313).
+need the storage the wedge makes unreadable. The accepted behavior keeps the
+in-memory guard and accepts the three gaps (issue #3313).
 
 **Deferred.** Keep the existing behavior: sends keep working in every storage
 wedge, at the cost of a possible reorder, an unhonoured cross-tab Stop, or a
