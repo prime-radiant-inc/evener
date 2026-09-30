@@ -16,7 +16,7 @@ export type SessionMenuAction =
 			kind:
 				| "find"
 				| "files"
-				| "subagents"
+				| "activity"
 				| "tasks"
 				| "notes"
 				| "info"
@@ -74,7 +74,7 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 		// Activity lists shell jobs as well as subagents, and a session's read
 		// can't say whether it has jobs, so like Tasks it needs only a
 		// connection.
-		...(input.connected ? [item("Activity", "subagents"), item("Tasks", "tasks")] : []),
+		...(input.connected ? [item("Activity", "activity"), item("Tasks", "tasks")] : []),
 		...(input.sharedNotes ? [item("Notes & links", "notes")] : []),
 		item("Session info", "info"),
 		...(input.canAside
