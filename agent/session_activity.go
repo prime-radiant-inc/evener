@@ -414,12 +414,10 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	}
 	// Cold badge reads never open descendant job/watch journals.
 	result.Jobs.Known = true
-	result.Watches.Known = true
 	for owner := range owners {
 		index := read.index.jobs[owner]
 		if index == nil || !index.Complete || index.Version != read.index.revision.Load() {
 			result.Jobs = appwire.SessionActivityCounts{}
-			result.Watches = appwire.SessionActivityCounts{}
 			break
 		}
 		for _, job := range index.Jobs {

@@ -41,7 +41,6 @@ func ReadPage(ctx context.Context, path string, cursor *PageCursor, maxBytes int
 	next.Journal.ReadBytes = 0
 	next.Journal.ReadLines = 0
 	next.EventEnds = nil
-	next.Lines = append([]linecap.JournalLine(nil), cursor.Lines...)
 	if len(next.Lines) == 0 && len(next.Batch) == 0 {
 		lines, complete, err := linecap.ReadJournalPage(ctx, path, &next.Journal, maxBytes, maxEvents, DefaultMaxLineBytes)
 		if err != nil {
