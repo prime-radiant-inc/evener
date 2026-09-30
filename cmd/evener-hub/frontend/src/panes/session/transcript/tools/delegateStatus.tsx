@@ -12,6 +12,7 @@
 
 import {
   delegateEndingText,
+  delegateNotResumableText,
   formatClockTime,
   formatElapsed,
   scopedDisclosureId,
@@ -311,6 +312,8 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
     reason: state.last_outcome?.reason,
     error: state.last_outcome?.error,
   });
+  // The not-resumable reason is a code too; say it in words (#3362).
+  const notResumable = delegateNotResumableText(state.not_resumable_reason);
   // Copy the structured state, not item.output: the output text may carry
   // breaker/annotation text appended after the JSON, so re-serializing the
   // validated state gives the reader valid JSON on paste.
@@ -357,11 +360,9 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
       {/* Diagnostics: not-resumable reason and/or last outcome reason.
           All non-success terminal outcomes render their reason: failed→danger,
           exhausted/cancelled/stopped→neutral (soft stops, not errors). */}
-      {state.not_resumable_reason && (
+      {notResumable && (
         <div className={CLASS.diagnostic} data-testid="delegate-not-resumable">
-          <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>
-            Not resumable: {state.not_resumable_reason}
-          </div>
+          <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>Not resumable: {notResumable}</div>
         </div>
       )}
       {state.last_outcome?.reason && isExhausted(state.last_outcome.status) && (
