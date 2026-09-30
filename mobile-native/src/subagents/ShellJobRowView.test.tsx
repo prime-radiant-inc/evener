@@ -55,12 +55,7 @@ describe("a shell job's row", () => {
 	// failed, killed, stopped and finished job never read the same.
 	it("says how a finished one ended and how long it ran, its hue carrying the outcome too", () => {
 		const ended = (state: ShellJobRow["state"], status: string, outcome: string) =>
-			render(
-				<ShellJobRowView
-					row={row(state, { terminal: true, status, outcome, endedAt: ago(60_000) })}
-					now={NOW}
-				/>,
-			);
+			render(<ShellJobRowView row={row(state, { terminal: true, status, outcome, endedAt: ago(60_000) })} now={NOW} />);
 		const failed = ended("failed", "command_exited_nonzero", "failure");
 		expect(renderedText(failed)).toContain("Command failed · 3m");
 		expect(label(failed)).toBe("Shell job, Serving the docs, Command failed · 3m, under Fix race in tree settle");
@@ -77,8 +72,6 @@ describe("a shell job's row", () => {
 
 	it("reads to VoiceOver as one sentence", () => {
 		const tree = render(<ShellJobRowView row={row("running")} now={NOW} />);
-		expect(label(tree)).toBe(
-			"Shell job, Serving the docs, running · 4m, under Fix race in tree settle",
-		);
+		expect(label(tree)).toBe("Shell job, Serving the docs, running · 4m, under Fix race in tree settle");
 	});
 });
