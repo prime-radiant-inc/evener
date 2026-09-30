@@ -285,6 +285,16 @@ func finishGenerationOn(t *testing.T, c *delegateTreeController, runtime *Sessio
 	return started.lease
 }
 
+// reportFinalizeTailDone reports lease's finished runtime quiesced, as the
+// child's finalize tail does when it is done, releasing the delegate for its
+// next start.
+func reportFinalizeTailDone(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session) {
+	t.Helper()
+	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced: %v", err)
+	}
+}
+
 func assertStartRefused(t *testing.T, c *delegateTreeController, delegateID, why string) {
 	t.Helper()
 	if _, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), delegateID); !errors.Is(err, errDelegateTargetBusy) {
