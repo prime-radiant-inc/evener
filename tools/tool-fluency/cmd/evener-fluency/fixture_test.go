@@ -58,7 +58,7 @@ func TestMaterializeFixtureIgnoresTheUsersGitSetup(t *testing.T) {
 	}
 	mustWrite(t, filepath.Join(home, "ignore"), "*.txt\n")
 	global := filepath.Join(home, "gitconfig")
-	mustWrite(t, global, "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n"+
+	mustWrite(t, global, "[commit]\n\tgpgsign = true\n[tag]\n\tgpgSign = true\n\tforceSignAnnotated = true\n[gpg]\n\tprogram = false\n"+
 		"[core]\n\thooksPath = "+filepath.Join(home, "hooks")+"\n\texcludesFile = "+filepath.Join(home, "ignore")+"\n"+
 		"[init]\n\ttemplateDir = "+filepath.Join(home, "template")+"\n")
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
@@ -74,6 +74,7 @@ func TestMaterializeFixtureIgnoresTheUsersGitSetup(t *testing.T) {
 	mustWrite(t, filepath.Join(work, "more.txt"), "the agent's change\n")
 	fixtureGit(t, work, "add", "more.txt")
 	fixtureGit(t, work, "commit", "-q", "-m", "the agent's commit")
+	fixtureGit(t, work, "tag", "-a", "v1.0.0", "-m", "the agent's annotated tag")
 }
 
 func TestMaterializeFixtureRejectsUntrackedPathEscape(t *testing.T) {

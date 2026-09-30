@@ -75,20 +75,24 @@ expect:
       run: |
         set -e
         awk '/^## \[Unreleased\]/{flag=1; next} /^## /{flag=0} flag' CHANGELOG.md | grep -qx '### Fixed'
-    - name: entry links the PR
-      run: grep -qF '[#481](https://github.com/acme/export/pull/481)' CHANGELOG.md
+    - name: entry sits under Unreleased's Fixed subsection and links the PR
+      run: |
+        awk '/^## \[Unreleased\]/{u=1; next} /^## /{u=0} u && /^### /{f=($0=="### Fixed")} u && f' CHANGELOG.md \
+          | grep -qF '[#481](https://github.com/acme/export/pull/481)'
     - name: entry is a past-tense sentence ending with a period before the link
-      run: grep -qE '^- [A-Za-z].*[a-z]\. \[#481\]\(https://github\.com/acme/export/pull/481\)$' CHANGELOG.md
-    - name: released 1.4.0 section is unchanged
       run: |
-        set -e
-        grep -qF -- '## [1.4.0] - 2026-08-01' CHANGELOG.md
-        grep -qF -- '- Fix header row (#402)' CHANGELOG.md
-    - name: released 1.3.0 section is unchanged
+        awk '/^## \[Unreleased\]/{u=1; next} /^## /{u=0} u' CHANGELOG.md \
+          | grep -qE '^- [A-Za-z].*[a-z]\. \[#481\]\(https://github\.com/acme/export/pull/481\)$'
+    - name: released sections are byte-identical
       run: |
-        set -e
-        grep -qF -- '## [1.3.0] - 2026-07-15' CHANGELOG.md
-        grep -qF -- '- Add streaming export (#390)' CHANGELOG.md
+        want='## [1.4.0] - 2026-08-01
+        ### Fixed
+        - Fix header row (#402)
+
+        ## [1.3.0] - 2026-07-15
+        ### Added
+        - Add streaming export (#390)'
+        test "$(awk '/^## \[[0-9]/{r=1} r' CHANGELOG.md)" = "$want"
 reference: |
   {
     echo '# Changelog'

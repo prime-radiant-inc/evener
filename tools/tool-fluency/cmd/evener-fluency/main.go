@@ -1442,6 +1442,8 @@ func commitFixture(workDir string) error {
 		{"config", "user.name", "Evener Fixture"},
 		{"config", "user.email", "fixture@evener.test"},
 		{"config", "commit.gpgsign", "false"},
+		{"config", "tag.gpgSign", "false"},
+		{"config", "tag.forceSignAnnotated", "false"},
 		{"config", "core.hooksPath", ".git/hooks"},
 		{"config", "core.excludesFile", os.DevNull},
 		{"add", "-A"},

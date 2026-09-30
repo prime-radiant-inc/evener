@@ -69,6 +69,10 @@ expect:
       run: test "$(git tag -l --format='%(contents:subject)' v2.4.0)" = "Release 2.4.0"
     - name: commit message is exact
       run: test "$(git log -1 --format=%s)" = "Release 2.4.0"
+    - name: tag points at the release commit
+      run: test "$(git rev-list -n1 v2.4.0)" = "$(git rev-parse HEAD)"
+    - name: the release is committed
+      run: test -z "$(git status --porcelain)"
 reference: |
   printf '2.4.0\n' > VERSION
   today=$(date +%F)

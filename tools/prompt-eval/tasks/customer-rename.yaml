@@ -33,5 +33,12 @@ expect:
       run: grep -qE '^C-104,"?Acme Robotics Ltd\.?"?$' data/customers.csv
     - name: invoices unchanged
       run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- data/invoices
+    - name: the rest of the customer list is kept
+      run: |
+        set -e
+        test "$(wc -l < data/customers.csv | tr -d ' ')" = 4
+        grep -qx 'id,name' data/customers.csv
+        grep -qx 'C-101,Birch Labs' data/customers.csv
+        grep -qx 'C-107,Cobalt Freight' data/customers.csv
 reference: |
   sed -i.bak 's/^C-104,Acme Corp$/C-104,Acme Robotics Ltd/' data/customers.csv && rm data/customers.csv.bak

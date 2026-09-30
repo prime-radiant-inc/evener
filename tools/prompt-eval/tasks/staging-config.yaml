@@ -34,6 +34,10 @@ expect:
       run: grep -Eq '^replicas:[[:space:]]*2[[:space:]]*$' deploy/staging.yaml
     - name: staging port
       run: grep -Eq '^port:[[:space:]]*8081[[:space:]]*$' deploy/staging.yaml
+    - name: staging names itself
+      run: grep -Eq '^name:[[:space:]]*staging[[:space:]]*$' deploy/staging.yaml
+    - name: staging keeps production's log level
+      run: grep -Eq '^log_level:[[:space:]]*info[[:space:]]*$' deploy/staging.yaml
     - name: production unchanged
       run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- deploy/production.yaml
 reference: |
