@@ -377,18 +377,23 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 // PendingQuestion's wire projection) deliberately carries only option
 // labels — this type exists for an external ask-responder
 // (`evener run --ask-responder`) that needs to see exactly what the model
-// asked, detail included.
+// asked, detail and recommendation included.
 type AskUserOption struct {
-	Label  string `json:"label"`
-	Detail string `json:"detail,omitempty"`
+	Label       string `json:"label"`
+	Detail      string `json:"detail,omitempty"`
+	Recommended bool   `json:"recommended,omitempty"`
 }
 
 // AskUserQuestion is one question from a pending ask_user call, with full
-// option detail.
+// option detail and the call's optional fields: whether several options may
+// be chosen, why the answer matters, and the fallback the model would take.
 type AskUserQuestion struct {
-	Header   string          `json:"header,omitempty"`
-	Question string          `json:"question"`
-	Options  []AskUserOption `json:"options,omitempty"`
+	Header       string          `json:"header,omitempty"`
+	Question     string          `json:"question"`
+	MultiSelect  bool            `json:"multi_select,omitempty"`
+	Why          string          `json:"why,omitempty"`
+	IfUnanswered string          `json:"if_unanswered,omitempty"`
+	Options      []AskUserOption `json:"options,omitempty"`
 }
 
 // ParseAskUserCallArguments parses one ask_user call's arguments, as the
@@ -415,26 +420,38 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
 	if err != nil {
 		return nil, err
 	}
-	// parseAskQuestions validated the shape and carries every field but the
-	// optional option detail, which is read from the same normalized call.
+	// parseAskQuestions validated the shape and carries header, question, and
+	// labels; the optional fields (detail, recommended, multi_select, why,
+	// if_unanswered) are read from the same normalized call.
 	raw, _ := normalized["questions"].([]any)
 	out := make([]AskUserQuestion, 0, len(parsed))
 	for i, q := range parsed {
-		var rawOpts []any
+		var qm map[string]any
 		if i < len(raw) {
-			qm, _ := raw[i].(map[string]any)
-			rawOpts, _ = qm["options"].([]any)
+			qm, _ = raw[i].(map[string]any)
 		}
+		rawOpts, _ := qm["options"].([]any)
 		options := make([]AskUserOption, 0, len(q.Options))
 		for j, label := range q.Options {
-			var detail string
+			var om map[string]any
 			if j < len(rawOpts) {
-				om, _ := rawOpts[j].(map[string]any)
-				detail, _ = om["detail"].(string)
+				om, _ = rawOpts[j].(map[string]any)
 			}
-			options = append(options, AskUserOption{Label: label, Detail: detail})
+			detail, _ := om["detail"].(string)
+			recommended, _ := om["recommended"].(bool)
+			options = append(options, AskUserOption{Label: label, Detail: detail, Recommended: recommended})
 		}
-		out = append(out, AskUserQuestion{Header: q.Header, Question: q.Question, Options: options})
+		multiSelect, _ := qm["multi_select"].(bool)
+		why, _ := qm["why"].(string)
+		ifUnanswered, _ := qm["if_unanswered"].(string)
+		out = append(out, AskUserQuestion{
+			Header:       q.Header,
+			Question:     q.Question,
+			MultiSelect:  multiSelect,
+			Why:          why,
+			IfUnanswered: ifUnanswered,
+			Options:      options,
+		})
 	}
 	return out, nil
 }

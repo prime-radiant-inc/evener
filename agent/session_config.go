@@ -1034,16 +1034,16 @@ func (c *SessionConfig) applyDefaults() {
 	}
 }
 
-// toSnapshot projects the persisted wire fields of a SessionConfig into a
-// schema.ConfigSnapshot, dropping the engine-only json:"-" fields that are never
-// serialized. The field set mirrors schema.ConfigSnapshot exactly; the converter
-// round-trip test guards against any field being dropped or misrouted.
 // noOneToAsk reports whether nobody can answer an ask_user question in this
 // session: no human, and no responder attached by this process.
 func (c SessionConfig) noOneToAsk() bool {
 	return c.NonInteractive && !c.AskResponderAttached
 }
 
+// toSnapshot projects the persisted wire fields of a SessionConfig into a
+// schema.ConfigSnapshot, dropping the engine-only json:"-" fields that are never
+// serialized. The field set mirrors schema.ConfigSnapshot exactly; the converter
+// round-trip test guards against any field being dropped or misrouted.
 func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 	return schema.ConfigSnapshot{
 		MaxToolRoundsPerInput:       c.MaxToolRoundsPerInput,
