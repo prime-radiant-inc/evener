@@ -1185,25 +1185,17 @@ describe("opening a session", () => {
 		);
 		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
 	};
-	// The rows are ask/reply for turn_1, then turn_2.
-	const layOutRow = (tree: ReactTestRenderer, index: number, y: number) => {
-		const cell = transcriptList(tree)
-			.findAll((node) => String(node.type) === "Item")
-			[index]?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
-		if (!cell) throw new Error(`no cell at row ${index}`);
-		act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height: 150 } } }));
-	};
-	const savePosition = (ref: string) =>
+	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
 		harness.kv.set(
 			"evener.reader-positions",
 			JSON.stringify({
 				[`hub-1\u0000${ref}`]: {
 					hubId: "hub-1",
 					sessionRef: ref,
-					itemKey: "a-turn_2",
+					itemKey,
 					withinItemOffset: 0,
 					touchedAt: 1,
-					turnsSeen: "turn_2",
+					turnsSeen,
 				},
 			}),
 		);
@@ -1267,19 +1259,7 @@ describe("opening a session", () => {
 	});
 
 	it("shows the start of an unread reply only once the restore to it has landed", async () => {
-		harness.kv.set(
-			"evener.reader-positions",
-			JSON.stringify({
-				"hub-1\u0000ref-open-unread": {
-					hubId: "hub-1",
-					sessionRef: "ref-open-unread",
-					itemKey: "u-turn_1",
-					withinItemOffset: 0,
-					touchedAt: 1,
-					turnsSeen: "turn_1",
-				},
-			}),
-		);
+		savePosition("ref-open-unread", "u-turn_1", "turn_1");
 		const { tree } = await mount(twoTurns("ref-open-unread"));
 		layOutViewport(tree);
 		await settle();
@@ -1431,6 +1411,16 @@ function transcriptList(tree: ReactTestRenderer) {
 		(node) =>
 			typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
 	)[0];
+}
+
+// Lays out the transcript's row at index at y. twoTurns' rows are ask/reply
+// for turn_1, then turn_2.
+function layOutRow(tree: ReactTestRenderer, index: number, y: number) {
+	const cell = transcriptList(tree)
+		.findAll((node) => String(node.type) === "Item")
+		[index]?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+	if (!cell) throw new Error(`no cell at row ${index}`);
+	act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height: 150 } } }));
 }
 
 function scrollTo(tree: ReactTestRenderer, y: number) {
@@ -1838,11 +1828,7 @@ it("rests a short transcript's end just above the composer", async () => {
 	await settle();
 	// And once its last row has measured, so it lands at its end once.
 	expect(opacity()).toBe(0);
-	const lastCell = transcriptList(tree)
-		.findAll((node) => String(node.type) === "Item")[3]
-		?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
-	if (!lastCell) throw new Error("no last cell");
-	act(() => lastCell.props.onLayout({ nativeEvent: { layout: { x: 0, y: 300, width: 390, height: 150 } } }));
+	layOutRow(tree, 3, 300);
 	await settle();
 	expect(opacity()).toBe(1);
 	expect(transcriptList(tree).props.contentContainerStyle).toMatchObject({
