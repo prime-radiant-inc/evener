@@ -25,6 +25,12 @@ import type {
 	NavigationReadParams,
 	NavigationReadResponse,
 	NavigationSessionSummary,
+	SessionActivityReadParams,
+	SessionActivityListParams,
+	SessionActivitySummary,
+	SessionDelegatesResponse,
+	SessionJobsResponse,
+	SessionWatchesResponse,
 	PluginListResponse,
 	SearchParams,
 	SearchResponse,
@@ -39,6 +45,7 @@ import {
 } from "./demoSubagents.js";
 import { parseActivityTree } from "@evener/appwire-client";
 import { flattenJobs } from "../subagents/subagentModel.js";
+import { createDemoSessionActivity } from "./demoSessionActivity.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireSnapshot response must carry the exact same id:
@@ -935,6 +942,10 @@ interface FleetAnswers {
 }
 
 export interface DemoFleet extends FleetAnswers {
+	answerActivityRead(params: SessionActivityReadParams): SessionActivitySummary;
+	answerDelegatesList(params: SessionActivityListParams): SessionDelegatesResponse;
+	answerSessionJobsList(params: SessionActivityListParams): SessionJobsResponse;
+	answerWatchesList(params: SessionActivityListParams): SessionWatchesResponse;
 	// demo-hub.mts's handshake capability, carrying the sequence the fleet
 	// has reached: the navigation store refuses a reconnect whose sequence
 	// moved backward within the generation. Built here so this is the one
@@ -1003,6 +1014,16 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	// start there and each change advances them together.
 	let sequence = 0;
 	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock, modelProviders, modelNames);
+	const activity = createDemoSessionActivity((ref) => {
+		const owner = sessionsList.find(
+			(raw) =>
+				sessionRef(raw) === ref || findSubagent(rawChildren(raw), ref, (id) => hostSessionRef(hostId(raw.host), id)),
+		);
+		if (!owner) return null;
+		const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(owner)), startupMs).data);
+		if (!tree) throw new Error("Invalid demonstration activity authority");
+		return { tree, availability: owner.state === "shutdown" ? "retained" : "live" };
+	}, `demo-activity-${startupMs}`);
 
 	// Moves the fleet to `changed` at the next sequence and revision, and
 	// returns the evener/navigation/invalidated payload for the targets the
@@ -1105,6 +1126,10 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 			return commitRowState(target, state);
 		},
 		archive,
+		answerActivityRead: activity.summary,
+		answerDelegatesList: activity.delegates,
+		answerSessionJobsList: activity.jobs,
+		answerWatchesList: activity.watches,
 		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
 		answerJobsOutput: (params) => {
 			// Read back as the phone reads the tree, so the job answered is the
@@ -1129,8 +1154,18 @@ function coordinatorFor(sessions: readonly RawSession[], ref: string): DemoCoord
 		const host = hostId(raw.host);
 		const subagentRef = (id: string) => hostSessionRef(host, id);
 		const model = raw.model ?? "";
-		if (sessionRef(raw) === ref)
-			return { ref, title: raw.title, model, subagents: rawChildren(raw), jobs: raw.jobs, subagentRef };
+		if (sessionRef(raw) === ref) {
+			const command = runningCommand(raw);
+			return {
+				ref,
+				title: raw.title,
+				model,
+				subagents: rawChildren(raw),
+				jobs: raw.jobs,
+				...(command ? { runningJob: { id: raw.id, command } } : {}),
+				subagentRef,
+			};
+		}
 		const sub = findSubagent(rawChildren(raw), ref, subagentRef);
 		if (sub) return { ref, title: sub.title, model: sub.model ?? model, subagents: sub.children ?? [], subagentRef };
 	}
