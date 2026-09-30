@@ -1554,6 +1554,75 @@ func TestAskUser_AcceptSteeringCarrierInputTagsSteeringCarrierOnAppendFailureFor
 	}
 }
 
+// TestProcessPendingUserInputReportsRanFalseWhenACarrierDrainsTwoFailedSteers
+// pins the reachable shape of RoboRev #3437's concern: ProcessPendingUserInput
+// claims one steering carrier, and that carrier's own drain retires EVERY
+// queued bad-skill steer (both shown below), so the drain ladder has no second
+// carrier left to claim and the claimed carrier's stand-down is reported once
+// as ran=false.
+func TestProcessPendingUserInputReportsRanFalseWhenACarrierDrainsTwoFailedSteers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	for _, id := range []string{"carrier-two-1", "carrier-two-2"} {
+		if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: id,
+			Input:            clientMutationInput("please hold", nil, []string{"no-such-skill"}),
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationSteer(%s): %v", id, err)
+		}
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); ran || err != nil {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=false err=nil", ran, err)
+	}
+	failures := 0
+	for _, turn := range sess.history {
+		if turn.Kind == schema.TurnFailure {
+			failures++
+		}
+	}
+	if failures != 2 {
+		t.Fatalf("TurnFailure turns = %d, want 2 (one claimed carrier drained both failed steers)", failures)
+	}
+}
+
+// TestSteeringCarrierStoodDownRemembersEveryTurn pins RoboRev #3437's fix: the
+// stand-down marker is a set keyed by turn id, so a later carrier's stand-down
+// cannot erase an earlier one. A single slot would drop turn_a and make
+// ProcessPendingUserInput report ran=true for a carrier that never started.
+func TestSteeringCarrierStoodDownRemembersEveryTurn(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	s.markSteeringCarrierStoodDown("turn_a")
+	s.markSteeringCarrierStoodDown("turn_b")
+	if !s.steeringCarrierStoodDown("turn_a") {
+		t.Fatal("a later stand-down erased turn_a: ProcessPendingUserInput would report ran=true for a carrier that never ran")
+	}
+	if !s.steeringCarrierStoodDown("turn_b") {
+		t.Fatal("turn_b's stand-down is not remembered")
+	}
+	if s.steeringCarrierStoodDown("turn_c") {
+		t.Fatal("turn_c never stood down but reads as stood down")
+	}
+	s.resetSteeringCarrierStoodDown()
+	if s.steeringCarrierStoodDown("turn_a") || s.steeringCarrierStoodDown("turn_b") {
+		t.Fatal("resetSteeringCarrierStoodDown left a marker behind")
+	}
+}
+
 // TestAskUser_RecordFailedSteeringSelectionTagsSteeringCarrierForAnAnsweringSteer
 // is the append-failure test's selection-failure sibling: an ANSWERING
 // steer's carrier claim whose own skill selection fails to prepare

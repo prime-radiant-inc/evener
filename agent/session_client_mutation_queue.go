@@ -329,6 +329,12 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// one atomic group tied to this input's durable identity,
 		// all-or-nothing before any dependent work dispatches.
 		ctx = s.contextWithSelectedSkills(ctx, queued)
+		if queued.SteeringCarrier {
+			// The stand-down set is per-carrier-run: clear anything a previous
+			// run left so this claim's membership test reads only this call's
+			// stand-downs.
+			s.resetSteeringCarrierStoodDown()
+		}
 		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
 		// The pop above is durable and the turn loop's gate can refuse after it,
 		// when poisoning lands in between. Put the message back rather than
@@ -523,19 +529,31 @@ func (s *Session) markSteeringCarrierStoodDown(turnID string) {
 		return
 	}
 	s.mu.Lock()
-	s.steeringCarrierStoodDownTurnID = turnID
+	if s.steeringCarrierStoodDowns == nil {
+		s.steeringCarrierStoodDowns = map[string]struct{}{}
+	}
+	s.steeringCarrierStoodDowns[turnID] = struct{}{}
 	s.mu.Unlock()
 }
 
 // steeringCarrierStoodDown reports whether the carrier turn named turnID stood
-// down, consuming the marker. Keyed by turn id so a stand-down of a different
-// carrier drained in the same input cannot false-positive on this one.
+// down. Keyed by turn id so a stand-down of a different carrier drained in the
+// same input cannot false-positive on this one, and stored as a set so an
+// earlier stand-down is not erased by a later one (RoboRev #3437). The caller
+// resets the set at the start of the next carrier run.
 func (s *Session) steeringCarrierStoodDown(turnID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stoodDown := turnID != "" && s.steeringCarrierStoodDownTurnID == turnID
-	s.steeringCarrierStoodDownTurnID = ""
-	return stoodDown
+	_, stoodDown := s.steeringCarrierStoodDowns[turnID]
+	return turnID != "" && stoodDown
+}
+
+// resetSteeringCarrierStoodDown empties the stand-down set so it never grows
+// past the one ProcessPendingUserInput call that observes it.
+func (s *Session) resetSteeringCarrierStoodDown() {
+	s.mu.Lock()
+	s.steeringCarrierStoodDowns = nil
+	s.mu.Unlock()
 }
 
 // AcceptClientMutationQueue durably accepts or replays one client-authored
