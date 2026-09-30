@@ -47,7 +47,7 @@ import { SearchField } from "../sheet/SearchField";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
-import { usePublishPluginsScreen } from "./pluginsScreenSlot";
+import { usePublishPluginsScreen } from "./hubScreenSlot";
 
 type Segment = "installed" | "marketplaces" | "browse";
 

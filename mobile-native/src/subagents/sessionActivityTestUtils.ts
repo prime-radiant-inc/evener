@@ -1,5 +1,6 @@
 // Typed external activity replies for native tests that share the rich row fixtures.
 import {
+	type ActivityDelegate,
 	type ActivityTree,
 	type Thread,
 	type SessionActivityContext,
@@ -14,6 +15,32 @@ import {
 	isFailedJobOutcome,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+
+// The optional SessionDelegate fields a hub's delegate rows carry, which the
+// adapter copies beside the ones it always sets. A rich fixture's other
+// ActivityDelegate fields (a report message, a mandate, a resolved model,
+// timings, origin ids and the like) belong to the activity tree's shape, so
+// the adapter never passes them on and a test can't pass on data these reads
+// don't send.
+const DELEGATE_FIELDS = [
+	"outcome",
+	"reason",
+	"error",
+	"notResumableReason",
+	"model",
+	"reasoningEffort",
+	"runStartedAt",
+	"runEndedAt",
+	"latestActivityAt",
+	"usage",
+	"worktree",
+] as const satisfies readonly (keyof ActivityDelegate & keyof SessionDelegate)[];
+
+function definedFields<T extends object, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {
+	const picked: Partial<Pick<T, K>> = {};
+	for (const key of keys) if (source[key] !== undefined) picked[key] = source[key];
+	return picked as Pick<T, K>;
+}
 
 export function activityFixture(raw: unknown, params: SessionActivityReadParams) {
 	const parsed = parseActivityTree(raw);
@@ -36,23 +63,29 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 		if (node.branch.error) issues.push({ ref: node.ref, code: "unavailable" });
 		if (node.branch.truncated) continuation ??= node.branch.continuation ?? "remaining";
 		for (const entry of node.entries) {
-			if (entry.kind === "shell") jobs.push({ ...entry.job });
-			else {
+			if (entry.kind === "shell") {
+				// A hub's job row is a JobActivityJob, which has no parentDelegateId.
+				const { parentDelegateId: _parentDelegateId, ...job } = entry.job;
+				jobs.push(job);
+			} else {
 				const d = entry.delegate;
-				const { child: _child, branch: _branch, message: _message, turns: _turns, mandate: _mandate, ...facts } = d;
+				// The hub reports a finished delegate as idle.
+				const state = d.terminal === true ? "idle" : "running";
 				delegates.push({
-					...facts,
-					description: d.description ?? "",
+					delegateId: d.delegateId,
 					ownerRef: node.ref,
 					rootRef: tree.root.ref,
-					task: d.task ?? d.mandate ?? d.description ?? "",
+					childRef: d.childRef,
+					...(parentDelegateId ? { parentDelegateId } : {}),
+					description: d.description ?? "",
+					task: d.task ?? d.description ?? "",
 					type: d.type ?? "delegate",
-					lifecycle: d.lifecycle ?? "running",
-					phase: d.phase ?? "running",
-					status: d.status ?? "running",
+					lifecycle: d.lifecycle ?? state,
+					phase: d.phase ?? state,
+					status: d.status ?? state,
 					terminal: d.terminal ?? false,
 					resumable: d.resumable ?? false,
-					...(parentDelegateId ? { parentDelegateId } : {}),
+					...definedFields(d, DELEGATE_FIELDS),
 				});
 				if (d.child && params.scope === "subtree") visit(d.child, d.delegateId);
 			}

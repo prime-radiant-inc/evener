@@ -28,10 +28,10 @@ import { HubsPage } from "./HubsPage";
 import { MarketplacePage } from "./MarketplacePage";
 import { OwnHostPage } from "./OwnHostPage";
 import { PluginsPage } from "./PluginsPage";
-import { PluginsScreenSlotProvider } from "./pluginsScreenSlot";
+import { PluginsScreenSlotProvider } from "./hubScreenSlot";
 import { ProviderDetailPage } from "./ProviderDetailPage";
 import { ProvidersPage } from "./ProvidersPage";
-import { ProvidersScreenSlotProvider } from "./providersScreenSlot";
+import { ProvidersScreenSlotProvider } from "./hubScreenSlot";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
 import { useHubUpdates } from "./hubUpdates";
 

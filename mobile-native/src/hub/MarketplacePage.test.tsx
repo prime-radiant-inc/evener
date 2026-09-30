@@ -13,7 +13,7 @@ import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import type { HubRoutes } from "./hubSheetContext";
 import { SearchField } from "../sheet/SearchField";
 import { MarketplacePage } from "./MarketplacePage";
-import { type PluginsScreenSlot, PluginsScreenSlotProvider, usePublishPluginsScreen } from "./pluginsScreenSlot";
+import { type PluginsScreenSlot, PluginsScreenSlotProvider, usePublishPluginsScreen } from "./hubScreenSlot";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
