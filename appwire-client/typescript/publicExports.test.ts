@@ -94,11 +94,11 @@ describe("protocol package root public exports", () => {
 
   it("re-exports the type that activityNodeID's parameter uses", () => {
     const nodes: ActivityNodeLike[] = [
-      { kind: "session", sessionId: "s1" },
-      { kind: "delegate", delegateId: "d1" },
-      { kind: "shell", jobId: "j1" },
+      { kind: "session", ref: "r1" },
+      { kind: "delegate", delegateId: "d1", childRef: "r2" },
+      { kind: "shell", jobId: "j1", ownerRef: "r1" },
     ];
-    expect(nodes.map(activityNodeID)).toEqual(["session:s1", "delegate:d1", "job:j1"]);
+    expect(nodes.map(activityNodeID)).toEqual(["session:r1", 'delegate:["r2","d1"]', 'job:["r1","j1"]']);
   });
 
   it("re-exports the transcript entity-link surface", () => {
@@ -137,21 +137,31 @@ describe("protocol package root public exports", () => {
   // time, which is exactly the regression the barrel gap let through.
   it("re-exports ActivityWatchRow and the watch-row helpers from the package root", () => {
     const rows = buildWatchRows([
-      { id: "w1", source: "self", deliveries: 0, created_at: "2026-09-12T19:00:00Z", active: true },
       {
-        id: "w2",
-        source: "timer",
-        deliveries: 2,
-        created_at: "2026-09-12T18:00:00Z",
-        active: false,
-        cadence: [{ kind: "every", seconds: 600 }],
-        delivery_times: ["2026-09-12T19:00:01Z"],
+        ownerRef: "r1",
+        receiverRef: "r1",
+        state: "armed",
+        watch: { id: "w1", source: "self", deliveries: 0, createdAt: "2026-09-12T19:00:00Z", active: true },
+      },
+      {
+        ownerRef: "r1",
+        receiverRef: "r1",
+        state: "ended",
+        watch: {
+          id: "w2",
+          source: "timer",
+          deliveries: 2,
+          createdAt: "2026-09-12T18:00:00Z",
+          active: false,
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveryTimes: ["2026-09-12T19:00:01Z"],
+        },
       },
     ]);
     const watched: ActivityWatchRow = rows[0]!;
-    expect(watched).toMatchObject({ kind: "watch", id: watchRowID("w1"), level: 1, defaultDetailOpen: true });
-    expect(watched.watch.id).toBe("w1");
-    expect(rows.map((row) => row.id)).toEqual([watchRowID("w1"), watchRowID("w2")]);
+    expect(watched).toMatchObject({ kind: "watch", id: watchRowID("r1", "w1"), level: 1, defaultDetailOpen: true });
+    expect(watched.watch.watch.id).toBe("w1");
+    expect(rows.map((row) => row.id)).toEqual([watchRowID("r1", "w1"), watchRowID("r1", "w2")]);
 
     const scheduled = rows[1]!.watch;
     expect(watchIsScheduled(scheduled)).toBe(true);
