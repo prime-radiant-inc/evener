@@ -788,28 +788,29 @@ test("the activity panel fetches for the SAME ref passed to SessionChrome", asyn
 // Activity open the activity sidebar, and mobile items open the Sheets
 // through the panels' imperative handles (openX branches on isMobile).
 
-test.each([
-  ["Details", "sessionDetails"],
-] as const)("desktop %s menu item opens and closes its pane for the SessionChrome ref", async (label, type) => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_inline"));
-  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
-  await threadsStore.getState().ensureThread("ref_inline");
+test.each([["Details", "sessionDetails"]] as const)(
+  "desktop %s menu item opens and closes its pane for the SessionChrome ref",
+  async (label, type) => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_inline"));
+    fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+    await threadsStore.getState().ensureThread("ref_inline");
 
-  render(<SessionChrome ref="ref_inline" />);
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: label }));
-  expect(workspaceStore.getState().panes).toContainEqual(
-    expect.objectContaining({ type, params: { ref: "ref_inline" } }),
-  );
+    render(<SessionChrome ref="ref_inline" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: label }));
+    expect(workspaceStore.getState().panes).toContainEqual(
+      expect.objectContaining({ type, params: { ref: "ref_inline" } }),
+    );
 
-  // The checked adornment is a live toggle, not a label: selecting a checked
-  // item must CLOSE its pane.
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: `${label} ✓` }));
-  expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
-});
+    // The checked adornment is a live toggle, not a label: selecting a checked
+    // item must CLOSE its pane.
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: `${label} ✓` }));
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
+  },
+);
 
 // Desktop Activity opens the activity sidebar (the zoom system's triage
 // surface), not a workspace pane; its checked adornment is the sidebar's own

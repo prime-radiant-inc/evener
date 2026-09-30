@@ -1,14 +1,11 @@
 import type { ThreadModel } from "@evener/appwire-client";
-import { useEffect } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { connectionStore } from "../../stores/connection";
 import {
   selectSessionOmittedArmedWatches,
   selectSessionOmittedWatches,
   selectSessionWatches,
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { useThreadModel } from "../../stores/useThreadModel";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { ActivityPanelBody } from "../session/chrome/ActivityPanel";

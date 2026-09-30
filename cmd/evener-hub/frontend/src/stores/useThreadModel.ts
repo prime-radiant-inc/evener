@@ -14,7 +14,10 @@ export function useThreadModel(ref: string): ThreadModel | undefined {
     const tryStart = () => {
       if (started || connectionStore.getState().state !== "ready") return;
       started = true;
-      threadsStore.getState().ensureThread(ref).catch(() => {});
+      threadsStore
+        .getState()
+        .ensureThread(ref)
+        .catch(() => {});
     };
     tryStart();
     const unsubscribe = connectionStore.subscribe(tryStart);
