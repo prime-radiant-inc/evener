@@ -1104,14 +1104,20 @@ agent may fail to discover ordinary linked project data.
 This is separate from the existing useful fallback when an automatic derived
 scope lacks an OS sandbox backend.
 
-**Discuss.** Determine whether target-aware traversal within the selected scope
-can preserve useful read-only access. Keep loops, symlink replacement races and
-out-of-scope targets explicit; an omitted directory should not masquerade as
-evidence it does not exist.
+**Decision.** Read-only agents can follow directory symlinks when the resolved
+destination is within their existing allowed read scope. Judge the destination
+against those permissions and preserve the read-only constraint. Handle loops
+and concurrent link changes without redirecting reads into prohibited content.
+When traversal cannot proceed, report the actual access limitation rather than
+presenting omitted content as nonexistent. The additional filesystem handling
+needed to support ordinary permitted links is an accepted cost. Implementation
+remains pending.
 
-**Acceptance.** Read an allowed directory through a symlink while retaining the
-selected boundary under loops and concurrent retargeting. Unavailable traversal
-has an accurate consequence the agent can act on.
+**Acceptance.** Read and browse permitted content through a directory symlink,
+including an in-project alias to another allowed directory. Retain the allowed
+read scope and read-only constraint under loops and concurrent retargeting to a
+prohibited destination. A refused or incomplete traversal accurately identifies
+the limitation and does not imply that the unexamined content is absent.
 
 ### T05 Approval scope and lifetime
 
