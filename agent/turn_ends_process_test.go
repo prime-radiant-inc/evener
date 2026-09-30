@@ -67,6 +67,53 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 	}
 }
 
+// TestOneShotRestoreIsNonInteractive: a session restored by a process whose
+// turn ends the process (a resumed `evener run`) has nobody to answer
+// ask_user, since --ask-responder refuses every resume flag. It restores
+// non-interactive even when the snapshot says interactive (a session first
+// run with --ask-responder, or one created under serve), so a question
+// cannot end the run with the task undone. A daemon restore keeps the
+// persisted value.
+func TestOneShotRestoreIsNonInteractive(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		persisted bool
+		oneShot   bool
+		want      bool
+	}{
+		{name: "one-shot resuming an interactive session", persisted: false, oneShot: true, want: true},
+		{name: "one-shot resuming a non-interactive session", persisted: true, oneShot: true, want: true},
+		{name: "serve resuming an interactive session", persisted: false, oneShot: false, want: false},
+		{name: "serve resuming a non-interactive session", persisted: true, oneShot: false, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{name: "openai"})
+			meta := schema.SessionMeta{
+				ID:        "01KONESHOTNONINTERACTIVE000",
+				ProfileID: "openai",
+				Model:     "gpt-5.2",
+				Config:    schema.ConfigSnapshot{NonInteractive: tt.persisted},
+			}
+			sess, err := RestoreSessionFromMetaWithConfig(
+				client,
+				NewOpenAIProfile("gpt-5.2"),
+				execenv.NewLocalExecutionEnvironment(t.TempDir()),
+				meta,
+				RestoreSessionConfig{StateDir: t.TempDir(), TurnEndsProcess: tt.oneShot},
+			)
+			if err != nil {
+				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+			}
+			t.Cleanup(sess.Close)
+			if got := sess.cfg.NonInteractive; got != tt.want {
+				t.Fatalf("restored NonInteractive = %v, want %v (persisted %v, one-shot restorer %v)", got, tt.want, tt.persisted, tt.oneShot)
+			}
+		})
+	}
+}
+
 // TestFrozenDescriptorTakesTurnEndsProcessFromTheLiveParent pins the third
 // path, which the drain-guidance attempt missed: a stable delegate restarted
 // from its frozen descriptor. The descriptor's snapshot answers "what was this
