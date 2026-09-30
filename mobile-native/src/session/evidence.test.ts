@@ -308,6 +308,20 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// The delegate's reply is its author's markdown too, so its images read
+	// as their alt text.
+	it("shows the images in a delegate's reply as words", () => {
+		const replied = {
+			...subagentWireStep("call_send_2"),
+			raw: undefined,
+			output: "Here: ![the trace](https://example.com/t.png)\n[delegate_id dlg_x · completed · completed]",
+		};
+		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(replied) })).toEqual([
+			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
+			{ kind: "markdown", title: "Reply", markdown: "Here: the trace" },
+		]);
+	});
+
 	// A send whose call carries no message and got no reply (a malformed call)
 	// shows its arguments and result, as any other tool's JSON does.
 	it("shows a send with nothing exchanged as its arguments and result", () => {

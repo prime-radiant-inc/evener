@@ -1,10 +1,10 @@
 // What a step in a run has to show when you tap it (spec 8.2): an edit's
 // diff, the file a write wrote, a command's output, a fetched page, the skill
-// an activation loaded, a task list, a tool's arguments and result, and an
-// error. Each
-// reads the words the tool printed, not the envelope around them (the
-// package's toolEvidence readers, which the web's bodies read too). Pure, so
-// the rules live apart from how StepEvidence draws them.
+// an activation loaded, a task list, what a message to a subagent sent and
+// what came back, a tool's arguments and result, and an error. Each reads the
+// words the tool printed, not the envelope around them (the package's
+// toolEvidence and delegateSteps readers, which the web's bodies read too).
+// Pure, so the rules live apart from how StepEvidence draws them.
 import {
 	diffStats,
 	editDiffText,
@@ -132,8 +132,9 @@ function jobStopInWords(text: string): string {
 // What a tool's output shows, by its family: a command without its exit
 // footer, a fetched page's answer, a skill's instructions, a task list as a
 // checklist, a transcript a read returned, what a worktree operation says it
-// did, an MCP or other tool's JSON pretty-printed; anything else as the tool
-// printed it.
+// did, a job check or watch in words, a message to a subagent as the message
+// and its reply, an MCP or other tool's JSON pretty-printed; anything else as
+// the tool printed it.
 function outputEvidence(label: string, detail: EvidenceSource["detail"]): Evidence[] {
 	const text = detail.output ?? "";
 	switch (toolFamily(label)) {

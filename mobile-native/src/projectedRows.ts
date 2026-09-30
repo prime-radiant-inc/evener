@@ -1354,6 +1354,8 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	const output = detail.output ? bound(detail.output) : detail.output;
 	const error = detail.error ? bound(detail.error) : detail.error;
 	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
+	const sendReply = detail.sendReply ? bound(detail.sendReply) : detail.sendReply;
+	const sendWaitIgnored = detail.sendWaitIgnored ? bound(detail.sendWaitIgnored) : detail.sendWaitIgnored;
 	// Nothing was cut: hand back the source detail so a settled row keeps its
 	// identity across publishes (see truncateItem).
 	if (
@@ -1363,7 +1365,9 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		args === detail.arguments &&
 		output === detail.output &&
 		error === detail.error &&
-		watchEvidence === detail.watchEvidence
+		watchEvidence === detail.watchEvidence &&
+		sendReply === detail.sendReply &&
+		sendWaitIgnored === detail.sendWaitIgnored
 	) {
 		return detail;
 	}
@@ -1376,6 +1380,8 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		output,
 		error,
 		watchEvidence,
+		sendReply,
+		sendWaitIgnored,
 	};
 }
 
