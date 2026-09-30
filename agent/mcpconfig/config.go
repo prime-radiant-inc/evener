@@ -278,16 +278,22 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 	var layers [][]ServerConfig
 	var warnings []string
 
-	// Layer 1: Global config.
-	globalPath := globalMCPConfigPath()
-	if globalPath != "" {
-		if configs, err := LoadFile(globalPath); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", globalPath, err))
+	// Layer 1: Global config. The tool-fluency harness sets EVENER_NO_USER_SKILLS
+	// so an eval round depends only on the revision under test; the operator's
+	// global MCP servers are one source that must not reach it (#3487). The
+	// project, CLI-file, and CLI-inline layers below stay, so a probe can still
+	// exercise MCP that its own fixture declares.
+	if envvars.EVENERNoUserSkills.Getenv() != "1" {
+		globalPath := globalMCPConfigPath()
+		if globalPath != "" {
+			if configs, err := LoadFile(globalPath); err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", globalPath, err))
+				}
+				// Missing global file is not an error.
+			} else {
+				layers = append(layers, configs)
 			}
-			// Missing global file is not an error.
-		} else {
-			layers = append(layers, configs)
 		}
 	}
 

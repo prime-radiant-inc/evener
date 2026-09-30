@@ -40,8 +40,14 @@ func DiscoverEvenerWideCommands(env execenv.ExecutionEnvironment) (map[string]Co
 	out := map[string]Command{}
 	var warnings []events.WarningData
 
-	if dir := globalCommandsDir(); dir != "" {
-		scanEvenerwideDir(dir, "user", out, &warnings)
+	// The tool-fluency harness sets EVENER_NO_USER_SKILLS so an eval round
+	// depends only on the revision under test; the operator's user-global
+	// commands are one source that must not reach it (#3487). The project walk
+	// below stays, so a probe still sees the commands its own fixture declares.
+	if envvars.EVENERNoUserSkills.Getenv() != "1" {
+		if dir := globalCommandsDir(); dir != "" {
+			scanEvenerwideDir(dir, "user", out, &warnings)
+		}
 	}
 
 	if env != nil {
