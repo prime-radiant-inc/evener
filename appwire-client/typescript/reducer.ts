@@ -1307,6 +1307,38 @@ export function cachedSessionRecord(model: ThreadModel, now: number): CachedSess
   };
 }
 
+/** The first and last item positions of a read response's fresh window: the
+ * bounds the store's shell seam compares against the captured anchor and the
+ * model's current newest (spec, "The two serving paths, the live gap, and
+ * its rule"). Pure record data; no disposition logic lives here. */
+export function readWindowBounds(resp: ThreadReadResponse): {
+  start: ThreadItemPosition | undefined;
+  end: ThreadItemPosition | undefined;
+} {
+  // threadFields' own session-id derivation (the wire sessionId, falling back
+  // to the thread id, trimmed), inlined here so the bounds read the same
+  // image session route the read itself would.
+  const fresh = splitWireTurns(
+    resp.thread.turns ?? [],
+    imageSessionRouteForSession(resp.thread.sessionId.trim() || resp.thread.id.trim()),
+  );
+  const range = fragmentRange(fresh.items);
+  return { start: range?.[0], end: range?.[1] };
+}
+
+/** Merges a fold tail (the pre-replacement model's turns positioned above the
+ * replacement window's end) onto a model whose history hydrateThread just
+ * built. The replay's result is the window plus exactly the folds that
+ * arrived (spec: "the rule therefore still replaces, then replays"). */
+export function mergeTailTurns<M extends ThreadModel>(model: M, tail: TurnModel[]): ThreadModel & ModelExtras<M> {
+  if (tail.length === 0 || model.history === undefined) return publicModel<M>(model);
+  const merged = mergeTurnHistory(model.history.turns, tail);
+  const history: HistoryState = { ...model.history, turns: merged.turns };
+  // model.overlay is set on every model withDisplay built (hydrateThread's v6
+  // branch included); the ?? {} is for the type, whose field is optional.
+  return publicModel<M>(withDisplay({ ...model, history }, history, model.overlay ?? {}));
+}
+
 // Every field a read sets except the transcript itself (turns, history,
 // overlay and the running turn).
 function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<ThreadModel, "turns"> {

@@ -336,8 +336,14 @@ function requireOpenHistory(
 // emitHistoryUpdated pushes a history/updated fold through the connected fake
 // client's notification path — the reducer's live merge, the publication route
 // the subscription exists to see (the notification handler's own setState,
-// never putThreadModel).
-function emitHistoryUpdated(ref: string, options: { fold: string }): void {
+// never putThreadModel). An explicit `entry` positions the fold's item the
+// way the daemon's own pushes do: the turn scalar in `turns` and the item —
+// the position's only carrier — in top-level `items` (the reducer's live
+// merge reads exactly that split; an item nested inside the turn is dropped
+// and the fold would sort by its version surrogate instead of its entry).
+// Without an entry the fold keeps the file's original shape, exactly as
+// Tasks 5-6 emitted it.
+function emitHistoryUpdated(ref: string, options: { fold: string; entry?: number }): void {
   const client = requireConnectedClient("emitHistoryUpdated");
   const { model, history } = requireOpenHistory("emitHistoryUpdated", ref);
   client.emitNotification({
@@ -348,7 +354,21 @@ function emitHistoryUpdated(ref: string, options: { fold: string }): void {
       bootGeneration: history.bootGeneration,
       epoch: history.epoch,
       snapshot: { incarnation: history.incarnation ?? "inc-1", length: history.length },
-      turns: [turnFixture(options.fold, "folded live")],
+      ...(options.entry === undefined
+        ? { turns: [turnFixture(options.fold, "folded live")] }
+        : {
+            turns: [{ id: options.fold, status: "completed", itemsView: "full", version: 2 }],
+            items: [
+              {
+                type: "agentMessage",
+                id: `item_${options.fold}`,
+                turnId: options.fold,
+                text: "folded live",
+                status: "completed",
+                position: { entry: options.entry, item: 0 },
+              },
+            ],
+          }),
     },
   } as AnyNotification);
 }
@@ -608,6 +628,8 @@ beforeEach(async () => {
   pendingReadRef = undefined;
   pendingReadGeneration = undefined;
   resolvePendingReadFn = undefined;
+  pendingReloadResolve = undefined;
+  pendingReloadGeneration = undefined;
   for (const resolve of readArmedWaiters.splice(0)) resolve();
   scheduledHydrationRetries = [];
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
@@ -1268,5 +1290,285 @@ describe("cached write seam", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// The gap-rule bed (Task 7; spec, "The two serving paths, the live gap, and
+// its rule"). Positions are explicit so overlap, abut, and disjoint windows
+// are arithmetic, not guesswork: turnAt builds one positioned TurnModel
+// (turnFixture's shape with the entry as the position, so one fixture serves
+// the seed and the read), and windowResponse builds the reconciling read's
+// wire answer through the file's own readResponse builder so the wire shape
+// stays identical.
+
+function turnAt(id: string, entry: number, text = "positioned turn"): TurnModel & Turn {
+  return {
+    id,
+    status: "completed",
+    itemsView: "full",
+    items: [{ id: `item_${id}`, turnId: id, type: "agentMessage", text, position: { entry, item: 0 } }],
+    version: 2,
+  };
+}
+
+// windowResponse builds the reconciling read's wire answer: a fresh window
+// of `count` turns named w<entry> starting at `from`, one positioned item per
+// turn, with no `changes`. The identity matches the seed (incarnation
+// "inc-1", length 40) so the read's disposition is a merge and the gap
+// rule's position arithmetic is the only thing that decides; the ref is the
+// block's own "local:gap", the one every scenario drives.
+function windowResponse(from: number, count: number, cursor: string): ThreadReadResponse {
+  const turns: Turn[] = [];
+  for (let at = 0; at < count; at += 1) turns.push(turnAt(`w${from + at}`, from + at));
+  return readResponse("local:gap", { olderCursor: cursor, turns });
+}
+
+// seedPositionedRecord seeds a record holding three turns — turn_p2 at entry
+// 10 (page 2), turn_p1 at entry 20 (page 1), turn_w at entry 30 (the window's
+// newest) — with `olderCursor: "cur-deep"`, so the captured anchor is
+// `{ entry: 30 }`. Seeding goes through a throwaway adapter over the same
+// global database the module adapter reads (cacheRecord's reader pattern), so
+// the bed installs nothing on the singleton seam.
+async function seedPositionedRecord(ref: string, overrides: { turns?: TurnModel[] } = {}): Promise<void> {
+  const adapter = new SessionCacheIndexedDB();
+  try {
+    await seedCache(adapter, ref, {
+      turns: overrides.turns ?? [turnAt("turn_p2", 10), turnAt("turn_p1", 20), turnAt("turn_w", 30)],
+      olderCursor: "cur-deep",
+    });
+  } finally {
+    adapter.close();
+  }
+}
+
+// The reload bed's parked read: whichever deferred read a fixture parks — the
+// shell's own, the stale-snapshot retry's, or the hand-driven failure
+// retry's — the scenario resolves it through resolveReloadRead, which echoes
+// the parked request's own generation back (the store's latest-window
+// contract discards a response to a superseded generation; resolvePendingRead's
+// own rule).
+let pendingReloadResolve: ((response: ThreadReadResponse) => void) | undefined;
+let pendingReloadGeneration: number | undefined;
+
+function parkReloadRead(params: { requestGeneration?: number }): Promise<ThreadReadResponse> {
+  pendingReloadGeneration = params.requestGeneration;
+  return new Promise<ThreadReadResponse>((resolve) => {
+    pendingReloadResolve = resolve;
+  });
+}
+
+function resolveReloadRead(response: ThreadReadResponse): void {
+  const resolve = pendingReloadResolve;
+  if (resolve === undefined) throw new Error("resolveReloadRead: no reload read is parked");
+  pendingReloadResolve = undefined;
+  resolve(pendingReloadGeneration === undefined ? response : { ...response, requestGeneration: pendingReloadGeneration });
+}
+
+// reloadWithDeferredRead: the shell publishes from the seeded record, the
+// reconciling read arms and stays parked, and the scenario resolves it.
+async function reloadWithDeferredRead(ref: string): Promise<{ resolveRead: (response: ThreadReadResponse) => void }> {
+  const fake = connectFakeClient();
+  let markArmed: () => void = () => {};
+  const armed = new Promise<void>((resolve) => {
+    markArmed = resolve;
+  });
+  fake.on("thread/read", (params) => {
+    markArmed();
+    return parkReloadRead(params);
+  });
+  const pending = threadsStore.getState().ensureThread(ref);
+  void pending.catch(() => {}); // the fixture owns the claim's failure modes
+  await nextModelPublished(ref);
+  await armed;
+  if (threadsStore.getState().cacheShellRefs.has(ref) !== true) {
+    throw new Error(`reloadWithDeferredRead: ${ref} must publish as a cached shell`);
+  }
+  if (pendingReloadResolve === undefined) throw new Error("reloadWithDeferredRead: the read must stay parked");
+  return { resolveRead: resolveReloadRead };
+}
+
+// reloadWithStaleSnapshot does the same but the first read — the one the
+// shell armed with its heldSnapshot — rejects with the hub's
+// TranscriptItemCursorStale, and the retry the store issues without it stays
+// parked. calls() answers the recorded thread/read params array so
+// heldSnapshot assertions read the actual wire request.
+async function reloadWithStaleSnapshot(ref: string): Promise<{
+  resolveRetry: (response: ThreadReadResponse) => void;
+  calls: () => Array<MethodTypes["thread/read"]["params"]>;
+}> {
+  const fake = connectFakeClient();
+  let markRetryArmed: () => void = () => {};
+  const retryArmed = new Promise<void>((resolve) => {
+    markRetryArmed = resolve;
+  });
+  fake.on("thread/read", (params) => {
+    if (params.heldSnapshot !== undefined) {
+      throw new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" });
+    }
+    markRetryArmed();
+    return parkReloadRead(params);
+  });
+  const pending = threadsStore.getState().ensureThread(ref);
+  void pending.catch(() => {}); // the fixture owns the claim's failure modes
+  await nextModelPublished(ref);
+  await retryArmed;
+  if (threadsStore.getState().cacheShellRefs.has(ref) !== true) {
+    throw new Error(`reloadWithStaleSnapshot: ${ref} must publish as a cached shell`);
+  }
+  if (pendingReloadResolve === undefined) throw new Error("reloadWithStaleSnapshot: the retry must stay parked");
+  return {
+    resolveRetry: resolveReloadRead,
+    calls: () =>
+      fake.calls
+        .filter((call) => call.method === "thread/read")
+        .map((call) => call.params as MethodTypes["thread/read"]["params"]),
+  };
+}
+
+// reloadWithFailedFirstRead arms the spec's failed-first-read reload (scenario
+// 7's fold cases): the shell publishes, its reconciling read rejects as a
+// transport failure, and the retry the store schedules stays undriven — the
+// scenario folds its live history/updated onto the shell in the gap, the one
+// moment a fold is genuinely live. (A fold emitted while a read is in flight
+// is buffered for the publish and then cleared by the response cut, which
+// already contains every notification the wire delivered before it — a
+// scripted response that omits it is a shape the real daemon cannot produce.)
+// The scenario drives the parked retry by hand through the file's injected
+// scheduler and resolves it through resolveReloadRead.
+async function reloadWithFailedFirstRead(ref: string): Promise<void> {
+  const fake = connectFakeClient();
+  let reads = 0;
+  fake.on("thread/read", (params) => {
+    reads += 1;
+    if (reads === 1) {
+      notifyReadArmed();
+      return Promise.reject(new Error("transport: read failed"));
+    }
+    notifyReadArmed();
+    return parkReloadRead(params);
+  });
+  const pending = threadsStore.getState().ensureThread(ref);
+  void pending.catch(() => {}); // the fixture owns the claim's failure modes
+  await nextModelPublished(ref);
+  await awaitReadArmed(); // the failing read is armed
+  // The rejection's own await chain must settle before the caller folds: the
+  // pending hydration leaves the map inside that catch (a frame buffered
+  // meanwhile would be dropped with it), and the hand-driven retry is what
+  // the scheduler records. Microtask drain, the file's cut-window idiom.
+  for (let at = 0; at < 20 && scheduledHydrationRetries.length === 0; at += 1) await Promise.resolve();
+  if (scheduledHydrationRetries.length === 0) {
+    throw new Error("reloadWithFailedFirstRead: the failed read must schedule its retry");
+  }
+  if (threadsStore.getState().cacheShellRefs.has(ref) !== true) {
+    throw new Error(`reloadWithFailedFirstRead: ${ref} must still be a cached shell`);
+  }
+}
+
+// settleReload awaits the reload's publication: the store bumps the ref's
+// hydrations counter exactly once per successful publish
+// (publishThreadHydration), so the bump is the deterministic witness that the
+// reconciling read's model is on the store — whichever fixture drove the read
+// (the parked one, the stale-snapshot retry, or the hand-driven failure
+// retry, whose own ensureThread promise already rejected). Called as the
+// next statement after the read resolves, before the publish's microtask
+// chain can run.
+async function settleReload(ref: string): Promise<void> {
+  const before = threadsStore.getState().hydrations.get(ref) ?? 0;
+  await new Promise<void>((resolve) => {
+    const unsubscribe = threadsStore.subscribe((state) => {
+      if ((state.hydrations.get(ref) ?? 0) <= before) return;
+      unsubscribe();
+      resolve();
+    });
+  });
+}
+
+describe("the live gap rule", () => {
+  it("scenario 6: an overlapping window merges and the deepest cursor is kept (the pinned reducer rule)", async () => {
+    await seedPositionedRecord("local:gap");
+    const { resolveRead } = await reloadWithDeferredRead("local:gap");
+    resolveRead(windowResponse(25, 3, "cur-shallow")); // start 25 is below the anchor 30: the merge is gapless
+    await settleReload("local:gap");
+    const { model, history } = requireOpenHistory("the live gap rule: scenario 6 overlap", "local:gap");
+    // The pages survived and the window arrived: the merge interleaves the
+    // window's own turns (w25-w27) between the held pages and the record's
+    // window newest — a fresh turn with a new id is never dropped, so the
+    // window's turns appear alongside the held ones the scenario pins.
+    expect(history.turns.map((t) => t.id)).toEqual(["turn_p2", "turn_p1", "w25", "w26", "w27", "turn_w"]);
+    expect(model.olderCursor).toBe("cur-deep"); // 792c379eca's rule, now pinned in the reload scenario
+  });
+
+  it("scenario 6: a window beginning exactly at the captured position's successor replaces (the accepted abut cost)", async () => {
+    await seedPositionedRecord("local:gap");
+    const { resolveRead } = await reloadWithDeferredRead("local:gap");
+    resolveRead(windowResponse(31, 3, "cur-abut")); // start 31 > anchor 30: one-item adjacency is indistinguishable from a one-item hole
+    await settleReload("local:gap");
+    const { model, history } = requireOpenHistory("the live gap rule: scenario 6 abut", "local:gap");
+    expect(history.turns.map((t) => t.id)).toEqual(["w31", "w32", "w33"]); // the cached pages were dropped
+    expect(model.olderCursor).toBe("cur-abut"); // the response's cursor is taken
+  });
+
+  it("scenario 7: a window starting entirely above the anchor replaces, and the response's cursor is taken", async () => {
+    await seedPositionedRecord("local:gap");
+    const { resolveRead } = await reloadWithDeferredRead("local:gap");
+    resolveRead(windowResponse(40, 3, "cur-new")); // disjoint: start 40 > anchor 30, no changes
+    await settleReload("local:gap");
+    const { model, history } = requireOpenHistory("the live gap rule: scenario 7 replace", "local:gap");
+    expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42"]); // replaced, pages dropped
+    expect(model.olderCursor).toBe("cur-new"); // no silent hole: nothing merged around the gap
+  });
+
+  it("scenario 7: a fold newer than the response replaces and replays the fold tail", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await seedPositionedRecord("local:gap");
+      await reloadWithFailedFirstRead("local:gap"); // the shell's read fails; the retry is the scenario's to drive
+      emitHistoryUpdated("local:gap", { fold: "turn_fold", entry: 50 }); // the fold lands above the incoming window's end
+      runScheduledHydrationRetryForThisFile();
+      await awaitReadArmed();
+      resolveReloadRead(windowResponse(40, 3, "cur-new")); // the window's end (42) is below the fold (50)
+      await settleReload("local:gap");
+      const { history } = requireOpenHistory("the live gap rule: scenario 7 fold", "local:gap");
+      expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42", "turn_fold"]); // replace, then replay
+      expect(threadsStore.getState().cacheShellRefs.has("local:gap")).toBe(false); // the first authoritative read cleared the shell
+      await vi.advanceTimersByTimeAsync(1_000);
+      const record = await cacheRecord("local:gap");
+      if (record === undefined) throw new Error("scenario 7 fold: the debounced write must have landed");
+      expect(record.history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42", "turn_fold"]); // no hole was written
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("scenario 7: a fold arriving with a dropped notification behind it replays what arrived, carrying today's hole", async () => {
+    await seedPositionedRecord("local:gap");
+    await reloadWithFailedFirstRead("local:gap"); // the shell's read fails; the retry is the scenario's to drive
+    // The first push (entry 48) is dropped — only the second (entry 50) arrives.
+    emitHistoryUpdated("local:gap", { fold: "turn_keep", entry: 50 });
+    runScheduledHydrationRetryForThisFile();
+    await awaitReadArmed();
+    resolveReloadRead(windowResponse(40, 3, "cur-new"));
+    await settleReload("local:gap");
+    const { history } = requireOpenHistory("the live gap rule: scenario 7 dropped", "local:gap");
+    expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42", "turn_keep"]); // exactly what arrived: today's hole, mirrored faithfully
+  });
+
+  it("scenario 8: stale identity: the server rejects the held snapshot, the retry replaces, and the cached turns do not survive", async () => {
+    await seedPositionedRecord("local:gap");
+    const { resolveRetry, calls } = await reloadWithStaleSnapshot("local:gap"); // the first read rejects TranscriptItemCursorStale
+    resolveRetry(windowResponse(40, 3, "cur-new"));
+    await settleReload("local:gap");
+    expect(calls()[1]?.heldSnapshot).toBeUndefined(); // the retry carried no held identity
+    const { history } = requireOpenHistory("the live gap rule: scenario 8 stale", "local:gap");
+    expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42"]); // the cached turns did not survive
+  });
+
+  it("an empty record takes the ordinary cold merge and the predicate holds (the gap rule's empty case, scenario 15's tail)", async () => {
+    await seedPositionedRecord("local:gap", { turns: [] }); // a zero-turn record: no anchor to compare against
+    const { resolveRead } = await reloadWithDeferredRead("local:gap");
+    resolveRead(windowResponse(40, 3, "cur-new"));
+    await settleReload("local:gap");
+    const { history } = requireOpenHistory("the live gap rule: empty record", "local:gap");
+    expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42"]); // the ordinary cold path, no crash, no replace branch
   });
 });

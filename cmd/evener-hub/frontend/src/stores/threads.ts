@@ -42,8 +42,11 @@ import {
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
   mergeOlderItemPage,
+  mergeTailTurns,
   mutationErrorData,
   notificationRoutingKey,
+  readDisposition,
+  readWindowBounds,
   resolvePendingEscalation,
   SHUT_DOWN_STATUSES,
   threadModelFromCache,
@@ -1982,7 +1985,7 @@ async function hydrateAndSubscribe(
   // instead, matching the hub's intent.
   const model =
     !discardHeldHistory && pending.baseModel?.history !== undefined
-      ? applyReadResponse(pending.baseModel, response, now)
+      ? applyCacheGapRule(ref, pending.baseModel, response, now)
       : hydrateThread(response, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return { model, response };
@@ -5248,6 +5251,45 @@ function onCacheEpochObserved(observed: number): void {
     for (const [ref, captured] of s.cacheLeases) if (captured < observed) suppressed.add(ref);
     return { cacheSuppressed: suppressed };
   });
+}
+
+// The live gap rule (spec, "The two serving paths, the live gap, and its
+// rule"): a cached-shell reconciling read that carries no changes and whose
+// fresh window starts above the shell's captured anchor replaces instead of
+// merging. The anchor is captured at shell-build from pure record data, so
+// a live fold cannot move it. A response carrying changes merges as usual;
+// so does an empty record (the ordinary cold merge) and any disposition the
+// identity rules already answer (replace/discard are theirs).
+function applyCacheGapRule(ref: string, base: ThreadModel, response: ThreadReadResponse, now: number): ThreadModel {
+  const ordinary = () => applyReadResponse(base, response, now);
+  const state = threadsStore.getState();
+  const anchor = state.cacheAnchors.get(ref);
+  if (anchor === undefined || !state.cacheShellRefs.has(ref) || response.changes !== undefined) return ordinary();
+  const held = base.history;
+  if (held === undefined || held.turns.length === 0) return ordinary();
+  if (readDisposition(held, response) !== "merge") return ordinary();
+  const bounds = readWindowBounds(response);
+  if (bounds.start === undefined || comparePositions(bounds.start, anchor) <= 0) return ordinary();
+  // The window starts above the anchor: replace. Pages drop, the response's
+  // cursor is taken. The abut case (start at the anchor's successor) lands
+  // here too: the position model has no predecessor function, and the cached
+  // pages re-fetch rather than risk a hole (the spec's accepted cost).
+  const current = state.threads.get(ref) ?? base;
+  const newest = newestItemPosition(current.history?.turns ?? held.turns);
+  const replaced = hydrateThread(response, ref, now);
+  clearOversizeMemo(ref); // a replacement is the one mid-lifetime shrink
+  if (newest === undefined || bounds.end === undefined || comparePositions(newest, bounds.end) <= 0) {
+    return replaced; // the response covers everything folded so far
+  }
+  // The fold is newer than the response: replace, then replay the tail —
+  // the model's items above the window's end. They cannot be cached pages,
+  // since the anchor sits below the window's start. The result carries the
+  // same hole today's live path carries when a notification was dropped;
+  // the next authoritative read's merge fills it.
+  const tail = (current.history?.turns ?? []).filter(
+    (turn) => turn.items[0]?.position !== undefined && comparePositions(turn.items[0]?.position, bounds.end) > 0,
+  );
+  return mergeTailTurns(replaced, tail);
 }
 
 threadsStore.subscribe((state, previous) => {

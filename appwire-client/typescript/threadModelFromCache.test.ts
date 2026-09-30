@@ -3,6 +3,8 @@ import {
   type CachedSessionRecord,
   cachedSessionRecord,
   hydrateThread,
+  mergeTailTurns,
+  readWindowBounds,
   type ThreadModel,
   threadModelFromCache,
 } from "./index";
@@ -54,7 +56,18 @@ function readResponseFixture(): Parameters<typeof hydrateThread>[0] {
           id: "turn_1",
           status: "completed",
           itemsView: "full",
-          items: [{ type: "assistantMessage", id: "item_1", turnId: "turn_1", status: "completed" }],
+          // The position a v6 read's window items carry: readWindowBounds
+          // reads the fresh window's extent from it (the bounds unit test
+          // below pins { entry: 1, item: 0, sub: 0 }).
+          items: [
+            {
+              type: "assistantMessage",
+              id: "item_1",
+              turnId: "turn_1",
+              status: "completed",
+              position: { entry: 1, item: 0, sub: 0 },
+            },
+          ],
         },
       ],
     },
@@ -180,5 +193,29 @@ describe("cachedSessionRecord", () => {
     expect(cachedSessionRecord(noHistory, 7000)).toBeUndefined();
     const handBuilt: ThreadModel = { ...bare, history: undefined };
     expect(cachedSessionRecord(handBuilt, 7000)).toBeUndefined();
+  });
+});
+
+describe("readWindowBounds", () => {
+  it("answers the fresh window's first and last item positions", () => {
+    const bounds = readWindowBounds(readResponseFixture());
+    expect(bounds.start).toEqual({ entry: 1, item: 0, sub: 0 });
+    expect(bounds.end).toEqual({ entry: 1, item: 0, sub: 0 });
+  });
+});
+
+describe("mergeTailTurns", () => {
+  it("merges a positioned tail above the window and keeps the window's identity", () => {
+    const replaced = hydrateThread(readResponseFixture(), "local:thr_1", 7000);
+    const tail = [{ id: "turn_9", status: "completed", items: [], version: 12 }];
+    const merged = mergeTailTurns(replaced, tail);
+    expect(merged.history?.incarnation).toBe(replaced.history?.incarnation); // identity is the window's
+    expect(merged.history?.turns.map((t) => t.id)).toEqual(["turn_1", "turn_9"]);
+    expect(merged.turns.map((t) => t.id)).toContain("turn_9"); // display derived, not stale
+  });
+
+  it("returns the model unchanged for an empty tail", () => {
+    const replaced = hydrateThread(readResponseFixture(), "local:thr_1", 7000);
+    expect(mergeTailTurns(replaced, [])).toBe(replaced);
   });
 });
