@@ -270,6 +270,13 @@ Agents, Jobs, and Watches tabs acquire their corresponding collection. They
 render domain records and drill through the returned public references. Tasks
 continue to use the existing task owner and unfold in the sidebar.
 
+The recursive browser activity panel requests subtree scope while it is open.
+Its closed trigger uses the selected session's summary. Store bindings share one
+owner per actual client object, requested ref, and scope; different scopes keep
+their counts and collections separate while sharing thread subscription leases.
+Closing the panel releases its collection demand without releasing a mounted
+transcript or a session-scoped tab's subscription.
+
 The native subagent tree uses the same session activity owner with subtree scope.
 Its existing views may use a pure adapter from flat domain rows into their
 rendering model; that adapter owns no networking, retries, or lifecycle state.

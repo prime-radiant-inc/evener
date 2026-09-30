@@ -33,6 +33,13 @@ update its owning guide and remove the resolved case from the open list without
 renumbering other cases. Verify recovery and preservation contracts with meaningful
 behavior tests, including the transition back to useful operation.
 
+Session activity belongs to the domain reads described in
+[the session activity guide](docs/product/session-activity.md). Keep navigation
+shallow and compact; do not reconstruct activity ownership from navigation rows.
+Preserve explicit session/subtree scope and share subscription lifetimes across
+transcript and activity consumers. Changes to this boundary need real producer,
+routing and client-lifetime coverage, plus updates to the guide and subsystem map.
+
 ## Testing
 
 Before adding or changing tests, read `docs/developing-evener/testing.md`.
