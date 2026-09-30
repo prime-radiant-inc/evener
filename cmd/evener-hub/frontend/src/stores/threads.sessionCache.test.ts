@@ -18,6 +18,7 @@ import type {
   ThreadCapabilities,
   ThreadModel,
   ThreadReadResponse,
+  ThreadTurnsListResponse,
   Turn,
   TurnModel,
   TurnQueueResponse,
@@ -1361,7 +1362,9 @@ function resolveReloadRead(response: ThreadReadResponse): void {
   const resolve = pendingReloadResolve;
   if (resolve === undefined) throw new Error("resolveReloadRead: no reload read is parked");
   pendingReloadResolve = undefined;
-  resolve(pendingReloadGeneration === undefined ? response : { ...response, requestGeneration: pendingReloadGeneration });
+  resolve(
+    pendingReloadGeneration === undefined ? response : { ...response, requestGeneration: pendingReloadGeneration },
+  );
 }
 
 // reloadWithDeferredRead: the shell publishes from the seeded record, the
@@ -1570,5 +1573,95 @@ describe("the live gap rule", () => {
     await settleReload("local:gap");
     const { history } = requireOpenHistory("the live gap rule: empty record", "local:gap");
     expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42"]); // the ordinary cold path, no crash, no replace branch
+  });
+});
+
+// The scroll-back bed (Task 8; spec, "Scroll-back: the deepest held cursor",
+// Testing scenario 12). olderPageResponse answers a thread/turns/list with
+// the wire shape the hub stamps on every page it serves: identity rides the
+// response (source.go's StampPage — bootGeneration, epoch, snapshot), the
+// page's turns live in `data`, and an exhausted page is `data: []` with no
+// nextCursor, "the transcript's first item ... as the daemon itself answers".
+// The identity is the file's default one so a page into the settled window's
+// versioned history classifies as a same-identity merge (pageDisposition),
+// not as a boot-generation stranger.
+function olderPageResponse(overrides: { turns?: Turn[]; nextCursor?: string } = {}): ThreadTurnsListResponse {
+  return {
+    data: overrides.turns ?? [],
+    ...(overrides.nextCursor === undefined ? {} : { nextCursor: overrides.nextCursor }),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 40 },
+  };
+}
+
+// seedScrollbackRecord seeds the volume case's record: the window the prior
+// session ended on (entries 30-32) plus the two older pages it paged in —
+// page 1 at 20-22, page 2 at 10-12 — with olderCursor "cur-page-3", the
+// boundary below the deepest held page. Seeding goes through a throwaway
+// adapter over the same global database the module adapter reads
+// (seedPositionedRecord's pattern), so the bed installs nothing on the
+// singleton seam.
+async function seedScrollbackRecord(ref: string): Promise<void> {
+  const adapter = new SessionCacheIndexedDB();
+  try {
+    await seedCache(adapter, ref, {
+      turns: [
+        turnAt("turn_p2a", 10),
+        turnAt("turn_p2b", 11),
+        turnAt("turn_p2c", 12),
+        turnAt("turn_p1a", 20),
+        turnAt("turn_p1b", 21),
+        turnAt("turn_p1c", 22),
+        turnAt("turn_wa", 30),
+        turnAt("turn_wb", 31),
+        turnAt("turn_wc", 32),
+      ],
+      olderCursor: "cur-page-3",
+    });
+  } finally {
+    adapter.close();
+  }
+}
+
+// The settled window the reconciling read answers with: three turns entirely
+// above the record's newest held item (entry 32), so the gap rule replaces
+// and the response's cursor "cur-settled" becomes the model's — the cursor
+// scroll-back continues from once the shell is gone.
+function settledWindowResponse(ref: string): ThreadReadResponse {
+  return readResponse(ref, {
+    turns: [turnAt("turn_s0", 40), turnAt("turn_s1", 41), turnAt("turn_s2", 42)],
+    olderCursor: "cur-settled",
+  });
+}
+
+describe("scroll-back, the volume case", () => {
+  it("renders window plus both cached pages, refuses loadOlderTurns while the shell is unverified, then continues from the settled cursor", async () => {
+    // Scenario 12: a prior session hydrated, paged back twice, and its
+    // record carries window plus both pages. The reload paints all of it
+    // from the shell while the reconciling read stays parked.
+    await seedScrollbackRecord("local:scroll");
+    const { resolveRead } = await reloadWithDeferredRead("local:scroll");
+    const fake = requireConnectedClient("scroll-back: the volume case");
+    const listCalls: Array<{ ref?: string; cursor?: string }> = [];
+    fake.on("thread/turns/list", (params) => {
+      listCalls.push({ ref: params.ref, cursor: params.cursor });
+      return olderPageResponse();
+    });
+    const { model: shell, history } = requireOpenHistory("scroll-back: the shell", "local:scroll");
+    expect(history.turns).toHaveLength(3 + 3 + 3); // the window plus the two pages the prior session paged in
+    expect(shell.olderCursor).toBe("cur-page-3"); // the deepest held cursor: scroll-back continues below page 2
+    // The shell gate: the shell's cursor belongs to whichever window the
+    // reconcile settles on, so scroll-back refuses while the read is pending.
+    await threadsStore.getState().loadOlderTurns("local:scroll");
+    expect(listCalls).toEqual([]); // refused: nothing was fetched against the unverified cursor
+    // The reconcile settles on a window entirely above the record, so the
+    // gap rule replaces the shell and the response's cursor is taken.
+    resolveRead(settledWindowResponse("local:scroll"));
+    await settleReload("local:scroll");
+    expect(threadsStore.getState().cacheShellRefs.has("local:scroll")).toBe(false); // the authoritative read ended the shell
+    await threadsStore.getState().loadOlderTurns("local:scroll");
+    expect(listCalls).toHaveLength(1); // one page: the two already-held pages were never re-requested
+    expect(listCalls[0]?.cursor).toBe("cur-settled"); // continues from where the settled window left off
   });
 });

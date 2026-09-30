@@ -4716,6 +4716,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async loadOlderTurns(ref) {
+    // A shell's cursor belongs to whichever window the reconcile settles on;
+    // paging below a shell the gap rule is about to replace races that
+    // replacement (spec, "Scroll-back"). Scroll-back waits for the read.
+    if (threadsStore.getState().cacheShellRefs.has(ref)) return;
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
