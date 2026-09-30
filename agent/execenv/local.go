@@ -2413,7 +2413,8 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 }
 
 // ExecCommand runs command through the platform shell in its own process group,
-// rooted at workingDir (defaulting to RootDir and required to be under RootDir).
+// rooted at workingDir, defaulting to RootDir. Confined policies require cwd
+// under RootDir; unrestricted off sessions may point elsewhere.
 // The environment is built from EnvPolicy plus envVars, with any local
 // virtualenv bin directory prepended to PATH. The command is terminated if ctx
 // is cancelled or timeoutMS elapses (default 10000ms), escalating from SIGTERM
@@ -2928,12 +2929,13 @@ func (e *LocalExecutionEnvironment) resolveWrite(path string) (string, error) {
 	return abs, nil
 }
 
-// ensureWritePath permits the ordinary workspace root and, only after that
-// check fails, the one scratch root already allocated to this environment. The
-// scratch fallback is used on platforms without the fd layer; Linux and macOS
+// ensureWritePath imposes no workspace boundary on unrestricted off sessions.
+// Confined policies permit the workspace root and, only after that check fails,
+// the one scratch root already allocated to this environment. The scratch
+// fallback is used on platforms without the fd layer; Linux and macOS
 // route matching operations through scratchSandboxFor first. It deliberately
-// uses the same symlink-aware best-effort canonicalization as the historical
-// workspace check and never treats a caller-supplied absolute path as a grant.
+// uses symlink-aware best-effort canonicalization and never treats a
+// caller-supplied absolute path as a grant.
 func (e *LocalExecutionEnvironment) ensureWritePath(abs string) error {
 	if e.Sandbox == nil || !e.Sandbox.FileToolConfined() {
 		return nil

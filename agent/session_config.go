@@ -407,11 +407,20 @@ type testConfig struct {
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
-	// subagentAfterFinalizationQuiesced observes a stable child's finalize
-	// tail right after it reports its generation quiesced to the controller,
-	// the point from which the delegate takes its next start. Nil in
-	// production.
-	subagentAfterFinalizationQuiesced func(*subagent)
+	// subagentBeforeGenerationAnnounced observes a stable child's finalize
+	// tail just before it announces and releases its finished generation:
+	// the child has stopped finalizing, the delegate is idle but not yet
+	// released. Nil in production.
+	subagentBeforeGenerationAnnounced func(*subagent)
+	// delegateFinalizationWaitCeiling overrides how long a send waits for a
+	// finished generation's finalize tail to release the delegate
+	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that
+	// never releases. Nil in production.
+	delegateFinalizationWaitCeiling *time.Duration
+	// delegateSendAwaitingFinalization observes a send that found the
+	// delegate still finalizing, just before it waits for the release. Nil
+	// in production.
+	delegateSendAwaitingFinalization func()
 
 	// registerTool injects deterministic registration failures. Nil preserves
 	// direct Registry.Register calls.
