@@ -62,7 +62,7 @@ const goalStatus = (step: StepArgs) => {
 // reload_skills selection (absent or null; any other value, an empty array
 // included, asks for a compaction). As with noteCleared, only arguments that
 // are here can say so.
-const onlyClearsNote = (step: Pick<HousekeepingStep, "argumentsJSON">) => {
+const onlyClearsNote = (step: StepArgs) => {
   if (step.argumentsJSON === undefined) return false;
   const args = parseArgs(step.argumentsJSON);
   return (
