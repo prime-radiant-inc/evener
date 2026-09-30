@@ -125,24 +125,6 @@ test("codec refuses a non-boolean approval flag on a session row", () => {
 // hub computes at projection time (countNeedsYouSubagents in
 // cmd/evener-hub/navigation_projection.go). Any resource kind's session row
 // may carry it; a malformed count is a schema error.
-test("codec keeps a valid needs_you_subagents count and refuses a malformed one", () => {
-  const withCount = (needsYouSubagents: unknown) => {
-    const snapshot = liveSnapshot();
-    const first = snapshot.entities[0];
-    if (!first) throw new Error("missing entity");
-    first.value = { ...(first.value as object), needs_you_subagents: needsYouSubagents };
-    return snapshot;
-  };
-  expect(decodedSnapshot(key, withCount(2)).snapshot.entities[0]?.value).toMatchObject({
-    needs_you_subagents: 2,
-  });
-  expect(decodedSnapshot(key, withCount(0)).snapshot.entities[0]?.value).toMatchObject({
-    needs_you_subagents: 0,
-  });
-  expectContentFreeRejection(key, withCount("private-body-value"));
-  expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, withCount(-1)))).toThrow();
-  expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, withCount(1.5)))).toThrow();
-});
 
 // approval_tool is an identity (at most 1024 UTF-8 bytes) and approval_target a
 // label (at most 512 characters), as the hub bounds them. A value at a bound is
@@ -207,7 +189,7 @@ function decodedSnapshot(resource: ResourceKey, snapshot: NavigationSnapshot) {
   return decoded;
 }
 
-test("codec drops unknown keys on a session row and on its jobs, watches and cadence", () => {
+test("codec drops removed activity detail and unknown keys on a session row", () => {
   const snapshot = liveSnapshot();
   const first = snapshot.entities[0];
   if (!first) throw new Error("missing entity");
@@ -225,9 +207,6 @@ test("codec drops unknown keys on a session row and on its jobs, watches and cad
   expect(rows).toEqual([
     {
       ...sessionValue("local:session"),
-      running_jobs: [job],
-      completed_jobs: [{ ...job, status: "completed" }],
-      watches: [{ ...watch, cadence: [cadence] }],
     },
   ]);
 });
@@ -497,7 +476,6 @@ function schemaFixtures(): SnapshotFixture[] {
     offset: 0,
     limit: 50,
   };
-  const subagents: ResourceKey = { kind: "subagents", ref: "local:session", offset: 0, limit: 50 };
   const location: ResourceKey = { kind: "location", ref: "local:session" };
   const pagedMetadata = { generation_id: "g", revision: 1, offset: 0, limit: 50, remaining: 0, truncated: false };
   const sessionSnapshot = (resource: ResourceKey, metadata: Record<string, unknown>): NavigationSnapshot => {
@@ -567,7 +545,6 @@ function schemaFixtures(): SnapshotFixture[] {
     { key: live, snapshot: sessionSnapshot(live, pagedMetadata) },
     { key: needsYou, snapshot: sessionSnapshot(needsYou, pagedMetadata) },
     { key: pinSection, snapshot: sessionSnapshot(pinSection, pagedMetadata) },
-    { key: subagents, snapshot: sessionSnapshot(subagents, pagedMetadata) },
     {
       key: pinCatalog,
       snapshot: {
@@ -914,67 +891,6 @@ test("codec rejects wrong resource metadata, value schema, slots, scope, and orp
 // (SubagentsPage in cmd/evener-hub/navigation_projection.go): the wire shape
 // is exactly the section page shape - paged metadata, session entities, and
 // nesting carried by graph edges the client reassembles into children arrays.
-test("codec decodes a subagents page as a section with its child tree", () => {
-  const resource: ResourceKey = { kind: "subagents", ref: "local:parent", offset: 0, limit: 50 };
-  const parent = entityKey(resource, "1");
-  const child = entityKey(resource, "2");
-  const grandchild = entityKey(resource, "3");
-  const snapshot: NavigationSnapshot = {
-    metadata: { generation_id: "g", revision: 1, offset: 0, limit: 50, remaining: 2, truncated: false },
-    entities: [
-      { key: parent, kind: "session", value: sessionValue("local:parent") },
-      {
-        key: child,
-        kind: "session",
-        value: { ...sessionValue("local:child"), kind: "subagent", needs_you_subagents: 1 },
-      },
-      { key: grandchild, kind: "session", value: { ...sessionValue("local:grandchild"), kind: "subagent" } },
-    ],
-    containers: [
-      {
-        key: navigationRootContainerKey(resource, "sessions"),
-        owner: { kind: "resource_root", slot: "sessions" },
-        children: [parent],
-      },
-      {
-        key: navigationOwnedContainerKey(parent, "children"),
-        owner: { kind: "entity", entityKey: parent, slot: "children" },
-        children: [child],
-      },
-      {
-        key: navigationOwnedContainerKey(child, "children"),
-        owner: { kind: "entity", entityKey: child, slot: "children" },
-        children: [grandchild],
-      },
-      {
-        key: navigationOwnedContainerKey(grandchild, "children"),
-        owner: { kind: "entity", entityKey: grandchild, slot: "children" },
-        children: [],
-      },
-    ],
-  };
-  const decoded = decodedSnapshot(resource, snapshot);
-  expect(decoded.snapshot.metadata).toMatchObject({ remaining: 2, truncated: false });
-  const page = materializeSnapshot(resource, decoded);
-  const sessions = page.sessions as Array<Record<string, unknown>>;
-  expect(sessions).toHaveLength(1);
-  expect(sessions[0]?.ref).toBe("local:parent");
-  const children = sessions[0]?.children as Array<Record<string, unknown>>;
-  expect(children).toHaveLength(1);
-  expect(children[0]?.ref).toBe("local:child");
-  expect(children[0]?.needs_you_subagents).toBe(1);
-  const grandchildren = children[0]?.children as Array<Record<string, unknown>>;
-  expect(grandchildren[0]?.ref).toBe("local:grandchild");
-
-  // The paged metadata is the section rule: offset and limit name the page the
-  // key asked for, and an entity keyed for another session's page is out of
-  // scope.
-  const wrongPage = cloneSnapshot(snapshot);
-  wrongPage.metadata = { ...(wrongPage.metadata as object), offset: 50 };
-  expectContentFreeRejection(resource, wrongPage);
-  const other: ResourceKey = { kind: "subagents", ref: "local:other", offset: 0, limit: 50 };
-  expect(() => decodeNavigationResponse(other, undefined, snapshotResponse(other, snapshot))).toThrow();
-});
 
 test("codec enforces the projector graph-depth boundary", () => {
   const fixtures = schemaFixtures().filter(
@@ -1306,7 +1222,7 @@ test("repeated compatibility materialization preserves root and nested identity"
   expect(after.sessions[0]?.children).toBe(before.sessions[0]?.children);
 });
 
-test("codec rejects an armed omitted count above the omitted watch total", () => {
+test("codec rejects an armed count above the watch total", () => {
   const session = entityKey(key, "1");
   const snapshotWithOmitted = (omitted: number | undefined, armed: number | undefined): NavigationSnapshot => ({
     ...liveSnapshot(),
@@ -1316,8 +1232,8 @@ test("codec rejects an armed omitted count above the omitted watch total", () =>
         kind: "session",
         value: {
           ...sessionValue("local:session"),
-          ...(omitted === undefined ? {} : { omitted_watches: omitted }),
-          ...(armed === undefined ? {} : { omitted_armed_watches: armed }),
+          ...(omitted === undefined ? {} : { watch_count: omitted }),
+          ...(armed === undefined ? {} : { armed_watch_count: armed }),
         },
       },
     ],
@@ -1697,4 +1613,33 @@ test("an archived list rejects more nested nodes than a navigation session may h
   expect(() => decodeArchivedListSessions([fanOut("a", 1000), fanOut("b", 1000)])).toThrow(
     "navigation protocol: invalid archived list",
   );
+});
+
+test("compact activity counts survive decoding and reject impossible armed totals", () => {
+  const snapshot = liveSnapshot();
+  const value = snapshot.entities[0]?.value as Record<string, unknown>;
+  Object.assign(value, {
+    running_job_count: 7,
+    running_job_command: "command-sentinel",
+    watch_count: 9,
+    armed_watch_count: 4,
+  });
+  const decoded = decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot));
+  expect(decoded.status).toBe("snapshot");
+  if (decoded.status !== "snapshot") throw new Error("snapshot expected");
+  expect(decoded.snapshot.entities[0]?.value).toMatchObject({
+    running_job_count: 7,
+    running_job_command: "command-sentinel",
+    watch_count: 9,
+    armed_watch_count: 4,
+  });
+  value.armed_watch_count = 10;
+  expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot))).toThrow();
+});
+
+test("representation 3 rejects a retained representation 2 graph", () => {
+  const snapshot = liveSnapshot();
+  const stale = JSON.parse(JSON.stringify(snapshot).replaceAll("nav3/", "nav2/"));
+  expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, stale))).toThrow();
+  expect(decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot)).status).toBe("snapshot");
 });

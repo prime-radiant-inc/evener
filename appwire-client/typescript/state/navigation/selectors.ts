@@ -245,25 +245,6 @@ export function selectSessionSummary(ref: string, state: NavigationStoreState): 
 }
 export const findSessionNode = selectSessionSummary;
 
-/** The exact number of live-watch rows the hub omitted from `ref`'s summary
- * (over the per-session cap, unrepresentable, or shed by the byte fitter). Zero
- * when the session is not materialized or carries no count. The Activity panel
- * header reads this so it never silently undercounts. */
-export function selectSessionOmittedWatches(ref: string, state: NavigationStoreState): number {
-  const summary = selectSessionSummary(ref, state);
-  return summary?.omitted_watches ?? 0;
-}
-
-/** The armed subset of the rows `selectSessionOmittedWatches` counts. A session
- * whose armed watches exceed the hub's per-session cap retains only the first
- * of them, so the retained list alone cannot state the true armed total; the
- * rail and the Activity panel add this to the armed rows they can see. Zero
- * when the session is not materialized or carries no count. */
-export function selectSessionOmittedArmedWatches(ref: string, state: NavigationStoreState): number {
-  const summary = selectSessionSummary(ref, state);
-  return summary?.omitted_armed_watches ?? 0;
-}
-
 /** The subagent counts a row's tally chip shows, or null when there is
  * nothing to show. Only a live root carries a tally (past and archived roots
  * show none), and done subagents are history, so a tally with nothing running

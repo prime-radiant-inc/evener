@@ -227,7 +227,7 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 		Ref:                   "local:session-a",
 		Offset:                &zero,
 		Limit:                 &zero,
-		RepresentationVersion: 2,
+		RepresentationVersion: 3,
 		Base:                  &NavigationReadBase{GenerationID: "generation-a", Revision: 7, ETag: "etag-a"},
 	}
 	raw, err := json.Marshal(params)
@@ -248,7 +248,7 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 		"ref":                   `"local:session-a"`,
 		"offset":                "0",
 		"limit":                 "0",
-		"representationVersion": "2",
+		"representationVersion": "3",
 		"base":                  `{"generationId":"generation-a","revision":7,"etag":"etag-a"}`,
 	} {
 		if got := string(fields[name]); got != want {
@@ -316,11 +316,12 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 	}
 }
 
-func TestNavigationReadParamsRequiresRepresentationVersion2(t *testing.T) {
+func TestNavigationReadParamsRequiresRepresentationVersion3(t *testing.T) {
 	for _, raw := range []string{
 		`{"resource":"manifest"}`,
 		`{"resource":"manifest","representationVersion":1}`,
-		`{"resource":"manifest","representationVersion":2,"etag":"legacy"}`,
+		`{"resource":"manifest","representationVersion":2}`,
+		`{"resource":"manifest","representationVersion":3,"etag":"legacy"}`,
 		`{"resource":"manifest","etag":"legacy"}`,
 	} {
 		var params NavigationReadParams
@@ -329,8 +330,8 @@ func TestNavigationReadParamsRequiresRepresentationVersion2(t *testing.T) {
 		}
 	}
 	var params NavigationReadParams
-	if err := json.Unmarshal([]byte(`{"resource":"manifest","representationVersion":2}`), &params); err != nil {
-		t.Fatalf("Unmarshal(v2) = %v, want nil", err)
+	if err := json.Unmarshal([]byte(`{"resource":"manifest","representationVersion":3}`), &params); err != nil {
+		t.Fatalf("Unmarshal(v3) = %v, want nil", err)
 	}
 	// The discriminator is required on the wire: marshaling must always emit
 	// it so callers cannot serialize a request the server rejects.
@@ -355,55 +356,55 @@ func TestNavigationReadParamsRejectsIncompleteBase(t *testing.T) {
 	}{
 		{
 			name: "complete base with explicit zero revision",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e"}}`,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":0,"etag":"e"}}`,
 		},
 		{
 			name: "generation omitted",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"revision":0,"etag":"e"}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"revision":0,"etag":"e"}}`, wantErr: true,
 		},
 		{
 			name: "revision omitted reviewer body",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","etag":"e"}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","etag":"e"}}`, wantErr: true,
 		},
 		{
 			name: "etag omitted",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":0}}`, wantErr: true,
 		},
 		{
 			name: "generation null",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":null,"revision":0,"etag":"e"}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":null,"revision":0,"etag":"e"}}`, wantErr: true,
 		},
 		{
 			name: "revision null reviewer body",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":null,"etag":"e"}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":null,"etag":"e"}}`, wantErr: true,
 		},
 		{
 			name: "etag null",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":null}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":0,"etag":null}}`, wantErr: true,
 		},
 		{
 			name: "generation wrong type",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":1,"revision":0,"etag":"e"}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":1,"revision":0,"etag":"e"}}`, wantErr: true,
 		},
 		{
 			name: "revision wrong type",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":"0","etag":"e"}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":"0","etag":"e"}}`, wantErr: true,
 		},
 		{
 			name: "etag wrong type",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":false}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":0,"etag":false}}`, wantErr: true,
 		},
 		{
 			name: "nested unknown field",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e","future":true}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":0,"etag":"e","future":true}}`, wantErr: true,
 		},
 		{
 			name: "outer unknown field",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e"},"future":true}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":0,"etag":"e"},"future":true}`, wantErr: true,
 		},
 		{
 			name: "trailing value",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e"}} {}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":0,"etag":"e"}} {}`, wantErr: true,
 		},
 		{
 			name: "base null with whitespace",
@@ -411,11 +412,11 @@ func TestNavigationReadParamsRejectsIncompleteBase(t *testing.T) {
 		},
 		{
 			name: "base wrong type",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":[]}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":[]}`, wantErr: true,
 		},
 		{
 			name: "revision above safe integer",
-			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":9007199254740992,"etag":"e"}}`, wantErr: true,
+			raw:  `{"resource":"manifest","representationVersion":3,"base":{"generationId":"g","revision":9007199254740992,"etag":"e"}}`, wantErr: true,
 		},
 		{
 			name: "representation version too large",
@@ -426,8 +427,8 @@ func TestNavigationReadParamsRejectsIncompleteBase(t *testing.T) {
 			raw:  `{"resource":"manifest","representationVersion":1,"base":{"generationId":"g","revision":0,"etag":"e"}}`, wantErr: true,
 		},
 		{
-			name: "v2 rejects legacy etag",
-			raw:  `{"resource":"manifest","representationVersion":2,"etag":"legacy"}`, wantErr: true,
+			name: "v3 rejects legacy etag",
+			raw:  `{"resource":"manifest","representationVersion":3,"etag":"legacy"}`, wantErr: true,
 		},
 	}
 

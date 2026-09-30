@@ -116,11 +116,11 @@ func TestNavigationServiceUsesOneCoreSnapshotAndStableNoOpRevisions(t *testing.T
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
 
-	manifestResult, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
+	manifestResult, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectResult, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
+	projectResult, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestNavigationServiceUsesOneCoreSnapshotAndStableNoOpRevisions(t *testing.T
 func TestNavigationServiceEmitsExactDependentTargetsAndWildcard(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -196,7 +196,7 @@ func TestNavigationServicePublishesInvalidationRacingOrdinaryBuild(t *testing.T)
 	done := make(chan navigationReadResult, 1)
 	errs := make(chan error, 1)
 	go func() {
-		result, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
+		result, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
 		done <- result
 		errs <- err
 	}()
@@ -250,7 +250,7 @@ func TestNavigationServiceRejectsSnapshotInvalidatedDuringBuild(t *testing.T) {
 	done := make(chan navigationReadResult, 1)
 	errs := make(chan error, 1)
 	go func() {
-		result, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
+		result, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
 		done <- result
 		errs <- err
 	}()
@@ -283,7 +283,7 @@ func TestNavigationServiceLogicalOffPageChangeAndRemovalInvalidateProjectAndCata
 	source.inputs.Tree.Projects[0].Current = rows
 	source.mu.Unlock()
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
@@ -348,7 +348,7 @@ func TestNavigationServiceReusesRetainedProjectionAcrossResourceMisses(t *testin
 		{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: 1},
 		{Kind: navigationResourceLocation, ID: "local:" + navigationTestSessionID},
 	} {
-		if _, err := service.readV2(t.Context(), key, nil); err != nil {
+		if _, err := service.readV3(t.Context(), key, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -357,7 +357,7 @@ func TestNavigationServiceReusesRetainedProjectionAcrossResourceMisses(t *testin
 	}
 }
 
-func TestNavigationReadV2FitsProductionMaxFieldSectionToExactResponseBudget(t *testing.T) {
+func TestNavigationReadV3FitsProductionMaxFieldSectionToExactResponseBudget(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	source.mu.Lock()
@@ -366,7 +366,7 @@ func TestNavigationReadV2FitsProductionMaxFieldSectionToExactResponseBudget(t *t
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
 
-	result, err := service.readV2(t.Context(), key, nil)
+	result, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,20 +374,18 @@ func TestNavigationReadV2FitsProductionMaxFieldSectionToExactResponseBudget(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Rows are the sheddable unit now (a fat row is ~56 KB, far over the old
-	// child-sized 4096 band), so convergence is tight at row granularity: never
-	// over the cap, never more than two rows under it.
-	if len(encoded) > maxNavigationResponseBytes || len(encoded) < maxNavigationResponseBytes-128*1024 {
-		t.Fatalf("normalized v2 response bytes=%d, want fitted at or below %d within two rows", len(encoded), maxNavigationResponseBytes)
+	// Detail volume cannot make the compact section exceed its fixed cost bound.
+	if len(encoded) > maxNavigationResponseBytes || len(encoded) > 256*1024 {
+		t.Fatalf("normalized v3 response bytes=%d, want fitted at or below %d with compact own-session facts", len(encoded), maxNavigationResponseBytes)
 	}
 }
 
-// TestNavigationReadV2FitsMaxFieldSectionInFewEncodes pins the encode work of
+// TestNavigationReadV3FitsMaxFieldSectionInFewEncodes pins the encode work of
 // one read of the largest section, the bulk of the hub's CPU per navigation
-// read. The projection fit and the v2 snapshot fit each start their search at
-// a size estimate and encode only a handful of ~2 MiB candidates, and the v2
+// read. The projection fit and the v3 snapshot fit each start their search at
+// a size estimate and encode only a handful of bounded candidates, and the v3
 // fit encodes its response envelope once rather than around every candidate.
-func TestNavigationReadV2FitsMaxFieldSectionInFewEncodes(t *testing.T) {
+func TestNavigationReadV3FitsMaxFieldSectionInFewEncodes(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	source.mu.Lock()
@@ -406,7 +404,7 @@ func TestNavigationReadV2FitsMaxFieldSectionInFewEncodes(t *testing.T) {
 	}
 	defer func() { navigationEnvelopeMarshal = originalMarshal }()
 
-	if _, err := service.readV2(t.Context(), key, nil); err != nil {
+	if _, err := service.readV3(t.Context(), key, nil); err != nil {
 		t.Fatal(err)
 	}
 	if encodes > 10 || encodedBytes > 8*maxNavigationResponseBytes {
@@ -414,7 +412,7 @@ func TestNavigationReadV2FitsMaxFieldSectionInFewEncodes(t *testing.T) {
 	}
 }
 
-func BenchmarkNavigationReadV2MaxFieldSection(b *testing.B) {
+func BenchmarkNavigationReadV3MaxFieldSection(b *testing.B) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	source.mu.Lock()
@@ -430,80 +428,46 @@ func BenchmarkNavigationReadV2MaxFieldSection(b *testing.B) {
 	for b.Loop() {
 		// A nil base always serves a full snapshot, so every iteration runs
 		// both fits over the same retained projection.
-		if _, err := service.readV2(b.Context(), key, nil); err != nil {
+		if _, err := service.readV3(b.Context(), key, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
-func TestNavigationJobHeavyPageRejectsZeroProgress(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0).UTC()
-	source := newTestNavigationSource(now)
-	jobHeavy := hubcore.TreeNode{
-		ID:        navigationTestSessionID,
-		Title:     "job-heavy",
-		Project:   "p1",
-		State:     "active",
-		Kind:      "session",
-		UpdatedAt: now,
-	}
-	for index := range 1_024 {
-		suffix := fmt.Sprintf("-%04d", index)
-		jobHeavy.RunningJobs = append(jobHeavy.RunningJobs, appwire.EvenerJobInfo{
-			JobID:   strings.Repeat("j", maxNavigationIdentityBytes-len(suffix)) + suffix,
-			JobType: strings.Repeat("t", maxNavigationLabelRunes),
-			Status:  "running",
-			Command: strings.Repeat("c", maxNavigationFullCommandRunes+1),
-			Task:    strings.Repeat("k", maxNavigationLabelRunes),
-			Reason:  strings.Repeat("r", maxNavigationLabelRunes),
-			Intent:  strings.Repeat("i", maxNavigationLabelRunes),
-		})
-	}
-	source.mu.Lock()
-	source.inputs.Tree.Live = []hubcore.TreeNode{jobHeavy}
-	source.mu.Unlock()
+func TestNavigationJobHeavyPageKeepsCompactCounts(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	node := hubcore.TreeNode{ID: navigationTestSessionID, Title: "job-heavy", Kind: "session", State: "active", RunningJobs: navigationFatRunningJobs("root", 1024)}
+	source.inputs.Tree.Live = []hubcore.TreeNode{node}
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
-	for attempt := 1; attempt <= 2; attempt++ {
-		result, err := service.readV2(t.Context(), key, nil)
-		if err == nil {
-			t.Fatalf("attempt %d returned successful page: %+v", attempt, result.Response)
+	result, err := service.readV3(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entity := range snapshot.Entities {
+		if entity.Kind == "session" {
+			var row hubapi.NavigationSessionSummary
+			if err := json.Unmarshal(entity.Value, &row); err != nil {
+				t.Fatal(err)
+			}
+			if row.RunningJobCount != 1024 || row.RunningJobCommand == "" {
+				t.Fatalf("counts=%+v", row)
+			}
+			count++
 		}
-		if _, ok := errors.AsType[navigationPageProgressInvariantError](err); !ok {
-			t.Fatalf("attempt %d error = %v, want page progress invariant", attempt, err)
-		}
 	}
-
-	object := hubapi.NavigationSectionResource{
-		GenerationID: "g",
-		Revision:     1,
-		Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{{
-			Ref:         "local:" + navigationTestSessionID,
-			HostID:      "local",
-			SessionID:   navigationTestSessionID,
-			Title:       "job-heavy",
-			Project:     "p1",
-			State:       "active",
-			Kind:        "session",
-			RunningJobs: navigationJobs(jobHeavy.RunningJobs),
-			Children:    hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
-		}},
+	if count != 1 {
+		t.Fatalf("rows=%d", count)
 	}
-	response := appwire.NavigationReadResponse{Status: "ok", GenerationID: "g", Revision: 1, ETag: `"one"`}
-	if _, _, err := fitNavigationV2Snapshot(key, object, response, maxNavigationResponseBytes); err == nil {
-		t.Fatal("normalized fitting returned a successful zero-progress page")
-	} else if _, ok := errors.AsType[navigationPageProgressInvariantError](err); !ok {
-		t.Fatalf("normalized fitting error = %v, want page progress invariant", err)
-	}
+	assertNavigationV3ResponseBudget(t, key, result.Response)
 }
 
-// TestNavigationOversizedWatchRowStaysListed pins the graceful degradation of
-// an oversized watch payload. One session row whose live watch carries enough
-// delivery instants to blow the response budget used to be dropped whole,
-// leaving the page with zero rows while Remaining stayed nonzero - a state the
-// page-progress invariant rejects, which took navigation for the whole
-// resource offline. The row must instead stay listed with its bulkiest
-// optional payload (the delivery instants) trimmed.
+// Source watch delivery history does not multiply the cost of a navigation row.
 func TestNavigationOversizedWatchRowStaysListed(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
@@ -527,9 +491,9 @@ func TestNavigationOversizedWatchRowStaysListed(t *testing.T) {
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
 
-	result, err := service.readV2(t.Context(), key, nil)
+	result, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
-		t.Fatalf("readV2 with an oversized watch row = %v, want the session listed with its payload trimmed", err)
+		t.Fatalf("readV3 with an oversized watch row = %v, want the session listed with compact counts", err)
 	}
 	data, err := json.Marshal(result.Response)
 	if err != nil {
@@ -557,16 +521,12 @@ func TestNavigationOversizedWatchRowStaysListed(t *testing.T) {
 	if session == nil || session.SessionID != navigationTestSessionID {
 		t.Fatalf("snapshot entities = %+v, want the watch-heavy session still listed", snapshot.Entities)
 	}
-	if len(session.Watches) != 0 && len(session.Watches[0].DeliveryTimes) != 0 {
-		t.Fatalf("session watches = %+v, want the oversized delivery-time payload trimmed", session.Watches)
+	if session.WatchCount != 1 || session.ArmedWatchCount != 1 {
+		t.Fatalf("watch counts=%d/%d", session.WatchCount, session.ArmedWatchCount)
 	}
 }
 
-// TestNavigationOversizedLocationWatchStaysServed pins the graceful degradation
-// of a deep-link location whose own session carries an oversized watch payload.
-// fitNavigationV2Snapshot had no NavigationSessionLocation case, so a
-// watch-heavy location response failed the whole resource with a response
-// invariant error instead of shedding the optional watch payload.
+// A deep link retains its own counts regardless of source watch detail volume.
 func TestNavigationOversizedLocationWatchStaysServed(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
@@ -591,9 +551,9 @@ func TestNavigationOversizedLocationWatchStaysServed(t *testing.T) {
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceLocation, ID: "local:" + navigationTestSessionID}
 
-	result, err := service.readV2(t.Context(), key, nil)
+	result, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
-		t.Fatalf("readV2 with an oversized location watch = %v, want the location served with its payload trimmed", err)
+		t.Fatalf("readV3 with an oversized location watch = %v, want the location served with compact counts", err)
 	}
 	data, err := json.Marshal(result.Response)
 	if err != nil {
@@ -621,21 +581,15 @@ func TestNavigationOversizedLocationWatchStaysServed(t *testing.T) {
 	if session == nil || session.SessionID != navigationTestSessionID {
 		t.Fatalf("snapshot entities = %+v, want the watch-heavy location session still listed", snapshot.Entities)
 	}
-	if len(session.Watches) != 0 && len(session.Watches[0].DeliveryTimes) != 0 {
-		t.Fatalf("session watches = %+v, want the oversized delivery-time payload trimmed", session.Watches)
+	if session.WatchCount != 1 || session.ArmedWatchCount != 1 {
+		t.Fatalf("watch counts=%d/%d", session.WatchCount, session.ArmedWatchCount)
 	}
 }
 
-// navigationMaxFieldSectionNodes builds a flat live list that overflows the
-// response budget. Lists carry no children anymore, so the oversize rides on
-// the rows themselves: each carries ten jobs with full-length commands
-// (untrimmable payload - the watch trim levels cannot shrink a job), so the
-// fitter must shed whole rows, the granularity flat lists leave it.
+// navigationMaxFieldSectionNodes exercises maximum labels and many source jobs
+// while the navigation rows carry only bounded commands and exact counts.
 func navigationMaxFieldSectionNodes(now time.Time) []hubcore.TreeNode {
 	const roots = 50
-	// Twelve jobs make a row ~56 KB: the fitted snapshot sheds rows to fit
-	// (35-36 kept), but a complete delta touching every row re-encodes ~2.8
-	// MB and must fall back to a fresh snapshot.
 	const jobsPerRow = 12
 	rows := make([]hubcore.TreeNode, roots)
 	for root := range rows {
@@ -653,11 +607,7 @@ func navigationMaxFieldSectionNodes(now time.Time) []hubcore.TreeNode {
 	return rows
 }
 
-// navigationFatRunningJobs builds running jobs with full-length commands. A
-// job's command is capped at maxNavigationFullCommandRunes and no watch trim
-// level shrinks a job, so a row carrying enough of them is untrimmable
-// payload and the fitter must shed whole rows, the granularity flat lists
-// leave it.
+// navigationFatRunningJobs supplies detail that must not multiply navigation cost.
 func navigationFatRunningJobs(session string, count int) []appwire.EvenerJobInfo {
 	jobs := make([]appwire.EvenerJobInfo, count)
 	for index := range jobs {
@@ -665,7 +615,7 @@ func navigationFatRunningJobs(session string, count int) []appwire.EvenerJobInfo
 			JobID:   fmt.Sprintf("job-%s-%02d", session, index),
 			JobType: "shell",
 			Status:  "running",
-			Command: strings.Repeat("c", maxNavigationFullCommandRunes),
+			Command: strings.Repeat("c", maxNavigationLabelRunes),
 		}
 	}
 	return jobs
@@ -782,7 +732,7 @@ func BenchmarkNavigationCatalogPages(b *testing.B) {
 	}
 }
 
-func TestNavigationReadV2ExactSerializedBudgetsByFamily(t *testing.T) {
+func TestNavigationReadV3ExactSerializedBudgetsByFamily(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := navigationBudgetTestSource(now)
 	service := newTestNavigationService(t, source)
@@ -798,16 +748,16 @@ func TestNavigationReadV2ExactSerializedBudgetsByFamily(t *testing.T) {
 	}
 	for name, key := range keys {
 		t.Run(name, func(t *testing.T) {
-			result, err := service.readV2(t.Context(), key, nil)
+			result, err := service.readV3(t.Context(), key, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			assertNavigationV2ResponseBudget(t, key, result.Response)
+			assertNavigationV3ResponseBudget(t, key, result.Response)
 		})
 	}
 }
 
-func TestNavigationReadV2OversizeManifestIsInternalInvariantWithoutPartialResponse(t *testing.T) {
+func TestNavigationReadV3OversizeManifestIsInternalInvariantWithoutPartialResponse(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	service := newTestNavigationService(t, navigationBudgetTestSource(now))
 	key := navigationResourceKey{Kind: navigationResourceManifest}
@@ -850,14 +800,14 @@ func TestNavigationReadV2OversizeManifestIsInternalInvariantWithoutPartialRespon
 		t.Fatalf("complete normalized manifest response bytes=%d, want > %d to prove invariant", len(unboundedEncoded), maxNavigationManifestBytes)
 	}
 
-	result, err := service.readV2(t.Context(), key, nil)
+	result, err := service.readV3(t.Context(), key, nil)
 	if err == nil {
 		t.Fatalf("oversize complete manifest returned partial response with %d data bytes", len(result.Response.Data))
 	}
 	if !reflect.DeepEqual(result, navigationReadResult{}) {
 		t.Fatalf("oversize complete manifest returned partial result: %+v", result)
 	}
-	invariant, ok := errors.AsType[navigationV2ResponseInvariantError](err)
+	invariant, ok := errors.AsType[navigationV3ResponseInvariantError](err)
 	if !ok || invariant.kind != navigationResourceManifest || invariant.maxBytes != maxNavigationManifestBytes {
 		t.Fatalf("oversize manifest error = %T %v, want manifest response invariant", err, err)
 	}
@@ -866,7 +816,7 @@ func TestNavigationReadV2OversizeManifestIsInternalInvariantWithoutPartialRespon
 	assertNavigationWireError(t, wireErr, appwire.CodeInternalError, appwire.ErrorInternal)
 }
 
-func TestNavigationReadV2UnderCapManifestRetainsCompleteAuthority(t *testing.T) {
+func TestNavigationReadV3UnderCapManifestRetainsCompleteAuthority(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := navigationBudgetTestSource(now)
 	source.mu.Lock()
@@ -875,7 +825,7 @@ func TestNavigationReadV2UnderCapManifestRetainsCompleteAuthority(t *testing.T) 
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceManifest}
 
-	legacy, err := service.readV2(t.Context(), key, nil)
+	legacy, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -887,11 +837,11 @@ func TestNavigationReadV2UnderCapManifestRetainsCompleteAuthority(t *testing.T) 
 	if err := json.Unmarshal(legacySnapshot.Metadata, &complete); err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.readV2(t.Context(), key, nil)
+	result, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertNavigationV2ResponseBudget(t, key, result.Response)
+	assertNavigationV3ResponseBudget(t, key, result.Response)
 	var snapshot hubapi.NavigationSnapshot
 	if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
 		t.Fatal(err)
@@ -901,7 +851,7 @@ func TestNavigationReadV2UnderCapManifestRetainsCompleteAuthority(t *testing.T) 
 		t.Fatal(err)
 	}
 	if len(complete.Sources) != 2 || len(manifest.Sources) != len(complete.Sources) {
-		t.Fatalf("under-cap manifest sources: legacy=%d v2=%d, want complete two-source authority", len(complete.Sources), len(manifest.Sources))
+		t.Fatalf("under-cap manifest sources: legacy=%d v3=%d, want complete two-source authority", len(complete.Sources), len(manifest.Sources))
 	}
 	for index := range complete.Sources {
 		if manifest.Sources[index] != complete.Sources[index] {
@@ -910,7 +860,7 @@ func TestNavigationReadV2UnderCapManifestRetainsCompleteAuthority(t *testing.T) 
 	}
 }
 
-func TestNavigationReadV2FittingIsDeterministicAndPreservesMetadataAndReachability(t *testing.T) {
+func TestNavigationReadV3FittingIsDeterministicAndPreservesMetadataAndReachability(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	source.mu.Lock()
@@ -919,11 +869,11 @@ func TestNavigationReadV2FittingIsDeterministicAndPreservesMetadataAndReachabili
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
 
-	first, err := service.readV2(t.Context(), key, nil)
+	first, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.readV2(t.Context(), key, nil)
+	second, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -946,7 +896,7 @@ func TestNavigationReadV2FittingIsDeterministicAndPreservesMetadataAndReachabili
 	if !bytes.Equal(retainedData, first.Response.Data) {
 		t.Fatal("history retained a different snapshot than the fitted current response")
 	}
-	assertNavigationV2ResponseBudget(t, key, first.Response)
+	assertNavigationV3ResponseBudget(t, key, first.Response)
 	var snapshot hubapi.NavigationSnapshot
 	if err := json.Unmarshal(first.Response.Data, &snapshot); err != nil {
 		t.Fatal(err)
@@ -961,8 +911,8 @@ func TestNavigationReadV2FittingIsDeterministicAndPreservesMetadataAndReachabili
 	if err := json.Unmarshal(snapshot.Metadata, &metadata); err != nil {
 		t.Fatal(err)
 	}
-	if !metadata.Truncated || metadata.Remaining == 0 {
-		t.Fatalf("bounded metadata = %+v, want truncated with omitted top-level rows", metadata)
+	if metadata.Truncated || metadata.Remaining != 0 {
+		t.Fatalf("bounded metadata = %+v, want all flat rows retained without detail payload", metadata)
 	}
 	// Every kept row is flat: the bounded prefix carries no children, and the
 	// shed rows are accounted in the metadata's Remaining (asserted above).
@@ -977,44 +927,17 @@ func TestNavigationReadV2FittingIsDeterministicAndPreservesMetadataAndReachabili
 	}
 }
 
-func TestNavigationReadV2OversizeCompleteDeltaFallsBackToBoundedSnapshot(t *testing.T) {
+func TestNavigationReadV3FlatCompleteDeltaAndReconnectRemainBounded(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
-	// A subagents page with a deep nested tree: the serve fitter sheds nested
-	// children one at a time, so the retained base converges tightly to the
-	// cap, and a mutation that touches every node pushes the complete delta
-	// over it deterministically. (Flat list pages shed whole rows - a
-	// row-sized convergence margin hides the delta overhead that triggers
-	// the fallback.)
-	children := make([]hubcore.TreeNode, 50)
-	for index := range children {
-		grandchildren := make([]hubcore.TreeNode, 50)
-		for nested := range grandchildren {
-			grandchildren[nested] = hubcore.TreeNode{
-				ID:      fmt.Sprintf("delta-grand-%03d-%03d", index, nested),
-				Title:   strings.Repeat("t", maxNavigationTitleRunes),
-				Project: strings.Repeat("p", maxNavigationLabelRunes),
-				Branch:  strings.Repeat("b", maxNavigationLabelRunes),
-				Kind:    "subagent",
-				State:   "idle",
-			}
-		}
-		children[index] = hubcore.TreeNode{
-			ID:       fmt.Sprintf("delta-child-%03d", index),
-			Title:    strings.Repeat("t", maxNavigationTitleRunes),
-			Project:  strings.Repeat("p", maxNavigationLabelRunes),
-			Branch:   strings.Repeat("b", maxNavigationLabelRunes),
-			Kind:     "subagent",
-			State:    "idle",
-			Children: grandchildren,
-		}
-	}
+	// Touch every compact row to exercise complete deltas and history-loss snapshots.
+	rows := navigationMaxFieldSectionNodes(now)
 	source.mu.Lock()
-	source.inputs.Tree.Live = []hubcore.TreeNode{{ID: "delta-parent", Title: "parent", Kind: "session", State: "active", Children: children}}
+	source.inputs.Tree.Live = rows
 	source.mu.Unlock()
 	service := newTestNavigationService(t, source)
-	key := navigationResourceKey{Kind: navigationResourceSubagents, ID: "local:delta-parent", Limit: maxNavigationSectionRows}
-	initial, err := service.readV2(t.Context(), key, nil)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+	initial, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1040,32 +963,32 @@ func TestNavigationReadV2OversizeCompleteDeltaFallsBackToBoundedSnapshot(t *test
 	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := service.readV2(t.Context(), key, &base)
+	changed, err := service.readV3(t.Context(), key, &base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed.Response.Representation != appwire.NavigationRepresentationSnapshot || changed.Response.Base != nil {
-		t.Fatalf("oversized complete delta representation=%q base=%+v data=%d, want snapshot fallback without Base", changed.Response.Representation, changed.Response.Base, len(changed.Response.Data))
+	if changed.Response.Representation != appwire.NavigationRepresentationDelta || changed.Response.Base == nil {
+		t.Fatalf("oversized complete delta representation=%q base=%+v data=%d, want bounded flat delta with Base", changed.Response.Representation, changed.Response.Base, len(changed.Response.Data))
 	}
-	assertNavigationV2ResponseBudget(t, key, changed.Response)
+	assertNavigationV3ResponseBudget(t, key, changed.Response)
 
 	service.history = newNavigationHistory(0, 0)
-	reconnect, err := service.readV2(t.Context(), key, &base)
+	reconnect, err := service.readV3(t.Context(), key, &base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reconnect.Response.Representation != appwire.NavigationRepresentationSnapshot || reconnect.Response.Base != nil {
 		t.Fatalf("history-missing reconnect representation=%q base=%+v data=%d, want snapshot without Base", reconnect.Response.Representation, reconnect.Response.Base, len(reconnect.Response.Data))
 	}
-	assertNavigationV2ResponseBudget(t, key, reconnect.Response)
+	assertNavigationV3ResponseBudget(t, key, reconnect.Response)
 }
 
-func TestNavigationReadV2SmallRetainedDeltaRemainsBoundedDelta(t *testing.T) {
+func TestNavigationReadV3SmallRetainedDeltaRemainsBoundedDelta(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: 1}
-	initial, err := service.readV2(t.Context(), key, nil)
+	initial, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1074,17 +997,17 @@ func TestNavigationReadV2SmallRetainedDeltaRemainsBoundedDelta(t *testing.T) {
 	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := service.readV2(t.Context(), key, &base)
+	changed, err := service.readV3(t.Context(), key, &base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if changed.Response.Representation != appwire.NavigationRepresentationDelta || changed.Response.Base == nil || *changed.Response.Base != base {
 		t.Fatalf("small retained response = %+v, want delta with exact Base", changed.Response)
 	}
-	assertNavigationV2ResponseBudget(t, key, changed.Response)
+	assertNavigationV3ResponseBudget(t, key, changed.Response)
 }
 
-func TestNavigationReadV2IrreducibleSnapshotOverflowIsInternalInvariant(t *testing.T) {
+func TestNavigationReadV3IrreducibleSnapshotOverflowIsInternalInvariant(t *testing.T) {
 	service := newTestNavigationService(t, newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC()))
 	key := navigationResourceKey{Kind: navigationResourceLocation, ID: "local:" + navigationTestSessionID}
 	_, versioned, projection, err := service.versionedCore(t.Context(), key)
@@ -1099,8 +1022,8 @@ func TestNavigationReadV2IrreducibleSnapshotOverflowIsInternalInvariant(t *testi
 		Status: "ok", GenerationID: versioned.Generation, Revision: versioned.Revision,
 		ETag: navigationETag(key, versioned.Generation, versioned.Revision),
 	}
-	_, _, err = fitNavigationV2Snapshot(versioned, object, response, 1)
-	if err == nil || !strings.Contains(err.Error(), "navigation v2 response invariant") {
+	_, _, err = fitNavigationV3Snapshot(versioned, object, response, 1)
+	if err == nil || !strings.Contains(err.Error(), "navigation v3 response invariant") {
 		t.Fatalf("irreducible overflow error = %v, want internal invariant", err)
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
@@ -1145,7 +1068,7 @@ func navigationBudgetTestSource(now time.Time) *testNavigationSource {
 	return source
 }
 
-func assertNavigationV2ResponseBudget(t *testing.T, key navigationResourceKey, response appwire.NavigationReadResponse) {
+func assertNavigationV3ResponseBudget(t *testing.T, key navigationResourceKey, response appwire.NavigationReadResponse) {
 	t.Helper()
 	encoded, err := json.Marshal(response)
 	if err != nil {
@@ -1163,10 +1086,10 @@ func assertNavigationV2ResponseBudget(t *testing.T, key navigationResourceKey, r
 	}
 }
 
-func TestNavigationReadV2ExactCurrentDoesNotReinsertHistory(t *testing.T) {
+func TestNavigationReadV3ExactCurrentDoesNotReinsertHistory(t *testing.T) {
 	service := newTestNavigationService(t, newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC()))
 	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}
-	initial, err := service.readV2(t.Context(), key, nil)
+	initial, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1178,7 +1101,7 @@ func TestNavigationReadV2ExactCurrentDoesNotReinsertHistory(t *testing.T) {
 
 	history := newNavigationHistory(1, 1<<20)
 	service.history = history
-	current, err := service.readV2(t.Context(), key, &base)
+	current, err := service.readV3(t.Context(), key, &base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1193,7 +1116,7 @@ func TestNavigationReadV2ExactCurrentDoesNotReinsertHistory(t *testing.T) {
 	}
 }
 
-func TestNavigationReadV2UsesOnlyExactCompleteViewBaseline(t *testing.T) {
+func TestNavigationReadV3UsesOnlyExactCompleteViewBaseline(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	source.mu.Lock()
@@ -1213,7 +1136,7 @@ func TestNavigationReadV2UsesOnlyExactCompleteViewBaseline(t *testing.T) {
 	archivedKey := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "archived", Offset: 2, Limit: 2}
 	readSnapshot := func(key navigationResourceKey) appwire.NavigationReadBase {
 		t.Helper()
-		result, err := service.readV2(t.Context(), key, nil)
+		result, err := service.readV3(t.Context(), key, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1234,7 +1157,7 @@ func TestNavigationReadV2UsesOnlyExactCompleteViewBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	exact, err := service.readV2(t.Context(), currentKey, &currentBase)
+	exact, err := service.readV3(t.Context(), currentKey, &currentBase)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1259,7 +1182,7 @@ func TestNavigationReadV2UsesOnlyExactCompleteViewBaseline(t *testing.T) {
 		"project root":  rootBase,
 		"archived page": archivedBase,
 	} {
-		result, err := service.readV2(t.Context(), currentKey, &crossViewBase)
+		result, err := service.readV3(t.Context(), currentKey, &crossViewBase)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1269,7 +1192,7 @@ func TestNavigationReadV2UsesOnlyExactCompleteViewBaseline(t *testing.T) {
 	}
 }
 
-func TestNavigationReadV2EvictedExactViewFallsBackWithoutRecordCounters(t *testing.T) {
+func TestNavigationReadV3EvictedExactViewFallsBackWithoutRecordCounters(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	source.mu.Lock()
@@ -1287,7 +1210,7 @@ func TestNavigationReadV2EvictedExactViewFallsBackWithoutRecordCounters(t *testi
 	type readBase = appwire.NavigationReadBase
 	read := func(key navigationResourceKey) (readBase, hubapi.NavigationSnapshot) {
 		t.Helper()
-		result, err := service.readV2(t.Context(), key, nil)
+		result, err := service.readV3(t.Context(), key, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1350,7 +1273,7 @@ func TestNavigationReadV2EvictedExactViewFallsBackWithoutRecordCounters(t *testi
 	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
 		t.Fatal(err)
 	}
-	otherResult, err := service.readV2(t.Context(), otherKey, &otherBase)
+	otherResult, err := service.readV3(t.Context(), otherKey, &otherBase)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1382,7 +1305,7 @@ func TestNavigationReadV2EvictedExactViewFallsBackWithoutRecordCounters(t *testi
 		Revision:     otherResult.Response.Revision,
 		ETag:         otherResult.Response.ETag,
 	}
-	crossView, err := service.readV2(t.Context(), originalKey, &retainedOtherBase)
+	crossView, err := service.readV3(t.Context(), originalKey, &retainedOtherBase)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1398,7 +1321,7 @@ func TestNavigationReadV2EvictedExactViewFallsBackWithoutRecordCounters(t *testi
 		t.Fatalf("cross-View snapshot revision = %d, want later than original base %d", crossView.Response.Revision, originalBase.Revision)
 	}
 
-	result, err := service.readV2(t.Context(), originalKey, &originalBase)
+	result, err := service.readV3(t.Context(), originalKey, &originalBase)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1415,14 +1338,14 @@ func TestNavigationReadV2EvictedExactViewFallsBackWithoutRecordCounters(t *testi
 	}
 }
 
-func TestNavigationReadV2PresentGoneTombstoneAndReappearLifecycle(t *testing.T) {
+func TestNavigationReadV3PresentGoneTombstoneAndReappearLifecycle(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 0, Limit: 1}
 	read := func(base *appwire.NavigationReadBase) appwire.NavigationReadResponse {
 		t.Helper()
-		result, err := service.readV2(t.Context(), key, base)
+		result, err := service.readV3(t.Context(), key, base)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1469,18 +1392,18 @@ func TestNavigationReadV2PresentGoneTombstoneAndReappearLifecycle(t *testing.T) 
 		t.Fatalf("reappeared entities = %+v, want only current row", snapshot.Entities)
 	}
 	neverKnown := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "never-known"}
-	if _, err := service.readV2(t.Context(), neverKnown, nil); err == nil {
+	if _, err := service.readV3(t.Context(), neverKnown, nil); err == nil {
 		t.Fatal("never-known resource fabricated a tombstone")
 	}
 }
 
-func TestNavigationReadV2MissingDecisionDoesNotMixReappearedAuthority(t *testing.T) {
+func TestNavigationReadV3MissingDecisionDoesNotMixReappearedAuthority(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 0, Limit: 1}
 
-	present, err := service.readV2(t.Context(), key, nil)
+	present, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1499,9 +1422,9 @@ func TestNavigationReadV2MissingDecisionDoesNotMixReappearedAuthority(t *testing
 	tombstoneRevision := service.CurrentRevision(key.Semantic())
 	tombstoneETag := navigationETag(key, present.Response.GenerationID, tombstoneRevision)
 
-	previous := navigationReadV2MissingCaptured
+	previous := navigationReadV3MissingCaptured
 	var refreshOnce sync.Once
-	navigationReadV2MissingCaptured = func() {
+	navigationReadV3MissingCaptured = func() {
 		refreshOnce.Do(func() {
 			source.mu.Lock()
 			source.inputs.Tree.Projects = []hubcore.TreeProject{{Key: "p1", Name: "p1", Current: []hubcore.TreeNode{{
@@ -1514,9 +1437,9 @@ func TestNavigationReadV2MissingDecisionDoesNotMixReappearedAuthority(t *testing
 			}
 		})
 	}
-	t.Cleanup(func() { navigationReadV2MissingCaptured = previous })
+	t.Cleanup(func() { navigationReadV3MissingCaptured = previous })
 
-	interleaved, err := service.readV2(t.Context(), key, presentBase)
+	interleaved, err := service.readV3(t.Context(), key, presentBase)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1538,7 +1461,7 @@ func TestNavigationReadV2MissingDecisionDoesNotMixReappearedAuthority(t *testing
 			Revision:     interleaved.Response.Revision,
 			ETag:         interleaved.Response.ETag,
 		}
-		followUp, readErr := service.readV2(t.Context(), key, base)
+		followUp, readErr := service.readV3(t.Context(), key, base)
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
@@ -1556,13 +1479,13 @@ func TestNavigationServiceCancelledOwnerDoesNotCancelSharedBuild(t *testing.T) {
 	ownerCtx, cancelOwner := context.WithCancel(t.Context())
 	owner := make(chan error, 1)
 	go func() {
-		_, err := service.readV2(ownerCtx, navigationResourceKey{Kind: navigationResourceManifest}, nil)
+		_, err := service.readV3(ownerCtx, navigationResourceKey{Kind: navigationResourceManifest}, nil)
 		owner <- err
 	}()
 	<-source.entered
 	waiter := make(chan error, 1)
 	go func() {
-		_, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
+		_, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
 		waiter <- err
 	}()
 	cancelOwner()
@@ -1578,7 +1501,7 @@ func TestNavigationServiceCancelledOwnerDoesNotCancelSharedBuild(t *testing.T) {
 func TestNavigationServiceCommitsCanceledRefreshForLaterPublication(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("committed-without-waiter")
@@ -1621,7 +1544,7 @@ func TestNavigationServiceCommitsCanceledRefreshForLaterPublication(t *testing.T
 func TestNavigationServicePublicationFIFOHasExactSequencesAndRefreshNeverConsumes(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1695,7 +1618,7 @@ func TestNavigationServiceRefreshRegistersCausalTicketOnCommittedFlight(t *testi
 func TestNavigationServiceJoinedTicketsShareExactCommittedOutcome(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("joined")
@@ -1740,7 +1663,7 @@ func TestNavigationServiceJoinedTicketsShareExactCommittedOutcome(t *testing.T) 
 func TestNavigationServiceBuildErrorCompletesEveryAttachedTicket(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.entered, source.release = make(chan struct{}), make(chan struct{})
@@ -1784,7 +1707,7 @@ func TestNavigationServiceBuildErrorCompletesEveryAttachedTicket(t *testing.T) {
 func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.mu.Lock()
@@ -1854,7 +1777,7 @@ func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 func TestNavigationServiceCanceledJoinedCallerAtCommitCutoffDoesNotPoisonFlight(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("cutoff")
@@ -1940,7 +1863,7 @@ func TestNavigationServiceWaitFlightPrefersCallerCancellation(t *testing.T) {
 func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.mu.Lock()
@@ -2005,7 +1928,7 @@ func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) 
 func TestNavigationServiceConcurrentAppendAndDrainKeepFIFOAndWakeAtomic(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2062,7 +1985,7 @@ func TestNavigationServiceConcurrentAppendAndDrainKeepFIFOAndWakeAtomic(t *testi
 func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("concurrent")
@@ -2113,7 +2036,7 @@ func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 func TestNavigationServiceMergesJoinedWildcardHintBeforeCommit(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("mixed")
@@ -2151,7 +2074,7 @@ func TestNavigationServiceMergesJoinedWildcardHintBeforeCommit(t *testing.T) {
 func TestNavigationServicePreservesLastGoodAndMapsChurnCancellationTo503(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	good, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
+	good, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2224,7 +2147,7 @@ func TestNavigationServiceBuildDeadlineInterruptsProjectionWithoutCommitOrPublic
 func TestNavigationServiceDeadlineAtCommitRevisesAndPublishesNothing(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
@@ -2359,7 +2282,7 @@ func TestNavigationServiceDeadlineInterruptsMidFingerprintWithoutPublication(t *
 	}
 	source.inputs.Tree.Projects[0].Current = rows
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
@@ -2524,7 +2447,7 @@ func TestNavigationServiceGenerationAndSafeIntegerOverflow(t *testing.T) {
 
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	service.mu.Lock()
@@ -2560,7 +2483,7 @@ func TestNavigationServiceGenerationFailureOmitsCapabilityAndFailsClosed(t *test
 	if capability := service.Capability(); capability != nil {
 		t.Fatalf("capability = %+v, want omitted", capability)
 	}
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err == nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err == nil {
 		t.Fatal("read succeeded after generation failure")
 	}
 	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err == nil {
@@ -2784,7 +2707,7 @@ func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBounda
 			return timer
 		}
 	})
-	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.mu.Lock()
@@ -2866,7 +2789,7 @@ func TestNavigationSnapshotBoundaryUsesNearest24HourOr14DayCutover(t *testing.T)
 	}
 }
 
-func TestNavigationReadV2DeltaForResourceThatLosesAllEntities(t *testing.T) {
+func TestNavigationReadV3DeltaForResourceThatLosesAllEntities(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	source.mu.Lock()
@@ -2878,7 +2801,7 @@ func TestNavigationReadV2DeltaForResourceThatLosesAllEntities(t *testing.T) {
 
 	bases := map[navigationResourceKind]appwire.NavigationReadBase{}
 	for _, key := range []navigationResourceKey{manifestKey, liveKey} {
-		initial, err := service.readV2(t.Context(), key, nil)
+		initial, err := service.readV3(t.Context(), key, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2895,7 +2818,7 @@ func TestNavigationReadV2DeltaForResourceThatLosesAllEntities(t *testing.T) {
 
 	for _, key := range []navigationResourceKey{manifestKey, liveKey} {
 		base := bases[key.Kind]
-		changed, err := service.readV2(t.Context(), key, &base)
+		changed, err := service.readV3(t.Context(), key, &base)
 		if err != nil {
 			t.Fatalf("%s delta read: %v", key.Kind, err)
 		}
@@ -2933,12 +2856,12 @@ func corruptRetainedNavigationBase(t *testing.T, history *navigationHistory, vie
 	element.Value = entry
 }
 
-func TestNavigationReadV2FailedDeltaFallsBackToSnapshot(t *testing.T) {
+func TestNavigationReadV3FailedDeltaFallsBackToSnapshot(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
 	service := newTestNavigationService(t, source)
 	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: 1}
-	initial, err := service.readV2(t.Context(), key, nil)
+	initial, err := service.readV3(t.Context(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2949,7 +2872,7 @@ func TestNavigationReadV2FailedDeltaFallsBackToSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, err := service.readV2(t.Context(), key, &base)
+	changed, err := service.readV3(t.Context(), key, &base)
 	if err != nil {
 		t.Fatalf("read with unreconstructable base: %v", err)
 	}
@@ -2959,7 +2882,7 @@ func TestNavigationReadV2FailedDeltaFallsBackToSnapshot(t *testing.T) {
 	if changed.DeltaFallback == nil {
 		t.Fatal("result did not report why the delta was abandoned")
 	}
-	assertNavigationV2ResponseBudget(t, key, changed.Response)
+	assertNavigationV3ResponseBudget(t, key, changed.Response)
 	currentBase := appwire.NavigationReadBase{GenerationID: changed.Response.GenerationID, Revision: changed.Response.Revision, ETag: changed.Response.ETag}
 	if _, ok := service.history.Lookup(key, currentBase); !ok {
 		t.Fatal("fallback snapshot was not retained as the next delta base")

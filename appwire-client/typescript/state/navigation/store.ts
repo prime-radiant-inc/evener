@@ -91,7 +91,7 @@ export const NAVIGATION_INVALIDATION_TIMEOUT_MS = 10_000;
 
 /** True when error is this store's not-initialized rejection (a waiter armed
  * while no revalidator existed — e.g. a shutdown action racing client
- * replacement, with navigation becoming v2 before convergence begins). There
+ * replacement, with navigation becoming v3 before convergence begins). There
  * is nothing to converge against yet the caller's mutation already committed,
  * so callers treat it as a successful no-op. */
 function isNavigationNotInitialized(error: unknown): boolean {
@@ -106,7 +106,7 @@ export interface NavigationStoreState {
   resources: ResourceMap;
   expanded: ReadonlyMap<string, boolean>;
   attention: { changed: AttentionChanged[]; summary: AttentionSummary | null };
-  mode: "unknown" | "v2" | "error";
+  mode: "unknown" | "v3" | "error";
   protocolError: Error | null;
   loadManifest(): Promise<ResourceState<NavigationManifest>>;
   loadSection(
@@ -131,7 +131,6 @@ export interface NavigationStoreState {
     limit?: number,
   ): Promise<ResourceState<NavigationProjectPage>>;
   lookupLocation(ref: string): Promise<ResourceState<NavigationSessionLocation>>;
-  loadSubagents(ref: string, offset?: number, limit?: number): Promise<ResourceState<NavigationSectionResource>>;
   setExpanded(projectKey: string, expanded: boolean): void;
   toggleExpanded(projectKey: string): void;
   awaitNavigationTargets(targets: NavigationInvalidationTarget[], generationID?: string): Promise<void>;
@@ -217,7 +216,6 @@ function assertNavigationPageProgress(k: ResourceKey, value: unknown): void {
     case "section":
     case "pin_section":
     case "project_page":
-    case "subagents":
       rows = Array.isArray(value.sessions) ? value.sessions.length : 0;
       remaining = count(value.remaining) ? value.remaining : 0;
       break;
@@ -244,7 +242,7 @@ function assertNavigationPageProgress(k: ResourceKey, value: unknown): void {
   }
 }
 function paramsFor(k: ResourceKey, base: NavigationReadBase | undefined): NavigationReadParams {
-  const conditional = { representationVersion: 2 as const, ...(base ? { base } : {}) };
+  const conditional = { representationVersion: 3 as const, ...(base ? { base } : {}) };
   switch (k.kind) {
     case "manifest":
       return { resource: "manifest", ...conditional };
@@ -267,8 +265,6 @@ function paramsFor(k: ResourceKey, base: NavigationReadBase | undefined): Naviga
         limit: k.limit,
         ...conditional,
       };
-    case "subagents":
-      return { resource: "subagents", ref: k.ref, offset: k.offset, limit: k.limit, ...conditional };
     case "location":
       return { resource: "location", ref: k.ref, ...conditional };
   }
@@ -278,11 +274,11 @@ function nonemptyCatalogs(manifest: NavigationManifest): Array<(typeof NAVIGATIO
 }
 
 // Single capability gate for boot and reconnect: envelope version 1 with an
-// advertised v2 representation. Returns the protocol error for the store to
+// advertised v3 representation. Returns the protocol error for the store to
 // publish, or null when the capability is acceptable.
 function navigationCapabilityError(cap: NavigationCapability): Error | null {
   if (cap.version !== 1) return new Error(`unsupported navigation capability version ${cap.version}`);
-  if (!cap.readVersions?.includes(2)) return new Error("navigation server does not advertise representation v2");
+  if (!cap.readVersions?.includes(3)) return new Error("navigation server does not advertise representation v3");
   return null;
 }
 
@@ -408,7 +404,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
         decoded = decodeNavigationResponse(k, base, response);
       } catch (cause) {
         if (cause instanceof NavigationBaseInvalidError) throw cause;
-        throw new NavigationProtocolError("invalid v2 response", { cause });
+        throw new NavigationProtocolError("invalid v3 response", { cause });
       }
       const state = store.getState();
       const previous = (k.kind === "manifest" ? state.manifest : state.resources.get(keyID(k)))?.normalized ?? null;
@@ -441,7 +437,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
         revision,
         etag: responseEtag,
         data: decoded.status === "gone" ? null : materialized,
-        v2: decoded,
+        v3: decoded,
         normalized,
       };
     };
@@ -504,7 +500,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
     next.set(projectKey, expanded);
     store.setState({ expanded: next });
     persistence.writeExpansion(next);
-    if (expanded && store.getState().mode === "v2") void hydrateProject(projectKey, bootEpoch);
+    if (expanded && store.getState().mode === "v3") void hydrateProject(projectKey, bootEpoch);
   }
   function actions() {
     return {
@@ -550,8 +546,6 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       loadProjectPage: (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = PAGE_LIMIT) =>
         load<NavigationProjectPage>({ kind: "project_page", projectKey, tier, offset, limit }),
       lookupLocation: (ref: string) => load<NavigationSessionLocation>({ kind: "location", ref }),
-      loadSubagents: (ref: string, offset = 0, limit = PAGE_LIMIT) =>
-        load<NavigationSectionResource>({ kind: "subagents", ref, offset, limit }),
       awaitNavigationTargets: (targets: NavigationInvalidationTarget[], generationID?: string) => {
         if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
         return revalidator.waitForTargets(targets, generationID);
@@ -595,7 +589,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
     const generationChanged = !!revalidator && revalidator.generationID !== cap.generationId;
     store.setState({
       capability: cap,
-      mode: "v2",
+      mode: "v3",
       clientGenerationID: cap.generationId,
       lastSequence: cap.sequence,
       manifest:
@@ -608,7 +602,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
           )
         : previous.resources,
       attention:
-        previous.mode === "v2" && previous.clientGenerationID === cap.generationId
+        previous.mode === "v3" && previous.clientGenerationID === cap.generationId
           ? previous.attention
           : initialAttention,
     });
@@ -674,8 +668,8 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
     // One staleness question, asked identically before and after the read: a
     // reset or a client replacement during the read leaves this hydration
     // owed to a store that has moved on, and so does navigation dropping out
-    // of v2 under it.
-    const stale = () => epoch !== bootEpoch || store.getState().mode !== "v2";
+    // of v3 under it.
+    const stale = () => epoch !== bootEpoch || store.getState().mode !== "v3";
     if (stale()) return;
     const resource = await store
       .getState()
@@ -748,7 +742,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
         if (n.method !== "evener/navigation/invalidated") return;
         const p = n.params as NavigationInvalidatedPayload;
         const s = store.getState();
-        if (s.mode !== "v2" || p.generationId !== s.clientGenerationID || p.sequence <= s.lastSequence) {
+        if (s.mode !== "v3" || p.generationId !== s.clientGenerationID || p.sequence <= s.lastSequence) {
           store.setState({ protocolError: new Error("navigation sequence or generation mismatch") });
           return;
         }
@@ -799,7 +793,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
           }
           store.setState({
             capability: cap,
-            mode: "v2",
+            mode: "v3",
             clientGenerationID: cap.generationId,
             lastSequence: cap.sequence,
           });
@@ -848,7 +842,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       rearm?: () => NavigationInvalidationWaiter;
     } = {},
   ): Promise<void> {
-    if (store.getState().mode !== "v2") {
+    if (store.getState().mode !== "v3") {
       invalidation.cancel();
       return;
     }
@@ -873,7 +867,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
           // replacement disposes the revalidator outright; the replacement
           // client reboots from scratch with the same effect. A waiter armed
           // while navigation was uninitialized rejects the same way: the mode
-          // may have become v2 after arming, but there was never anything to
+          // may have become v3 after arming, but there was never anything to
           // converge against and the mutation already committed.
           if (isGenerationMismatch(error) || isRevalidatorDisposed(error) || isNavigationNotInitialized(error)) return;
           throw error;
@@ -890,9 +884,9 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
         invalidation = opts.rearm();
       }
       // The wait may have outlived navigation itself (teardown mid-shutdown):
-      // without an initialized v2 store the fallback has nothing to converge
+      // without an initialized v3 store the fallback has nothing to converge
       // and its rejection would be a false failure for a committed mutation.
-      if (store.getState().mode !== "v2") return;
+      if (store.getState().mode !== "v3") return;
       await store.getState().applyNavigationMutation({
         generation_id: store.getState().clientGenerationID,
         targets,

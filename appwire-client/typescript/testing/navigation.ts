@@ -1,5 +1,5 @@
 // Navigation wire fixtures for both apps' tests and dev previews: builders for
-// the capability and manifest shapes, and the wireV2 converter.
+// the capability and manifest shapes, and the wireSnapshot converter.
 import {
   NAVIGATION_CATALOG_LIMIT,
   NAVIGATION_SECTION_LIMIT,
@@ -20,7 +20,7 @@ export const capability = (generationId = "generation_test", version = 1): Navig
   version,
   generationId,
   sequence: 0,
-  readVersions: [2],
+  readVersions: [3],
 });
 export const manifest = (overrides: Partial<NavigationManifest> = {}): NavigationManifest => ({
   generation_id: "generation_test",
@@ -88,15 +88,14 @@ const ROOT_SLOT: Record<ResourceKey["kind"], string | undefined> = {
   catalog: "projects",
   project: undefined,
   project_page: "sessions",
-  subagents: "sessions",
   location: "session",
 };
 
-// wireV2 converts a v1-shaped body into a valid v2 snapshot response for the
+// wireSnapshot converts a v1-shaped body into a valid v3 snapshot response for the
 // requesting key, mirroring the server's normalization: nested session trees
 // are flattened into entities plus owned children containers, and resource
 // metadata carries exactly the keys the codec validates.
-export const wireV2 = (
+export const wireSnapshot = (
   params: NavigationReadParams,
   data: unknown,
   etag = '"one"',
@@ -135,12 +134,7 @@ export const wireV2 = (
   const rootSlot = ROOT_SLOT[key.kind];
   if (key.kind === "manifest") {
     metadata = body;
-  } else if (
-    key.kind === "section" ||
-    key.kind === "pin_section" ||
-    key.kind === "project_page" ||
-    key.kind === "subagents"
-  ) {
+  } else if (key.kind === "section" || key.kind === "pin_section" || key.kind === "project_page") {
     const sessions = Array.isArray(body.sessions) ? (body.sessions as Record<string, unknown>[]) : [];
     rootChildren.push(...sessions.map((session) => addSessionTree(session)));
     metadata = {
@@ -237,7 +231,7 @@ export const wireV2 = (
 
 // A fixed manifest/section/location reconnect fixture, shared by both apps'
 // navigation store contract suites: a same-generation reconnect that returns
-// a fresh v2 snapshot for whichever resource the store re-requests.
+// a fresh v3 snapshot for whichever resource the store re-requests.
 export const reconnectManifestKey: ResourceKey = { kind: "manifest" };
 export const reconnectSectionKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
 export const reconnectLocationKey: ResourceKey = { kind: "location", ref: "local:x" };
@@ -281,14 +275,14 @@ export const reconnectSessionSnapshot = (
     ],
   };
 };
-export const reconnectV2Response = (params: NavigationReadParams): NavigationReadResponse => {
+export const reconnectSnapshotResponse = (params: NavigationReadParams): NavigationReadResponse => {
   if (params.resource === "manifest")
     return {
       status: "ok",
       representation: "snapshot",
       generationId: "generation_test",
       revision: 11,
-      etag: '"manifest-v2"',
+      etag: '"manifest-v3"',
       data: {
         metadata: manifest({ revision: 11 }),
         entities: [],
@@ -307,7 +301,7 @@ export const reconnectV2Response = (params: NavigationReadParams): NavigationRea
       representation: "snapshot",
       generationId: "generation_test",
       revision: 22,
-      etag: '"section-v2"',
+      etag: '"section-v3"',
       data: reconnectSessionSnapshot(
         reconnectSectionKey,
         { generation_id: "generation_test", revision: 22, offset: 0, limit: 50, remaining: 0, truncated: false },
@@ -320,7 +314,7 @@ export const reconnectV2Response = (params: NavigationReadParams): NavigationRea
       representation: "snapshot",
       generationId: "generation_test",
       revision: 33,
-      etag: '"location-v2"',
+      etag: '"location-v3"',
       data: reconnectSessionSnapshot(
         reconnectLocationKey,
         { generation_id: "generation_test", revision: 33, ref: "local:x", top_level_ref: "local:x", top_level: true },

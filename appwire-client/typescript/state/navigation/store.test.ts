@@ -19,8 +19,8 @@ import {
   reconnectManifestKey,
   reconnectSectionKey,
   reconnectSessionSnapshot,
-  reconnectV2Response,
-  wireV2,
+  reconnectSnapshotResponse,
+  wireSnapshot,
 } from "../../testing/navigation";
 import { memoryNavigationPersistence } from "../../testing/navigationPersistence";
 import { navigationInvalidatedNotification } from "../../testing/notifications";
@@ -112,8 +112,8 @@ afterEach(() => {
 test("navigation reads use the typed AppWire method and structured resource params", async () => {
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
-    expect(params).toEqual({ resource: "manifest", representationVersion: 2 });
-    return wireV2(params, emptyManifest());
+    expect(params).toEqual({ resource: "manifest", representationVersion: 3 });
+    return wireSnapshot(params, emptyManifest());
   });
   vi.stubGlobal(
     "fetch",
@@ -126,7 +126,7 @@ test("navigation reads use the typed AppWire method and structured resource para
   await flush();
 
   expect(client.calls).toEqual([
-    { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+    { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 3 } },
   ]);
   expect(store.getState().manifest?.data).toMatchObject(emptyManifest());
 });
@@ -134,7 +134,7 @@ test("navigation reads use the typed AppWire method and structured resource para
 test.each([
   ["absent", null, "error"],
   ["v1", { version: 1, generationId: generation, sequence: 0 }, "error"],
-  ["v2", capability(), "v2"],
+  ["v3", capability(), "v3"],
   ["unsupported", capability(generation, 2), "error"],
 ] as const)("capability %s selects mode", async (_name, cap, mode) => {
   store.init(new FakeClient("ready"), cap);
@@ -150,24 +150,24 @@ test("manifest is read first, count-zero resources are skipped, and defaults are
   });
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wireV2(params, m);
-    if (params.resource === "section") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
-    return wireV2(params, { projects: [], remaining: 0 });
+    if (params.resource === "manifest") return wireSnapshot(params, m);
+    if (params.resource === "section") return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false });
+    return wireSnapshot(params, { projects: [], remaining: 0 });
   });
-  expect(calls[0]).toEqual({ resource: "manifest", representationVersion: 2 });
+  expect(calls[0]).toEqual({ resource: "manifest", representationVersion: 3 });
   expect(calls).toContainEqual({
     resource: "section",
     section: "live",
     offset: 0,
     limit: 50,
-    representationVersion: 2,
+    representationVersion: 3,
   });
   expect(calls).toContainEqual({
     resource: "catalog",
     catalog: "projects",
     offset: 0,
     limit: 100,
-    representationVersion: 2,
+    representationVersion: 3,
   });
   expect(
     calls.some((x) => x.section === "needs_you" || x.catalog === "archived_projects" || x.catalog === "test_runs"),
@@ -186,7 +186,7 @@ test("manifest invalidation hydrates resources that become nonempty", async () =
   const client = await init((params) => {
     calls.push(params);
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         populated ? nextManifest : emptyManifest(),
         populated ? '"two"' : '"one"',
@@ -194,16 +194,16 @@ test("manifest invalidation hydrates resources that become nonempty", async () =
       );
     if (params.resource === "section") {
       sectionRequested.resolve();
-      return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+      return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false });
     }
     if (params.resource === "catalog") {
       catalogRequested.resolve();
-      return wireV2(params, { projects: [{ key: "project", default_expanded: false }], remaining: 0 });
+      return wireSnapshot(params, { projects: [{ key: "project", default_expanded: false }], remaining: 0 });
     }
-    return wireV2(params, { sessions: [], remaining: 0 });
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
 
-  expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]);
+  expect(calls).toEqual([{ resource: "manifest", representationVersion: 3 }]);
   populated = true;
   client.emitNotification(
     navigationInvalidatedNotification({
@@ -219,22 +219,22 @@ test("manifest invalidation hydrates resources that become nonempty", async () =
     section: "live",
     offset: 0,
     limit: 50,
-    representationVersion: 2,
+    representationVersion: 3,
   });
   expect(calls).toContainEqual({
     resource: "catalog",
     catalog: "projects",
     offset: 0,
     limit: 100,
-    representationVersion: 2,
+    representationVersion: 3,
   });
 });
 
-test("validated manifest attention seeds the v2 summary before notifications", async () => {
+test("validated manifest attention seeds the v3 summary before notifications", async () => {
   await init((params) =>
     params.resource === "manifest"
-      ? wireV2(params, emptyManifest({ attentionSummary: { needsYou: 2, error: 1, working: 3 } }))
-      : wireV2(params, { sessions: [], remaining: 0 }),
+      ? wireSnapshot(params, emptyManifest({ attentionSummary: { needsYou: 2, error: 1, working: 3 } }))
+      : wireSnapshot(params, { sessions: [], remaining: 0 }),
   );
   expect(store.getState().attention.summary).toEqual({ needsYou: 2, error: 1, working: 3 });
 });
@@ -298,7 +298,7 @@ test("needs-you selectors keep manifest count, first-occurrence order, short-pag
     ],
   ]);
   store.setState({
-    mode: "v2",
+    mode: "v3",
     manifest: {
       key: { kind: "manifest" },
       data: emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 75 }, pin_sections: { count: 0 } } }),
@@ -336,7 +336,7 @@ test("needs-you cursor uses limit as the same-offset canonical tie-break", () =>
   const narrow = { kind: "section", section: "needs_you", offset: 10, limit: 10 } as const;
   const wide = { kind: "section", section: "needs_you", offset: 10, limit: 20 } as const;
   store.setState({
-    mode: "v2",
+    mode: "v3",
     resources: new Map([
       [
         keyID(narrow),
@@ -378,23 +378,30 @@ test("needs-you cursor uses limit as the same-offset canonical tie-break", () =>
 
 test("resource keys map to exact AppWire params and preserve decoded identifiers", async () => {
   const client = await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
-    if (params.resource === "section") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
-    if (params.resource === "pin_catalog") return wireV2(params, { pin_sections: [], remaining: 0 });
-    if (params.resource === "pin_section") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
-    if (params.resource === "catalog") return wireV2(params, { projects: [], remaining: 0 });
-    if (params.resource === "subagents") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+    if (params.resource === "section") return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "pin_catalog") return wireSnapshot(params, { pin_sections: [], remaining: 0 });
+    if (params.resource === "pin_section")
+      return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "catalog") return wireSnapshot(params, { projects: [], remaining: 0 });
     if (params.resource === "project_page")
-      return wireV2(params, { key: "p/a ?", tier: "recent", offset: 6, sessions: [], remaining: 0, truncated: false });
+      return wireSnapshot(params, {
+        key: "p/a ?",
+        tier: "recent",
+        offset: 6,
+        sessions: [],
+        remaining: 0,
+        truncated: false,
+      });
     if (params.resource === "project")
-      return wireV2(params, {
+      return wireSnapshot(params, {
         key: "p/a ?",
         current: { sessions: [], remaining: 0 },
         recent: { sessions: [], remaining: 0 },
         archived: { sessions: [], remaining: 0 },
         truncated: false,
       });
-    return wireV2(params, { ref: params.ref, top_level_ref: params.ref, top_level: true });
+    return wireSnapshot(params, { ref: params.ref, top_level_ref: params.ref, top_level: true });
   });
   const s = store.getState();
   await s.loadSection("needs_you", 3, 7);
@@ -404,17 +411,15 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
   await s.loadProject("p/a ?");
   await s.loadProjectPage("p/a ?", "recent", 6, 11);
   await s.lookupLocation("r/a ?");
-  await s.loadSubagents("r/a ?", 12, 13);
   expect(client.calls.map((call) => call.params)).toEqual([
-    { resource: "manifest", representationVersion: 2 },
-    { resource: "section", section: "needs_you", offset: 3, limit: 7, representationVersion: 2 },
-    { resource: "pin_catalog", offset: 4, limit: 8, representationVersion: 2 },
-    { resource: "pin_section", sectionId: "a/b ?", offset: 2, limit: 9, representationVersion: 2 },
-    { resource: "catalog", catalog: "archived_projects", offset: 5, limit: 10, representationVersion: 2 },
-    { resource: "project", projectKey: "p/a ?", representationVersion: 2 },
-    { resource: "project_page", projectKey: "p/a ?", tier: "recent", offset: 6, limit: 11, representationVersion: 2 },
-    { resource: "location", ref: "local:r/a ?", representationVersion: 2 },
-    { resource: "subagents", ref: "local:r/a ?", offset: 12, limit: 13, representationVersion: 2 },
+    { resource: "manifest", representationVersion: 3 },
+    { resource: "section", section: "needs_you", offset: 3, limit: 7, representationVersion: 3 },
+    { resource: "pin_catalog", offset: 4, limit: 8, representationVersion: 3 },
+    { resource: "pin_section", sectionId: "a/b ?", offset: 2, limit: 9, representationVersion: 3 },
+    { resource: "catalog", catalog: "archived_projects", offset: 5, limit: 10, representationVersion: 3 },
+    { resource: "project", projectKey: "p/a ?", representationVersion: 3 },
+    { resource: "project_page", projectKey: "p/a ?", tier: "recent", offset: 6, limit: 11, representationVersion: 3 },
+    { resource: "location", ref: "local:r/a ?", representationVersion: 3 },
   ]);
   const callCount = client.calls.length;
   await s.loadSection("needs_you", 3, 7);
@@ -425,11 +430,11 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
 test("qualified remote and local location refs remain unchanged", async () => {
   const locationRefs: string[] = [];
   await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     if (params.resource !== "location") throw new Error(`unexpected resource ${params.resource}`);
     if (typeof params.ref !== "string") throw new Error("qualified location request omitted ref");
     locationRefs.push(params.ref);
-    return wireV2(params, { ref: params.ref, top_level_ref: params.ref, top_level: true });
+    return wireSnapshot(params, { ref: params.ref, top_level_ref: params.ref, top_level: true });
   });
 
   await store.getState().lookupLocation("remote:session");
@@ -446,8 +451,8 @@ test("qualified remote and local location refs remain unchanged", async () => {
   });
 });
 
-test("bare and canonical local location aliases coalesce through canonical v2 requests and scopes", async () => {
-  const canonicalKey = { kind: "location", ref: "local:v2-session" } as const;
+test("bare and canonical local location aliases coalesce through canonical v3 requests and scopes", async () => {
+  const canonicalKey = { kind: "location", ref: "local:v3-session" } as const;
   const locationRefs: string[] = [];
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
@@ -457,7 +462,7 @@ test("bare and canonical local location aliases coalesce through canonical v2 re
         representation: "snapshot",
         generationId: generation,
         revision: 1,
-        etag: '"manifest-v2"',
+        etag: '"manifest-v3"',
         data: {
           metadata: emptyManifest(),
           entities: [],
@@ -480,7 +485,7 @@ test("bare and canonical local location aliases coalesce through canonical v2 re
       representation: "snapshot",
       generationId: generation,
       revision: 2,
-      etag: '"location-v2"',
+      etag: '"location-v3"',
       data: {
         metadata: {
           generation_id: generation,
@@ -508,7 +513,7 @@ test("bare and canonical local location aliases coalesce through canonical v2 re
   store.init(client, capability());
   await flush();
 
-  const bare = await store.getState().lookupLocation("v2-session");
+  const bare = await store.getState().lookupLocation("v3-session");
   const canonical = await store.getState().lookupLocation(canonicalKey.ref);
 
   expect(locationRefs).toEqual([canonicalKey.ref]);
@@ -516,59 +521,22 @@ test("bare and canonical local location aliases coalesce through canonical v2 re
   expect(bare).toMatchObject({ key: canonicalKey, error: null });
   expect(bare.normalized?.key).toEqual(canonicalKey);
   expect(bare.normalized?.graph.containers.has(navigationRootContainerKey(canonicalKey, "session"))).toBe(true);
-  expect(selectLocation("v2-session")(store.getState())).toBe(bare);
+  expect(selectLocation("v3-session")(store.getState())).toBe(bare);
 });
 
 // A session's subagents page reads like the location beside it: a bare local
 // ref canonicalizes to the same key the qualified ref builds, so the two
 // forms coalesce into one request and one resource - and the page keeps the
 // child tree the flat lists no longer carry.
-test("bare and canonical local subagents refs coalesce, and the page carries its child tree", async () => {
-  const canonicalKey = { kind: "subagents", ref: "local:v2-session", offset: 0, limit: 50 } as const;
-  const requested: string[] = [];
-  const client = new FakeClient("ready");
-  client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
-    if (params.resource !== "subagents") throw new Error(`unexpected resource ${params.resource}`);
-    if (params.ref !== canonicalKey.ref) throw new Error(`uncanonical subagents ref ${params.ref}`);
-    requested.push(params.ref);
-    return wireV2(params, {
-      sessions: [
-        completeSession({
-          ref: "local:child",
-          kind: "subagent",
-          needs_you_subagents: 1,
-          children: [completeSession({ ref: "local:grandchild", kind: "subagent" })],
-        }),
-      ],
-      remaining: 2,
-      truncated: false,
-    });
-  });
-  store.init(client, capability());
-  await flush();
-
-  const bare = await store.getState().loadSubagents("v2-session");
-  const canonical = await store.getState().loadSubagents(canonicalKey.ref);
-
-  expect(requested).toEqual([canonicalKey.ref]);
-  expect(bare).toBe(canonical);
-  expect(bare).toMatchObject({ key: canonicalKey, error: null });
-  const page = bare.data;
-  expect(page?.remaining).toBe(2);
-  expect(page?.sessions[0]?.ref).toBe("local:child");
-  expect(page?.sessions[0]?.needs_you_subagents).toBe(1);
-  expect(page?.sessions[0]?.children[0]?.ref).toBe("local:grandchild");
-});
 
 test("pin catalog page loading preserves every assignment target", async () => {
   const client = await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     if (params.resource !== "pin_catalog") throw new Error(`unexpected resource ${params.resource}`);
     if (params.offset === 0)
-      return wireV2(params, { pin_sections: [{ id: "first", name: "First", count: 0 }], remaining: 1 });
+      return wireSnapshot(params, { pin_sections: [{ id: "first", name: "First", count: 0 }], remaining: 1 });
     if (params.offset === 1)
-      return wireV2(params, { pin_sections: [{ id: "second", name: "Second", count: 2 }], remaining: 0 });
+      return wireSnapshot(params, { pin_sections: [{ id: "second", name: "Second", count: 2 }], remaining: 0 });
     throw new Error(`unexpected pin catalog offset ${params.offset}`);
   });
 
@@ -579,8 +547,8 @@ test("pin catalog page loading preserves every assignment target", async () => {
       .map((call) => call.params as NavigationReadParams)
       .filter((params) => params.resource === "pin_catalog"),
   ).toEqual([
-    { resource: "pin_catalog", offset: 0, limit: 100, representationVersion: 2 },
-    { resource: "pin_catalog", offset: 1, limit: 100, representationVersion: 2 },
+    { resource: "pin_catalog", offset: 0, limit: 100, representationVersion: 3 },
+    { resource: "pin_catalog", offset: 1, limit: 100, representationVersion: 3 },
   ]);
   expect(selectPinSectionSummaries(store.getState())).toEqual([
     { id: "first", name: "First", member_count: 0 },
@@ -591,15 +559,15 @@ test("pin catalog page loading preserves every assignment target", async () => {
 test("forced pin catalog page loading replaces every fresh cached page", async () => {
   let refreshed = false;
   const client = await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     if (params.resource === "pin_catalog" && params.offset === 0)
       return refreshed
-        ? wireV2(params, { pin_sections: [{ id: "section", name: "After", count: 0 }], remaining: 0 })
-        : wireV2(params, { pin_sections: [{ id: "section", name: "Before", count: 0 }], remaining: 1 });
+        ? wireSnapshot(params, { pin_sections: [{ id: "section", name: "After", count: 0 }], remaining: 0 })
+        : wireSnapshot(params, { pin_sections: [{ id: "section", name: "Before", count: 0 }], remaining: 1 });
     if (params.resource === "pin_catalog" && params.offset === 1)
       return refreshed
-        ? wireV2(params, { pin_sections: [], remaining: 0 })
-        : wireV2(params, { pin_sections: [{ id: "deleted", name: "Deleted", count: 1 }], remaining: 0 });
+        ? wireSnapshot(params, { pin_sections: [], remaining: 0 })
+        : wireSnapshot(params, { pin_sections: [{ id: "deleted", name: "Deleted", count: 1 }], remaining: 0 });
     throw new Error(`unexpected resource ${params.resource}`);
   });
 
@@ -620,16 +588,16 @@ test("AppWire envelope status and conditional reads preserve cached navigation",
   const client = await init((params) => {
     if (params.resource === "manifest") {
       manifestCalls++;
-      return wireV2(params, emptyManifest(), '"a"', 3);
+      return wireSnapshot(params, emptyManifest(), '"a"', 3);
     }
-    return wireV2(params, { sessions: [], remaining: 0 }, '"section"', 3);
+    return wireSnapshot(params, { sessions: [], remaining: 0 }, '"section"', 3);
   });
   expect(store.getState().manifest?.etag).toBe('"a"');
   await store.getState().loadSection("live");
   client.on("evener/navigation/read", (params) =>
     params.resource === "section"
-      ? wireV2(params, { sessions: [], remaining: 0 }, '"section"', 4)
-      : wireV2(params, emptyManifest(), '"a"', 3),
+      ? wireSnapshot(params, { sessions: [], remaining: 0 }, '"section"', 4)
+      : wireSnapshot(params, emptyManifest(), '"a"', 3),
   );
   client.emitNotification({
     method: "evener/navigation/invalidated",
@@ -644,7 +612,7 @@ test("AppWire envelope status and conditional reads preserve cached navigation",
     section: "live",
     offset: 0,
     limit: 50,
-    representationVersion: 2,
+    representationVersion: 3,
     base: { generationId: generation, revision: 3, etag: '"section"' },
   });
   expect(
@@ -655,7 +623,7 @@ test("AppWire envelope status and conditional reads preserve cached navigation",
   expect(manifestCalls).toBeGreaterThan(0);
 });
 
-test("v2 manifest deltas apply against the retained manifest snapshot", async () => {
+test("v3 manifest deltas apply against the retained manifest snapshot", async () => {
   const manifestKey = { kind: "manifest" } as const;
   const metadata = (revision: number, needsYou: number) =>
     emptyManifest({ revision, attentionSummary: { needsYou, error: 0, working: 0 } });
@@ -727,7 +695,7 @@ test("v2 manifest deltas apply against the retained manifest snapshot", async ()
   expect(current.protocolError).toBeNull();
 });
 
-test("v2 gone tombstones clear visible rows, retain the exact base, and reappear from current snapshot", async () => {
+test("v3 gone tombstones clear visible rows, retain the exact base, and reappear from current snapshot", async () => {
   const manifestKey = { kind: "manifest" } as const;
   const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
   const sessionKey = `${navigationViewScope(sectionKey)}/entity/${"1".repeat(64)}`;
@@ -863,13 +831,13 @@ test("v2 gone tombstones clear visible rows, retain the exact base, and reappear
 test("invalid AppWire envelopes and resource bodies become resource errors", async () => {
   let mode = "status";
   const client = await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
-    const response = wireV2(params, { sessions: [], remaining: 0, truncated: false }, '"x"');
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+    const response = wireSnapshot(params, { sessions: [], remaining: 0, truncated: false }, '"x"');
     if (mode === "status") return { ...response, status: "partial" } as NavigationReadResponse;
     if (mode === "generation") return { ...response, generationId: "" };
     if (mode === "etag") return { ...response, etag: "" };
     if (mode === "not_modified") return { ...response, status: "not_modified" };
-    return wireV2(params, { sessions: [{ ref: 123 }], remaining: 0 });
+    return wireSnapshot(params, { sessions: [{ ref: 123 }], remaining: 0 });
   });
   const status = await store.getState().loadSection("live");
   expect(status.error).toBeTruthy();
@@ -886,11 +854,15 @@ test("invalid AppWire envelopes and resource bodies become resource errors", asy
   expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
 });
 
-test("rejects malformed job collections in navigation session summaries", async () => {
+test("rejects malformed job counts in navigation session summaries", async () => {
   await init((params) =>
     params.resource === "manifest"
-      ? wireV2(params, emptyManifest())
-      : wireV2(params, { sessions: [{ ref: "local:bad", running_jobs: {} }], remaining: 0, truncated: false }),
+      ? wireSnapshot(params, emptyManifest())
+      : wireSnapshot(params, {
+          sessions: [{ ref: "local:bad", running_job_count: {} }],
+          remaining: 0,
+          truncated: false,
+        }),
   );
   const resource = await store.getState().loadSection("live");
   expect(resource.error).toBeTruthy();
@@ -906,11 +878,11 @@ test("a malformed refresh response preserves the installed graph while recording
   let sectionCalls = 0;
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     if (params.resource !== "section") throw new Error("unexpected navigation resource");
     sectionCalls++;
     if (sectionCalls > 1) return refresh.promise;
-    return wireV2(params, { sessions: [{ ref: "local:stable", children: [] }], remaining: 0, truncated: false });
+    return wireSnapshot(params, { sessions: [{ ref: "local:stable", children: [] }], remaining: 0, truncated: false });
   });
   store.init(client, capability());
   await flush();
@@ -945,7 +917,7 @@ test("a malformed refresh response preserves the installed graph while recording
   const failure = failed?.error;
   expect(failure).toBeInstanceOf(Error);
   if (!(failure instanceof Error)) throw new Error("expected malformed response error");
-  expect(failure).toMatchObject({ message: "navigation protocol: invalid v2 response" });
+  expect(failure).toMatchObject({ message: "navigation protocol: invalid v3 response" });
   expect(failure).toBe(store.getState().protocolError);
   expect(failure.cause).toBeInstanceOf(Error);
   expect(failed?.data).toBe(installedData);
@@ -959,10 +931,10 @@ test("stale client completion cannot overwrite newer client", async () => {
   store.init(first, capability("old"));
   await flush();
   const second = new FakeClient("ready");
-  second.on("evener/navigation/read", (params) => wireV2(params, emptyManifest({}), '"new"', 1, "new"));
+  second.on("evener/navigation/read", (params) => wireSnapshot(params, emptyManifest({}), '"new"', 1, "new"));
   store.init(second, capability("new"));
   await flush();
-  old.resolve(wireV2({ resource: "manifest", representationVersion: 2 }, emptyManifest(), '"old"', 1, "old"));
+  old.resolve(wireSnapshot({ resource: "manifest", representationVersion: 3 }, emptyManifest(), '"old"', 1, "old"));
   await flush();
   expect(store.getState().clientGenerationID).toBe("new");
   expect(store.getState().manifest?.generationID).not.toBe("old");
@@ -981,10 +953,10 @@ test("same-generation reconnect during manifest load continues booting resources
     calls.push(params);
     if (params.resource === "manifest") {
       manifestCalls++;
-      return manifestCalls === 1 ? firstManifest.promise : wireV2(params, m);
+      return manifestCalls === 1 ? firstManifest.promise : wireSnapshot(params, m);
     }
-    if (params.resource === "section") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
-    return wireV2(params, { projects: [], remaining: 0 });
+    if (params.resource === "section") return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false });
+    return wireSnapshot(params, { projects: [], remaining: 0 });
   });
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
@@ -999,7 +971,7 @@ test("same-generation reconnect during manifest load continues booting resources
   client.emitStateChange("reconnecting");
   client.emitReady();
   await flush();
-  firstManifest.resolve(wireV2({ resource: "manifest", representationVersion: 2 }, m));
+  firstManifest.resolve(wireSnapshot({ resource: "manifest", representationVersion: 3 }, m));
   await flush();
 
   expect(calls).toContainEqual({
@@ -1007,14 +979,14 @@ test("same-generation reconnect during manifest load continues booting resources
     section: "live",
     offset: 0,
     limit: 50,
-    representationVersion: 2,
+    representationVersion: 3,
   });
   expect(calls).toContainEqual({
     resource: "catalog",
     catalog: "projects",
     offset: 0,
     limit: 100,
-    representationVersion: 2,
+    representationVersion: 3,
   });
 });
 
@@ -1025,7 +997,7 @@ test("a stale malformed response cannot poison or force the active client", asyn
   store.init(oldClient, capability("old"));
   await flush();
   const newClient = new FakeClient("ready");
-  newClient.on("evener/navigation/read", (params) => wireV2(params, emptyManifest(), '"new"', 1, "new"));
+  newClient.on("evener/navigation/read", (params) => wireSnapshot(params, emptyManifest(), '"new"', 1, "new"));
   store.init(newClient, capability("new"));
   await flush();
 
@@ -1051,13 +1023,14 @@ test("expanded and default projects hydrate complete tiers and post-action expan
   });
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wireV2(params, m);
+    if (params.resource === "manifest") return wireSnapshot(params, m);
     if (params.resource === "catalog" && params.catalog === "projects")
-      return wireV2(params, { projects: [project("default"), project("closed")], remaining: 0 });
+      return wireSnapshot(params, { projects: [project("default"), project("closed")], remaining: 0 });
     if (params.resource === "project_page" && params.projectKey === "default")
-      return wireV2(params, { sessions: [], remaining: 0, truncated: false });
-    if (params.resource === "project" && params.projectKey === "default") return wireV2(params, project("default"));
-    return wireV2(params, { sessions: [], remaining: 0 });
+      return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "project" && params.projectKey === "default")
+      return wireSnapshot(params, project("default"));
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
   expect(calls.some((params) => params.resource === "project_page")).toBe(false);
   expect(calls.some((params) => params.resource === "project" && params.projectKey === "closed")).toBe(false);
@@ -1072,16 +1045,16 @@ test("expanded and default projects hydrate complete tiers and post-action expan
     tier: "current",
     offset: 0,
     limit: 50,
-    representationVersion: 2,
+    representationVersion: 3,
   });
 });
 
-test("setExpanded issues a v2 project read with the raw key and representation version 2", async () => {
+test("setExpanded issues a v3 project read with the raw key and representation version 2", async () => {
   const projectKey = "raw/project key";
   const calls: NavigationReadParams[] = [];
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     throw new Error(`scripted project read ${params.resource}`);
   });
   store.getState().setExpanded(projectKey, true);
@@ -1089,7 +1062,7 @@ test("setExpanded issues a v2 project read with the raw key and representation v
 
   expect(store.getState().expanded.get(projectKey)).toBe(true);
   expect(calls.filter((params) => params.resource === "project")).toEqual([
-    { resource: "project", projectKey, representationVersion: 2 },
+    { resource: "project", projectKey, representationVersion: 3 },
   ]);
 });
 
@@ -1097,8 +1070,8 @@ test("notification fencing rejects duplicate, wrong generation, and gaps while l
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) =>
     params.resource === "manifest"
-      ? wireV2(params, emptyManifest())
-      : wireV2(params, { session: { ref: "x", children: [] } }),
+      ? wireSnapshot(params, emptyManifest())
+      : wireSnapshot(params, { session: { ref: "x", children: [] } }),
   );
   store.init(client, capability());
   await flush();
@@ -1121,7 +1094,7 @@ test("terminal location failures are retained without an automatic retry or proj
   const client = new FakeClient("ready");
   let locationCalls = 0;
   client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     locationCalls++;
     throw new WireError("location unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
@@ -1156,9 +1129,9 @@ test("sequence gaps revalidate demanded locations", async () => {
   }));
   let locationCalls = 0;
   client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     locationCalls++;
-    return wireV2(params, { ref: "x", top_level_ref: "x", top_level: true });
+    return wireSnapshot(params, { ref: "x", top_level_ref: "x", top_level: true });
   });
   store.init(client);
   await flush();
@@ -1178,7 +1151,7 @@ test("same-generation equal-sequence reconnect updates capability without broad 
   const reconnectCapability = { ...initialCapability };
   const client = new FakeClient("ready");
   client.scriptConnect(() => initialize(initialCapability));
-  client.on("evener/navigation/read", (params) => wireV2(params, emptyManifest()));
+  client.on("evener/navigation/read", (params) => wireSnapshot(params, emptyManifest()));
   store.init(client);
   await flush();
   const callsBeforeReconnect = client.calls.length;
@@ -1189,13 +1162,13 @@ test("same-generation equal-sequence reconnect updates capability without broad 
 
   const state = store.getState();
   expect(state.capability).toEqual(reconnectCapability);
-  expect(state.mode).toBe("v2");
+  expect(state.mode).toBe("v3");
   expect(state.lastSequence).toBe(2);
   expect(client.calls).toHaveLength(callsBeforeReconnect);
   expect(state.protocolError).toBeNull();
 });
 
-test("same-generation v2-to-v2 equal reconnect keeps entries until invalidation, then deltas from the base", async () => {
+test("same-generation v3-to-v3 equal reconnect keeps entries until invalidation, then deltas from the base", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...initialCapability };
   const calls: NavigationReadParams[] = [];
@@ -1203,7 +1176,7 @@ test("same-generation v2-to-v2 equal reconnect keeps entries until invalidation,
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     if (params.resource !== "section") throw new Error(`unexpected resource ${params.resource}`);
     sectionV2Reads++;
     if (sectionV2Reads === 1) {
@@ -1213,7 +1186,7 @@ test("same-generation v2-to-v2 equal reconnect keeps entries until invalidation,
         representation: "snapshot",
         generationId: generation,
         revision: 3,
-        etag: "section-v2-snapshot",
+        etag: "section-v3-snapshot",
         data: reconnectSessionSnapshot(
           reconnectSectionKey,
           { generation_id: generation, revision: 3, offset: 0, limit: 50, remaining: 0, truncated: false },
@@ -1221,13 +1194,13 @@ test("same-generation v2-to-v2 equal reconnect keeps entries until invalidation,
         ),
       };
     }
-    expect(params.base).toEqual({ generationId: generation, revision: 3, etag: "section-v2-snapshot" });
+    expect(params.base).toEqual({ generationId: generation, revision: 3, etag: "section-v3-snapshot" });
     return {
       status: "ok",
       representation: "delta",
       generationId: generation,
       revision: 4,
-      etag: "section-v2-delta",
+      etag: "section-v3-delta",
       base: params.base,
       data: {
         metadata: { generation_id: generation, revision: 4, offset: 0, limit: 50, remaining: 0, truncated: false },
@@ -1247,7 +1220,7 @@ test("same-generation v2-to-v2 equal reconnect keeps entries until invalidation,
   client.emitReady(initialize(reconnectCapability));
   await flush();
   expect(calls).toHaveLength(callsBeforeReconnect);
-  expect(store.getState().mode).toBe("v2");
+  expect(store.getState().mode).toBe("v3");
 
   client.emitNotification(
     navigationInvalidatedNotification({
@@ -1263,24 +1236,24 @@ test("same-generation v2-to-v2 equal reconnect keeps entries until invalidation,
     section: "live",
     offset: 0,
     limit: 50,
-    representationVersion: 2,
-    base: { generationId: generation, revision: 3, etag: "section-v2-snapshot" },
+    representationVersion: 3,
+    base: { generationId: generation, revision: 3, etag: "section-v3-snapshot" },
   });
   expect(store.getState().resources.get(keyID(reconnectSectionKey))?.normalized?.version).toEqual({
     generationId: generation,
     revision: 4,
-    etag: "section-v2-delta",
+    etag: "section-v3-delta",
   });
   expect(store.getState().protocolError).toBeNull();
 });
 
-test("same-generation higher-sequence v2-to-v2 reconnect forces loaded entries with fresh snapshots", async () => {
+test("same-generation higher-sequence v3-to-v3 reconnect forces loaded entries with fresh snapshots", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...initialCapability, sequence: 5 };
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
-    expect(params.representationVersion).toBe(2);
-    return reconnectV2Response(params);
+    expect(params.representationVersion).toBe(3);
+    return reconnectSnapshotResponse(params);
   });
   store.init(client, initialCapability);
   await flush();
@@ -1294,28 +1267,28 @@ test("same-generation higher-sequence v2-to-v2 reconnect forces loaded entries w
   expect(client.calls.slice(callsBeforeReconnect).map((call) => call.params)).toEqual([
     {
       resource: "manifest",
-      representationVersion: 2,
-      base: { generationId: generation, revision: 11, etag: '"manifest-v2"' },
+      representationVersion: 3,
+      base: { generationId: generation, revision: 11, etag: '"manifest-v3"' },
     },
     {
       resource: "section",
       section: "live",
       offset: 0,
       limit: 50,
-      representationVersion: 2,
-      base: { generationId: generation, revision: 22, etag: '"section-v2"' },
+      representationVersion: 3,
+      base: { generationId: generation, revision: 22, etag: '"section-v3"' },
     },
   ]);
   expect(store.getState().protocolError).toBeNull();
 });
 
-test("pending v2 read stays bound across a same-generation reconnect", async () => {
+test("pending v3 read stays bound across a same-generation reconnect", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...initialCapability };
   const pendingSection = deferred<NavigationReadResponse>();
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return reconnectV2Response(params);
+    if (params.resource === "manifest") return reconnectSnapshotResponse(params);
     if (params.resource === "section") return pendingSection.promise;
     throw new Error(`unexpected resource ${params.resource}`);
   });
@@ -1325,17 +1298,17 @@ test("pending v2 read stays bound across a same-generation reconnect", async () 
   const pendingLoad = store.getState().loadSection("live");
   expect(client.calls.at(-1)).toEqual({
     method: "evener/navigation/read",
-    params: { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 2 },
+    params: { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 3 },
   });
 
   client.emitStateChange("reconnecting");
   client.emitReady(initialize(reconnectCapability));
   await flush();
-  expect(store.getState().mode).toBe("v2");
+  expect(store.getState().mode).toBe("v3");
 
   pendingSection.resolve(
-    wireV2(
-      { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 2 },
+    wireSnapshot(
+      { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 3 },
       { sessions: [{ ref: "local:representation-bound", children: [] }], remaining: 0, truncated: false },
     ),
   );
@@ -1348,15 +1321,15 @@ test("pending v2 read stays bound across a same-generation reconnect", async () 
   ]);
   expect(selectGlobalRows(store.getState()).map((session) => session.ref)).toEqual(["local:representation-bound"]);
   expect(store.getState().protocolError).toBeNull();
-  expect(store.getState().mode).toBe("v2");
+  expect(store.getState().mode).toBe("v3");
 });
 
-test("different-generation capability without v2 enters error mode without reading", async () => {
-  const nextGeneration = "generation_nov2_reconnect";
+test("different-generation capability without v3 enters error mode without reading", async () => {
+  const nextGeneration = "generation_nov3_reconnect";
   const initialCapability = capability();
   const reconnectCapability = { version: 1, generationId: nextGeneration, sequence: 0 };
   const client = new FakeClient("ready");
-  client.on("evener/navigation/read", (params) => reconnectV2Response(params));
+  client.on("evener/navigation/read", (params) => reconnectSnapshotResponse(params));
   store.init(client, initialCapability);
   await flush();
   await store.getState().loadSection("live");
@@ -1370,11 +1343,11 @@ test("different-generation capability without v2 enters error mode without readi
   expect(client.calls).toHaveLength(callsBeforeReconnect);
   expect(state.capability).toEqual(reconnectCapability);
   expect(state.mode).toBe("error");
-  expect(state.protocolError?.message).toContain("representation v2");
+  expect(state.protocolError?.message).toContain("representation v3");
 });
 
-test("different-generation upgrade restarts every loaded resource in v2 and keeps last-good data provisional", async () => {
-  const nextGeneration = "generation_v2_reconnect";
+test("different-generation upgrade restarts every loaded resource in v3 and keeps last-good data provisional", async () => {
+  const nextGeneration = "generation_v3_reconnect";
   const initialCapability = capability();
   const reconnectCapability = capability(nextGeneration);
   const nextManifest = deferred<NavigationReadResponse>();
@@ -1383,9 +1356,13 @@ test("different-generation upgrade restarts every loaded resource in v2 and keep
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
     if (!reconnecting) {
-      if (params.resource === "manifest") return wireV2(params, emptyManifest());
+      if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
       if (params.resource === "section")
-        return wireV2(params, { sessions: [{ ref: "local:last-good", children: [] }], remaining: 0, truncated: false });
+        return wireSnapshot(params, {
+          sessions: [{ ref: "local:last-good", children: [] }],
+          remaining: 0,
+          truncated: false,
+        });
     }
     if (params.resource === "manifest") return nextManifest.promise;
     if (params.resource === "section") return nextSection.promise;
@@ -1423,17 +1400,17 @@ test("different-generation upgrade restarts every loaded resource in v2 and keep
   expect(client.calls.slice(callsBeforeReconnect)).toEqual([
     {
       method: "evener/navigation/read",
-      params: { resource: "manifest", representationVersion: 2 },
+      params: { resource: "manifest", representationVersion: 3 },
     },
     {
       method: "evener/navigation/read",
-      params: { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 2 },
+      params: { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 3 },
     },
   ]);
   expect(publications.length).toBeGreaterThan(0);
   for (const publication of publications) {
     expect(publication).toEqual({
-      mode: "v2",
+      mode: "v3",
       clientGenerationID: nextGeneration,
       resourceGenerationID: nextGeneration,
       version: undefined,
@@ -1458,7 +1435,7 @@ test("different-generation upgrade restarts every loaded resource in v2 and keep
     representation: "snapshot",
     generationId: nextGeneration,
     revision: 1,
-    etag: '"manifest-v2-next"',
+    etag: '"manifest-v3-next"',
     data: {
       metadata: emptyManifest({ generation_id: nextGeneration, revision: 1 }),
       entities: [],
@@ -1476,7 +1453,7 @@ test("different-generation upgrade restarts every loaded resource in v2 and keep
     representation: "snapshot",
     generationId: nextGeneration,
     revision: 2,
-    etag: '"section-v2-next"',
+    etag: '"section-v3-next"',
     data: reconnectSessionSnapshot(
       reconnectSectionKey,
       { generation_id: nextGeneration, revision: 2, offset: 0, limit: 50, remaining: 0, truncated: false },
@@ -1488,13 +1465,13 @@ test("different-generation upgrade restarts every loaded resource in v2 and keep
   const state = store.getState();
   const section = state.resources.get(keyID(reconnectSectionKey));
   expect(state.capability).toEqual(reconnectCapability);
-  expect(state.mode).toBe("v2");
+  expect(state.mode).toBe("v3");
   expect(state.clientGenerationID).toBe(nextGeneration);
   expect(section).toMatchObject({ generationID: nextGeneration, loadedRevision: 2, stale: false, error: null });
   expect(section?.normalized?.version).toEqual({
     generationId: nextGeneration,
     revision: 2,
-    etag: '"section-v2-next"',
+    etag: '"section-v3-next"',
   });
   expect(selectGlobalRows(state).map((session) => session.ref)).toEqual(["x"]);
   await flush();
@@ -1505,7 +1482,7 @@ test("client replacement clears prior navigation ownership during bootstrap but 
   const oldClient = new FakeClient("ready");
   oldClient.on("evener/navigation/read", (params) => {
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({
           sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
@@ -1515,7 +1492,7 @@ test("client replacement clears prior navigation ownership during bootstrap but 
         "old",
       );
     if (params.resource === "section")
-      return wireV2(
+      return wireSnapshot(
         params,
         { sessions: [{ ref: "local:old-client", children: [] }], remaining: 0, truncated: false },
         '"old-section"',
@@ -1565,7 +1542,7 @@ test("client replacement clears prior navigation ownership during bootstrap but 
   expect(disposalError).toEqual(expect.objectContaining({ message: "navigation protocol: revalidator disposed" }));
 
   newManifest.resolve(
-    wireV2({ resource: "manifest", representationVersion: 2 }, emptyManifest(), '"new-manifest"', 1, "new"),
+    wireSnapshot({ resource: "manifest", representationVersion: 3 }, emptyManifest(), '"new-manifest"', 1, "new"),
   );
   await flush();
   const installed = store.getState();
@@ -1575,12 +1552,12 @@ test("client replacement clears prior navigation ownership during bootstrap but 
   expect(installed.expanded.get("remembered-project")).toBe(true);
 });
 
-test("same-generation higher-sequence reconnect advances and forces every loaded v2 base exactly once", async () => {
+test("same-generation higher-sequence reconnect advances and forces every loaded v3 base exactly once", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...initialCapability, sequence: 5 };
   const client = new FakeClient("ready");
   client.scriptConnect(() => initialize(initialCapability));
-  client.on("evener/navigation/read", reconnectV2Response);
+  client.on("evener/navigation/read", reconnectSnapshotResponse);
   store.init(client);
   await flush();
   await store.getState().loadSection("live");
@@ -1593,7 +1570,7 @@ test("same-generation higher-sequence reconnect advances and forces every loaded
 
   const state = store.getState();
   expect(state.capability).toEqual(reconnectCapability);
-  expect(state.mode).toBe("v2");
+  expect(state.mode).toBe("v3");
   expect(state.lastSequence).toBe(5);
   expect(state.protocolError).toBeNull();
   expect(client.calls.slice(callsBeforeReconnect)).toEqual([
@@ -1601,8 +1578,8 @@ test("same-generation higher-sequence reconnect advances and forces every loaded
       method: "evener/navigation/read",
       params: {
         resource: "manifest",
-        representationVersion: 2,
-        base: { generationId: generation, revision: 11, etag: '"manifest-v2"' },
+        representationVersion: 3,
+        base: { generationId: generation, revision: 11, etag: '"manifest-v3"' },
       },
     },
     {
@@ -1612,8 +1589,8 @@ test("same-generation higher-sequence reconnect advances and forces every loaded
         section: "live",
         offset: 0,
         limit: 50,
-        representationVersion: 2,
-        base: { generationId: generation, revision: 22, etag: '"section-v2"' },
+        representationVersion: 3,
+        base: { generationId: generation, revision: 22, etag: '"section-v3"' },
       },
     },
     {
@@ -1621,14 +1598,14 @@ test("same-generation higher-sequence reconnect advances and forces every loaded
       params: {
         resource: "location",
         ref: "local:x",
-        representationVersion: 2,
-        base: { generationId: generation, revision: 33, etag: '"location-v2"' },
+        representationVersion: 3,
+        base: { generationId: generation, revision: 33, etag: '"location-v3"' },
       },
     },
   ]);
 });
 
-test("same-generation equal-sequence reconnect retries one settled error with its installed v2 base", async () => {
+test("same-generation equal-sequence reconnect retries one settled error with its installed v3 base", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...initialCapability, sequence: 3 };
   const sectionBases: unknown[] = [];
@@ -1638,7 +1615,7 @@ test("same-generation equal-sequence reconnect retries one settled error with it
   const client = new FakeClient("ready");
   client.scriptConnect(() => initialize(initialCapability));
   client.on("evener/navigation/read", (params) => {
-    if (!refreshing) return reconnectV2Response(params);
+    if (!refreshing) return reconnectSnapshotResponse(params);
     if (params.resource === "section") {
       sectionBases.push(params.base);
       sectionRefreshes++;
@@ -1649,7 +1626,7 @@ test("same-generation equal-sequence reconnect retries one settled error with it
         representation: "snapshot",
         generationId: generation,
         revision: 23,
-        etag: '"section-v2-23"',
+        etag: '"section-v3-23"',
         data: reconnectSessionSnapshot(
           reconnectSectionKey,
           { generation_id: generation, revision: 23, offset: 0, limit: 50, remaining: 0, truncated: false },
@@ -1664,7 +1641,7 @@ test("same-generation equal-sequence reconnect retries one settled error with it
   await store.getState().loadSection("live");
   const initial = store.getState();
   const initialSection = initial.resources.get(keyID(reconnectSectionKey));
-  if (!initialSection?.normalized) throw new Error("expected installed v2 section");
+  if (!initialSection?.normalized) throw new Error("expected installed v3 section");
 
   refreshing = true;
   client.emitNotification(
@@ -1694,14 +1671,14 @@ test("same-generation equal-sequence reconnect retries one settled error with it
         section: "live",
         offset: 0,
         limit: 50,
-        representationVersion: 2,
-        base: { generationId: generation, revision: 22, etag: '"section-v2"' },
+        representationVersion: 3,
+        base: { generationId: generation, revision: 22, etag: '"section-v3"' },
       },
     },
   ]);
   expect(sectionBases).toEqual([
-    { generationId: generation, revision: 22, etag: '"section-v2"' },
-    { generationId: generation, revision: 22, etag: '"section-v2"' },
+    { generationId: generation, revision: 22, etag: '"section-v3"' },
+    { generationId: generation, revision: 22, etag: '"section-v3"' },
   ]);
   expect(authorityDuringRetry).toBe(initialSection.normalized.version);
   expect(store.getState().manifest).toBe(initial.manifest);
@@ -1710,8 +1687,8 @@ test("same-generation equal-sequence reconnect retries one settled error with it
 test("shutdown convergence follows the invalidation receipt when one arrives", async () => {
   let revision = 1;
   const client = await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
-    return wireV2(params, { sessions: [], remaining: 0, truncated: false }, `"section-${revision}"`, revision);
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+    return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false }, `"section-${revision}"`, revision);
   });
   await store.getState().loadSection("live");
   const waiter = store.getState().awaitNavigationInvalidation(() => true);
@@ -1732,8 +1709,8 @@ test("shutdown convergence re-arms past unrelated receipts until its session set
   let revision = 1;
   let listed = true;
   const client = await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
-    return wireV2(
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+    return wireSnapshot(
       params,
       { sessions: listed ? [{ ref: "local:doomed", children: [] }] : [], remaining: 0, truncated: false },
       `"section-${revision}"`,
@@ -1782,8 +1759,8 @@ test("shutdown convergence re-arms past unrelated receipts until its session set
 
 test("shutdown convergence treats revalidator disposal as converged", async () => {
   await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
-    return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+    return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false });
   });
   await store.getState().loadSection("live");
   const waiter = store.getState().awaitNavigationInvalidation(() => true);
@@ -1814,8 +1791,8 @@ test("shutdown convergence refreshes targets directly when no invalidation arriv
   const calls: NavigationReadParams[] = [];
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
-    return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+    return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false });
   });
   await store.getState().loadSection("live");
   const waiter = store.getState().awaitNavigationInvalidation(() => true);
@@ -1825,12 +1802,12 @@ test("shutdown convergence refreshes targets directly when no invalidation arriv
   expect(calls.filter((params) => params.resource === "section")).toHaveLength(2);
 });
 
-test("same-generation lower-sequence reconnect preserves installed v2 authority and identities without a read", async () => {
+test("same-generation lower-sequence reconnect preserves installed v3 authority and identities without a read", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...capability(), sequence: 1 };
   const client = new FakeClient("ready");
   client.scriptConnect(() => initialize(initialCapability));
-  client.on("evener/navigation/read", reconnectV2Response);
+  client.on("evener/navigation/read", reconnectSnapshotResponse);
   store.init(client);
   await flush();
   await store.getState().loadSection("live");
@@ -1840,7 +1817,7 @@ test("same-generation lower-sequence reconnect preserves installed v2 authority 
   const beforeSection = before.resources.get(keyID(reconnectSectionKey));
   const beforeLocation = before.resources.get(keyID(reconnectLocationKey));
   if (!beforeManifest?.version || !beforeSection?.version || !beforeLocation?.version) {
-    throw new Error("expected installed v2 reconnect bases");
+    throw new Error("expected installed v3 reconnect bases");
   }
   const callsBeforeReconnect = client.calls.length;
 
@@ -1853,7 +1830,7 @@ test("same-generation lower-sequence reconnect preserves installed v2 authority 
   expect(state.capability).toEqual(initialCapability);
   expect(state.capability).not.toEqual(reconnectCapability);
   expect(state.mode).toBe(before.mode);
-  expect(state.mode).toBe("v2");
+  expect(state.mode).toBe("v3");
   expect(state.clientGenerationID).toBe(before.clientGenerationID);
   expect(state.clientGenerationID).toBe(generation);
   expect(state.lastSequence).toBe(2);
@@ -1874,26 +1851,29 @@ test("same-generation lower-sequence reconnect preserves installed v2 authority 
     state.resources.get(keyID(reconnectSectionKey))?.version,
     state.resources.get(keyID(reconnectLocationKey))?.version,
   ]).toEqual([
-    { generationId: generation, revision: 11, etag: '"manifest-v2"' },
-    { generationId: generation, revision: 22, etag: '"section-v2"' },
-    { generationId: generation, revision: 33, etag: '"location-v2"' },
+    { generationId: generation, revision: 11, etag: '"manifest-v3"' },
+    { generationId: generation, revision: 22, etag: '"section-v3"' },
+    { generationId: generation, revision: 33, etag: '"location-v3"' },
   ]);
 });
 
 test("selectors expose every loaded global/pin page, location, project/page resources and expansion", async () => {
   await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
     if (params.resource === "section")
-      return wireV2(params, {
+      return wireSnapshot(params, {
         sessions: [{ ref: params.offset === 50 ? "s2" : "s", children: [] }],
         remaining: 0,
       });
     if (params.resource === "pin_catalog")
-      return wireV2(params, { pin_sections: [{ id: "pin", name: "Pinned", count: 2 }], remaining: 0 });
+      return wireSnapshot(params, { pin_sections: [{ id: "pin", name: "Pinned", count: 2 }], remaining: 0 });
     if (params.resource === "pin_section")
-      return wireV2(params, { sessions: [{ ref: params.offset === 50 ? "p2" : "p1", children: [] }], remaining: 0 });
-    if (params.resource === "location") return wireV2(params, { session: { ref: params.ref, children: [] } });
-    return wireV2(params, { sessions: [], remaining: 0 });
+      return wireSnapshot(params, {
+        sessions: [{ ref: params.offset === 50 ? "p2" : "p1", children: [] }],
+        remaining: 0,
+      });
+    if (params.resource === "location") return wireSnapshot(params, { session: { ref: params.ref, children: [] } });
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
   await store.getState().loadSection("live");
   await store.getState().loadSection("live", 50, 50);
@@ -1934,25 +1914,25 @@ test("boot keeps one global four-request budget through first resources, pin sec
       active--;
       request.resolve(
         request.params.resource === "catalog" && request.params.catalog === "projects"
-          ? wireV2(request.params, { projects, remaining: 0 })
+          ? wireSnapshot(request.params, { projects, remaining: 0 })
           : request.params.resource === "catalog"
-            ? wireV2(request.params, { projects: [], remaining: 0 })
+            ? wireSnapshot(request.params, { projects: [], remaining: 0 })
             : request.params.resource === "pin_catalog"
-              ? wireV2(request.params, { pin_sections: pinSections, remaining: 0 })
+              ? wireSnapshot(request.params, { pin_sections: pinSections, remaining: 0 })
               : request.params.resource === "project"
-                ? wireV2(request.params, {
+                ? wireSnapshot(request.params, {
                     key: request.params.projectKey,
                     current: { sessions: [], remaining: 1 },
                     recent: { sessions: [], remaining: 1 },
                     archived: { sessions: [], remaining: 1 },
                   })
-                : wireV2(request.params, { sessions: [], remaining: 0 }),
+                : wireSnapshot(request.params, { sessions: [], remaining: 0 }),
       );
     }
   };
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wireV2(params, m);
+    if (params.resource === "manifest") return wireSnapshot(params, m);
     let resolve!: (value: NavigationReadResponse) => void;
     const promise = new Promise<NavigationReadResponse>((r) => {
       resolve = r;
@@ -2011,22 +1991,22 @@ test("boot hydrates default-expanded projects in catalog order, not resource-map
   store.setState({ resources: seeded });
   const projectCalls: string[] = [];
   await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, m);
+    if (params.resource === "manifest") return wireSnapshot(params, m);
     if (params.resource === "catalog" && params.catalog)
-      return wireV2(params, {
+      return wireSnapshot(params, {
         projects: [{ key: params.catalog, default_expanded: true }],
         remaining: 0,
       });
     if (params.resource === "project" && params.projectKey) {
       projectCalls.push(params.projectKey);
-      return wireV2(params, {
+      return wireSnapshot(params, {
         key: params.projectKey,
         current: { sessions: [], remaining: 0 },
         recent: { sessions: [], remaining: 0 },
         archived: { sessions: [], remaining: 0 },
       });
     }
-    return wireV2(params, { sessions: [], remaining: 0 });
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
   await flush();
   expect(projectCalls).toEqual(["projects", "archived_projects", "test_runs"]);
@@ -2040,10 +2020,10 @@ test("zero-count pin descriptors and collapsed projects do not issue requests", 
   const calls: NavigationReadParams[] = [];
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wireV2(params, m);
+    if (params.resource === "manifest") return wireSnapshot(params, m);
     if (params.resource === "pin_catalog")
-      return wireV2(params, { pin_sections: [{ id: "empty", count: 0 }], remaining: 0 });
-    return wireV2(params, { projects: [{ key: "collapsed", default_expanded: false }], remaining: 0 });
+      return wireSnapshot(params, { pin_sections: [{ id: "empty", count: 0 }], remaining: 0 });
+    return wireSnapshot(params, { projects: [{ key: "collapsed", default_expanded: false }], remaining: 0 });
   });
   expect(calls.some((params) => params.resource === "pin_section")).toBe(false);
   expect(calls.some((params) => params.resource === "project" && params.projectKey === "collapsed")).toBe(false);
@@ -2055,19 +2035,19 @@ test("tracking an unseen empty pin section lets its first assignment converge in
   await init((params) => {
     calls.push(params);
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 1 } } }),
       );
     if (params.resource === "pin_catalog")
-      return wireV2(
+      return wireSnapshot(
         params,
         { pin_sections: [{ id: "empty", count: assigned ? 1 : 0 }], remaining: 0 },
         assigned ? '"catalog-two"' : '"catalog-one"',
         assigned ? 2 : 1,
       );
     if (params.resource === "pin_section")
-      return wireV2(
+      return wireSnapshot(
         params,
         { sessions: assigned ? [{ ref: "local:a", children: [] }] : [], remaining: 0 },
         '"section-two"',
@@ -2103,7 +2083,7 @@ test("unavailable project recovery refreshes its owning loaded catalog once and 
   const catalog = { projects: [{ key: "p" }], remaining: 0 };
   const client = await init((params) => {
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
@@ -2111,15 +2091,15 @@ test("unavailable project recovery refreshes its owning loaded catalog once and 
       );
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      return wireV2(params, catalog, catalogCalls === 1 ? '"catalog-1"' : '"catalog-2"', catalogCalls);
+      return wireSnapshot(params, catalog, catalogCalls === 1 ? '"catalog-1"' : '"catalog-2"', catalogCalls);
     }
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
       if (projectCalls === 1)
         throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
-      return wireV2(params, project);
+      return wireSnapshot(params, project);
     }
-    return wireV2(params, { sessions: [], remaining: 0 });
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
   const result = await store.getState().loadProject("p");
   expect(result.data).toMatchObject(project);
@@ -2136,7 +2116,7 @@ test("unavailable project recovery refreshes its owning loaded catalog once and 
     catalog: "projects",
     offset: 0,
     limit: 100,
-    representationVersion: 2,
+    representationVersion: 3,
     base: { generationId: generation, revision: 1, etag: '"catalog-1"' },
   });
 });
@@ -2155,7 +2135,7 @@ test("uncertain project membership refreshes every loaded catalog before retry",
   };
   await init((params) => {
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 1 }, test_runs: { count: 0 } },
@@ -2163,19 +2143,19 @@ test("uncertain project membership refreshes every loaded catalog before retry",
       );
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogs.set("projects", catalogs.get("projects")! + 1);
-      return wireV2(params, { projects: catalogs.get("projects") === 1 ? [] : [{ key: "p" }], remaining: 0 });
+      return wireSnapshot(params, { projects: catalogs.get("projects") === 1 ? [] : [{ key: "p" }], remaining: 0 });
     }
     if (params.resource === "catalog" && params.catalog === "archived_projects") {
       catalogs.set("archived-projects", catalogs.get("archived-projects")! + 1);
-      return wireV2(params, { projects: [], remaining: 0 });
+      return wireSnapshot(params, { projects: [], remaining: 0 });
     }
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
       if (projectCalls === 1)
         throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
-      return wireV2(params, project);
+      return wireSnapshot(params, project);
     }
-    return wireV2(params, { sessions: [], remaining: 0 });
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
   expect((await store.getState().loadProject("p")).data).toMatchObject(project);
   expect(projectCalls).toBe(2);
@@ -2196,7 +2176,7 @@ test("unavailable project recovery discovers nonempty catalogs after a forced ma
   await init((params) => {
     if (params.resource === "manifest") {
       manifestCalls++;
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({
           catalogs: {
@@ -2211,15 +2191,15 @@ test("unavailable project recovery discovers nonempty catalogs after a forced ma
     }
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      return wireV2(params, { projects: [{ key: "late" }], remaining: 0 });
+      return wireSnapshot(params, { projects: [{ key: "late" }], remaining: 0 });
     }
     if (params.resource === "project" && params.projectKey === "late") {
       projectCalls++;
       if (projectCalls === 1)
         throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
-      return wireV2(params, project);
+      return wireSnapshot(params, project);
     }
-    return wireV2(params, { projects: [], remaining: 0 });
+    return wireSnapshot(params, { projects: [], remaining: 0 });
   });
 
   expect((await store.getState().loadProject("late")).data).toMatchObject(project);
@@ -2236,23 +2216,24 @@ test.each([
   ["project", () => store.getState().loadProject("p")],
   ["project page", () => store.getState().loadProjectPage("p", "current")],
   ["location", () => store.getState().lookupLocation("p")],
-] as const)("malformed %s bodies fail closed without leaving v2 mode", async (_name, operation) => {
+] as const)("malformed %s bodies fail closed without leaving v3 mode", async (_name, operation) => {
   await init((params) => {
-    if (params.resource === "manifest") return wireV2(params, emptyManifest());
-    if (params.resource === "pin_catalog") return wireV2(params, { pin_sections: [{ id: 123 }], remaining: 0 });
-    if (params.resource === "catalog") return wireV2(params, { projects: [{ key: 123 }], remaining: 0 });
-    if (params.resource === "project") return wireV2(params, { current: { sessions: [{ ref: 123 }] }, remaining: 0 });
-    if (params.resource === "location") return wireV2(params, { session: { ref: 123 } });
-    return wireV2(params, { sessions: [{ ref: 123 }], remaining: 0 });
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+    if (params.resource === "pin_catalog") return wireSnapshot(params, { pin_sections: [{ id: 123 }], remaining: 0 });
+    if (params.resource === "catalog") return wireSnapshot(params, { projects: [{ key: 123 }], remaining: 0 });
+    if (params.resource === "project")
+      return wireSnapshot(params, { current: { sessions: [{ ref: 123 }] }, remaining: 0 });
+    if (params.resource === "location") return wireSnapshot(params, { session: { ref: 123 } });
+    return wireSnapshot(params, { sessions: [{ ref: 123 }], remaining: 0 });
   });
   const result = await operation();
   expect(result.error).toBeInstanceOf(Error);
   expect(result.data).toBeNull();
-  expect(store.getState().mode).toBe("v2");
+  expect(store.getState().mode).toBe("v3");
   expect(store.getState().protocolError).toBeInstanceOf(Error);
 });
 
-test("v2 successful pages must advance when remaining is positive", async () => {
+test("v3 successful pages must advance when remaining is positive", async () => {
   const manifestKey = { kind: "manifest" } as const;
   const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
   let sectionCalls = 0;
@@ -2320,10 +2301,10 @@ test("v2 successful pages must advance when remaining is positive", async () => 
 });
 
 test("a malformed manifest body is never committed", async () => {
-  await init((params) => wireV2(params, { sessions: [{ ref: 123 }], remaining: 0 }));
+  await init((params) => wireSnapshot(params, { sessions: [{ ref: 123 }], remaining: 0 }));
   expect(store.getState().manifest?.data).toBeNull();
   expect(store.getState().manifest?.error).toBeInstanceOf(Error);
-  expect(store.getState().mode).toBe("v2");
+  expect(store.getState().mode).toBe("v3");
 });
 
 test("authoritative project unavailability preserves last-good state without retry loops", async () => {
@@ -2337,7 +2318,7 @@ test("authoritative project unavailability preserves last-good state without ret
   };
   const client = await init((params) => {
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
@@ -2345,15 +2326,15 @@ test("authoritative project unavailability preserves last-good state without ret
       );
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      if (catalogCalls === 1) return wireV2(params, { projects: [{ key: "p" }], remaining: 0 });
+      if (catalogCalls === 1) return wireSnapshot(params, { projects: [{ key: "p" }], remaining: 0 });
       throw new WireError("catalog unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      if (projectCalls === 1) return wireV2(params, project);
+      if (projectCalls === 1) return wireSnapshot(params, project);
       throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
-    return wireV2(params, { sessions: [], remaining: 0 });
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
   expect((await store.getState().loadProject("p")).data).toMatchObject(project);
   client.emitNotification({
@@ -2378,7 +2359,7 @@ test("catalog refresh failure preserves stale catalog and project data", async (
   };
   const client = await init((params) => {
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
@@ -2386,15 +2367,15 @@ test("catalog refresh failure preserves stale catalog and project data", async (
       );
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      if (catalogCalls === 1) return wireV2(params, { projects: [{ key: "p" }], remaining: 0 });
+      if (catalogCalls === 1) return wireSnapshot(params, { projects: [{ key: "p" }], remaining: 0 });
       throw new WireError("catalog unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      if (projectCalls === 1) return wireV2(params, project);
+      if (projectCalls === 1) return wireSnapshot(params, project);
       throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
-    return wireV2(params, { sessions: [], remaining: 0 });
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
   const first = await store.getState().loadProject("p");
   expect(first.data).toMatchObject(project);
@@ -2415,7 +2396,7 @@ test("targeted updates are immutable and preserve unrelated resource identity", 
   let sectionRevision = 1;
   const client = await init((params) => {
     if (params.resource === "manifest")
-      return wireV2(
+      return wireSnapshot(
         params,
         emptyManifest({
           sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
@@ -2423,15 +2404,15 @@ test("targeted updates are immutable and preserve unrelated resource identity", 
         }),
       );
     if (params.resource === "section" && params.section === "live")
-      return wireV2(
+      return wireSnapshot(
         params,
         { sessions: [{ ref: `s${sectionRevision}`, children: [] }], remaining: 0 },
         `"section-${sectionRevision}"`,
         sectionRevision,
       );
     if (params.resource === "catalog" && params.catalog === "projects")
-      return wireV2(params, { projects: [], remaining: 0 });
-    return wireV2(params, { sessions: [], remaining: 0 });
+      return wireSnapshot(params, { projects: [], remaining: 0 });
+    return wireSnapshot(params, { sessions: [], remaining: 0 });
   });
   await store.getState().loadSection("live");
   await store.getState().loadCatalog("projects");
@@ -2603,20 +2584,20 @@ test("strict invalid delta recovery retains the installed graph and converges th
 // once, and the persistence port's own reads and writes.
 const catalogOfOne = (projectKey: string, defaultExpanded: boolean) => (params: NavigationReadParams) => {
   if (params.resource === "manifest")
-    return wireV2(
+    return wireSnapshot(
       params,
       manifest({ catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } } }),
     );
   if (params.resource === "catalog" && params.catalog === "projects")
-    return wireV2(params, { projects: [{ key: projectKey, default_expanded: defaultExpanded }], remaining: 0 });
+    return wireSnapshot(params, { projects: [{ key: projectKey, default_expanded: defaultExpanded }], remaining: 0 });
   if (params.resource === "project")
-    return wireV2(params, {
+    return wireSnapshot(params, {
       key: projectKey,
       current: { sessions: [], remaining: 0 },
       recent: { sessions: [], remaining: 0 },
       archived: { sessions: [], remaining: 0 },
     });
-  return wireV2(params, { sessions: [], remaining: 0 });
+  return wireSnapshot(params, { sessions: [], remaining: 0 });
 };
 
 const booted = async (store: NavigationStore, script: (p: NavigationReadParams) => NavigationReadResponse) => {
@@ -2642,7 +2623,7 @@ test("two stores keep their own expansion, their own port and their own connecti
   expect(firstPort.writes).toEqual([{ a: true, b: true }]);
 
   await booted(first, catalogOfOne("p", false));
-  expect(first.getState().mode).toBe("v2");
+  expect(first.getState().mode).toBe("v3");
   expect(second.getState().mode).toBe("unknown");
   expect(second.getState().manifest).toBeNull();
 });
@@ -2731,4 +2712,13 @@ test("a store reset mid-boot fences the fan-out its manifest would have started"
   expect(store.getState().mode).toBe("unknown");
   expect(store.getState().manifest).toBeNull();
   expect(store.getState().resources.size).toBe(0);
+});
+
+test("navigation reads require the advertised version 3 representation", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams) => wireSnapshot(params, emptyManifest()));
+  store.init(client, { ...capability(), readVersions: [3] });
+  await flush();
+  expect(store.getState().protocolError).toBeNull();
+  expect(client.calls[0]?.params).toMatchObject({ representationVersion: 3 });
 });

@@ -30,7 +30,6 @@ export type ResourceKey =
   | { kind: "catalog"; catalog: "projects" | "archived_projects" | "test_runs"; offset: number; limit: number }
   | { kind: "project"; projectKey: string }
   | { kind: "project_page"; projectKey: string; tier: "current" | "recent" | "archived"; offset: number; limit: number }
-  | { kind: "subagents"; ref: string; offset: number; limit: number }
   | { kind: "location"; ref: string };
 
 function rawBase64URL(value: string): string {
@@ -54,7 +53,7 @@ function canonicalNavigationLimit(limit: number, maximum: number): number {
 }
 
 export function canonicalResourceKey(key: ResourceKey): ResourceKey {
-  if ((key.kind !== "location" && key.kind !== "subagents") || key.ref.includes(":")) return key;
+  if (key.kind !== "location" || key.ref.includes(":")) return key;
   return { ...key, ref: `local:${key.ref}` };
 }
 
@@ -95,8 +94,6 @@ export function navigationParamsToResourceKey(params: NavigationReadParams): Res
         tier: params.tier as "current" | "recent" | "archived",
         ...paged(NAVIGATION_SECTION_LIMIT),
       };
-    case "subagents":
-      return { kind: "subagents", ref: params.ref as string, ...paged(NAVIGATION_SECTION_LIMIT) };
     case "location":
       return { kind: "location", ref: params.ref as string };
     default: {
@@ -143,16 +140,11 @@ export function navigationViewScope(key: ResourceKey): string {
       offset = key.offset;
       limit = canonicalNavigationLimit(key.limit, NAVIGATION_SECTION_LIMIT);
       break;
-    case "subagents":
-      id = key.ref;
-      offset = key.offset;
-      limit = canonicalNavigationLimit(key.limit, NAVIGATION_SECTION_LIMIT);
-      break;
     case "location":
       id = key.ref;
       break;
   }
-  return `nav2/${kind}/${rawBase64URL(id)}/${rawBase64URL(sectionID)}/${rawBase64URL(projectKey)}/${rawBase64URL(tier)}/${offset}/${limit}`;
+  return `nav3/${kind}/${rawBase64URL(id)}/${rawBase64URL(sectionID)}/${rawBase64URL(projectKey)}/${rawBase64URL(tier)}/${offset}/${limit}`;
 }
 
 export function navigationRootContainerKey(key: ResourceKey, slot: string): string {
@@ -188,7 +180,7 @@ export interface NavigationResponse<T = unknown> {
   revision: number;
   etag: string;
   data?: T | null;
-  v2?: DecodedNavigationResponse;
+  v3?: DecodedNavigationResponse;
   normalized?: NormalizedResource;
 }
 export type NavigationRequest<T = unknown> = (

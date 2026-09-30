@@ -31,7 +31,7 @@ func newSharedBareIDPinWeb(t *testing.T) (*WebServer, *hubcore.PinSectionStore) 
 
 func pinSectionRowRefs(t *testing.T, web *WebServer, sectionID string) []string {
 	t.Helper()
-	result, err := web.navigation.readV2(context.Background(), navigationResourceKey{Kind: navigationResourcePinSection, SectionID: sectionID, Limit: 50}, nil)
+	result, err := web.navigation.readV3(context.Background(), navigationResourceKey{Kind: navigationResourcePinSection, SectionID: sectionID, Limit: 50}, nil)
 	if err != nil {
 		t.Fatalf("read pin section %s: %v", sectionID, err)
 	}

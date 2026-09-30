@@ -9,7 +9,7 @@ import (
 )
 
 // Navigation resource keys, canonicalization, view scoping, entity/container
-// key derivation, and ETags are shared by the v2 read path, delta history,
+// key derivation, and ETags are shared by the v3 read path, delta history,
 // and normalization. They live here after the v1 representation cache was
 // removed.
 
@@ -69,7 +69,7 @@ func navigationViewScope(key navigationResourceKey) string {
 	view := key.View()
 	encode := base64.RawURLEncoding.EncodeToString
 	return fmt.Sprintf(
-		"nav2/%s/%s/%s/%s/%s/%d/%d",
+		"nav3/%s/%s/%s/%s/%s/%d/%d",
 		view.Kind,
 		encode([]byte(view.ID)),
 		encode([]byte(view.SectionID)),
