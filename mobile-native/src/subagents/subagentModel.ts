@@ -157,7 +157,8 @@ export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[];
 	const jobs: ShellJobRow[] = [];
 	const seen = new Set<string>();
 	let order = 0;
-	const visit = (session: ActivitySessionNode, owner: string, parentTitle: string | undefined) => {
+	// parentTitle is the subagent whose session this is, absent at the root.
+	const visit = (session: ActivitySessionNode, parentTitle: string | undefined) => {
 		for (const entry of session.entries) {
 			if (entry.kind === "shell") {
 				if (seen.has(entry.job.jobId)) continue;
@@ -167,7 +168,7 @@ export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[];
 					kind: "job",
 					id: job.jobId,
 					title: job.description.trim() || firstLine(job.command ?? "", 80) || job.jobId,
-					owner,
+					owner: parentTitle ?? tree.root.label,
 					state: shellJobState(job),
 					job,
 					order: order++,
@@ -190,10 +191,10 @@ export function flattenActivity(tree: ActivityTree): { subagents: SubagentRow[];
 				delegate,
 				order: order++,
 			});
-			if (delegate.child) visit(delegate.child, title, title);
+			if (delegate.child) visit(delegate.child, title);
 		}
 	};
-	visit(tree.root, tree.root.label, undefined);
+	visit(tree.root, undefined);
 	return { subagents, jobs };
 }
 
