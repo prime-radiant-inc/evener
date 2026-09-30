@@ -1163,11 +1163,12 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
 		answerJobsOutput: (params) => {
 			// Read back as the phone reads the tree, so the job answered is the
-			// one the Activity list shows.
+			// one the Activity list shows, and only for the session that owns
+			// it, as a hub answers.
 			for (const raw of sessionsList) {
 				const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(raw)), startupMs).data);
 				const job = tree ? flattenActivity(tree).jobs.find((row) => row.id === params.jobId)?.job : undefined;
-				if (job) return demoJobOutput(job);
+				if (job && job.ownerRef === params.ref) return demoJobOutput(job);
 			}
 			throw new Error(`job not found: ${params.jobId}`);
 		},
