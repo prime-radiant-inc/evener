@@ -2069,6 +2069,43 @@ function releaseHeldClear(): void {
   release?.();
 }
 
+// The held-then-aborting clear adapter: the singleton seam parks clear()
+// until the test releases it, then resolves the abort ({ committed: false })
+// without ever running a transaction — the shape a clear that never reaches
+// a definite commit takes in the wild, scriptable mid-flight.
+class HeldAbortingClearAdapter extends SessionCacheIndexedDB {
+  readonly #open: Promise<void>;
+
+  constructor(open: Promise<void>) {
+    super();
+    this.#open = open;
+  }
+
+  override clear(): Promise<{ committed: boolean; epoch: number }> {
+    // The abort's epoch is unused by the caller; the transaction never ran,
+    // so no epoch was observed.
+    return this.#open.then(() => ({ committed: false, epoch: 0 }));
+  }
+}
+
+let releaseHeldAbortingClearFn: (() => void) | undefined;
+
+function installHeldAbortingClearAdapter(): HeldAbortingClearAdapter {
+  releaseHeldAbortingClearFn = undefined;
+  const opened = new Promise<void>((resolve) => {
+    releaseHeldAbortingClearFn = resolve;
+  });
+  const adapter = new HeldAbortingClearAdapter(opened);
+  installCacheAdapter(adapter);
+  return adapter;
+}
+
+function releaseHeldAbortingClear(): void {
+  const release = releaseHeldAbortingClearFn;
+  releaseHeldAbortingClearFn = undefined;
+  release?.();
+}
+
 // The faulted-clear adapter: beforeCommit("clear") throws, so the clear's
 // transaction aborts and reads as { committed: false } — the honest no-op
 // every tab must revert from (installFaultedDeleteAdapter's pattern).
@@ -2101,12 +2138,17 @@ describe("the clear", () => {
       installHeldClearAdapter(); // the singleton seam answers clear() only when the test releases it
       const clearing = clearCachedSessions();
       // The in-memory step already ran while the clear's transaction never
-      // started: the lease's suppression is armed ahead of any commit.
-      expect(threadsStore.getState().cacheSuppressed.has("local:held")).toBe(true);
+      // started: the in-flight marker holds the armed epoch, and it is what
+      // refuses the ref's writes until the outcome lands.
+      expect(threadsStore.getState().clearInFlight).toBe(1);
       await vi.advanceTimersByTimeAsync(6_000); // the timer would have fired long ago
-      expect(await cacheRecord("local:held")).toBeDefined(); // the write died by timer cancellation + suppression
+      expect(await cacheRecord("local:held")).toBeDefined(); // the pre-clear write died by timer cancellation
+      emitHistoryUpdated("local:held", { fold: "turn_k2" }); // a publication during the flight
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect((await cacheRecord("local:held"))?.threadId).toBe("thr_1"); // the in-flight marker refused it: the seed's record stands
       releaseHeldClear(); // the transaction commits
       expect(await clearing).toEqual({ committed: true });
+      expect(threadsStore.getState().clearInFlight).toBeUndefined(); // the marker went with the commit
       expect(await cacheRecord("local:held")).toBeUndefined();
     } finally {
       vi.useRealTimers();
@@ -2130,7 +2172,7 @@ describe("the clear", () => {
       installFaultedClearAdapter(); // beforeCommit("clear") throws: the honest no-op
       expect(await clearCachedSessions()).toEqual({ committed: false });
       expect(posted).toEqual([]); // commit-gated: no message for a clear that did not happen
-      expect(threadsStore.getState().cacheSuppressed.has("local:resume")).toBe(false); // the revert disarmed exactly what this clear armed
+      expect(threadsStore.getState().cacheSuppressed.has("local:resume")).toBe(false); // the abort left nothing behind: the arm never touched cacheSuppressed
       emitHistoryUpdated("local:resume", { fold: "turn_m" }); // suppression disarmed: caching resumes
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:resume")).toBeDefined();
@@ -2167,6 +2209,81 @@ describe("the clear", () => {
       threadsStore.getState().releaseThread("local:stack");
       expect(threadsStore.getState().cacheSuppressed.has("local:stack")).toBe(false);
       expect(threadsStore.getState().cacheLeases.has("local:stack")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the in-flight abort: a sibling deletion message that arrived during the flight keeps its suppression when the clear aborts", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { peer } = installTestCacheChannel();
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, "local:race");
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 40 } }));
+      await threadsStore.getState().ensureThread("local:race");
+      await resolveEverything(fake);
+      installHeldAbortingClearAdapter(); // park clear(); the release resolves the abort
+      const clearing = clearCachedSessions();
+      // While the clear's transaction is pending, a sibling tab's deletion
+      // message arrives: it arms the suppression itself and heals storage.
+      peer.post({ version: 1, sourceId: "other-tab", kind: "deletion", refs: ["local:race"] });
+      await settleProjectionWorkForTests();
+      expect(threadsStore.getState().cacheSuppressed.has("local:race")).toBe(true); // the deletion message's own arm
+      expect(await cacheRecord("local:race")).toBeUndefined(); // and its heal removed the record
+      releaseHeldAbortingClear(); // the clear aborts: committed: false
+      expect(await clearing).toEqual({ committed: false });
+      // (a) The abort left the deletion message's suppression standing.
+      expect(threadsStore.getState().cacheSuppressed.has("local:race")).toBe(true);
+      // (b) The T9 sibling property: a post-abort fold never resurrects the record the sibling deleted.
+      emitHistoryUpdated("local:race", { fold: "turn_r" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:race")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the in-flight abort: a newer epoch observed during the flight survives it, with the suppression it armed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // local:epoch_a holds the lease (seeded); local:epoch_b is cold, so
+      // its mid-flight write is the aborted write through which the
+      // backstop observes a sibling's committed clear this tab never heard
+      // about.
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, "local:epoch_a");
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 40 } }));
+      await threadsStore.getState().ensureThread("local:epoch_a");
+      await threadsStore.getState().ensureThread("local:epoch_b");
+      await resolveEverything(fake);
+      await adapter.deleteRecords(["local:epoch_a"]); // observe only this tab's writes for the leased ref
+      await bumpDurableCacheEpoch(5); // a sibling's clear committed; the message never arrives
+      const held = installHeldAbortingClearAdapter();
+      // The double parks clear() before any base call, so it would never
+      // open its connection; a real aborting clear ran against an open one.
+      // Warm it, or the write gate's isOpen check refuses the mid-flight
+      // write this test needs to abort on the newer epoch.
+      await held.get("local:epoch_warm", Date.now());
+      const clearing = clearCachedSessions();
+      emitHistoryUpdated("local:epoch_b", { fold: "turn_e" }); // the cold ref's mid-flight write
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:epoch_b")).toBeUndefined(); // the write aborted on the newer epoch...
+      expect(threadsStore.getState().cacheSuppressed.has("local:epoch_a")).toBe(true); // ...and the backstop armed the leased ref
+      releaseHeldAbortingClear();
+      expect(await clearing).toEqual({ committed: false });
+      // The abort neither disarmed the backstop's suppression...
+      expect(threadsStore.getState().cacheSuppressed.has("local:epoch_a")).toBe(true);
+      emitHistoryUpdated("local:epoch_a", { fold: "turn_e2" }); // the leased ref's post-abort fold stays refused
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:epoch_a")).toBeUndefined();
+      // ...nor clobbered the newer epoch back to the pre-clear view: the
+      // cold ref's next write carries the observed epoch and lands.
+      emitHistoryUpdated("local:epoch_b", { fold: "turn_e3" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord("local:epoch_b")).toBeDefined();
     } finally {
       vi.useRealTimers();
     }

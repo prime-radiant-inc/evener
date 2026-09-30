@@ -194,6 +194,15 @@ export interface ThreadsStoreState {
   /** The gap rule's captured anchor: the newest item position in the record,
    * fixed at shell-build from pure record data before any live merge. */
   cacheAnchors: Map<string, ThreadItemPosition>;
+  /** The epoch this tab's in-flight clear armed (spec, "The
+   * clear-cached-sessions setting"): while set, the write seam refuses every
+   * open lease whose captured epoch predates it. The clear's arm lives here,
+   * never in cacheSuppressed — the commit merges the ref set in, the abort
+   * just drops the marker — so no abort can touch another source's
+   * suppression (a sibling deletion message, the aborted-write backstop)
+   * that arrived while the clear was in flight. undefined when no clear is
+   * in flight. */
+  clearInFlight: number | undefined;
   ensureThread(ref: string): Promise<void>;
   // beforePublish, when given, is evaluated synchronously immediately before
   // this refresh publishes its snapshot. A throw cancels the read's result so
@@ -4339,6 +4348,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   cacheSuppressed: new Set(),
   cacheLeases: new Map(),
   cacheAnchors: new Map(),
+  clearInFlight: undefined,
 
   async ensureThread(ref) {
     let client = requireClient();
@@ -5256,6 +5266,14 @@ function flushCacheWrite(ref: string): void {
 
 function cacheWriteGatesPass(ref: string, model: ThreadModel): boolean {
   const state = threadsStore.getState();
+  // The in-flight clear's arm (clearInFlight): every open lease captured
+  // below the armed epoch predates the clear, so its writes wait for the
+  // outcome — the same set the commit merges into cacheSuppressed.
+  const inFlight = state.clearInFlight;
+  if (inFlight !== undefined) {
+    const captured = state.cacheLeases.get(ref);
+    if (captured !== undefined && captured < inFlight) return false;
+  }
   return (
     model.history?.incarnation !== undefined && // a completed v6 content-bearing read
     !state.cacheShellRefs.has(ref) && // the shell skip: lineage state, not object identity
@@ -5402,38 +5420,44 @@ export function markCacheSessionsDeleted(refs: string[]): void {
 /** Clear cached session content (spec, "The clear-cached-sessions setting").
  * Synchronous in-memory step first — the only order that works, since
  * in-memory timer state cannot commit transactionally — then one
- * read-write transaction. The broadcast is commit-gated: a sibling never
- * arms suppression for a clear that did not happen. A clear that never
- * reaches a definite commit reverts its own in-memory effects — an
- * earlier committed clear's suppression stands — so open refs resume
- * caching at their next publication. */
+ * read-write transaction. The in-flight arm lives in clearInFlight, never
+ * in cacheSuppressed: the write gate refuses open leases below the armed
+ * epoch, the commit merges exactly those refs into cacheSuppressed, and the
+ * abort drops the marker without touching cacheSuppressed at all — so an
+ * abort is incapable of disarming another source's suppression (a sibling
+ * deletion message, the aborted-write backstop) that arrived mid-flight.
+ * The broadcast is commit-gated: a sibling never arms suppression for a
+ * clear that did not happen. A clear that never reaches a definite commit
+ * reverts its own in-memory effects — an earlier committed clear's
+ * suppression stands — so open refs resume caching at their next
+ * publication. */
 export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   const prior = tabCacheEpoch;
-  tabCacheEpoch = (prior ?? 0) + 1;
-  const leases = threadsStore.getState().cacheLeases;
-  // Arm only what this clear adds. A lease ref already suppressed carries an
-  // earlier committed clear's arming, still owed through this ref's final
-  // release; the abort branch below must revert exactly what THIS clear
-  // armed, so the refs armed here are recorded and never an earlier clear's
-  // suppression.
-  const armed = [...leases.keys()].filter((ref) => !threadsStore.getState().cacheSuppressed.has(ref));
-  threadsStore.setState((s) => {
-    const suppressed = new Set(s.cacheSuppressed);
-    for (const ref of armed) suppressed.add(ref); // every open lease predates this clear
-    return { cacheSuppressed: suppressed };
-  });
+  const armed = (prior ?? 0) + 1;
+  tabCacheEpoch = armed;
+  threadsStore.setState({ clearInFlight: armed });
   for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
   const result = await currentSessionCache().clear();
   if (!result.committed) {
-    tabCacheEpoch = prior; // revert unless a definite commit is observed
-    threadsStore.setState((s) => {
-      const suppressed = new Set(s.cacheSuppressed);
-      for (const ref of armed) suppressed.delete(ref);
-      return { cacheSuppressed: suppressed };
-    });
+    // The abort drops only its own marker — cacheSuppressed is never touched,
+    // so another source's mid-flight arming stands — and the epoch view
+    // reverts only if nothing newer was observed during the flight. The
+    // identity guards keep a concurrent clear's marker and epoch intact.
+    threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
+    if (tabCacheEpoch === armed) tabCacheEpoch = prior;
     return { committed: false };
   }
   tabCacheEpoch = result.epoch;
+  // Every open lease whose captured epoch predates the committed epoch: the
+  // same set the marker refused during the flight, re-derived at commit so a
+  // lease captured mid-flight is covered too.
+  threadsStore.setState((s) => {
+    const suppressed = new Set(s.cacheSuppressed);
+    for (const [ref, captured] of s.cacheLeases) if (captured < result.epoch) suppressed.add(ref);
+    return s.clearInFlight === armed
+      ? { cacheSuppressed: suppressed, clearInFlight: undefined }
+      : { cacheSuppressed: suppressed };
+  });
   broadcastCacheMessage({ version: 1, sourceId: cacheSourceId, kind: "clear", epoch: result.epoch });
   return { committed: true };
 }
@@ -5623,6 +5647,7 @@ export function resetThreadsStoreForTests(): void {
       cacheSuppressed: new Set(),
       cacheLeases: new Map(),
       cacheAnchors: new Map(),
+      clearInFlight: undefined,
     },
     true,
   );
