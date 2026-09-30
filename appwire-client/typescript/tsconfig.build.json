@@ -77,6 +77,8 @@
     "marketplaceSourceLabel.ts",
     "railSessionState.ts",
     "sessionActivity.ts",
+    "sessionActivityStore.ts",
+    "threadSubscription.ts",
     "reasoningEffort.ts",
     "credentialLabels.ts",
     "pathRows.ts",
