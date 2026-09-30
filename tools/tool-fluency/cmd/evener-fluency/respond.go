@@ -131,8 +131,8 @@ func renderQuestionsForRespond(questions []agent.AskUserQuestion) string {
 }
 
 // appendAskLog appends one JSON line per question in questions, each paired
-// with the same answer (respond makes one model call per invocation,
-// covering every question that round posted).
+// with that question's own answer (answers[i]; runRespond has checked the
+// counts match).
 func appendAskLog(path string, questions []agent.AskUserQuestion, answers []string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -175,7 +175,9 @@ func readAskLog(path string) []askExchange {
 }
 
 // respondAnswerSchema is the JSON schema the model's answer must conform to
-// — a single "answer" string, so parsing never depends on prose shape.
+// — an "answers" array with one string per question, in question order, so
+// parsing never depends on prose shape and a skipped question shows as a
+// short list.
 func respondAnswerSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",

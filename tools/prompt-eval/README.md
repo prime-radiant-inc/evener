@@ -66,6 +66,18 @@ reference: |
   EOF
 ```
 
+A task that should be answerable by asking someone adds a `person:` block. The CLI harness then runs `evener run --ask-responder`, pointed at `evener-fluency respond`. It plays the person from the brief, answering each question the agent asks with `ask_user`:
+
+```yaml
+person:
+  brief: |
+    You are Alex, head of ops. Northwind is being renamed to Acme Robotics Ltd.
+    Only new records carry the new name; issued invoices keep the old one.
+  model: lunarouter/glm-5.3   # optional; defaults to --fast-cheap-model, then --model
+```
+
+A bare `model` or `--fast-cheap-model` runs on the main model's provider. The questions and answers land in each probe's result as `asks`, with the call count as `ask_user_calls`. The live harness refuses a task with a `person:` block.
+
 After adding or changing a task, run:
 
 ```bash
