@@ -22,6 +22,8 @@ import { ACTIVITY_TABS, activityTabSpec } from "./activityTabs";
 
 const CLASS = {
   sidebar: requireClass(styles.sidebar, "activitybar.module.css", "sidebar"),
+  scope: requireClass(styles.scope, "activitybar.module.css", "scope"),
+  pending: requireClass(styles.pending, "activitybar.module.css", "pending"),
   head: requireClass(styles.head, "activitybar.module.css", "head"),
   tabs: requireClass(styles.tabs, "activitybar.module.css", "tabs"),
   body: requireClass(styles.body, "activitybar.module.css", "body"),
@@ -77,8 +79,10 @@ export function ActivitySidebar() {
           data-testid="activity-sidebar"
         >
           <div className={CLASS.head}>
-            <ScopeCrumbs path={scope.path} />
-            {!scope.ancestryKnown ? <span>Finding session context…</span> : null}
+            <div className={CLASS.scope}>
+              <ScopeCrumbs path={scope.path} hierarchy />
+              {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
+            </div>
             <IconButton
               label="Close the activity sidebar"
               icon="×"
@@ -90,6 +94,7 @@ export function ActivitySidebar() {
           <div className={CLASS.tabs}>
             <SegmentedControl<ActivityTab>
               label="Activity kind"
+              hideLabel
               size="sm"
               fullWidth
               value={tab}

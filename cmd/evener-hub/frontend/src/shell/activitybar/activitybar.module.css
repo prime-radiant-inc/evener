@@ -17,7 +17,7 @@
 
 .head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--edge);
@@ -139,4 +139,14 @@
   font-size: var(--font-size-caption);
   color: var(--ink-low);
   padding: var(--space-2) var(--space-1);
+}
+
+.scope {
+  flex: 1;
+  min-width: 0;
+}
+
+.pending {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
 }

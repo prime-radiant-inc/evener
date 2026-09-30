@@ -1,13 +1,22 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, beforeAll, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
-import { activityClient, activityContext, activityDelegate } from "../../stores/sessionActivityTestUtils";
+import {
+  activityClient,
+  activityContext,
+  activityDelegate,
+  activitySummary,
+} from "../../stores/sessionActivityTestUtils";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
-import { resetWorkspaceStoreForTests } from "../workspace";
+import { currentSessionRef, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
+
+beforeAll(async () => {
+  await import("../../panes/transcript");
+});
 
 const ref = "remote:owner";
 const mount = () =>
@@ -127,4 +136,108 @@ test("Escape dismisses only an unclaimed sidebar gesture", async () => {
   }
   fireEvent.keyDown(window, { key: "Escape" });
   expect(activitySidebarStore.getState().open).toBe(false);
+});
+
+test("delegate drill and proven parent links restore exact scope at the unchanged root URL", async () => {
+  const root = "remote:root",
+    child = "remote:child",
+    grandchild = "remote:grandchild";
+  const client = activityClient();
+  const context = (ref: string) => ({
+    ...activityContext(ref),
+    rootRef: root,
+    ancestors:
+      ref === root
+        ? []
+        : [
+            { ref: root, sessionId: "root", title: "Root work" },
+            ...(ref === grandchild ? [{ ref: child, sessionId: "child", title: "Child work" }] : []),
+          ],
+  });
+  client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: context(ref),
+    scope: scope ?? "session",
+    delegates:
+      ref === grandchild
+        ? []
+        : [
+            activityDelegate({
+              ownerRef: ref,
+              childRef: ref === root ? child : grandchild,
+              description: ref === root ? "Open child" : "Open grandchild",
+            }),
+          ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope(root);
+  workspaceStore.setState({
+    panes: [{ id: "root", type: "session", params: { ref: root }, slot: "main" }],
+    focusedPaneId: "root",
+  });
+  window.history.replaceState({}, "", "/s/remote%3Aroot");
+  activitySidebarStore.getState().openWith("agents");
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: /Open child/ }));
+  fireEvent.click(await screen.findByRole("button", { name: /Open grandchild/ }));
+  await screen.findByRole("button", { name: "Child work" });
+  expect(currentSessionRef(workspaceStore.getState())).toBe(grandchild);
+  fireEvent.click(screen.getByRole("button", { name: "Child work" }));
+  await screen.findByRole("button", { name: /Open grandchild/ });
+  expect(currentSessionRef(workspaceStore.getState())).toBe(child);
+  fireEvent.click(screen.getByRole("button", { name: "Root work" }));
+  await screen.findByRole("button", { name: /Open child/ });
+  expect(currentSessionRef(workspaceStore.getState())).toBe(root);
+  expect(window.location.pathname).toBe("/s/remote%3Aroot");
+});
+
+test("activity tabs keep a named keyboard radio group without a visible heading", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  mount();
+  await screen.findByRole("button", { name: /inspect/ });
+  expect(screen.getByRole("radiogroup", { name: "Activity kind" })).toBeTruthy();
+  expect(screen.queryByText("Activity kind")).toBeNull();
+  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "End" }));
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Tasks/ }), { key: "Home" }));
+  expect(activitySidebarStore.getState().tab).toBe("agents");
+  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "ArrowRight" }));
+  expect(activitySidebarStore.getState().tab).toBe("jobs");
+});
+
+test("pending ancestry becomes useful parent navigation only after the domain proves it", async () => {
+  let known = false;
+  const client = activityClient();
+  const context = () => ({
+    ...activityContext(ref),
+    ancestryKnown: known,
+    rootRef: "remote:root",
+    ancestors: [{ ref: "remote:root", sessionId: "root", title: "Proven root" }],
+  });
+  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref), context: context() }));
+  client.on("evener/thread/delegates/list", () => ({
+    context: context(),
+    scope: "session",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  mount();
+  await screen.findByText("No subagents at this level.");
+  expect(screen.getByText("Finding session context…")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Proven root" })).toBeNull();
+  known = true;
+  act(() =>
+    client.emitNotification({
+      method: "evener/thread/activity/changed",
+      params: { ref, threadId: "owner", sessionId: "owner", resources: ["summary"] },
+    }),
+  );
+  await screen.findByRole("button", { name: "Proven root" });
+  expect(screen.queryByText("Finding session context…")).toBeNull();
 });

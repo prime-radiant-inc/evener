@@ -6,7 +6,10 @@ import {
 } from "@evener/appwire-client";
 import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useState } from "react";
 import { ActivityPageBoundary } from "../../../shell/activitybar/ActivityPageBoundary";
+import { ScopeCrumbs } from "../../../shell/statusbar/ScopeCrumbs";
+import { deriveScope } from "../../../shell/statusbar/statusScope";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
+import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { useSessionActivity } from "../../../stores/sessionActivity";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { Button, EmptyState, Sheet } from "../../../widgets";
@@ -38,6 +41,12 @@ const CLASS = {
 /** The recursive tree owns explicit subtree demand only while its body is visible. */
 export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps) {
   const { snapshot, loadMore } = useSessionActivity(sessionRef, "subtree", COLLECTIONS);
+  const resources = useNavigationStore((state) => state.resources);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resources invalidates the navigation title read.
+  const scope = useMemo(
+    () => deriveScope(navigationStore.getState(), sessionRef, snapshot),
+    [sessionRef, snapshot, resources],
+  );
   const presentation = useMemo(() => (snapshot ? projectSessionActivity(snapshot) : null), [snapshot]);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
   const entities = useMemo(
@@ -64,6 +73,8 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
   return (
     <EntityViewsProvider entities={entities} ownerRef={sessionRef}>
       <div className={CLASS.panel}>
+        <ScopeCrumbs path={scope.path} hierarchy />
+        {!scope.ancestryKnown ? <p className={CLASS.stale}>Finding session context…</p> : null}
         {updating ? <p className={CLASS.stale}>Activity is updating…</p> : null}
         {!tree || (empty && !complete) ? (
           <EmptyState title={unavailable ? "Activity unavailable for this session" : "Loading activity…"} />

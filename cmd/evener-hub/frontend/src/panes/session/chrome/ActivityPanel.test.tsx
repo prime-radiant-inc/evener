@@ -227,3 +227,35 @@ test("loaded subtree job output uses the supplied owner ref and raw logical job 
     maxBytes: 256,
   });
 });
+
+test("recursive activity shows the same proven parent hierarchy above its content", async () => {
+  const client = activityClient();
+  const context = {
+    ...activityContext(ref),
+    rootRef: "remote:root",
+    ancestors: [{ ref: "remote:root", sessionId: "root", title: "Parent session" }],
+  };
+  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref), scope: "subtree", context }));
+  client.on("evener/thread/delegates/list", () => ({
+    context,
+    scope: "subtree",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/jobs/list", () => ({
+    context,
+    scope: "subtree",
+    jobs: [],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/watches/list", () => ({
+    context,
+    scope: "subtree",
+    watches: [],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  expect(await screen.findByRole("button", { name: "Parent session" })).toBeTruthy();
+  expect(screen.getByRole("navigation", { name: "Scope" })).toBeTruthy();
+});
