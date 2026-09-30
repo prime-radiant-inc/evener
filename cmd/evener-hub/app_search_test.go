@@ -28,10 +28,11 @@ var searchPastIndexes = []struct {
 	}},
 }
 
-// A search must not pull the whole past index into memory: the Past fetch is
-// bounded to searchPastLimit per call, not math.MaxInt32, on both the in-memory
-// and FTS-backed indexes and for an empty query as well as a matching one
-// (#2873).
+// The Past page is bounded to searchPastLimit per fetch, not math.MaxInt32, on
+// both the in-memory and FTS-backed indexes and for an empty query as well as a
+// matching one (#2873). This pins the requested page bound; SearchAdmitted's
+// FTS branch still materializes the FTS match id set, the indexed-query design
+// pass #2873 defers.
 func TestHubSearchBoundsThePastFetch(t *testing.T) {
 	now := time.Now()
 	for _, tc := range searchPastIndexes {
