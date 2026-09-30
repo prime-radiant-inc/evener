@@ -1343,7 +1343,7 @@ The Go [TurnStart client](../../appwire/client.go#L589) has no retained pending
 mutation coordinator for this path. Existing steer-notification reconciliation
 does not establish safe resend of turn/start.
 
-**Discuss.** Treat each Send as one retained intent: preserve its exact text,
+**Decision.** Treat each Send as one retained intent: preserve its exact text,
 attachments, target identity and mutation ID independently of the current
 composer before transmission. An interrupted response leaves the submission
 pending while the client automatically establishes the authoritative outcome.
@@ -1354,7 +1354,7 @@ definitive rejection retains the complete composition for correction. Explicit
 Stop or cancellation prevents further automatic dispatch, and any newer draft
 remains independent. Reuse the existing mutation receipt and deduplication
 contracts; one user send must not become two accepted turns because a response
-was lost.
+was lost. Implementation remains pending.
 
 **Acceptance.** Lose a send response after acceptance, reconnect, and obtain one
 turn with correct composer state. Also recover a send interrupted before
