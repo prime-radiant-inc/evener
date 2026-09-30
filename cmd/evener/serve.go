@@ -115,7 +115,6 @@ type serveServer interface {
 	SetUrlsRemoveFunc(func(outerID, id string) (bool, error))
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
-	SetPromoteQueuedAsSteerFunc(func(int, string) error)
 	SetCancelQueuedFunc(func(int, string) (string, int, error))
 	// SetThreadEnvelopeSource replaces sixteen read-time session callbacks with
 	// one seam the daemon samples at change time. See server/thread_envelope.go.
@@ -1454,9 +1453,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
 		return getSession().DrainAsSteerWithInput(ctx, text, images)
-	})
-	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
-		return getSession().PromoteQueuedAsSteer(ctx, index, expectedID)
 	})
 	srv.SetCancelQueuedFunc(func(index int, expectedID string) (string, int, error) {
 		return getSession().CancelQueued(ctx, index, expectedID)
