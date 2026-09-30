@@ -13,41 +13,65 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
 
-// A search must not pull the whole past index into memory: the fetch that
-// feeds the Past group is paged at searchPastLimit per call, not math.MaxInt32,
-// so it stays finite as session history grows (#2873).
+// newSearchPastIndex builds a PastIndex for a test, in-memory or FTS-backed.
+type newSearchPastIndex func(projectsRoot, dbPath string) *hubcore.PastIndex
+
+var searchPastIndexes = []struct {
+	name     string
+	newIndex newSearchPastIndex
+}{
+	{"memory", func(projectsRoot, _ string) *hubcore.PastIndex {
+		return hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	}},
+	{"fts", func(projectsRoot, dbPath string) *hubcore.PastIndex {
+		return hubcore.NewPastIndexWithDB(filepath.Join(projectsRoot, "*"), dbPath)
+	}},
+}
+
+// A search must not pull the whole past index into memory: the Past fetch is
+// bounded to searchPastLimit per call, not math.MaxInt32, on both the in-memory
+// and FTS-backed indexes and for an empty query as well as a matching one
+// (#2873).
 func TestHubSearchBoundsThePastFetch(t *testing.T) {
 	now := time.Now()
-	projectsRoot := filepath.Join(t.TempDir(), "projects")
-	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
-	// More matching past sessions than one page, so an unbounded fetch would
-	// have to return every one of them.
-	for i := range searchPastLimit + 5 {
-		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-			ID: hubtest.SessionID(t), UpdatedAt: now.Add(-time.Duration(i+1) * time.Minute),
-			Name: "frobnitz chatter",
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	var limits []int
-	past.SetSearchProbeForTest(func(limit, offset int) { limits = append(limits, limit) })
-	roster := hubcore.NewRosterWithEntries(
-		hubcore.LiveEntry{PID: 1, SessionID: hubtest.SessionID(t), Status: appwire.ThreadStatusActive},
-		hubcore.LiveEntry{PID: 2, SessionID: hubtest.SessionID(t), Status: appwire.ThreadStatusActive},
-	)
-	if _, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, now); err != nil {
-		t.Fatal(err)
-	}
-	if len(limits) != 1 {
-		t.Fatalf("Search calls=%v, want exactly the one bounded past fetch", limits)
-	}
-	if limits[0] != searchPastLimit {
-		t.Fatalf("past fetch limit=%d, want %d (one bounded page, not math.MaxInt32)", limits[0], searchPastLimit)
+	for _, tc := range searchPastIndexes {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			projectsRoot := filepath.Join(root, "projects")
+			stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+			// More matching past sessions than one page, so an unbounded fetch
+			// would have to return every one of them.
+			for i := range searchPastLimit + 5 {
+				if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+					ID: hubtest.SessionID(t), UpdatedAt: now.Add(-time.Duration(i+1) * time.Minute),
+					Name: "frobnitz chatter",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			past := tc.newIndex(projectsRoot, filepath.Join(root, "index.db"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			roster := hubcore.NewRosterWithEntries(
+				hubcore.LiveEntry{PID: 1, SessionID: hubtest.SessionID(t), Status: appwire.ThreadStatusActive},
+				hubcore.LiveEntry{PID: 2, SessionID: hubtest.SessionID(t), Status: appwire.ThreadStatusActive},
+			)
+			for _, query := range []string{"frobnitz", ""} {
+				var limits []int
+				past.SetSearchProbeForTest(func(limit, offset int) { limits = append(limits, limit) })
+				resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: query}, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(limits) != 1 || limits[0] != searchPastLimit {
+					t.Fatalf("query %q: fetch limits=%v, want one bounded page of %d (not math.MaxInt32)", query, limits, searchPastLimit)
+				}
+				if resp.Past == nil || len(resp.Past) != searchPastLimit {
+					t.Fatalf("query %q: past len=%d (nil %t), want a full page of %d", query, len(resp.Past), resp.Past == nil, searchPastLimit)
+				}
+			}
+		})
 	}
 }
 
@@ -58,20 +82,52 @@ func TestHubSearchBoundsThePastFetch(t *testing.T) {
 // (#2873).
 func TestHubSearchFindsAScopedMatchPastThePageSize(t *testing.T) {
 	now := time.Now()
-	root := t.TempDir()
-	projectsRoot := filepath.Join(root, "projects")
-	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
-	for i := range searchPastLimit + 5 {
-		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-			ID: hubtest.SessionID(t), UpdatedAt: now.Add(-time.Duration(i+1) * time.Minute),
-			Name: "frobnitz chatter",
-		}); err != nil {
-			t.Fatal(err)
-		}
+	for _, tc := range searchPastIndexes {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			projectsRoot := filepath.Join(root, "projects")
+			stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+			for i := range searchPastLimit + 5 {
+				if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+					ID: hubtest.SessionID(t), UpdatedAt: now.Add(-time.Duration(i+1) * time.Minute),
+					Name: "frobnitz chatter",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			archivedID := hubtest.SessionID(t)
+			if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+				ID: archivedID, UpdatedAt: now.Add(-time.Hour), Name: "frobnitz archive",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			past := tc.newIndex(projectsRoot, filepath.Join(root, "index.db"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			archive := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
+			if err := archive.Set("", "session", archivedID, true, now); err != nil {
+				t.Fatal(err)
+			}
+			resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Archive: archive}, appwire.SearchParams{Query: "frobnitz", Scope: appwire.SearchScopeArchived}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := searchIDs(resp.Past); !reflect.DeepEqual(got, []string{archivedID}) {
+				t.Fatalf("archived past = %v, want the older archived session found past the newer unarchived matches", got)
+			}
+		})
 	}
-	archivedID := hubtest.SessionID(t)
+}
+
+// A search with no admitted past match must still send an empty array, not
+// null: the mobile Board search spreads results.past with no null guard.
+func TestHubSearchEmptyPastIsAnArray(t *testing.T) {
+	now := time.Now()
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-		ID: archivedID, UpdatedAt: now.Add(-time.Hour), Name: "frobnitz archive",
+		ID: hubtest.SessionID(t), UpdatedAt: now, Name: "unrelated",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -79,16 +135,12 @@ func TestHubSearchFindsAScopedMatchPastThePageSize(t *testing.T) {
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
-	if err := archive.Set("", "session", archivedID, true, now); err != nil {
-		t.Fatal(err)
-	}
-	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Archive: archive}, appwire.SearchParams{Query: "frobnitz", Scope: appwire.SearchScopeArchived}, now)
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past}, appwire.SearchParams{Query: "frobnitz"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := searchIDs(resp.Past); !reflect.DeepEqual(got, []string{archivedID}) {
-		t.Fatalf("archived past = %v, want the older archived session found past the newer unarchived matches", got)
+	if resp.Past == nil || len(resp.Past) != 0 {
+		t.Fatalf("past = %#v (nil %t), want a non-nil empty array", resp.Past, resp.Past == nil)
 	}
 }
 

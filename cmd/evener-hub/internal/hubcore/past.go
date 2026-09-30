@@ -1198,8 +1198,10 @@ func (i *PastIndex) MatchIDs(ids []string, q string) map[string]bool {
 		}
 		ftsCandidates = append(ftsCandidates, id)
 	}
-	for _, id := range i.ftsMatchIDs(lower, ftsCandidates) {
-		out[id] = true
+	if ftsIDs, ok := i.ftsMatchIDs(lower, ftsCandidates); ok {
+		for _, id := range ftsIDs {
+			out[id] = true
+		}
 	}
 	return out
 }
@@ -1207,24 +1209,25 @@ func (i *PastIndex) MatchIDs(ids []string, q string) map[string]bool {
 // ftsMatchIDs returns the ids among ids the FTS mirror holds as matches for q,
 // the same token-prefix rule Search's FTS path applies. It chunks the id list
 // the way writeFTSTx chunks deletes, so a large live roster cannot exceed
-// SQLite's bound-parameter ceiling. A read error mid-way returns the ids found
-// so far: they are real matches, and the ids not yet checked are the ones the
-// error costs (their substring scan already failed in MatchIDs).
-func (i *PastIndex) ftsMatchIDs(q string, ids []string) []string {
+// SQLite's bound-parameter ceiling. A partial read is not authoritative — it
+// would silently drop live sessions whose match is discoverable only through
+// FTS — so any error reports ok=false and MatchIDs falls back to the substring
+// scan alone.
+func (i *PastIndex) ftsMatchIDs(q string, ids []string) ([]string, bool) {
 	query := ftsQuery(q)
 	if query == "" || len(ids) == 0 {
-		return nil
+		return nil, false
 	}
 	i.ensureFTSFresh()
 	i.mu.RLock()
 	available := i.fts
 	i.mu.RUnlock()
 	if !available || i.dbPath == "" {
-		return nil
+		return nil, false
 	}
 	db, err := i.openDB("sqlite", sqliteDSN(i.dbPath))
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer func() { _ = db.Close() }()
 	var out []string
@@ -1240,23 +1243,23 @@ func (i *PastIndex) ftsMatchIDs(q string, ids []string) []string {
 		// local in-process SQLite query; PastIndex.Search is a context-free API. (noctx)
 		rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? AND id IN (`+placeholders+`)`, args...) //nolint:noctx
 		if err != nil {
-			return out
+			return nil, false
 		}
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
 				_ = rows.Close()
-				return out
+				return nil, false
 			}
 			out = append(out, id)
 		}
 		rowErr := rows.Err()
 		_ = rows.Close()
 		if rowErr != nil {
-			return out
+			return nil, false
 		}
 	}
-	return out
+	return out, true
 }
 
 // SeedForTest replaces the in-memory index with the given metas (StateDir left
