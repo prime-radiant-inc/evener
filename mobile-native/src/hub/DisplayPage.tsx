@@ -72,7 +72,7 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 			<GroupFooter>For what agents write: messages, plans and documents.</GroupFooter>
 			{unsaved === "readingFont" ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
 			{/* A hub that keeps no default level shows nothing here (spec 14). */}
-			{transcript?.support === "unsupported" ? null : (
+			{transcript?.support !== "unsupported" && (
 				<>
 					{/* The row names the setting; a label above would say it twice. */}
 					<Group>
