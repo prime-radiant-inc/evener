@@ -133,7 +133,7 @@ import { SearchResults } from "./SearchResults";
 import { SelectBar } from "./SelectBar";
 import { selectionActions, toggleSelected } from "./selection";
 import { listScrollHandlers } from "./settledList";
-import { organizationOpen } from "./organizationCheck";
+import { journalOperation, organizationOpen } from "./organizationCheck";
 import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
@@ -1390,7 +1390,10 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 			{ text: "Cancel", style: "cancel" },
 		]);
 	};
-	const operation = organization.state?.pending ? organization.state.recovery?.operation : undefined;
+	// One gate with the other readers (organizationCheck.journalOperation): a
+	// change in flight or one the hub couldn't confirm holds the category, so it
+	// stays dimmed until the journal settles.
+	const operation = journalOperation(organization.state);
 	return {
 		menuFor: (section: NavigationPinSectionDescriptor) => (organization.ready ? () => open(section) : null),
 		changing: (sectionId: string) =>
