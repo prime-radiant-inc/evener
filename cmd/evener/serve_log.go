@@ -51,8 +51,7 @@ func turnFailureSummary(err error) string {
 	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
 		return err.Error()
 	}
-	var llmErr llm.Error
-	if !errors.As(err, &llmErr) {
+	if _, ok := errors.AsType[llm.Error](err); !ok {
 		return err.Error()
 	}
 	return llm.ProviderFailureSummary(err)
