@@ -1414,6 +1414,12 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	// the old name resolving a credential the config no longer names.
 	if err := c.auth.creds.Move(oldName, newName); err != nil {
 		problems = append(problems, fmt.Sprintf("stored key not copied: %v", err))
+	} else {
+		// The key left oldName and arrived under newName, so neither name
+		// holds a credential a provider rejected. A failed move left the key,
+		// and its rejection, where they were.
+		c.auth.forgetCredentialRejection(oldName)
+		c.auth.forgetCredentialRejection(newName)
 	}
 	record, err := c.auth.loadAuth(c.auth.stateDir, oldName)
 	switch {
@@ -1565,6 +1571,16 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if !registry.ValidInstanceName(name) {
 		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
+	// The instance's credential is gone only once the removal stands: a
+	// removal that fails after its cleanup puts the credential back, and a
+	// provider's rejection of it still stands (removeCredentials only voids
+	// the probes in flight). A removal can stand and still return an error
+	// (removeAppliedError), when the credential could not be put back.
+	defer func() {
+		if _, standing := errors.AsType[removeAppliedError](err); err == nil || standing {
+			c.auth.forgetCredentialRejection(name)
+		}
+	}()
 
 	// The fingerprint key is resolved once, before either lock is taken:
 	// resolving it can repair the key file (an inter-process lock and a write),
@@ -2137,6 +2153,10 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	if removedRecord {
 		c.applied.markApplied()
 	}
+	// No probe that dialed the deleted credential may settle. The rejection
+	// itself stays until Remove knows the removal stands: a later failure
+	// puts the credential back.
+	c.auth.voidCredentialProbes(name)
 	return deleted, nil
 }
 
