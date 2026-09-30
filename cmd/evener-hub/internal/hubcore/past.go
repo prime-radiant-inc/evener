@@ -1235,9 +1235,12 @@ func (i *PastIndex) ftsMatchIDs(q string, ids []string) []string {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return out
+			return nil
 		}
 		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil
 	}
 	return out
 }
