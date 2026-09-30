@@ -375,9 +375,10 @@ seconds wherever the encoding is RFC 3339, and floats must be integral to
 survive widening through `any`. The last gotcha is the structural one: an
 unhandled `reflect.Kind` must fail loudly rather than skip, because a
 builder that silently skips a kind is a test that silently stops covering
-it. `fillEveryField` has no `reflect.Interface` case, so an `any` field
-added to the snapshot tomorrow stops the test rather than going quietly
-untested.
+it. `reflectfill.Fill` (`fuzz/reflectfill`, the shared filler both this test
+and the hub's whole-struct comparison use) reports an unhandled kind through
+`Fatalf`, so a field of a kind it does not yet handle stops the test rather
+than going quietly untested.
 
 Two corollaries:
 
