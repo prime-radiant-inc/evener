@@ -125,10 +125,10 @@ describe("what couldn't be listed", () => {
 	});
 
 	// Its subagent's row is on a page not loaded yet, so there's no title to give.
-	it("leaves a branch unnamed when its subagent isn't loaded, and keys it apart", () => {
-		const items = missingOf(["local:unloaded", "local:also-unloaded"]);
-		expect(items).toEqual([{ kind: "missing" }]);
-		expect(items.map(activityListKey)).toEqual(["missing"]);
+	it("leaves branches unnamed when their subagents aren't loaded, as one line under its own key", () => {
+		const items = missingOf(["local:unloaded", "local:also-unloaded", "local:coord"]);
+		expect(items).toEqual([{ kind: "missing" }, { kind: "missing", title: "Get PR 2138 Test Clean" }]);
+		expect(items.map(activityListKey)).toEqual(["missing", "missing:Get PR 2138 Test Clean"]);
 	});
 });
 

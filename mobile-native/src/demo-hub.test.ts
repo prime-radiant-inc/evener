@@ -304,7 +304,8 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 				const owned = jobs.map((row) => [row.title, row.state, row.owner]);
 				expect(owned).toContainEqual(["go build ./...", "done", "Get PR 2138 Test Clean"]);
 				expect(owned).toContainEqual(["go test", "failed", "Fix race in tree settle"]);
-				expect(jobs.filter((row) => row.owner.includes(":"))).toEqual([]);
+				const titles = new Set(["Get PR 2138 Test Clean", ...activity.filter(isSubagentRow).map((row) => row.title)]);
+				expect(jobs.filter((row) => !titles.has(row.owner))).toEqual([]);
 			} finally {
 				release();
 				await binding.setClient(null);

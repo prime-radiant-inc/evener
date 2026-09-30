@@ -52,8 +52,7 @@ export function activityListItems(
 			? view.coordinator.title
 			: rows.find((row) => isSubagentRow(row) && row.ref === ref)?.title;
 	// Two branches can share a title; the line names the title once.
-	for (const title of new Set(view.missing.map(titleOf)))
-		items.push(title === undefined ? { kind: "missing" } : { kind: "missing", title });
+	for (const title of new Set(view.missing.map(titleOf))) items.push({ kind: "missing", title });
 	return items;
 }
 

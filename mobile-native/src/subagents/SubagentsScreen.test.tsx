@@ -471,13 +471,20 @@ it("says the count is partial and whose subagents are missing when a later page 
 
 // A branch whose shell jobs couldn't be read is named by whose it is: the
 // coordinator by its title, a subagent by its row's title, never by a ref.
+// A branch no loaded row names (its subagent's row is on a page not read yet)
+// has no title to give, so it goes unnamed.
 it("names whose activity isn't listed by title", async () => {
 	client = hub(() => ({
 		revision: 1,
 		root: session(
 			"local:coord",
 			COORDINATOR.title,
-			[runningOne("solo", "Only one", { child: session("local:solo", "Only one", [], { error: "unavailable" }) })],
+			[
+				runningOne("solo", "Only one", { child: session("local:solo", "Only one", [], { error: "unavailable" }) }),
+				runningOne("pair", "Second one", {
+					child: session("local:unlisted", "Unlisted", [], { error: "unavailable" }),
+				}),
+			],
 			{ error: "unavailable" },
 		),
 	}));
@@ -485,6 +492,8 @@ it("names whose activity isn't listed by title", async () => {
 	const shown = text(await mount());
 	expect(shown).toContain(`Some activity under “${COORDINATOR.title}” isn't listed.`);
 	expect(shown).toContain("Some activity under “Only one” isn't listed.");
+	expect(shown).toContain("Some activity isn't listed.");
+	expect(shown).not.toContain("Unlisted");
 	expect(shown).not.toContain("local:");
 });
 
