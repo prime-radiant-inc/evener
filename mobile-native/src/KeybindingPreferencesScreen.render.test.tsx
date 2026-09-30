@@ -4,7 +4,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { AnyNotification, AppwireClient, InitializeResponse } from "@evener/appwire-client";
 import { KeybindingPreferencesScreen } from "./KeybindingPreferencesScreen";
 import { NativePreferencesProvider } from "./NativePreferencesProvider";
-import { render, renderedText } from "./renderNative.testkit";
+import { dropped, render, renderedText, screenConnection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => {
 	const values = new Map<string, string>();
@@ -200,5 +200,44 @@ it("drops the offline storage diagnostic after connected live recovery", async (
 	});
 
 	expect(alertNodes(tree)).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("takes the store-free discard when the connection drops with a model retained", async () => {
+	// #1860, the #1791 round-4 branch: once the connection drops, the client
+	// object (and so `preferences.model`) can stay non-null while
+	// `preferences.connected` is false. The screen must route the discard
+	// through the store-free path in that state - the live path's `run` bails
+	// on `!connected`, which would leave the unreadable record in place behind
+	// a dead button.
+	writeDraft(hub.id, "{not json");
+	const connection = clientFixture();
+	const live = screenConnection(connection.client, "ready");
+	harness.connection = live;
+	const initialRequest = connection.nextRequest();
+	const tree = render(app());
+	await act(async () => {
+		await connection.connected;
+		await initialRequest;
+	});
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" })).toHaveLength(1);
+
+	// The connection drops; the same client object (and its model) is retained.
+	harness.connection = dropped(live, "closed");
+	act(() => tree.update(app()));
+	// "Check current shortcuts" renders only for a non-null model, so its
+	// presence is what makes this the retained-model case rather than a
+	// never-connected one.
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Check current shortcuts" })).toHaveLength(1);
+
+	const action = tree.root.findByProps({ accessibilityLabel: "Discard unreadable draft" });
+	expect(action.props.disabled).toBe(false);
+	act(() => {
+		action.props.onPress();
+	});
+
+	// The store-free discard ran (the live path would have been dropped).
+	expect(harness.values.has(draftKey(hub.id))).toBe(false);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" })).toHaveLength(0);
 	act(() => tree.unmount());
 });
