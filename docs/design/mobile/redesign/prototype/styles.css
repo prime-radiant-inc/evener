@@ -723,7 +723,6 @@ input, textarea { font: inherit; color: inherit; }
 .search-field input { flex: 1; border: 0; outline: none; background: transparent; font: 17px var(--sans); color: var(--ink-hi); min-width: 0; }
 mark.hit { background: var(--accent-bg); color: inherit; font-weight: 600; border-radius: 3px; }
 
-
 .menu-layer { position: absolute; inset: 0; z-index: 70; }
 .menu-scrim { position: absolute; inset: 0; background: var(--scrim); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); animation: fadeIn 180ms ease both; }
 .menu-wrap { position: absolute; left: 16px; right: 16px; display: flex; flex-direction: column; gap: 10px; animation: pop 220ms cubic-bezier(.2,.8,.2,1) both; }

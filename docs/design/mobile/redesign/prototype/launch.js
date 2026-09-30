@@ -2,7 +2,7 @@
 // effort / plugins / access / branch pickers.
 (function () {
   const EV = window.EV;
-  const { html, h, useRef, useEffect, useState, Done, Cancel } = EV;
+  const { html, h, useRef, useEffect, useState, Done } = EV;
   const I = EV.I;
 
   // Which projects exist on which host (the hub knows this from the host's roots).
