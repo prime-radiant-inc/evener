@@ -616,31 +616,94 @@ func (i *PastIndex) snapshot() ([]PastEntry, uint64) {
 // matches q. SQLite FTS contributes token-prefix matches when available; the
 // in-memory scan preserves substring matches.
 func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
-	if i.searchProbe != nil {
-		i.searchProbe(limit, offset)
-	}
+	i.searchProbeNotify(limit, offset)
 	if strings.TrimSpace(q) != "" {
-		// Search is FTS's only consumer, so a stale mirror (a fold's or
-		// rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was
-		// briefly unwritable) is observable only here — and this is the
-		// repair point: re-publish the current snapshot so the FTS path
-		// serves every indexed id again. While the mirror stays broken
-		// every Search re-attempts the full FTS write; the first success
-		// flips i.fts and the repair stops. The fingerprint gate keeps
-		// the redundant publish from firing onChange.
-		i.mu.RLock()
-		ftsStale := i.dbPath != "" && !i.fts
-		i.mu.RUnlock()
-		if ftsStale {
-			all, gen := i.snapshot()
-			i.publishAndSignal(all, gen)
-		}
+		i.ensureFTSFresh()
 		if fts, ok := i.searchFTS(q); ok {
 			mem := i.searchMemoryMatches(q)
 			return i.mergeSearchResults(fts, mem, limit, offset)
 		}
 	}
 	return i.searchMemory(q, limit, offset)
+}
+
+// SearchAdmitted returns the newest up-to-limit entries that match q and
+// satisfy admit, in the Hub session ordering. Unlike Search it applies admit
+// before the limit cuts, and unlike an unbounded Search it never collects more
+// than limit entries: hubSearch uses it so the Past group's scope filter runs
+// over the whole index without pulling every match into memory (#2873). A nil
+// admit admits everything. admit must be a pure predicate; it runs under the
+// index's read lock and must not call back into the index.
+func (i *PastIndex) SearchAdmitted(q string, limit int, admit func(PastEntry) bool) []PastEntry {
+	if limit <= 0 {
+		return nil
+	}
+	if admit == nil {
+		admit = func(PastEntry) bool { return true }
+	}
+	i.searchProbeNotify(limit, 0)
+	if strings.TrimSpace(q) != "" {
+		i.ensureFTSFresh()
+		if fts, ok := i.searchFTS(q); ok {
+			ids := make(map[string]struct{}, len(fts))
+			for _, e := range fts {
+				ids[e.ID] = struct{}{}
+			}
+			for _, e := range i.searchMemoryMatches(q) {
+				ids[e.ID] = struct{}{}
+			}
+			i.mu.RLock()
+			defer i.mu.RUnlock()
+			out := make([]PastEntry, 0, limit)
+			for _, e := range i.all {
+				if len(out) == limit {
+					break
+				}
+				if _, ok := ids[e.ID]; ok && admit(e) {
+					out = append(out, e)
+				}
+			}
+			return out
+		}
+	}
+	lower := strings.ToLower(strings.TrimSpace(q))
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	out := make([]PastEntry, 0, limit)
+	for _, e := range i.all {
+		if len(out) == limit {
+			break
+		}
+		if (lower == "" || matches(e, lower)) && admit(e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// searchProbeNotify reports a query bound to the test probe, if installed.
+func (i *PastIndex) searchProbeNotify(limit, offset int) {
+	if i.searchProbe != nil {
+		i.searchProbe(limit, offset)
+	}
+}
+
+// ensureFTSFresh re-publishes the FTS mirror from the current snapshot when it
+// is stale (or was never published). Search and Matches are the mirror's only
+// readers, so both call this before querying it. A stale mirror (a fold's or
+// rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was briefly
+// unwritable) is repaired here so the FTS path serves every indexed id again.
+// While the mirror stays broken every caller re-attempts the full FTS write;
+// the first success flips i.fts and the repair stops. The fingerprint gate keeps
+// the redundant publish from firing onChange.
+func (i *PastIndex) ensureFTSFresh() {
+	i.mu.RLock()
+	ftsStale := i.dbPath != "" && !i.fts
+	i.mu.RUnlock()
+	if ftsStale {
+		all, gen := i.snapshot()
+		i.publishAndSignal(all, gen)
+	}
 }
 
 func (i *PastIndex) searchMemory(q string, limit, offset int) []PastEntry {
@@ -1103,19 +1166,53 @@ func matches(e PastEntry, lowerQ string) bool {
 	return false
 }
 
-// Matches reports whether the entry for sessionID matches q by the same
-// substring rule Search applies, looking the entry up directly instead of
-// scanning Search's results. hubSearch uses it to answer a live session's own
-// prompt match without pulling the whole index into memory (#2873).
+// Matches reports whether the entry for sessionID matches q by the same rules
+// Search applies — the in-memory substring scan unioned with SQLite FTS —
+// looking the entry up directly instead of fetching the whole match set.
+// hubSearch uses it to answer a live session's own prompt match without pulling
+// the index into memory (#2873).
 func (i *PastIndex) Matches(sessionID, q string) bool {
 	if i == nil {
 		return false
 	}
+	// An id absent from the index cannot appear in Search's results, so it
+	// cannot match there either.
 	e, ok := i.Find(sessionID)
 	if !ok {
 		return false
 	}
-	return matches(e, strings.ToLower(strings.TrimSpace(q)))
+	lower := strings.ToLower(strings.TrimSpace(q))
+	if matches(e, lower) {
+		return true
+	}
+	return i.ftsMatchesID(lower, sessionID)
+}
+
+// ftsMatchesID reports whether the FTS mirror holds sessionID as a match for q,
+// the same token-prefix rule Search's FTS path applies. It queries the one id
+// directly, so Matches can union FTS with the substring scan without
+// materializing the whole FTS match set.
+func (i *PastIndex) ftsMatchesID(q, sessionID string) bool {
+	query := ftsQuery(q)
+	if query == "" {
+		return false
+	}
+	i.ensureFTSFresh()
+	i.mu.RLock()
+	available := i.fts
+	i.mu.RUnlock()
+	if !available || i.dbPath == "" {
+		return false
+	}
+	db, err := i.openDB("sqlite", sqliteDSN(i.dbPath))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = db.Close() }()
+	var id string
+	// local in-process SQLite query; PastIndex.Search is a context-free API. (noctx)
+	err = db.QueryRow(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? AND id = ? LIMIT 1`, query, sessionID).Scan(&id) //nolint:noctx
+	return err == nil
 }
 
 // SeedForTest replaces the in-memory index with the given metas (StateDir left

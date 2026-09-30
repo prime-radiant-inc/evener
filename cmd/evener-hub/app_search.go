@@ -56,17 +56,6 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 		entries = cfg.Roster.List()
 		sortLiveForSearch(entries, cfg.Past)
 	}
-	// The past fetch behind the Past group is bounded: the page size plus one
-	// slot per live session, which the past loop skips, so a run of live
-	// matches cannot crowd a past-only match out of the page. A live session's
-	// own prompt match no longer rides on this fetch (it is looked up directly
-	// below), so the bound cannot drop it however old its entry is. The scope
-	// still filters before the limit cuts, now within the bounded page rather
-	// than the whole index, so the fetch stays finite as history grows (#2873).
-	var pastMatches []hubcore.PastEntry
-	if cfg.Past != nil {
-		pastMatches = cfg.Past.Search(q, searchPastLimit+len(entries), 0)
-	}
 	// Every live session's result, in the Live order, built once for both
 	// the Live group and the In sessions group.
 	var live []appwire.SearchResult
@@ -108,15 +97,22 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			}
 		}
 	}
-	for _, e := range pastMatches {
-		if len(resp.Past) == searchPastLimit {
-			break
-		}
-		if isLive[e.Meta.ID] {
-			continue
-		}
-		if result := pastSearchResult(e, decisions, now); searchScopeAdmits(scope, result, false) {
-			resp.Past = append(resp.Past, result)
+	// The Past group's fetch filters before the limit cuts, so the scope still
+	// applies over the whole index and newer out-of-scope or live matches cannot
+	// crowd an older in-scope match out of the page. It collects at most
+	// searchPastLimit entries, so no query — not even an empty one — pulls the
+	// whole match set into memory (#2873). A live session's own prompt match is
+	// answered separately above (Past.Matches), so it never depended on this
+	// fetch's width.
+	if cfg.Past != nil {
+		pastMatches := cfg.Past.SearchAdmitted(q, searchPastLimit, func(e hubcore.PastEntry) bool {
+			if isLive[e.Meta.ID] {
+				return false
+			}
+			return searchScopeAdmits(scope, pastSearchResult(e, decisions, now), false)
+		})
+		for _, e := range pastMatches {
+			resp.Past = append(resp.Past, pastSearchResult(e, decisions, now))
 		}
 	}
 	resp.InSessions, err = searchInSessions(ctx, cfg, params.Query, scope, live, decisions, now)
