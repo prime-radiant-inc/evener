@@ -80,6 +80,22 @@ func TestReadTranscriptReadsShellJobRefUnderSymlinkedTemp(t *testing.T) {
 		t.Fatalf("createShell: %v", err)
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	// The job store must live under the raw (symlinked) temp dir: the session
+	// has no state dir, so this read exercises localJobTrustedRoot's
+	// no-state-dir branch rather than the state-dir path. Assert it, so the
+	// test cannot silently start covering a different path.
+	if got := s.StateDir(); got != "" {
+		t.Fatalf("session state dir = %q, want empty so the job store uses the temp fallback", got)
+	}
+	owner, err := identifier.JobOwnerSessionID(rec.JobID)
+	if err != nil {
+		t.Fatalf("JobOwnerSessionID: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(os.TempDir(), "evener-jobs", owner, "jobs.jsonl")); statErr != nil {
+		t.Fatalf("job journal is not under the symlinked temp dir %q: %v", os.TempDir(), statErr)
+	}
+
 	run := runningJobByID(t, jm, rec.JobID)
 	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("hello\n")); err != nil {
 		t.Fatalf("appendJobOutput: %v", err)
