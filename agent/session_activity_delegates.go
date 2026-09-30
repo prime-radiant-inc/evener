@@ -74,7 +74,7 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 		if _, ok := walk.Cutoffs[read.rootID]; !ok {
 			info, statErr := os.Stat(read.delegatePath())
 			if statErr != nil && !os.IsNotExist(statErr) {
-				return result, appwire.Unavailable("delegate source unavailable")
+				return result, sessionActivitySourceReadError("delegate source unavailable", statErr)
 			}
 			if info != nil {
 				walk.Cutoffs[read.rootID] = info.Size()

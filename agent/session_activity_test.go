@@ -986,3 +986,158 @@ func TestSessionActivityLiveDelegateAdmissionMembership(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionActivityRecoverableSourceAccess(t *testing.T) {
+	t.Parallel()
+	for _, resource := range []string{"metadata", "delegates", "jobs"} {
+		for _, warm := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/warm=%t", resource, warm), func(t *testing.T) {
+				stateDir := t.TempDir()
+				id := "accessrecovery"
+				savePastActivityMeta(t, stateDir, id, "Root")
+				params := appwire.SessionActivityListParams{Ref: encodeRef("", id), Limit: 1}
+				path := filepath.Join(stateDir, "sessions", id+".meta.json")
+				query := func() (int, error) {
+					summary, err := LoadSessionActivitySummary(t.Context(), stateDir, id, appwire.SessionActivityReadParams{Ref: params.Ref})
+					return len(summary.Context.SessionID), err
+				}
+				switch resource {
+				case "delegates":
+					writePastStableDelegates(t, stateDir, id, pastStableDescriptor(id, "accesschild1", "one"), pastStableDescriptor(id, "accesschild2", "two"))
+					path = filepath.Join(jobsDir(stateDir, id), "delegates.jsonl")
+					query = func() (int, error) {
+						page, err := LoadSessionActivityDelegates(t.Context(), stateDir, id, params)
+						if err == nil && params.Cursor == "" {
+							params.Cursor = page.Page.NextCursor
+						}
+						return len(page.Delegates), err
+					}
+				case "jobs":
+					writeJobLogFast(t, stateDir, id, 2)
+					path = filepath.Join(jobsDir(stateDir, id), "jobs.jsonl")
+					query = func() (int, error) {
+						page, err := LoadSessionActivityJobs(t.Context(), stateDir, id, params)
+						if err == nil && params.Cursor == "" {
+							params.Cursor = page.Page.NextCursor
+						}
+						return len(page.Jobs), err
+					}
+				}
+				if warm {
+					if _, err := query(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Rename(path, path+".held"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				_, err := query()
+				var wire appwire.WireError
+				if !errors.As(err, &wire) {
+					t.Fatalf("source failure not typed: %v", err)
+				}
+				data, ok := wire.Data.(appwire.ErrorData)
+				if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorActionUnavailable || data.RetryDisposition != appwire.RetryDispositionAutomatic {
+					t.Fatalf("recoverable access parked: %+v", wire)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(path+".held", path); err != nil {
+					t.Fatal(err)
+				}
+				if rows, err := query(); err != nil || rows == 0 {
+					t.Fatalf("restored source cannot resume same walk: rows=%d err=%v", rows, err)
+				}
+			})
+		}
+	}
+}
+
+func TestSessionActivityPermanentSourceFailuresStayDistinct(t *testing.T) {
+	t.Parallel()
+	for _, resource := range []string{"metadata", "delegates", "jobs"} {
+		t.Run(resource, func(t *testing.T) {
+			dir := t.TempDir()
+			id := "permanentsource"
+			savePastActivityMeta(t, dir, id, "Root")
+			path := filepath.Join(dir, "sessions", id+".meta.json")
+			query := func() error {
+				_, err := LoadSessionActivitySummary(t.Context(), dir, id, appwire.SessionActivityReadParams{Ref: encodeRef("", id)})
+				return err
+			}
+			switch resource {
+			case "delegates":
+				path = filepath.Join(jobsDir(dir, id), "delegates.jsonl")
+				query = func() error {
+					_, err := LoadSessionActivityDelegates(t.Context(), dir, id, appwire.SessionActivityListParams{Ref: encodeRef("", id)})
+					return err
+				}
+			case "jobs":
+				path = filepath.Join(jobsDir(dir, id), "jobs.jsonl")
+				query = func() error {
+					_, err := LoadSessionActivityJobs(t.Context(), dir, id, appwire.SessionActivityListParams{Ref: encodeRef("", id)})
+					return err
+				}
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("{invalid}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := query()
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+				t.Fatalf("corrupt source=%v", err)
+			}
+			if data, ok := wire.Data.(appwire.ErrorData); !ok || data.RetryDisposition == appwire.RetryDispositionAutomatic {
+				t.Fatalf("corrupt data treated as access failure: %+v", wire)
+			}
+		})
+	}
+	dir := t.TempDir()
+	id := "absentmetadata"
+	_, err := LoadSessionActivitySummary(t.Context(), dir, id, appwire.SessionActivityReadParams{Ref: encodeRef("", id)})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.ResourceNotFound("").Code {
+		t.Fatalf("missing metadata=%v", err)
+	}
+}
+
+func TestSessionActivityTailAccessPreservesProbePairing(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "journal")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	index := &sessionActivityIndex{}
+	read := &sessionActivityRead{index: index}
+	source := sessionActivitySource{Offset: 4, Tail: []byte("old!")}
+	err := read.captureTail(path, &source, 8)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("tail access=%v", err)
+	}
+	if data := wire.Data.(appwire.ErrorData); data.RetryDisposition != appwire.RetryDispositionAutomatic {
+		t.Fatalf("tail access parked: %+v", wire)
+	}
+	if source.Offset != 8 || len(source.Tail) != 0 {
+		t.Fatalf("old tail paired with new offset: %+v", source)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("restored"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := read.captureTail(path, &source, 8); err != nil {
+		t.Fatal(err)
+	}
+	if string(source.Tail) != "restored" || index.rawBytes != 8 {
+		t.Fatalf("restored tail=%+v bytes=%d", source, index.rawBytes)
+	}
+}

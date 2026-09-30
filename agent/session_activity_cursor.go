@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -234,18 +235,24 @@ func (index *sessionActivityIndex) checkSource(path string, source *sessionActiv
 		return nil, nil
 	}
 	if err != nil {
-		return nil, appwire.Unavailable("session activity source unavailable")
+		return nil, sessionActivitySourceReadError("session activity source unavailable", err)
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return nil, sessionActivitySourceReadError("session activity source unavailable", err)
+	}
+	if info.IsDir() {
+		return nil, sessionActivitySourceUnavailable("session activity source is not readable as a file")
 	}
 	changed := source.Info != nil && (!os.SameFile(source.Info, info) || info.Size() < source.Offset)
 	if !changed && len(source.Tail) > 0 {
 		probe := make([]byte, len(source.Tail))
 		n, readErr := file.ReadAt(probe, source.Offset-int64(len(probe)))
 		index.rawBytes += uint64(n)
+		if _, pathError := errors.AsType[*os.PathError](readErr); pathError {
+			return nil, sessionActivitySourceReadError("session activity source unavailable", readErr)
+		}
 		changed = readErr != nil || n != len(probe) || !hmac.Equal(probe, source.Tail)
 	}
 	if changed {
@@ -255,15 +262,29 @@ func (index *sessionActivityIndex) checkSource(path string, source *sessionActiv
 	source.Info = info
 	return info, nil
 }
-func captureSessionActivityTail(path string, source *sessionActivitySource, offset int64) int {
+func (read *sessionActivityRead) captureTail(path string, source *sessionActivitySource, offset int64) error {
+	count, err := captureSessionActivityTail(path, source, offset)
+	read.index.rawBytes += uint64(count)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, io.EOF) {
+		read.index.reset()
+		return appwire.SessionActivityCursorStale()
+	}
+	return sessionActivitySourceReadError("session activity source unavailable", err)
+}
+func captureSessionActivityTail(path string, source *sessionActivitySource, offset int64) (int, error) {
 	source.Offset = offset
+	// The tail must describe this offset, even if access fails while capturing it.
+	source.Tail = nil
 	n := min(offset, 64)
 	if n == 0 {
-		return 0
+		return 0, nil
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	defer func() { _ = file.Close() }()
 	tail := make([]byte, int(n))
@@ -271,5 +292,5 @@ func captureSessionActivityTail(path string, source *sessionActivitySource, offs
 	if err == nil {
 		source.Tail = tail
 	}
-	return count
+	return count, err
 }

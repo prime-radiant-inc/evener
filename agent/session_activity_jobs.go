@@ -98,7 +98,7 @@ func (read *sessionActivityRead) prepareSources(ctx context.Context, walk *sessi
 			path := filepath.Join(jobsDir(read.stateDir, owner), "jobs.jsonl")
 			info, err := os.Stat(path)
 			if err != nil && !os.IsNotExist(err) {
-				return false, appwire.Unavailable("session job source unavailable")
+				return false, sessionActivitySourceReadError("session job source unavailable", err)
 			}
 			if info != nil {
 				walk.Cutoffs[owner] = info.Size()
@@ -164,7 +164,7 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 			if ctx.Err() != nil {
 				return false, ctx.Err()
 			}
-			return false, appwire.Unavailable("retained job journal invalid")
+			return false, sessionActivitySourceReadError("retained job journal unavailable", scanErr)
 		}
 		used := cursor.Journal.Offset - before
 		if cursor.Journal.Info != nil && !os.SameFile(index.Source.Info, cursor.Journal.Info) {
@@ -184,7 +184,9 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 		index.PendingEnds = cursor.EventEnds
 		index.PendingComplete = complete
 		index.PendingPosition = 0
-		read.index.rawBytes += uint64(captureSessionActivityTail(path, &index.Source, cursor.Journal.Offset))
+		if err := read.captureTail(path, &index.Source, cursor.Journal.Offset); err != nil {
+			return false, err
+		}
 		if !complete && used == 0 && len(events) == 0 {
 			return false, appwire.Unavailable("retained job journal incomplete")
 		}
