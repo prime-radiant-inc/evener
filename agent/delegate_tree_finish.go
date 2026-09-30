@@ -156,9 +156,8 @@ func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease,
 	defer c.mu.Unlock()
 	// The finished generation's lease is no longer exact here, so the
 	// finalizing runtime is released by identity before the lease check.
-	if finalizing := c.finalizationLocked(lease, runtime); finalizing != nil {
-		close(finalizing.released)
-		c.live[lease.delegateID].finalizing = nil
+	if live := c.live[lease.delegateID]; live != nil && live.finalizing != nil && live.finalizing.runtime == runtime && live.finalizing.generation == lease.generation {
+		c.releaseFinalizationLocked(live)
 	}
 	decision := c.reduceReportQuiescedIntent(finishIntent{lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
 	return decision.err
@@ -255,10 +254,18 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 // a send waiting on it tries again at once. The caller holds c.mu.
 func (c *delegateTreeController) setResidentRuntimeLocked(live *delegateLiveState, runtime *Session) {
 	if live.finalizing != nil && live.finalizing.runtime != runtime {
+		c.releaseFinalizationLocked(live)
+	}
+	live.runtime = runtime
+}
+
+// releaseFinalizationLocked releases live's finalization, if any, waking
+// every send waiting on it. The caller holds c.mu.
+func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveState) {
+	if live.finalizing != nil {
 		close(live.finalizing.released)
 		live.finalizing = nil
 	}
-	live.runtime = runtime
 }
 
 // finalizingLocked is delegateID's finished generation still finalizing on
@@ -269,16 +276,6 @@ func (c *delegateTreeController) setResidentRuntimeLocked(live *delegateLiveStat
 func (c *delegateTreeController) finalizingLocked(delegateID string) *delegateFinalization {
 	live := c.live[delegateID]
 	if live == nil || live.finalizing == nil || live.finalizing.runtime != live.runtime {
-		return nil
-	}
-	return live.finalizing
-}
-
-// finalizationLocked is lease's generation's finalization when runtime is
-// the one finalizing it, else nil. The caller holds c.mu.
-func (c *delegateTreeController) finalizationLocked(lease delegateLease, runtime *Session) *delegateFinalization {
-	live := c.live[lease.delegateID]
-	if live == nil || live.finalizing == nil || live.finalizing.runtime != runtime || live.finalizing.generation != lease.generation {
 		return nil
 	}
 	return live.finalizing
@@ -298,9 +295,7 @@ func (c *delegateTreeController) finishGenerationLocked(intent finishIntent) (de
 	plans, cancel, err := c.executeFinishDecisionLocked(decision)
 	if err == nil && runtime != nil && decision.releaseGeneration && decision.events != nil {
 		if live := c.live[intent.lease.delegateID]; live != nil {
-			if live.finalizing != nil {
-				close(live.finalizing.released)
-			}
+			c.releaseFinalizationLocked(live)
 			live.finalizing = &delegateFinalization{
 				runtime:    runtime,
 				generation: intent.lease.generation,
