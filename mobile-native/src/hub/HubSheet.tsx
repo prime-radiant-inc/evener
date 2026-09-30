@@ -29,7 +29,9 @@ import { MarketplacePage } from "./MarketplacePage";
 import { OwnHostPage } from "./OwnHostPage";
 import { PluginsPage } from "./PluginsPage";
 import { PluginsScreenSlotProvider } from "./pluginsScreenSlot";
+import { ProviderDetailPage } from "./ProviderDetailPage";
 import { ProvidersPage } from "./ProvidersPage";
+import { ProvidersScreenSlotProvider } from "./providersScreenSlot";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
 import { useHubUpdates } from "./hubUpdates";
 
@@ -72,6 +74,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	return (
 		<HubSheetProvider value={value}>
 			<PluginsScreenSlotProvider>
+				<ProvidersScreenSlotProvider>
 				<HubStack.Navigator screenOptions={sheetStackOptions}>
 					<HubStack.Screen
 						name="HubHome"
@@ -95,6 +98,11 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					{/* The page sets its own title and its Cancel and Save. */}
 					<HubStack.Screen name="HostEdit" component={HostEditPage} />
 					<HubStack.Screen name="Providers" component={ProvidersPage} options={{ title: "Providers" }} />
+					<HubStack.Screen
+						name="ProviderDetail"
+						component={ProviderDetailPage}
+						options={({ route }) => ({ title: route.params.name })}
+					/>
 					<HubStack.Screen name="Plugins" component={PluginsPage} options={{ title: "Plugins" }} />
 					<HubStack.Screen
 						name="Marketplace"
@@ -120,6 +128,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 					/>
 					<HubStack.Screen name="HubSettings" component={HubSettingsScreen} options={{ title: "Hub settings" }} />
 				</HubStack.Navigator>
+				</ProvidersScreenSlotProvider>
 			</PluginsScreenSlotProvider>
 		</HubSheetProvider>
 	);
