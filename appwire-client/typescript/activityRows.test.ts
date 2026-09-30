@@ -2,7 +2,13 @@
 
 import { expect, test } from "vitest";
 import type { ActivityJob, ActivitySessionNode, ActivityShellEntry, ActivityTree } from "./activityData";
-import { activityDelegateState, buildActivityRows, foldRowID, indexActivityEntities } from "./activityRows";
+import {
+  activityDelegateState,
+  buildActivityRows,
+  foldRowID,
+  indexActivityEntities,
+  shellJobState,
+} from "./activityRows";
 
 const TERMINAL_JOB_ID = "terminal";
 
@@ -491,4 +497,17 @@ test("all-terminal delegate folds as one inactive entry", () => {
 test("no terminal entries renders no fold row", () => {
   const rows = buildActivityRows(tree([shell("a", false)]), new Set());
   expect(rows.every((r) => r.kind !== "fold")).toBe(true);
+});
+
+// A shell job's state is the three the Activity list sorts by: a failed job
+// reads "failed", any other ended job "done", and a live one "running".
+test("shellJobState reads failed, done or running for a shell job", () => {
+  const live = shell("a", false).job as ActivityJob;
+  const finished = shell("b", true, "completed").job as ActivityJob;
+  const stopped = shell("c", true, "stopped").job as ActivityJob;
+  const failed = { ...finished, status: "failed", outcome: "failure" };
+  expect(shellJobState(live)).toBe("running");
+  expect(shellJobState(finished)).toBe("done");
+  expect(shellJobState(stopped)).toBe("done");
+  expect(shellJobState(failed)).toBe("failed");
 });
