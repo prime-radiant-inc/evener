@@ -293,7 +293,9 @@ test("has words for every not-resumable closure code the daemon writes", () => {
     ),
   );
   expect(codes.size).toBeGreaterThan(5);
-  const unmapped = [...codes].filter((code) => delegateNotResumableText(code) === "its resumability was closed");
+  const generic = delegateNotResumableText("unknown_closure_code");
+  expect(generic).toBe("its resumability was closed");
+  const unmapped = [...codes].filter((code) => delegateNotResumableText(code) === generic);
   expect(unmapped).toEqual([]);
 });
 

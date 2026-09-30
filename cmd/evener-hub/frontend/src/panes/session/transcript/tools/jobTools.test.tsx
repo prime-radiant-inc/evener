@@ -375,8 +375,9 @@ test("job_status: body renders not-resumable reason diagnostic", () => {
 });
 
 // not_resumable_reason carries its own codes; the card says them in words too
-// (#3362). turn_budget_exhausted and isolation_disposed are the two the daemon
-// writes that the run-ending table does not already carry.
+// (#3362). turn_budget_exhausted is a run-ending code the shared table already
+// carries; isolation_disposed and working_dir_missing are closure-only codes
+// the not-resumable table carries.
 test.each([
   ["turn_budget_exhausted", /Not resumable: ran out of turns/],
   ["isolation_disposed", /Not resumable: its isolation was disposed/],
