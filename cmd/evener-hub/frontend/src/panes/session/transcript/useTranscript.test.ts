@@ -4,10 +4,13 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, renderHook } from "@testing-library/react";
 import { createElement, type PropsWithChildren, StrictMode, Suspense, useEffect } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
 import { resetTranscriptPagingForTests, useTranscript } from "./useTranscript";
+import "../index";
+import "../../transcript/index";
 
 // flushUntil drains microtask turns until `done()` reports true - same
 // contract/name as stores/threads.test.ts's own helper (duplicated here:
@@ -56,10 +59,25 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+function mountWorkspaceTranscript(ref: string, paneId: string) {
+  return renderHook(() => {
+    const transcript = useTranscript(ref, paneId);
+    const flow = useTranscriptScroll({
+      ref,
+      model: transcript.model,
+      listRef: { current: null },
+      loadOlder: transcript.loadOlder,
+      cancelOlder: transcript.cancelOlder,
+    });
+    return { transcript, flow };
+  });
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
+  resetWorkspaceStoreForTests();
 });
 
 test("model is undefined before the ref is tracked", () => {
@@ -458,6 +476,130 @@ test("jumping live cancels this pane's recovery without cancelling another pane"
   first.unmount();
   second.unmount();
   vi.useRealTimers();
+});
+
+test.each([false, true])("returning to a session can abandon retained history demand (jump live: %s)", async (jump) => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref }) => ({
+    thread: testThread(ref ?? "ref_a", {
+      turns: [{ id: "latest", status: "completed", itemsView: "full", items: [] }],
+    }),
+    olderCursor: "page",
+  }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().ensureThread("ref_b");
+  });
+  let attempts = 0;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporary");
+    return { data: [{ id: "older", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+  });
+  const firstId = workspaceStore.getState().replacePrimary("session", { ref: "ref_a" });
+  const first = mountWorkspaceTranscript("ref_a", firstId);
+  await act(async () => {
+    await first.result.current.transcript.loadOlder().catch(() => {});
+  });
+  const awayId = workspaceStore.getState().replacePrimary("session", { ref: "ref_b" });
+  first.unmount();
+  const away = mountWorkspaceTranscript("ref_b", awayId);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(attempts).toBe(1);
+  const returnedId = workspaceStore.getState().replacePrimary("session", { ref: "ref_a" });
+  expect(returnedId).not.toBe(firstId);
+  away.unmount();
+  const returned = mountWorkspaceTranscript("ref_a", returnedId);
+  if (jump) act(() => returned.result.current.flow.jumpToBottom());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(attempts).toBe(jump ? 1 : 2);
+  expect(returned.result.current.transcript.model?.turns.map((turn) => turn.id)).toEqual(
+    jump ? ["latest"] : ["older", "latest"],
+  );
+  returned.unmount();
+});
+
+test("jumping live preserves an inactive open transcript's demand across pane record replacement", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "page" }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  let attempts = 0;
+  let healed = false;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    if (!healed) throw new Error("temporary");
+    return { data: [{ id: "older", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+  });
+  const mainId = workspaceStore.getState().replacePrimary("session", { ref: "ref_a" });
+  const main = mountWorkspaceTranscript("ref_a", mainId);
+  const otherId = workspaceStore.getState().openPane("transcript", { ref: "ref_a" });
+  const other = mountWorkspaceTranscript("ref_a", otherId);
+  await act(async () => {
+    await main.result.current.transcript.loadOlder().catch(() => {});
+    await other.result.current.transcript.loadOlder();
+  });
+  other.unmount();
+  workspaceStore.setState((state) => ({
+    panes: state.panes.map((pane) => ({ ...pane, params: { ...(pane.params as object) } })),
+  }));
+  act(() => main.result.current.flow.jumpToBottom());
+  healed = true;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(attempts).toBe(2);
+  expect(main.result.current.transcript.model?.turns.map((turn) => turn.id)).toEqual(["older"]);
+  main.unmount();
+});
+
+test("returning Jump to live cancels demand before the removed pane's in-flight failure settles", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "page" }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  let rejectRead!: (error: Error) => void;
+  let attempts = 0;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    return new Promise<ThreadTurnsListResponse>((_resolve, reject) => {
+      rejectRead = reject;
+    });
+  });
+  const firstId = workspaceStore.getState().replacePrimary("session", { ref: "ref_a" });
+  const first = mountWorkspaceTranscript("ref_a", firstId);
+  let firstRead!: Promise<void>;
+  await act(async () => {
+    firstRead = first.result.current.transcript.loadOlder().catch(() => {});
+    await flushUntil(() => attempts === 1);
+  });
+  workspaceStore.getState().replacePrimary("session", { ref: "ref_b" });
+  first.unmount();
+  const returnedId = workspaceStore.getState().replacePrimary("session", { ref: "ref_a" });
+  const returned = mountWorkspaceTranscript("ref_a", returnedId);
+  act(() => returned.result.current.flow.jumpToBottom());
+  await act(async () => {
+    rejectRead(new Error("temporary"));
+    await firstRead;
+  });
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    return { data: [], nextCursor: undefined };
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(attempts).toBe(1);
+  returned.unmount();
 });
 
 test.each([false, true])(

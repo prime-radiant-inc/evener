@@ -5,6 +5,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { HistoryPaging, sessionActionError } from "@evener/appwire-client";
 import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
+import { workspaceStore } from "../../../shell/workspace";
 import { useConnectionStore } from "../../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 
@@ -31,6 +32,7 @@ interface TranscriptPaging {
   ref: string;
   binding: string | undefined;
   paging: HistoryPaging;
+  consumers: Map<string, "session" | "transcript">;
 }
 const pagingByRef = new Map<string, TranscriptPaging>();
 
@@ -47,6 +49,7 @@ function createPaging(ref: string, binding: string | undefined): TranscriptPagin
   const entry: TranscriptPaging = {
     ref,
     binding,
+    consumers: new Map(),
     paging: new HistoryPaging(
       () => {
         const current = threadsStore.getState().threads.get(ref);
@@ -62,6 +65,15 @@ function createPaging(ref: string, binding: string | undefined): TranscriptPagin
     ),
   };
   return entry;
+}
+
+function rememberConsumer(entry: TranscriptPaging, viewId: string): HistoryPaging {
+  // A fulfilled read may still have pending demand when its cursor did not
+  // advance. Only settled demand can discard its retained pane ownership.
+  if (!entry.paging.getSnapshot().pending) entry.consumers.clear();
+  const pane = workspaceStore.getState().panes.find((pane) => pane.id === viewId);
+  if (pane && (pane.type === "session" || pane.type === "transcript")) entry.consumers.set(viewId, pane.type);
+  return entry.paging;
 }
 
 export function useTranscript(ref: string, viewId = ref): UseTranscriptResult {
@@ -106,16 +118,37 @@ export function useTranscript(ref: string, viewId = ref): UseTranscriptResult {
 
   // A layout commit can adopt another pane's owner before the state update
   // renders. Automatic effects must already route to the committed ref.
-  const committedPaging = useCallback(() => pagingByRef.get(ref)?.paging ?? paging, [ref, paging]);
-  const loadOlder = useCallback(() => committedPaging().request(viewId), [committedPaging, viewId]);
-  const cancelOlder = useCallback(() => committedPaging().cancel(viewId), [committedPaging, viewId]);
+  const committedEntry = useCallback(() => pagingByRef.get(ref) ?? entry, [ref, entry]);
+  const loadOlder = useCallback(
+    () => rememberConsumer(committedEntry(), viewId).request(viewId),
+    [committedEntry, viewId],
+  );
+  const cancelOlder = useCallback(() => {
+    const selected = committedEntry();
+    selected.paging.cancel(viewId);
+    selected.consumers.delete(viewId);
+    // Navigation retains demand but creates a fresh pane ID on return. Jump
+    // to live abandons those removed predecessors, while an independently
+    // open pane keeps its demand even when its reader is currently inactive.
+    const panes = workspaceStore.getState().panes;
+    for (const [consumer, type] of selected.consumers) {
+      if (
+        panes.some(
+          (pane) => pane.id === consumer && pane.type === type && (pane.params as { ref?: unknown })?.ref === ref,
+        )
+      )
+        continue;
+      selected.paging.cancel(consumer);
+      selected.consumers.delete(consumer);
+    }
+  }, [committedEntry, viewId, ref]);
   return {
     model,
     loadOlder,
     cancelOlder,
     loadingOlder: state.loading,
     loadOlderReportingError: () => {
-      void committedPaging()
+      void rememberConsumer(committedEntry(), viewId)
         .retryNow(viewId)
         .catch(() => {});
     },
