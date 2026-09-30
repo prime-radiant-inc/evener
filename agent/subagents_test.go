@@ -25,6 +25,11 @@ func newTestSession(t *testing.T) *Session {
 	t.Helper()
 	return newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
+		// A canonical state dir keeps the session's job store off a host temp
+		// symlink (macOS /var → /private/var): the transcript read path refuses
+		// symlinked ancestors inside the state root, and an empty state dir
+		// falls back to the raw temp path, tripping that refusal.
+		StateDir: realTempDirForTest(t),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
