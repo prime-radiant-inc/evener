@@ -19,6 +19,8 @@ type PageCursor struct {
 	Lines         []linecap.JournalLine
 	Complete      bool
 	Batch         []byte
+	BatchEnd      int64
+	EventEnds     []int64
 	BatchOffset   int
 	BatchEvents   int
 	DecodedEvents uint64
@@ -36,6 +38,7 @@ func ReadPage(ctx context.Context, path string, cursor *PageCursor, maxBytes int
 		return nil, false, errors.New("delegatestore: positive page limits required")
 	}
 	next := *cursor
+	next.EventEnds = nil
 	next.Lines = append([]linecap.JournalLine(nil), cursor.Lines...)
 	if len(next.Lines) == 0 && len(next.Batch) == 0 {
 		lines, complete, err := linecap.ReadJournalPage(ctx, path, &next.Journal, maxBytes, maxEvents, DefaultMaxLineBytes)
@@ -76,6 +79,7 @@ func ReadPage(ctx context.Context, path string, cursor *PageCursor, maxBytes int
 				return nil, false, err
 			}
 			next.Batch, next.BatchOffset, next.BatchEvents = line.Bytes, offset, 0
+			next.BatchEnd = line.EndOffset
 		}
 		// Re-enter the remaining array with a fresh decoder. This allows a canceled
 		// page to discard its local position without mutating a shared decoder.
@@ -103,6 +107,7 @@ func ReadPage(ctx context.Context, path string, cursor *PageCursor, maxBytes int
 				return nil, false, err
 			}
 			events = append(events, event)
+			next.EventEnds = append(next.EventEnds, next.BatchEnd)
 			next.BatchEvents++
 			next.DecodedEvents++
 			next.BatchOffset = start + int(decoder.InputOffset()) - 1

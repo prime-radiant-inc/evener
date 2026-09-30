@@ -18,6 +18,7 @@ type JournalCursor struct {
 type JournalLine struct {
 	Bytes      []byte
 	Terminated bool
+	EndOffset  int64
 }
 
 // ReadJournalPage reads at most byteLimit bytes and lineLimit records. A long
@@ -65,7 +66,7 @@ func ReadJournalPage(ctx context.Context, path string, cursor *JournalCursor, by
 			break
 		}
 		if len(next.Pending) > 0 || terminated {
-			lines = append(lines, JournalLine{Bytes: next.Pending, Terminated: terminated})
+			lines = append(lines, JournalLine{Bytes: next.Pending, Terminated: terminated, EndOffset: next.Offset})
 			next.Pending = nil
 		}
 		if atEnd {

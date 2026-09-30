@@ -11,12 +11,16 @@ import (
 
 // PageCursor carries only disposable read progress. Callers bind it to a
 // journal incarnation and serialize access.
-type PageCursor struct{ Journal linecap.JournalCursor }
+type PageCursor struct {
+	Journal   linecap.JournalCursor
+	EventEnds []int64
+}
 
 // ReadPage yields bounded journal input without changing ScanEventsFrom's
 // historical full-read contract. No outcome is authoritative until complete.
 func ReadPage(ctx context.Context, path string, cursor *PageCursor, maxBytes int64, maxEvents int) ([]Event, bool, error) {
 	next := *cursor
+	next.EventEnds = nil
 	lines, complete, err := linecap.ReadJournalPage(ctx, path, &next.Journal, maxBytes, maxEvents, DefaultMaxLineBytes)
 	if err != nil {
 		return nil, false, err
@@ -42,6 +46,7 @@ func ReadPage(ctx context.Context, path string, cursor *PageCursor, maxBytes int
 			return nil, false, fmt.Errorf("jobstore: decode journal page: %w", err)
 		}
 		events = append(events, event)
+		next.EventEnds = append(next.EventEnds, line.EndOffset)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, false, err

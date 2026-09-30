@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -52,5 +53,30 @@ func TestJournalPageCancellationKeepsPosition(t *testing.T) {
 	}
 	if cursor.Offset != 8 {
 		t.Fatalf("position=%d", cursor.Offset)
+	}
+}
+
+func TestReadJournalPageRecordsAbsoluteEnds(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "journal")
+	if err := os.WriteFile(path, []byte("one\ntwo\nlast"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var cursor JournalCursor
+	var ends []int64
+	for {
+		lines, complete, err := ReadJournalPage(t.Context(), path, &cursor, 3, 2, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range lines {
+			ends = append(ends, line.EndOffset)
+		}
+		if complete {
+			break
+		}
+	}
+	if !reflect.DeepEqual(ends, []int64{4, 8, 12}) {
+		t.Fatalf("absolute record boundaries=%v", ends)
 	}
 }
