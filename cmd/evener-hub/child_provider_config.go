@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -67,19 +68,25 @@ func (c *childProviderConfig) cleanupUnowned() {
 	}
 }
 
-// credentialsPath preserves the original sibling fallback when the retained
-// provider file moves into its private directory. Explicit hub/project values
-// and a nonempty inherited override retain their existing precedence.
-func (c *childProviderConfig) credentialsPath(configured string, parentEnv []string) string {
-	if c.dir == "" || configured != "" {
-		return configured
+// environment applies project precedence before preserving the original sibling
+// credential fallback. Empty overrides still select that fallback when the
+// provider file moves into its private directory.
+func (c *childProviderConfig) environment(in launchconfig.EnvInputs) []string {
+	env := launchconfig.ToEnv(in)
+	if c.dir == "" {
+		return env
 	}
-	for _, entry := range parentEnv {
-		if value, ok := strings.CutPrefix(entry, envvars.EVENERCredentialsConfig.Name+"="); ok && strings.TrimSpace(value) != "" {
-			return value
+	prefix := envvars.EVENERCredentialsConfig.Name + "="
+	fallback := prefix + filepath.Join(filepath.Dir(c.sourcePath), "credentials.toml")
+	for i, entry := range env {
+		if value, ok := strings.CutPrefix(entry, prefix); ok {
+			if strings.TrimSpace(value) == "" {
+				env[i] = fallback
+			}
+			return env
 		}
 	}
-	return filepath.Join(filepath.Dir(c.sourcePath), "credentials.toml")
+	return append(env, fallback)
 }
 
 // transferToChild is called only after Start succeeds. The returned cleanup
