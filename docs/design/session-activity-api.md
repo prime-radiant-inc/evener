@@ -306,7 +306,10 @@ them absent otherwise; they never invent IDs from opaque refs. A loaded descenda
 whose parent page has not arrived remains visible with incomplete relationship
 evidence, then attaches to its known parent when that row arrives.
 
-Navigation stays roots-only. Remove the unmerged `subagents` resource, its global
+The normalized navigation graph stays roots-only. The separate archived list
+retains bounded inline fork-original conversations and their disclosure/reveal
+path; fork originals are outside both activity scopes. Remove the unmerged
+`subagents` resource, its global
 fingerprints, and the new child-derived needs-you count. Remove job/watch detail
 arrays from navigation once all consumers are migrated; retain small cached
 summaries where useful. Existing human-attention policy is unchanged. Navigation

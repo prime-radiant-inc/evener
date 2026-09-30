@@ -177,11 +177,11 @@ usage and missing logical session IDs remain unknown rather than fabricated.
 
 **Interfaces:** Consume Task 4's shared owner with subtree scope. A pure adapter may provide the existing rendering model from flat delegate/job rows; it must not add networking, recovery loops, lifecycle interpretation, or another source of truth.
 
-- [ ] Add native owner/adapter tests for child/grandchild identity, shell-job ownership, missing runtime, retained pages, reconnect, and route disposal while another consumer remains mounted.
-- [ ] Run the focused native tests and capture red evidence before replacing the duplicate fetch/reload loop with the shared owner.
-- [ ] Preserve scope, counts, model/usage fields when available, nested drill-in, delegate stop reconciliation, and shell-job detail/output behavior. No new native visual redesign is included.
-- [ ] Run affected native tests, native typecheck, and touched-path formatter. Report simulator/device qualification separately from these automated checks.
-- [ ] Commit and document any genuinely unavailable optional fields rather than substituting misleading zero values.
+- [x] Add native owner/adapter tests for child/grandchild identity, shell-job ownership, missing runtime, retained pages, reconnect, and route disposal while another consumer remains mounted.
+- [x] Run the focused native tests and capture red evidence before replacing the duplicate fetch/reload loop with the shared owner.
+- [x] Preserve scope, counts, model/usage fields when available, nested drill-in, delegate stop reconciliation, and shell-job detail/output behavior. No new native visual redesign is included.
+- [x] Run affected native tests, native typecheck, and touched-path formatter. Report simulator/device qualification separately from these automated checks.
+- [x] Commit and document any genuinely unavailable optional fields rather than substituting misleading zero values.
 
 ### Task 7: Integrated qualification and evergreen ownership
 

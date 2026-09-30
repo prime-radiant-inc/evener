@@ -38,7 +38,10 @@ left to fragment-route.
   Representation version 3 carries flat session summaries with compact activity
   counts. Session delegate, shell-job and watch collections use the session
   activity methods in the [AppWire catalog](appwire-protocol.md); a navigation
-  `location` remains a placement lookup.
+  `location` remains a placement lookup. The separate `evener/archived/list`
+  path retains bounded inline fork-original conversations and their disclosure;
+  the normalized navigation graph stays flat. See the
+  [session activity boundary](product/session-activity.md#navigation-boundary).
 - `evener/favorite/set` — set or clear a project's favorite (Pinned) decision;
   the typed method retains the explicit rejection for obsolete session-shaped
   favorite requests.

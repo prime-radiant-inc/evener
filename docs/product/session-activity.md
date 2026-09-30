@@ -188,6 +188,11 @@ The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection
 holders acquire demand separately, and client replacement fences old replies.
 Its retained rendering tree does not own a separate network or retry loop.
+Client lifetime changes retire pending model replies even when the same client
+object later returns; accepted model evidence remains useful during disconnect.
+[Stop-request display records](../../mobile-native/src/subagents/stopRequests.ts)
+use the authoritative child ref and raw delegate ID, so another source's equal
+ID cannot acquire that request's label or suppress its stop control.
 [Conversation reads](../../mobile/src/services/conversation.ts) and
 [session links](../../mobile-native/src/session/sessionMessage.ts) use the same
 additive thread lease as activity, preserving another holder when a screen closes.
@@ -212,6 +217,14 @@ Attention and the existing compact root subagent tally keep their own meanings;
 collection downloads do not establish their authority. See the
 [navigation schema](../../hubapi/navigation.go) and
 [web routing guide](../evener-hub-web-routing.md).
+
+The normalized navigation graph stays flat. The separate
+[archived list](../../cmd/evener-hub/navigation_archived_list.go) retains fork
+originals as bounded inline conversation rows. They remain independently
+openable and revealable through their continuation's disclosure in the
+[browser rail](../../cmd/evener-hub/frontend/src/shell/rail/railNodes.ts).
+Fork originals are separate conversations, outside either activity scope; this
+archive path does not restore subagent or job/watch detail to navigation.
 
 When changing this boundary, update the [subsystem map](subsystems.md), public
 contracts, domain producers, routing tests and actual client lifetimes together.
