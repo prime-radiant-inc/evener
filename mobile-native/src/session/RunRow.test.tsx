@@ -164,7 +164,10 @@ describe("a step line's Menlo target", () => {
 	});
 
 	it("sets nothing in Menlo when the words name no target", () => {
-		const tree = drawn({ summary: "Used reindex workspace", words: { verb: "Used reindex workspace" } }, "reindex_workspace");
+		const tree = drawn(
+			{ summary: "Used reindex workspace", words: { verb: "Used reindex workspace" } },
+			"reindex_workspace",
+		);
 		expect(menlo(tree.root)).toEqual([]);
 		expect(texts(tree.root).map(textOf)).toContain("Used reindex workspace");
 	});
