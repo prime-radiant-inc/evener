@@ -284,7 +284,11 @@ describe("each tool's evidence, as the tools print it", () => {
 		const waited = subagentWireStep("call_send_2");
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(waited) })).toEqual([
 			{ kind: "markdown", title: "Message", markdown: "Is drain ordering safe now?" },
-			{ kind: "markdown", title: "Reply", markdown: "Yes: tree settle now waits for the drain, and a test pins the order." },
+			{
+				kind: "markdown",
+				title: "Reply",
+				markdown: "Yes: tree settle now waits for the drain, and a test pins the order.",
+			},
 		]);
 	});
 
@@ -295,7 +299,8 @@ describe("each tool's evidence, as the tools print it", () => {
 			...subagentWireStep("call_send_1"),
 			raw: undefined,
 			argumentsJSON: '{"to":"dlg_x","message":"See ![the plot](https://example.com/p.png)","max_wait_ms":60000}',
-			output: "[delegate_id dlg_x · steered · running · running in background · wait ignored: delegate is already running]",
+			output:
+				"[delegate_id dlg_x · steered · running · running in background · wait ignored: delegate is already running]",
 		};
 		expect(stepEvidence({ label: "delegate_send", detail: activityDetail(ignored) })).toEqual([
 			{ kind: "markdown", title: "Message", markdown: "See the plot" },
@@ -309,7 +314,10 @@ describe("each tool's evidence, as the tools print it", () => {
 		expect(
 			stepEvidence({
 				label: "delegate_send",
-				detail: { arguments: '{"to":"dlg_x"}', output: "[delegate_id dlg_x · steered · running · running in background]" },
+				detail: {
+					arguments: '{"to":"dlg_x"}',
+					output: "[delegate_id dlg_x · steered · running · running in background]",
+				},
 			}),
 		).toEqual([
 			{ kind: "json", label: "Arguments", text: '{\n  "to": "dlg_x"\n}' },

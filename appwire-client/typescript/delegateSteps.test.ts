@@ -1,8 +1,8 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { subagentWireStep } from "./testing/subagentWireFixtures";
 import { delegateSendResponse, delegateSendWaitIgnoredReason } from "./delegateSteps";
+import { subagentWireStep } from "./testing/subagentWireFixtures";
 import { toolStepSummary, toolStepWords } from "./toolSummaries";
 
 // The recorded delegate and delegate_send calls (agent/testdata/subagentwire),
