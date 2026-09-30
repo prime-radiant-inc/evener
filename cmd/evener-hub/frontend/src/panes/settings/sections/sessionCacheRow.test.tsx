@@ -19,9 +19,9 @@ import type { CachedSessionRecord } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearProjectionWorkForTests } from "../../../stores/projectionWork";
+import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "../../../stores/projectionWork";
 import { SessionCacheIndexedDB } from "../../../stores/sessionCacheIndexedDB";
-import { neverSettlingRequest } from "../../../stores/testing/stalledIndexedDB";
+import { holdNextWriteTransaction, neverSettlingRequest } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setSessionCacheAdapterForTests } from "../../../stores/threads";
 import { resetSessionCacheRowStoreForTests, SessionCacheRow, sessionCacheRowStore } from "./sessionCacheRow";
 
@@ -113,13 +113,10 @@ function installWedgedCacheAdapter(): void {
 // epoch — the same value the tab's own write seam captures after its
 // same-tab clear; scheduling below it aborts by design.
 async function writeOneRecordThroughTheSeam(): Promise<void> {
-  const sibling = new SessionCacheIndexedDB();
-  try {
-    const outcome = await sibling.put(seededRecord("local:refill"), 1, Date.now());
-    expect(outcome.outcome).toBe("written");
-  } finally {
-    sibling.close();
-  }
+  const adapter = installedAdapters.at(-1);
+  if (adapter === undefined) throw new Error("no cache adapter installed");
+  const outcome = await adapter.put(seededRecord("local:refill"), 1, Date.now());
+  expect(outcome.outcome).toBe("written");
 }
 
 beforeEach(async () => {
@@ -183,9 +180,11 @@ describe("SessionCacheRow", () => {
     }
   });
 
-  it("cleared exits on the next re-render: the per-render count recomputes the state", { timeout: 3_000 }, async () => {
+  it("a mounted cleared badge yields to the next same-tab write without a forced render", {
+    timeout: 3_000,
+  }, async () => {
     await seedCacheWithRecords(1);
-    const { rerender } = render(<SessionCacheRow />);
+    render(<SessionCacheRow />);
     // The row starts unavailable with Clear disabled (its pre-count
     // state), so the click must wait for the first count to land — the
     // brief's own test-2 order.
@@ -197,10 +196,71 @@ describe("SessionCacheRow", () => {
     await act(async () => {
       await writeOneRecordThroughTheSeam(); // the next record this tab writes
     });
-    await act(async () => {
-      rerender(<SessionCacheRow />); // the settings pane rendering the row again
-    });
     expect(await screen.findByText("cached")).toBeTruthy(); // the badge yielded
+  });
+
+  it("a clear missing its terminal event becomes unavailable and ignores late completion", {
+    timeout: 3_000,
+  }, async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await seedCacheWithRecords(1);
+    await sessionCacheRowStore.getState().refresh();
+    const hold = holdNextWriteTransaction(["records", "meta"]);
+    const clearing = sessionCacheRowStore.getState().clear();
+    try {
+      await hold.reached;
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(sessionCacheRowStore.getState().clearing).toBe(false);
+      expect(sessionCacheRowStore.getState().status).toBe("unavailable");
+      await clearing;
+      hold.release();
+      await settleProjectionWorkForTests();
+      expect(sessionCacheRowStore.getState().status).toBe("unavailable");
+      // Retry can now recount using a fresh connection, without late success
+      // falsely claiming that the uncertain action was observed to commit.
+      await sessionCacheRowStore.getState().refresh();
+      expect(sessionCacheRowStore.getState().status).toBe("empty");
+    } finally {
+      hold.release();
+      await clearing;
+      vi.useRealTimers();
+    }
+  });
+
+  it("the mounted row retains unavailable and Retry after an uncertain clear", { timeout: 3_000 }, async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await seedCacheWithRecords(1);
+    render(<SessionCacheRow />);
+    await act(async () => {
+      await sessionCacheRowStore.getState().refresh();
+    });
+    const hold = holdNextWriteTransaction(["records", "meta"]);
+    let clearing: Promise<void> | undefined;
+    try {
+      await act(async () => {
+        clearing = sessionCacheRowStore.getState().clear();
+        await hold.reached;
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_001);
+      });
+      await act(async () => {
+        hold.release();
+        await clearing;
+        await settleProjectionWorkForTests();
+      });
+      expect(screen.getByText("unavailable")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+      await act(async () => {
+        screen.getByRole("button", { name: "Retry" }).click();
+        await settleProjectionWorkForTests();
+      });
+      expect(screen.getByText("empty")).toBeTruthy();
+    } finally {
+      hold.release();
+      await clearing;
+      vi.useRealTimers();
+    }
   });
 
   it("a reset invalidates an in-flight count, so a late answer cannot overwrite the fresh state", {
@@ -214,7 +274,7 @@ describe("SessionCacheRow", () => {
     // hoped for.
     const adapter = new SessionCacheIndexedDB();
     installedAdapters.push(adapter);
-    let releaseCount!: (count: number) => void;
+    let releaseCount: ((count: number) => void) | undefined;
     const deferred = new Promise<number>((resolve) => {
       releaseCount = resolve;
     });
@@ -228,6 +288,7 @@ describe("SessionCacheRow", () => {
     unmount(); // this test ends
     resetSessionCacheRowStoreForTests(); // the next test's beforeEach runs
     await act(async () => {
+      if (releaseCount === undefined) throw new Error("count resolver was not installed");
       releaseCount(1); // the stale answer lands at last: would flip the row to "cached"
     });
     expect(sessionCacheRowStore.getState().status).toBe("unavailable"); // it wrote nothing

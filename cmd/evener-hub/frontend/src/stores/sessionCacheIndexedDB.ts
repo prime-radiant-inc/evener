@@ -152,6 +152,7 @@ export class SessionCacheIndexedDB {
   #database: IDBDatabase | undefined;
   #databasePromise: Promise<IDBDatabase> | undefined;
   #observedEpoch: number | undefined;
+  readonly #writeListeners = new Set<() => void>();
   readonly #onOpenDiagnostic: (d: SessionCacheOpenDiagnostic) => void;
   readonly #beforeCommit: ((operation: "put" | "clear" | "deleteRecords") => void) | undefined;
 
@@ -169,6 +170,13 @@ export class SessionCacheIndexedDB {
 
   get observedEpoch(): number | undefined {
     return this.#observedEpoch;
+  }
+
+  subscribeWrites(listener: () => void): () => void {
+    this.#writeListeners.add(listener);
+    return () => {
+      this.#writeListeners.delete(listener);
+    };
   }
 
   close(): void {
@@ -215,7 +223,7 @@ export class SessionCacheIndexedDB {
     // UTF-8 JSON payload bytes, not JS UTF-16 code units or IndexedDB overhead.
     const encoded = JSON.stringify(record);
     const bytes = new TextEncoder().encode(encoded).byteLength;
-    return this.#readwriteOutcome(
+    const result = await this.#readwriteOutcome(
       "put",
       async (tx) => {
         const metaStore = tx.objectStore(META_STORE);
@@ -245,6 +253,10 @@ export class SessionCacheIndexedDB {
       },
       now,
     );
+    if (result.outcome === "written") {
+      for (const listener of this.#writeListeners) listener();
+    }
+    return result;
   }
 
   // The commit-observed clear: one readwrite transaction deletes every
@@ -381,6 +393,14 @@ export class SessionCacheIndexedDB {
     const tx = database.transaction(stores, mode);
     const work = body(tx);
     const completion = transactionCompletion(tx);
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error("session cache transaction timed out"));
+      }, STORAGE_WAIT_MS);
+    });
     // Success requires both the body's result and the durable commit event
     // (requests issued; auto-commit happens when the microtask queue drains).
     // Promise.all rejects on either failure without waiting for the other, and
@@ -388,7 +408,7 @@ export class SessionCacheIndexedDB {
     // seam's throw - must not leave its already-issued requests committing
     // behind it, the same rollback the outbox's runner enforces.
     try {
-      const [result] = await Promise.all([work, completion]);
+      const [result] = await Promise.race([Promise.all([work, completion]), deadline]);
       return result;
     } catch (error) {
       try {
@@ -396,7 +416,12 @@ export class SessionCacheIndexedDB {
       } catch {
         // The transaction already completed; preserve the original failure.
       }
+      // Only ordinary transactions run here, never schema upgrades. A late
+      // terminal event cannot settle the abandoned race or announce success.
+      if (timedOut) this.#retire(database);
       throw error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

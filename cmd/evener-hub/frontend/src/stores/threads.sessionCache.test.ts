@@ -2167,6 +2167,40 @@ function installFaultedClearAdapter(): void {
 }
 
 describe("the clear", () => {
+  it("an unobserved clear reverts its own arm and never broadcasts a late completion", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { adapter } = cacheTestBed();
+    const { posted } = installTestCacheChannel();
+    const fake = connectFakeClient();
+    fake.on("thread/read", echoingReadHandler());
+    await threadsStore.getState().ensureThread("local:uncertain-clear");
+    const hold = holdNextWriteTransaction(["records", "meta"]);
+    const clearing = clearCachedSessions();
+    try {
+      await hold.reached;
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(threadsStore.getState().clearInFlight).toBeUndefined();
+      expect(await clearing).toEqual({ committed: false });
+      expect(threadsStore.getState().cacheSuppressed.has("local:uncertain-clear")).toBe(false);
+      expect(posted).toEqual([]);
+      hold.release();
+      await settleProjectionWorkForTests();
+      expect(posted).toEqual([]);
+      // The fake committed but withheld delivery. The durable epoch, not the
+      // abandoned action, still prevents re-persistence after reconnecting.
+      await adapter.count();
+      emitHistoryUpdated("local:uncertain-clear", { fold: "after-timeout", entry: 2 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await settleProjectionWorkForTests();
+      expect(await adapter.count()).toBe(0);
+      expect(threadsStore.getState().cacheSuppressed.has("local:uncertain-clear")).toBe(true);
+    } finally {
+      hold.release();
+      await clearing;
+      vi.useRealTimers();
+    }
+  }, 3_000);
+
   it("14b ordering: in-memory epoch and timer cancellation happen before the awaited transaction", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {

@@ -5491,6 +5491,12 @@ export async function countCachedSessions(): Promise<number | undefined> {
   return currentSessionCache().count();
 }
 
+/** Same-tab committed writes invalidate a mounted settings row immediately.
+ * Sibling writes still use its existing per-render count. */
+export function subscribeCacheWrites(listener: () => void): () => void {
+  return currentSessionCache().subscribeWrites(listener);
+}
+
 // The live gap rule (spec, "The two serving paths, the live gap, and its
 // rule"): a cached-shell reconciling read that carries no changes and whose
 // fresh window starts above the shell's captured anchor replaces instead of

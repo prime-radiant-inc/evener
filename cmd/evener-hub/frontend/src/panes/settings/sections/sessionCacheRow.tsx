@@ -4,10 +4,10 @@
 // row keeps its own module-scoped store, mirroring the settingsOverview
 // convention, because its state is this row's alone: the count is re-derived
 // per render, so no other pane's state can hold it stale.
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { clearCachedSessions, countCachedSessions } from "../../../stores/threads";
+import { clearCachedSessions, countCachedSessions, subscribeCacheWrites } from "../../../stores/threads";
 import { Button } from "../../../widgets";
 import { SettingsField } from "./settingsField";
 
@@ -21,14 +21,14 @@ export interface SessionCacheRowState {
   clear: () => Promise<void>;
 }
 
-// Tests invalidate in-flight actions: resetSessionCacheRowStoreForTests bumps
-// this counter, and every async action captures it before its await and
+// Clear and test resets invalidate in-flight counts by bumping this counter.
+// Every async action captures it before its await and
 // drops its sets if the counter moved. A completion that lands after a reset
 // belongs to a test that already ended - in the wedged-open test the count
 // settles only after the test (the adapter's watchdog is the sole failure
 // path), and writing its answer then would clobber the next test's state,
-// which is the full-suite isolation flake. Production never resets, so the
-// counter never moves and the guard is inert there.
+// which was the full-suite isolation flake. A count started before Clear also
+// cannot overwrite the action's later result.
 let storeGeneration = 0;
 
 // sessionCacheRowStore's shape is PINNED by sessionCacheRow.test.tsx, which
@@ -39,7 +39,7 @@ let storeGeneration = 0;
 // sessionCacheRow's store: the row's state machine. The count runs per
 // render through refresh(), so a cleared badge never outlives the next
 // render (spec, "The clear-cached-sessions setting").
-export const sessionCacheRowStore = createStore<SessionCacheRowState>((set) => ({
+export const sessionCacheRowStore = createStore<SessionCacheRowState>((set, get) => ({
   // The pre-count state: no count has answered yet, and unknown renders as
   // unavailable — never empty (spec: unavailable is "never shown as empty,
   // so the privacy remedy cannot silently claim to have worked"). The first
@@ -47,6 +47,7 @@ export const sessionCacheRowStore = createStore<SessionCacheRowState>((set) => (
   status: "unavailable",
   clearing: false,
   refresh: async () => {
+    if (get().clearing) return;
     const generation = storeGeneration;
     const count = await countCachedSessions();
     if (generation !== storeGeneration) return; // a reset retired this count: its answer must not write
@@ -64,7 +65,7 @@ export const sessionCacheRowStore = createStore<SessionCacheRowState>((set) => (
     set((s) => ({ status: s.status === "cleared" ? "cleared" : "empty" }));
   },
   clear: async () => {
-    const generation = storeGeneration;
+    const generation = ++storeGeneration;
     set({ clearing: true });
     const result = await clearCachedSessions();
     if (generation !== storeGeneration) return; // ditto: the reset restored clearing itself
@@ -104,13 +105,25 @@ export function SessionCacheRow() {
   const clearing = useSessionCacheRowStore((s) => s.clearing);
   const refresh = useSessionCacheRowStore((s) => s.refresh);
   const clear = useSessionCacheRowStore((s) => s.clear);
+  const previousStatus = useRef(status);
 
-  // No dependency array: the count runs per render, so the badge can never
-  // outlive a render whose own count contradicts it. A same-status set is
-  // invisible to the selectors above, so the loop settles instead of
-  // spinning: only a genuine status change renders again.
+  // This tab's next committed record ends the cleared badge even while the
+  // row stays mounted and nothing else renders. Failed writes emit nothing.
+  useEffect(
+    () =>
+      subscribeCacheWrites(() => {
+        void refresh();
+      }),
+    [refresh],
+  );
+
+  // Recount on mount and unrelated renders, not the render caused by our own
+  // count/action result. In particular an uncertain Clear must expose Retry,
+  // not immediately auto-retry and replace unavailable with empty.
   useEffect(() => {
-    void refresh();
+    const changed = previousStatus.current !== status;
+    previousStatus.current = status;
+    if (!clearing && !changed) void refresh();
   });
 
   return (
