@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { forgetLaunchMemory, HISTORY_LIMIT, historyKey, LaunchMemory } from "./launchMemory";
+import { forgetLaunchMemory, LaunchMemory, lastSetupKey } from "./launchMemory";
 import type { LaunchSetup } from "./launchSetup";
 
 function memory(values = new Map<string, string>()) {
@@ -23,69 +23,48 @@ const setup = (over: Partial<LaunchSetup> = {}): LaunchSetup => ({
 	...over,
 });
 
-describe("the starts New session opens on", () => {
-	it("keeps the newest start per host and project, newest first, across launches", () => {
+describe("the start New session opens on", () => {
+	it("keeps only the newest start, across launches", () => {
 		const storage = memory();
 		const starts = new LaunchMemory(storage, "hub-a");
-		starts.recordStart(setup({ effort: "high" }), 1);
-		starts.recordStart(setup({ cwd: "/home/jesse/git/docs" }), 2);
-		starts.recordStart(setup({ effort: "max" }), 3);
-		expect(
-			new LaunchMemory(storage, "hub-a").history().map((entry) => [entry.setup.cwd, entry.setup.effort, entry.at]),
-		).toEqual([
-			["/home/jesse/git/evener", "max", 3],
-			["/home/jesse/git/docs", "xhigh", 2],
-		]);
-	});
-
-	it("forgets the oldest past the limit", () => {
-		const starts = new LaunchMemory(memory(), "hub-a");
-		for (let index = 0; index <= HISTORY_LIMIT; index++) starts.recordStart(setup({ cwd: `/p/${index}` }), index);
-		expect(starts.history()).toHaveLength(HISTORY_LIMIT);
-		expect(starts.history().some((entry) => entry.setup.cwd === "/p/0")).toBe(false);
+		expect(starts.lastSetup()).toBeNull();
+		starts.recordStart(setup({ effort: "high" }));
+		starts.recordStart(setup({ cwd: "/home/jesse/git/docs" }));
+		starts.recordStart(setup({ effort: "max" }));
+		expect(starts.lastSetup()).toEqual(setup({ effort: "max" }));
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toEqual(setup({ effort: "max" }));
 	});
 
 	it("leaves itself unchanged when the phone can't store a start", () => {
 		const storage = memory();
 		const starts = new LaunchMemory(storage, "hub-a");
-		starts.recordStart(setup(), 1);
+		starts.recordStart(setup());
 		storage.setItemSync = () => {
 			throw new Error("disk full");
 		};
-		expect(() => starts.recordStart(setup({ cwd: "/other" }), 2)).toThrow("disk full");
-		expect(starts.history().map((entry) => entry.setup.cwd)).toEqual(["/home/jesse/git/evener"]);
+		expect(() => starts.recordStart(setup({ cwd: "/other" }))).toThrow("disk full");
+		expect(starts.lastSetup()?.cwd).toBe("/home/jesse/git/evener");
 	});
 });
 
 describe("stored values", () => {
-	it("drops entries this build can't read and keeps the rest", () => {
-		const storage = memory(
-			new Map([
-				[
-					historyKey("hub-a"),
-					JSON.stringify([
-						{ setup: { host: 7 }, at: 1 },
-						{ setup: setup(), at: 2 },
-						{ setup: setup({ cwd: "/p" }), at: "yesterday" },
-					]),
-				],
-			]),
-		);
-		expect(new LaunchMemory(storage, "hub-a").history()).toEqual([{ setup: setup(), at: 2 }]);
+	it("reads a setup this build can't read as nothing", () => {
+		const storage = memory(new Map([[lastSetupKey("hub-a"), JSON.stringify({ ...setup(), host: 7 })]]));
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
 	});
 
-	it("reads a list that doesn't parse as empty", () => {
-		const storage = memory(new Map([[historyKey("hub-a"), "{not json"]]));
-		expect(new LaunchMemory(storage, "hub-a").history()).toEqual([]);
+	it("reads a value that doesn't parse as nothing", () => {
+		const storage = memory(new Map([[lastSetupKey("hub-a"), "{not json"]]));
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
 	});
 
 	it("forgets one hub and keeps another's (Review Focus 5)", () => {
 		const storage = memory();
-		new LaunchMemory(storage, "hub-a").recordStart(setup(), 1);
-		new LaunchMemory(storage, "hub-b").recordStart(setup({ cwd: "/b" }), 1);
+		new LaunchMemory(storage, "hub-a").recordStart(setup());
+		new LaunchMemory(storage, "hub-b").recordStart(setup({ cwd: "/b" }));
 		forgetLaunchMemory(storage, "hub-a");
-		expect(new LaunchMemory(storage, "hub-a").history()).toEqual([]);
-		expect(new LaunchMemory(storage, "hub-b").history().map((entry) => entry.setup.cwd)).toEqual(["/b"]);
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
+		expect(new LaunchMemory(storage, "hub-b").lastSetup()?.cwd).toBe("/b");
 	});
 });
 
@@ -95,12 +74,12 @@ describe("a storage that fails", () => {
 		storage.getItemSync = () => {
 			throw new Error("kv-store unavailable");
 		};
-		expect(new LaunchMemory(storage, "hub-a").history()).toEqual([]);
+		expect(new LaunchMemory(storage, "hub-a").lastSetup()).toBeNull();
 	});
 
 	it("says so when the phone won't let go of a removed hub's starts", () => {
 		const storage = memory();
-		new LaunchMemory(storage, "hub-a").recordStart(setup(), 1);
+		new LaunchMemory(storage, "hub-a").recordStart(setup());
 		storage.removeItemSync = () => {
 			throw new Error("disk busy");
 		};
