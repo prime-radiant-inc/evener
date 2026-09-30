@@ -455,6 +455,15 @@ export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQu
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export type { QuietState } from "./sessionActivity";
 export { decodeActivityRead, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
+export type {
+  SessionActivityClient,
+  SessionActivityClock,
+  SessionActivityCollection,
+  SessionActivityCollectionState,
+  SessionActivityReadState,
+  SessionActivitySnapshot,
+} from "./sessionActivityStore";
+export { SessionActivityStore } from "./sessionActivityStore";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";
@@ -566,6 +575,12 @@ export {
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
+export type {
+  ThreadSubscriptionClient,
+  ThreadSubscriptionLease,
+  ThreadSubscriptionReadParams,
+} from "./threadSubscription";
+export { acquireThreadSubscription } from "./threadSubscription";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
 export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
@@ -709,6 +724,7 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
+
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 export type { WarningWords } from "./warnings";

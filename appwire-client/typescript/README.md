@@ -123,6 +123,60 @@ optional `olderCursor` at history end, while an unavailable model stays `undefin
 existing history store remains responsible for merging pages and scroll anchors.
 Typed client-upgrade and deleted-target rejections remain explained failures.
 
+## Session activity demand and subscriptions
+
+`SessionActivityStore` owns typed activity for one connection, public session ref,
+and ownership scope. It reads the session summary independently of collection
+pages. `start()` observes only that summary; `observe("delegates" | "jobs" |
+"watches")` acquires a collection's demand and returns an idempotent release.
+`load` performs a one-shot read; `loadMore` reads the next keyset page when a
+visible list approaches its boundary. Empty incomplete scan pages advance
+without a repair action. `refresh(resource?)` wakes a read immediately; omitting
+the resource refreshes summary and observed collections. `dispose` releases the
+owner and ignores late results. Create a new owner when client, ref or scope
+changes.
+
+Consumers sharing a client, ref and scope lifetime share one store binding.
+That owner coalesces collection demand and reads. Separate store instances
+share wire subscription membership through leases; they do not share a second
+collection cache or RPC registry.
+
+`getSnapshot()` returns `context`, `summary`, `summaryState`, and collection
+states `delegates`, `jobs`, `watches`. Collection states expose typed `rows`,
+`context`, `loading`, `pending`, `complete`, `hasMore`, `issues`, `error`,
+`unavailable`, and `permanent`. Counts come from the summary, never the length of
+loaded rows. Check `known` before displaying a count. `context.ancestryKnown`
+distinguishes proven ancestry from bounded retained-source progress; an empty
+ancestor list is root evidence only when ancestry is known. Observed pending
+ancestry is paced without treating useful progress as a failure. `clock` options
+inject timeout scheduling for deterministic tests.
+
+Useful rows survive transient failures, stale cursors, and reconnects. Transient
+failure retries continue while observed after 1, 2, 4, 8, 16, then 30 seconds,
+capped at 30 seconds. A typed `sessionActivityCursorStale` rejection restarts only
+the affected collection. Invalid inputs, deleted resources and unsupported
+methods do not retry automatically. Typed activity invalidations revalidate only
+observed resources; subtree owners accept descendant changes routed to their
+subscription. Collection pages merge stable identities only within the current
+source epoch and root read lifetime.
+
+Activity and transcript owners share wire membership through
+`acquireThreadSubscription(client, ref)`. Its lease has `ensure`, `read`, and
+idempotent `release`. `ensure` makes a lean additive `thread/read`.
+`read(params)` preserves the caller's hydration fields and makes its rich read
+acquire absent membership directly; it does not need a separate lean request on
+that healthy path. After membership exists, independent rich reads run without
+waiting on one another. Only membership acquisition/release is serialized.
+Reconnect retires old membership generations. The helper owns no history,
+mutation state, or retry loop.
+
+Every pane, watch, outbox, conversation and followed session link on that
+connection must acquire a lease, use `lease.read` for subscribed reads, and
+release its own lifetime. Raw replacing subscriptions or direct
+`thread/unsubscribe` bypass this ownership and can remove another mounted
+owner's subscription. The final lease releases the wire membership; releasing
+an activity view cannot unsubscribe a transcript that holds its own lease.
+
 ## Published subpaths
 
 Besides the root, `package.json` `exports` publishes these subpaths:
