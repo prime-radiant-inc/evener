@@ -4,6 +4,7 @@
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, renderedText } from "../renderNative.testkit";
+import { palettes } from "../design/tokens";
 import { DocumentChip } from "./DocumentChip";
 import { DocumentMemory } from "./documentMemory";
 import { forgetDocumentSummaries } from "./documentSummaries";
@@ -202,12 +203,16 @@ describe("since you last read it", () => {
 	const dots = (tree: ReactTestRenderer) =>
 		tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "circle.fill");
 
-	it("shows a dot and says so when the session wrote it after your last read", async () => {
+	// Jesse, 2026-09-30: the change shows as a blue dot only. The words cut
+	// to "ch…" on the chip's one fact line; VoiceOver, which can't see the
+	// dot, still says them.
+	it("shows a blue dot, and says so only to VoiceOver, when the session wrote it after your last read", async () => {
 		read(OLDER);
 		const tree = chip({ updatedAt: NEWER });
 		await settle();
 		expect(dots(tree)).toHaveLength(1);
-		expect(renderedText(tree)).toContain("changed since you last read");
+		expect(dots(tree)[0]?.props.tintColor).toBe(palettes.light.accent);
+		expect(renderedText(tree)).not.toContain("changed since you last read");
 		expect(button(tree)?.props.accessibilityLabel).toContain("changed since you last read");
 	});
 
