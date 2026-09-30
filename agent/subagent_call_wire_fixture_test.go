@@ -227,11 +227,8 @@ func awaitDelegateIdle(t *testing.T, s *Session, delegateID string) {
 	// TRIPWIRE: a hang guard only; the scripted child answers at once and its
 	// generation goes idle within milliseconds.
 	waitForCondition(t, 30*time.Second, "the delegate going idle after its child answered", func() bool {
-		c := s.delegateController
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		aggregate := c.durable[delegateID]
-		return aggregate != nil && aggregate.Phase == delegatestore.PhaseIdle && !aggregate.CurrentRunOpen
+		aggregate := delegateAggregateSnapshot(t, s.delegateController, delegateID)
+		return aggregate.Phase == delegatestore.PhaseIdle && !aggregate.CurrentRunOpen
 	})
 }
 
