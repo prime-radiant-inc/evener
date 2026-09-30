@@ -29,7 +29,6 @@ export interface AuthStatusesState {
   /** Each provider's status by name; null until a read lands, since before
    * then nothing is known (an account sign-in must not read as signed in). */
   authStatuses: ReadonlyMap<string, AuthStatusResponse> | null;
-  authStatusesLoading: boolean;
   /** The failed read's own text (errorText); null once a read succeeds. */
   authStatusesError: string | null;
   fetchAuthStatuses(): Promise<void>;
@@ -61,28 +60,27 @@ export function createAuthStatusesStore(client: AuthStatusesClient): AuthStatuse
     // statuses read so far describe a hub this store no longer speaks to, so
     // they go with the read in flight, and no error of the previous hub is
     // shown against the next one's providers, even if its read fails.
-    onFence: (set) => set({ authStatuses: null, authStatusesLoading: false, authStatusesError: null }),
-    wantsList: (s) => s.authStatuses !== null || s.authStatusesError !== null || s.authStatusesLoading,
+    onFence: (set) => set({ authStatuses: null, authStatusesError: null }),
+    // An in-flight read counts too: the lifecycle ORs listRevision.hasLive() in.
+    wantsList: (s) => s.authStatuses !== null || s.authStatusesError !== null,
   });
 
   const store = createFrameworkFreeStore<AuthStatusesState>((publish) => {
     const set = lifecycle.guard(publish);
     return {
       authStatuses: null,
-      authStatusesLoading: false,
       authStatusesError: null,
 
       fetchAuthStatuses() {
-        set({ authStatusesLoading: true, authStatusesError: null });
+        set({ authStatusesError: null });
         return readRevisioned(listRevision, () => client.request("evener/auth/list", {}), {
           onAnswer: (response) => () =>
             set({
               // Go sends an empty (nil) slice as null.
               authStatuses: new Map((response.providers ?? []).map((status) => [status.provider, status])),
-              authStatusesLoading: false,
               authStatusesError: null,
             }),
-          onFailure: (err) => () => set({ authStatusesLoading: false, authStatusesError: errorText(err) }),
+          onFailure: (err) => () => set({ authStatusesError: errorText(err) }),
         });
       },
     };

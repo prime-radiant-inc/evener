@@ -68,16 +68,17 @@ export type InstanceRowProps = {
 export function InstanceRow(props: InstanceRowProps) {
   const { instance, authError } = props;
   const meta = metaText(instance, authError);
+  const dot = authError
+    ? "failed"
+    : credentialLayers(instance).length > 0 || keylessByDesign(instance)
+      ? "idle"
+      : "ended";
   // Both variants render this node, so a read-only row states exactly what the
   // tappable one does.
   const body = (
     <div className={CLASS.rowMain}>
       <div className={CLASS.heading}>
-        <StatusDot
-          state={
-            authError ? "failed" : credentialLayers(instance).length > 0 || keylessByDesign(instance) ? "idle" : "ended"
-          }
-        />
+        <StatusDot state={dot} />
         <span className={CLASS.name}>{instance.name}</span>
         {instance.isDefault && <Chip>★ default</Chip>}
         {fromEnvironment(instance) && <Chip>from environment</Chip>}
