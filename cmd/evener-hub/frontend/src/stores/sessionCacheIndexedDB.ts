@@ -194,16 +194,17 @@ export class SessionCacheIndexedDB {
         await this.#deleteRows(tx, victim.ref);
         total -= victim.bytes;
       }
-      this.#beforeCommit?.("put");
       return { outcome: "written" } as SessionCacheWriteOutcome;
     });
     return written ?? ({ outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome);
   }
 
-  // The commit-observed clear: one readwrite transaction deletes every record
-  // row and its meta row, and increments the reserved epoch row in the same
-  // commit. `committed` is read off the value the transaction runner delivers,
-  // which only arrives after the completion event - an abort (the fault
+  // The commit-observed clear: one readwrite transaction deletes every
+  // records row and every meta row except the reserved epoch row - by each
+  // store's own keys, so an orphan meta row no record backs dies too - and
+  // increments the epoch row in the same commit. `committed` is read off the
+  // value the transaction runner delivers, which only arrives after the
+  // completion event - an abort (the fault
   // seam's throw, a request error, a commit-time failure) reads as
   // { committed: false, epoch: observed-before-the-abort }, so no caller ever
   // broadcasts a clear that did not land.
@@ -217,7 +218,11 @@ export class SessionCacheIndexedDB {
       const refs = await requestResult(recordsStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
       for (const ref of refs) {
         recordsStore.delete(ref);
-        metaStore.delete(String(ref));
+      }
+      const metaKeys = await requestResult(metaStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
+      for (const ref of metaKeys) {
+        if (ref === EPOCH_ROW_KEY) continue; // exempt by construction: the reserved epoch row survives every clear
+        metaStore.delete(ref);
       }
       metaStore.put({ ref: EPOCH_ROW_KEY, epoch: observed + 1 } satisfies EpochRow);
       this.#beforeCommit?.("clear");
@@ -271,11 +276,21 @@ export class SessionCacheIndexedDB {
   // The write failure discipline: #readwrite turns a failure into a miss;
   // a write turns the same failure into the "failed" outcome instead - open,
   // transaction, and quota errors all drop silently here, never a throw.
+  // The beforeCommit seam fires inside this wrapper, after every completed
+  // put body's requests are queued - the written, oversize, and stale-epoch
+  // paths alike - while a throw can still abort the transaction, which is
+  // what proves the rollback: the operation label threaded to the shared
+  // end-of-transaction path, the brief's alternative wiring.
   async #readwriteOutcome(
-    label: string,
+    operation: "put",
     body: (tx: IDBTransaction) => Promise<SessionCacheWriteOutcome>,
   ): Promise<SessionCacheWriteOutcome> {
-    return (await this.#readwrite(label, body)) ?? { outcome: "failed" };
+    const outcome = await this.#readwrite(operation, async (tx) => {
+      const result = await body(tx);
+      this.#beforeCommit?.(operation);
+      return result;
+    });
+    return outcome ?? { outcome: "failed" };
   }
 
   // One attempt per call: a timeout fails this call and the next call tries

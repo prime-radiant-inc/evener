@@ -158,6 +158,34 @@ async function bumpEpochRow(factory: IDBFactory, epoch: number): Promise<void> {
   });
 }
 
+// Seed a meta row no record row backs - an orphan the adapter never creates,
+// so only a raw write can produce it: clear must delete every meta row except
+// the reserved epoch row, including one the records keys never name.
+async function seedOrphanMetaRow(factory: IDBFactory, ref: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = factory.open("evener-session-cache", 1);
+    request.addEventListener(
+      "success",
+      () => {
+        const db = request.result;
+        const tx = db.transaction("meta", "readwrite");
+        tx.objectStore("meta").put({ ref, bytes: 10, savedAt: 1_000 });
+        tx.addEventListener(
+          "complete",
+          () => {
+            db.close();
+            resolve();
+          },
+          { once: true },
+        );
+        tx.addEventListener("error", () => reject(tx.error), { once: true });
+      },
+      { once: true },
+    );
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+}
+
 // The tree's neverSettlingRequest() takes no factory - it IS the dead open
 // request. A wedged-open adapter needs a factory whose open() returns it,
 // which is the spy wrap the outbox's open-diagnostic tests use.
@@ -382,6 +410,42 @@ describe("SessionCacheIndexedDB put", () => {
     adapter.close();
   });
 
+  it("an oversize put the seam aborts leaves the previously stored row intact and reports failed", async () => {
+    const indexedDB = new IDBFactory();
+    const storer = new SessionCacheIndexedDB({ indexedDB, maxBytes: 500 });
+    expect(await storer.put(record({ ref: "local:huge" }), 0, 1_000)).toMatchObject({ outcome: "written" });
+    await settleProjectionWorkForTests();
+    const crashing = new SessionCacheIndexedDB({
+      indexedDB,
+      maxBytes: 500,
+      beforeCommit: (op) => {
+        if (op === "put") throw new Error("fault");
+      },
+    });
+    // The stored record encodes to 351 bytes; this outgrown one to 850, so
+    // the put takes the oversize path and queues the sweep of its own row.
+    const outgrown = record({
+      ref: "local:huge",
+      history: {
+        ...record().history,
+        turns: [
+          {
+            id: "t",
+            status: "completed",
+            items: [{ type: "assistantMessage", id: "i1", turnId: "t", status: "completed", text: "x".repeat(500) }],
+          },
+        ],
+      },
+    });
+    expect(await crashing.put(outgrown, 0, 2_000)).toEqual({ outcome: "failed" }); // never a throw
+    await settleProjectionWorkForTests();
+    // The seam fired after the oversize path queued its delete, so the abort
+    // rolled the sweep back: the stored row is intact, exactly as written.
+    expect((await storer.get("local:huge", 3_000))?.record.history).toEqual(record({ ref: "local:huge" }).history);
+    storer.close();
+    crashing.close();
+  });
+
   it("aborts a write scheduled under an older epoch and reports the observed one", async () => {
     const { adapter, factory, write } = freshAdapter();
     await write(record()); // durable epoch is 0
@@ -415,14 +479,22 @@ describe("SessionCacheIndexedDB put", () => {
 
 describe("SessionCacheIndexedDB clear, deleteRecords, count", () => {
   it("clear deletes every record, increments the epoch, and reports the commit", async () => {
-    const { adapter, write } = freshAdapter();
+    const { adapter, factory, write } = freshAdapter();
     await write(record({ ref: "local:a" }));
     await write(record({ ref: "local:b" }));
+    await seedOrphanMetaRow(factory, "local:orphan"); // a meta row no record row backs
     const result = await adapter.clear();
     await settleProjectionWorkForTests();
     expect(result.committed).toBe(true);
     expect(result.epoch).toBe(1);
     expect(await adapter.count()).toBe(0);
+    expect(await countStoreRows(factory, "meta")).toBe(1); // every meta row died except the reserved epoch row
+    // The epoch row survived clear and carries the new epoch: a put scheduled
+    // under the pre-clear epoch reads it and aborts.
+    expect(await adapter.put(record({ ref: "local:c" }), 0, 1_000)).toEqual({
+      outcome: "aborted",
+      observedEpoch: 1,
+    });
     expect((await adapter.get("local:a", Date.now()))?.record).toBeUndefined();
     adapter.close();
   });
