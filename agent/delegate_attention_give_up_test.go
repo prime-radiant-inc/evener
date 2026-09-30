@@ -153,8 +153,8 @@ func TestTransientRestoreFailuresDoNotCountTowardGivingUp(t *testing.T) {
 	}
 	c := root.delegateController
 	c.mu.Lock()
-	count := c.attentionRestoreFailures[fenced.grandchildDelegateID]
-	_, parked := c.attentionParked[fenced.grandchildDelegateID]
+	count := attentionRestoreFailuresOf(c, fenced.grandchildDelegateID)
+	parked := attentionParkedOf(c, fenced.grandchildDelegateID)
 	c.mu.Unlock()
 	if count != 0 || parked {
 		t.Fatalf("after ten transient failures: count=%d parked=%t, want nothing counted", count, parked)
@@ -172,9 +172,9 @@ func TestASuccessfulRestoreResetsTheFailureCount(t *testing.T) {
 	root.drivePendingStableDelegateAttention()
 
 	c.mu.Lock()
-	count, counted := c.attentionRestoreFailures[fenced.grandchildDelegateID]
+	count := attentionRestoreFailuresOf(c, fenced.grandchildDelegateID)
 	c.mu.Unlock()
-	if counted {
+	if count != 0 {
 		t.Fatalf("after a successful restore the failure count is still %d, want it cleared", count)
 	}
 }
@@ -198,10 +198,10 @@ func TestLeavingThePendingSetClearsParkedAndCountedState(t *testing.T) {
 	c.mu.Lock()
 	c.replaceDelegateAttentionLocked("dlg_replaced", []string{"delegate:dlg_replaced-again"})
 	for _, id := range []string{"dlg_forgotten", "dlg_replaced"} {
-		if _, parked := c.attentionParked[id]; parked {
+		if attentionParkedOf(c, id) {
 			t.Errorf("%s still parked after leaving the pending set", id)
 		}
-		if count := c.attentionRestoreFailures[id]; count != 0 {
+		if count := attentionRestoreFailuresOf(c, id); count != 0 {
 			t.Errorf("%s still counts %d failures after leaving the pending set", id, count)
 		}
 	}
@@ -277,8 +277,8 @@ func TestANilRestoreErrorIsNotCounted(t *testing.T) {
 	root.countDelegateAttentionRestoreFailure(fenced.grandchildDelegateID, nil)
 	c := root.delegateController
 	c.mu.Lock()
-	count := c.attentionRestoreFailures[fenced.grandchildDelegateID]
-	_, parked := c.attentionParked[fenced.grandchildDelegateID]
+	count := attentionRestoreFailuresOf(c, fenced.grandchildDelegateID)
+	parked := attentionParkedOf(c, fenced.grandchildDelegateID)
 	c.mu.Unlock()
 	if count != 0 || parked {
 		t.Fatalf("after a nil error: count=%d parked=%t, want nothing recorded", count, parked)

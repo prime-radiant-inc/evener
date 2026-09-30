@@ -3346,7 +3346,7 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 	}
 	controller.mu.Lock()
 	armedFlag := controller.durable[fixture.delegateID].NeedsAttention
-	wakeIDs := len(controller.attentionWakeIDs[fixture.delegateID])
+	wakeIDs := len(attentionWakeIDsOf(controller, fixture.delegateID))
 	controller.mu.Unlock()
 	if !armedFlag || wakeIDs != 1 {
 		t.Fatalf("armed attention projection = needs:%t wakeIDs:%d, want true/1", armedFlag, wakeIDs)
@@ -3359,7 +3359,7 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 	}
 	controller.mu.Lock()
 	keptFlag := controller.durable[fixture.delegateID].NeedsAttention
-	keptWakeIDs := len(controller.attentionWakeIDs[fixture.delegateID])
+	keptWakeIDs := len(attentionWakeIDsOf(controller, fixture.delegateID))
 	controller.mu.Unlock()
 	if !keptFlag || keptWakeIDs != 1 {
 		t.Fatalf("pending attention projection = needs:%t wakeIDs:%d, want true/1", keptFlag, keptWakeIDs)
@@ -3391,7 +3391,7 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 	readExistingDelegateAttentionFoldCompute = compute
 	controller.mu.Lock()
 	racedFlag := controller.durable[fixture.delegateID].NeedsAttention
-	_, racedKept := controller.attentionWakeIDs[fixture.delegateID][racedID]
+	_, racedKept := attentionWakeIDsOf(controller, fixture.delegateID)[racedID]
 	controller.mu.Unlock()
 	if !racedFlag || !racedKept {
 		t.Fatalf("racing open projection = needs:%t keptRacedWake:%t, want true/true", racedFlag, racedKept)
@@ -3401,7 +3401,7 @@ func TestStableDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 
 	controller.mu.Lock()
 	cleared := !controller.durable[fixture.delegateID].NeedsAttention
-	remaining := len(controller.attentionWakeIDs[fixture.delegateID])
+	remaining := len(attentionWakeIDsOf(controller, fixture.delegateID))
 	controller.mu.Unlock()
 	if !cleared || remaining != 0 {
 		t.Fatalf("resolved attention projection = needs:%t wakeIDs:%d, want false/0", !cleared, remaining)
@@ -3444,7 +3444,7 @@ func TestClearResolvedDelegateAttentionDefersWhenTranscriptMissing(t *testing.T)
 	}
 	controller.mu.Lock()
 	keptFlag := controller.durable[fixture.delegateID].NeedsAttention
-	keptWakeIDs := len(controller.attentionWakeIDs[fixture.delegateID])
+	keptWakeIDs := len(attentionWakeIDsOf(controller, fixture.delegateID))
 	controller.mu.Unlock()
 	if !keptFlag || keptWakeIDs != 1 {
 		t.Fatalf("missing-transcript projection = needs:%t wakeIDs:%d, want true/1", keptFlag, keptWakeIDs)

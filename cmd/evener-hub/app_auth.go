@@ -1579,8 +1579,24 @@ func (c *hubAuthController) instanceStatus(inst registry.Instance, resolved ...r
 // not resolve - and possibly repair - the key file under it.
 func (c *hubAuthController) instanceStatusKeyed(key []byte, inst registry.Instance, resolved ...registry.Resolved) appwire.AuthStatusResponse {
 	if inst.Auth == registry.AuthOAuthOpenAICodex {
-		resp, _ := c.openAIInstanceStatusKeyed(key, inst.Name, resolved...)
-		return resp
+		resp, err := c.openAIInstanceStatusKeyed(key, inst.Name, resolved...)
+		if err == nil {
+			return resp
+		}
+		// The stored OAuth record could not be read (neither absent nor
+		// corrupt). Report the row with the failure in Error rather than
+		// dropping it - Error's one source, the redesign spec's "Error"
+		// provider status (section 12). Write paths read through
+		// openAIInstanceStatus directly, so they still get the error.
+		_, hasFile := c.storedKey(inst.Name)
+		return appwire.AuthStatusResponse{
+			Provider:      inst.Name,
+			Supported:     true,
+			ActiveSource:  "none",
+			AuthModes:     authModesFor(inst.Auth),
+			HasStoredFile: hasFile,
+			Error:         "the stored credential could not be read",
+		}
 	}
 	_, hasFile := c.storedKey(inst.Name)
 	// The registry names an environment credential "env:<VAR>", and that

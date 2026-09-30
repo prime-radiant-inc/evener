@@ -7,6 +7,30 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
+// attentionWakeIDsOf returns delegateID's owed attention wake IDs from its
+// per-delegate attention state, nil when it owes none.
+func attentionWakeIDsOf(c *delegateTreeController, delegateID string) map[string]struct{} {
+	if state := c.attention[delegateID]; state != nil {
+		return state.wakeIDs
+	}
+	return nil
+}
+
+// attentionRestoreFailuresOf returns delegateID's consecutive cold-restore
+// failure count, zero when it has none.
+func attentionRestoreFailuresOf(c *delegateTreeController, delegateID string) int {
+	if state := c.attention[delegateID]; state != nil {
+		return state.restoreFailures
+	}
+	return 0
+}
+
+// attentionParkedOf reports whether the drive parked delegateID.
+func attentionParkedOf(c *delegateTreeController, delegateID string) bool {
+	state := c.attention[delegateID]
+	return state != nil && state.parked
+}
+
 // ---------------------------------------------------------------------------
 // coldDelegateAttentionRef struct
 // ---------------------------------------------------------------------------
@@ -193,13 +217,13 @@ func TestNoteDelegateAttentionLockedNilAggregate(t *testing.T) {
 func TestNoteDelegateAttentionLockedNew(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		durable:          map[string]*delegatestore.Aggregate{"dlg_1": {}},
-		attentionWakeIDs: map[string]map[string]struct{}{},
+		durable:   map[string]*delegatestore.Aggregate{"dlg_1": {}},
+		attention: map[string]*delegateAttentionState{},
 	}
 	if !c.noteDelegateAttentionLocked("dlg_1", "att_1") {
 		t.Fatalf("expected true for new attention")
 	}
-	if len(c.attentionWakeIDs["dlg_1"]) != 1 {
+	if len(attentionWakeIDsOf(c, "dlg_1")) != 1 {
 		t.Fatalf("expected 1 attention ID")
 	}
 }
@@ -208,8 +232,8 @@ func TestNoteDelegateAttentionLockedDuplicate(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{"dlg_1": {}},
-		attentionWakeIDs: map[string]map[string]struct{}{
-			"dlg_1": {"att_1": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
 		},
 	}
 	if c.noteDelegateAttentionLocked("dlg_1", "att_1") {
@@ -224,36 +248,36 @@ func TestNoteDelegateAttentionLockedDuplicate(t *testing.T) {
 func TestForgetDelegateAttentionLocked(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{
-			"dlg_1": {"att_1": {}, "att_2": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}, "att_2": {}}},
 		},
 	}
 	c.forgetDelegateAttentionLocked("dlg_1", "att_1")
-	if _, exists := c.attentionWakeIDs["dlg_1"]["att_1"]; exists {
+	if _, exists := attentionWakeIDsOf(c, "dlg_1")["att_1"]; exists {
 		t.Fatalf("expected att_1 to be deleted")
 	}
-	if _, exists := c.attentionWakeIDs["dlg_1"]; !exists {
-		t.Fatalf("expected dlg_1 to still exist (has att_2)")
+	if state := c.attention["dlg_1"]; state == nil || len(state.wakeIDs) != 1 {
+		t.Fatalf("expected dlg_1 to still owe att_2")
 	}
 }
 
 func TestForgetDelegateAttentionLockedLastID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{
-			"dlg_1": {"att_1": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
 		},
 	}
 	c.forgetDelegateAttentionLocked("dlg_1", "att_1")
-	if _, exists := c.attentionWakeIDs["dlg_1"]; exists {
-		t.Fatalf("expected dlg_1 to be deleted when no IDs remain")
+	if state := c.attention["dlg_1"]; state != nil {
+		t.Fatalf("expected dlg_1's attention state to be dropped when no IDs remain")
 	}
 }
 
 func TestForgetDelegateAttentionLockedNonExistent(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{},
+		attention: map[string]*delegateAttentionState{},
 	}
 	c.forgetDelegateAttentionLocked("dlg_missing", "att_1") // should be a no-op
 }
@@ -265,28 +289,25 @@ func TestForgetDelegateAttentionLockedNonExistent(t *testing.T) {
 func TestReplaceDelegateAttentionLockedEmpty(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{
-			"dlg_1": {"att_1": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}, driveTurn: 3},
 		},
-		attentionDriveTurns: map[string]uint64{"dlg_1": 3},
 	}
 	c.replaceDelegateAttentionLocked("dlg_1", nil)
-	if _, exists := c.attentionWakeIDs["dlg_1"]; exists {
-		t.Fatalf("expected dlg_1 to be deleted for empty list")
-	}
-	// A delegate that no longer owes attention leaves the drive's line.
-	if _, exists := c.attentionDriveTurns["dlg_1"]; exists {
-		t.Fatalf("expected dlg_1's drive turn to be deleted for empty list")
+	// A delegate that no longer owes attention leaves the drive's line: its
+	// whole attention state, wake IDs and drive turn together.
+	if _, exists := c.attention["dlg_1"]; exists {
+		t.Fatalf("expected dlg_1's attention state to be dropped for empty list")
 	}
 }
 
 func TestReplaceDelegateAttentionLockedWithIDs(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{},
+		attention: map[string]*delegateAttentionState{},
 	}
 	c.replaceDelegateAttentionLocked("dlg_1", []string{"att_1", "att_2"})
-	if len(c.attentionWakeIDs["dlg_1"]) != 2 {
+	if len(attentionWakeIDsOf(c, "dlg_1")) != 2 {
 		t.Fatalf("expected 2 IDs")
 	}
 }
@@ -294,10 +315,10 @@ func TestReplaceDelegateAttentionLockedWithIDs(t *testing.T) {
 func TestReplaceDelegateAttentionLockedEmptyStringsFiltered(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{},
+		attention: map[string]*delegateAttentionState{},
 	}
 	c.replaceDelegateAttentionLocked("dlg_1", []string{"att_1", "", "att_2", ""})
-	if len(c.attentionWakeIDs["dlg_1"]) != 2 {
+	if len(attentionWakeIDsOf(c, "dlg_1")) != 2 {
 		t.Fatalf("expected 2 IDs (empty strings filtered)")
 	}
 }
@@ -305,29 +326,27 @@ func TestReplaceDelegateAttentionLockedEmptyStringsFiltered(t *testing.T) {
 func TestReplaceDelegateAttentionLockedAllEmptyStrings(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs:    map[string]map[string]struct{}{},
-		attentionDriveTurns: map[string]uint64{"dlg_1": 3},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {driveTurn: 3},
+		},
 	}
 	c.replaceDelegateAttentionLocked("dlg_1", []string{"", ""})
-	if _, exists := c.attentionWakeIDs["dlg_1"]; exists {
-		t.Fatalf("expected dlg_1 to be deleted when all IDs are empty")
-	}
-	if _, exists := c.attentionDriveTurns["dlg_1"]; exists {
-		t.Fatalf("expected dlg_1's drive turn to be deleted when all IDs are empty")
+	if _, exists := c.attention["dlg_1"]; exists {
+		t.Fatalf("expected dlg_1's attention state to be dropped when all IDs are empty")
 	}
 }
 
 func TestReplaceDelegateAttentionLockedEmptyDelegateID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{
-			"dlg_1": {"att_1": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
 		},
 	}
 	c.replaceDelegateAttentionLocked("", []string{"att_1"})
 	// empty delegateID should delete from the map key ""
 	// but dlg_1 should still exist
-	if _, exists := c.attentionWakeIDs["dlg_1"]; !exists {
+	if _, exists := c.attention["dlg_1"]; !exists {
 		t.Fatalf("dlg_1 should still exist")
 	}
 }
@@ -347,8 +366,8 @@ func TestHasPendingDelegateAttentionNil(t *testing.T) {
 func TestHasPendingDelegateAttentionEmpty(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{},
-		durable:          map[string]*delegatestore.Aggregate{},
+		attention: map[string]*delegateAttentionState{},
+		durable:   map[string]*delegatestore.Aggregate{},
 	}
 	if c.hasPendingDelegateAttention() {
 		t.Fatalf("expected false for empty")
@@ -358,8 +377,8 @@ func TestHasPendingDelegateAttentionEmpty(t *testing.T) {
 func TestHasPendingDelegateAttentionWithPending(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{
-			"dlg_1": {"att_1": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
 		},
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Resumable: true, PendingStopSeq: 0, Phase: delegatestore.PhaseIdle},
@@ -373,8 +392,8 @@ func TestHasPendingDelegateAttentionWithPending(t *testing.T) {
 func TestHasPendingDelegateAttentionNotResumable(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{
-			"dlg_1": {"att_1": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
 		},
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Resumable: false},
@@ -388,8 +407,8 @@ func TestHasPendingDelegateAttentionNotResumable(t *testing.T) {
 func TestHasPendingDelegateAttentionClosedPhase(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{
-			"dlg_1": {"att_1": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
 		},
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Resumable: true, Phase: delegatestore.PhaseClosed},
@@ -403,7 +422,7 @@ func TestHasPendingDelegateAttentionClosedPhase(t *testing.T) {
 func TestHasPendingDelegateAttentionEmptyIDs(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{
+		attention: map[string]*delegateAttentionState{
 			"dlg_1": {},
 		},
 		durable: map[string]*delegatestore.Aggregate{
@@ -430,8 +449,8 @@ func TestHasRunnableDelegateAttentionNil(t *testing.T) {
 func TestHasRunnableDelegateAttentionEmpty(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{},
-		durable:          map[string]*delegatestore.Aggregate{},
+		attention: map[string]*delegateAttentionState{},
+		durable:   map[string]*delegatestore.Aggregate{},
 	}
 	if c.hasRunnableDelegateAttention() {
 		t.Fatalf("expected false for empty")
@@ -470,8 +489,8 @@ func TestNextIdleDelegateAttentionNil(t *testing.T) {
 func TestNextIdleDelegateAttentionEmpty(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attentionWakeIDs: map[string]map[string]struct{}{},
-		durable:          map[string]*delegatestore.Aggregate{},
+		attention: map[string]*delegateAttentionState{},
+		durable:   map[string]*delegatestore.Aggregate{},
 	}
 	_, _, ok := c.nextIdleDelegateAttention()
 	if ok {
@@ -569,8 +588,8 @@ func TestTryOpenDelegateAttentionEmptyAttentionID(t *testing.T) {
 func TestTryOpenDelegateAttentionNilAggregate(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		durable:          map[string]*delegatestore.Aggregate{},
-		attentionWakeIDs: map[string]map[string]struct{}{},
+		durable:   map[string]*delegatestore.Aggregate{},
+		attention: map[string]*delegateAttentionState{},
 	}
 	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_missing", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
@@ -584,8 +603,8 @@ func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: true},
 		},
-		attentionWakeIDs: map[string]map[string]struct{}{
-			"dlg_1": {"att_1": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
 		},
 	}
 	added, blocker, _, emit, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
