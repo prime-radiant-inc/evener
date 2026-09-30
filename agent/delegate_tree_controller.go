@@ -168,6 +168,7 @@ type delegateRuntimeBinding struct {
 // delegateFinalization is a finished generation whose runtime has not yet
 // reported its finalize tail done.
 type delegateFinalization struct {
+	delegateID string
 	runtime    *Session
 	generation uint64
 	// released closes when the finalization is released, so a send refused

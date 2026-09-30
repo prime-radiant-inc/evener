@@ -259,12 +259,33 @@ func (c *delegateTreeController) setResidentRuntimeLocked(live *delegateLiveStat
 	live.runtime = runtime
 }
 
+// stillFinalizing reports whether delegateID's finished generation is still
+// finalizing on its resident runtime: the delegate isn't released, and its
+// result may not be announced yet.
+func (c *delegateTreeController) stillFinalizing(delegateID string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.finalizingLocked(delegateID) != nil
+}
+
 // releaseFinalizationLocked releases live's finalization, if any, waking
-// every send waiting on it. The caller holds c.mu.
+// every send waiting on it. The root's attention drive skips a delegate
+// while it finalizes, and nothing else wakes the drive for attention it
+// skipped, so a release that leaves attention owed to the delegate wakes the
+// drive here. The caller holds c.mu, and the drive re-enters the controller,
+// so the wake runs on its own goroutine.
 func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveState) {
-	if live.finalizing != nil {
-		close(live.finalizing.released)
-		live.finalizing = nil
+	finalizing := live.finalizing
+	if finalizing == nil {
+		return
+	}
+	close(finalizing.released)
+	live.finalizing = nil
+	if root := c.rootRuntime; root != nil && len(c.attentionWakeIDs[finalizing.delegateID]) != 0 {
+		go root.notify()
 	}
 }
 
@@ -297,6 +318,7 @@ func (c *delegateTreeController) finishGenerationLocked(intent finishIntent) (de
 		if live := c.live[intent.lease.delegateID]; live != nil {
 			c.releaseFinalizationLocked(live)
 			live.finalizing = &delegateFinalization{
+				delegateID: intent.lease.delegateID,
 				runtime:    runtime,
 				generation: intent.lease.generation,
 				released:   make(chan struct{}),

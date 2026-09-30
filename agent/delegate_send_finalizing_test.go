@@ -36,6 +36,25 @@ type finalizingDelegate struct {
 // the window with no timing.
 func holdDelegateFinalizing(t *testing.T) finalizingDelegate {
 	t.Helper()
+	return holdDelegateTail(t, holdAtResultDelivery)
+}
+
+// tailHoldPoint is where holdDelegateTail pins a delegate's finalize tail.
+type tailHoldPoint int
+
+const (
+	// holdAtResultDelivery pins the tail while it hands the result to the
+	// parent.
+	holdAtResultDelivery tailHoldPoint = iota
+	// holdBeforeAnnouncement pins the tail after the child stopped
+	// finalizing locally, before it announces anything.
+	holdBeforeAnnouncement
+)
+
+// holdDelegateTail starts a delegate and holds its first generation's
+// finalize tail at the given point, with no timing.
+func holdDelegateTail(t *testing.T, at tailHoldPoint) finalizingDelegate {
+	t.Helper()
 	stateDir := realTempDirForTest(t)
 	workspace := realTempDirForTest(t)
 	held, hold := make(chan struct{}), make(chan struct{})
@@ -44,29 +63,36 @@ func holdDelegateFinalizing(t *testing.T) finalizingDelegate {
 	var child *subagent
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("done")}
+		return finalResponse("done")
 	}})
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	pin := func() {
+		holdOnce.Do(func() {
+			close(held)
+			<-hold
+		})
+	}
+	testOnly := testConfig{
+		skipGitSnapshot:     true,
+		minimalSystemPrompt: true,
+		sandboxProber:       bwrapCapableProber(workspace),
+		subagentAfterFinalStatePublish: func(a *subagent) {
+			childMu.Lock()
+			child = a
+			childMu.Unlock()
+		},
+	}
+	switch at {
+	case holdAtResultDelivery:
+		testOnly.delegateDeliveryClassified = func(*Session, bool) { pin() }
+	case holdBeforeAnnouncement:
+		testOnly.subagentBeforeGenerationAnnounced = func(*subagent) { pin() }
+	}
 	s, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
 		ForceRealIO:      true,
-		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			sandboxProber:       bwrapCapableProber(workspace),
-			subagentAfterFinalStatePublish: func(a *subagent) {
-				childMu.Lock()
-				child = a
-				childMu.Unlock()
-			},
-			delegateDeliveryClassified: func(*Session, bool) {
-				holdOnce.Do(func() {
-					close(held)
-					<-hold
-				})
-			},
-		},
+		testOnly:         testOnly,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -546,5 +572,74 @@ func TestDelegateSendTakesAReleaseReadyAlongsideItsCancellation(t *testing.T) {
 	}
 	if err := c.AbortStart(reservation); err != nil {
 		t.Fatalf("AbortStart: %v", err)
+	}
+}
+
+// A drain waits out a delegate whose finished generation hasn't announced
+// its result yet: the child has stopped finalizing locally, but its result
+// still has to reach the parent, so the tree is not quiet.
+func TestDrainCountsADelegateWhoseResultIsUnannouncedAsOutstanding(t *testing.T) {
+	t.Parallel()
+	held := holdDelegateTail(t, holdBeforeAnnouncement)
+	defer held.release()
+	outstanding, err := held.s.treeHasOutstandingWork()
+	if err != nil {
+		t.Fatalf("treeHasOutstandingWork: %v", err)
+	}
+	if !outstanding {
+		t.Fatal("the tree read quiet while a finished generation's result was still unannounced")
+	}
+}
+
+// The root's attention drive skips a delegate while its finished generation
+// finalizes, so a release that leaves attention owed to it must wake the
+// drive: nothing else will. The quiescence report is also how a send
+// releases a generation whose run never launched, which has no tail to
+// re-arm attention; a replaced or dropped resident runtime releases it with
+// no tail involved at all.
+func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		release func(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session)
+	}{
+		{"the finished runtime reports quiescence", func(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session) {
+			if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
+				t.Fatalf("ReportFinalizationQuiesced: %v", err)
+			}
+		}},
+		{"another runtime becomes resident", func(_ *testing.T, c *delegateTreeController, _ delegateLease, _ *Session) {
+			c.mu.Lock()
+			c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
+			c.mu.Unlock()
+		}},
+		{"the resident runtime is dropped", func(_ *testing.T, c *delegateTreeController, _ delegateLease, _ *Session) {
+			c.mu.Lock()
+			c.setResidentRuntimeLocked(c.live["dlg_target"], nil)
+			c.mu.Unlock()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, lease, runtime := finishedDelegateStillFinalizing(t)
+			wakes := make(chan struct{}, 1)
+			root := &Session{}
+			root.notifyFunc = func() {
+				select {
+				case wakes <- struct{}{}:
+				default:
+				}
+			}
+			c.mu.Lock()
+			c.rootRuntime = root
+			c.attentionWakeIDs["dlg_target"] = map[string]struct{}{"attention-owed": {}}
+			c.mu.Unlock()
+			tc.release(t, c, lease, runtime)
+			select {
+			case <-wakes:
+			// TRIPWIRE: a hang guard only; the wake is handed off at the
+			// release, with no timer in between.
+			case <-time.After(10 * time.Second):
+				t.Fatal("the release left attention owed to the delegate with no wake for the root's drive")
+			}
+		})
 	}
 }

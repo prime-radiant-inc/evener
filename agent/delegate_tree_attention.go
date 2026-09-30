@@ -444,7 +444,8 @@ func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID 
 	}
 	// A finished generation still finalizing hasn't announced its result: an
 	// attention successor waits for the release, as a send does, so it can't
-	// start ahead of that result. The tail re-arms attention after releasing.
+	// start ahead of that result. Every release wakes the root's drive for
+	// attention it skipped here (releaseFinalizationLocked).
 	if c.finalizingLocked(delegateID) != nil {
 		return false
 	}
