@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hydrateThread, makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { hydrateThread, makeTranscriptDisplayConfig, WarningCodeMCPReconnected } from "@evener/appwire-client";
 import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import type {
 	AskQuestionRef,
@@ -90,6 +90,52 @@ function asksFor(callId: string): ReadonlyMap<string, AskQuestionRef[]> {
 }
 
 describe("projectedRow — item entries", () => {
+	it.each(["warning", "systemMessage"])("MCP recovery through %s is quiet full-detail history", (type) => {
+		const warning = { code: WarningCodeMCPReconnected };
+		const model = {
+			turns: [
+				{
+					id: "t1",
+					status: "completed",
+					items: [
+						item({ id: "recovery", type, eventKind: "warning", text: "connection-1", warning, raw: { warning } }),
+						item({
+							id: "retry",
+							type: "commandExecution",
+							toolName: "server__probe",
+							status: "failed",
+							description: "probe-1",
+							error: "failure-1",
+						}),
+						item({ id: "signin", type: "warning", text: "signin-1", warning: { source: "mcp" } }),
+						item({
+							id: "interruption",
+							type: "systemMessage",
+							eventKind: "error",
+							text: "interruption-1",
+							raw: { warning },
+						}),
+					],
+				},
+			],
+		} as unknown as ThreadModel;
+		for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+			const rows = projectTimeline(model, new Map(), makeTranscriptDisplayConfig({ kind: "preset", level }));
+			const recovery = rows.find((row) => row.id === "recovery");
+			if (level === "full") expect(recovery).toMatchObject({ kind: "notice", tone: "system", text: "connection-1" });
+			else expect(recovery).toBeUndefined();
+			expect(rows.find((row) => row.id === "signin")).toMatchObject({ kind: "failure", attention: true });
+			expect(rows.find((row) => row.id === "interruption")).toMatchObject({ kind: "notice", tone: "warning" });
+			expect(
+				rows.some(
+					(row) =>
+						(row.kind === "activity" && row.id === "retry" && row.state === "failed") ||
+						(row.kind === "cluster" && row.steps.some((step) => step.id === "retry" && step.state === "failed")),
+				),
+			).toBe(true);
+		}
+	});
+
 	it("maps a user message to the user row, carrying its transcript entry index", () => {
 		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi", transcriptEntryIndex: 7 }), true));
 		expect(row).toEqual<MobileTimelineItem>({
