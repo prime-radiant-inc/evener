@@ -453,8 +453,8 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	registerWebTools(reg, deps)
 	registerCommunicateTool(reg, deps)
 	// ask_user is root-only and interactive-only (spec §7 point 1): invisible,
-	// not merely disabled, in non-interactive sessions and every subagent.
-	if !s.cfg.NonInteractive && !s.isSubagentSession() {
+	// not merely disabled, when nobody can answer and in every subagent.
+	if !s.cfg.noOneToAsk() && !s.isSubagentSession() {
 		registerAskTool(reg, s, deps)
 	}
 	registerSkillTool(reg, deps)

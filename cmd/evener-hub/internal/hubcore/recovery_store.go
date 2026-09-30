@@ -125,6 +125,15 @@ func (s *recoveryStore) commit(next map[string]recoveryAuthority) (bool, error) 
 	return renamed, nil
 }
 
+// write stays private to this store rather than calling writeStateFileAtomic:
+// its durability contract deliberately differs. Where the shared writer treats
+// an unsupported fsync as tolerated and creates the directory with one
+// MkdirAll, this store must (a) treat an unsupported sync as a failure - a
+// signal must never be authorized on sync the filesystem did not honor - and
+// (b) link and fsync every missing directory in its parent before intent can
+// commit, so recovery authority survives a crash. It also fires the
+// AfterRename fault before the directory sync and folds that sync into the
+// same write result. See TestRecoveryIntentRequiresFileAndDirectoryDurability.
 func (s *recoveryStore) write(data []byte) (renamed bool, err error) {
 	dir := filepath.Join(s.root, "recovery")
 	if err := createRecoveryDirectory(s.fs, dir, s.directoryBase); err != nil {

@@ -546,14 +546,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}()
 
-	// Populate default tasks from agent definition (non-interactive/eval mode
-	// only). A one-shot run counts even when an ask responder makes it
-	// interactive, so `evener run --ask-responder` gets the same tasks.
+	// Populate default tasks from agent definition (non-interactive/eval mode only).
 	agentName := cfg.AgentName
 	if agentName == "" {
 		agentName = defaultAgentName
 	}
-	if (cfg.NonInteractive || cfg.TurnEndsProcess) && cfg.spawn.parentSessionID == "" {
+	if cfg.NonInteractive && cfg.spawn.parentSessionID == "" {
 		// Root sessions only. Subagent tasks are populated in spawnAgent
 		// where parentTasks from the coordinator's task_list parameter are
 		// available. Populating here with nil parentTasks would leave the
@@ -940,13 +938,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	cfg.testOnly = restoreCfg.testOnly
 	cfg.TurnEndsProcess = restoreCfg.TurnEndsProcess
-	// A process whose turn ends the process has nobody to answer ask_user:
-	// the only answerer a one-shot run has, --ask-responder, refuses every
-	// resume flag. So a one-shot restore is non-interactive whatever the
-	// snapshot says, like TurnEndsProcess the restorer's own answer.
-	if restoreCfg.TurnEndsProcess {
-		cfg.NonInteractive = true
-	}
 	cfg.ForceRealIO = restoreCfg.ForceRealIO
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()

@@ -152,8 +152,9 @@ import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
+import { historyForSession } from "./session/historyMemory";
 import { useOlderHistory } from "./session/useOlderHistory";
-import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
+import { type FindState, newFind, findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
 import { outboxFlush } from "./outbox/nativeOutboxFlush";
@@ -206,22 +207,6 @@ const BAR_MAX_SHARE = 0.8;
 // where it opens, at most.
 const OPENING_REVEAL_CAP_MS = 1000;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
-
-/** Find in session while it's open: what you typed, the current match's
- * reader key, whether older history is being searched, and whether that
- * search reached the start of history with nothing older. */
-interface FindState {
-	query: string;
-	key: string | null;
-	seeking: boolean;
-	exhausted: boolean;
-}
-
-/** A new query starts a new search: no current match yet, and older history
- * is searched only when there is something to look for. */
-function newFind(query: string): FindState {
-	return { query, key: null, seeking: query.trim() !== "", exhausted: false };
-}
 
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
@@ -363,7 +348,9 @@ export function ConversationScreen({
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
 	// remembered by its row's reader key, since older pages prepend rows.
-	const [find, setFind] = useState<FindState | null>(null);
+	const [find, setFind] = useState<FindState | null>(
+		() => historyForSession(route.params.hubId, route.params.ref)?.find ?? null,
+	);
 	const headerHeight = useHeaderHeight();
 	// Where the device has Liquid Glass, the nav bar is the system's glass
 	// over the transcript (spec 16.3): the screen starts under it, and the
@@ -1472,6 +1459,7 @@ export function ConversationScreen({
 	}, [listLaidOut, openingHidden, openingCapRound]);
 	const {
 		state: olderHistory,
+		isCurrentReader,
 		loadOlder: loadOlderPage,
 		findOlder,
 		cancelFind,
@@ -1480,7 +1468,10 @@ export function ConversationScreen({
 		store,
 		service,
 		active: Boolean(service) && connected && focused && snapshot.status === "open",
-		resetKey: `${route.params.hubId}\u0000${route.params.ref}`,
+		hubId: route.params.hubId,
+		ref: route.params.ref,
+		find,
+		setFind,
 		binding: bindingInstance,
 	});
 	const findQuery = find?.query ?? "";
@@ -1508,8 +1499,10 @@ export function ConversationScreen({
 	// the newest of all), loading one older page at a time until a match
 	// appears or history ends.
 	useEffect(() => {
-		if (!find?.seeking || !focused || snapshot.status !== "open" || !conversation) return;
-		const next = stepMatch(findHits, findCurrent, -1);
+		if (!isCurrentReader() || !find?.seeking || !focused || snapshot.status !== "open" || !conversation) return;
+		// A resumed search first reloads its saved boundary; newer matches
+		// in the fresh window have already been searched.
+		const next = find.key !== null && findCurrent === null ? null : stepMatch(findHits, findCurrent, -1);
 		if (next !== null) {
 			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
 			return;
@@ -1653,24 +1646,33 @@ export function ConversationScreen({
 				readerContentHeight.current,
 				listContentMinHeight(readerViewportHeight.current, listUnderBar),
 			);
-			// Already there: the opening has landed.
+			// Already there: the opening has landed, if the list reaches the row.
 			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) {
-				landOpening();
+				landRestore(appliedReaderRestore.current?.clamped ?? false);
 				return;
 			}
+			const clamped = scrollOffset !== desired;
 			appliedReaderRestore.current = {
 				key: currentKey,
 				height: measurement.height,
 				offset: scrollOffset,
-				clamped: scrollOffset !== desired,
+				clamped,
 			};
 			captureSuppressed.current = true;
 			timeline.current?.scrollToOffset({
 				offset: scrollOffset,
 				animated: false,
 			});
-			landOpening();
+			landRestore(clamped);
 		}
+	}
+	// A restore the list can't reach yet (clamped) lands the opening only once
+	// the last row has measured: before that the rows below the reading position
+	// are estimates, the content grows as they render, and the list would show
+	// short of the row and then move. After it, as far as the list reaches is
+	// where it rests. The opening's cap still shows it if that never happens.
+	function landRestore(clamped: boolean) {
+		if (!clamped || lastRowMeasured()) landOpening();
 	}
 	// The latest restore, with this render's rows, for the layout timer below.
 	const restoreReadingPositionNow = useRef(restoreReadingPosition);

@@ -1,18 +1,12 @@
-// What this phone remembers about starting sessions on one hub: the setups
-// sessions were started with, so New session opens on the newest one (spec
-// 11; recipes are deferred). It is per hub, because a
-// setup names that hub's hosts and folders.
+// What this phone remembers about starting sessions on one hub: the setup the
+// newest session was started with, so New session opens on it (spec 11). It is
+// per hub, because a setup names that hub's hosts and folders.
 import { isPlainObject, type LaunchConfigLayer } from "@evener/appwire-client";
 import { readJson, removeKeys } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { type LaunchSetup, ownedOverrides, type RememberedSetup } from "./launchSetup";
+import { type LaunchSetup, ownedOverrides } from "./launchSetup";
 
-export const historyKey = (hubId: string) => `evener.native.launch-history.${hubId}`;
-
-/** Starts remembered per hub: one per host and project, enough for every
- * project in use (the spec's fleet has 14) and small enough to rewrite on
- * every start. */
-export const HISTORY_LIMIT = 50;
+export const lastSetupKey = (hubId: string) => `evener.native.launch-setup.${hubId}`;
 
 function record(value: unknown): Record<string, unknown> | null {
 	return isPlainObject(value) ? value : null;
@@ -54,52 +48,31 @@ function toSetup(value: unknown): LaunchSetup | null {
 	};
 }
 
-function toRemembered(value: unknown): RememberedSetup | null {
-	const entry = record(value);
-	const setup = toSetup(entry?.setup);
-	return entry && setup && typeof entry.at === "number" ? { setup, at: entry.at } : null;
-}
-
-/** A stored list's readable entries. A list the phone can't read, or that
- * doesn't parse, reads as empty (deviceStorage's readJson). */
-function parseList<T>(value: unknown, item: (value: unknown) => T | null): T[] {
-	if (!Array.isArray(value)) return [];
-	return value.flatMap((entry) => {
-		const parsed = item(entry);
-		return parsed ? [parsed] : [];
-	});
-}
-
 export class LaunchMemory {
-	private historyList: RememberedSetup[];
+	private last: LaunchSetup | null;
 
 	constructor(
 		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
-		this.historyList = parseList(readJson(storage, historyKey(hubId)), toRemembered);
+		this.last = toSetup(readJson(storage, lastSetupKey(hubId)));
 	}
 
-	history(): readonly RememberedSetup[] {
-		return this.historyList;
+	/** The setup the newest start used, or null when nothing was started here. */
+	lastSetup(): LaunchSetup | null {
+		return this.last;
 	}
 
-	/** Remembers a start: it replaces older starts for the same
-	 * host and project, and the oldest fall off past the limit. */
-	recordStart(setup: LaunchSetup, at: number): void {
-		const others = this.historyList.filter((entry) => entry.setup.host !== setup.host || entry.setup.cwd !== setup.cwd);
-		this.writeHistory([{ setup, at }, ...others].slice(0, HISTORY_LIMIT));
-	}
-
-	/** Stores first, so a failed write leaves this memory as it was. */
-	private writeHistory(next: RememberedSetup[]): void {
-		this.storage.setItemSync(historyKey(this.hubId), JSON.stringify(next));
-		this.historyList = next;
+	/** Remembers a start. Stores first, so a failed write leaves this memory
+	 * as it was. */
+	recordStart(setup: LaunchSetup): void {
+		this.storage.setItemSync(lastSetupKey(this.hubId), JSON.stringify(setup));
+		this.last = setup;
 	}
 }
 
-/** Removes a hub's remembered starts (deviceStorage's removeKeys reports a
- * storage that won't let go of them). */
+/** Removes a hub's remembered start (deviceStorage's removeKeys reports a
+ * storage that won't let go of it). */
 export function forgetLaunchMemory(storage: SyncStringStorage, hubId: string): void {
-	removeKeys(storage, [historyKey(hubId)]);
+	removeKeys(storage, [lastSetupKey(hubId)]);
 }

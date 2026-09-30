@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
-	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -184,29 +182,17 @@ func loadKeybindingsSnapshotFS(fs afero.Fs, stateRoot string) (keybindingsSnapsh
 	if stateRoot == "" {
 		return empty, nil
 	}
-	data, err := afero.ReadFile(fs, keybindingsStatePath(stateRoot))
-	if os.IsNotExist(err) {
-		return empty, nil
-	}
+	data, ok, err := readStateFile(fs, keybindingsStatePath(stateRoot), "keybindings")
 	if err != nil {
-		return empty, fmt.Errorf("read keybindings state: %w", err)
+		return empty, err
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
+	if !ok || len(bytes.TrimSpace(data)) == 0 {
 		return empty, nil
 	}
 
 	var state keybindingsSnapshot
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&state); err != nil {
-		return empty, fmt.Errorf("decode keybindings state: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return empty, errors.New("decode keybindings state: trailing JSON value")
-		}
-		return empty, fmt.Errorf("decode keybindings state trailing data: %w", err)
+	if err := decodeStateFileStrict(data, "keybindings", &state); err != nil {
+		return empty, err
 	}
 	if err := validateKeybindingsSnapshotShape(data); err != nil {
 		return empty, fmt.Errorf("validate keybindings state shape: %w", err)
@@ -228,61 +214,7 @@ func saveKeybindingsSnapshotFS(fs afero.Fs, stateRoot string, state keybindingsS
 	if stateRoot == "" {
 		return true, nil
 	}
-
-	path := keybindingsStatePath(stateRoot)
-	dir := filepath.Dir(path)
-	if err := fs.MkdirAll(dir, 0o700); err != nil {
-		return false, fmt.Errorf("create keybindings state directory: %w", err)
-	}
-	temp, err := afero.TempFile(fs, dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return false, fmt.Errorf("create temp keybindings state: %w", err)
-	}
-	tempPath := temp.Name()
-	defer func() {
-		if temp != nil {
-			_ = temp.Close()
-		}
-		if !renamed {
-			_ = fs.Remove(tempPath)
-		}
-	}()
-	if _, err := temp.Write(data); err != nil {
-		return false, fmt.Errorf("write temp keybindings state: %w", err)
-	}
-	if err := temp.Sync(); err != nil && !deletionSyncUnsupported(err) {
-		return false, fmt.Errorf("sync temp keybindings state: %w", err)
-	}
-	if err := temp.Close(); err != nil {
-		return false, fmt.Errorf("close temp keybindings state: %w", err)
-	}
-	temp = nil
-	if faults.BeforeRename != nil {
-		if err := faults.BeforeRename(); err != nil {
-			return false, err
-		}
-	}
-	if err := fs.Rename(tempPath, path); err != nil {
-		return false, fmt.Errorf("rename keybindings state: %w", err)
-	}
-	renamed = true
-	directory, err := fs.Open(dir)
-	if err != nil {
-		return true, fmt.Errorf("open keybindings state directory: %w", err)
-	}
-	if err := directory.Sync(); err != nil && !deletionSyncUnsupported(err) {
-		_ = directory.Close()
-		return true, fmt.Errorf("sync keybindings state directory: %w", err)
-	}
-	if err := directory.Close(); err != nil {
-		return true, fmt.Errorf("close keybindings state directory: %w", err)
-	}
-	if faults.AfterRename != nil {
-		if err := faults.AfterRename(); err != nil {
-			return true, err
-		}
-	}
-	return true, nil
+	return writeStateFileAtomic(fs, keybindingsStatePath(stateRoot), "keybindings", data, faults.BeforeRename, faults.AfterRename)
 }
 
 func validateKeybindingsSnapshot(state keybindingsSnapshot) error {

@@ -340,12 +340,13 @@ func run(ctx context.Context, cfg runConfig) error {
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
-	// --ask-responder is the only thing that makes a one-shot `evener run`
-	// interactive: with no responder there is nobody to answer, so ask_user
-	// stays unregistered. The session still counts as a one-shot run
-	// (TurnEndsProcess), so an agent's default tasks populate either way.
+	// --ask-responder attaches a responder for this process only: ask_user is
+	// offered, while the session stays NonInteractive in everything it saves
+	// and in what it does without asking (default tasks, no sandbox
+	// escalation). With no responder there is nobody to answer, so ask_user
+	// stays unregistered.
 	if cfg.askResponder != "" {
-		baseSessionCfg.NonInteractive = false
+		baseSessionCfg.AskResponderAttached = true
 	}
 	if cfg.maxSubagentDepth >= 0 {
 		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth

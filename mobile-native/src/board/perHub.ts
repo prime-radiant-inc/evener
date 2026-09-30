@@ -9,6 +9,10 @@ export function perHub<T, A extends unknown[] = []>(make: (hubId: string, ...arg
 	// Each instance sits in its own entry, so one that is falsy is still made.
 	const instances = new Map<string, { instance: T }>();
 	return {
+		/** Reads an existing instance without creating one. */
+		peek(hubId: string): T | undefined {
+			return instances.get(hubId)?.instance;
+		},
 		get(hubId: string, ...args: A): T {
 			let entry = instances.get(hubId);
 			if (!entry) {

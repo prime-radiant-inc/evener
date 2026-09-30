@@ -30,18 +30,21 @@ func writeFakeResponder(t *testing.T, dir, name, body string) string {
 	return path
 }
 
-// TestRunAskResponderFlagSetsInteractiveSession: --ask-responder makes the
-// session interactive (NonInteractive false) so ask_user is offered;
+// TestRunAskResponderFlagSetsInteractiveSession: --ask-responder attaches a
+// responder for this process only (AskResponderAttached), so ask_user is
+// offered, while the session's own NonInteractive stays true: what a later
+// resume restores is exactly what a plain one-shot run saves.
 // runProvisionSandbox is intercepted to read the config before the run
 // aborts, the same seam TestRunPassesResolvedPluginDirsToSessionConfig uses.
 func TestRunAskResponderFlagSetsInteractiveSession(t *testing.T) {
 	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
 	oldProvision := runProvisionSandbox
 	t.Cleanup(func() { runProvisionSandbox = oldProvision })
-	var gotNonInteractive bool
+	var gotNonInteractive, gotAttached bool
 	seen := false
 	runProvisionSandbox = func(_ *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, _ string) error {
 		gotNonInteractive = cfg.NonInteractive
+		gotAttached = cfg.AskResponderAttached
 		seen = true
 		return errors.New("stop after config")
 	}
@@ -55,8 +58,8 @@ func TestRunAskResponderFlagSetsInteractiveSession(t *testing.T) {
 	if !seen {
 		t.Fatal("runProvisionSandbox was never called")
 	}
-	if gotNonInteractive {
-		t.Fatal("NonInteractive = true, want false when --ask-responder is set")
+	if !gotNonInteractive || !gotAttached {
+		t.Fatalf("NonInteractive = %v, AskResponderAttached = %v; want true, true when --ask-responder is set", gotNonInteractive, gotAttached)
 	}
 }
 

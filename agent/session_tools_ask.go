@@ -455,7 +455,7 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
-			if s.cfg.NonInteractive || s.isSubagentSession() {
+			if s.cfg.noOneToAsk() || s.isSubagentSession() {
 				return nil, errors.New(askUserUnavailableErr)
 			}
 
