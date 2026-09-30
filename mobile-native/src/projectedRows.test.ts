@@ -424,7 +424,14 @@ describe("projectedRow — item entries", () => {
 
 	it("draws a daemon warning's hint once when it repeats the message", () => {
 		const row = projectedRow(
-			itemEntry(item({ type: "systemMessage", eventKind: "warning", text: "disk full", raw: { warning: { hint: "disk full" } } })),
+			itemEntry(
+				item({
+					type: "systemMessage",
+					eventKind: "warning",
+					text: "disk full",
+					raw: { warning: { hint: "disk full" } },
+				}),
+			),
 		);
 		expect(row).toMatchObject({ tone: "attention", text: "disk full" });
 		expect(row).not.toHaveProperty("hint");

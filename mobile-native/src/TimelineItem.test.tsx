@@ -761,9 +761,7 @@ const palette = paletteFor("light");
 
 // The colour of the one rule an error or warning row draws down its left edge.
 function ruleColor(tree: ReturnType<typeof render>): unknown {
-	const rules = tree.root.findAll(
-		(node) => typeof node.type === "string" && node.props.style?.borderLeftWidth === 2,
-	);
+	const rules = tree.root.findAll((node) => typeof node.type === "string" && node.props.style?.borderLeftWidth === 2);
 	expect(rules).toHaveLength(1);
 	return rules[0]?.props.style.borderLeftColor;
 }
@@ -839,7 +837,6 @@ describe("an error", () => {
 // A warning is amber (spec 8.2 and the state table: amber means a human is
 // needed; red means failed), with its hint as a quiet second line (#3387).
 describe("a warning", () => {
-
 	it("draws a daemon warning notice with an amber rule, its text, and its hint", () => {
 		const tree = render(
 			<TimelineItem
