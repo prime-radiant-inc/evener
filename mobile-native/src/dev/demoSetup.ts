@@ -48,7 +48,8 @@ const OFFLINE_ERROR = "ssh: connect to host paradise-park port 22: Operation tim
 // it (llm/registry/types.go): a key (bearer), a Codex account, Google's
 // application default credentials, or nothing (ollama).
 type AuthScheme = "bearer" | "oauth-openai-codex" | "gcp-adc" | "none";
-const PROVIDERS: { id: string; base: string; auth: AuthScheme; models: string[] }[] = [
+// `email`: the account an account sign-in uses, as evener/auth/list names it.
+const PROVIDERS: { id: string; base: string; auth: AuthScheme; models: string[]; email?: string }[] = [
 	{
 		id: "lunaroute",
 		base: "openai-compatible",
@@ -61,7 +62,13 @@ const PROVIDERS: { id: string; base: string; auth: AuthScheme; models: string[] 
 		auth: "oauth-openai-codex",
 		models: ["gpt-5.6", "gpt-5.6-luna", "gpt-6-astra"],
 	},
-	{ id: "codex-jesse-at-pr", base: "codex", auth: "oauth-openai-codex", models: ["gpt-5.6"] },
+	{
+		id: "codex-jesse-at-pr",
+		base: "codex",
+		auth: "oauth-openai-codex",
+		models: ["gpt-5.6"],
+		email: "jesse@example.com",
+	},
 	{ id: "oai-jrv", base: "openai", auth: "bearer", models: ["gpt-5.5", "codex-auto-review"] },
 	{ id: "meta", base: "meta", auth: "bearer", models: ["muse-spark-1.3"] },
 	{ id: "kimi-code", base: "moonshot", auth: "bearer", models: ["k3"] },
@@ -449,6 +456,7 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 				authModes: ["oauth"],
 				hasStoredOAuth: true,
 				needsLogin: false,
+				email: provider.email,
 			}));
 			return { providers: [...fleetStatuses, ...signedIn] };
 		},
@@ -563,5 +571,6 @@ function instanceEntry(
 		isDefault: index === 0,
 		models,
 		...SIGN_IN[provider.auth],
+		...(provider.email ? { storedEmail: provider.email } : {}),
 	};
 }

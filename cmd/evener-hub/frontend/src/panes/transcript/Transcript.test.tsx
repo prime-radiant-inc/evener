@@ -320,6 +320,59 @@ test("a job: ref renders the shell job's output log via evener/jobs/output, neve
   expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
 });
 
+test("a job log shows the job's full command above its output", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/jobs/get", () => ({
+    data: {
+      jobId: "job_x",
+      ownerSessionId: "sess_ref_parent",
+      ownerRef: "ref_parent",
+      type: "shell",
+      status: "running",
+      terminal: false,
+      background: false,
+      hasOutput: true,
+      description: "shell job",
+      startedAt: "2026-08-05T15:00:00Z",
+      outputBytes: 3,
+      command: "go test ./... -run Foo -count=1",
+    },
+  }));
+  fake.on("evener/jobs/output", () => ({
+    data: { tail: "ok\n", totalBytes: 3, retainedStart: 0, truncated: false },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  // The command rides its own read, against the same owning session.
+  await waitFor(() => expect(screen.getByTestId("joblog-command").textContent).toBe("go test ./... -run Foo -count=1"));
+  expect(screen.getByTestId("joblog-content").textContent).toContain("ok");
+  const commandCalls = fake.calls.filter((call) => call.method === "evener/jobs/get");
+  expect(commandCalls).toHaveLength(1);
+  expect(commandCalls[0]?.params).toEqual({ ref: "ref_parent", jobId: "job_x" });
+});
+
+test("a job log whose metadata read fails still renders the output", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/jobs/get", () => Promise.reject(new Error("job not available")));
+  fake.on("evener/jobs/output", () => ({
+    data: { tail: "hello from the job", totalBytes: 18, retainedStart: 0, truncated: false },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText("hello from the job")).toBeTruthy());
+  expect(screen.queryByTestId("joblog-command")).toBeNull();
+});
+
 test("job output renders ANSI SGR sequences as styled runs, not literal escape text", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/output", () => ({

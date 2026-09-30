@@ -220,6 +220,12 @@ async function settle() {
 	for (let round = 0; round < 10; round += 1) await flush();
 }
 
+async function advanceFakeTimers(ms: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ms);
+	});
+}
+
 const CAPABILITIES = {
 	send: true,
 	steer: true,
@@ -1218,11 +1224,11 @@ it("waits for the bottom bar to lay out before restoring a reading position", as
 // land, move and land again.
 describe("opening a session", () => {
 	const opacity = (tree: ReactTestRenderer) => transcriptList(tree).props.style?.opacity;
-	const layOutViewport = (tree: ReactTestRenderer) => {
+	const layOutViewport = (tree: ReactTestRenderer, contentHeight = 20_000) => {
 		act(() =>
 			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
 		);
-		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+		act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
 	};
 	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
 		harness.kv.set(
@@ -1327,15 +1333,11 @@ describe("opening a session", () => {
 		vi.useFakeTimers();
 		try {
 			layOutViewport(tree);
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(999);
-			});
+			await advanceFakeTimers(999);
 			// The anchor's row never measures: without a cap the list would
 			// stay hidden.
 			expect(opacity(tree)).toBe(0);
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(1);
-			});
+			await advanceFakeTimers(1);
 			expect(opacity(tree)).toBe(1);
 		} finally {
 			vi.useRealTimers();
@@ -1350,21 +1352,16 @@ describe("opening a session", () => {
 		vi.useFakeTimers();
 		try {
 			layOutViewport(tree);
-			const advance = async (ms: number) => {
-				await act(async () => {
-					await vi.advanceTimersByTimeAsync(ms);
-				});
-			};
-			await advance(600);
+			await advanceFakeTimers(600);
 			expect(opacity(tree)).toBe(0);
 			const moved = { ...route, params: { ...route.params, ref: next } };
 			navigationState.state = { index: 0, routes: [moved] };
 			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
-			await advance(0);
+			await advanceFakeTimers(0);
 			// The first session's cap has 400ms left; the second's starts afresh.
-			await advance(999);
+			await advanceFakeTimers(999);
 			expect(opacity(tree)).toBe(0);
-			await advance(1);
+			await advanceFakeTimers(1);
 			expect(opacity(tree)).toBe(1);
 		} finally {
 			vi.useRealTimers();
@@ -1388,31 +1385,26 @@ describe("opening a session", () => {
 			});
 			return { ...mounted, deliver };
 		};
-		const advance = async (ms: number) => {
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(ms);
-			});
-		};
 
 		it("opens at the live end and forgets the spot", async () => {
 			const { tree, deliver } = await mountWaitingOnOlderPage("ref-open-unloaded");
 			vi.useFakeTimers();
 			try {
 				layOutViewport(tree);
-				await advance(999);
+				await advanceFakeTimers(999);
 				expect(opacity(tree)).toBe(0);
 				flatListCalls.length = 0;
-				await advance(1);
+				await advanceFakeTimers(1);
 				// It heads for the end, still out of sight until the end's last row measures.
 				expect(flatListCalls.map((call) => call.method)).toContain("scrollToEnd");
 				expect(opacity(tree)).toBe(0);
 				layOutRow(tree, 3, 19_000);
-				await advance(0);
+				await advanceFakeTimers(0);
 				expect(opacity(tree)).toBe(1);
 				// The older page landing later doesn't pull the list back to the spot.
 				flatListCalls.length = 0;
 				deliver();
-				await advance(0);
+				await advanceFakeTimers(0);
 				expect(flatListCalls.filter((call) => call.method !== "scrollToEnd")).toEqual([]);
 			} finally {
 				vi.useRealTimers();
@@ -1424,11 +1416,90 @@ describe("opening a session", () => {
 			vi.useFakeTimers();
 			try {
 				layOutViewport(tree);
-				await advance(1000);
+				await advanceFakeTimers(1000);
 				expect(opacity(tree)).toBe(0);
-				await advance(999);
+				await advanceFakeTimers(999);
 				expect(opacity(tree)).toBe(0);
-				await advance(1);
+				await advanceFakeTimers(1);
+				expect(opacity(tree)).toBe(1);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
+	// The list's content grows in stages as it renders the rows below a saved
+	// position, so the first restore can fall short of it (clamped). Showing
+	// the list there would show it land short and then move.
+	describe("when the list can't reach the saved position yet", () => {
+		const offsets = () =>
+			flatListCalls
+				.filter((call) => call.method === "scrollToOffset")
+				.map((call) => (call.args as { offset: number }).offset);
+
+		it("shows it only once the restore reaches the row", async () => {
+			savePosition("ref-open-clamped", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped"));
+			flatListCalls.length = 0;
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			// It moves as far as the list reaches, out of sight.
+			expect(offsets().at(-1)).toBeLessThan(9_523);
+			expect(opacity(tree)).toBe(0);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+			layOutRow(tree, 3, 19_000);
+			await settle();
+			expect(offsets().at(-1)).toBe(9_523);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("shows it short of the row once the last row has measured", async () => {
+			savePosition("ref-open-near-end", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-near-end"));
+			flatListCalls.length = 0;
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 2_800);
+			layOutRow(tree, 3, 2_900);
+			await settle();
+			// The content is whole, so as far as the list reaches is where it rests.
+			expect(offsets().at(-1)).toBeLessThan(2_800);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("keeps it hidden when the restore runs again short of the row, until the last row measures", async () => {
+			savePosition("ref-open-clamped-again", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped-again"));
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			expect(opacity(tree)).toBe(0);
+			// A row between measures: the restore runs again, already as far as
+			// the list reaches, so it neither moves the list nor shows it, since
+			// the rows below are still estimates.
+			flatListCalls.length = 0;
+			layOutRow(tree, 2, 9_700);
+			await settle();
+			expect(flatListCalls).toEqual([]);
+			expect(opacity(tree)).toBe(0);
+			layOutRow(tree, 3, 9_900);
+			await settle();
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("shows it after a second when the last row never measures", async () => {
+			savePosition("ref-open-clamped-cap", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped-cap"));
+			vi.useFakeTimers();
+			try {
+				layOutViewport(tree, 3_000);
+				layOutRow(tree, 1, 9_523);
+				await advanceFakeTimers(0);
+				// The restore fell short and the rows below never measure.
+				expect(offsets().at(-1)).toBeLessThan(9_523);
+				await advanceFakeTimers(999);
+				expect(opacity(tree)).toBe(0);
+				await advanceFakeTimers(1);
 				expect(opacity(tree)).toBe(1);
 			} finally {
 				vi.useRealTimers();

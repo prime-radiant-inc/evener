@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -52,26 +51,31 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	}
 	resp := appwire.SearchResponse{Live: []appwire.SearchResult{}, Past: []appwire.SearchResult{}, Scope: scope}
 	q := strings.ToLower(strings.TrimSpace(params.Query))
-	// Every past match, so the scope filters before the limit cuts: the
-	// newest matches are rarely the archived ones. This same fetch also
-	// feeds pastMatched (a live session's own prompt match), so bounding it
-	// even for scope=all would let enough newer past-only matches crowd a
-	// live session's older past-index entry out of both groups entirely.
-	var pastMatches []hubcore.PastEntry
-	pastMatched := map[string]bool{}
-	if cfg.Past != nil {
-		pastMatches = cfg.Past.Search(q, math.MaxInt32, 0)
-		for _, e := range pastMatches {
-			pastMatched[e.Meta.ID] = true
+	var entries []hubcore.LiveEntry
+	if cfg.Roster != nil {
+		entries = cfg.Roster.List()
+		sortLiveForSearch(entries, cfg.Past)
+	}
+	// A live session's meta sits in the past index too, so a prompt or
+	// working-directory match there lists it here, live. Resolve every live
+	// session's own past-index match in one lookup, ahead of the bounded Past
+	// fetch, so it is found however far back its entry sits and one search costs
+	// one query rather than one per live session (#2873).
+	var pastMatched map[string]bool
+	if cfg.Past != nil && q != "" {
+		ids := make([]string, 0, len(entries))
+		for _, le := range entries {
+			if le.SessionID != "" {
+				ids = append(ids, le.SessionID)
+			}
 		}
+		pastMatched = cfg.Past.MatchIDs(ids, q)
 	}
 	// Every live session's result, in the Live order, built once for both
 	// the Live group and the In sessions group.
 	var live []appwire.SearchResult
 	isLive := map[string]bool{}
 	if cfg.Roster != nil {
-		entries := cfg.Roster.List()
-		sortLiveForSearch(entries, cfg.Past)
 		// A subagent is not a navigation row: the roots-only tree gives one no
 		// top-level row and lets an orphan (its parent not live) vanish (#3082).
 		// The Live group mirrors the Board's Live section, so it omits subagents
@@ -93,28 +97,30 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			isLive[le.SessionID] = true
 			result := liveSearchResult(cfg, le, decisions, now)
 			live = append(live, result)
-			// A live session's meta is in the past index too, so a prompt or
-			// working-directory match there lists it here, live.
 			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(result.Title), q) && !pastMatched[le.SessionID] {
 				continue
 			}
 			if roots.IsSubagent(le.SessionID) || running[le.SessionID] {
 				continue
 			}
-			if searchScopeAdmits(scope, result, true) {
+			if searchScopeAdmits(scope, result.Archived, true) {
 				resp.Live = append(resp.Live, result)
 			}
 		}
 	}
-	for _, e := range pastMatches {
-		if len(resp.Past) == searchPastLimit {
-			break
-		}
-		if isLive[e.Meta.ID] {
-			continue
-		}
-		if result := pastSearchResult(e, decisions, now); searchScopeAdmits(scope, result, false) {
-			resp.Past = append(resp.Past, result)
+	// The Past group's fetch filters before the limit cuts, so the scope still
+	// applies over the whole index and newer out-of-scope or live matches cannot
+	// crowd an older in-scope match out of the page. It returns at most
+	// searchPastLimit entries, so the whole match set no longer lands in the
+	// caller's hands on every query, even an empty one (#2873). A live session's
+	// own prompt match is answered separately above, so it never depended on this
+	// fetch's width.
+	if cfg.Past != nil {
+		pastMatches := cfg.Past.SearchAdmitted(q, searchPastLimit, func(e hubcore.PastEntry) bool {
+			return !isLive[e.Meta.ID] && searchScopeAdmits(scope, pastArchived(e, decisions, now), false)
+		})
+		for _, e := range pastMatches {
+			resp.Past = append(resp.Past, pastSearchResult(e, decisions, now))
 		}
 	}
 	resp.InSessions, err = searchInSessions(ctx, cfg, params.Query, scope, live, decisions, now)
@@ -135,15 +141,15 @@ func searchDecisions(cfg hubcore.WebConfig) (map[hubcore.ArchiveKey]bool, error)
 	return cfg.Archive.Decisions()
 }
 
-// searchScopeAdmits reports whether scope keeps result: Live keeps what the
-// Board's Live section holds, live and not archived; Archived keeps every
-// archived session.
-func searchScopeAdmits(scope string, result appwire.SearchResult, live bool) bool {
+// searchScopeAdmits reports whether scope keeps a result with this archived
+// flag: Live keeps what the Board's Live section holds, live and not archived;
+// Archived keeps every archived session.
+func searchScopeAdmits(scope string, archived, live bool) bool {
 	switch scope {
 	case appwire.SearchScopeLive:
-		return live && !result.Archived
+		return live && !archived
 	case appwire.SearchScopeArchived:
-		return result.Archived
+		return archived
 	default:
 		return true
 	}
@@ -182,11 +188,6 @@ func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, decisions map
 }
 
 func pastSearchResult(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool, now time.Time) appwire.SearchResult {
-	// A past entry's state directory is named by its project's ID, but only
-	// when that basename is well formed: the navigation tree skips a
-	// malformed one, so search skips the project decision too rather than
-	// applying one the tree would not (#2775).
-	projectID, _ := stateDirProjectID(e.StateDir)
 	return appwire.SearchResult{
 		ID:       e.Meta.ID,
 		Title:    searchPastTitle(e),
@@ -194,8 +195,20 @@ func pastSearchResult(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool
 		Project:  filepath.Base(e.Meta.EnvInfo.WorkingDir),
 		Age:      hubcore.AgeString(e.Meta.UpdatedAt),
 		Ref:      hubRefFromTreeNodeID(e.Meta.ID).String(),
-		Archived: hubcore.SessionArchived(decisions, e.Meta.ID, projectID, "", hubcore.OrderUpdatedAt(e.Meta.UpdatedAt, e.Meta.CreatedAt), now),
+		Archived: pastArchived(e, decisions, now),
 	}
+}
+
+// pastArchived is a past entry's archived flag, the one pastSearchResult and
+// the Past group's scope filter share so a fetch can admit by scope without
+// building the whole result.
+func pastArchived(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool, now time.Time) bool {
+	// A past entry's state directory is named by its project's ID, but only
+	// when that basename is well formed: the navigation tree skips a
+	// malformed one, so search skips the project decision too rather than
+	// applying one the tree would not (#2775).
+	projectID, _ := stateDirProjectID(e.StateDir)
+	return hubcore.SessionArchived(decisions, e.Meta.ID, projectID, "", hubcore.OrderUpdatedAt(e.Meta.UpdatedAt, e.Meta.CreatedAt), now)
 }
 
 // searchInSessions is the In sessions group (S14): the sessions whose messages
@@ -213,7 +226,7 @@ func searchInSessions(ctx context.Context, cfg hubcore.WebConfig, query, scope s
 	var chosen []appwire.SearchResult
 	seen := map[string]bool{}
 	take := func(result appwire.SearchResult, isLive bool) {
-		if searchScopeAdmits(scope, result, isLive) {
+		if searchScopeAdmits(scope, result.Archived, isLive) {
 			result.HitCount = matches[result.ID].Count
 			chosen = append(chosen, result)
 		}

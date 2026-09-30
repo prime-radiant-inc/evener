@@ -60,61 +60,49 @@ type delegateTreeController struct {
 	live             map[string]*delegateLiveState
 	rootRuntime      *Session
 
-	rootSessionID         string
-	stateDir              string
-	worktreeRoot          string
-	now                   func() time.Time
-	newDelegateID         func() string
-	turnLimit             int
-	driveLimit            int
-	maxRetainedTerminal   int
-	turnsInUse            int
-	drivesInUse           int
-	nextToken             uint64
-	reservations          map[uint64]*delegateStartRecord
-	inputClaims           map[uint64]delegateLease
-	steeringClaims        map[uint64]*delegateSteeringClaim
-	modelClaims           map[uint64]*delegateModelRequestClaim
-	settlementClaims      map[uint64]*delegateSettlementClaim
-	work                  map[uint64]*delegateShellWork
-	deliveries            map[uint64]*delegateDeliveryAdmission
-	deliveryClaims        map[string]*delegateDeliveryClaim
-	quietClaims           map[uint64]*delegateQuietAttentionClaim
-	attentionWakeIDs      map[string]map[string]struct{}
+	rootSessionID       string
+	stateDir            string
+	worktreeRoot        string
+	now                 func() time.Time
+	newDelegateID       func() string
+	turnLimit           int
+	driveLimit          int
+	maxRetainedTerminal int
+	turnsInUse          int
+	drivesInUse         int
+	nextToken           uint64
+	reservations        map[uint64]*delegateStartRecord
+	inputClaims         map[uint64]delegateLease
+	steeringClaims      map[uint64]*delegateSteeringClaim
+	modelClaims         map[uint64]*delegateModelRequestClaim
+	settlementClaims    map[uint64]*delegateSettlementClaim
+	work                map[uint64]*delegateShellWork
+	deliveries          map[uint64]*delegateDeliveryAdmission
+	deliveryClaims      map[string]*delegateDeliveryClaim
+	quietClaims         map[uint64]*delegateQuietAttentionClaim
+	// attention holds each delegate's per-delegate attention bookkeeping in one
+	// place (delegateAttentionState), so every path that removes a delegate
+	// drops all of it at once. Process-local.
+	attention             map[string]*delegateAttentionState
 	attentionRestoreHolds map[string]int
-	// attentionDriveTurns records when the attention drive last selected each
-	// delegate (attentionDriveSeq order): the drive picks the delegate it
-	// has not picked yet, else the one picked longest ago, so eligible
-	// delegates take turns and none, failing or not, holds the others back.
-	// Process-local; cleared when the delegate stops owing attention.
-	attentionDriveTurns map[string]uint64
-	attentionDriveSeq   uint64
-	// attentionRestoreFailures counts, per delegate, the consecutive restores
-	// of its cold runtime that failed for a reason that is not transient
-	// (isTransientStartFailure); the drive gives up at
-	// maxDelegateAttentionRestoreFailures. attentionParked holds delegates
-	// whose attention could be neither delivered nor handed to the root: the
-	// drive leaves them alone until new attention arrives or the daemon
-	// restarts. Both are process-local and cleared when the delegate stops
-	// owing attention or its attention is replaced from a transcript fold.
-	attentionRestoreFailures map[string]int
-	attentionParked          map[string]struct{}
-	idleReleaseTimers        map[string]idleReleaseTimerHandle
-	idleReleaseArmSeq        uint64
-	watchEnqueues            map[uint64]*delegateWatchReceipt
-	watchDeliveries          map[uint64]*delegateWatchReceipt
-	reclamations             map[uint64]*delegateRuntimeReclamationClaim
-	reclaiming               map[string]uint64
-	stop                     *delegateStopState
-	stopDriver               *delegateStopDriver
-	evidenceVersion          uint64
-	retirementClaim          *RetirementClaim
-	closing                  bool
-	reconcileOrder           []delegateLease
-	runStarts                map[delegateLease]delegatestore.RunTrigger
-	owedAdmission            bool
-	emitUpdate               func(delegateUpdatePlan)
-	attentionOpen            delegateAttentionWriterOpener
+	// attentionDriveSeq orders selections for delegateAttentionState.driveTurn.
+	attentionDriveSeq uint64
+	idleReleaseTimers map[string]idleReleaseTimerHandle
+	idleReleaseArmSeq uint64
+	watchEnqueues     map[uint64]*delegateWatchReceipt
+	watchDeliveries   map[uint64]*delegateWatchReceipt
+	reclamations      map[uint64]*delegateRuntimeReclamationClaim
+	reclaiming        map[string]uint64
+	stop              *delegateStopState
+	stopDriver        *delegateStopDriver
+	evidenceVersion   uint64
+	retirementClaim   *RetirementClaim
+	closing           bool
+	reconcileOrder    []delegateLease
+	runStarts         map[delegateLease]delegatestore.RunTrigger
+	owedAdmission     bool
+	emitUpdate        func(delegateUpdatePlan)
+	attentionOpen     delegateAttentionWriterOpener
 }
 
 type delegateActor struct {
@@ -350,7 +338,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveries:          make(map[uint64]*delegateDeliveryAdmission),
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
-		attentionWakeIDs:    make(map[string]map[string]struct{}),
+		attention:           make(map[string]*delegateAttentionState),
 		idleReleaseTimers:   make(map[string]idleReleaseTimerHandle),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),

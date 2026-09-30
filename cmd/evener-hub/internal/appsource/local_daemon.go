@@ -767,6 +767,20 @@ func (s *LocalDaemonSource) JobOutput(ctx context.Context, params appwire.JobsOu
 	return out, err
 }
 
+func (s *LocalDaemonSource) JobGet(ctx context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.JobsGetResponse{}, err
+	}
+	var out appwire.JobsGetResponse
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		var callErr error
+		out, callErr = client.JobsGet(ctx, params)
+		return callErr
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	key := relaySessionKey(s.sourceID, params.Ref, params.ThreadID)
 	s.relayMu.Lock()

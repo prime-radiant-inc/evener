@@ -336,11 +336,18 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 // new root's live leases; this is the same root/generation counter-idiom
 // validClaimLocked uses on the claim path. On mismatch the snapshot degrades to
 // live controller state only, and the next attempt reads the new root afresh.
-func (c *RetirementController) claimSnapshotCurrent(root *Session, generation uint64, manual bool) RetirementSnapshot {
+func (c *RetirementController) claimSnapshotCurrent(root *Session, generation uint64, manual bool, held ...RetirementBlocker) RetirementSnapshot {
 	var evidence []RetirementBlocker
 	if manual {
 		evidence = c.nonBlockingEvidence(root)
 	}
+	// held carries the leases captured under the admission predicate's own lock.
+	// claimSnapshotCurrent assembles its snapshot after this read, and re-reads
+	// c.active then, so a lease that releases in between would vanish and leave
+	// the refusal with no obligation behind it. The caller captures the leases it
+	// refused for; a captured lease from a root that a concurrent AttachRoot
+	// replaced is dropped with the rest of the stale evidence below.
+	evidence = append(evidence, held...)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.root != root || c.generation != generation {
@@ -415,8 +422,17 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	}
 	if len(c.active) != 0 || c.root == nil {
 		root, generation := c.root, c.generation
+		// Capture the leases under this lock, the one the predicate above read:
+		// claimSnapshotCurrent re-reads c.active when it assembles the snapshot,
+		// so a lease that releases in between would disappear and the refusal
+		// would present no obligation at all (#3009's empty "missing
+		// notification evidence" snapshot).
+		held := make([]RetirementBlocker, 0, len(c.active))
+		for _, blocker := range c.active {
+			held = append(held, blocker)
+		}
 		c.mu.Unlock()
-		return nil, c.claimSnapshotCurrent(root, generation, manual), nil
+		return nil, c.claimSnapshotCurrent(root, generation, manual, held...), nil
 	}
 	if !manual && (c.timeout == 0 || c.eligibleSince.IsZero() || now.Before(c.eligibleSince.Add(c.timeout))) {
 		root, generation := c.root, c.generation

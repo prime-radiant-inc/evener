@@ -625,6 +625,28 @@ func TestRemoteHubJobsListPreservesUnrecognizedPayloads(t *testing.T) {
 	}
 }
 
+// TestRemoteHubJobsGetTranslatesOnlyRecognizedJobNodes pins evener/jobs/get's
+// translation gate, the same declared-field policy the tree walk keeps: a node
+// recognized as a JobActivityJob has its declared refs rewritten to this
+// controller's addresses, while any other object — including one that happens
+// to carry an ownerRef key — reaches the controller byte-for-byte.
+func TestRemoteHubJobsGetTranslatesOnlyRecognizedJobNodes(t *testing.T) {
+	source := &RemoteHubSource{id: "host"}
+
+	unrelated := map[string]any{"ownerRef": "local:sess_1", "transcriptRef": "local:child", "note": "not a job"}
+	source.translateActivityJobNode(unrelated)
+	want := map[string]any{"ownerRef": "local:sess_1", "transcriptRef": "local:child", "note": "not a job"}
+	if !reflect.DeepEqual(unrelated, want) {
+		t.Fatalf("unrecognized payload = %#v, want it preserved as %#v", unrelated, want)
+	}
+
+	job := map[string]any{"jobId": "job_1", "ownerSessionId": "sess_1", "ownerRef": "local:sess_1", "transcriptRef": "local:child"}
+	source.translateActivityJobNode(job)
+	if job["ownerRef"] == "local:sess_1" || job["transcriptRef"] == "local:child" {
+		t.Fatalf("recognized job's declared refs were not translated: %#v", job)
+	}
+}
+
 // TestRemoteHubJobsListPreservesUndecodableTreePayloads pins the second half of
 // the recognition boundary: a payload can satisfy activityTreeRecognized's
 // discriminator test — `revision` a non-negative integer, `root` an object

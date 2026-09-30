@@ -497,6 +497,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/instance/setModelDisabled":        false,
 		"evener/jobs/list":                        false,
 		"evener/jobs/output":                      false,
+		"evener/jobs/get":                         false,
 		"evener/launch/getLayer":                  true,
 		"evener/launch/resolve":                   true,
 		"evener/launch/schema":                    true,

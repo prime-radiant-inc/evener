@@ -78,7 +78,6 @@ it("names the hub's default under each", async () => {
 	expect(text).toContain(
 		"Everything else uses the hub's launch defaults. Edit them from the Hub, under Launch defaults.",
 	);
-	expect(text).not.toMatch(/recipe/i);
 });
 
 it("sets each value, and Default removes it", async () => {

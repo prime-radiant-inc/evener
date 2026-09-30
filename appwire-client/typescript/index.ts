@@ -24,7 +24,9 @@ export {
   isFailedDelegateOutcome,
   isFailedJobOutcome,
   isTurnContainer,
+  jobCommandLabel,
   jobStatusDisplay,
+  parseActivityJob,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
@@ -49,6 +51,7 @@ export {
   indexActivityEntities,
   jobIsFailed,
   jobRowFields,
+  shellJobState,
   watchDeliveryInstants,
   watchFacts,
   watchIsScheduled,
@@ -157,11 +160,14 @@ export {
 export {
   type DelegateSendFooterInfo,
   type DelegateSendRawState,
+  type DelegateSendResult,
   type DelegateSendStep,
   delegateSendBase,
   delegateSendFooter,
+  delegateSendResponse,
   delegateSendSummary,
   delegateSendTarget,
+  delegateSendWaitIgnoredReason,
   isDelegateSendResult,
 } from "./delegateSteps";
 export type { AskQuestionRef } from "./deriveAskQuestions";

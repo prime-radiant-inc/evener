@@ -3,9 +3,10 @@ import type { ItemModel } from "@evener/appwire-client";
 import {
   clip,
   delegateSendBase,
-  delegateSendFooter,
+  delegateSendResponse,
   delegateSendSummary,
   delegateSendTarget,
+  delegateSendWaitIgnoredReason,
   isDelegateSendResult,
   jobListSummary,
   jobStatusSummary,
@@ -127,33 +128,6 @@ registerToolRenderer({
   summary: jobStopSummary,
   body: HeadClippedOutputBody,
 });
-
-function delegateSendResponse(item: ItemModel): string | undefined {
-  if (isDelegateSendResult(item.raw)) {
-    const rawOutput = item.raw.output;
-    if (rawOutput !== undefined && rawOutput.trim() !== "") return rawOutput;
-  }
-
-  const output = item.output ?? "";
-  if (output === "") return undefined;
-  const footer = delegateSendFooter(output);
-  if (footer === undefined) return output;
-
-  const response = output.trimEnd().split("\n").slice(0, footer.index).join("\n");
-  return response.trim() === "" ? undefined : response;
-}
-
-function delegateSendWaitIgnoredReason(item: ItemModel): string | undefined {
-  if (isDelegateSendResult(item.raw)) {
-    const reason = item.raw.wait_ignored_reason?.trim();
-    if (reason) return reason;
-  }
-  const footer = delegateSendFooter(item.output ?? "");
-  if (!footer) return undefined;
-  const field = footer.text.split(" · ").find((part) => part.startsWith("wait ignored: "));
-  const reason = field?.slice("wait ignored: ".length).trim();
-  return reason || undefined;
-}
 
 // The target transcript ref enables the row's open-in-pane action.
 function delegateSendTranscriptRef(item: ItemModel): string | undefined {

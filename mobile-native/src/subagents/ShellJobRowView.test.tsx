@@ -69,12 +69,12 @@ describe("a shell job's row", () => {
 		expect(label(failed)).toBe("Shell job, Serving the docs, Command failed, 3 minutes, under Fix race in tree settle");
 		expect(glyphColor(failed)).toBe(palette.dangerInk);
 		expect(label(ended("failed", "command_killed", "failure"))).toContain("Command killed, 3 minutes");
-		expect(label(ended("failed", "exhausted", "failure"))).toContain("Failed, 3 minutes");
-		expect(label(ended("done", "stopped", "neutral"))).toContain("Stopped, 3 minutes");
+		expect(label(ended("failed", "exhausted", "failure"))).toContain("exhausted, 3 minutes");
+		expect(label(ended("done", "stopped", "neutral"))).toContain("stopped, 3 minutes");
 		const done = ended("done", "completed", "success");
 		expect(renderedText(done)).toContain("3m");
 		expect(renderedText(done)).not.toContain("Done");
-		expect(label(done)).toBe("Shell job, Serving the docs, Done, 3 minutes, under Fix race in tree settle");
+		expect(label(done)).toBe("Shell job, Serving the docs, completed, 3 minutes, under Fix race in tree settle");
 		expect(glyphColor(done)).toBe(palette.inkLow);
 	});
 

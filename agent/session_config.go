@@ -133,6 +133,14 @@ type SessionConfig struct {
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
 	NonInteractive bool `json:"non_interactive,omitempty"`
 
+	// AskResponderAttached says this process answers ask_user questions for a
+	// NonInteractive session (`evener run --ask-responder`), so ask_user is
+	// offered even though no human is present. It belongs to the process, not
+	// the session: it is never persisted, so a resumed session is exactly what
+	// a plain run saves and NonInteractive keeps its own meaning for tasks and
+	// the snapshot.
+	AskResponderAttached bool `json:"-"`
+
 	// TurnEndsProcess indicates the process exits when the current turn's work is
 	// drained, as in a one-shot `evener run`: there is no later turn in which a
 	// background job could report, so ending the turn kills it. Distinct from
@@ -353,6 +361,11 @@ type testConfig struct {
 	// the drive claim is held. Tests use it to drive the child at exactly that
 	// point and assert the committed start refuses a second turn.
 	delegateSendStartCommitted func(*subagent)
+	// delegateSendChildResolved observes a send once it has resolved (and,
+	// cold, restored) its child, just before it takes the child's drive
+	// guard. Tests use it to make the child busy at that point. Nil in
+	// production.
+	delegateSendChildResolved func(*subagent)
 	// delegateSendStartClaimed observes the committed send start at the earliest
 	// point in the window: immediately after ReserveStart and before CommitStart,
 	// when the id-keyed claim has been taken but restoreIdleForSend has NOT yet
@@ -1024,6 +1037,12 @@ func (c *SessionConfig) applyDefaults() {
 	if c.clock == nil {
 		c.clock = clock.Real()
 	}
+}
+
+// noOneToAsk reports whether nobody can answer an ask_user question in this
+// session: no human, and no responder attached by this process.
+func (c SessionConfig) noOneToAsk() bool {
+	return c.NonInteractive && !c.AskResponderAttached
 }
 
 // toSnapshot projects the persisted wire fields of a SessionConfig into a

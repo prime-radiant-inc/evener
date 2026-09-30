@@ -67,6 +67,7 @@ const (
 	MethodEvenerTasksList                = "evener/tasks/list"
 	MethodEvenerJobsList                 = "evener/jobs/list"
 	MethodEvenerJobsOutput               = "evener/jobs/output"
+	MethodEvenerJobsGet                  = "evener/jobs/get"
 	MethodEvenerDaemonList               = "evener/daemon/list"
 	MethodEvenerDaemonRetire             = "evener/daemon/retire"
 	MethodEvenerDaemonStatus             = "evener/daemon/status"
@@ -2867,6 +2868,21 @@ type JobsOutputParams struct {
 }
 
 type JobsOutputResponse struct {
+	Data any `json:"data"`
+}
+
+// JobsGetParams reads ONE job's metadata (the activity-tree job shape),
+// including its untruncated command. Ref names the owning session; JobID names
+// the job.
+type JobsGetParams struct {
+	Ref   string `json:"ref,omitempty"`
+	JobID string `json:"jobId"`
+}
+
+// JobsGetResponse carries an appwire.JobActivityJob in Data: the same job node
+// the activity tree renders, so a client can show the job's full command beside
+// its output.
+type JobsGetResponse struct {
 	Data any `json:"data"`
 }
 

@@ -14,7 +14,7 @@ import { AnsiOutputList } from "../AnsiOutputList";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { flattenActivity, type ShellJobRow, shellJobMeta } from "./subagentModel";
+import { flattenJobs, type ShellJobRow, shellJobMeta } from "./subagentModel";
 import { type ShellJobOutput, useShellJobOutput } from "./useShellJobOutput";
 import { useFollowedSubagentTree } from "./useSubagentTree";
 
@@ -25,7 +25,7 @@ export function ShellJobScreen({ route }: NativeStackScreenProps<Routes, "ShellJ
 	const { snapshot, client } = useFollowedSubagentTree(hubId, coordinator.ref, coordinator.threadId);
 
 	const row = useMemo(
-		() => (snapshot.tree ? flattenActivity(snapshot.tree).jobs.find((job) => job.id === jobId) : undefined),
+		() => (snapshot.tree ? flattenJobs(snapshot.tree).find((job) => job.id === jobId) : undefined),
 		[snapshot.tree, jobId],
 	);
 	// Taken when the tree changes, so the screen runs no clock (ruling 7).
