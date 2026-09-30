@@ -133,29 +133,25 @@ one cache lookup before arming the hydration. Two properties are load-bearing:
 
 - **The lookup is bounded by its own short deadline** (250 ms,
   `Promise.race`), not the outbox adapter's 10-second storage timeout
-  (`STORAGE_WAIT_MS = 10_000`). It captures the current clear epoch when
-  it starts — the durable epoch row read in the lookup's own transaction,
-  never the in-memory view, which a tab that has not yet received the
-  clear's channel message cannot trust — and re-reads the durable epoch
-  row immediately before publishing, in the same synchronous step with
-  no await between, discarding on any difference, and requires the
-  captured epoch to equal the tab's in-memory epoch at publish — a
-  same-tab clear bumps the in-memory epoch synchronously, so whatever
-  order the lookup, the re-read, the clear, and the publish land in, a
-  same-tab clear never resurrects a shell. IndexedDB cannot make the
-  publish itself atomic with another tab's transaction, so a sibling's
-  clear committing between the re-read and the publish can still paint
-  pre-clear content for the pane's opening moment — bounded staleness,
-  not resurrection: the write seam's in-transaction epoch check keeps
-  that shell from ever re-persisting, and the next fenced read replaces
-  it. The
-  same captured value is the lease's epoch: the arming records it, and
-  the clear's suppression uses it to tell a lease that predates a
-  clear from one opened after it (the clear section). On deadline, open failure, miss, or an epoch
-  change, the
-  hydration proceeds exactly as today, with `beginThreadHydration` receiving
-  `undefined` as its model. No pane ever waits on storage longer than 250 ms.
-  The lookup is serial by necessity, and the trade is stated rather than
+  (`STORAGE_WAIT_MS = 10_000`). It captures the durable epoch row in the
+  lookup's own transaction — never the in-memory view, which a tab that
+  has not yet received the clear's channel message cannot trust — and at
+  publish requires the captured epoch to equal the tab's in-memory
+  epoch: a same-tab clear bumps the in-memory epoch synchronously, so
+  whatever order the lookup and the clear land in, a same-tab clear
+  never resurrects a shell. IndexedDB cannot make the publish atomic
+  with another tab's transaction, so a sibling's clear committing while
+  the lookup is in flight can still paint pre-clear content for the
+  pane's opening moment — bounded staleness, not resurrection: the
+  write seam's in-transaction epoch check keeps that shell from ever
+  re-persisting, and the next fenced read replaces it. The same
+  captured value is the lease's epoch: the arming records it, and the
+  clear's suppression uses it to tell a lease that predates a clear
+  from one opened after it (the clear section). On deadline, open
+  failure, miss, or an epoch mismatch, the hydration proceeds exactly
+  as today, with `beginThreadHydration` receiving `undefined` as its
+  model. No pane ever waits on storage longer than 250 ms.
+- **The lookup is serial by necessity, and the trade is stated rather than
   hidden: the held identity must exist before the request goes out (the
   store's own contract — `issueLatestWindowRead` runs synchronously before
   the wire call), and issuing the read concurrently would cold-read every
@@ -167,8 +163,14 @@ one cache lookup before arming the hydration. Two properties are load-bearing:
   sequence is check-then-arm (`threads.has(ref)` short-circuit, then
   `beginThreadHydration`'s synchronous `pendingThreadHydrations.set`). The
   cache lookup therefore carries its own per-ref inflight map, mirroring
-  `inflightHydrates`: a concurrent `ensureThread` for the same ref joins
-  the shared lookup rather than starting its own, and only the lookup's
+  `inflightHydrates` — deliberately parallel rather than hosted inside it,
+  because the two registries have different winner semantics: a hydration
+  slot's winner delivers when the fetch lands, while the lookup's winner
+  delivers the shell under the 250 ms deadline, and joining the fetch
+  slot would tie a second caller's shell to the fetch's completion,
+  which is exactly what the deadline exists to avoid. A concurrent
+  `ensureThread` for the same ref joins the shared lookup rather than
+  starting its own, and only the lookup's
   creator proceeds to publish and arm — joiners return once they see a
   model or a hydration in flight, so two callers cannot double-arm. After
   the await the creator rechecks: the ref may have been released
@@ -178,11 +180,10 @@ one cache lookup before arming the hydration. Two properties are load-bearing:
   because from the deadline onward the cold path it abandoned is
   authoritative.
 
-On a hit, the store publishes the cached shell through `putThreadModel`
-immediately, then arms the pending hydration with the shell as its base
-model. `beginThreadHydration` publishes the shell a second time as the
-generation-bumped base (its own guard, above) — content-identical, and the
-pane's loader clears on the first publication either way. Consequences:
+On a hit, the store arms the pending hydration with the shell as its base
+model, and `beginThreadHydration`'s own guard publishes the
+generation-bumped base once — the one publication the pane's loader
+clears on, and the one the joiners see. Consequences:
 
 - The threads map holds the bumped base, not the shell. The read carries
   `heldSnapshot {incarnation, length}` and a request generation above the
@@ -261,11 +262,9 @@ it fires. The gates:
 - the ref's shell flag is clear (the shell skip, above),
 - the ref is not in `deletedRefs` (the deletion fence, re-checked at fire
   time),
-- the ref is not in the clear-suppression set (a ref a clear suppressed:
-  re-checked at fire time, ended only by the ref's final release, so a
-  pane still open across a clear cannot re-persist its pre-clear content
-  under the new epoch — a deliberate re-open establishes the fresh lease
-  the clear section defines),
+- the ref is not in the clear-suppression set (re-checked at fire time;
+  suppression ends only at the ref's final release — the clear section
+  defines the lease rules),
 - the history is live: `invalidatedAtGeneration` is unset, the one marker
   whose presence means the next latest-window response replaces rather
   than merges (the same single-field test the reducer's own liveness
@@ -302,10 +301,14 @@ refuses.
 The subscription sees every publication, so a `history/updated` that grows
 the recorded history refreshes the record like any read merge.
 
-The flush is load-bearing, not a nicety: live content arrives by
-notification between reads, and a tab closed without a flush (a crash, a
-killed tab) loses the tail. `releaseThread` flushes a pending write, and
-so does the pinned-mutation drain (`dropUnpinnedModel`, the path a
+The flush is load-bearing, not a nicety — the contract the tree
+already holds twice (`HumanNoteDraft.flush` runs a pending delayed
+save at tear-down; DockHost's layout debounce flushes rather than
+drops), with the stated divergence that drafts flush on `pagehide`
+while the cache flushes at store release and accepts the tab-kill
+loss below. Live content arrives by notification between reads, and
+a tab closed without a flush (a crash, a killed tab) loses the tail.
+`releaseThread` flushes a pending write, and so does the pinned-mutation drain (`dropUnpinnedModel`, the path a
 pinned ref's model finally leaves through, since `releaseThread` returns
 early while pinned). The flush runs **before** removal: both paths
 snapshot the model, evaluate the gates on that snapshot, write, and only
@@ -323,52 +326,51 @@ Three events invalidate rather than write:
   no history, so it would never match the write gates. The cache deletes the
   ref's record in the same step, or a cleared session's next reload paints
   pre-clear content from the shell.
-- **Session delete** (the UI's shared `deleteSession` action): the record
-  is deleted on the action's success path (`result.deleted`), the ref
-  joins `deletedRefs` in the same step, mapped the way
-  `closePanesForDeletedSessions` maps it — `result.deleted` carries
+- **Deletion** (keyed on the response, not the caller: any deletion
+  response that reports removed thread ids — the shared `deleteSession`
+  action and a project delete alike, the same both-paths contract
+  `closePanesForDeletedSessions` already serves): each id maps to a ref
+  the way `closePanesForDeletedSessions` maps it — the responses carry
   bare thread ids, not pane refs, so an id already carrying a source
   prefix passes through and any other becomes the `local:<id>` ref, or
-  the write gate never matches a `local:` pane — the deleting tab
-  arms its own
-  fence, because a BroadcastChannel never delivers the sender its own
-  message — and the ref's pending debounce timer is cancelled with it.
-  The flush skips refs closed by deletion, so closing a deleted
-  session's pane cannot re-persist it. Deletion also propagates cross-tab: one BroadcastChannel
-  message per deleted ref, the same channel and the same shape the clear
-  uses. On receiving it a sibling does two things, not one: it adds the
-  ref to its suppression set — re-checked at write-fire time — and it
-  deletes the ref's record from storage, idempotently. That second step
-  heals the one interleaving that can beat the message: a sibling write
-  that started after the deleting tab's removal but before the message
+  the write gate never matches a `local:` pane. On the response the
+  deleting tab deletes each removed record, cancels each ref's pending
+  debounce timer, and joins each ref into `deletedRefs` in the same
+  step — the immediate arm, so a pane still open on a deleted session
+  cannot schedule another write while any read is still in flight. The
+  fence below is the second writer with a different job: it re-arms
+  the same set when a read proves a deletion this tab was never told
+  about. The flush skips refs closed by deletion, so closing a deleted
+  session's pane cannot re-persist it. Deletion also propagates
+  cross-tab: one BroadcastChannel message carrying all the deleted
+  refs — one message per action, whether it removed one session or a
+  whole project — the same channel and the same shape the clear uses.
+  On receiving it a sibling does two things, not one, in one step: it
+  adds each ref to its suppression set — re-checked at write-fire
+  time — and it deletes each ref's record from storage in one delete
+  transaction, idempotently. The second step heals the one
+  interleaving that can beat the message: a sibling write that
+  started after the deleting tab's removal but before the message
   arrives still passes its gates and re-creates the record, and the
-  message's arrival deletes that resurrection in the same step that
-  arms the suppression — a heal that cannot be lost, because the
-  message's delete transaction cannot start until an in-flight write's
+  message's arrival deletes that resurrection in the same transaction
+  that arms the suppression — a heal that cannot be lost, because
+  that delete transaction cannot start until an in-flight write's
   transaction completes, so it always runs after the record it must
-  remove. The remaining residual is a sibling that dies
-  between its racing write and the message's arrival: nothing is left
-  to hear the message, and the record it re-created waits for the
-  14-day expiry or the next fenced read of the ref — the same stated
-  residual class as sessions no tab ever reads again. That bounded
-  window is the argument against the durable per-ref tombstone a
-  reviewer proposes: a durable per-ref generation checked inside every
-  write transaction is machinery for a window measured in channel
-  latency, the clear epoch stays the only durable generation, a deleted
-  session's pane releases on close, and a re-open of a deleted session
-  fails its read through the existing fence, which keeps the record
-  gone. A record delete whose transaction aborts leaves the stale
-  record to that same fence — the deleted session's own re-open
-  triggers it — or to the 14-day expiry; the durable fact is the
-  server-side deletion, and the fence is the cache's correction, so
-  the deletion never depends on the cache transaction succeeding. An earlier draft of this spec refuted a per-ref tombstone as
-  over-building and claimed the sibling "learns of the deletion through
-  the fence on its next read" — that retraction is recorded because it
-  was wrong: a sibling tab holding the session open receives
+  remove. The heal-and-suppress pair is necessary rather than
+  belt-and-braces: a sibling tab holding the session open receives
   `history/updated` pushes, not a rejected read, so the fence never
-  fires there and its continuously scheduled writes would resurrect the
-  record indefinitely, which is not the one-time residual the draft
-  claimed.
+  fires there, and without the message its continuously scheduled
+  writes would resurrect the record indefinitely. The remaining
+  residual is a sibling that dies between its racing write and the
+  message's arrival: nothing is left to hear the message, and the
+  record it re-created waits for the expiry or the next fenced read
+  of the ref — the deletion-fence bullet's stated residual class. A
+  durable per-ref tombstone checked inside every write transaction
+  would close even that window, but it is machinery for a window
+  measured in channel latency, the clear epoch stays the only durable
+  generation, and a deleted session's re-open fails its read through
+  the existing fence — the durable fact is the server-side deletion,
+  so the deletion never depends on a cache transaction succeeding.
 - **The deletion fence** (`markThreadDeletedIfFenced` setting `deletedRefs`):
   deletes the ref's record, cancels its pending debounce timer, and
   publishes the same per-ref propagation — out-of-band deletions (another
@@ -397,9 +399,7 @@ refresh path replaces the window and the cursor with it.
 The shell qualifies that with one rule: while the shell flag is set — the
 first authoritative read still pending — `loadOlderTurns` is disabled.
 Paging below a shell the gap rule is about to replace races that
-replacement, and the reconciled window owns the cursor afterwards: a
-merge keeps the deepest held cursor by the existing rule above, a
-replacement takes the response's. Scroll-back therefore waits for
+replacement, and the reconciled window owns the cursor afterwards. Scroll-back therefore waits for
 whichever window wins and never fetches against a cursor that is about
 to be discarded.
 
@@ -431,15 +431,21 @@ the stale-snapshot retry already uses), not a merge.** The pages are
 dropped, the response's cursor is taken, and the user re-pages if they want
 the older content back — the honest alternative to rendering a transcript
 with a silent hole in it. A response carrying `changes` merges as usual.
-The predicate is exact, and its anchor is captured, not derived. The
+
+The predicate is exact, and its anchor is captured, not derived: the
 shell's lineage state records, at shell-build time, the newest item
 position in the record (`threadModelFromCache`'s input — pure record
 data, fixed before any live merge can touch the model). The rule: it
 applies only when the read's disposition is `merge` (the existing rules
-already answer replace and discard), the record held at least one item
-(an empty record takes the ordinary cold merge), and the fresh window's
-first item position is strictly greater than that captured position —
-`comparePositions` on `ThreadItemPosition`, position against position.
+already answer replace and discard — a disposition the store already
+participates in: `shouldRetryWithoutHeldSnapshot` chooses replace at
+both hydrate call sites today, and the markers it reads are public
+history state, not reducer internals), the record held at least one
+item (an empty record takes the ordinary cold merge), and the fresh
+window's first item position is strictly greater than that captured
+position — `comparePositions` on `ThreadItemPosition`, position
+against position.
+
 One more term guards the live fold: the response's newest item position
 must be at or above the model's current newest. A `history/updated`
 landing while the read is in flight advances that newest past a
@@ -466,19 +472,20 @@ states the limitation), so contiguity cannot be proven at the
 disposition point, and no delta request is issued for a hole today's
 own live behavior produces. The loss below the window's start is the
 rule's stated re-pageable cost, and the fold is data already in hand,
-so the replay needs no deferral machinery. An earlier draft keyed the anchor on "the newest held item below
-`history.length`"; that was dimensionally wrong — `SnapshotIdentity.length`
-is the transcript's covered byte count (the index's own Window doc:
-"the transcript bytes it covered"), not an entry ordinal, so comparing
-a position ordinal against it degenerates to the newest held item,
-which is exactly what a post-failure live fold can push past a real
-hole. The captured position cannot move: it is read from the record
-before the shell publishes, a `history/updated` merge only adds items
-to the model (it never rewrites the lineage state), and
-`history.length` itself is written only by a read response's identity
-(`readIdentity`) — a merge returns `{ ...held, turns }` without
-touching it. One
-cost is accepted and stated: a window that begins exactly at the
+so the replay needs no deferral machinery.
+
+The anchor is a `ThreadItemPosition`, and it cannot move: a
+`history/updated` merge only adds items to the model and never
+rewrites the lineage state, and `history.length` itself is written
+only by a read response's identity (`readIdentity`) — a merge returns
+`{ ...held, turns }` without touching it. It must be a position, not
+an item count: `SnapshotIdentity.length` is the transcript's covered
+byte count (the index's own Window doc: "the transcript bytes it
+covered"), not an entry ordinal, and keying the anchor on the newest
+held item below it degenerates to the newest held item — exactly what
+a post-failure live fold can push past a real hole.
+
+One cost is accepted and stated: a window that begins exactly at the
 captured position's successor replaces too, because the position model
 has no predecessor function to distinguish one-item adjacency from a
 one-item hole — the cached pages re-fetch rather than risk a hole, a
@@ -503,8 +510,15 @@ involved.
   serialized length exceeds `SESSION_CACHE_MAX_BYTES` is skipped whole,
   never written, and a stored row for the same ref is deleted with it —
   a session that outgrew its cache leaves nothing stale behind and keeps
-  today's behavior. A proposed window-only fallback for oversize records
-  was rejected with the same evidence as the trimming cut: the model
+  today's behavior. The skip is memoized per ref: a live oversize
+  session would otherwise re-serialize its full record on every
+  debounced fire, a 32 MB encode on the main thread for a guaranteed
+  no-op, plus an idempotent delete per fire. The memo clears whenever
+  the history is replaced (the stale-snapshot retry or the gap rule's
+  `hydrateThread`) — the one path by which an oversize record can
+  shrink back under the cap, since within one identity a merge only
+  adds items. A proposed window-only fallback for oversize records
+  was rejected for the same reason as the trimming cut: the model
   carries no window-boundary marker (`mergeOlderItemPage` folds pages
   into one flat turns array), so a "window-only record" needs persisted
   page-boundary metadata — machinery for a rare case whose accepted cost
@@ -542,7 +556,11 @@ involved.
   deletions, the enumeration of the `meta` store's rows, the insert, and
   any evictions run in one read-write IndexedDB transaction. A write
   carries the epoch it was scheduled under and aborts — writing nothing —
-  when that transaction observes a newer one. IndexedDB serializes
+  when that transaction observes a newer one. The shape is the outbox
+  adapter's `TargetSequence.stopEpoch` — a generation bumped in one
+  transaction and compared, capture in hand, inside another's — proven
+  there for cross-tab Stop correctness; the meta epoch row is its
+  database-scope analogue. IndexedDB serializes
   read-write transactions on the same stores, so the interleaving has
   exactly two orders: a write transaction that runs after the clear's
   reads the incremented epoch and aborts, and one that runs before it has
@@ -579,8 +597,8 @@ retry — never shown as empty, so the privacy remedy cannot silently
 claim to have worked), or **cleared** — which shows only when the
 clear's transaction committed, and yields the moment that fact goes
 stale: the next record this tab writes, a reload, or the settings pane
-rendering the row again — its enumeration runs per render — recomputes
-it, so a cleared badge never misstates the remedy the way an empty
+rendering the row again — a count over the records store runs per
+render — recomputes it, so a cleared badge never misstates the remedy the way an empty
 badge over a failed open does. What it reports is this tab's own last
 clear, deliberately not a cross-tab lock: cache writes do not
 broadcast, so a sibling re-opening a session refills the shared store
@@ -612,20 +630,13 @@ the transaction's commit is observed, never on abort — a sibling never
 arms suppression for a clear that did not happen, so an aborted clear
 leaves no sibling state to revert. A lease records the durable
 epoch its arming lookup observed (the load seam's capture), so the
-arming is exact: a ref still open across the clear captured an older
-epoch and is suppressed — a sibling still receiving `history/updated`
-pushes cannot re-persist its pre-clear pages under the new epoch
-either — while a ref closed before the clear and re-opened after its
-transaction committed captured the clear's own epoch and is a fresh
-lease by construction, not suppressed, so the re-open starts caching
-again even if the message has not arrived yet. The suppression is the
-fire-time gate above, not a UI state. It attaches to the leases a
-clear found open — those whose captured epoch is older — and ends with
-each one's final release: a ref deliberately re-opened afterwards
-establishes a fresh cache lease and caches again — that is the feature
-working, not the remedy failing — while the durable epoch still kills
-anything scheduled before the
-clear. Deletion is the storage adapter's own operation so a wedged
+arming is exact — suppression is the write seam's fire-time gate,
+not a UI state: a ref still open across the clear captured an older
+epoch and is suppressed through its final release, while a ref closed
+before the clear and re-opened after its transaction committed is a
+fresh lease by construction and caches again — the feature working,
+not the remedy failing — while the durable epoch still kills
+anything scheduled before the clear. Deletion is the storage adapter's own operation so a wedged
 open degrades to the unavailable state rather than a failed button.
 A clear that never reaches a definite commit is a clean no-op in every
 tab, because IndexedDB commits the deletions and the epoch increment
@@ -635,10 +646,10 @@ has exactly two definite terminal states, an open or transaction
 creation that fails is an abort that happened before there was a
 transaction to abort, and every request settles — there is no
 timeout whose commit status is unknown, so the rule is simply revert
-unless a commit is observed. Even a revert taken over a commit that
-landed unobserved self-heals: the tab's in-memory epoch sits below the
-durable one, its next write aborts on the in-transaction read and
-arms the suppression, and the row's re-clear is an idempotent no-op.
+unless a commit is observed. Even a revert taken over a commit that landed unobserved self-heals
+through the write seam's in-transaction epoch check (the eviction
+section's missed-message mechanism), and the row's re-clear is an
+idempotent no-op.
 The one path with no terminal event at all — a wedged transaction,
 the same pathology as the wedged open above — degrades the same way:
 the row never hears its commit and stays **unavailable**, and the
@@ -662,8 +673,10 @@ The adapter copies the outbox adapter's failure discipline
 (`mutationOutboxIndexedDB.ts`): injected `IDBFactory`, a storage timeout with
 the neutral message, an observational `onOpenDiagnostic` seam (defaulting to
 one greppable `console.warn` line, silent in tests via the same
-`import.meta.env.MODE` branch), and version-fence `VersionError` handling.
-Every failure is a cache miss and the 250 ms load-seam deadline above bounds
+`import.meta.env.MODE` branch), and version-fence `VersionError` handling. The transaction wrapper
+registers every transaction with `trackProjectionWork` exactly as the
+outbox's `#transaction` does, so a flush can wait for durable cache
+work whoever began it. Every failure is a cache miss and the 250 ms load-seam deadline above bounds
 the open path. No transcript surface shows a storage error, and the loader
 path is exactly today's. Quota errors during write drop the write; the next
 debounced window retries, and a persistently full profile simply stops
@@ -694,12 +707,10 @@ output. Three facts bound the exposure:
   writes user content to IndexedDB today. Drafts, by contrast, live in
   localStorage (`draftStorage.ts`), which is also unencrypted browser-local
   storage.
-- The cap bounds the footprint; a session deleted from this UI removes its
-  record on the spot, and the per-ref propagation deletes a racing
-  sibling's resurrection the moment its message lands (a sibling that
-  dies in that window leaves the stated 14-day residual); the deletion
-  fence removes records a read proves deleted; and the setting clears
-  everything in one action.
+- The cap bounds the footprint, and the deletion paths and the clear
+  action bound the lifetime — the write-seam deletion bullet and the
+  eviction section specify the record removal, the per-ref propagation
+  and its heal, the fence, and the stated residuals.
 
 What the cache deliberately never holds: credentials (auth lives in the hub
 and the outbox's own rows), attachments, drafts, and the human-client
@@ -724,7 +735,14 @@ All tests are deterministic: the fake client (`@evener/appwire-client/testing`)
 scripts socket responses, `new IDBFactory()` fakes storage exactly as the
 outbox tests do, fake timers drive the injected debounce interval, and no
 test touches the network or sleeps
-(`docs/developing-evener/testing.md`). Per-test ceiling 3 s.
+(`docs/developing-evener/testing.md`). Tests that must await durable
+writes settle through `settleProjectionWorkForTests` rather than polling
+the ceiling — polling side effects against a fixed window is a race,
+not an assertion (the projection-work module's own rule) — and the
+wedged-open and interleaving scenarios (2, 3, 13, 14) use the tree's
+existing `stores/testing/stalledIndexedDB.ts` helpers
+(`neverSettlingRequest`, `holdIndexedDBEvent`) rather than hand-rolled
+fakes. Per-test ceiling 3 s.
 
 Adapter (new `stores/sessionCacheIndexedDB.ts`):
 
@@ -819,11 +837,9 @@ Store integration (`stores/threads.test.ts` additions and a new
     release during the lookup (publishes nothing), a lookup that lost its
     own deadline race resolving late (publishes nothing, arms nothing),
     a same-tab clear committing between the lookup's transaction and its
-    publish discarding the result through the second durable read, one
-    committing after that read but before the publish discarding it
-    through the in-memory epoch check, a sibling-tab clear in that same
-    window publishing a stale shell that never re-persists and that the
-    next fenced read replaces, and
+    publish discarding the result through the in-memory epoch check, a
+    sibling-tab clear in that same window publishing a stale shell that
+    never re-persists and that the next fenced read replaces, and
     hydration still completing within the 250 ms bound.
 14. Deletion and clearing, one focused test per interleaving rather
     than one bundling them (the per-test ceiling makes a monolith opaque
@@ -892,7 +908,7 @@ Store integration (`stores/threads.test.ts` additions and a new
 Settings: the row renders empty vs unavailable truthfully and the clear
 action works (scenario 14 covers the adapter side); `cleared` exits on
 the next write, a reload, or a re-render of the row — its per-render
-enumeration keeps a sibling's refill from outliving the next render.
+count keeps a sibling's refill from outliving the next render.
 
 Reducer: `threadModelFromCache` is pinned by a type-level test that no
 required `ThreadModel` field is left undefined, and by unit tests that the
@@ -917,12 +933,9 @@ transient invalidation fields are reset and the history identity round-trips.
    placement; watched/rail reads never load or write.
 6. **32 MB whole-record LRU cap, one atomic read-write transaction per
    write, a durable clear epoch every write verifies, cross-tab
-   last-write-wins.** A no-shrink rule was considered and
-   rejected: its failure modes (LRU inversion, frozen superseded content)
-   cost more than the pages it saved. A per-record cap with oldest-page
-   trimming was cut with it: trimming dangles the single `olderCursor`
-   below the dropped pages, and repairing it needs a per-page cursor chain
-   the total cap makes unnecessary.
+   last-write-wins.** A no-shrink comparison and a per-record cap with oldest-page trimming
+   were rejected — the cross-tab and eviction bullets state their failure
+   modes and the per-page cursor chain the total cap makes unnecessary.
 7. **Zero reducer changes.** The deepest-held-cursor rule already exists
    (792c379eca) and is pinned, not re-implemented. The one new behavioral
    rule — a no-`changes` reconcile whose window starts above the held pages
