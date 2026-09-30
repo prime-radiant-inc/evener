@@ -198,23 +198,41 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			const line = jobStatusDisplay(status, str(job, "reason"));
 			return rawOutput(description ? `${line} — ${description}` : line);
 		}
-		case "message":
-		case "mcp":
-		case "tool": {
-			const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;
-			const result = text ? prettyJSON(text) : undefined;
-			// Arguments that aren't a JSON object or array show as they were
-			// sent, as the web's MCPToolArguments shows them.
-			const evidence: Evidence[] = args
-				? [{ kind: "json", label: "Arguments", text: args }]
-				: rawOutput(detail.arguments?.trim() ? detail.arguments : "");
-			if (result) evidence.push({ kind: "json", label: "Result", text: result });
-			else evidence.push(...rawOutput(text));
+		case "message": {
+			// A message to a subagent: what was sent, the delegate's reply when
+			// the send waited for one, and why a wait was ignored, as the web's
+			// DelegateSendBody shows the exchange. A call with no message and no
+			// reply (a malformed one) shows its JSON, as any other tool's does.
+			const message = str(parseArgs(detail.arguments), "message");
+			if (!message && detail.sendReply === undefined) return jsonEvidence(detail, text);
+			const evidence: Evidence[] = [];
+			if (message) evidence.push({ kind: "markdown", title: "Message", markdown: withoutImages(message) });
+			if (detail.sendReply !== undefined)
+				evidence.push({ kind: "markdown", title: "Reply", markdown: withoutImages(detail.sendReply) });
+			if (detail.sendWaitIgnored !== undefined)
+				evidence.push({ kind: "note", text: `Wait ignored: ${detail.sendWaitIgnored}` });
 			return evidence;
 		}
+		case "mcp":
+		case "tool":
+			return jsonEvidence(detail, text);
 		default:
 			return rawOutput(text);
 	}
+}
+
+// A tool's arguments and result, pretty-printed when they're JSON.
+function jsonEvidence(detail: ActivityDetail, text: string): Evidence[] {
+	const args = detail.arguments ? prettyJSON(detail.arguments) : undefined;
+	const result = text ? prettyJSON(text) : undefined;
+	// Arguments that aren't a JSON object or array show as they were sent, as
+	// the web's MCPToolArguments shows them.
+	const evidence: Evidence[] = args
+		? [{ kind: "json", label: "Arguments", text: args }]
+		: rawOutput(detail.arguments?.trim() ? detail.arguments : "");
+	if (result) evidence.push({ kind: "json", label: "Result", text: result });
+	else evidence.push(...rawOutput(text));
+	return evidence;
 }
 
 /** The parts of a step its evidence comes from. */

@@ -128,6 +128,43 @@ export function delegateSendFooter(output: string): DelegateSendFooterInfo | und
   return { text: footer, index, status, runningInBackground };
 }
 
+/** The parts of a delegate_send step its exchange reads: its result's raw
+ * state and printed output. */
+export type DelegateSendResult = Pick<ItemModel, "raw" | "output">;
+
+/** The delegate's reply to a send that waited for one: the raw state's
+ * output, else what the tool printed above its footer (all of it when there
+ * is no footer). Undefined when the send got none, as a steer doesn't. */
+export function delegateSendResponse(step: DelegateSendResult): string | undefined {
+  if (isDelegateSendResult(step.raw)) {
+    const rawOutput = step.raw.output;
+    if (rawOutput !== undefined && rawOutput.trim() !== "") return rawOutput;
+  }
+
+  const output = step.output ?? "";
+  if (output === "") return undefined;
+  const footer = delegateSendFooter(output);
+  if (footer === undefined) return output;
+
+  const response = output.trimEnd().split("\n").slice(0, footer.index).join("\n");
+  return response.trim() === "" ? undefined : response;
+}
+
+/** Why a send's wait was ignored (it asked to wait on a delegate that was
+ * already running): the raw state's reason, else the footer's "wait
+ * ignored:" field. Undefined when the wait was honoured or not asked for. */
+export function delegateSendWaitIgnoredReason(step: DelegateSendResult): string | undefined {
+  if (isDelegateSendResult(step.raw)) {
+    const reason = step.raw.wait_ignored_reason?.trim();
+    if (reason) return reason;
+  }
+  const footer = delegateSendFooter(step.output ?? "");
+  if (!footer) return undefined;
+  const field = footer.text.split(" · ").find((part) => part.startsWith("wait ignored: "));
+  const reason = field?.slice("wait ignored: ".length).trim();
+  return reason || undefined;
+}
+
 /** Who a send addressed: `to`, the live argument, or `target`, the retired
  * job_send_message alias's (agent/transcript_render.go's historical rendering
  * path still reads it this way); "" when the call names neither. */

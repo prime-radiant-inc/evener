@@ -392,6 +392,8 @@ describe("a step's evidence", () => {
 			endedAtMs: 2001,
 			tasks: [{ id: 1, status: "in_progress", description: "Fix the drain" }],
 			watchEvidence: "Check the deploy finished.",
+			sendReply: "Yes, drain ordering is safe.",
+			sendWaitIgnored: "delegate is already running",
 		};
 		const full: Run = { kind: "run", id: "run:full", turnId: "t1", steps: [{ ...step("f", "job_watch", {}), detail }] };
 		render(<RunRow run={full} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-full" />);

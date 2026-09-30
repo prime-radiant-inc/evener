@@ -158,11 +158,14 @@ export {
 export {
   type DelegateSendFooterInfo,
   type DelegateSendRawState,
+  type DelegateSendResult,
   type DelegateSendStep,
   delegateSendBase,
   delegateSendFooter,
+  delegateSendResponse,
   delegateSendSummary,
   delegateSendTarget,
+  delegateSendWaitIgnoredReason,
   isDelegateSendResult,
 } from "./delegateSteps";
 export type { AskQuestionRef } from "./deriveAskQuestions";
