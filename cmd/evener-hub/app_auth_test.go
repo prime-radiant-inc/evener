@@ -733,6 +733,49 @@ func TestAuth_Codex_Status_CorruptOAuthIsNoCredential(t *testing.T) {
 	}
 }
 
+// TestAuth_Codex_Status_UnreadableOAuthRecordIsAnErrorRow pins that a Codex
+// instance whose stored OAuth record cannot be read at all (neither absent nor
+// corrupt) is reported as a status row carrying Error, rather than dropped from
+// the answer. AuthStatusResponse.Error has no other source, and this is what
+// lets a client show the redesign spec's "Error" provider status (section 12).
+func TestAuth_Codex_Status_UnreadableOAuthRecordIsAnErrorRow(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir()
+	attachTestRegistry(t, c)
+	c.loadAuth = func(string, string) (authopenai.AuthRecord, error) {
+		return authopenai.AuthRecord{}, errors.New("the auth record could not be read")
+	}
+
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got.Provider != "openai-codex" {
+		t.Fatalf("status=%+v, want the row named for the instance asked about", got)
+	}
+	if got.Error == "" {
+		t.Fatalf("status=%+v, want Error set when the stored credential cannot be read", got)
+	}
+	if got.SignedIn || got.ActiveSource != "none" {
+		t.Fatalf("status=%+v, want signed out with source none", got)
+	}
+	if got.RefreshRejected {
+		t.Errorf("status=%+v, want RefreshRejected false: the record could not be read, so no refresh is known to have been refused", got)
+	}
+
+	// The listing marks the row in place rather than dropping it.
+	list, err := c.List(appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if row := authRowOf(t, list, "openai-codex"); row.Error == "" {
+		t.Errorf("List row %+v, want Error set", row)
+	}
+}
+
 // TestAuth_Codex_ApiKeySetIsRefused: storing a key nothing can use and then
 // reporting success is how the pane came to claim a sign-in the spawn gate
 // refuses. The Codex transport authenticates with its OAuth record alone
