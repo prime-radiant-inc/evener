@@ -408,8 +408,14 @@ describe("shell jobs in the Activity list", () => {
 		expect(shellJobLabel(finished, NOW)).toBe(
 			"Shell job, go test ./agent/..., Command failed, 1 minute, under Fix race in tree settle",
 		);
-		const clean = { ...finished, state: "done" as const, job: { ...finished.job, status: "completed", outcome: "success" } };
-		expect(shellJobLabel(clean, NOW)).toBe("Shell job, go test ./agent/..., Done, 1 minute, under Fix race in tree settle");
+		const clean = {
+			...finished,
+			state: "done" as const,
+			job: { ...finished.job, status: "completed", outcome: "success" },
+		};
+		expect(shellJobLabel(clean, NOW)).toBe(
+			"Shell job, go test ./agent/..., Done, 1 minute, under Fix race in tree settle",
+		);
 		const untimed = { ...clean, job: { ...clean.job, endedAt: undefined } };
 		expect(shellJobMeta(untimed, NOW)).toBe("Done");
 		expect(shellJobLabel(untimed, NOW)).toBe("Shell job, go test ./agent/..., Done, under Fix race in tree settle");
