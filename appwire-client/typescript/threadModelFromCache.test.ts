@@ -162,7 +162,8 @@ describe("cachedSessionRecord", () => {
     const hydrated = hydrateThread(readResponseFixture(), "local:thr_1", 7000);
     const encoded = cachedSessionRecord(hydrated, 7000);
     expect(encoded).toBeDefined();
-    const back = threadModelFromCache(encoded!, 8000);
+    if (encoded === undefined) throw new Error("the encoder must accept a hydrated v6 read");
+    const back = threadModelFromCache(encoded, 8000);
     expect(back.history?.incarnation).toBe("inc-9");
     expect(back.history?.epoch).toBe(2);
     expect(back.history?.length).toBe(900);
@@ -173,7 +174,9 @@ describe("cachedSessionRecord", () => {
 
   it("refuses a model with no recorded history identity (incarnation absent)", () => {
     const bare = { ...hydrateThread(readResponseFixture(), "local:thr_1", 7000) };
-    const noHistory = { ...bare, history: { ...bare.history!, incarnation: undefined } };
+    const held = bare.history;
+    if (held === undefined) throw new Error("a v6 read must carry recorded history");
+    const noHistory = { ...bare, history: { ...held, incarnation: undefined } };
     expect(cachedSessionRecord(noHistory, 7000)).toBeUndefined();
     const handBuilt: ThreadModel = { ...bare, history: undefined };
     expect(cachedSessionRecord(handBuilt, 7000)).toBeUndefined();
