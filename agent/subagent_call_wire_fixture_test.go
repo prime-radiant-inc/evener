@@ -33,9 +33,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -86,7 +86,7 @@ func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}, func(
 		<-release
 		// The request carries the whole history, so only the generation the
 		// question started sees it.
-		if history, _ := json.Marshal(req.Messages); strings.Contains(string(history), subagentWireQuestion) {
+		if requestContainsText(req, subagentWireQuestion) {
 			return finalResponse(subagentWireReply)
 		}
 		return finalResponse("Fixed the race between tree settle and the drain.")
@@ -137,7 +137,6 @@ func (c subagentWireCall) run(t *testing.T, s *Session) subagentWireCall {
 func TestSubagentCallWireFixtures(t *testing.T) {
 	t.Parallel()
 	s, stateDir, childRunning, answer := subagentWireSession(t)
-	stream := s.Events()
 	delegate := subagentWireCall{
 		id:   "call_delegate_1",
 		tool: "delegate",
@@ -167,7 +166,7 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 	}.run(t, s)
 	// Let the child answer, and send the question once the delegate is idle.
 	answer()
-	awaitDelegateIdle(t, stream, receipt.DelegateID)
+	awaitDelegateIdle(t, s, receipt.DelegateID)
 	waiting := subagentWireCall{
 		id:   "call_send_2",
 		tool: "delegate_send",
@@ -217,34 +216,62 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 		Items []appwire.ThreadItem `json:"items"`
 	}{
 		Note:  "One ASSISTANT entry announcing delegate, two delegate_sends, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate and delegate_send calls ran for real (the delegate's id, its child session's id and the state directory fixed): the first send steered the running delegate, and the second, sent once it was idle, waited for and returned its reply (its run times fixed too). The shell and task_list outputs are hand-written text.",
-		Items: toolWireRelocated(t, items, func(encoded string) string { return subagentWireRunTimesFixed(relocate.Replace(encoded)) }),
+		Items: toolWireRelocated(t, items, func(encoded string) string { return subagentWireRunTimesFixed(t, relocate.Replace(encoded)) }),
 	}, "the mobile-native tests that read it")
 }
 
-// awaitDelegateIdle reads stream until delegateID is published idle.
-func awaitDelegateIdle(t *testing.T, stream <-chan events.SessionEvent, delegateID string) {
+// awaitDelegateIdle waits until delegateID's generation has finished and the
+// delegate reads idle. It reads the controller's own state: the session's
+// event stream is best effort and could drop the idle event.
+func awaitDelegateIdle(t *testing.T, s *Session, delegateID string) {
 	t.Helper()
-	for {
-		select {
-		case ev := <-stream:
-			if data, ok := ev.Data.(events.DelegateUpdatedData); ok && data.DelegateID == delegateID && data.Lifecycle == string(delegateLifecycleIdle) {
-				return
-			}
-		// TRIPWIRE: a hang guard only; the scripted child answers at once
-		// and its generation goes idle within milliseconds.
-		case <-time.After(30 * time.Second):
-			t.Fatal("the delegate never went idle after its child answered")
-		}
-	}
+	// TRIPWIRE: a hang guard only; the scripted child answers at once and its
+	// generation goes idle within milliseconds.
+	waitForCondition(t, 30*time.Second, "the delegate going idle after its child answered", func() bool {
+		c := s.delegateController
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		aggregate := c.durable[delegateID]
+		return aggregate != nil && aggregate.Phase == delegatestore.PhaseIdle && !aggregate.CurrentRunOpen
+	})
 }
 
 // subagentWireRunTimes matches the run times a delegate_send result carries,
 // which are the clock's.
-var subagentWireRunTimes = regexp.MustCompile(`"(run_started_at|latest_activity_at|run_ended_at)":"[^"]*"`)
+var subagentWireRunTimes = regexp.MustCompile(`"(run_started_at|latest_activity_at|run_ended_at)":"([^"]*)"`)
+
+// subagentWireRunFields are the run-time fields, in the order a run's times
+// must fall.
+var subagentWireRunFields = []string{"run_started_at", "latest_activity_at", "run_ended_at"}
 
 // subagentWireRunTimesFixed records each run time as a fixed time after the
-// fixture's start, by field, so two equal times can't swap places.
-func subagentWireRunTimesFixed(encoded string) string {
+// fixture's start, by field, so two equal times can't swap places. It first
+// checks the recorded times are real and in order (started, then latest
+// activity, then ended), and that none appears escaped inside a string the
+// replacement can't reach.
+func subagentWireRunTimesFixed(t *testing.T, encoded string) string {
+	t.Helper()
+	for _, field := range subagentWireRunFields {
+		if strings.Contains(encoded, `\"`+field+`\"`) {
+			t.Fatalf("a %s appears escaped inside a string, where the fixture can't fix it", field)
+		}
+	}
+	recorded := make(map[string]time.Time, len(subagentWireRunFields))
+	for _, match := range subagentWireRunTimes.FindAllStringSubmatch(encoded, -1) {
+		at, err := time.Parse(time.RFC3339Nano, match[2])
+		if err != nil {
+			t.Fatalf("%s %q isn't a time: %v", match[1], match[2], err)
+		}
+		recorded[match[1]] = at
+	}
+	for i, field := range subagentWireRunFields {
+		if _, ok := recorded[field]; !ok {
+			t.Fatalf("the waiting send's result carries no %s", field)
+		}
+		if i > 0 && recorded[field].Before(recorded[subagentWireRunFields[i-1]]) {
+			t.Fatalf("%s %v is before %s %v", field, recorded[field], subagentWireRunFields[i-1], recorded[subagentWireRunFields[i-1]])
+		}
+	}
 	fixed := map[string]time.Time{
 		"run_started_at":     wireFixtureStart.Add(time.Second),
 		"latest_activity_at": wireFixtureStart.Add(1500 * time.Millisecond),
