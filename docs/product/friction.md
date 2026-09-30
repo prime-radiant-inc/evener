@@ -66,7 +66,6 @@ and should not be presented as reproduced production incidents.
 | [H12](#h12-dormant-host-notices) | Low | An unused disconnected host becomes a recovery notice | S03, S06, S07 |
 | [T01](#t01-tool-call-parking) | High | Repeated failure parks an operation even after the dependency heals | S14 |
 | [T02](#t02-mcp-initial-discovery-recovery) | High | An initially unavailable MCP server never contributes tools to the session | S18, S19 |
-| [T03](#t03-unsandboxed-tool-scope) | Medium | Sandbox-off tools disagree about usable filesystem scope | S14 |
 | [T04](#t04-read-only-directory-symlinks) | Medium (deferred) | A derived read-only delegate cannot browse an allowed target through a symlink | S12, S14 |
 | [T05](#t05-approval-scope-and-lifetime) | Medium (deferred) | Narrow one-call approval paths repeatedly interrupt authorized work | S12, S14 |
 | [U01](#u01-tui-uncertain-submission) | High | A lost send acknowledgement becomes a manual new submission | S04, S05, S11 |
@@ -402,20 +401,29 @@ polling, and closing the panel ends its recovery reads.
 
 **Current behavior.** Successful MCP reconnect emits an EventWarning saying no
 action is needed. Its missing informational code makes it a critical warning in
-shared projection, an attention chip on web and a failure row on native.
+shared projection and gives it attention or failure styling on web and native.
+The recovery event is emitted before the retried tool call returns, so connection
+recovery does not establish that the tool operation succeeded.
 
-**Evidence.** [reconnectRecoveryWarning](../../agent/session_init.go#L2592),
+**Evidence.** [reconnectRecoveryWarning](../../agent/session_init.go#L2600),
 [warning classification](../../appwire-client/typescript/warnings.ts#L27), web
 [WarningItem](../../cmd/evener-hub/frontend/src/panes/session/transcript/messages/WarningItem.tsx#L67),
-and native [projectedRows](../../mobile-native/src/projectedRows.ts#L736).
+and native [warning projection](../../mobile-native/src/projectedRows.ts#L447).
+The [MCP tool callback](../../agent/internal/mcp/manager.go#L405) emits recovery
+before making the retry and separately returns its actual result.
 This is a source-traced presentation path; visual/device qualification remains.
 
 **Discuss.** Give successful repair structured informational meaning and a quiet
-diagnostic record. Keep actual failed reconnect and required sign-in visible;
-changing this success event need not weaken other warnings.
+diagnostic record, available in full/detail views without attention styling in
+the normal conversation. State only what recovered: a restored connection does
+not prove that the retried operation succeeded. Keep an actual failed tool call,
+ongoing interruption or required sign-in accurately represented in its own
+result or status.
 
 **Acceptance.** After a dropped MCP connection recovers, both clients show normal
 operation with inspectable recovery history and no failure styling for success.
+Make the retried operation fail after reconnect: its real failure remains visible
+and the connection-recovery record does not claim the operation succeeded.
 
 ### C12 Remote credential transfer outcomes
 
@@ -1185,38 +1193,6 @@ agent can continue work waiting on them. Existing tools remain available
 throughout. A prolonged outage paces discovery without abandoning recovery;
 disabling or removing the server stops retries and prevents late registration.
 
-### T03 Unsandboxed tool scope
-
-**Current behavior.** Sandbox off still restricts built-in file writes/edits and
-the shell working-directory parameter to the execution root, apart from scratch
-exceptions. The unsandboxed shell body can access other paths. Authorized
-multi-repository or home-configuration work can therefore require switching tools
-to get around an inconsistent capability boundary.
-
-**Evidence.** [WriteFile](../../agent/execenv/local.go#L1661),
-[ensureWritePath/EnsureUnderRoot](../../agent/execenv/local.go#L2885), and shell
-[working-directory validation](../../agent/session_tools_shell.go#L362).
-Existing `TestLocalExecutionEnvironment_WriteFile_OutsideRoot_Rejected`,
-`TestLocalExecutionEnvironment_EditFile_OutsideRoot_Rejected` and
-`TestLocalExecutionEnvironment_ExecCommand_WorkingDirOutsideRoot_Rejected` specify
-the root restriction.
-
-**Decision.** Sandbox off applies no Evener-imposed workspace path restriction
-to file-writing and editing tools or shell working directories. The working
-directory supplies the default location for relative paths; it does not prevent
-authorized work in another directory. Operating-system permissions and the
-user's instructions still apply. Explicit sandbox policies retain their stated
-boundaries. Removing the extra wrong-path guard from the built-in tools is an
-accepted tradeoff for consistent access across tools. Implementation remains
-pending.
-
-**Acceptance.** With sandbox off, an authorized edit in a neighboring repository
-or home-configuration directory and a command using an outside working directory
-succeed through their ordinary tools without substitution. Relative paths still
-resolve against the working directory, and operating-system permission errors
-remain accurate. Explicit confined and read-only policies continue enforcing
-their stated boundaries.
-
 ### T04 Read-only directory symlinks
 
 **Deferred.** Restricted-mode and permission refinements are outside the active
@@ -1253,8 +1229,7 @@ the limitation and does not imply that the unexamined content is absent.
 
 **Deferred.** Approval-system work is outside the active work queue. Everyday use
 is predominantly unsandboxed, so retain the decisions below without scheduling
-their implementation or further approval-design discussion. T03 remains active
-because it removes unintended restrictions from sandbox-off operation.
+their implementation or further approval-design discussion.
 
 **Current behavior.** Sandbox escalation grants one invocation and only supports
 read_file, write_file and edit_file on a root session with an active subscriber.
