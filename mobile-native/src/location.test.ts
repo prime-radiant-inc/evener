@@ -455,6 +455,19 @@ describe("last mobile location", () => {
 		});
 	});
 
+	it("reopens a shell job's detail as its coordinator's session after a relaunch", () => {
+		const params = {
+			hubId: "studio",
+			jobId: "job-1",
+			title: "go test ./agent/...",
+			coordinator: { ref: "local:coord", threadId: "coord", title: "Coordinator" },
+		};
+		expect(locationForRoute({ name: "ShellJob", params }, "studio")).toEqual({
+			hubId: "studio",
+			conversation: { ref: "local:coord", title: "Coordinator" },
+		});
+	});
+
 	it("refuses a document with no session, an empty path, or mixed with another destination", () => {
 		const disk = storage();
 		const repository = new LocationRepository(disk);

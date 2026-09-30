@@ -432,8 +432,7 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 // every wake-cache scan, so the driver, the retry loop, and the escalation
 // collector cannot disagree about the same delegate.
 func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID string) bool {
-	aggregate := c.durable[delegateID]
-	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
+	if !c.idleRestorableLocked(delegateID) {
 		return false
 	}
 	if _, parked := c.attentionParked[delegateID]; parked {
@@ -453,7 +452,8 @@ func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID 
 // hasRunnableDelegateAttention reports whether the root driver has actionable
 // attention work: a wake it may commit, or attention it must escalate because
 // a permanently closed ancestor fences the wake off forever. Attention parked
-// under a transient ancestor stop is pending, not runnable.
+// under a transient ancestor stop, or under an ancestor chain its restore
+// cannot make resident yet, is pending, not runnable.
 func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 	if c == nil {
 		return false
@@ -464,8 +464,7 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		blocked, closedAncestorID := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID)
-		if !blocked || closedAncestorID != "" {
+		if ready, closedAncestorID := c.attentionWakeAncestorGateLocked(delegateID); ready || closedAncestorID != "" {
 			return true
 		}
 	}
@@ -512,13 +511,43 @@ func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, 
 	return delegateID, attentionID, true
 }
 
+// attentionWakeAncestorGateLocked is the ancestor side of an attention wake,
+// shared by every wake-cache scan so the runnable check, selection, and
+// escalation cannot disagree. ready means no ancestor fences the wake and the
+// cold restore can make the owner chain resident; closedAncestorID names a
+// permanently closed ancestor, whose fence escalates rather than waits.
+func (c *delegateTreeController) attentionWakeAncestorGateLocked(delegateID string) (ready bool, closedAncestorID string) {
+	parentID := c.durable[delegateID].Descriptor.ParentDelegateID
+	blocked, closedAncestorID := c.ancestorFenceLocked(parentID)
+	return !blocked && c.ancestorChainRestorableLocked(parentID), closedAncestorID
+}
+
+// ancestorChainRestorableLocked reports whether a child's cold restore can
+// make its owner chain resident: walking up from parentID, each ancestor is
+// either resident already or idle and restorable, the two conditions the
+// restore itself applies (restoreColdDelegateOwnerRuntime). A running
+// ancestor with no resident runtime (after a restart, until its generation
+// is recovered) fails every restore beneath it target_busy, so its
+// descendants wait rather than being selected pass after pass.
+func (c *delegateTreeController) ancestorChainRestorableLocked(parentID string) bool {
+	for ancestorID := parentID; ancestorID != ""; ancestorID = c.durable[ancestorID].Descriptor.ParentDelegateID {
+		if c.residentDelegateRuntimeLocked(ancestorID) != nil {
+			return true
+		}
+		if !c.idleRestorableLocked(ancestorID) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, string, bool) {
 	delegateIDs := make([]string, 0, len(c.attentionWakeIDs))
 	for delegateID, ids := range c.attentionWakeIDs {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		if blocked, _ := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID); blocked {
+		if ready, _ := c.attentionWakeAncestorGateLocked(delegateID); !ready {
 			continue
 		}
 		delegateIDs = append(delegateIDs, delegateID)
@@ -567,11 +596,10 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		aggregate := c.durable[delegateID]
-		blocked, closedAncestorID := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID)
-		if !blocked || closedAncestorID == "" {
+		if _, closedAncestorID := c.attentionWakeAncestorGateLocked(delegateID); closedAncestorID == "" {
 			continue
 		}
+		aggregate := c.durable[delegateID]
 		plans = append(plans, c.escalationPlanLocked(delegateID, aggregate, ids))
 	}
 	sort.Slice(plans, func(i, j int) bool { return plans[i].delegateID < plans[j].delegateID })
@@ -697,10 +725,10 @@ func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (d
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	aggregate := c.durable[delegateID]
-	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
+	if !c.idleRestorableLocked(delegateID) {
 		return delegateStartCommit{}, "", errDelegateTargetBusy
 	}
+	aggregate := c.durable[delegateID]
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
 	worktreePath := ""
 	if descriptor.Isolation == "worktree" {
@@ -721,12 +749,26 @@ func (c *delegateTreeController) residentDelegateRuntime(delegateID string) *Ses
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.residentDelegateRuntimeLocked(delegateID)
+}
+
+// residentDelegateRuntimeLocked is delegateID's live runtime when it is
+// resident and neither closed nor stopping, else nil.
+func (c *delegateTreeController) residentDelegateRuntimeLocked(delegateID string) *Session {
 	aggregate := c.durable[delegateID]
 	live := c.live[delegateID]
 	if aggregate == nil || aggregate.Phase == delegatestore.PhaseClosed || aggregate.PendingStopSeq != 0 || live == nil {
 		return nil
 	}
 	return live.runtime
+}
+
+// idleRestorableLocked reports whether delegateID can be restored cold for
+// an attention wake: idle, resumable, not stopping, not being reclaimed, on
+// a controller that is not closing.
+func (c *delegateTreeController) idleRestorableLocked(delegateID string) bool {
+	aggregate := c.durable[delegateID]
+	return !c.closing && aggregate != nil && aggregate.Phase == delegatestore.PhaseIdle && aggregate.Resumable && aggregate.PendingStopSeq == 0 && !c.reclamationCoversLocked(delegateID)
 }
 
 // AttachIdleRuntime installs only the exact lazily restored runtime identity.
