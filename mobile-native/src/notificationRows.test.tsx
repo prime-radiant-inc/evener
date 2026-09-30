@@ -150,10 +150,44 @@ describe("delegate and job notifications", () => {
 		expect(renderedText(tree)).toContain("go test exited 1 three times");
 	});
 
+	// A legacy attribute-shaped frame (recorded before packets) carries its
+	// whole report in the body's excerpt and a raw reason code in the reason
+	// attr: the line shows the report, never the code. Packet frames have an
+	// empty excerpt, so the redesign's reason fallback still reads for them.
+	it("shows a legacy failed frame's report, not its reason code", () => {
+		const { tree } = showItem({
+			...notificationWireItem("delegate-failed-unnamed"),
+			id: "item_legacy_failed",
+			text: `<delegate-notification delegate_id="dlg_2" name="Split the retry loop" status="failed" reason="exit_nonzero">
+The delegate failed.
+excerpt:
+The retry loop splits reads from writes; the flaky test needs a fixed seed.
+</delegate-notification>`,
+		});
+		expect(renderedText(tree)).toContain("Split the retry loop failed");
+		expect(renderedText(tree)).toContain("The retry loop splits reads from writes; the flaky test needs a fixed seed.");
+		expect(renderedText(tree)).not.toContain("exit_nonzero");
+	});
+
+	// A legacy failed frame with nothing beneath the headline says nothing:
+	// its reason attr is a raw producer code (exit_nonzero), never display
+	// prose - only a packet frame's `ending` earns the detail seat.
+	it("never shows a legacy failed frame's raw reason code", () => {
+		const { tree } = showItem({
+			...notificationWireItem("delegate-failed-unnamed"),
+			id: "item_legacy_code_only",
+			text: `<delegate-notification delegate_id="dlg_2" name="Split the retry loop" status="failed" reason="exit_nonzero"></delegate-notification>`,
+		});
+		expect(renderedText(tree)).toContain("Split the retry loop failed");
+		expect(renderedText(tree)).not.toContain("exit_nonzero");
+	});
+
 	it("says a subagent the user stopped was stopped", () => {
 		const { tree } = show("delegate-stopped");
 		expect(renderedText(tree)).toContain("Check drain ordering stopped");
-		expect(renderedText(tree)).toContain("Stopped by the user.");
+		// The stop stub never renders as a report (the delegate redesign): the
+		// headline says the stop.
+		expect(renderedText(tree)).not.toContain("Stopped by the user.");
 	});
 
 	it("reads a parent's stop of a run that left its own packet as stopped", () => {
@@ -163,7 +197,12 @@ describe("delegate and job notifications", () => {
 	it("reads a parent's stop as stopped, not failed", () => {
 		const { tree } = show("delegate-stopped-by-parent");
 		expect(textNode(tree, "Tail the hub log stopped")?.props.style).toMatchObject({ color: INK_LOW });
-		expect(renderedText(tree)).toContain("stopped by parent");
+		// The bare stop packet's stub phrase is machinery, not a report: the
+		// headline carries the stop and the stub never renders.
+		expect(renderedText(tree)).not.toContain("stopped by parent");
+		// The humanized ending says who stopped it - the hub's static head
+		// shows the same words, and the raw stub stays retired.
+		expect(renderedText(tree)).toContain("stopped by its coordinator");
 	});
 
 	it.each([
