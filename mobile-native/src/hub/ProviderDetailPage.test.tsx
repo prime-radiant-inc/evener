@@ -37,10 +37,7 @@ function mount(published: ProviderDetailSlot, route = { hubId: "hub-1", name: "w
 	const page = (value: ProviderDetailSlot, params = route) => (
 		<ProvidersScreenSlotProvider>
 			<Publisher value={value} />
-			<ProviderDetailPage
-				navigation={navigation as never}
-				route={{ key: "detail", name: "ProviderDetail", params }}
-			/>
+			<ProviderDetailPage navigation={navigation as never} route={{ key: "detail", name: "ProviderDetail", params }} />
 		</ProvidersScreenSlotProvider>
 	);
 	const tree = render(page(published));
