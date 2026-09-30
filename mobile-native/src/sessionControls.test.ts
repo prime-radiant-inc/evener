@@ -1,5 +1,5 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse, Thread } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
@@ -398,6 +398,36 @@ describe("conversation-owned session controls", () => {
 		await refresh;
 		if (loadFails) expect(controls.getSnapshot()).toMatchObject({ catalog: null, modelError: "hub unavailable" });
 		else expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3");
+	});
+	// An announcement that arrives while a load is out is not dropped: the load
+	// may have read the list before the hub refreshed it, so the catalog is read
+	// again once the load settles (Jesse, 2026-09-30).
+	it("reads again after a load when an announcement arrived during it", async () => {
+		let reads = 0;
+		const held = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					const read = reads;
+					if (read === 2) await held.promise;
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${read}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const load = controls.loadModels();
+		await controls.refreshModels();
+		expect(reads).toBe(2);
+		held.resolve();
+		await load;
+		await vi.waitFor(() => expect(reads).toBe(3));
+		await vi.waitFor(() => expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3"));
 	});
 	it("refreshes nothing before a catalog is loaded", async () => {
 		let reads = 0;
