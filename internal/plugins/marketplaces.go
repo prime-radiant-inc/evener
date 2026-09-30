@@ -222,7 +222,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	cat, err := ParseCatalog(root)
 	if err != nil {
 		_ = marketplaceRemoveAll(staging)
-		return MarketplaceRef{}, fmt.Errorf("reading marketplace.json: %w", err)
+		return MarketplaceRef{}, m.storeFileFailed(err, "reading marketplace.json")
 	}
 	if name == "" {
 		name = cat.Name
