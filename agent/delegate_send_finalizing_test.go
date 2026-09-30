@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -75,7 +76,7 @@ func holdDelegateFinalizing(t *testing.T) finalizingDelegate {
 	// before the session closes.
 	t.Cleanup(s.Close)
 	t.Cleanup(release)
-	create := executeDelegateTool(s, "call_create", "delegate", map[string]any{"prompt": "Find the race.", "name": "settle-race"})
+	create := executeDelegateTool(context.Background(), s, "call_create", "delegate", map[string]any{"prompt": "Find the race.", "name": "settle-race"})
 	var receipt stableDelegateCreateResult
 	if err := json.Unmarshal([]byte(create.Output), &receipt); err != nil || receipt.DelegateID == "" {
 		t.Fatalf("delegate receipt %q names no delegate: %v", create.Output, err)
@@ -93,14 +94,24 @@ func holdDelegateFinalizing(t *testing.T) finalizingDelegate {
 }
 
 // executeDelegateTool runs one tool call as a session's tool round does, with
-// the call's id in its context. It never fails the test itself, so a test may
+// the call's id added to ctx. It never fails the test itself, so a test may
 // call it off its own goroutine.
-func executeDelegateTool(s *Session, id, name string, args map[string]any) tool.ExecResult {
+func executeDelegateTool(ctx context.Context, s *Session, id, name string, args map[string]any) tool.ExecResult {
 	// The arguments are plain maps of strings and numbers, which always
 	// marshal.
 	raw, _ := json.Marshal(args)
-	ctx := context.WithValue(context.Background(), ctxToolCallID, id)
+	ctx = context.WithValue(ctx, ctxToolCallID, id)
 	return s.reg.ExecuteCall(ctx, s.currentEnv(), llm.ToolCallData{ID: id, Name: name, Arguments: raw})
+}
+
+// assertDelegateUnchanged fails unless delegateID is still at before's
+// generation with before's latest outcome.
+func assertDelegateUnchanged(t *testing.T, c *delegateTreeController, delegateID string, before delegatestore.Aggregate, why string) {
+	t.Helper()
+	after := delegateAggregateSnapshot(t, c, delegateID)
+	if after.Generation != before.Generation || !reflect.DeepEqual(after.LatestOutcome, before.LatestOutcome) {
+		t.Fatalf("%s changed the delegate: generation %d → %d, outcome %+v → %+v", why, before.Generation, after.Generation, before.LatestOutcome, after.LatestOutcome)
+	}
 }
 
 // sendTaken reports whether a delegate_send result took the send: it started
@@ -129,7 +140,9 @@ func TestDelegateSendAtTheResultIsTaken(t *testing.T) {
 			args["max_wait_ms"] = wait
 		}
 		result := make(chan tool.ExecResult, 1)
-		go func() { result <- executeDelegateTool(held.s, "call_send", "delegate_send", args) }()
+		go func() {
+			result <- executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", args)
+		}()
 		select {
 		case <-waiting:
 			held.release()
@@ -171,14 +184,11 @@ func TestDelegateSendThatOutwaitsTheReleaseIsARefusal(t *testing.T) {
 		if wait > 0 {
 			args["max_wait_ms"] = wait
 		}
-		res := executeDelegateTool(held.s, "call_send", "delegate_send", args)
+		res := executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", args)
 		if !res.IsError || !strings.Contains(res.Output, "target_busy") {
 			t.Fatalf("max_wait_ms %d: a send past the ceiling = %q (error %v), want a target_busy refusal", wait, res.Output, res.IsError)
 		}
-		after := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID)
-		if after.Generation != before.Generation || !reflect.DeepEqual(after.LatestOutcome, before.LatestOutcome) {
-			t.Fatalf("max_wait_ms %d: the refused send changed the delegate: generation %d → %d, outcome %+v → %+v", wait, before.Generation, after.Generation, before.LatestOutcome, after.LatestOutcome)
-		}
+		assertDelegateUnchanged(t, held.s.delegateController, held.delegateID, before, fmt.Sprintf("max_wait_ms %d: the refused send", wait))
 		held.release()
 	}
 }
@@ -210,14 +220,11 @@ func TestDelegateSendToABusyChildTheControllerCantSeeIsARefusal(t *testing.T) {
 		held.child.mu.Unlock()
 	}()
 	before := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID)
-	res := executeDelegateTool(held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+	res := executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
 	if !res.IsError || !strings.Contains(res.Output, "target_busy") {
 		t.Fatalf("a send to a busy child = %q (error %v), want a target_busy refusal", res.Output, res.IsError)
 	}
-	after := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID)
-	if after.Generation != before.Generation || !reflect.DeepEqual(after.LatestOutcome, before.LatestOutcome) {
-		t.Fatalf("the refused send changed the delegate: generation %d → %d, outcome %+v → %+v", before.Generation, after.Generation, before.LatestOutcome, after.LatestOutcome)
-	}
+	assertDelegateUnchanged(t, held.s.delegateController, held.delegateID, before, "the refused send")
 }
 
 // finishedDelegateStillFinalizing finishes a delegate's generation the way a
@@ -400,21 +407,15 @@ func TestDelegateSendWaitingForTheReleaseStopsWithItsContext(t *testing.T) {
 	t.Parallel()
 	held := holdDelegateFinalizing(t)
 	defer held.release()
-	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), ctxToolCallID, "call_send"))
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	updateSessionTestConfig(held.s, func(cfg *testConfig) { cfg.delegateSendAwaitingFinalization = cancel })
 	before := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID)
-	raw, err := json.Marshal(map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res := held.s.reg.ExecuteCall(ctx, held.s.currentEnv(), llm.ToolCallData{ID: "call_send", Name: "delegate_send", Arguments: raw})
+	res := executeDelegateTool(ctx, held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
 	if !res.IsError || !strings.Contains(res.Output, context.Canceled.Error()) {
 		t.Fatalf("a cancelled waiting send = %q (error %v), want the cancellation", res.Output, res.IsError)
 	}
-	if after := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID); after.Generation != before.Generation || !reflect.DeepEqual(after.LatestOutcome, before.LatestOutcome) {
-		t.Fatalf("the cancelled send changed the delegate: generation %d → %d, outcome %+v → %+v", before.Generation, after.Generation, before.LatestOutcome, after.LatestOutcome)
-	}
+	assertDelegateUnchanged(t, held.s.delegateController, held.delegateID, before, "the cancelled send")
 }
 
 // A client that sends as soon as it sees the delegate go idle
@@ -430,7 +431,7 @@ func TestDelegateSendOnTheIdleEventIsTaken(t *testing.T) {
 	go func() {
 		for ev := range stream {
 			if data, ok := ev.Data.(events.DelegateUpdatedData); ok && data.DelegateID == held.delegateID && data.Lifecycle == string(delegateLifecycleIdle) {
-				result <- executeDelegateTool(held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+				result <- executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
 				return
 			}
 		}
