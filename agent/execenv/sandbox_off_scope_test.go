@@ -146,6 +146,10 @@ func TestSandboxOffCommandWorkingDirectory(t *testing.T) {
 
 func TestConfinedCommandWorkingDirectory(t *testing.T) {
 	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, policy := range []sandbox.ResolvedPolicy{
 		{Mode: sandbox.ModeReadOnly}, {Mode: sandbox.ModeWorkspaceWrite}, {Mode: sandbox.ModeRestricted}, {Mode: sandbox.ModeOff, WriteBlocked: true},
 	} {
@@ -157,21 +161,29 @@ func TestConfinedCommandWorkingDirectory(t *testing.T) {
 			env := NewLocalExecutionEnvironment(t.TempDir())
 			env.Sandbox = &policy
 			outside := t.TempDir()
-			if _, err := env.resolveCommandWorkingDir(outside); err == nil {
+			boundaryErr := env.EnsureCommandWorkingDirectory(outside)
+			if boundaryErr == nil {
 				t.Fatal("confined cwd outside root was accepted")
 			}
-			if _, err := env.ExecCommand(context.Background(), "exit 0", 1000, outside, nil); err == nil {
-				t.Fatal("confined exec accepted external cwd")
+			assertBoundaryError := func(err error) {
+				t.Helper()
+				if err == nil || !strings.HasSuffix(err.Error(), boundaryErr.Error()) {
+					t.Fatalf("cwd error = %v; want containment error %v", err, boundaryErr)
+				}
 			}
-			if _, err := env.ExecArgv(context.Background(), "unused", nil, 1000, outside, nil); err == nil {
-				t.Fatal("confined argv accepted external cwd")
+			if res, err := env.ExecArgv(context.Background(), executable, []string{"-test.run=^$"}, 5000, env.RootDir, nil); err != nil || res.ExitCode != 0 {
+				t.Fatalf("allowed argv = %+v, %v", res, err)
 			}
-			if _, err := env.StreamCommand(context.Background(), "exit 0", outside, nil, &bytes.Buffer{}); err == nil {
-				t.Fatal("confined stream accepted external cwd")
-			}
-			if _, err := env.DetachCommand(context.Background(), "exit 0", outside, nil); err == nil {
-				t.Fatal("confined detach accepted external cwd")
-			}
+			_, err := env.resolveCommandWorkingDir(outside)
+			assertBoundaryError(err)
+			_, err = env.ExecCommand(context.Background(), "exit 0", 1000, outside, nil)
+			assertBoundaryError(err)
+			_, err = env.ExecArgv(context.Background(), executable, []string{"-test.run=^$"}, 5000, outside, nil)
+			assertBoundaryError(err)
+			_, err = env.StreamCommand(context.Background(), "exit 0", outside, nil, &bytes.Buffer{})
+			assertBoundaryError(err)
+			_, err = env.DetachCommand(context.Background(), "exit 0", outside, nil)
+			assertBoundaryError(err)
 			if got, err := env.resolveCommandWorkingDir(""); err != nil || got != env.RootDir {
 				t.Fatalf("default cwd = %q, %v", got, err)
 			}
