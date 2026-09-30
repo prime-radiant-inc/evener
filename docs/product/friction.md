@@ -55,7 +55,7 @@ and should not be presented as reproduced production incidents.
 | [H03](#h03-host-journal-failure-scope) | High | Incomplete host-journal quarantine prevents unrelated local work | S06, S07 |
 | [H04](#h04-retaining-explicit-connect-intent) | High | A transient first Connect failure has no continuing retry owner | S02, S03, S07 |
 | [H05](#h05-connection-versus-build-synchronization) | High | Build synchronization can block an otherwise compatible remote host | S07, S20 |
-| [H06](#h06-provider-file-repair-discovery) | Medium | Fixing provider configuration on disk leaves the hub's cached failure | S06, S15 |
+| [H06](#h06-provider-file-repair-discovery) | Medium | An invalid provider edit hides retained working configuration from new launches | S06, S15 |
 | [H07](#h07-proven-no-op-teardown-remnants) | Medium | Already-harmless teardown remnants still require manual recovery | S07 |
 | [H08](#h08-oauth-refresh-across-processes) | Medium | Shared rotating credentials can race and provoke another sign-in | S08, S15 |
 | [H09](#h09-issued-credentials-awaiting-persistence) | Medium | A local save failure discards successfully issued credentials | S06, S15 |
@@ -778,16 +778,23 @@ to another build succeeds.
 
 ### H06 Provider-file repair discovery
 
-**Current behavior.** The hub caches a providers.toml load error. Repairing the
-file externally does not clear that error until a separate reload path runs.
-Refreshing model choices need not reload the file, so the user's repair can
-appear ineffective.
+**Current behavior.** The hub's notice watcher detects external providers.toml
+edits and retries failed loads. A valid repair clears the error and invalidates
+client settings and model listings automatically. Invalid edits retain the
+previous usable hub registry and preserve the edited bytes. Child launches and
+launch-model discovery still disable the user layer whenever the source file
+cannot load, so they cannot use the explicit providers retained by the hub.
+The watcher also repeats a reload and client invalidation after an in-app write.
 
-**Evidence.** [ProviderRegistry.Reload](../../cmd/evener-hub/internal/hubcore/registry.go#L121)
-records the failure; [WritesRefused](../../cmd/evener-hub/internal/hubcore/registry.go#L689)
-reads it. [RefreshModels](../../cmd/evener-hub/app_instances.go#L2227) fetches into
-the held registry without reloading configuration. Startup, selected auth paths
-and successful writes provide other reload triggers.
+**Evidence.** [refreshProviderFile](../../cmd/evener-hub/app_provider_reload.go#L14)
+owns file observation and retries;
+[watchRead](../../cmd/evener-hub/app_notices.go#L258) invalidates clients when the
+registry or diagnostic changes.
+[ProviderRegistry.Reload](../../cmd/evener-hub/internal/hubcore/registry.go#L121)
+retains the previous registry on failure. The remaining launch gap is in
+[childNoUserLayer](../../cmd/evener-hub/spawn.go#L89), which excludes the user
+layer when [WritesRefused](../../cmd/evener-hub/internal/hubcore/registry.go#L695)
+reports a load error. Instance writes do not update the watcher's file signature.
 
 **Decision.** Detect provider-configuration changes and automatically adopt a
 valid repair. Clear the stale load error and update open settings and launch
@@ -796,7 +803,9 @@ edit is invalid, keep usable previous configuration active where available,
 preserve the edited file and show the specific problem. Make clear when running
 configuration differs from an invalid edit, then converge as soon as the
 replacement validates. Failed loads retain a recovery owner rather than
-remaining cached indefinitely. Implementation remains pending.
+remaining cached indefinitely. Retained configuration must also remain usable
+by child launches and model discovery. Avoid redundant invalidations after
+in-app writes. These remaining gaps keep the case open.
 
 **Acceptance.** Start with malformed provider configuration, repair it on disk,
 and keep the same settings/launch surface open. The repaired instances appear
