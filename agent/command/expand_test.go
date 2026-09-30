@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 )
@@ -280,6 +281,29 @@ func TestExpand_AtFileBounded(t *testing.T) {
 	}
 	if !strings.Contains(got, "truncated") {
 		t.Error("expected a truncation marker")
+	}
+}
+
+// TestExpand_AtFileBoundNeverSplitsRune pins that the maxInlineBytes bound
+// lands on a rune boundary. A raw byte cut would splice invalid UTF-8 into the
+// prompt: "a" shifts the rune grid so that maxInlineBytes (a multiple of 3)
+// falls inside a 3-byte rune.
+func TestExpand_AtFileBoundNeverSplitsRune(t *testing.T) {
+	dir := t.TempDir()
+	content := "a" + strings.Repeat("€", maxInlineBytes/3+100)
+	if len(content) <= maxInlineBytes {
+		t.Fatalf("fixture is %d bytes, must exceed maxInlineBytes=%d", len(content), maxInlineBytes)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wide.txt"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	got, err := Expand(context.Background(), "@wide.txt", "", env)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("expanded prompt is not valid UTF-8: the bound split a rune")
 	}
 }
 

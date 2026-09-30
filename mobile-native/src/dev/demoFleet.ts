@@ -31,7 +31,7 @@ import type {
 	SearchResponse,
 	Source,
 } from "@evener/appwire-client";
-import { type DemoCoordinator, type DemoSubagent, demoActivityTree } from "./demoSubagents.js";
+import { type DemoCoordinator, type DemoShellJob, type DemoSubagent, demoActivityTree } from "./demoSubagents.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireV2 response must carry the exact same id:
@@ -190,6 +190,7 @@ interface RawSession {
 	subs?: { run: number; fail: number; done: number }; // generic subagent counts (data.js genericSubs)
 	children?: RawSubagent[]; // explicitly named subagents (data.js's `subagents` map)
 	model?: string; // data.js's session model, for a coordinator's subagent tree
+	jobs?: DemoShellJob[]; // its own finished shell jobs, in its Activity list
 }
 
 // data.js's swarm for s-pr2138: two named failures plus 31 running, 3 waiting
@@ -494,6 +495,7 @@ const SESSIONS: RawSession[] = [
 		ago: 5,
 		category: "release",
 		children: PR2138_CHILDREN,
+		jobs: [{ id: "pr2138-build", command: "go build ./...", ago: 12 * M, elapsed: 40 }],
 		activity: "Waiting on 31 subagents",
 	},
 	{
@@ -1160,7 +1162,8 @@ function coordinatorFor(sessions: readonly RawSession[], ref: string): DemoCoord
 		const host = hostId(raw.host);
 		const subagentRef = (id: string) => hostSessionRef(host, id);
 		const model = raw.model ?? "";
-		if (sessionRef(raw) === ref) return { ref, title: raw.title, model, subagents: rawChildren(raw), subagentRef };
+		if (sessionRef(raw) === ref)
+			return { ref, title: raw.title, model, subagents: rawChildren(raw), jobs: raw.jobs, subagentRef };
 		const sub = findSubagent(rawChildren(raw), ref, subagentRef);
 		if (sub) return { ref, title: sub.title, model: sub.model ?? model, subagents: sub.children ?? [], subagentRef };
 	}

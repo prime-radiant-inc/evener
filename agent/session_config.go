@@ -554,6 +554,12 @@ type testConfig struct {
 	// goroutine. Nil in production.
 	afterDelegateAttentionRestore func(delegateID string, restored *subagent)
 
+	// delegateAttentionGiveUpAfter overrides how many consecutive counted
+	// restore failures the attention drive tolerates before it hands a
+	// delegate's attention to the root (maxDelegateAttentionRestoreFailures).
+	// Zero keeps the default.
+	delegateAttentionGiveUpAfter int
+
 	// namerClient, when non-nil, is the llm.Client the background session namer
 	// uses instead of the session's own. The namer runs on a detached goroutine,
 	// so routing it through a separate scripted client keeps its draw off the

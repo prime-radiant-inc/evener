@@ -220,12 +220,6 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 	}
 }
 
-// TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce drives
-// the hot path end to end: a resident root supervises an idle grandchild whose
-// pending attention sits under a parent delegate that closed permanently. The
-// wake must be refused and the exact original message transferred to the root
-// under its original attention ID, with the source durably resolved -- replays
-// append nothing new.
 // fencedGrandchildAttention is a resident root supervising an idle grandchild
 // delegate whose transcript holds one undelivered attention message, under
 // the fixture's child delegate. Closing the child's resumability fences the
@@ -321,6 +315,12 @@ func newFencedGrandchildAttention(t *testing.T) fencedGrandchildAttention {
 	}
 }
 
+// TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce drives
+// the hot path end to end: a resident root supervises an idle grandchild whose
+// pending attention sits under a parent delegate that closed permanently. The
+// wake must be refused and the exact original message transferred to the root
+// under its original attention ID, with the source durably resolved -- replays
+// append nothing new.
 func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	fixture, root := fenced.fixture, fenced.root
