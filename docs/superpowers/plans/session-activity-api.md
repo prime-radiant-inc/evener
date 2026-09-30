@@ -14,6 +14,7 @@
 
 - Preserve stable delegate identities and logical receiver ownership of watches.
 - Navigation stays roots-only and does not enumerate descendant activity.
+- Remove shipped navigation detail fields through a coordinated representation version 3 cutover, with compact counts and both clients updated together.
 - No permission, approval, diagnostic-authority, provider, or runtime-restart changes.
 - Default tests are deterministic; no live provider calls or credential changes.
 - No new compatibility fallback or dual-read path for new consumers.
@@ -140,6 +141,7 @@ event type/payload after its first commit.
 - [ ] Add tests for loading versus known-empty, retained data through disconnect, automatic pagination recovery, and scope switching during a request. Use the shared owner rather than a fabricated navigation tree.
 - [ ] Run focused sidebar/status/focus tests, capture intended failures, and migrate the views to typed domain data. Preserve row actions and embedded Tasks behavior.
 - [ ] Remove the unmerged navigation subagents API, child-derived attention count, and obsolete fixtures. Inventory all consumers of navigation jobs/watch arrays before removing them; migrate a dependent view to the shared owner rather than silently dropping behavior. Keep root-only tree/attention tests intact.
+- [ ] Cut navigation over to representation version 3: advertised read versions, validation, shared client requests/codec, browser fixtures and native callers must agree. Keep compact running-job/watch counts and a bounded command summary. Do not add v2 fallback emission or change the AppWire connection version for this navigation-only shape change.
 - [ ] Update the browser layout guard to exercise Tasks in the activity sidebar and retain its actual overflow/collapse assertions. Run targeted navigation tests, `make test-web`, and the affected real-browser guard.
 - [ ] Commit, with source/behavior evidence that global navigation no longer carries activity detail or builds per-session child resources.
 

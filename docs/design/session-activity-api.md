@@ -169,11 +169,27 @@ Do not allocate or sort a full historical recursive activity tree to answer a
 single collection page. Derived indexes are disposable and read-only with
 respect to durable authorities.
 
-Request cancellation reaches session resolution, disk scans, and projection.
-No request performs provider calls or starts an ended session. Existing public
-APIs keep their existing behavior; no compatibility fallback or dual-read path
-is added to new consumers. The new, unmerged navigation `subagents` resource is
-retired once its consumers move.
+Request contexts reach session resolution, disk scans, and projection. Caller
+cancellation closes an owned local daemon read connection. The existing shared
+remote connection has no per-request wire cancellation: the caller stops waiting,
+while an already dispatched remote read may finish its bounded work. Keep the
+shared connection and its other subscriptions healthy; no new cancellation
+protocol or connection teardown workaround is introduced.
+
+No request performs provider calls or starts an ended session. The existing
+`evener/jobs/list` contract keeps its behavior; no compatibility fallback or
+dual-read path is added to new consumers. The new, unmerged navigation
+`subagents` resource is retired once its consumers move.
+
+Navigation switches to representation version 3 when its activity detail fields
+are removed. Update the hub's advertised read versions, request validation,
+shared client, browser and native requests together; do not silently change the
+meaning of version 2. This cutover uses navigation's representation version,
+independently of the AppWire connection protocol. The compact navigation summary
+retains running-job and watch counts and a bounded running-command description
+needed by the rail and native board. Job rows, completed-job rows, watch rows and
+their omitted-row counters come from the session collections. No parallel v2
+emission path is added. Navigation clients must update for the version 3 shape.
 
 ## Changes and client recovery
 
