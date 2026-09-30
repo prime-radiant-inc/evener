@@ -430,7 +430,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_runtime.go", function: "(delegateRuntime).failAdoptedStart", kind: "lifecycle method", symbol: "FailCommittedStart"}:                                          1,
 	{filename: "delegate_runtime.go", function: "(delegateRuntime).failStableSendStartAfterDispatch", kind: "lifecycle method", symbol: "FailCommittedRestart"}:                        1,
 	{filename: "delegate_runtime.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "Steer"}:                                                                   1,
-	{filename: "delegate_runtime.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "ReserveStart"}:                                                            2,
+	{filename: "delegate_runtime.go", function: "(*Session).reserveStartAfterFinalization", kind: "lifecycle method", symbol: "ReserveStart"}:                                          2,
 	{filename: "delegate_runtime.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "RegisterInlineWaiter"}:                                                    1,
 	{filename: "delegate_runtime.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "AbortStart"}:                                                              3,
 	{filename: "delegate_runtime.go", function: "(delegateRuntime).send", kind: "lifecycle method", symbol: "CommitStart"}:                                                             1,

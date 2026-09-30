@@ -75,7 +75,7 @@ func holdDelegateFinalizing(t *testing.T) finalizingDelegate {
 	// before the session closes.
 	t.Cleanup(s.Close)
 	t.Cleanup(release)
-	create := executeDelegateTool(t, s, "call_create", "delegate", map[string]any{"prompt": "Find the race.", "name": "settle-race"})
+	create := executeDelegateTool(s, "call_create", "delegate", map[string]any{"prompt": "Find the race.", "name": "settle-race"})
 	var receipt stableDelegateCreateResult
 	if err := json.Unmarshal([]byte(create.Output), &receipt); err != nil || receipt.DelegateID == "" {
 		t.Fatalf("delegate receipt %q names no delegate: %v", create.Output, err)
@@ -93,15 +93,20 @@ func holdDelegateFinalizing(t *testing.T) finalizingDelegate {
 }
 
 // executeDelegateTool runs one tool call as a session's tool round does, with
-// the call's id in its context.
-func executeDelegateTool(t *testing.T, s *Session, id, name string, args map[string]any) tool.ExecResult {
-	t.Helper()
-	raw, err := json.Marshal(args)
-	if err != nil {
-		t.Fatalf("%s arguments: %v", id, err)
-	}
+// the call's id in its context. It never fails the test itself, so a test may
+// call it off its own goroutine.
+func executeDelegateTool(s *Session, id, name string, args map[string]any) tool.ExecResult {
+	// The arguments are plain maps of strings and numbers, which always
+	// marshal.
+	raw, _ := json.Marshal(args)
 	ctx := context.WithValue(context.Background(), ctxToolCallID, id)
 	return s.reg.ExecuteCall(ctx, s.currentEnv(), llm.ToolCallData{ID: id, Name: name, Arguments: raw})
+}
+
+// sendTaken reports whether a delegate_send result took the send: it started
+// a generation, or (with a wait) the generation it started completed.
+func sendTaken(res tool.ExecResult) bool {
+	return !res.IsError && (strings.Contains(res.Output, "started") || strings.Contains(res.Output, "completed"))
 }
 
 // A send issued the moment the parent is handed a finished generation's
@@ -124,7 +129,7 @@ func TestDelegateSendAtTheResultIsTaken(t *testing.T) {
 			args["max_wait_ms"] = wait
 		}
 		result := make(chan tool.ExecResult, 1)
-		go func() { result <- executeDelegateTool(t, held.s, "call_send", "delegate_send", args) }()
+		go func() { result <- executeDelegateTool(held.s, "call_send", "delegate_send", args) }()
 		select {
 		case <-waiting:
 			held.release()
@@ -143,7 +148,7 @@ func TestDelegateSendAtTheResultIsTaken(t *testing.T) {
 		case <-time.After(30 * time.Second):
 			t.Fatal("the send never finished after the release")
 		}
-		if res.IsError || !strings.Contains(res.Output, "started") && !strings.Contains(res.Output, "completed") {
+		if !sendTaken(res) {
 			t.Fatalf("max_wait_ms %d: the send at the result = %q (error %v), want it taken", wait, res.Output, res.IsError)
 		}
 		if got := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation; got != before.Generation+1 {
@@ -166,7 +171,7 @@ func TestDelegateSendThatOutwaitsTheReleaseIsARefusal(t *testing.T) {
 		if wait > 0 {
 			args["max_wait_ms"] = wait
 		}
-		res := executeDelegateTool(t, held.s, "call_send", "delegate_send", args)
+		res := executeDelegateTool(held.s, "call_send", "delegate_send", args)
 		if !res.IsError || !strings.Contains(res.Output, "target_busy") {
 			t.Fatalf("max_wait_ms %d: a send past the ceiling = %q (error %v), want a target_busy refusal", wait, res.Output, res.IsError)
 		}
@@ -205,7 +210,7 @@ func TestDelegateSendToABusyChildTheControllerCantSeeIsARefusal(t *testing.T) {
 		held.child.mu.Unlock()
 	}()
 	before := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID)
-	res := executeDelegateTool(t, held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+	res := executeDelegateTool(held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
 	if !res.IsError || !strings.Contains(res.Output, "target_busy") {
 		t.Fatalf("a send to a busy child = %q (error %v), want a target_busy refusal", res.Output, res.IsError)
 	}
@@ -338,13 +343,7 @@ func TestDelegateControllerAUnlaunchedGenerationLeavesTheDelegateStartable(t *te
 func TestDelegateTailReleasesADelegateWhoseAnnouncementFails(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	runtime := newSession(t)
-	// The runtime reports to the harness controller for the test; its own
-	// goes back before it closes (cleanups run last-registered first), or
-	// closing would tear down the harness tree it sits in.
-	own := runtime.delegateController
-	runtime.delegateController = c
-	t.Cleanup(func() { runtime.delegateController = own })
+	runtime := sessionOnHarness(t, c)
 	reservation, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
 	if err != nil {
 		t.Fatalf("ReserveStart: %v", err)
@@ -429,7 +428,7 @@ func TestDelegateSendOnTheIdleEventIsTaken(t *testing.T) {
 	go func() {
 		for ev := range stream {
 			if data, ok := ev.Data.(events.DelegateUpdatedData); ok && data.DelegateID == held.delegateID && data.Lifecycle == string(delegateLifecycleIdle) {
-				result <- executeDelegateTool(t, held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+				result <- executeDelegateTool(held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
 				return
 			}
 		}
@@ -443,8 +442,8 @@ func TestDelegateSendOnTheIdleEventIsTaken(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("no send followed the idle event")
 	}
-	if res.IsError || !strings.Contains(res.Output, "started") {
-		t.Fatalf("the send on the idle event = %q (error %v), want it started", res.Output, res.IsError)
+	if !sendTaken(res) {
+		t.Fatalf("the send on the idle event = %q (error %v), want it taken", res.Output, res.IsError)
 	}
 	if got := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation; got != before.Generation+1 {
 		t.Fatalf("generation after the send = %d, want %d", got, before.Generation+1)
@@ -470,4 +469,103 @@ func TestDelegateControllerReleasesAFinalizationWhoseRuntimeIsReplaced(t *testin
 		t.Fatal("the replaced runtime's finalization was not released")
 	}
 	assertStartAdmitted(t, c, "dlg_target", "once the finalizing runtime was replaced")
+}
+
+// sessionOnHarness is a session whose delegate controller is the harness's,
+// for driving the send's reservation directly. Its own controller goes back
+// before it closes (cleanups run last-registered first), or closing would
+// tear down the harness tree.
+func sessionOnHarness(t *testing.T, c *delegateTreeController) *Session {
+	t.Helper()
+	s := newSession(t)
+	own := s.delegateController
+	s.delegateController = c
+	t.Cleanup(func() { s.delegateController = own })
+	return s
+}
+
+// finishAnotherGeneration runs one more generation of dlg_target on runtime
+// through to FinishGeneration, leaving it finalizing.
+func finishAnotherGeneration(t *testing.T, c *delegateTreeController, runtime *Session) delegateLease {
+	t.Helper()
+	reservation, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
+	if err != nil {
+		t.Fatalf("ReserveStart successor: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart successor: %v", err)
+	}
+	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+		t.Fatalf("AttachRuntime successor: %v", err)
+	}
+	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
+		t.Fatalf("AdmitStartInput successor: %v", err)
+	}
+	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+		t.Fatalf("FinishGeneration successor: %v", err)
+	}
+	return started.lease
+}
+
+// A send that waited out one finalization and finds the delegate finalizing
+// again (another generation finished in the gap) waits again rather than
+// refusing, within the same ceiling.
+func TestDelegateSendWaitsOutAFinalizationThatFollowsTheOneItWaitedFor(t *testing.T) {
+	c, first, runtime := finishedDelegateStillFinalizing(t)
+	s := sessionOnHarness(t, c)
+	var second delegateLease
+	waits := 0
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.delegateSendAwaitingFinalization = func() {
+			waits++
+			switch waits {
+			case 1:
+				// Release the first generation, and let another run and
+				// finish before the send reserves again.
+				if err := c.ReportFinalizationQuiesced(first, runtime); err != nil {
+					t.Errorf("release first: %v", err)
+				}
+				second = finishAnotherGeneration(t, c, runtime)
+			case 2:
+				if err := c.ReportFinalizationQuiesced(second, runtime); err != nil {
+					t.Errorf("release second: %v", err)
+				}
+			}
+		}
+	})
+	reservation, err := s.reserveStartAfterFinalization(context.Background(), rootDelegateActor(c.rootSessionID), "dlg_target")
+	if err != nil {
+		t.Fatalf("reserve after two finalizations: %v (waited %d times)", err, waits)
+	}
+	if err := c.AbortStart(reservation); err != nil {
+		t.Fatalf("AbortStart: %v", err)
+	}
+	if waits != 2 {
+		t.Fatalf("the send waited %d times, want once for each finalization", waits)
+	}
+}
+
+// A release that is ready wins over a cancellation (or ceiling) that is
+// ready at the same moment: the delegate is sendable, so the send reserves.
+func TestDelegateSendTakesAReleaseReadyAlongsideItsCancellation(t *testing.T) {
+	c, lease, runtime := finishedDelegateStillFinalizing(t)
+	s := sessionOnHarness(t, c)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.delegateSendAwaitingFinalization = func() {
+			cancel()
+			if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
+				t.Errorf("release: %v", err)
+			}
+		}
+	})
+	reservation, err := s.reserveStartAfterFinalization(ctx, rootDelegateActor(c.rootSessionID), "dlg_target")
+	if err != nil {
+		t.Fatalf("reserve with the release and the cancellation both ready = %v, want the release taken", err)
+	}
+	if err := c.AbortStart(reservation); err != nil {
+		t.Fatalf("AbortStart: %v", err)
+	}
 }
