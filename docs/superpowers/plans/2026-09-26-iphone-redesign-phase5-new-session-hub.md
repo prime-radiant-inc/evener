@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Starting a session and running the hub move into two native sheets: a New session sheet that sets host, project, model, effort, plugins and access in a few taps (spec 11), and a Hub sheet for hosts, providers, plugins, recipes, display and hubs (spec 12). When the phase ends, no screen asks you to reconnect.
+**Goal:** Starting a session and running the hub move into two native sheets: a New session sheet that sets host, project, model, effort, plugins and access in a few taps (spec 11), and a Hub sheet for hosts, providers, plugins, display and hubs (spec 12). When the phase ends, no screen asks you to reconnect.
 
 **Architecture:**
 - **Two modal sheets, each with its own stack.** The root routes `NewSession` and `Hub` present as iOS page sheets (`presentation: "modal"`). Each hosts a nested native stack, so pickers and detail pages push inside the sheet and Back returns to the form.
-- **Pure cores, table-tested.** The setup rules live in `src/newSession/launchSetup.ts`: recipes, "Same as last time", host changes, and the access and effort labels. The host, provider and hub-update status words live in small pure modules.
+- **Pure cores, table-tested.** The setup rules live in `src/newSession/launchSetup.ts`: host changes and the access and effort labels. The host, provider and hub-update status words live in small pure modules.
 - **The data layer stays.** These keep their logic, and the sheets restyle only what they render:
   - the creation store (`src/newSession.ts`);
   - the credential store and the sign-in flow;
@@ -25,12 +25,12 @@ CocoaPods runs through Bundler 2.7.2 on Ruby 3.3.6.
 **Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`. This phase uses:
 - principle 2 (Calm), the vocabulary (5), and structure and sheets (6);
 - New session (11), the Hub (12), states (14) and first run (15);
-- the visual system (16), data sources (17), and server additions S8, S11, S17 and S18 (18).
+- the visual system (16), data sources (17), and server additions S11, S17 and S18 (18).
 
 Other sources:
 - The roadmap: `docs/superpowers/plans/2026-09-25-iphone-redesign-roadmap.md`.
 - The phase 2 plan (`2026-09-26-iphone-redesign-phase2-board.md` and its part 2): the Board this phase hangs off.
-- The server plan (`2026-09-26-iphone-redesign-server-additions.md`): S8 and S11.
+- The server plan (`2026-09-26-iphone-redesign-server-additions.md`): S11.
 - The prototype's `launch.js` and `hub.js` (`docs/design/mobile/redesign/prototype/`): copy the spec leaves out. The spec wins where they differ.
 
 ## Global Constraints
@@ -38,7 +38,6 @@ Other sources:
 - **Copy is the spec's, verbatim.** Where the spec is silent, the copy is the prototype's.
   - New session:
     - header: "Cancel", "New session", "Start"; the prompt placeholder "What should the agent do?";
-    - chips "Same as last time", "Custom" and "+ Save";
     - rows "Host", "Project", "Branch", "Model" (second line "via <provider>"), "Effort" (second line "How long it thinks before acting"), "Plugins" ("10 of 14"), "Access" and "More options";
     - the access levels "Full access", "Workspace write", "Read-only" and "Restricted";
     - "Browse folders on <host>…" and "New folder";
@@ -68,7 +67,7 @@ Other sources:
   - Row glyphs are bare SF Symbols in `inkMid`, never colored tiles (spec 12).
 - **SF Symbols** through `SymbolView` from `expo-symbols`:
   - from spec 16.5: `server.rack` (host), `folder` (project), `arrow.triangle.branch` (branch), `cpu` (model), `puzzlepiece.extension` (plugins), `lock.shield` (access), `point.3.connected.trianglepath.dotted` (hubs) and `square.and.pencil` (New session);
-  - chosen here where the spec names none: `key` (providers), `list.bullet.rectangle` (recipes), `textformat.size` (display), `info.circle` (about and a hub's details), `qrcode.viewfinder` (scan), `doc.on.clipboard` (paste), `checkmark`, `chevron.right`, `eye` (vision) and `wrench.and.screwdriver` (tools).
+  - chosen here where the spec names none: `key` (providers), `textformat.size` (display), `info.circle` (about and a hub's details), `qrcode.viewfinder` (scan), `doc.on.clipboard` (paste), `checkmark`, `chevron.right`, `eye` (vision) and `wrench.and.screwdriver` (tools).
   - A name `expo-symbols`' `SFSymbol` type rejects fails `npm run check`; pick a listed neighbor rather than casting.
 - **Type:**
   - SF Pro for everything you operate.
@@ -84,7 +83,7 @@ Other sources:
   - Existing storage keys don't change.
   - New kv-store keys:
     - `evener.native.display` (device-wide, never cleared with a hub);
-    - `evener.native.recipes.${hubId}` and `evener.native.launch-history.${hubId}`, both removed by `ConnectionProvider.removeHub`.
+    - `evener.native.launch-history.${hubId}`, removed by `ConnectionProvider.removeHub`.
   - The creation draft gains one optional field, `source` (ruling 28).
 - **Tests** meet the hub at the request boundary: a fake `request`/`onNotification` client, or `scriptedClient` from `src/renderNative.testkit.tsx`.
   - Screens render through `render` and `renderedText` from the same kit, with `react-native` mocked by `nativeModuleMock()` and `expo-symbols` by `{ SymbolView: "SymbolView" }`.
@@ -177,16 +176,13 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - `sandboxNet` shows as "Network" only when a sandbox mode is set, since it has no effect otherwise (`sandbox_net`, `cmd/evener-hub/internal/launchconfig/schema.go`).
     - More options writes `contextStrategy`, `maxSubagentDepth` and `maxRounds`. The last is labelled "Max turns", spec 11's word; the schema calls it "Max rounds".
     - Each row names the hub's default for the chosen host and project, from `evener/launch/resolve`'s `effective` with the sheet's own overrides left out.
-15. **Branch shows the current branch until S18.** `evener/git/head` gives the project's branch. Today the hub has no way to start a session in a new worktree (`ThreadStartParams` has no such field), and S18 is the server item for it (ruling 26). Until it lands, the Branch row is information only, and recipes carry no branch.
-16. **Recipes and "Same as last time" live on the phone** (S8's fallback), per hub.
+15. **Branch shows the current branch until S18.** `evener/git/head` gives the project's branch. Today the hub has no way to start a session in a new worktree (`ThreadStartParams` has no such field), and S18 is the server item for it (ruling 26). Until it lands, the Branch row is information only.
+16. **The phone remembers its starts,** per hub.
     - Every successful Start records its setup.
-    - "Same as last time" is the last setup started for the chosen host and project. With none, it is the newest setup on this hub, moved to that project. With nothing ever started here, the chip is hidden and the sheet starts from the hub's defaults.
-    - The lit chip is derived by comparing setups, never stored: after any change that matches nothing, Custom lights up.
-    - Changing the project or host while "Same as last time" is lit applies that project's last setup, so the chip stays true.
-    - A recipe stores host, project, model, effort, plugins, access, network and the three options. Edit renames it. Saving with an existing name replaces that recipe's setup and keeps its place.
+    - The sheet opens on the newest setup started on this hub. With nothing ever started here, the sheet starts from the hub's defaults.
 17. **Changing host keeps the project when the new host has it** (`evener/path/validate` with `kind: "dir"` on that host). Otherwise the project moves to the host's most recent one, and the Host row's footer says so, as the prototype words it: "evener isn't on paradise-park, so the project changed to docs." With no recent project there, it says "evener isn't on paradise-park. Choose a project."
 18. **Only Cancel discards.** The draft saves as you type (`creationDraftRepository.ts`), so swiping the sheet down closes it and keeps the draft for next time.
-    - Cancel with a prompt or an image asks "Delete this draft?" with "Delete draft" (destructive) and "Keep draft". A setup alone is never lost, because "Same as last time" and recipes bring it back.
+    - Cancel with a prompt or an image asks "Delete this draft?" with "Delete draft" (destructive) and "Keep draft". A setup alone is never lost, because the sheet opens on the newest start.
     - Spec 6's "ask before discarding" holds, because the only way to discard asks.
 19. **The prompt stays optional**, as the app allows today: the hub starts an empty session. The prototype's disabled Start isn't carried over.
 20. **Start blames a field only for what the phone checked.**
@@ -204,7 +200,7 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - Jesse, 2026-09-26: "hub update: install and restart as the web: yes. should use a shared api." So the check and the apply run through one update client in `@evener/appwire-client`, lifted from the web's store (`cmd/evener-hub/frontend/src/stores/hubUpdate.ts`) before the phone points at it (Task 4). The phone's install-only `evener/upgrade` path goes (Task 5).
     - About doesn't repeat the hub's version (spec 12). It is a group on the Hub's home, not a page.
 23. **First run lands here.** Spec 15 isn't on any phase's row, and its parts are this phase's: the scanner, pasting a link, and the saved-hub list. The root `Hubs` route keeps its name, since restore depends on it (`restoredStack`, `src/location.ts`), and shows spec 15's screen. Entering an address and token by hand stays as a quiet third choice, "Enter the address", so a hub without a pairing page is still reachable.
-24. **"New session like this" copies what the wire has.** It copies the host (the ref's source), project (`cwd`), model (`modelProvider`) and effort (`reasoningEffort`). A session's plugins and access aren't on `Thread`, so those come from "Same as last time". Spec 8.7's menu doesn't list the item; spec 11 puts it there, so Task 25 adds it.
+24. **"New session like this" copies what the wire has.** It copies the host (the ref's source), project (`cwd`), model (`modelProvider`) and effort (`reasoningEffort`). A session's plugins and access aren't on `Thread`, so those come from the newest remembered start. Spec 8.7's menu doesn't list the item; spec 11 puts it there, so Task 25 adds it.
 25. **The Board's notices open the Hub at the thing they name**, each once its page lands:
     - a host's "Details" opens Hosts and pushes that host;
     - "Plugins" opens Plugins with that plugin's detail;
@@ -232,7 +228,7 @@ None open. The coordinator settled question 1 (the Alerts page moves to phase 6:
 
 1. **A session meant for another host starts there, with that host's projects, models and plugins.** Reads for paradise-park issued to the hub's own machine, or the reverse, would start a session with a path or model the host doesn't have. Pinned by Task 18: each launch read is plain for the local host and wrapped in `evener/host/request` for another. Also pinned by Task 19: `submit` sends `thread/start` with `source` only for another host.
 2. **Answers for the host you just left never land in the form.** A slow `model/list` or `evener/projects/recent` for the previous host must not overwrite the new host's form. Pinned by Task 19's host-switch race test.
-3. **A draft or recipe naming a host that is offline or gone never starts anywhere else.** The web learned this in round five of its host picker (`Spawn.tsx`, the `submittedSource` comment). Pinned by Task 20:
+3. **A draft naming a host that is offline or gone never starts anywhere else.** The web learned this in round five of its host picker (`Spawn.tsx`, the `submittedSource` comment). Pinned by Task 20:
    - with the draft's host offline, Start is disabled, the Host row says "Offline", the sheet says "paradise-park is offline. Connect it or choose another host.", and no `thread/start` is sent;
    - with the host missing from the hub's list, it says "paradise-park is no longer a host on this hub. Choose another host."
 4. **The connection drops with a sheet open.** Content stays. Controls that need the hub disable. The status line says "Reconnecting…" after 2 seconds, and no element anywhere reads "Reconnect".
@@ -241,7 +237,7 @@ None open. The coordinator settled question 1 (the Alerts page moves to phase 6:
    - Pinned by Task 27: a source guard fails the build if any production module under `mobile-native/src` renders "Reconnect".
 5. **Removing a hub from inside the Hub sheet.**
    - Removing the hub you're connected to closes the sheet and returns to the first-run screen, with no stale Board.
-   - A removed hub's recipes and launch history are forgotten, and no other hub's are.
+   - A removed hub's launch history is forgotten, and no other hub's are.
    - Pinned by Task 3 (`useClosesOnHubChange` leaves for `Hubs` when no hub is selected), Task 9 (removing the selected hub from its details calls `removeHub` and leaves the navigation to the sheet) and Task 17 (`forgetLaunchMemory` leaves other hubs alone).
 
 ---
@@ -260,8 +256,8 @@ None open. The coordinator settled question 1 (the Alerts page moves to phase 6:
 | 6: Providers | 12-14 | Sonnet for 12, Opus for 13-14 | PR 1 lands | A5 |
 | 7: Plugins | 15 | Opus | PR 1 lands | A6 |
 | 9: the New session sheet | 20-21 | Opus | PRs 1, 5 and 8 land | B |
-| 10: plugins, access, options and recipes in New session | 22-23 | Opus | PR 9 lands | B |
-| 11: recipes in the Hub, and New session like this | 24-25 | Opus | PR 10 lands | B |
+| 10: plugins, access and options in New session | 22 | Opus | PR 9 lands | B |
+| 11: New session like this | 25 | Opus | PR 10 lands | B |
 | 13: the last Reconnect, DESIGN.md, screenshots | 27-29 | Opus | every other PR lands | A |
 
 - After PR 1, PRs 2 to 7 can run as parallel lanes. Each touches `src/hub/HubSheet.tsx` (one route) and `src/hub/HubHome.tsx` (one row), so a rebase conflict is a line or two.
@@ -3046,7 +3042,7 @@ Expected: PASS.
 
 ## PR 8: the New session's rules and reads
 
-PR 8 lands the pure rules, the phone's memory of recipes and starts, host-routed reads, and the creation store's new abilities. The New session sheet (PR 9) is their first consumer; say so in the PR description. PR 8 can run beside PR 1.
+PR 8 lands the pure rules, the phone's memory of starts, host-routed reads, and the creation store's new abilities. The New session sheet (PR 9) is their first consumer; say so in the PR description. PR 8 can run beside PR 1.
 
 ### Task 16: A setup and its rules
 
@@ -3057,11 +3053,11 @@ PR 8 lands the pure rules, the phone's memory of recipes and starts, host-routed
 **Interfaces:**
 - Consumes: `basename` and `LaunchConfigLayer` from `@evener/appwire-client`; `LOCAL_HOST` from `cmd/evener-hub/frontend/src/stores/hostRouting.ts`.
 - Produces:
-  - types: `OWNED_FIELDS`, `OwnedOverrides`, `ModelChoice`, `LaunchSetup`, `RememberedSetup`, `SessionSeed`, `LitChip`, `HostMove`, `AccessLevel`, and `ACCESS_LEVELS`;
+  - types: `OWNED_FIELDS`, `OwnedOverrides`, `ModelChoice`, `LaunchSetup`, `RememberedSetup`, `SessionSeed`, `HostMove`, `AccessLevel`, and `ACCESS_LEVELS`;
   - `ownedOverrides(layer)` and `withOwnedOverrides(layer, owned)`;
-  - `sameSetup(a, b)`, `lastSetupFor(history, host, cwd)`, `newestSetup(history)` and `litChip(current, last, recipes)`;
+  - `newestSetup(history)`;
   - `moveToHost(cwd, hostLabel, projectExists, recentOnHost)` and `projectName(cwd)`;
-  - `effortLabel(level)`, `accessOf(sandbox, hubDefault)`, `networkApplies(access)` and `setupSummary(setup, words)`;
+  - `effortLabel(level)`, `accessOf(sandbox, hubDefault)` and `networkApplies(access)`;
   - `setupOf(form)`, `hostOfRef(ref)` and `modelFromId(id, models)`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -3074,17 +3070,13 @@ import {
 	effortLabel,
 	hostOfRef,
 	type LaunchSetup,
-	lastSetupFor,
-	litChip,
 	modelFromId,
 	moveToHost,
 	networkApplies,
 	newestSetup,
 	ownedOverrides,
 	projectName,
-	sameSetup,
 	setupOf,
-	setupSummary,
 	withOwnedOverrides,
 } from "./launchSetup";
 
@@ -3119,72 +3111,19 @@ describe("the overrides the sheet owns", () => {
 	});
 });
 
-describe("comparing setups", () => {
-	it("ignores plugin order", () => {
-		const reordered = setup({ overrides: { enabledPlugins: ["go", "superpowers"], sandbox: "workspace-write" } });
-		expect(sameSetup(setup(), reordered)).toBe(true);
-	});
-
-	const differences: [string, Partial<LaunchSetup>][] = [
-		["host", { host: "paradise-park" }],
-		["project", { cwd: "/home/jesse/git/docs" }],
-		["model", { model: { provider: "meta", model: "muse-spark-1.3" } }],
-		["hub default model", { model: null }],
-		["effort", { effort: "high" }],
-		["plugins", { overrides: { enabledPlugins: ["superpowers"], sandbox: "workspace-write" } }],
-		["default plugins", { overrides: { sandbox: "workspace-write" } }],
-		["access", { overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "read-only" } }],
-		["network", { overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "workspace-write", sandboxNet: false } }],
-		["turn limit", { overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "workspace-write", maxRounds: 100 } }],
-	];
-	it.each(differences)("tells a different %s apart", (_name, over) => {
-		expect(sameSetup(setup(), setup(over))).toBe(false);
-	});
-});
-
-describe("Same as last time (ruling 16)", () => {
+describe("the newest start", () => {
 	const history = [
 		{ setup: setup({ effort: "high" }), at: 1 },
 		{ setup: setup({ cwd: "/home/jesse/git/docs", effort: "max" }), at: 3 },
 		{ setup: setup({ effort: "xhigh" }), at: 2 },
 	];
 
-	it("is the newest setup started for that host and project", () => {
-		expect(lastSetupFor(history, "local", "/home/jesse/git/evener")?.effort).toBe("xhigh");
-	});
-
-	it("moves the newest setup on this hub to a project never started from here", () => {
-		expect(lastSetupFor(history, "paradise-park", "/Users/jesse/git/evener")).toEqual({
-			...setup({ cwd: "/home/jesse/git/docs", effort: "max" }),
-			host: "paradise-park",
-			cwd: "/Users/jesse/git/evener",
-		});
-	});
-
 	it("is nothing when nothing was ever started from this phone", () => {
-		expect(lastSetupFor([], "local", "/home/jesse/git/evener")).toBeNull();
 		expect(newestSetup([])).toBeNull();
 	});
 
 	it("opens a new sheet on the newest start", () => {
 		expect(newestSetup(history)?.cwd).toBe("/home/jesse/git/docs");
-	});
-});
-
-describe("the lit chip (spec 11)", () => {
-	const recipes = [{ id: "quick", setup: setup({ effort: "medium" }) }];
-
-	it("is Same as last time when the setup is exactly the last one", () => {
-		expect(litChip(setup(), setup(), recipes)).toEqual({ kind: "last" });
-	});
-
-	it("is a recipe when the setup is exactly that recipe", () => {
-		expect(litChip(setup({ effort: "medium" }), setup(), recipes)).toEqual({ kind: "recipe", id: "quick" });
-	});
-
-	it("is Custom after any change that matches nothing", () => {
-		expect(litChip(setup({ effort: "low" }), setup(), recipes)).toEqual({ kind: "custom" });
-		expect(litChip(setup(), null, [])).toEqual({ kind: "custom" });
 	});
 });
 
@@ -3247,19 +3186,6 @@ describe("labels", () => {
 		expect(networkApplies(accessOf("off", undefined))).toBe(false);
 		expect(networkApplies(accessOf("restricted", undefined))).toBe(true);
 	});
-
-	it("sums a setup up in one line", () => {
-		expect(setupSummary(setup(), { host: "magic-kingdom", model: "GLM 5.3 Vision", access: "Workspace write" })).toBe(
-			"magic-kingdom · evener · GLM 5.3 Vision · XHigh · 2 plugins · Workspace write",
-		);
-		expect(
-			setupSummary(setup({ effort: "", overrides: {} }), {
-				host: "magic-kingdom",
-				model: "Hub default model",
-				access: "Full access",
-			}),
-		).toBe("magic-kingdom · evener · Hub default model · Default plugins · Full access");
-	});
 });
 
 describe("from the form and from a session", () => {
@@ -3310,9 +3236,9 @@ Expected: FAIL: `Cannot find module './launchSetup'`.
 
 ```ts
 // mobile-native/src/newSession/launchSetup.ts
-// A new session's setup (spec 11): where it runs and how. The sheet's rows,
-// "Same as last time", recipes and a host change all speak in this shape, and
-// every rule applied to it is a pure function here.
+// A new session's setup (spec 11): where it runs and how. The sheet's rows
+// and a host change speak in this shape, and every rule applied to it is a
+// pure function here.
 import { basename, type LaunchConfigLayer } from "@evener/appwire-client";
 import { LOCAL_HOST } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
 
@@ -3372,50 +3298,11 @@ export function ownedOverrides(layer: LaunchConfigLayer): OwnedOverrides {
 }
 
 /** `layer` with its owned fields replaced by `owned`'s. A field `owned` leaves
- * out is removed, so a recipe with no sandbox falls back to the hub's. */
+ * out is removed, so a setup with no sandbox falls back to the hub's. */
 export function withOwnedOverrides(layer: LaunchConfigLayer, owned: OwnedOverrides): LaunchConfigLayer {
 	const next: LaunchConfigLayer = { ...layer };
 	for (const field of OWNED_FIELDS) delete next[field];
 	return { ...next, ...ownedOverrides(owned) };
-}
-
-function sameNames(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
-	if (a === undefined || b === undefined) return a === b;
-	if (a.length !== b.length) return false;
-	const sorted = [...b].sort();
-	return [...a].sort().every((name, index) => name === sorted[index]);
-}
-
-/** Two setups start the same session: the same place, model, effort and owned
- * overrides. Plugin order doesn't matter, since the hub loads a set. */
-export function sameSetup(a: LaunchSetup, b: LaunchSetup): boolean {
-	return (
-		a.host === b.host &&
-		a.cwd === b.cwd &&
-		a.model?.provider === b.model?.provider &&
-		a.model?.model === b.model?.model &&
-		a.effort === b.effort &&
-		sameNames(a.overrides.enabledPlugins, b.overrides.enabledPlugins) &&
-		a.overrides.sandbox === b.overrides.sandbox &&
-		a.overrides.sandboxNet === b.overrides.sandboxNet &&
-		a.overrides.contextStrategy === b.overrides.contextStrategy &&
-		a.overrides.maxSubagentDepth === b.overrides.maxSubagentDepth &&
-		a.overrides.maxRounds === b.overrides.maxRounds
-	);
-}
-
-/** "Same as last time" for a host and project (spec 11; ruling 16): the newest
- * setup started for that project on that host; else the newest setup on this
- * hub, moved there; null when nothing was ever started from this phone. */
-export function lastSetupFor(history: readonly RememberedSetup[], host: string, cwd: string): LaunchSetup | null {
-	let exact: RememberedSetup | null = null;
-	let newest: RememberedSetup | null = null;
-	for (const entry of history) {
-		if (!newest || entry.at > newest.at) newest = entry;
-		if (entry.setup.host === host && entry.setup.cwd === cwd && (!exact || entry.at > exact.at)) exact = entry;
-	}
-	if (exact) return exact.setup;
-	return newest ? { ...newest.setup, host, cwd } : null;
 }
 
 /** The newest setup started from this phone: where a sheet with nothing in
@@ -3424,21 +3311,6 @@ export function newestSetup(history: readonly RememberedSetup[]): LaunchSetup | 
 	let newest: RememberedSetup | null = null;
 	for (const entry of history) if (!newest || entry.at > newest.at) newest = entry;
 	return newest?.setup ?? null;
-}
-
-export type LitChip = { kind: "last" } | { kind: "recipe"; id: string } | { kind: "custom" };
-
-/** Which chip is lit (spec 11): "Same as last time" when the setup is exactly
- * the last one for its project, a recipe when it is exactly that recipe, and
- * Custom otherwise. Derived, never stored, so it can't disagree with the rows. */
-export function litChip(
-	current: LaunchSetup,
-	last: LaunchSetup | null,
-	recipes: readonly { id: string; setup: LaunchSetup }[],
-): LitChip {
-	if (last && sameSetup(current, last)) return { kind: "last" };
-	const recipe = recipes.find((candidate) => sameSetup(current, candidate.setup));
-	return recipe ? { kind: "recipe", id: recipe.id } : { kind: "custom" };
 }
 
 export interface HostMove {
@@ -3520,22 +3392,6 @@ export function networkApplies(access: AccessLevel): boolean {
 	return access.mode !== FULL_ACCESS.mode;
 }
 
-/** A setup in one line, for a recipe's row and the Save sheet (the
- * prototype's hub.js): the caller names the host, the model and the access. */
-export function setupSummary(setup: LaunchSetup, words: { host: string; model: string; access: string }): string {
-	const plugins = setup.overrides.enabledPlugins;
-	return [
-		words.host,
-		setup.cwd ? projectName(setup.cwd) : "",
-		words.model,
-		setup.effort ? effortLabel(setup.effort) : "",
-		plugins === undefined ? "Default plugins" : `${plugins.length} ${plugins.length === 1 ? "plugin" : "plugins"}`,
-		words.access,
-	]
-		.filter(Boolean)
-		.join(" · ");
-}
-
 /** The creation form's fields as a setup. */
 export function setupOf(form: {
 	source: string;
@@ -3574,7 +3430,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Commit** (`feat(native): a new session's setup and its rules`).
 
-### Task 17: The phone's memory of recipes and starts
+### Task 17: The phone's memory of starts
 
 **Files:**
 - Create: `mobile-native/src/newSession/launchMemory.ts`, `mobile-native/src/newSession/nativeLaunchMemory.ts`
@@ -3584,11 +3440,10 @@ Expected: PASS.
 **Interfaces:**
 - Consumes: Task 16.
 - Produces:
-  - `interface Recipe { id: string; name: string; setup: LaunchSetup }`;
   - `interface LaunchMemoryStorage { getItemSync; setItemSync; removeItemSync }`;
-  - `recipesKey(hubId)`, `historyKey(hubId)`, `HISTORY_LIMIT = 50` and `RECIPE_NAME_LIMIT = 40`;
-  - `class LaunchMemory`: constructor `(storage, hubId, createId: () => string)`; `recipes()`, `history()`, `saveRecipe(name, setup)`, `renameRecipe(id, name)`, `deleteRecipe(id)`, `moveRecipe(id, by: -1 | 1)`, `recordStart(setup, at)`, `subscribe(listener)` and `getRevision()`;
-  - `recipeNameIssue(name): string | null` and `forgetLaunchMemory(storage, hubId)`;
+  - `historyKey(hubId)` and `HISTORY_LIMIT = 50`;
+  - `class LaunchMemory`: constructor `(storage, hubId)`; `history()` and `recordStart(setup, at)`;
+  - `forgetLaunchMemory(storage, hubId)`;
   - `launchMemory(hubId): LaunchMemory` (one per hub, on `expo-sqlite/kv-store`) and `forgetLaunchMemoryForHub(hubId)`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -3596,14 +3451,7 @@ Expected: PASS.
 ```ts
 // mobile-native/src/newSession/launchMemory.test.ts
 import { describe, expect, it } from "vitest";
-import {
-	forgetLaunchMemory,
-	HISTORY_LIMIT,
-	historyKey,
-	LaunchMemory,
-	recipeNameIssue,
-	recipesKey,
-} from "./launchMemory";
+import { forgetLaunchMemory, HISTORY_LIMIT, historyKey, LaunchMemory } from "./launchMemory";
 import type { LaunchSetup } from "./launchSetup";
 
 function memory(values = new Map<string, string>()) {
@@ -3618,10 +3466,6 @@ function memory(values = new Map<string, string>()) {
 		},
 	};
 }
-const ids = () => {
-	let next = 0;
-	return () => `recipe-${++next}`;
-};
 const setup = (over: Partial<LaunchSetup> = {}): LaunchSetup => ({
 	host: "local",
 	cwd: "/home/jesse/git/evener",
@@ -3631,63 +3475,9 @@ const setup = (over: Partial<LaunchSetup> = {}): LaunchSetup => ({
 	...over,
 });
 
-describe("recipes", () => {
-	it("keeps them in order across launches", () => {
-		const storage = memory();
-		const first = new LaunchMemory(storage, "hub-a", ids());
-		first.saveRecipe("Evener coordinator", setup());
-		first.saveRecipe("Quick question", setup({ effort: "medium" }));
-		const again = new LaunchMemory(storage, "hub-a", ids());
-		expect(again.recipes().map((recipe) => recipe.name)).toEqual(["Evener coordinator", "Quick question"]);
-		expect(again.recipes()[1]?.setup.effort).toBe("medium");
-	});
-
-	it("replaces a recipe saved under the same name, whatever its case, and keeps its place", () => {
-		const recipes = new LaunchMemory(memory(), "hub-a", ids());
-		const original = recipes.saveRecipe("Evener coordinator", setup());
-		recipes.saveRecipe("Quick question", setup({ effort: "medium" }));
-		const replaced = recipes.saveRecipe("  evener COORDINATOR ", setup({ effort: "max" }));
-		expect(replaced.id).toBe(original.id);
-		expect(recipes.recipes().map((recipe) => [recipe.name, recipe.setup.effort])).toEqual([
-			["Evener coordinator", "max"],
-			["Quick question", "medium"],
-		]);
-	});
-
-	it("renames, moves and deletes", () => {
-		const recipes = new LaunchMemory(memory(), "hub-a", ids());
-		const a = recipes.saveRecipe("A", setup());
-		const b = recipes.saveRecipe("B", setup());
-		recipes.renameRecipe(a.id, " Alpha ");
-		recipes.moveRecipe(b.id, -1);
-		expect(recipes.recipes().map((recipe) => recipe.name)).toEqual(["B", "Alpha"]);
-		recipes.moveRecipe(b.id, -1);
-		expect(recipes.recipes().map((recipe) => recipe.name)).toEqual(["B", "Alpha"]);
-		recipes.deleteRecipe(b.id);
-		expect(recipes.recipes().map((recipe) => recipe.name)).toEqual(["Alpha"]);
-	});
-
-	it("leaves itself unchanged when the phone can't store the change", () => {
-		const storage = memory();
-		const recipes = new LaunchMemory(storage, "hub-a", ids());
-		recipes.saveRecipe("A", setup());
-		storage.setItemSync = () => {
-			throw new Error("disk full");
-		};
-		expect(() => recipes.saveRecipe("B", setup())).toThrow("disk full");
-		expect(recipes.recipes().map((recipe) => recipe.name)).toEqual(["A"]);
-	});
-
-	it("says what's wrong with a name", () => {
-		expect(recipeNameIssue("  ")).toBe("Name the recipe.");
-		expect(recipeNameIssue("x".repeat(41))).toBe("Keep it under 40 characters.");
-		expect(recipeNameIssue("Quick question")).toBeNull();
-	});
-});
-
-describe("starts, for Same as last time", () => {
+describe("starts", () => {
 	it("keeps the newest start per host and project, newest first", () => {
-		const starts = new LaunchMemory(memory(), "hub-a", ids());
+		const starts = new LaunchMemory(memory(), "hub-a");
 		starts.recordStart(setup({ effort: "high" }), 1);
 		starts.recordStart(setup({ cwd: "/home/jesse/git/docs" }), 2);
 		starts.recordStart(setup({ effort: "max" }), 3);
@@ -3698,10 +3488,21 @@ describe("starts, for Same as last time", () => {
 	});
 
 	it("forgets the oldest past the limit", () => {
-		const starts = new LaunchMemory(memory(), "hub-a", ids());
+		const starts = new LaunchMemory(memory(), "hub-a");
 		for (let index = 0; index <= HISTORY_LIMIT; index++) starts.recordStart(setup({ cwd: `/p/${index}` }), index);
 		expect(starts.history()).toHaveLength(HISTORY_LIMIT);
 		expect(starts.history().some((entry) => entry.setup.cwd === "/p/0")).toBe(false);
+	});
+
+	it("leaves itself unchanged when the phone can't store the change", () => {
+		const storage = memory();
+		const starts = new LaunchMemory(storage, "hub-a");
+		starts.recordStart(setup(), 1);
+		storage.setItemSync = () => {
+			throw new Error("disk full");
+		};
+		expect(() => starts.recordStart(setup({ cwd: "/home/jesse/git/docs" }), 2)).toThrow("disk full");
+		expect(starts.history().map((entry) => entry.setup.cwd)).toEqual(["/home/jesse/git/evener"]);
 	});
 });
 
@@ -3710,42 +3511,26 @@ describe("stored values", () => {
 		const storage = memory(
 			new Map([
 				[
-					recipesKey("hub-a"),
+					historyKey("hub-a"),
 					JSON.stringify([
-						{ id: "bad", name: "Bad", setup: { host: 7 } },
-						{ id: "good", name: "Good", setup: setup() },
+						{ setup: { host: 7 }, at: 1 },
+						{ setup: setup(), at: 2 },
 					]),
 				],
-				[historyKey("hub-a"), "{not json"],
+				[historyKey("hub-b"), "{not json"],
 			]),
 		);
-		const loaded = new LaunchMemory(storage, "hub-a", ids());
-		expect(loaded.recipes().map((recipe) => recipe.id)).toEqual(["good"]);
-		expect(loaded.history()).toEqual([]);
-	});
-
-	it("tells listeners about each change", () => {
-		const recipes = new LaunchMemory(memory(), "hub-a", ids());
-		let heard = 0;
-		recipes.subscribe(() => {
-			heard += 1;
-		});
-		const revision = recipes.getRevision();
-		recipes.saveRecipe("A", setup());
-		recipes.recordStart(setup(), 1);
-		expect(heard).toBe(2);
-		expect(recipes.getRevision()).toBe(revision + 2);
+		expect(new LaunchMemory(storage, "hub-a").history().map((entry) => entry.at)).toEqual([2]);
+		expect(new LaunchMemory(storage, "hub-b").history()).toEqual([]);
 	});
 
 	it("forgets one hub and keeps another's (Review Focus 5)", () => {
 		const storage = memory();
-		new LaunchMemory(storage, "hub-a", ids()).saveRecipe("A", setup());
-		new LaunchMemory(storage, "hub-b", ids()).saveRecipe("B", setup());
-		new LaunchMemory(storage, "hub-a", ids()).recordStart(setup(), 1);
+		new LaunchMemory(storage, "hub-a").recordStart(setup(), 1);
+		new LaunchMemory(storage, "hub-b").recordStart(setup(), 2);
 		forgetLaunchMemory(storage, "hub-a");
-		expect(new LaunchMemory(storage, "hub-a", ids()).recipes()).toEqual([]);
-		expect(new LaunchMemory(storage, "hub-a", ids()).history()).toEqual([]);
-		expect(new LaunchMemory(storage, "hub-b", ids()).recipes().map((recipe) => recipe.name)).toEqual(["B"]);
+		expect(new LaunchMemory(storage, "hub-a").history()).toEqual([]);
+		expect(new LaunchMemory(storage, "hub-b").history().map((entry) => entry.at)).toEqual([2]);
 	});
 });
 ```
@@ -3759,18 +3544,11 @@ Expected: FAIL: the module doesn't exist.
 
 ```ts
 // mobile-native/src/newSession/launchMemory.ts
-// What this phone remembers about starting sessions on one hub (spec 11; S8's
-// fallback, ruling 16): recipes, in the order you keep them, and the setups
-// sessions were started with, for "Same as last time". Both are per hub,
-// because a setup names that hub's hosts and folders.
+// What this phone remembers about starting sessions on one hub: the setups
+// sessions were started with, so New session opens on the newest one (spec
+// 11). It is per hub, because a setup names that hub's hosts and folders.
 import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { type LaunchSetup, ownedOverrides, type RememberedSetup } from "./launchSetup";
-
-export interface Recipe {
-	id: string;
-	name: string;
-	setup: LaunchSetup;
-}
 
 export interface LaunchMemoryStorage {
 	getItemSync(key: string): string | null;
@@ -3778,14 +3556,12 @@ export interface LaunchMemoryStorage {
 	removeItemSync(key: string): void;
 }
 
-export const recipesKey = (hubId: string) => `evener.native.recipes.${hubId}`;
 export const historyKey = (hubId: string) => `evener.native.launch-history.${hubId}`;
 
 /** Starts remembered per hub: one per host and project, enough for every
  * project in use (the spec's fleet has 14) and small enough to rewrite on
  * every start. */
 export const HISTORY_LIMIT = 50;
-export const RECIPE_NAME_LIMIT = 40;
 
 function record(value: unknown): Record<string, unknown> | null {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -3826,14 +3602,6 @@ function toSetup(value: unknown): LaunchSetup | null {
 	};
 }
 
-function toRecipe(value: unknown): Recipe | null {
-	const recipe = record(value);
-	const setup = toSetup(recipe?.setup);
-	return recipe && setup && typeof recipe.id === "string" && typeof recipe.name === "string"
-		? { id: recipe.id, name: recipe.name, setup }
-		: null;
-}
-
 function toRemembered(value: unknown): RememberedSetup | null {
 	const entry = record(value);
 	const setup = toSetup(entry?.setup);
@@ -3856,70 +3624,21 @@ function parseList<T>(raw: string | null, item: (value: unknown) => T | null): T
 }
 
 export class LaunchMemory {
-	private recipeList: Recipe[];
 	private historyList: RememberedSetup[];
-	private revision = 0;
-	private readonly listeners = new Set<() => void>();
 
 	constructor(
 		private readonly storage: LaunchMemoryStorage,
 		private readonly hubId: string,
-		private readonly createId: () => string,
 	) {
-		this.recipeList = parseList(storage.getItemSync(recipesKey(hubId)), toRecipe);
 		this.historyList = parseList(storage.getItemSync(historyKey(hubId)), toRemembered);
-	}
-
-	recipes(): readonly Recipe[] {
-		return this.recipeList;
 	}
 
 	history(): readonly RememberedSetup[] {
 		return this.historyList;
 	}
 
-	getRevision = (): number => this.revision;
-
-	subscribe = (listener: () => void): (() => void) => {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
-	};
-
-	/** Saves a setup under a name. A recipe with the same name, ignoring case
-	 * and surrounding spaces, takes the new setup and keeps its place (ruling
-	 * 16); a new one goes last. */
-	saveRecipe(name: string, setup: LaunchSetup): Recipe {
-		const trimmed = name.trim();
-		const existing = this.recipeList.find((recipe) => recipe.name.toLowerCase() === trimmed.toLowerCase());
-		const saved: Recipe = existing ? { ...existing, setup } : { id: this.createId(), name: trimmed, setup };
-		this.writeRecipes(
-			existing ? this.recipeList.map((recipe) => (recipe.id === saved.id ? saved : recipe)) : [...this.recipeList, saved],
-		);
-		return saved;
-	}
-
-	renameRecipe(id: string, name: string): void {
-		this.writeRecipes(this.recipeList.map((recipe) => (recipe.id === id ? { ...recipe, name: name.trim() } : recipe)));
-	}
-
-	deleteRecipe(id: string): void {
-		this.writeRecipes(this.recipeList.filter((recipe) => recipe.id !== id));
-	}
-
-	/** Moves a recipe one place up (-1) or down (1); at an end it stays. */
-	moveRecipe(id: string, by: -1 | 1): void {
-		const index = this.recipeList.findIndex((recipe) => recipe.id === id);
-		const target = index + by;
-		if (index < 0 || target < 0 || target >= this.recipeList.length) return;
-		const next = [...this.recipeList];
-		[next[index], next[target]] = [next[target] as Recipe, next[index] as Recipe];
-		this.writeRecipes(next);
-	}
-
-	/** Remembers a start (ruling 16): it replaces older starts for the same
-	 * host and project, and the oldest fall off past the limit. */
+	/** Remembers a start: it replaces older starts for the same host and
+	 * project, and the oldest fall off past the limit. */
 	recordStart(setup: LaunchSetup, at: number): void {
 		const others = this.historyList.filter(
 			(entry) => entry.setup.host !== setup.host || entry.setup.cwd !== setup.cwd,
@@ -3928,51 +3647,29 @@ export class LaunchMemory {
 	}
 
 	/** Stores first, so a failed write leaves this memory as it was. */
-	private writeRecipes(next: Recipe[]): void {
-		this.storage.setItemSync(recipesKey(this.hubId), JSON.stringify(next));
-		this.recipeList = next;
-		this.changed();
-	}
-
 	private writeHistory(next: RememberedSetup[]): void {
 		this.storage.setItemSync(historyKey(this.hubId), JSON.stringify(next));
 		this.historyList = next;
-		this.changed();
 	}
-
-	private changed(): void {
-		this.revision += 1;
-		for (const listener of this.listeners) listener();
-	}
-}
-
-export function recipeNameIssue(name: string): string | null {
-	const trimmed = name.trim();
-	if (!trimmed) return "Name the recipe.";
-	if (Array.from(trimmed).length > RECIPE_NAME_LIMIT) return `Keep it under ${RECIPE_NAME_LIMIT} characters.`;
-	return null;
 }
 
 export function forgetLaunchMemory(storage: LaunchMemoryStorage, hubId: string): void {
-	storage.removeItemSync(recipesKey(hubId));
 	storage.removeItemSync(historyKey(hubId));
 }
 ```
 
 ```ts
 // mobile-native/src/newSession/nativeLaunchMemory.ts
-import * as Crypto from "expo-crypto";
 import { Storage } from "expo-sqlite/kv-store";
 import { forgetLaunchMemory, LaunchMemory } from "./launchMemory";
 
 const memories = new Map<string, LaunchMemory>();
 
-/** The one LaunchMemory per hub, shared by New session and the Hub's Recipes
- * page, so a recipe saved on one shows on the other at once. */
+/** The one LaunchMemory per hub, shared by every New session sheet. */
 export function launchMemory(hubId: string): LaunchMemory {
 	let memory = memories.get(hubId);
 	if (!memory) {
-		memory = new LaunchMemory(Storage, hubId, () => Crypto.randomUUID());
+		memory = new LaunchMemory(Storage, hubId);
 		memories.set(hubId, memory);
 	}
 	return memory;
@@ -3991,7 +3688,7 @@ In `ConnectionProvider.removeHub`'s `removeHub(hubId)` callback, call `forgetLau
 Run: `cd mobile-native && npx vitest run src/newSession/launchMemory.test.ts src/removeHub.test.ts && npm run check`
 Expected: PASS.
 
-- [ ] **Step 5: Commit** (`feat(native): recipes and starts remembered per hub on the phone`).
+- [ ] **Step 5: Commit** (`feat(native): starts remembered per hub on the phone`).
 
 ### Task 18: Reads that go to the chosen host
 
@@ -4611,7 +4308,7 @@ export function startBlock(input: StartInput): StartBlock | null {
   2. **Opening.** On first mount, with the draft loaded:
      - With `like`: `applySeed(like)` once.
      - Else, with a draft that already has a project or a prompt: the draft stands.
-     - Else, with a remembered start: `applySetup(newestSetup(memory.history()))`. This is spec 11's "Same as last time", selected by default.
+     - Else, with a remembered start: `applySetup(newestSetup(memory.history()))`.
      - Else: once the hub's recent projects arrive, the most recent becomes the project.
   3. **The form's header:**
      - "Cancel" on the left;
@@ -4818,7 +4515,7 @@ export function modelFacts(model: ModelDescriptor): string {
 
 ---
 
-## PR 10: plugins, access, options and recipes in New session
+## PR 10: plugins, access and options in New session
 
 ### Task 22: The plugin checklist, access, branch and More options
 
@@ -4970,7 +4667,7 @@ export function pluginWarnings(preview: PluginPreviewResponse, name: string): st
        - "MAX SUBAGENT DEPTH": Default, 1, 2, 3, 5;
        - "MAX TURNS": Default, 100, 500, No limit (−1).
      - Under each, the hub's default from `useLaunchDefaults`: "The hub's default is compact.", "The hub's default is 2.", "The hub's default is no limit." (for −1).
-     - A value that isn't a segment (a recipe's 4) lights no segment, and the footer says "This session uses 4. The hub's default is 2."
+     - A value that isn't a segment (a remembered start's 4) lights no segment, and the footer says "This session uses 4. The hub's default is 2."
      - The page's last footer: "Everything else uses the hub's launch defaults. Edit them from the Hub, under Launch defaults." (ruling 12 keeps that screen on the phone).
      - The form's row: "More options", second line "Context strategy, subagent depth, turn limit", valued "Custom" when any of the three is set.
 - [ ] **Step 5: Write the failing tests**, one per requirement above. Cover:
@@ -4980,98 +4677,11 @@ export function pluginWarnings(preview: PluginPreviewResponse, name: string): st
   - Branch hidden outside a repository;
   - More options' three groups and footers, and "Default" removing the field.
 - [ ] **Step 6: Run them and watch them fail**, then implement, then run them and watch them pass. Run: `cd mobile-native && npx vitest run src/newSession && npm run check && make test-native-bundle`
-- [ ] **Step 7: Commit** (`feat(native): plugins, access, branch and more options in New session`).
-
-### Task 23: Recipes and "Same as last time" in the sheet
-
-**Files:**
-- Create: `mobile-native/src/newSession/RecipeChips.tsx`, `mobile-native/src/newSession/SaveRecipe.tsx`
-- Modify: `NewSessionSheet.tsx` (route `SaveRecipe`; the context gains `followLastTime`), `NewSessionForm.tsx`, `HostPicker.tsx`, `ProjectPicker.tsx`, `BrowseFolders.tsx`
-- Test: `mobile-native/src/newSession/RecipeChips.test.tsx`, `SaveRecipe.test.tsx`, and new cases in `NewSessionForm.test.tsx`
-
-**Interfaces:**
-- Consumes: Task 16's `litChip`, `lastSetupFor`, `setupOf` and `setupSummary`; Task 17's `LaunchMemory` and `recipeNameIssue`.
-- Produces:
-  - `RecipeChips(props: { current: LaunchSetup; last: LaunchSetup | null; recipes: readonly Recipe[]; onApply(setup: LaunchSetup): void; onSave(): void })`;
-  - the context's `followLastTime(before: LitChip): void`. When `before` was "Same as last time", it applies `lastSetupFor(history, source, cwd)` for the host and project the form now has.
-
-**Requirements (spec 11; ruling 16):**
-1. **The chips** sit in one horizontally scrolling row under the prompt. They are capsules at least 36pt tall, with a 4pt hit slop to reach 44pt. A lit chip is `accentBg` with `accentInk`; an unlit one is `inset` with `inkHi` (spec 16.1). The chips, in order:
-   - "Custom", shown only while lit, and not a button;
-   - "Same as last time", shown when `lastSetupFor(history, source, cwd)` exists;
-   - one chip per recipe, in the memory's order;
-   - "+ Save", which pushes `SaveRecipe`.
-
-   Tapping a chip calls `applySetup` with its setup. Which chip is lit comes from `litChip(setupOf(form), lastSetupFor(…), recipes)` on every render.
-2. **"Same as last time" follows the project.** Before a host or project change (the host picker, the project picker, "Use this folder"), the picker reads `litChip`. After the change, it calls `followLastTime(before)`.
-3. **Save as recipe (`SaveRecipe`, title "Save as recipe", header Cancel and Save).**
-   - A "Recipe name" field, focused on open.
-   - The footer is the setup in one line (`setupSummary`, naming the host with `hostLabel`, the model with its display name or "Hub default model", and access with `accessOf(…).label`).
-   - When the name matches an existing recipe, ignoring case, the right button reads "Replace", and a second footer says "This replaces the recipe <name>."
-   - `recipeNameIssue` shows as a danger footer, and Save stays inert while there is one.
-   - Save calls `memory.saveRecipe(name, setupOf(form))` and pops; the new chip lights up, which is the confirmation. A storage failure shows "Couldn't save this recipe on this phone." and stays.
-4. **Every successful Start is recorded** (Task 20), so "Same as last time" exists from the second session on.
-
-- [ ] **Step 1: Write the failing tests.**
-  - The chips:
-    - order and visibility;
-    - the lit chip for each `litChip` result;
-    - a tap applies that chip's setup;
-    - "+ Save" calls `onSave`.
-  - The form:
-    - applying a recipe re-reads the host's models (a `model/list` request) and lights the recipe's chip once they arrive;
-    - changing the project while "Same as last time" is lit applies that project's last setup and keeps the chip lit;
-    - changing it while Custom is lit changes only the project.
-  - Save:
-    - the summary line;
-    - Replace for a matching name;
-    - the name issues;
-    - a storage failure's message.
-- [ ] **Step 2: Run them and watch them fail**, then implement, then run them and watch them pass. Run: `cd mobile-native && npx vitest run src/newSession && npm run check`
-- [ ] **Step 3: Look in the simulator.**
-  - Start a session, reopen New session: "Same as last time" is lit.
-  - Change the effort: Custom lights.
-  - Save it as "Quick question": its chip lights.
-  - Switch project: "Same as last time" follows it.
-- [ ] **Step 4: Commit and open PR 10** (`feat(native): plugins, access and recipes in New session (phase 5, PR 10)`).
+- [ ] **Step 7: Commit and open PR 10** (`feat(native): plugins, access and options in New session (phase 5, PR 10)`).
 
 ---
 
-## PR 11: recipes in the Hub, and New session like this
-
-### Task 24: The Recipes page
-
-**Files:**
-- Create: `mobile-native/src/hub/RecipesPage.tsx`
-- Modify: `mobile-native/src/hub/HubSheet.tsx` (route `Recipes: { hubId: string }`), `mobile-native/src/hub/HubHome.tsx`
-- Test: `mobile-native/src/hub/RecipesPage.test.tsx`
-
-**Requirements (spec 12's Recipes; ruling 16):**
-1. **The page** (title "Recipes"): `headerRight` toggles between "Edit" and "Done".
-   - The top footer: "Recipes set host, project, model, effort, plugins and access for a new session in one tap."
-   - One group of recipes:
-     - the name;
-     - the second line is `setupSummary`, naming the host with the sheet context's `hubName` for `local`, the model by its id or "Hub default model", and access by its label, or "Hub default access" with no sandbox set.
-   - The bottom footer: "Save a recipe from the New session screen."
-   - With no recipes, only the second footer shows, reading "No recipes yet. Save one from the New session screen."
-2. **Outside edit mode**, tapping a recipe asks `Alert.prompt("Rename recipe", undefined, [Cancel, Save], "plain-text", name)`. A name with a `recipeNameIssue` is refused with that issue as an alert, and a valid name calls `renameRecipe`.
-3. **In edit mode**, each row carries three 44pt buttons:
-   - "Move <name> up" (`arrow.up`), disabled for the first row;
-   - "Move <name> down" (`arrow.down`), disabled for the last row;
-   - "Delete <name>" (`minus.circle.fill` in danger ink).
-
-   Delete confirms `Alert.alert(\`Delete ${name}?\`, "Sessions started from it aren't affected.", [Cancel, Delete (destructive)])`. The page reads `launchMemory(hubId)` and re-renders on its `subscribe`.
-4. **The Hub's home:** SETUP gains "Recipes" (`list.bullet.rectangle`) after Plugins, valued with the count, pushing `Recipes`.
-
-- [ ] **Step 1: Write the failing tests** over a memory-backed `LaunchMemory`, mocking `../newSession/nativeLaunchMemory`'s `launchMemory` to return it. Cover:
-  - the rows and their summary;
-  - the empty state;
-  - rename, including a refused name;
-  - edit mode's moves and their disabled ends;
-  - delete with its confirmation;
-  - the home's row and count.
-- [ ] **Step 2: Run them and watch them fail**, then implement, then run them and watch them pass. Run: `cd mobile-native && npx vitest run src/hub && npm run check`
-- [ ] **Step 3: Commit** (`feat(native): Recipes in the Hub`).
+## PR 11: New session like this
 
 ### Task 25: New session like this
 
@@ -5087,11 +4697,11 @@ export function pluginWarnings(preview: PluginPreviewResponse, name: string): st
    - `effort`: `evener.reasoningEffort`, when set.
 
    All of these come from the thread read the session screen already holds.
-3. The sheet applies the seed once (Task 20). Its plugins and access come from "Same as last time", because a session's plugins and access aren't on the wire.
+3. The sheet applies the seed once (Task 20). Its plugins and access come from the newest remembered start, because a session's plugins and access aren't on the wire.
 
 - [ ] **Step 1: Write the failing test** in the menu's test file: choosing the item navigates to `NewSession` with the seed built from a fixture thread on `paradise-park`.
 - [ ] **Step 2: Run it and watch it fail**, then implement, then run it and watch it pass, plus `npm run check`.
-- [ ] **Step 3: Commit and open PR 11** (`feat(native): Recipes in the Hub and New session like this (phase 5, PR 11)`).
+- [ ] **Step 3: Commit and open PR 11** (`feat(native): New session like this (phase 5, PR 11)`).
 
 ---
 
@@ -5264,10 +4874,10 @@ Ruling 12 keeps today's administration screens on the phone, so this task delete
 
 ### Task 29: Screenshots for the phase's last PR
 
-Run the demo hub with `EVENER_DEMO_FLEET=1` and a Release simulator build (iPhone 17 Pro, 393×852). Save two recipes first, "Evener coordinator" and "Quick question", because recipes live on the phone. Then capture Appendix A frames 20-24 in light and dark:
+Run the demo hub with `EVENER_DEMO_FLEET=1` and a Release simulator build (iPhone 17 Pro, 393×852). Start one session first, so the sheet has a remembered start to open on. Then capture Appendix A frames 20-24 in light and dark:
 
 20. New session, filled:
-    - the prompt, with "Same as last time" lit and the two recipes;
+    - the prompt;
     - Host magic-kingdom, Project evener, Branch main;
     - Model GLM 5.3 Vision via lunaroute, Effort XHigh;
     - Plugins "10 of 14", Access Workspace write, and More options.
@@ -5276,7 +4886,7 @@ Run the demo hub with `EVENER_DEMO_FLEET=1` and a Release simulator build (iPhon
 23. The Hub's home, taken with `EVENER_DEMO_FLEET_OFFLINE_HOST=1`:
     - "Hosts" with its "1 offline" tag;
     - "Providers" with "1 to sign in";
-    - Plugins, Recipes, Display, Hubs and About.
+    - Plugins, Display, Hubs and About.
     - The spec's "plugins (one update)" can't show (ruling 7), and the PR says so.
 24. paradise-park's detail, offline: its status, the "Hub runs 0.9.412" tag, its last error, Connect, and the offline footer.
 
@@ -5290,7 +4900,6 @@ Save them under `docs/design/mobile/assets/2026-09-2x-redesign-phase5-*.png`, na
 
 - **Spec 11, New session:**
   - the prompt first, with images: Task 20;
-  - recipe chips, "Same as last time", Custom and "+ Save": Task 23 (rulings 16 and 18);
   - Host, with the offline state and Connect: Tasks 20 and 10 (ruling 4);
   - the host change keeping or moving the project: Tasks 16 and 19 (ruling 17);
   - Project, with recent projects, browsing and New folder: Task 21;
@@ -5308,7 +4917,6 @@ Save them under `docs/design/mobile/assets/2026-09-2x-redesign-phase5-*.png`, na
   - Hosts and host detail: Tasks 10 and 11 (rulings 3, 4 and 5);
   - Providers and sign-in: Tasks 12 to 14 (ruling 6);
   - Plugins: Task 15 (ruling 7);
-  - Recipes: Task 24;
   - Display: Tasks 6 and 7 (ruling 8);
   - In-app alerts: phase 6 (ruling 11);
   - Hubs: Tasks 8 and 9;
@@ -5316,7 +4924,7 @@ Save them under `docs/design/mobile/assets/2026-09-2x-redesign-phase5-*.png`, na
   - More, today's administration screens, and Providers' MANAGE groups: Tasks 5, 13 and 27 (ruling 12).
 - **Spec 14 and principle 2:**
   - the connection line: Task 2;
-  - no Reconnect anywhere: Tasks 3 to 23 for this phase's screens, and Task 27's sweep and guard (ruling 21).
+  - no Reconnect anywhere: Tasks 3 to 22 for this phase's screens, and Task 27's sweep and guard (ruling 21).
 - **Spec 15, first run:** Tasks 8 and 9 (ruling 23).
 - **The brief's facts:**
   - the hub retries a dropped host, so "Offline · reconnecting" shows and Connect only for an unattached host: Task 10 (ruling 4);
