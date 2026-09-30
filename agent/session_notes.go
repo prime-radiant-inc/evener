@@ -477,7 +477,7 @@ func (s *Session) notesCWD() string {
 // http(s) lowercases scheme+host, drops default ports, collapses a trailing
 // slash on an empty path, and drops the fragment. Bare paths and file:/// URLs
 // resolve to file:/// absolute forms checked against the session scope via the
-// execenv.RootBoundary precedent (resolveShellWorkingDir). It rejects
+// attachment-specific execenv.RootBoundary check. It rejects
 // non-http(s)/file schemes and over-length url/label values.
 func canonicalSessionURL(raw, cwd string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
@@ -614,9 +614,9 @@ func canonicalHTTPURL(raw string) (string, error) {
 
 // canonicalFilePath resolves a bare path or file-URL path against cwd and
 // returns its file:/// absolute form, rejecting out-of-scope paths via the
-// execenv.RootBoundary precedent (the same symlink-aware escape check the
-// shell tool applies to a model-chosen cwd). file-URL callers pass the
-// decoded path, so encoded traversal is checked against the scoped hierarchy.
+// attachment-specific execenv.RootBoundary check, independent of command cwd
+// policy. File-URL callers pass the decoded path, so encoded traversal is
+// checked against the scoped hierarchy.
 // Bare-path callers pass literal filenames, including any percent signs.
 func canonicalFilePath(path, cwd, raw string) (string, error) {
 	if path == "" {
@@ -655,8 +655,8 @@ func canonicalFilePath(path, cwd, raw string) (string, error) {
 }
 
 // notesRootBoundary returns the RootBoundary view of a local execution
-// environment rooted at cwd, matching the securepath-backed check the shell
-// tool uses for cwd validation.
+// environment rooted at cwd, enforcing attachment scope independently of
+// the sandbox policy for file tools and command cwd.
 func notesRootBoundary(cwd string) (execenv.RootBoundary, bool) {
 	env := execenv.NewLocalExecutionEnvironment(cwd)
 	rb, ok := any(env).(execenv.RootBoundary)
