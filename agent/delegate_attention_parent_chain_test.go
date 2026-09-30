@@ -6,11 +6,8 @@ import "testing"
 // it can do that only for an idle one (idleDelegateRestoreCommit). A parent
 // that is running without a resident runtime (after a restart, until its
 // generation is recovered) makes every restore of the child fail target_busy.
-// The drive used to pick such a child anyway, pass after pass: selection
-// checked that its ancestors were resumable and not stopping, and nothing
-// about whether the chain could be restored. Now a child whose chain can't be
-// made resident waits, not selected and not runnable, until its parent is
-// resident or idle.
+// So a child whose chain can't be made resident waits, neither selected nor
+// runnable but still pending, until its parent is resident or idle.
 func TestAChildWaitsWhileItsParentIsRunningWithoutARuntime(t *testing.T) {
 	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
