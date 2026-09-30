@@ -14,7 +14,7 @@ import { AnsiOutputList } from "../AnsiOutputList";
 import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { flattenJobs, type ShellJobRow, shellJobMeta } from "./subagentModel";
+import { flattenJobs, type ShellJobRow, shellJobMeta, shellJobOwner } from "./subagentModel";
 import { type ShellJobOutput, useShellJobOutput } from "./useShellJobOutput";
 import { useFollowedSubagentTree } from "./useSubagentTree";
 
@@ -94,7 +94,7 @@ function JobFacts({ row, now }: { row: ShellJobRow; now: number }) {
 				</Text>
 			) : null}
 			<Text allowFontScaling={allowFontScaling} style={small}>
-				{`under ${row.owner}`}
+				{shellJobOwner(row)}
 			</Text>
 		</View>
 	);

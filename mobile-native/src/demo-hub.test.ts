@@ -300,13 +300,14 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 				const activity = flattenActivity(tree, coordinator);
 				expect(activity.filter(isSubagentRow)).toHaveLength(55);
 				// Its own finished build names it by its title, and a subagent's
-				// failed test names that subagent: never a ref.
+				// failed test names that subagent: never a ref. With every page
+				// loaded, every job can name who ran it.
 				const jobs = activity.filter(isJobRow);
 				const owned = jobs.map((row) => [row.title, row.state, row.owner]);
 				expect(owned).toContainEqual(["go build ./...", "done", coordinator]);
 				expect(owned).toContainEqual(["go test", "failed", "Fix race in tree settle"]);
 				const titles = new Set([coordinator, ...activity.filter(isSubagentRow).map((row) => row.title)]);
-				expect(jobs.filter((row) => !titles.has(row.owner))).toEqual([]);
+				expect(jobs.filter((row) => row.owner === undefined || !titles.has(row.owner))).toEqual([]);
 			} finally {
 				release();
 				await binding.setClient(null);
