@@ -111,7 +111,7 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 	}
 	defer childConfig.cleanup()
 	parentEnv := os.Environ()
-	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+	env := childConfig.environment(launchconfig.EnvInputs{
 		Resolved:            launchconfig.Resolved{},
 		RunDir:              h.RunDir,
 		StateDir:            stateDir,
@@ -119,7 +119,7 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 		ParentEnv:           parentEnv,
 		ProvidersConfigPath: childConfig.path,
 		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     childConfig.credentialsPath(h.CredentialsPath, parentEnv),
+		CredentialsPath:     h.CredentialsPath,
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
@@ -150,7 +150,7 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 	}
 	defer childConfig.cleanup()
 	parentEnv := os.Environ()
-	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+	env := childConfig.environment(launchconfig.EnvInputs{
 		Resolved:            launchconfig.Resolved{},
 		RunDir:              h.RunDir,
 		StateDir:            stateDir,
@@ -158,7 +158,7 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 		ParentEnv:           parentEnv,
 		ProvidersConfigPath: childConfig.path,
 		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     childConfig.credentialsPath(h.CredentialsPath, parentEnv),
+		CredentialsPath:     h.CredentialsPath,
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
@@ -201,7 +201,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	}
 	defer childConfig.cleanupUnowned()
 	parentEnv := os.Environ()
-	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
+	req.Env = childConfig.environment(launchconfig.EnvInputs{
 		Resolved:            req.Resolved,
 		ParentEnv:           parentEnv,
 		RunDir:              h.RunDir,
@@ -209,7 +209,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		HubToken:            h.HubToken,
 		ProvidersConfigPath: childConfig.path,
 		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     childConfig.credentialsPath(h.CredentialsPath, parentEnv),
+		CredentialsPath:     h.CredentialsPath,
 	})
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
@@ -263,7 +263,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	defer childConfig.cleanupUnowned()
 	parentEnv := os.Environ()
-	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
+	req.Env = childConfig.environment(launchconfig.EnvInputs{
 		Resolved:            req.Resolved,
 		ParentEnv:           parentEnv,
 		RunDir:              h.RunDir,
@@ -271,7 +271,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		HubToken:            h.HubToken,
 		ProvidersConfigPath: childConfig.path,
 		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     childConfig.credentialsPath(h.CredentialsPath, parentEnv),
+		CredentialsPath:     h.CredentialsPath,
 	})
 	if req.Provider != "" {
 		// The resume request carries the model the session persisted

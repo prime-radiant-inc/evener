@@ -35,7 +35,7 @@ and should not be presented as reproduced production incidents.
 | [C01](#c01-browser-first-connection) | High | First browser connection failure needs Retry | S02, S05 |
 | [C02](#c02-uncertain-session-creation) | High | Lost creation response means hunting for a session or creating a duplicate | S02, S03, S05, S06 |
 | [C03](#c03-transcript-repair-rereads) | Medium | A retained transcript can stay failed after its backing condition heals | S02, S03, S10 |
-| [C04](#c04-older-history-and-find) | Medium | One older-page failure stops browsing or Find | S02, S03, S10 |
+| [C04](#c04-older-history-and-find) | Medium | Native route disposal loses pending older-history and Find demand | S03, S10 |
 | [C05](#c05-native-outbox-convergence) | High | A queued message can remain parked after one proof-read failure | S03, S05, S11 |
 | [C06](#c06-rejected-image-message-recovery) | Medium | Rejected image messages cannot be restored intact for correction | S03, S11 |
 | [C07](#c07-model-discovery-and-default-launch) | Medium | Model discovery delays default launch and stays failed in an open form | S02, S03, S16 |
@@ -171,36 +171,38 @@ recovery requests.
 
 ### C04 Older history and Find
 
-**Current behavior.** Native remembers a failed older-page cursor in
-`readerPageAttempts`; subsequent top-scroll and Find cannot retry that cursor
-until the guard resets. Browser normal history already loads automatically, but
-its geometry-driven path stops on an error and offers Retry. Its separate
-near-top scroll path swallows a failed read and relies on another scroll event.
+**Current behavior.** Browser older-page demand survives transient failures,
+inactive panes and remounts. Native keeps browse and Find demand through
+backgrounding, pushed screens and connection replacement while its conversation
+screen remains mounted. Returning to Board removes that route; reopening the
+same chat creates a new local pager and clears the open Find query, so an
+outstanding older read does not resume. Reading-position restoration retains
+its anchor independently and does not retain pending demand.
 
-**Evidence.** Native
-[`loadOlderPage`](../../mobile-native/src/screens.tsx) retains the failed
-cursor in `readerPageAttempts`; `stepFind` in the same file checks that guard.
-Browser
-[LoadOlderRow](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/LoadOlderRow.tsx#L58)
-blocks automatic loading on error, while
-[useTranscriptScroll](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts#L1487)
-catches the raw loader's failure. `LoadOlderRow.test.tsx` pins Retry behavior.
+**Evidence.** The conversation header in
+[`ConversationScreen`](../../mobile-native/src/screens.tsx) calls
+`navigation.goBack`; [`BoardScreen`](../../mobile-native/src/board/BoardScreen.tsx)
+opens Conversation through the native stack in [App](../../mobile-native/App.tsx).
+The screen creates and closes its own conversation store and holds `FindState`
+in local state. [`useOlderHistory`](../../mobile-native/src/session/useOlderHistory.ts)
+creates a local retry owner. [`ReaderPositionRepository`](../../mobile-native/src/readerPosition.ts)
+retains the item anchor, binding, offset and last-seen turn, but no browse or
+search demand.
 
-**Decision.** Keep retrying a transient or unresolved older-history failure for
-as long as the user is actively waiting for that history or search result. Backoff
-bounds the request rate; a fixed attempt count or elapsed-time limit must not
-abandon the demand and require another interaction. Preserve demand when the
-view is inactive and resume recovery when it becomes active again. Keep loaded
-content and reading position usable throughout; Find must distinguish incomplete
-search from confirmed absence of matches. A proven permanent condition needs an
-accurate explanation rather than repeated identical requests. Implementation
-remains pending.
+**Decision.** Keep retrying transient or unresolved older-history demand for as
+long as the user is waiting for that history or search result. Backoff bounds
+rate without an attempt or duration limit. Preserve demand across leaving and
+returning, including route disposal and reopening the same chat. Keep loaded
+content and reading position usable, distinguish incomplete Find from confirmed
+absence of matches, and retain accurate permanent-condition explanations.
+Closing Find or jumping live cancels only the corresponding consumer's demand.
+The native route-disposal gap remains open.
 
-**Acceptance.** Fail an older page both once and through a prolonged outage, then
-restore reads without a scroll, click or reconnect event. The page appears and
-Find reaches a match or the confirmed end. Attempts slow during failure without
-being abandoned; there are no duplicate pages, jumps to live output, or false
-absence of matches. Leaving and returning preserves the outstanding demand.
+**Acceptance.** Fail an older page, leave for Board, restore reads and reopen the
+same chat without another scroll or Find action. Browse resumes and Find reaches
+a match or confirmed end with its query intact. No reads run for an inactive
+reader; return preserves backoff, anchors and consumer ownership. A genuinely
+different session binding cannot inherit the prior demand.
 
 ### C05 Native outbox convergence
 
@@ -1349,10 +1351,22 @@ unnecessary repeated permission or duplicate implementation rituals.
 
 These are useful patterns and preservation checks, rather than new fix requests.
 
-- Browser chat history already demand-pages, and
-  [`loadOlderTurns`](../../cmd/evener-hub/frontend/src/stores/threads.ts) refreshes
-  tracked history when `isStaleCursorError` identifies a stale cursor.
-  Native first connection and initial transcript reads already have retry owners.
+- Browser and native older-history demand uses
+  [`HistoryPaging`](../../appwire-client/typescript/historyPaging.ts), through
+  browser [`useTranscript`](../../cmd/evener-hub/frontend/src/panes/session/transcript/useTranscript.ts)
+  and native [`useOlderHistory`](../../mobile-native/src/session/useOlderHistory.ts).
+  Transient failures and unresolved reads retain demand with capped backoff and
+  no attempt limit. Hidden browser panes and inactive native screens retain
+  demand; active, connected readers resume it. Loaded content and reading
+  position remain with the existing stores and scroll owners. Find stays
+  incomplete until a match or confirmed history end; proven permanent failures
+  keep their explanations. Closing Find or jumping live cancels only that
+  consumer's demand. Fulfilled reads without cursor progress remain quiet and
+  paced rather than reporting a fetch failure. Native route disposal is the
+  remaining [C04](#c04-older-history-and-find) gap.
+- Browser [`loadOlderTurns`](../../cmd/evener-hub/frontend/src/stores/threads.ts)
+  refreshes tracked history when `isStaleCursorError` identifies a stale cursor.
+  Native first connection and initial transcript reads have separate retry owners.
   A fallback button by itself does not establish a manual-only experience.
 - Browser [IndexedDB recovery](../../cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts#L717)
   bounds opening and transaction stalls, retires stale handles and rejects late

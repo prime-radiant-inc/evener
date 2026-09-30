@@ -776,3 +776,43 @@ test("a committed ref change routes automatic demand to that ref with another re
   reader.unmount();
   other.unmount();
 });
+
+test("keeps fulfilled unresolved history quiet and paces geometry demand until it heals", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({
+    thread: testThread("ref_a", { turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] }),
+    olderCursor: "cursor_1",
+  }));
+  let attempts = 0;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    if (attempts === 1) return { data: [], nextCursor: "cursor_1" };
+    return { data: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }], nextCursor: undefined };
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const { result, unmount } = renderHook(() => useTranscript("ref_a"));
+  await act(async () => {
+    result.current.loadOlderReportingError();
+  });
+  expect(attempts).toBe(1);
+  expect(result.current.olderError).toBeNull();
+  expect(result.current.loadingOlder).toBe(true);
+  expect(result.current.model?.turns.map((turn) => turn.id)).toEqual(["turn_2"]);
+  await act(async () => {
+    for (let i = 0; i < 5; i += 1) result.current.loadOlderReportingError();
+    await vi.advanceTimersByTimeAsync(999);
+  });
+  expect(attempts).toBe(1);
+  expect(result.current.olderError).toBeNull();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(attempts).toBe(2);
+  expect(result.current.model?.turns.map((turn) => turn.id)).toEqual(["turn_1", "turn_2"]);
+  expect(result.current.loadingOlder).toBe(false);
+  expect(result.current.olderError).toBeNull();
+  unmount();
+});

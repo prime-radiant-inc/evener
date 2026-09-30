@@ -91,17 +91,18 @@ export class HistoryPaging {
     let failure: { error: unknown } | undefined;
     try {
       const page = this.pageKey();
-      if (page === undefined) throw new Error("Waiting for session history.");
-      if (page !== null) await this.loadPage();
+      if (page !== undefined && page !== null) await this.loadPage();
       const nextPage = this.pageKey();
-      if (nextPage === undefined || (page !== null && nextPage === page)) {
-        // A fulfilled request that did not advance history has not satisfied
-        // demand. Pace it like an unresolved read rather than spin.
-        throw new Error("Older history is not available yet.");
+      if (page === undefined || nextPage === undefined || (page !== null && nextPage === page)) {
+        // An unavailable or non-advancing page leaves demand unresolved, but
+        // only an actual rejected read belongs in the user-facing error state.
+        this.failures += 1;
+        settled = { loading: false, pending: this.consumers.size > 0, error: null, permanent: false };
+      } else {
+        this.failures = 0;
+        this.consumers.clear();
+        settled = { loading: false, pending: false, error: null, permanent: false };
       }
-      this.failures = 0;
-      this.consumers.clear();
-      settled = { loading: false, pending: false, error: null, permanent: false };
     } catch (error) {
       this.failures += 1;
       const permanent = isUpgradeRequiredError(error) || mutationErrorData(error)?.mutationOutcome === "targetDeleted";
