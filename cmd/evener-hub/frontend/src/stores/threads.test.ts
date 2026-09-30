@@ -19,12 +19,14 @@ import type {
   TurnStartResponse,
 } from "@evener/appwire-client";
 import {
+  acquireThreadSubscription,
   applyNotification,
   ClientNotReadyError,
   errorKind,
   hydrateThread,
   notificationTargetsThread,
   RequestTimeoutError,
+  type ThreadSubscriptionLease,
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
@@ -77,6 +79,15 @@ import {
   threadsStore,
   useThreadsStore,
 } from "./threads";
+
+const establishedMemberships: ThreadSubscriptionLease[] = [];
+async function establishMembership(fake: FakeClient, ref = "ref_a"): Promise<void> {
+  fake.on("thread/read", () => readResponse(ref));
+  const lease = acquireThreadSubscription(fake, ref);
+  establishedMemberships.push(lease);
+  await lease.ensure();
+  fake.calls.length = 0;
+}
 
 // flushUntil drains microtask turns until `done()` reports true (or a bounded
 // number of turns elapse, so a genuine hang fails fast instead of silently).
@@ -416,6 +427,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  for (const lease of establishedMemberships.splice(0)) lease.release();
   cleanup();
   restoreHydrationRetryScheduler?.();
   restoreHydrationRetryScheduler = null;
@@ -1498,6 +1510,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("a thread resync supersedes an initial same-epoch open hydration", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
 
@@ -1532,6 +1545,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("an initial open hydration rejection follows its same-epoch resync replacement", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
       reject: (error: Error) => void;
@@ -1577,6 +1591,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("an open lifecycle follows a newest resync after its failed predecessor already cleared ownership", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
       reject: (error: Error) => void;
@@ -1630,6 +1645,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("a published newest open resync survives later superseded rejections", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
       reject: (error: Error) => void;
@@ -2351,6 +2367,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("last release retires a pending hydrate before an immediate re-ensure starts a new lifecycle", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
 
@@ -2390,6 +2407,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("a retired ensure rejection does not consume a replacement lifecycle claim", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       resolve: (response: ThreadReadResponse) => void;
       reject: (error: Error) => void;
@@ -3880,9 +3898,7 @@ describe("reconnect resubscribe", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("");
 
     reconnectRead.resolve?.(authoritativeSnapshot);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.activeTurnId === undefined);
     const model = threadsStore.getState().threads.get("ref_a");
     expect(model?.activeTurnId).toBeUndefined();
     expect(model?.turns[0]?.status).toBe("completed");
@@ -7613,6 +7629,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("repeated thread resyncs keep rich watched hydration newest-wins in one epoch", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7667,6 +7684,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a rich watched hydration rejection follows its same-epoch resync replacement", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7714,6 +7732,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a rich watched lifecycle follows a newest resync after its failed predecessor cleared ownership", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7769,6 +7788,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a published newest rich watched resync survives later superseded rejections", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const reads: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7871,6 +7891,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a concurrent rich watch does not share an in-flight lean hydrate or lose its turns", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const pending: Array<{
       includeTurns: boolean;
       resolve: (response: ThreadReadResponse) => void;
@@ -7964,6 +7985,8 @@ describe("useThreadsStore.watchThread", () => {
     await flushUntil(() => pending.length === 1);
 
     const rich = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    expect(pending).toHaveLength(1); // Rich demand waits for the reconnect membership barrier.
+    pending[0]!.resolve(readResponse("ref_a", { turns: [] }));
     await flushUntil(() => pending.length === 2);
     expect(pending.map((request) => request.includeTurns)).toEqual([false, true]);
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(3);
@@ -7973,7 +7996,6 @@ describe("useThreadsStore.watchThread", () => {
         turns: [{ id: "turn_reconnect_rich", status: "completed", itemsView: "full", items: [] }],
       }),
     );
-    pending[0]!.resolve(readResponse("ref_a", { turns: [] }));
     await rich;
 
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
@@ -7986,6 +8008,7 @@ describe("useThreadsStore.watchThread", () => {
 
   test("a new watcher starts a fresh hydrate after the previous lifecycle is released", async () => {
     const fake = connectFakeClient();
+    await establishMembership(fake);
     const pending: Array<(response: ThreadReadResponse) => void> = [];
     fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => pending.push(resolve)));
 
@@ -15543,5 +15566,84 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     // exists.
     threadsStore.getState().releaseThread("ref_gone");
     expect(threadsStore.getState().threads.has("ref_gone")).toBe(false);
+  });
+});
+
+describe("pending shared membership acquisition", () => {
+  test("a resync surviving a timed-out first acquisition retries in its current owner", async () => {
+    const fake = connectFakeClient();
+    const initial = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () =>
+      ++reads === 1
+        ? initial.promise
+        : readResponse("ref_a", { turns: [{ id: "turn_current", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    const first = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads === 1);
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushMicrotasks();
+    expect(reads).toBe(1);
+    initial.reject(new RequestTimeoutError("first acquisition timed out"));
+    await flushUntil(() => scheduledHydrationRetries.length > 0);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    runScheduledHydrationRetry();
+    await first;
+    expect(reads).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_current");
+    expect(
+      fake.calls
+        .filter((call) => call.method === "thread/read")
+        .every((call) => (call.params as { subscribe: boolean }).subscribe),
+    ).toBe(true);
+    threadsStore.getState().releaseThread("ref_a");
+  });
+  test("a rich watcher surviving a failed lean acquisition retries with its required turns", async () => {
+    const fake = connectFakeClient(),
+      initial = deferred<ThreadReadResponse>();
+    const includes: boolean[] = [];
+    fake.on("thread/read", (params) => {
+      includes.push(params.includeTurns === true);
+      return includes.length === 1
+        ? initial.promise
+        : readResponse("ref_a", { turns: [{ id: "rich", status: "completed", itemsView: "full", items: [] }] });
+    });
+    const lean = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => includes.length === 1);
+    const rich = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushMicrotasks();
+    expect(includes).toEqual([false]);
+    initial.reject(new RequestTimeoutError("lean acquisition timed out"));
+    await flushUntil(() => scheduledHydrationRetries.length > 0);
+    runScheduledHydrationRetry();
+    await Promise.all([lean, rich]);
+    expect(includes).toEqual([false, true]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("rich");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
+  test("release and reacquire waits for pending membership and fences the retired model", async () => {
+    const fake = connectFakeClient(),
+      initial = deferred<ThreadReadResponse>(),
+      replacement = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () => (++reads === 1 ? initial.promise : replacement.promise));
+    const first = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads === 1);
+    threadsStore.getState().releaseThread("ref_a");
+    const second = threadsStore.getState().ensureThread("ref_a");
+    await flushMicrotasks();
+    expect(reads).toBe(1);
+    initial.resolve(
+      readResponse("ref_a", { turns: [{ id: "old", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await flushUntil(() => reads === 2);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    replacement.resolve(
+      readResponse("ref_a", { turns: [{ id: "new", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await Promise.all([first, second]);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("new");
+    threadsStore.getState().releaseThread("ref_a");
   });
 });
