@@ -113,6 +113,7 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 	if token.After.ID != "" {
 		start = sort.Search(len(keys), func(i int) bool { return !keys[i].before(token.After) }) - 1
 	}
+	pageBudget := newSessionActivityPageBudget(result)
 	for ; start >= 0 && read.budget > 0; start-- {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -136,9 +137,8 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 			}
 		}
 		result.Delegates = append(result.Delegates, projected)
-		encoded, _ := json.Marshal(result)
 		// Reserve room for the opaque continuation; never consume an excluded row.
-		if len(encoded) > sessionActivityPageBytes-2048 {
+		if !pageBudget.fits(projected, result) {
 			result.Delegates = result.Delegates[:len(result.Delegates)-1]
 			break
 		}

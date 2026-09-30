@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"slices"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -51,7 +50,8 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 		return result, err
 	}
 	result.Page.Issues = append([]appwire.SessionActivityIssue(nil), walk.Issues...)
-	if raw, _ := json.Marshal(result); len(raw) > sessionActivityPageBytes-2048 {
+	pageBudget := newSessionActivityPageBudget(result)
+	if pageBudget.bytes > sessionActivityPageBytes-2048 {
 		return result, appwire.Unavailable("session activity context and issues exceed response budget")
 	}
 	if !complete {
@@ -119,8 +119,7 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 			jm.mu.Unlock()
 		}
 		result.Watches = append(result.Watches, row)
-		raw, _ := json.Marshal(result)
-		if len(raw) > sessionActivityPageBytes-2048 {
+		if !pageBudget.fits(row, result) {
 			result.Watches = result.Watches[:len(result.Watches)-1]
 			if len(result.Watches) == 0 {
 				return result, appwire.Unavailable("session activity row exceeds response budget")
