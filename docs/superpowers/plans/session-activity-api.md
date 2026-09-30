@@ -104,13 +104,13 @@ through the existing session event bridge using a typed activity-change event
 carrying logical session ID and affected resources. Inform Task 3 of the exact
 event type/payload after its first commit.
 
-- [ ] Add `TestSessionActivityRealDelegateTree` with a scripted provider creating child and grandchild delegates. Assert stable identities, direct versus subtree ownership, and survival of an unavailable child runtime.
-- [ ] Add `TestSessionActivityWatchReceiverOwnership`: install a parent-owned child-source watch, assert it appears exactly once for the receiver, assert delivery/clear/end produces the correct invalidation, and distinguish retained unknown state from armed/ended.
-- [ ] Add cursor tests with 451 rows, large prose, creation and status updates between pages, unrelated-session/cross-resource tokens, journal replacement, deletion, and canceled cold reconstruction. Assert every retained identity is reachable once and continuation advances when no rows can yet be safely emitted.
-- [ ] Run `go test ./agent -run '^TestSessionActivity' -count=1`; record the intended red results.
-- [ ] Implement the four domain queries, narrow reusable row projections, and bounded disposable index/cursor state. Reuse the existing controller, shell store, watch receiver projection, bounded scanners, and incremental fold. Do not call the old recursive `JobActivityTree` to implement each new page.
-- [ ] Prove a summary does not load descendant journals and a warm page does not rescan its entire journal using counted fixture readers or existing scanner seams. Use real source data and no fake lifecycle owner.
-- [ ] Run focused tests and a targeted race run over the new shared read/index state. Commit in coherent increments, report public interface readiness, and retain red/green output in the report.
+- [x] Add `TestSessionActivityRealDelegateTree` with a scripted provider creating child and grandchild delegates. Assert stable identities, direct versus subtree ownership, and survival of an unavailable child runtime.
+- [x] Add `TestSessionActivityWatchReceiverOwnership`: install a parent-owned child-source watch, assert it appears exactly once for the receiver, assert delivery/clear/end produces the correct invalidation, and distinguish retained unknown state from armed/ended.
+- [x] Add cursor tests with 451 rows, large prose, creation and status updates between pages, unrelated-session/cross-resource tokens, journal replacement, deletion, and canceled cold reconstruction. Assert every retained identity is reachable once and continuation advances when no rows can yet be safely emitted.
+- [x] Run `go test ./agent -run '^TestSessionActivity' -count=1`; record the intended red results.
+- [x] Implement the four domain queries, narrow reusable row projections, and bounded disposable index/cursor state. Reuse the existing controller, shell store, watch receiver projection, bounded scanners, and incremental fold. Do not call the old recursive `JobActivityTree` to implement each new page.
+- [x] Prove a summary does not load descendant journals and a warm page does not rescan its entire journal using counted fixture readers or existing scanner seams. Use real source data and no fake lifecycle owner.
+- [x] Run focused tests and a targeted race run over the new shared read/index state. Commit in coherent increments, report public interface readiness, and retain red/green output in the report.
 
 ### Task 3: Daemon, hub, remote routing, and invalidations
 
