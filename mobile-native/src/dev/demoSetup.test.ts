@@ -1,7 +1,7 @@
 // The demo hub's answers for New session and the Hub (phase 5's Task 26):
 // every one is typed as its method's result in demoSetup.ts, so npm run check
 // holds them to the wire; these cases pin what the screenshots rely on.
-import { WireError } from "@evener/appwire-client";
+import { activeSourceLabel, WireError } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import { createDemoFleet } from "./demoFleet.js";
 import { createDemoSetup, DEMO_MODEL_PROVIDERS } from "./demoSetup.js";
@@ -132,7 +132,9 @@ describe("providers", () => {
 		const statuses = setup().answer("evener/auth/list", {}).providers;
 		expect(statuses.find((status) => status.provider === "codex-jesse-at-pr")?.email).toBe("jesse@example.com");
 		const instances = setup().answer("evener/instance/list", {}).instances;
-		expect(instances.find((instance) => instance.name === "codex-jesse-at-pr")?.storedEmail).toBe("jesse@example.com");
+		const signedIn = instances.find((instance) => instance.name === "codex-jesse-at-pr");
+		expect(signedIn?.storedEmail).toBe("jesse@example.com");
+		expect(signedIn && activeSourceLabel(signedIn)).toBe("Configured via OAuth (jesse@example.com)");
 	});
 });
 
