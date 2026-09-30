@@ -144,17 +144,40 @@ func (p *navigationProjector) projectArchivedNode(node hubcore.TreeNode, depth i
 	if !ok {
 		return summary, false
 	}
-	for _, child := range node.Children {
+	for index, child := range node.Children {
 		if child.Kind != "fork" {
 			continue
 		}
 		original, ok := p.projectArchivedNode(child, depth+1)
 		if !ok {
+			summary.OmittedDescendants += countArchivedForkNodes(node.Children[index:])
 			break
 		}
 		summary.Children = append(summary.Children, original)
 	}
 	return summary, true
+}
+
+// Count only the already-built fork branches eligible for archived discovery.
+// Delegate branches, including their own originals, are outside this scope.
+// Iteration keeps counting independent of the rendered tree's depth bound.
+func countArchivedForkNodes(rows []hubcore.TreeNode) int {
+	count := 0
+	pending := [][]hubcore.TreeNode{rows}
+	for len(pending) > 0 {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		for _, node := range current {
+			if node.Kind != "fork" {
+				continue
+			}
+			count++
+			if len(node.Children) > 0 {
+				pending = append(pending, node.Children)
+			}
+		}
+	}
+	return count
 }
 
 // ArchivedList serves evener/archived/list from the current core. It waits
