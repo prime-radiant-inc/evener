@@ -138,6 +138,9 @@ export function ModelSwitchTrigger({
         setError(null);
         setLoading(true);
         loadingRef.current = true;
+        // Nothing is on screen while this loads, and if it fails the error
+        // is: either way no list is left for a later reload to keep.
+        catalogRef.current = null;
       }
       try {
         const loaded = await loader(refresh);
@@ -202,7 +205,9 @@ export function ModelSwitchTrigger({
     if (refreshed && catalogRef.current !== null && !loadingRef.current) {
       void startLoad(loadGenerationRef.current, loadCatalog, true, true);
     } else {
-      void startLoad(loadGenerationRef.current, loadCatalog);
+      // Newer data still bypasses the caller's cache when there is no list
+      // to keep; a scope change alone reads through it.
+      void startLoad(loadGenerationRef.current, loadCatalog, refreshed || undefined);
     }
   }, [loadCatalog, refreshKey, open, startLoad]);
   useEffect(() => {

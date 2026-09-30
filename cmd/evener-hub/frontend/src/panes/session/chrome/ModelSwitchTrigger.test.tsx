@@ -441,3 +441,46 @@ test("a loader change that comes with a refresh key change reloads in place", as
   });
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
 });
+
+// A picker whose last load failed shows the error, not a list, so newer data
+// is a full load that can replace the error with the list.
+test("a refresh after a failed load replaces the error with the list", async () => {
+  const user = userEvent.setup();
+  let failing = false;
+  const loadCatalog = vi.fn(async () => {
+    if (failing) throw new WireError("hub unavailable", -32000);
+    return catalog();
+  });
+  const { props, rerender } = renderTrigger({ loadCatalog, refreshKey: 0 });
+  await user.click(screen.getByTestId("trigger"));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+  await user.keyboard("{Escape}");
+  failing = true;
+  await user.click(screen.getByTestId("trigger"));
+  await screen.findByText(/Couldn't load models/);
+
+  failing = false;
+  rerender(<ModelSwitchTrigger {...props} refreshKey={1} />);
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+  expect(screen.queryByText(/Couldn't load models/)).toBeNull();
+});
+
+// Newer data arriving while the first load is still out cannot keep a list
+// that is not on screen yet; it loads again, bypassing the caller's cache.
+test("a refresh key change while the first load is out reloads bypassing the cache", async () => {
+  const user = userEvent.setup();
+  let resolveFirst: (value: ModelCatalog) => void = () => {};
+  const loadCatalog = vi.fn(async (refresh?: boolean) => {
+    if (refresh) return catalog();
+    return new Promise<ModelCatalog>((resolve) => {
+      resolveFirst = resolve;
+    });
+  });
+  const { props, rerender } = renderTrigger({ loadCatalog, refreshKey: 0 });
+  await user.click(screen.getByTestId("trigger"));
+  rerender(<ModelSwitchTrigger {...props} refreshKey={1} />);
+  await waitFor(() => expect(loadCatalog).toHaveBeenLastCalledWith(true));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+  await act(async () => resolveFirst({ models: [], recent: [] }));
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+});

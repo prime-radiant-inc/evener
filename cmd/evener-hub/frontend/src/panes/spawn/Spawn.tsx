@@ -30,7 +30,7 @@ import {
   spliceSlashCommand,
   withPluginSelection,
 } from "@evener/appwire-client";
-import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
@@ -1052,12 +1052,7 @@ function SpawnForm({
     return tracked;
   }, [client, submittedSource, harness, cwd, providerSetup.instances, credentialsGeneration]);
   const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
-  // What moves the model list without moving its scope: a credential or model
-  // list change (credentialsGeneration) and the instance list it refetches.
-  // The model picker reloads in place on it, keeping its list up while the
-  // new one loads, where a harness, cwd or host change reloads from scratch.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the dependencies are the point; a new object marks each change
-  const modelListRevision = useMemo(() => ({}), [credentialsGeneration, providerSetup.instances]);
+  const modelListRevision = useSameScopeRevision(submittedSource, credentialsGeneration, providerSetup.instances);
   // Every model-valued control in the spawn pane consumes this one scoped
   // response. The same promise is shared with the default-model preview, so
   // opening a picker and resolving the working directory cannot issue
@@ -2848,4 +2843,24 @@ function SpawnForm({
       </ConfirmDialog>
     </PaneScaffold>
   );
+}
+
+/** useSameScopeRevision counts the changes to a model list that leave its
+ * scope alone: a new credential generation, or a new instance list for the
+ * same host. The model picker reloads in place when it moves, keeping its list
+ * up while the newer one loads. A host switch also brings the host's own
+ * instance list, but that is a new scope, so the count holds still and the
+ * picker's loader change alone reloads it from scratch. It is derived during
+ * render, before the effects that compare it, so the picker sees the count
+ * and the loader move in the same commit; recomputing it for the same inputs
+ * is a no-op. */
+function useSameScopeRevision(host: string, generation: number, instances: unknown): number {
+  const last = useRef({ host, generation, instances, revision: 0 });
+  const seen = last.current;
+  if (seen.host !== host) {
+    last.current = { host, generation, instances, revision: seen.revision };
+  } else if (seen.generation !== generation || seen.instances !== instances) {
+    last.current = { host, generation, instances, revision: seen.revision + 1 };
+  }
+  return last.current.revision;
 }

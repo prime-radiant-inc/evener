@@ -4522,6 +4522,34 @@ test("an open model picker updates in place when the hub announces a refreshed l
   expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
 });
 
+// A host switch is a new scope, not newer data: the picker drops the old
+// host's list and loads the new host's from scratch, even though the switch
+// also moves the instance list the in-place reload follows.
+test("switching host under an open model picker reloads it from scratch", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      // The remote host's model list never answers here, so the picker's
+      // state while it loads can be seen.
+      if (forwarded.method === "model/list") return new Promise(() => {});
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+  await user.click(modelTrigger());
+  await screen.findByRole("listbox", { name: "Model" });
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await act(async () => {});
+  expect(screen.queryByRole("listbox", { name: "Model" })).toBeNull();
+});
+
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
 //
 // The spawn pane is a dockview singleton (paneRegistry.ts: "focus existing
