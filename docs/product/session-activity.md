@@ -154,8 +154,11 @@ The [presentation adapter](../../appwire-client/typescript/sessionActivityPresen
 builds rendering models without network calls, retry timers or lifecycle
 authority. Loaded descendants whose parents have not arrived remain visible
 with incomplete relationship evidence. Rendering keys qualify resource IDs with
-their authoritative refs. API actions still use the raw logical ID and returned
-owner ref, not a rendering key. Optional usage fields stay absent when unknown.
+their authoritative refs. Actions keep the raw logical ID: job output uses the
+returned job owner ref, delegate stopping addresses its controller root, and a
+child transcript opens the returned child ref. A rendering key never becomes an
+action argument. The [delegate stop handler](../../server/appwire_runtime.go)
+checks that root mutation boundary. Optional usage fields stay absent when unknown.
 
 See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.ts),
 [lease tests](../../appwire-client/typescript/threadSubscription.test.ts) and
