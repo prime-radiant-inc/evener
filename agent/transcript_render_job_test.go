@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/fuzz/reflectfill"
 	"primeradiant.com/evener/llm"
 )
 
@@ -568,7 +569,7 @@ func TestPrettyJSON_NoHTMLEscaping(t *testing.T) {
 // marshalDelegateSendResult (the "delegate_send" tool, via the same
 // tool.StateResult path session_tool_round.go actually persists) — and asserts
 // every top-level key either marshaler ever emits is present in
-// jobResultKnownKeys. fillEveryField (agent/session_client_mutation_doctor_drift_test.go)
+// jobResultKnownKeys. reflectfill.Fill (fuzz/reflectfill)
 // sets every field to a non-zero value via reflection, so a field added to
 // either struct tomorrow is populated and checked with no edit to this test —
 // the next drift fails CI, named, instead of silently degrading rendering to a
@@ -578,7 +579,7 @@ func TestJobResultKnownKeysCoversLiveDelegateShapes(t *testing.T) {
 
 	t.Run("stableDelegateCreateResult via marshalStableDelegateCreateResult", func(t *testing.T) {
 		var out stableDelegateCreateResult
-		fillEveryField(t, reflect.ValueOf(&out).Elem(), "stableDelegateCreateResult")
+		reflectfill.Fill(t, reflect.ValueOf(&out).Elem(), "stableDelegateCreateResult")
 		// maxChars<=0 is unbounded (marshalBoundedJSON), so the fit-downgrade
 		// path never drops a field out of the fully-populated fixture.
 		wire, err := marshalStableDelegateCreateResult(out, 0)
@@ -590,7 +591,7 @@ func TestJobResultKnownKeysCoversLiveDelegateShapes(t *testing.T) {
 
 	t.Run("delegate_send result via marshalDelegateSendResult", func(t *testing.T) {
 		var res sendMessageResult
-		fillEveryField(t, reflect.ValueOf(&res).Elem(), "sendMessageResult")
+		reflectfill.Fill(t, reflect.ValueOf(&res).Elem(), "sendMessageResult")
 		value, err := marshalDelegateSendResult(res, 0)
 		if err != nil {
 			t.Fatalf("marshalDelegateSendResult: %v", err)
