@@ -464,8 +464,9 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		blocked, closedAncestorID := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID)
-		if !blocked || closedAncestorID != "" {
+		parentID := c.durable[delegateID].Descriptor.ParentDelegateID
+		blocked, closedAncestorID := c.ancestorFenceLocked(parentID)
+		if closedAncestorID != "" || !blocked && c.ancestorChainRestorableLocked(parentID) {
 			return true
 		}
 	}
@@ -512,13 +513,38 @@ func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, 
 	return delegateID, attentionID, true
 }
 
+// ancestorChainRestorableLocked reports whether a child's cold restore can
+// make its owner chain resident: walking up from parentID, each ancestor is
+// either resident already (residentDelegateRuntime's condition) or idle and
+// restorable (idleDelegateRestoreCommit's condition). A running ancestor
+// with no resident runtime (after a restart, until its generation is
+// recovered) fails every restore beneath it target_busy, so its descendants
+// wait rather than being selected pass after pass.
+func (c *delegateTreeController) ancestorChainRestorableLocked(parentID string) bool {
+	for ancestorID := parentID; ancestorID != ""; {
+		aggregate := c.durable[ancestorID]
+		if aggregate == nil {
+			return false
+		}
+		if live := c.live[ancestorID]; live != nil && live.runtime != nil && aggregate.Phase != delegatestore.PhaseClosed && aggregate.PendingStopSeq == 0 {
+			return true
+		}
+		if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(ancestorID) {
+			return false
+		}
+		ancestorID = aggregate.Descriptor.ParentDelegateID
+	}
+	return true
+}
+
 func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, string, bool) {
 	delegateIDs := make([]string, 0, len(c.attentionWakeIDs))
 	for delegateID, ids := range c.attentionWakeIDs {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		if blocked, _ := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID); blocked {
+		parentID := c.durable[delegateID].Descriptor.ParentDelegateID
+		if blocked, _ := c.ancestorFenceLocked(parentID); blocked || !c.ancestorChainRestorableLocked(parentID) {
 			continue
 		}
 		delegateIDs = append(delegateIDs, delegateID)
