@@ -1,9 +1,14 @@
 import type { CachedSessionRecord } from "@evener/appwire-client";
 import { IDBFactory } from "fake-indexeddb";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import { SessionCacheIndexedDB, type SessionCacheOpenDiagnostic } from "./sessionCacheIndexedDB";
 import { holdIndexedDBEvent, neverSettlingRequest } from "./testing/stalledIndexedDB";
+
+// These fixtures use millisecond 1_000 as "now", including opens whose expiry
+// sweep has no injected timestamp. Keep the real event-delivery timers.
+beforeEach(() => vi.spyOn(Date, "now").mockReturnValue(1_000));
+afterEach(() => vi.restoreAllMocks());
 
 function record(overrides: Partial<CachedSessionRecord> = {}): CachedSessionRecord {
   return {
@@ -210,6 +215,46 @@ function freshAdapter(): {
 }
 
 describe("SessionCacheIndexedDB get", () => {
+  it.each([
+    {},
+    { ...record().history, turns: null },
+    { ...record().history, turns: [null] },
+    { ...record().history, turns: [{ id: "t", status: "completed", items: {} }] },
+    { ...record().history, turns: [{ id: "t", status: "completed", items: [null] }] },
+    { ...record().history, epoch: "1" },
+  ])("deletes malformed nested history and its metadata: %j", async (history) => {
+    const { adapter, factory } = freshAdapter();
+    await seedRecord(adapter, factory, { ...record(), history } as CachedSessionRecord);
+    expect(await adapter.get("local:thr_1", 2_000)).toBeUndefined();
+    expect(await countStoreRows(factory, "records")).toBe(0);
+    expect(await countStoreRows(factory, "meta")).toBe(1);
+    adapter.close();
+  });
+
+  it("sweeps untouched expired rows on reopen before count, preserving the epoch", async () => {
+    const { adapter, factory, write } = freshAdapter();
+    await write(record({ savedAt: Date.now() - 15 * 24 * 60 * 60 * 1000 }));
+    await bumpEpochRow(factory, 7);
+    adapter.close();
+    const reopened = new SessionCacheIndexedDB({ indexedDB: factory });
+    expect(await reopened.count()).toBe(0);
+    expect(await countStoreRows(factory, "meta")).toBe(1);
+    expect(await reopened.put(record({ savedAt: Date.now() }), 0, Date.now())).toEqual({
+      outcome: "aborted",
+      observedEpoch: 7,
+    });
+    reopened.close();
+  });
+
+  it("sweeps untouched expired pairs in a deleteRecords write", async () => {
+    const { adapter, factory, write } = freshAdapter();
+    await write(record({ savedAt: Date.now() - 15 * 24 * 60 * 60 * 1000 }));
+    expect(await adapter.deleteRecords(["local:other"])).toBe(true);
+    expect(await countStoreRows(factory, "records")).toBe(0);
+    expect(await countStoreRows(factory, "meta")).toBe(1);
+    adapter.close();
+  });
+
   it("round-trips a record with identical history, and the epoch captured in the same transaction is 0 on a fresh database", async () => {
     const { adapter, write } = freshAdapter();
     await write(record());
@@ -308,6 +353,20 @@ describe("SessionCacheIndexedDB get", () => {
 });
 
 describe("SessionCacheIndexedDB put", () => {
+  it("caps UTF-8 payload bytes rather than UTF-16 code units", async () => {
+    const factory = new IDBFactory();
+    const adapter = new SessionCacheIndexedDB({ indexedDB: factory, maxBytes: 500 });
+    const small = record();
+    expect(await adapter.put(small, 0, 1_000)).toEqual({ outcome: "written" });
+    const large = record({ name: "界".repeat(100) });
+    expect(JSON.stringify(large).length).toBeLessThan(500);
+    expect(new TextEncoder().encode(JSON.stringify(large)).byteLength).toBeGreaterThan(500);
+    expect(await adapter.put(large, 0, 1_000)).toEqual({ outcome: "oversize" });
+    expect(await countStoreRows(factory, "records")).toBe(0);
+    expect(await countStoreRows(factory, "meta")).toBe(1);
+    adapter.close();
+  });
+
   it("replaces on a second write for the same ref, and meta bytes/savedAt follow", async () => {
     const { adapter, write } = freshAdapter();
     await write(record());

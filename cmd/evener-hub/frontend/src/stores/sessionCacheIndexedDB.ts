@@ -96,12 +96,53 @@ function transactionCompletion(transaction: IDBTransaction): Promise<void> {
 
 // The JSON boundary: a record is plain data. A row that fails to decode is a
 // miss, and the caller deletes it; storage never hands the store a value it
-// did not encode. `history` presence is the shape check.
+// did not encode. Check the required nested shape before the shell constructor
+// or position scanners can see it. Optional positions must also be usable.
 function decodeRecord(row: unknown): CachedSessionRecord | undefined {
-  const candidate = row as CachedSessionRecord | undefined;
-  if (candidate === undefined || typeof candidate !== "object") return undefined;
-  if (candidate.history === undefined || candidate.ref === undefined) return undefined;
-  return candidate;
+  if (!isObject(row)) return undefined;
+  if (![row.ref, row.threadId, row.name, row.modelProvider, row.model].every((value) => typeof value === "string")) {
+    return undefined;
+  }
+  if (!Number.isFinite(row.savedAt)) return undefined;
+  if (![row.imageSessionId, row.olderCursor].every((value) => value === undefined || typeof value === "string")) {
+    return undefined;
+  }
+  const history = row.history;
+  if (!isObject(history) || typeof history.bootGeneration !== "string") return undefined;
+  if (history.incarnation !== undefined && typeof history.incarnation !== "string") return undefined;
+  if (![history.epoch, history.length, history.appliedGeneration, history.issuedGeneration].every(Number.isFinite)) {
+    return undefined;
+  }
+  if (!Array.isArray(history.turns)) return undefined;
+  for (const turn of history.turns) {
+    if (
+      !isObject(turn) ||
+      typeof turn.id !== "string" ||
+      typeof turn.status !== "string" ||
+      !Array.isArray(turn.items)
+    ) {
+      return undefined;
+    }
+    for (const item of turn.items) {
+      if (
+        !isObject(item) ||
+        ![item.id, item.turnId, item.type, item.text].every((value) => typeof value === "string")
+      ) {
+        return undefined;
+      }
+      if (
+        item.position !== undefined &&
+        (!isObject(item.position) || !Number.isFinite(item.position.entry) || !Number.isFinite(item.position.item))
+      ) {
+        return undefined;
+      }
+    }
+  }
+  return row as unknown as CachedSessionRecord;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export class SessionCacheIndexedDB {
@@ -137,66 +178,63 @@ export class SessionCacheIndexedDB {
     // A readwrite transaction so an expired (or corrupt) row can be deleted
     // in the same step that found it: the guarantee is that an expired record
     // does not survive any storage access that sees it.
-    return this.#readwrite("get", async (tx) => {
-      const epochRow = await requestResult(
-        tx.objectStore(META_STORE).get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>,
-      );
-      const row = await requestResult(tx.objectStore(RECORDS_STORE).get(ref));
-      const record = decodeRecord(row);
-      if (record === undefined) {
-        if (row !== undefined) await this.#deleteRows(tx, ref); // corrupt: a miss, never a throw, never a leftover
-        return undefined;
-      }
-      const meta = await requestResult(tx.objectStore(META_STORE).get(ref) as IDBRequest<CacheMetaRow | undefined>);
-      if (meta !== undefined && meta.savedAt + TTL_MS <= now) {
-        await this.#deleteRows(tx, ref);
-        return undefined;
-      }
-      return { record, epoch: epochRow?.epoch ?? 0 };
-    });
+    return this.#readwrite(
+      "get",
+      async (tx) => {
+        const epochRow = await requestResult(
+          tx.objectStore(META_STORE).get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>,
+        );
+        const row = await requestResult(tx.objectStore(RECORDS_STORE).get(ref));
+        const record = decodeRecord(row);
+        if (record === undefined) {
+          if (row !== undefined) await this.#deleteRows(tx, ref); // corrupt: a miss, never a throw, never a leftover
+          return undefined;
+        }
+        const meta = await requestResult(tx.objectStore(META_STORE).get(ref) as IDBRequest<CacheMetaRow | undefined>);
+        if (meta !== undefined && meta.savedAt + TTL_MS <= now) {
+          await this.#deleteRows(tx, ref);
+          return undefined;
+        }
+        return { record, epoch: epochRow?.epoch ?? 0 };
+      },
+      now,
+    );
   }
 
   async put(record: CachedSessionRecord, scheduledEpoch: number, now: number): Promise<SessionCacheWriteOutcome> {
-    // bytes by construction: the meta row stores the encoded length; the body
-    // carries no bytes field of its own (a length stored inside the body it
-    // measures cannot be exact).
+    // UTF-8 JSON payload bytes, not JS UTF-16 code units or IndexedDB overhead.
     const encoded = JSON.stringify(record);
-    const bytes = encoded.length;
-    let observed = 0;
-    const written = await this.#readwriteOutcome("put", async (tx) => {
-      const metaStore = tx.objectStore(META_STORE);
-      const epochRow = await requestResult(metaStore.get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>);
-      observed = epochRow?.epoch ?? 0;
-      if (observed > scheduledEpoch) return { outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome;
+    const bytes = new TextEncoder().encode(encoded).byteLength;
+    return this.#readwriteOutcome(
+      "put",
+      async (tx) => {
+        const metaStore = tx.objectStore(META_STORE);
+        const epochRow = await requestResult(metaStore.get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>);
+        const observed = epochRow?.epoch ?? 0;
+        if (observed > scheduledEpoch)
+          return { outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome;
 
-      const rows = await requestResult(metaStore.getAll() as IDBRequest<CacheMetaRow[]>);
-      const live: CacheMetaRow[] = [];
-      for (const row of rows) {
-        if (row.ref === EPOCH_ROW_KEY) continue; // exempt by construction: no savedAt, never evicted or expired
-        if (row.savedAt + TTL_MS <= now) {
-          await this.#deleteRows(tx, row.ref); // expiry runs inside every write transaction
-          continue;
+        const rows = await requestResult(metaStore.getAll() as IDBRequest<CacheMetaRow[]>);
+        const live = rows.filter((row) => row.ref !== EPOCH_ROW_KEY);
+        if (bytes > this.#maxBytes) {
+          await this.#deleteRows(tx, record.ref); // a session that outgrew its cache leaves nothing stale behind
+          return { outcome: "oversize" } as SessionCacheWriteOutcome;
         }
-        live.push(row);
-      }
-      if (bytes > this.#maxBytes) {
-        await this.#deleteRows(tx, record.ref); // a session that outgrew its cache leaves nothing stale behind
-        return { outcome: "oversize" } as SessionCacheWriteOutcome;
-      }
-      const previous = live.find((row) => row.ref === record.ref);
-      if (previous) live.splice(live.indexOf(previous), 1); // a re-write replaces its own accounting
-      metaStore.put({ ref: record.ref, bytes, savedAt: record.savedAt } satisfies CacheMetaRow);
-      tx.objectStore(RECORDS_STORE).put(JSON.parse(encoded) as CachedSessionRecord);
-      let total = live.reduce((sum, row) => sum + row.bytes, 0) + bytes;
-      live.sort((a, b) => a.savedAt - b.savedAt); // whole-record LRU by last write
-      for (const victim of live) {
-        if (total <= this.#maxBytes) break;
-        await this.#deleteRows(tx, victim.ref);
-        total -= victim.bytes;
-      }
-      return { outcome: "written" } as SessionCacheWriteOutcome;
-    });
-    return written ?? ({ outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome);
+        const previous = live.find((row) => row.ref === record.ref);
+        if (previous) live.splice(live.indexOf(previous), 1); // a re-write replaces its own accounting
+        metaStore.put({ ref: record.ref, bytes, savedAt: record.savedAt } satisfies CacheMetaRow);
+        tx.objectStore(RECORDS_STORE).put(JSON.parse(encoded) as CachedSessionRecord);
+        let total = live.reduce((sum, row) => sum + row.bytes, 0) + bytes;
+        live.sort((a, b) => a.savedAt - b.savedAt); // whole-record LRU by last write
+        for (const victim of live) {
+          if (total <= this.#maxBytes) break;
+          await this.#deleteRows(tx, victim.ref);
+          total -= victim.bytes;
+        }
+        return { outcome: "written" } as SessionCacheWriteOutcome;
+      },
+      now,
+    );
   }
 
   // The commit-observed clear: one readwrite transaction deletes every
@@ -261,13 +299,27 @@ export class SessionCacheIndexedDB {
     void tx.objectStore(META_STORE).delete(ref);
   }
 
+  async #sweepExpired(tx: IDBTransaction, now: number): Promise<void> {
+    const rows = await requestResult(tx.objectStore(META_STORE).getAll() as IDBRequest<CacheMetaRow[]>);
+    for (const row of rows) {
+      if (row.ref !== EPOCH_ROW_KEY && row.savedAt + TTL_MS <= now) await this.#deleteRows(tx, row.ref);
+    }
+  }
+
   #transaction<T>(stores: string[], mode: IDBTransactionMode, body: (tx: IDBTransaction) => Promise<T>): Promise<T> {
     return trackProjectionWork(this.#runTransaction(stores, mode, body));
   }
 
-  async #readwrite<T>(_label: string, body: (tx: IDBTransaction) => Promise<T>): Promise<T | undefined> {
+  async #readwrite<T>(
+    _label: string,
+    body: (tx: IDBTransaction) => Promise<T>,
+    now = Date.now(),
+  ): Promise<T | undefined> {
     try {
-      return await this.#transaction([RECORDS_STORE, META_STORE], "readwrite", body);
+      return await this.#transaction([RECORDS_STORE, META_STORE], "readwrite", async (tx) => {
+        await this.#sweepExpired(tx, now);
+        return body(tx);
+      });
     } catch {
       return undefined; // every failure is a miss; the diagnostic seam carries the why
     }
@@ -284,12 +336,17 @@ export class SessionCacheIndexedDB {
   async #readwriteOutcome(
     operation: "put",
     body: (tx: IDBTransaction) => Promise<SessionCacheWriteOutcome>,
+    now: number,
   ): Promise<SessionCacheWriteOutcome> {
-    const outcome = await this.#readwrite(operation, async (tx) => {
-      const result = await body(tx);
-      this.#beforeCommit?.(operation);
-      return result;
-    });
+    const outcome = await this.#readwrite(
+      operation,
+      async (tx) => {
+        const result = await body(tx);
+        this.#beforeCommit?.(operation);
+        return result;
+      },
+      now,
+    );
     return outcome ?? { outcome: "failed" };
   }
 
@@ -302,6 +359,15 @@ export class SessionCacheIndexedDB {
     body: (tx: IDBTransaction) => Promise<T>,
   ): Promise<T> {
     const database = await this.#open();
+    return this.#onDatabaseTransaction(database, stores, mode, body);
+  }
+
+  async #onDatabaseTransaction<T>(
+    database: IDBDatabase,
+    stores: string[],
+    mode: IDBTransactionMode,
+    body: (tx: IDBTransaction) => Promise<T>,
+  ): Promise<T> {
     const tx = database.transaction(stores, mode);
     const work = body(tx);
     const completion = transactionCompletion(tx);
@@ -387,19 +453,17 @@ export class SessionCacheIndexedDB {
       request.addEventListener(
         "success",
         () => {
-          clearTimeout(timer);
           const database = request.result;
           // A close() (or a newer attempt) superseded this open, or the
           // watchdog abandoned it: never install the late connection. Close
           // it so nothing outlives the adapter's lifecycle, and fail this
           // call, which reads as a miss.
           if (abandoned || this.#databasePromise !== opening) {
+            clearTimeout(timer);
             database.close();
             reject(new Error("session cache open was superseded"));
             return;
           }
-          this.#database = database;
-          this.#databasePromise = undefined;
           database.addEventListener("versionchange", () => {
             // Another connection is taking the database to a new version, so
             // this one must close. No versionchange transaction is in
@@ -409,7 +473,26 @@ export class SessionCacheIndexedDB {
             this.#retire(database);
           });
           database.addEventListener("close", () => this.#retire(database));
-          resolve(database);
+          void this.#onDatabaseTransaction(database, [RECORDS_STORE, META_STORE], "readwrite", (tx) =>
+            this.#sweepExpired(tx, Date.now()),
+          ).then(
+            () => {
+              clearTimeout(timer);
+              if (abandoned || this.#databasePromise !== opening) {
+                database.close();
+                reject(new Error("session cache open was superseded"));
+                return;
+              }
+              this.#database = database;
+              this.#databasePromise = undefined;
+              resolve(database);
+            },
+            (error: unknown) => {
+              clearTimeout(timer);
+              database.close();
+              reject(error);
+            },
+          );
         },
         { once: true },
       );
