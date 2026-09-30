@@ -70,7 +70,7 @@ and should not be presented as reproduced production incidents.
 | [T05](#t05-approval-scope-and-lifetime) | Medium (deferred) | Narrow one-call approval paths repeatedly interrupt authorized work | S12, S14 |
 | [U01](#u01-tui-uncertain-submission) | High | A lost send acknowledgement becomes a manual new submission | S04, S05, S11 |
 | [U02](#u02-tui-failed-submission-attachments) | High | Preserving a newer draft discards the older failed submission's images | S04, S11 |
-| [D01](#d01-diagnostic-repair-authority) | Medium | Bundled repair instructions prohibit product fixes and require byte-identical voting | S21 |
+| [D01](#d01-diagnostic-repair-authority) | Medium (deferred) | Bundled repair instructions prohibit product fixes and require byte-identical voting | S21 |
 
 ## Clients and everyday work
 
@@ -89,13 +89,21 @@ constructs the replacement; native
 [hubConnection](../../mobile-native/src/hubConnection.ts#L195) retries itself.
 `ConnectionBanner.test.tsx` tests the manual replacement path.
 
-**Discuss.** Give browser startup a continuing retry owner with capped backoff,
-online/focus triggers, and cancellation when replaced. Decide how authentication
-and protocol incompatibility affect retry; preserve route and draft.
+**Decision.** The browser automatically recovers a failed first connection.
+Retain one startup retry owner with paced, capped backoff and no attempt or
+elapsed-time limit for recoverable failures. Preserve the route and draft while
+the hub is unavailable; online or focus events can advance recovery without
+creating competing clients. Replacement or explicit cancellation ends the old
+owner's attempts. Show quiet connection progress rather than requiring Retry to
+restart recovery. An actual authentication or protocol requirement must remain
+accurate and actionable; a transport failure alone does not require user
+intervention. Implementation remains pending.
 
 **Acceptance.** Open the browser while the hub is unavailable, then restore the
-hub without touching the page. Exactly one client becomes usable and the user's
-work remains intact.
+hub without touching the page, including after a prolonged outage. Exactly one
+client becomes usable and the user's work remains intact. Repeated focus events
+and late results from a replaced client cannot create duplicate connections or
+overwrite the active client's state. Successful connection retires recovery.
 
 ### C02 Uncertain session creation
 
@@ -1335,12 +1343,23 @@ The Go [TurnStart client](../../appwire/client.go#L589) has no retained pending
 mutation coordinator for this path. Existing steer-notification reconciliation
 does not establish safe resend of turn/start.
 
-**Discuss.** Retain input and identity, establish the server outcome, and retry
-automatically when acceptance is proven absent. Align terminal behavior with the
-same exactly-once user intent used by durable client queues.
+**Discuss.** Treat each Send as one retained intent: preserve its exact text,
+attachments, target identity and mutation ID independently of the current
+composer before transmission. An interrupted response leaves the submission
+pending while the client automatically establishes the authoritative outcome.
+An accepted request settles without another turn; a proven unaccepted, still
+valid request retries with its original identity and payload. An unknown outcome
+keeps paced reconciliation active instead of becoming a new submission. A
+definitive rejection retains the complete composition for correction. Explicit
+Stop or cancellation prevents further automatic dispatch, and any newer draft
+remains independent. Reuse the existing mutation receipt and deduplication
+contracts; one user send must not become two accepted turns because a response
+was lost.
 
 **Acceptance.** Lose a send response after acceptance, reconnect, and obtain one
-turn with correct composer state. No manual comparison or new mutation identity
+turn with correct composer state. Also recover a send interrupted before
+acceptance, retain both the original composition and a newer draft, and stop
+automatic dispatch when canceled. No manual comparison or new mutation identity
 is needed to recover the original submission.
 
 ### U02 TUI failed submission attachments
@@ -1357,15 +1376,25 @@ removes those origins. Existing
 `TestHubModelFailureRestorePreservesNewerAttachments` protect the newer
 draft rather than recovery of the older failed composition.
 
-**Discuss.** Retain failed submissions independently of the currently edited
-draft, including media ownership, until sent, restored or deliberately discarded.
-Preserving new work must not consume older unresolved work.
+**Decision.** Preserve failed submissions independently of the currently edited
+draft, including their text, image order, image references and ownership of the
+original media. Keep each composition recoverable until accepted, safely
+restored or explicitly discarded. Restoring an older submission must preserve
+any newer draft; retaining the newer draft must not delete the older
+submission's temporary image files. Release media only when its recovery owner
+has completed or another owner has safely retained it. Implementation remains
+pending.
 
 **Acceptance.** Send A with an image, type draft B before A fails, and recover A.
 Both compositions and the exact original image bytes remain available through
 the chosen recovery flow.
 
 ### D01 Diagnostic repair authority
+
+**Deferred.** Diagnostic repair authority is outside the active work queue.
+Keep the bundled repair policy unchanged and retain this evidence for a later
+discussion. Do not schedule changes to the doctor's authority or validation
+workflow unless the user resumes this case.
 
 **Current behavior.** The bundled doctor repair guide prohibits product-code
 fixes within its healing authority. Even proposed fixes to the doctor's own Go
@@ -1379,7 +1408,7 @@ define the voting gate and
 The read-only forensic APIs remain useful; the question concerns repair workflow
 authority and validation, not mutating evidence during diagnosis.
 
-**Discuss.** Keep diagnosis inspectable while allowing a clear handoff to a
+**When revisited.** Keep diagnosis inspectable while allowing a clear handoff to a
 repair-capable workflow within the user's authorization. Decide whether behavioral
 evidence and review provide a better acceptance criterion than byte agreement
 between generated candidates. These bundled instructions remain unchanged until
