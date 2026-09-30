@@ -58,13 +58,11 @@ describe("the list's items", () => {
 	});
 
 	it("opens done in place, and shows a filtered state as its own section", () => {
-		expect(shape(activityListItems(rows, { ...view, doneOpen: true })).slice(-2)).toEqual(
-			["fold:1:true", "Tests pass"],
-		);
-		expect(shape(activityListItems(rows, { ...view, filter: "done" }))).toEqual([
-			"done:1",
+		expect(shape(activityListItems(rows, { ...view, doneOpen: true })).slice(-2)).toEqual([
+			"fold:1:true",
 			"Tests pass",
 		]);
+		expect(shape(activityListItems(rows, { ...view, filter: "done" }))).toEqual(["done:1", "Tests pass"]);
 	});
 
 	it("counts what the search matches, drops empty sections, and ends with what couldn't be listed", () => {
@@ -164,10 +162,7 @@ describe("shell jobs in the list", () => {
 			"Check drain ordering",
 			"Run linux -race",
 		]);
-		expect(shape(activityListItems(all, { ...view, query: "npm" }))).toEqual([
-			"running:1",
-			"Serving the docs",
-		]);
+		expect(shape(activityListItems(all, { ...view, query: "npm" }))).toEqual(["running:1", "Serving the docs"]);
 	});
 
 	it("keys a job apart from any subagent", () => {

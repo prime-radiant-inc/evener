@@ -430,7 +430,9 @@ describe("shell jobs in the Activity list", () => {
 	it("reads a job to VoiceOver with how it ended, even a clean finish", () => {
 		const [running, finished] = flattenJobs(activityTree(), COORDINATOR);
 		if (!running || !finished) throw new Error("no jobs");
-		expect(shellJobLabel(running, NOW)).toBe("Shell job, Serving the docs, running, 2 minutes, under Get PR 2138 Test Clean");
+		expect(shellJobLabel(running, NOW)).toBe(
+			"Shell job, Serving the docs, running, 2 minutes, under Get PR 2138 Test Clean",
+		);
 		expect(shellJobLabel(finished, NOW)).toBe(
 			"Shell job, go test ./agent/..., Command failed, 1 minute, under Fix race in tree settle",
 		);
