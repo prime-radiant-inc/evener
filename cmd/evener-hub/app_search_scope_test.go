@@ -440,6 +440,33 @@ func TestHubSearchOmitsALiveSubagentFromTheLiveGroup(t *testing.T) {
 	}
 }
 
+// The other half of the subagent rule: a session a live parent reports as its
+// running child is excluded even when its own meta has not reached the past
+// index yet (hubcore.RunningSubagentIDs). That branch fires first for a
+// just-created child, so it needs its own case: with only the meta check, the
+// child would reappear as a needs-you top-level hit.
+func TestHubSearchOmitsALiveChildReportedAsARunningSubagent(t *testing.T) {
+	const (
+		parentID = "02wMz5TxvParentRunning"
+		childID  = "02wMz5TxvChildRunning"
+	)
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{
+			PID: 1, WorkingDir: "/projects/alpha", SessionID: parentID, Status: appwire.ThreadStatusIdle,
+			RunningSubagentIDs: []string{childID},
+		},
+		hubcore.LiveEntry{PID: 2, WorkingDir: "/projects/alpha", SessionID: childID, Status: appwire.ThreadStatusAwaiting},
+	)
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Roster: roster}, appwire.SearchParams{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An empty query admits every live session, so both are candidates.
+	if got := searchIDs(resp.Live); len(got) != 1 || got[0] != parentID {
+		t.Fatalf("live = %v, want only the parent %s: a child a live entry reports in RunningSubagentIDs is not a top-level hit", got, parentID)
+	}
+}
+
 // The primary production configuration (a roster and a message index both
 // configured) must find a live session whose only match is its message text:
 // it is listed once, in Live order ahead of ended sessions, not duplicated as
