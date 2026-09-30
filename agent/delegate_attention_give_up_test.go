@@ -298,6 +298,36 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		fenced.closeParent(t)
 		return fenced
 	}
+	// stableRetry reads the root's stable attention retry: the delay it will
+	// wait next and whether it is armed.
+	stableRetry := func(fenced fencedGrandchildAttention) (time.Duration, bool) {
+		fenced.root.attentionMu.Lock()
+		defer fenced.root.attentionMu.Unlock()
+		return fenced.root.stableAttentionRetry.delay, fenced.root.stableAttentionRetry.active
+	}
+	// makeGrandchildTranscriptUnreadable sets the grandchild transcript aside
+	// and puts a directory in its place, which stats fine and fails the read.
+	// The returned func puts the transcript back.
+	makeGrandchildTranscriptUnreadable := func(t *testing.T, fenced fencedGrandchildAttention) (restore func()) {
+		t.Helper()
+		grandchildTranscript := transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)
+		setAside := grandchildTranscript + ".aside"
+		if err := os.Rename(grandchildTranscript, setAside); err != nil {
+			t.Fatalf("set the grandchild transcript aside: %v", err)
+		}
+		if err := os.Mkdir(grandchildTranscript, 0o755); err != nil {
+			t.Fatalf("put a directory in place of the grandchild transcript: %v", err)
+		}
+		return func() {
+			t.Helper()
+			if err := os.Remove(grandchildTranscript); err != nil {
+				t.Fatalf("remove the directory in the transcript's place: %v", err)
+			}
+			if err := os.Rename(setAside, grandchildTranscript); err != nil {
+				t.Fatalf("restore the grandchild transcript: %v", err)
+			}
+		}
+	}
 
 	t.Run("transcript present: handed to the root", func(t *testing.T) {
 		fenced := parkedUnderClosedParent(t)
@@ -336,10 +366,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		// The delegate already said it is undeliverable; its failed
 		// escalation must not re-arm the retry, or the drive re-runs it
 		// every backoff tick forever.
-		fenced.root.attentionMu.Lock()
-		retryArmed := fenced.root.stableAttentionRetry.active
-		fenced.root.attentionMu.Unlock()
-		if retryArmed {
+		if _, retryArmed := stableRetry(fenced); retryArmed {
 			t.Fatal("a parked delegate's failed escalation armed the stable attention retry")
 		}
 		if got := logged.String(); !strings.Contains(got, "delegate attention failed") || !strings.Contains(got, "no such file or directory") {
@@ -355,27 +382,15 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		fenced := parkedUnderClosedParent(t)
 		clk := agenttest.NewFakeClock()
 		fenced.root.clock = clk
-		grandchildTranscript := transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)
-		if err := os.Remove(grandchildTranscript); err != nil {
-			t.Fatalf("remove grandchild transcript: %v", err)
-		}
-		// A directory in the transcript's place stats fine and fails the read.
-		if err := os.Mkdir(grandchildTranscript, 0o755); err != nil {
-			t.Fatalf("put a directory in place of the grandchild transcript: %v", err)
-		}
+		makeGrandchildTranscriptUnreadable(t, fenced)
 
 		fenced.root.drivePendingStableDelegateAttention()
-		retryDelay := func() (time.Duration, bool) {
-			fenced.root.attentionMu.Lock()
-			defer fenced.root.attentionMu.Unlock()
-			return fenced.root.stableAttentionRetry.delay, fenced.root.stableAttentionRetry.active
-		}
-		if _, active := retryDelay(); !active {
+		if _, active := stableRetry(fenced); !active {
 			t.Fatal("a parked delegate's escalation failing on an unreadable transcript did not arm the retry")
 		}
 		clk.Advance(jobNotificationRetryInitialDelay)
 		clk.Drain()
-		if delay, _ := retryDelay(); delay != 2*jobNotificationRetryInitialDelay {
+		if delay, _ := stableRetry(fenced); delay != 2*jobNotificationRetryInitialDelay {
 			t.Fatalf("retry delay after one failed pass = %v, want it backed off to %v", delay, 2*jobNotificationRetryInitialDelay)
 		}
 	})
@@ -387,40 +402,21 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		fenced := parkedUnderClosedParent(t)
 		clk := agenttest.NewFakeClock()
 		fenced.root.clock = clk
-		grandchildTranscript := transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)
-		setAside := grandchildTranscript + ".aside"
-		if err := os.Rename(grandchildTranscript, setAside); err != nil {
-			t.Fatalf("set the grandchild transcript aside: %v", err)
-		}
-		// A directory in the transcript's place stats fine and fails the read.
-		if err := os.Mkdir(grandchildTranscript, 0o755); err != nil {
-			t.Fatalf("put a directory in place of the grandchild transcript: %v", err)
-		}
+		restoreTranscript := makeGrandchildTranscriptUnreadable(t, fenced)
 		fenced.root.drivePendingStableDelegateAttention()
 		clk.Advance(jobNotificationRetryInitialDelay)
 		clk.Drain()
-		fenced.root.attentionMu.Lock()
-		backedOff := fenced.root.stableAttentionRetry.delay
-		fenced.root.attentionMu.Unlock()
-		if backedOff != 2*jobNotificationRetryInitialDelay {
+		if backedOff, _ := stableRetry(fenced); backedOff != 2*jobNotificationRetryInitialDelay {
 			t.Fatalf("this test is not in the state it means to be: retry delay after one failed pass = %v, want %v", backedOff, 2*jobNotificationRetryInitialDelay)
 		}
-		if err := os.Remove(grandchildTranscript); err != nil {
-			t.Fatalf("remove the directory in the transcript's place: %v", err)
-		}
-		if err := os.Rename(setAside, grandchildTranscript); err != nil {
-			t.Fatalf("restore the grandchild transcript: %v", err)
-		}
+		restoreTranscript()
 
 		fenced.root.drivePendingStableDelegateAttention()
 
 		if owed, parked := fenced.owedAndParked(); owed || parked {
 			t.Fatalf("after escalation: owed=%t parked=%t, want neither", owed, parked)
 		}
-		fenced.root.attentionMu.Lock()
-		delay := fenced.root.stableAttentionRetry.delay
-		fenced.root.attentionMu.Unlock()
-		if delay != jobNotificationRetryInitialDelay {
+		if delay, _ := stableRetry(fenced); delay != jobNotificationRetryInitialDelay {
 			t.Fatalf("retry delay after the escalation succeeded = %v, want it reset to %v", delay, jobNotificationRetryInitialDelay)
 		}
 	})
