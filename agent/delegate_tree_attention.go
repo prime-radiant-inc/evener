@@ -337,8 +337,9 @@ func (c *delegateTreeController) delegateAttentionRestored(delegateID string) {
 	delete(c.attentionRestoreFailures, delegateID)
 }
 
-// parkDelegateAttention takes delegateID out of the drive until new attention
-// arrives for it (noteDelegateAttentionLocked) or the daemon restarts. It
+// parkDelegateAttention stops the drive's cold restores of delegateID until
+// new attention arrives for it (noteDelegateAttentionLocked) or the daemon
+// restarts (coldRestoreDriveCandidateLocked says what the park leaves). It
 // reports whether this call parked it, so overlapping passes say so once.
 func (c *delegateTreeController) parkDelegateAttention(delegateID string) bool {
 	c.mu.Lock()

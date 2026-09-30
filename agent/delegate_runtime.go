@@ -1218,9 +1218,9 @@ func (s *Session) delegateAttentionGiveUpAfter() int {
 // owed attention to the root, the way attention a closed ancestor fences off
 // is escalated: the root receives each message under its original identity
 // and the source is resolved, so nothing is dropped. When the hand-over
-// fails too, the delegate is parked, out of the drive until new attention
-// arrives or the daemon restarts, and the session says so once at every
-// level and in the daemon log.
+// fails too, the delegate is parked, out of the drive's cold restores until
+// new attention arrives or the daemon restarts, and the session says so once
+// at every level and in the daemon log.
 func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	plan, ok := s.delegateController.giveUpAttentionPlan(delegateID)
 	if !ok {
