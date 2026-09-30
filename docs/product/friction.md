@@ -413,15 +413,18 @@ The [MCP tool callback](../../agent/internal/mcp/manager.go#L405) emits recovery
 before making the retry and separately returns its actual result.
 This is a source-traced presentation path; visual/device qualification remains.
 
-**Discuss.** Give successful repair structured informational meaning and a quiet
+**Decision.** Give successful repair structured informational meaning and a quiet
 diagnostic record, available in full/detail views without attention styling in
 the normal conversation. State only what recovered: a restored connection does
 not prove that the retried operation succeeded. Keep an actual failed tool call,
 ongoing interruption or required sign-in accurately represented in its own
-result or status.
+result or status. Implementation remains pending.
 
 **Acceptance.** After a dropped MCP connection recovers, both clients show normal
 operation with inspectable recovery history and no failure styling for success.
+Verify both direct warning items and their system-notice representation: normal
+views do not draw attention to the success, and full/detail views render it
+quietly.
 Make the retried operation fail after reconnect: its real failure remains visible
 and the connection-recovery record does not claim the operation succeeded.
 
@@ -449,8 +452,7 @@ transfers a recovery owner that checks authoritative remote state and preserves
 per-entry outcomes. Establish what landed before considering another write;
 respect newer credentials, changed host registration and cancellation. A socket
 replacement alone must not turn known success into an unresolved operation.
-Keep this separate from C08's setup navigation and from any permission-policy
-redesign.
+Setup navigation is covered separately by C08.
 
 **Acceptance.** Complete a transfer and reconnect to the same hub and host: its
 report remains available. Lose the response after a remote write: recovery
