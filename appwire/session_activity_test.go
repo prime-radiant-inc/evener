@@ -254,3 +254,32 @@ func TestSessionActivityCursorErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionActivityAncestryCompleteness(t *testing.T) {
+	t.Parallel()
+	for _, known := range []bool{false, true} {
+		payload, err := json.Marshal(map[string]any{"ref": "local:child", "sessionId": "child", "rootRef": "local:root", "epoch": "source", "availability": "retained", "ancestors": []any{}, "ancestryKnown": known})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var context SessionActivityContext
+		if err := json.Unmarshal(payload, &context); err != nil {
+			t.Fatal(err)
+		}
+		result, err := json.Marshal(context)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(result, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		var got bool
+		if err := json.Unmarshal(decoded["ancestryKnown"], &got); err != nil {
+			t.Fatalf("ancestry completeness must be explicit: %v", err)
+		}
+		if got != known {
+			t.Fatalf("ancestryKnown=%v, want %v", got, known)
+		}
+	}
+}
