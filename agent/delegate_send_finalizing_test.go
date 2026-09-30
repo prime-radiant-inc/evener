@@ -226,13 +226,8 @@ func TestDelegateSendThatOutwaitsTheReleaseIsARefusal(t *testing.T) {
 // the send's own look at the child.
 func TestDelegateSendToABusyChildTheControllerCantSeeIsARefusal(t *testing.T) {
 	t.Parallel()
-	held := holdDelegateFinalizing(t)
+	held := holdDelegateReleasedByTheController(t)
 	defer held.release()
-	if held.child == nil {
-		t.Fatal("the held delegate's child was never published")
-	}
-	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation}
-	reportFinalizeTailDone(t, held.s.delegateController, lease, held.child.sess)
 	// The controller no longer holds the delegate, so a refusal can only
 	// come from the send's own look at the child.
 	assertStartAdmitted(t, held.s.delegateController, held.delegateID, "once the controller has released the finalization")
@@ -294,6 +289,28 @@ func reportFinalizeTailDone(t *testing.T, c *delegateTreeController, lease deleg
 	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
 		t.Fatalf("ReportFinalizationQuiesced: %v", err)
 	}
+}
+
+// holdDelegateReleasedByTheController holds a delegate finalizing, with its
+// child published, and reports the tail done to the controller: the
+// controller admits a start while the child's own finalize tail is still
+// held. The caller defers release.
+func holdDelegateReleasedByTheController(t *testing.T) finalizingDelegate {
+	t.Helper()
+	held := holdDelegateFinalizing(t)
+	ready := false
+	defer func() {
+		if !ready {
+			held.release()
+		}
+	}()
+	if held.child == nil {
+		t.Fatal("the held delegate's child was never published")
+	}
+	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation}
+	reportFinalizeTailDone(t, held.s.delegateController, lease, held.child.sess)
+	ready = true
+	return held
 }
 
 func assertStartRefused(t *testing.T, c *delegateTreeController, delegateID, why string) {
@@ -639,13 +656,8 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 // trySetDisposeGate gating the child for disposal.
 func TestDelegateSendToAChildThatTurnsBusyCommitsNothing(t *testing.T) {
 	t.Parallel()
-	held := holdDelegateFinalizing(t)
+	held := holdDelegateReleasedByTheController(t)
 	defer held.release()
-	if held.child == nil {
-		t.Fatal("the held delegate's child was never published")
-	}
-	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation}
-	reportFinalizeTailDone(t, held.s.delegateController, lease, held.child.sess)
 	updateSessionTestConfig(held.s, func(cfg *testConfig) {
 		cfg.delegateSendChildResolved = func(sub *subagent) {
 			sub.mu.Lock()
@@ -672,14 +684,9 @@ func TestDelegateSendToAChildThatTurnsBusyCommitsNothing(t *testing.T) {
 // refused, so it can't gate a child that has just been handed a generation.
 func TestDelegateSendHoldsAResidentChildsGuardThroughItsCommit(t *testing.T) {
 	t.Parallel()
-	held := holdDelegateFinalizing(t)
+	held := holdDelegateReleasedByTheController(t)
 	defer held.release()
-	if held.child == nil {
-		t.Fatal("the held delegate's child was never published")
-	}
 	c := held.s.delegateController
-	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, c, held.delegateID).Generation}
-	reportFinalizeTailDone(t, c, lease, held.child.sess)
 	var guardTaken, probed, disposalWon atomic.Bool
 	updateSessionTestConfig(held.s, func(cfg *testConfig) {
 		cfg.delegateSendChildResolved = func(*subagent) { guardTaken.Store(true) }
@@ -716,13 +723,8 @@ func TestDelegateSendHoldsAResidentChildsGuardThroughItsCommit(t *testing.T) {
 // would keep every later drive off it.
 func TestDelegateSendReleasesAResidentReplacedAfterItsCommit(t *testing.T) {
 	t.Parallel()
-	held := holdDelegateFinalizing(t)
+	held := holdDelegateReleasedByTheController(t)
 	defer held.release()
-	if held.child == nil {
-		t.Fatal("the held delegate's child was never published")
-	}
-	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation}
-	reportFinalizeTailDone(t, held.s.delegateController, lease, held.child.sess)
 	resident := held.child
 	// The replacement is busy, so the send refuses it after the commit and
 	// nothing runs on either.
