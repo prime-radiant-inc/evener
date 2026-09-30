@@ -200,6 +200,9 @@ The retry loop splits reads from writes; the flaky test needs a fixed seed.
 		// The bare stop packet's stub phrase is machinery, not a report: the
 		// headline carries the stop and the stub never renders.
 		expect(renderedText(tree)).not.toContain("stopped by parent");
+		// The humanized ending says who stopped it - the hub's static head
+		// shows the same words, and the raw stub stays retired.
+		expect(renderedText(tree)).toContain("stopped by its coordinator");
 	});
 
 	it.each([

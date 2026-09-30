@@ -1629,6 +1629,36 @@ test("a plain JSON report with a non-array artifacts stays whole", () => {
   expect(n?.structuredResult).toBeUndefined();
 });
 
+// The default schema types artifacts as an array of strings
+// (definitions.go:647-651), so a real capture can never carry non-string
+// artifacts - a result that does is a schema's own shape and stays whole.
+test("a schema result whose artifacts are not strings stays whole", () => {
+  const whole = { message: "Read.", data: { rows: 1 }, artifacts: [1] };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(whole),
+        structured_result: whole,
+        structured_result_valid: true,
+        metadata: { outcome: "completed", name: "task12-artifacts" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(whole);
+});
+
+// A legacy attribute frame's raw reason code never reaches the head: the
+// secondary carries identity only, so an unlabeled frame's static head has
+// no code to render and a labeled one's head composes the ending words.
+test("a legacy failed frame's secondary carries no reason code", () => {
+  const [n] = notificationsOf(
+    parseSteeringNotifications('<delegate-notification status="failed" reason="exit_nonzero"></delegate-notification>'),
+  );
+  expect(n?.reason).toBe("exit_nonzero");
+  expect(n?.secondary).toBe("");
+});
+
 // The packet's ending is display prose - the one reason-shaped value a phone
 // line can say beneath a headline. A legacy attribute frame's `reason` is the
 // producer's raw code (exit_nonzero, stopped_by_parent) and never earns that

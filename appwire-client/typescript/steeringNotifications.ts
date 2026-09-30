@@ -272,9 +272,10 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   const description = decodeNotificationEntities(attrs.description ?? "").trim();
   const status = (attrs.status || attrs.event || "notification").trim();
   const reason = attrs.reason?.trim();
-  const secondary = [description || delegateId, tone === "error" || tone === "warning" ? reason : ""]
-    .filter(Boolean)
-    .join(" · ");
+  // The secondary carries identity only: a legacy frame's reason attr is a raw
+  // producer code, and a code never reaches the screen (the packet path's
+  // heads compose the humanized ending instead - see delegatePacketNotification).
+  const secondary = description || delegateId || "";
   return {
     type: "delegate",
     title: status ? `Delegate ${status}` : "Delegate notification",
@@ -418,7 +419,16 @@ function isDefaultEnvelopeCopy(result: Record<string, unknown>, envelope: { mess
   // ride with different surrounding whitespace.
   const captureMessage = result.message.trim();
   if (captureMessage !== "" && captureMessage !== envelope.message) return false;
-  if (!isPlainObject(result.data) || !Array.isArray(result.artifacts)) return false;
+  // The default schema types artifacts as an array of strings, so a real
+  // capture's artifacts are always string[] - non-string artifacts mark a
+  // schema result that merely wears the envelope's shape.
+  if (
+    !isPlainObject(result.data) ||
+    !Array.isArray(result.artifacts) ||
+    !result.artifacts.every((item) => typeof item === "string")
+  ) {
+    return false;
+  }
   return Object.keys(result).every((key) => DEFAULT_ENVELOPE_KEYS.has(key));
 }
 
