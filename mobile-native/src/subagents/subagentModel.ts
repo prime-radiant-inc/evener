@@ -21,6 +21,7 @@ import {
 	jobIsFailed,
 	jobStatusDisplay,
 	plainQuoteLine,
+	shellJobState,
 } from "@evener/appwire-client";
 import { compactDuration, spokenDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
@@ -143,11 +144,6 @@ export interface ShellJobRow {
 
 /** A row of the Activity list. */
 export type ActivityListRow = SubagentRow | ShellJobRow;
-
-function shellJobState(job: ActivityJob): SubagentState {
-	if (jobIsFailed(job)) return "failed";
-	return job.terminal ? "done" : "running";
-}
 
 /** Every subagent and shell job in the tree, depth first in the tree's own
  * order, each once; a subagent another subagent started names its parent,
@@ -396,39 +392,27 @@ export function matchesSearch(row: ActivityListRow, query: string): boolean {
 	return words.some((text) => text.toLowerCase().includes(needle));
 }
 
-/** How an ended shell job ended, in words: "Command failed" or "Command
- * killed" (jobStatusDisplay), "Stopped" or "Cancelled", else its state's word
- * ("Failed", "Done"). */
-export function shellJobEnding(row: ShellJobRow): string {
-	const { status, reason } = row.job;
-	const display = jobStatusDisplay(status, reason);
-	if (display !== status) return display;
-	if (status === "stopped") return "Stopped";
-	if (status === "cancelled") return "Cancelled";
-	return subagentStateWord(row.state);
-}
-
 /** A shell job's status in parts, which its meta and its spoken label each
- * word their own way: while it runs, its status (jobStatusDisplay) and how
- * long it has been quiet; once it ends, how it ended and how long it ran.
- * `clean` marks a job that finished well, whose ending the meta leaves to
- * its hue. */
+ * word their own way: while it runs, its status (jobStatusDisplay, the shared
+ * words) and how long it has been quiet; once it ends, the same status words
+ * and how long it ran. `clean` marks a job that finished well, whose status
+ * the meta leaves to its hue. */
 function shellJobStatus(row: ShellJobRow, now: number): { words: string; clean: boolean; ms: number | null } {
 	const { job } = row;
+	const words = jobStatusDisplay(job.status, job.reason);
 	if (!job.terminal) {
 		const since = time(job.lastOutputAt) ?? time(job.startedAt);
 		return {
-			words: jobStatusDisplay(job.status, job.reason),
+			words,
 			clean: false,
 			ms: since === null ? null : Math.max(0, now - since),
 		};
 	}
-	const words = shellJobEnding(row);
 	const started = time(job.startedAt);
 	const ended = time(job.endedAt);
 	return {
 		words,
-		clean: words === subagentStateWord("done"),
+		clean: job.status === "completed",
 		ms: started === null || ended === null ? null : Math.max(0, ended - started),
 	};
 }
