@@ -185,6 +185,9 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 	if required && inst.CredentialSource == "none" {
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage), nil
 	}
+	// Noted before the client is built: the client reads the credential, and
+	// a write that lands after that read must void this probe's outcome.
+	probe := c.beginCredentialProbe(name)
 	childConfig, err := prepareChildProviderConfig(c.providersConfigPath, c.noUserLayer, c.reg, nil)
 	if err != nil {
 		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage), nil
@@ -206,7 +209,6 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 		}
 	}
 
-	probe := c.beginCredentialProbe(name)
 	probeCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), credentialTestTimeout)
 	defer cancel()
 	listing, err := client.Models(probeCtx, name)

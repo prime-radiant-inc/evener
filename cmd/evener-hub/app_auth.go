@@ -1606,8 +1606,8 @@ func (c *hubAuthController) credentialStatusKeyed(key []byte, inst registry.Inst
 		// The stored OAuth record could not be read (neither absent nor
 		// corrupt). Report the row with the failure in Error rather than
 		// dropping it - one source of the redesign spec's "Error" provider
-		// status (section 12), beside a rejected credential. Write paths read through
-		// openAIInstanceStatus directly, so they still get the error.
+		// status (section 12), beside a rejected credential. Write paths read
+		// through openAIInstanceStatus directly, so they still get the error.
 		_, hasFile := c.storedKey(inst.Name)
 		return appwire.AuthStatusResponse{
 			Provider:      inst.Name,

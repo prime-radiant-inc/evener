@@ -1401,6 +1401,10 @@ func removeApplied(err error) error {
 // the discriminator).
 // Nothing it calls takes credMu, which the caller still holds.
 func (c *hubInstancesController) moveCredentials(oldName, newName string) error {
+	// The credential leaves oldName and arrives under newName: neither name
+	// holds the credential a provider rejected any more.
+	c.auth.forgetCredentialRejection(oldName)
+	c.auth.forgetCredentialRejection(newName)
 	var problems []string
 	// A backstop for the rename flow's own up-front refusal: with no usable
 	// store there is no Move to make, and dereferencing the nil store would
@@ -2113,6 +2117,7 @@ func (e removalLeftoversError) Error() string { return e.problems }
 // in place - rewriting either would be a false alarm on a disk that is already
 // refusing writes.
 func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
+	c.auth.forgetCredentialRejection(name)
 	var deleted deletedCredentials
 	// A backstop for the removal flow's own up-front refusal (see
 	// requireCredentialStore): the read below must not dereference a nil store,

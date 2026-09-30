@@ -10,8 +10,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -147,7 +150,10 @@ func TestCredentialRejection_TestConnectionRecordsARejectedCredential(t *testing
 			if got != tc.want {
 				t.Fatalf("error = %q, want %q", got, tc.want)
 			}
-			status, _ := c.Status(appwire.AuthStatusParams{Provider: "gateway"})
+			status, err := c.Status(appwire.AuthStatusParams{Provider: "gateway"})
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
 			encoded, err := json.Marshal(status)
 			if err != nil {
 				t.Fatal(err)
@@ -223,6 +229,17 @@ func TestCredentialRejection_CredentialWritesClearIt(t *testing.T) {
 		}},
 		{name: "clear key", write: func(c *hubAuthController) error {
 			_, err := c.ApiKeyClear(appwire.AuthApiKeyClearParams{Provider: "gateway"})
+			return err
+		}},
+		{name: "conditional set", write: func(c *hubAuthController) error {
+			resp, err := c.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{Provider: "gateway", Value: "sk-pushed"})
+			if err == nil && resp.Action != appwire.ApiKeyConditionalSetActionUpdated {
+				return fmt.Errorf("conditional set action = %q (%s), want it to write", resp.Action, resp.Reason)
+			}
+			return err
+		}},
+		{name: "logout", write: func(c *hubAuthController) error {
+			_, err := c.Logout(appwire.AuthLogoutParams{Provider: "gateway"})
 			return err
 		}},
 	}
@@ -324,5 +341,74 @@ func TestCredentialRejection_TestRPCBroadcastsAuthUpdated(t *testing.T) {
 	got := waitForAuthUpdated(t, client)
 	if got.Provider != "gateway" {
 		t.Fatalf("auth/updated = %+v, want it to name gateway", got)
+	}
+}
+
+// Removing or renaming an instance moves or deletes its credential without a
+// credential write, so those paths drop the rejection too. Without that, the
+// record outlives the credential: putting the same key back under the same
+// name out of band (here, straight into the store) brings the old rejection
+// back with it.
+func TestCredentialRejection_InstanceRemovalAndRenameDropIt(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*hubInstancesController) error
+		undo   func(*credentials.Store) error
+	}{
+		{
+			name: "remove",
+			mutate: func(c *hubInstancesController) error {
+				_, err := c.removeCredentials("gateway")
+				return err
+			},
+			undo: func(store *credentials.Store) error { return store.Set("gateway", rejectionSecret) },
+		},
+		{
+			name:   "rename",
+			mutate: func(c *hubInstancesController) error { return c.moveCredentials("gateway", "renamed") },
+			undo:   func(store *credentials.Store) error { return store.Move("renamed", "gateway") },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newRejectionController(t, &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil)})
+			testGateway(t, c)
+			if gatewayError(t, c) == "" {
+				t.Fatal("precondition: the 401 was not recorded")
+			}
+			if err := tc.mutate(&hubInstancesController{auth: c}); err != nil {
+				t.Fatalf("mutate: %v", err)
+			}
+			if err := tc.undo(c.creds); err != nil {
+				t.Fatalf("undo: %v", err)
+			}
+			if err := c.reloadRegistry(); err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if got := gatewayError(t, c); got != "" {
+				t.Fatalf("error = %q: the rejection outlived the %s", got, tc.name)
+			}
+		})
+	}
+}
+
+// With no fingerprint key the hub serves no configuration revision, so a
+// rejection could not tell its own configuration from another; it is not
+// recorded at all.
+func TestCredentialRejection_NoRevisionRecordsNothing(t *testing.T) {
+	c, _ := newRejectionController(t, &credentialProbeFakeClient{listErr: llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil)})
+	// A state root that is a file, not a directory, is one no fingerprint
+	// key can be resolved under.
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.stateDir = blocked
+	if key, err := resolveEndpointFingerprintKey(c.stateDir); err == nil && len(key) > 0 {
+		t.Fatal("precondition: a fingerprint key resolved under a file")
+	}
+	testGateway(t, c)
+	if got := gatewayError(t, c); got != "" {
+		t.Fatalf("error = %q recorded with no configuration revision", got)
 	}
 }

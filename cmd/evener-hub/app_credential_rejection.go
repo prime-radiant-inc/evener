@@ -65,9 +65,14 @@ func credentialRejectedMessage(status int) string {
 // provider rejected, by instance name. A rejection holds only while the
 // instance's credential configuration revision is the one it was seen under
 // (a new endpoint or source is not the credential that was refused), and any
-// credential write for the instance drops it. It is not persisted: a hub
-// restart forgets it, and the next probe finds it again, which is safer than
-// carrying a rejection across an environment the hub no longer reads.
+// credential write the hub makes for the instance drops it, as does removing
+// or renaming the instance. It is not persisted: a hub restart forgets it, and
+// the next probe finds it again, which is safer than carrying a rejection
+// across an environment the hub no longer reads.
+//
+// The revision does not cover the secret itself, so a key another process
+// writes straight into credentials.toml leaves the rejection standing until
+// the next probe that reaches the provider, or a restart.
 type credentialRejections struct {
 	mu sync.Mutex
 	// writes counts credential writes. A probe notes it when it starts and
@@ -108,10 +113,14 @@ func (c *hubAuthController) beginCredentialProbe(name string) credentialProbeSta
 // since the probe started voids its outcome. A change is announced through
 // credentialRejectionChanged; the caller must not hold credMu, since the
 // announcement reads the instance's status.
+//
+// A probe with no revision (the hub could not resolve its fingerprint key)
+// records nothing: its rejection could not tell the configuration it was
+// about from any other.
 func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) {
 	status, rejected := credentialRejectionStatus(err)
 	verified := err == nil && listing.Live
-	if !rejected && !verified {
+	if (!rejected && !verified) || start.revision == "" {
 		return
 	}
 	r := &c.rejections

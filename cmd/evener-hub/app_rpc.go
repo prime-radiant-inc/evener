@@ -2007,7 +2007,8 @@ func registerThreadHandlers(
 func registerAuthHandlers(server *appserver.Server, authController *hubAuthController) {
 	// A credential rejection appearing or clearing changes the instance's
 	// status (its Error) with no write behind it, so it is announced the way a
-	// write is: clients re-read statuses on evener/auth/updated.
+	// write is: clients re-read statuses on evener/auth/updated. It is set here,
+	// before the server serves, and never again: probes read it unlocked.
 	authController.credentialRejectionChanged = func(name string) {
 		status, err := authController.Status(appwire.AuthStatusParams{Provider: name})
 		if err != nil {
