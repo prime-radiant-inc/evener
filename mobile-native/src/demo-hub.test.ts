@@ -289,6 +289,7 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 	// page loaded, as the list loads them while you scroll.
 	it("lists Get PR 2138 Test Clean's 55 subagents, and who ran each shell job, over a real socket", async () => {
 		await withFleetHub(async (_hub, client) => {
+			const coordinator = "Get PR 2138 Test Clean";
 			const binding = new SubagentTree(PR2138, demoSessionId("s-pr2138"));
 			const release = binding.observeActivity();
 			try {
@@ -296,15 +297,15 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 				for (let page = 0; page < 5 && binding.getSnapshot().hasMore; page++) await binding.loadMore();
 				const tree = binding.getSnapshot().tree;
 				if (!tree) throw new Error("no tree");
-				const activity = flattenActivity(tree, "Get PR 2138 Test Clean");
+				const activity = flattenActivity(tree, coordinator);
 				expect(activity.filter(isSubagentRow)).toHaveLength(55);
 				// Its own finished build names it by its title, and a subagent's
 				// failed test names that subagent: never a ref.
 				const jobs = activity.filter(isJobRow);
 				const owned = jobs.map((row) => [row.title, row.state, row.owner]);
-				expect(owned).toContainEqual(["go build ./...", "done", "Get PR 2138 Test Clean"]);
+				expect(owned).toContainEqual(["go build ./...", "done", coordinator]);
 				expect(owned).toContainEqual(["go test", "failed", "Fix race in tree settle"]);
-				const titles = new Set(["Get PR 2138 Test Clean", ...activity.filter(isSubagentRow).map((row) => row.title)]);
+				const titles = new Set([coordinator, ...activity.filter(isSubagentRow).map((row) => row.title)]);
 				expect(jobs.filter((row) => !titles.has(row.owner))).toEqual([]);
 			} finally {
 				release();

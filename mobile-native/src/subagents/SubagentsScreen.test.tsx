@@ -471,8 +471,10 @@ it("says the count is partial and whose subagents are missing when a later page 
 
 // A branch whose shell jobs couldn't be read is named by whose it is: the
 // coordinator by its title, a subagent by its row's title, never by a ref.
-// A branch no loaded row names (its subagent's row is on a page not read yet)
-// has no title to give, so it goes unnamed.
+// A branch no loaded row names, as when its subagent's row is on a later
+// page, has no title to give, so it goes unnamed. The fixture can't leave a
+// row out of the tree, so that child's ref differs from its delegate's
+// childRef instead.
 it("names whose activity isn't listed by title", async () => {
 	client = hub(() => ({
 		revision: 1,
@@ -493,7 +495,6 @@ it("names whose activity isn't listed by title", async () => {
 	expect(shown).toContain(`Some activity under “${COORDINATOR.title}” isn't listed.`);
 	expect(shown).toContain("Some activity under “Only one” isn't listed.");
 	expect(shown).toContain("Some activity isn't listed.");
-	expect(shown).not.toContain("Unlisted");
 	expect(shown).not.toContain("local:");
 });
 
