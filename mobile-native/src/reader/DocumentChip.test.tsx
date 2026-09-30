@@ -128,9 +128,12 @@ it("keeps its two lines from the start, so it never grows when its summary lands
 	const tree = chip();
 	// Only the file name is known: the second line is held empty.
 	expect(lines(tree)).toHaveLength(2);
+	const held = lines(tree)?.[1];
 	await settle();
-	expect(lines(tree)).toHaveLength(2);
-	expect(renderedText(tree)).toContain("142 lines");
+	// The summary fills the line that was held, rather than adding one.
+	const filled = lines(tree)?.[1];
+	expect(filled).toBe(held);
+	expect(filled?.children.filter((child) => typeof child === "string").join("")).toContain("142 lines");
 });
 
 it("opens when pressed", async () => {
