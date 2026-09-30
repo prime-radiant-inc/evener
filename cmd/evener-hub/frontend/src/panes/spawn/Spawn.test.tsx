@@ -6602,6 +6602,525 @@ test("choosing a non-local host sends source and persists it in the draft", asyn
   expect(completionDraft("/tmp/host-target").fields.getState().source).toBe("buildbox");
 });
 
+// --- host picker: the working directory is resolved over the selected host ---
+
+// The working directory a new session is seeded with belongs to the machine the
+// session starts on. Switching the Host picker re-resolves it over the SELECTED
+// host alone: that host is asked whether it has the directory, and a refusal
+// re-seeds it from that host's own default - its home, resolved over THAT host
+// through evener/path/validate's "~" expansion - so neither the controller's
+// default nor the previous host's value can ride to a machine that does not
+// have it.
+/** A host-routed path/validate call: the resolution a switch is made of. */
+function routedPathValidations(fake: FakeClient, host: string): { path?: string }[] {
+  return fake.calls
+    .filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as HostRequestParams).host === host &&
+        (call.params as HostRequestParams).method === "evener/path/validate",
+    )
+    .map((call) => (call.params as HostRequestParams).params as { path?: string });
+}
+
+/** readyClient for a host that has only its own home: its path/validate answers
+ * "~" with `home` and refuses every other path, the way a real host answers for
+ * a directory that belongs to another machine. */
+function readyClientWithRemoteHome(home: string): FakeClient {
+  return readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/path/validate") {
+        const path = (forwarded.params as { path?: string } | undefined)?.path;
+        return path === "~"
+          ? { path: home, valid: true }
+          : { path: path ?? "", valid: false, error: "no such file or directory" };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+}
+
+test("switching the host re-seeds the working directory from the selected host", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // The controller's default working directory (spawnDefaults'
+  // GLOBAL_WORKING_DIR_KEY): what a fresh /new seeds when the URL names no dir.
+  localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/tmp/controller-default");
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  window.history.pushState({}, "", "/new");
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/tmp/controller-default");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // The switch asks the SELECTED host about the controller's directory...
+  expect(routedPathValidations(fake, "buildbox").some((params) => params.path === "/tmp/controller-default")).toBe(
+    true,
+  );
+  // ...and, refused, resolves that host's own home over that host. The
+  // directory shown and seeded for the new session is the host's.
+  expect(routedPathValidations(fake, "buildbox").some((params) => params.path === "~")).toBe(true);
+  expectWorkingDir("/home/buildbox");
+  expect(workingDir().textContent).not.toContain("/tmp/controller-default");
+});
+
+test("switching back to local restores the controller's own default directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/tmp/controller-default");
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  // ...and that home is not a directory on the controller either.
+  fake.on("evener/path/validate", ({ path }) =>
+    path === "/home/buildbox" ? { path, valid: false, error: "no such file or directory" } : { path: "", valid: true },
+  );
+  window.history.pushState({}, "", "/new");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/home/buildbox");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await settled();
+
+  // The reverse switch resolves the directory over the local host too: refused
+  // here, it re-seeds the controller's own default - the same value a fresh
+  // local mount seeds - and never keeps the previous host's path.
+  expectWorkingDir("/tmp/controller-default");
+  expect(workingDir().textContent).not.toContain("/home/buildbox");
+  // Local keeps its current behavior: its own resolution is the plain call,
+  // never a forwarded one.
+  expect(routedPathValidations(fake, "local")).toEqual([]);
+});
+
+test("a host switch moves the draft's typed state to the selected host's directory", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/typed-before-switch");
+  renderSpawn(fake);
+  await settled();
+  await fillPrompt(user, "typed before the switch");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/home/buildbox");
+
+  // The re-seed moves the draft to the selected host's directory: the person's
+  // typed state travels with it (a reconnect/host move is not a discard).
+  expect(promptField().value).toBe("typed before the switch");
+  expect(completionDraft("/home/buildbox").fields.getState().prompt).toBe("typed before the switch");
+  expect(spawnDraftsStore.getState().drafts.has("/tmp/typed-before-switch")).toBe(false);
+});
+
+test("a same-host re-read neither re-resolves nor discards the working directory", async () => {
+  const sources = [
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ] as const;
+  seedSources([...sources]);
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/reconnect-a");
+  const mounted = renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/home/buildbox");
+  const resolutions = routedPathValidations(fake, "buildbox").filter((params) => params.path === "~").length;
+  expect(resolutions).toBe(1);
+
+  // A reconnect re-seeds the navigation store and the manifest revalidates;
+  // the host itself does not change. That is not a switch: nothing re-resolves
+  // the default, and the directory stands.
+  await act(async () => {
+    seedSources([...sources], { loading: true });
+  });
+  await act(async () => {
+    seedSources([...sources]);
+  });
+  await settled();
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toHaveLength(resolutions);
+  expectWorkingDir("/home/buildbox");
+
+  // A pane remount (the same draft restored) is not a switch either.
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/home/buildbox");
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toHaveLength(resolutions);
+});
+
+// The other half of "a reconnect is not a switch": a re-VISIT to the same host
+// IS a switch, and a new question. An answer to an earlier visit's question -
+// issued for this same host and this same draft - describes a moment the form
+// has left, so it must not land: only the newest issuance's answer decides.
+test("a stale answer from an earlier visit to the same host cannot move the directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // The FIRST buildbox question about this directory hangs; every later one
+  // answers the way a host that has the directory does. The hanging answer is a
+  // refusal, which late would re-seed the form from buildbox's home.
+  const firstVisit = deferred<{ path: string; valid: boolean; error?: string }>();
+  let buildboxDirectoryAsks = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "/tmp/visit-a") {
+        buildboxDirectoryAsks++;
+        return buildboxDirectoryAsks === 1 ? firstVisit.promise : { path, valid: true };
+      }
+      if (path === "~") return { path: "/home/buildbox", valid: true };
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/visit-a");
+  renderSpawn(fake);
+  await settled();
+
+  // local -> buildbox: this first question hangs.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expect(buildboxDirectoryAsks).toBe(1);
+  // buildbox -> local: the local host has the directory, so it stays.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await settled();
+  // local -> buildbox again: the second question answers "this host has it".
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expect(buildboxDirectoryAsks).toBe(2);
+  expectWorkingDir("/tmp/visit-a");
+
+  // The first visit's refusal finally lands. It is not this switch's answer.
+  await act(async () => {
+    firstVisit.resolve({ path: "/tmp/visit-a", valid: false, error: "no such file or directory" });
+  });
+  await settled();
+  expectWorkingDir("/tmp/visit-a");
+  // Nothing re-seeded: only the latest issuance's answer landed, so the host's
+  // own home was never resolved over it.
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
+});
+
+// The guard belongs to the form INSTANCE, not to the draft store: the store is
+// module scope and outlives the pane, so a validation still in flight when the
+// pane goes away (a route change) must not seed the form a later mount shows
+// for the same draft.
+test("an answer still in flight when the pane unmounts cannot seed the remount", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const held = deferred<{ path: string; valid: boolean; error?: string }>();
+  let heldOnce = false;
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "/tmp/unmount-a" && !heldOnce) {
+        heldOnce = true;
+        return held.promise;
+      }
+      if (path === "~") return { path: "/home/buildbox", valid: true };
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/unmount-a");
+  const mounted = renderSpawn(fake);
+  await settled();
+
+  // local -> buildbox: this question hangs.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // The pane goes away while the answer is out, and comes back on the same
+  // draft: a fresh mount's first run only records, so a host+draft check alone
+  // would let the dead instance's answer through.
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/tmp/unmount-a");
+
+  // The answer finally lands. It belongs to a form that no longer exists.
+  await act(async () => {
+    held.resolve({ path: "/tmp/unmount-a", valid: false, error: "no such file or directory" });
+  });
+  await settled();
+  expectWorkingDir("/tmp/unmount-a");
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
+});
+
+// Drafts are keyed by directory and outlive a draft transition: picking another
+// directory and then back returns the SAME draft object. An answer issued
+// before that round trip must not pass for the draft that came back - only the
+// question asked for the visit it belongs to may decide.
+test("an answer issued before a directory round trip cannot seed the returned draft", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const held = deferred<{ path: string; valid: boolean; error?: string }>();
+  let heldOnce = false;
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "/tmp/trip-a" && !heldOnce) {
+        heldOnce = true;
+        return held.promise;
+      }
+      if (path === "~") return { path: "/home/buildbox", valid: true };
+      if (path === "/tmp/trip-a" || path === "/tmp/trip-b") return { path, valid: true };
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/trip-a");
+  renderSpawn(fake);
+  await settled();
+
+  // local -> buildbox: this question about trip-a hangs.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/tmp/trip-a");
+
+  // The person visits another directory and comes back to the first one, which
+  // returns the original draft.
+  await setWorkingDir(user, "/tmp/trip-b");
+  await settled();
+  await setWorkingDir(user, "/tmp/trip-a");
+  await settled();
+  expectWorkingDir("/tmp/trip-a");
+
+  // The trip's question finally answers - with a refusal, which late would
+  // re-seed the returned draft from buildbox's home.
+  await act(async () => {
+    held.resolve({ path: "/tmp/trip-a", valid: false, error: "no such file or directory" });
+  });
+  await settled();
+  expectWorkingDir("/tmp/trip-a");
+  expect(routedPathValidations(fake, "buildbox").filter((params) => params.path === "~")).toEqual([]);
+});
+
+// The re-seed moves the live draft onto a key another draft may already occupy
+// (a directory visited earlier by a draft that has since moved on). The live
+// draft wins the key - the person's current work must not be dropped for stale
+// state - and the displaced draft becomes unreachable: drafts are keyed by the
+// directory, and nothing else holds a reference to it. Pinned as the
+// deliberate tradeoff rather than inventing storage the pane does not have.
+test("a re-seed onto an occupied directory keeps the live draft", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClientWithRemoteHome("/home/buildbox");
+  // An earlier visit's draft for the host's home directory...
+  const displaced = selectSpawnDirectory("/home/buildbox");
+  setDraftField(displaced, "prompt", "stale home draft");
+  window.history.pushState({}, "", "/new?dir=/tmp/collide-a");
+  renderSpawn(fake);
+  await settled();
+  await fillPrompt(user, "live work");
+
+  // ...and the live draft, which the switch re-seeds onto that same key.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  expectWorkingDir("/home/buildbox");
+  expect(promptField().value).toBe("live work");
+  expect(completionDraft("/home/buildbox").fields.getState().prompt).toBe("live work");
+  expect(spawnDraftsStore.getState().drafts.get("/home/buildbox")).toBe(spawnDraftsStore.getState().current);
+  // The displaced draft is unreachable: no key resolves to it any more.
+  expect([...spawnDraftsStore.getState().drafts.values()]).not.toContain(displaced);
+});
+
+// A picked directory is the person's own choice, and it opens that directory's
+// own draft (drafts are keyed by the exact directory). Selecting another draft
+// is not a switch of the selected host, so the picked directory's draft keeps
+// the directory the person just chose - the re-seed belongs to a host change
+// WITHIN one draft, never to a draft change.
+test("a directory pick does not re-seed the picked directory's own draft", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/path/validate") {
+        const path = (forwarded.params as { path?: string } | undefined)?.path;
+        if (path === "~") return { path: "/home/buildbox", valid: true };
+        // The prefill's directory is not on this host; the one the person
+        // picks is.
+        if (path === "/tmp/pick-a") return { path, valid: false, error: "no such file or directory" };
+        return { path: path ?? "", valid: true };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/pick-a");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+  expectWorkingDir("/home/buildbox");
+
+  await setWorkingDir(user, "/srv/app");
+  await settled();
+  expectWorkingDir("/srv/app");
+});
+
+// The other half of the same rule: a directory the SELECTED host itself
+// resolves as one it has is kept. It is no longer the previous host's value -
+// it is the machine the session starts on saying it can start there - and no
+// home is resolved over the host.
+test("a switch keeps a directory the selected host also has", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/path/validate") {
+        const path = (forwarded.params as { path?: string } | undefined)?.path;
+        return path === "/tmp/shared-repo"
+          ? { path, valid: true }
+          : { path: path ?? "", valid: false, error: "no such file or directory" };
+      }
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/shared-repo");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  expect(routedPathValidations(fake, "buildbox").some((params) => params.path === "/tmp/shared-repo")).toBe(true);
+  expect(routedPathValidations(fake, "buildbox").some((params) => params.path === "~")).toBe(false);
+  expectWorkingDir("/tmp/shared-repo");
+});
+
+// A host that cannot answer keeps the directory: unknown is not absent (the
+// same rule the phone's New session follows when it moves between hosts), and
+// the submit's own host-routed preflight is the authority on the path then.
+test("a host that cannot answer keeps the working directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method === "evener/path/validate") throw new Error("host went away");
+      return routedDiscoveryDefault(forwarded.method);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/away-a");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  expectWorkingDir("/tmp/away-a");
+});
+
+// The last resort of the re-seed: the host refused the directory, and its own
+// home cannot be resolved either - refused, or a request that throws. The form
+// must not keep a path that belongs to another machine, so it seeds NO
+// directory: the picker already opens at the selected host's home there, and
+// no launch carries a foreign path.
+test.each([
+  ["refuses it", () => ({ path: "", valid: false, error: "no such file or directory" })],
+  [
+    "cannot answer for it",
+    () => {
+      throw new Error("host went away");
+    },
+  ],
+])("an unresolvable host default seeds no directory (%s)", async (_case, answerHome) => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "~") return answerHome() as HostForwardedResult;
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/foreign-a");
+  renderSpawn(fake);
+  await settled();
+  expectWorkingDir("/tmp/foreign-a");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // Nothing of the previous host's path is kept, and the form says so.
+  expect(workingDir().textContent).not.toContain("/tmp/foreign-a");
+  expect(workingDir().textContent).toContain("Choose a folder");
+  expect(spawnDraftsStore.getState().current?.cwd).toBe("");
+});
+
+// `path` is typed non-optional, but evener/host/request hands a remote host's
+// answer back through a cast, so an answer that is valid and names no directory
+// (an older host, a malformed one) reaches this code as undefined. It must seed
+// no directory - never a non-string key in the string-keyed drafts map.
+test("a host answering valid with no path seeds no directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "evener/path/validate") return routedDiscoveryDefault(forwarded.method);
+      const path = (forwarded.params as { path?: string } | undefined)?.path;
+      if (path === "~") return { valid: true } as HostForwardedResult; // no path at all
+      return { path: path ?? "", valid: false, error: "no such file or directory" };
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/nopath-a");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // Every draft key stays a directory string...
+  expect([...spawnDraftsStore.getState().drafts.keys()].every((key) => typeof key === "string")).toBe(true);
+  // ...and the form seeds no directory rather than a nameless one.
+  expect(spawnDraftsStore.getState().current?.cwd).toBe("");
+  expect(workingDir().textContent).toContain("Choose a folder");
+});
+
 test("a local host choice omits source from the thread/start request", async () => {
   const user = setupUser();
   seedSources([
@@ -7969,7 +8488,11 @@ function answerRemoteHost(
     const forwarded = params as HostRequestParams;
     if (forwarded.host !== "buildbox") throw new Error(`unexpected host "${forwarded.host}"`);
     if (options.fail?.includes(forwarded.method)) throw new Error(`remote ${forwarded.method} unavailable`);
-    return (answers[forwarded.method] ?? {}) as HostForwardedResult;
+    const answer = answers[forwarded.method];
+    // A function answers per call: a host whose answer depends on what is asked
+    // (whether it has a directory, vs the verdict on a field's value).
+    if (typeof answer === "function") return (answer as (params: unknown) => HostForwardedResult)(forwarded.params);
+    return (answer ?? {}) as HostForwardedResult;
   });
 }
 
@@ -8968,10 +9491,15 @@ test("a late path validation from the previous host never marks the field on the
     f.on("evener/path/validate", ({ path }) =>
       path === "review-agent" ? localValidation.promise : { path, valid: true },
     );
-    // buildbox offers the same field but rejects the value.
+    // buildbox offers the same field but rejects the value - and has the
+    // working directory, so the switch's own resolution of that directory
+    // keeps it (only the field's value is refused).
     readyRemoteHost(f, {
       "evener/launch/schema": { options: [agentOption] },
-      "evener/path/validate": { path: "review-agent", valid: false, error: "not on buildbox" },
+      "evener/path/validate": (params: { path?: string } | undefined) =>
+        params?.path === "review-agent"
+          ? { path: "review-agent", valid: false, error: "not on buildbox" }
+          : { path: params?.path ?? "", valid: true },
     });
   });
   connectionStore.getState().connect(fake);
@@ -8996,12 +9524,19 @@ test("a late path validation from the previous host never marks the field on the
   // local answer's re-ask is not the only routed call - what this pins is that
   // every routed ask names this field and that the verdict that lands is
   // buildbox's.
-  await waitFor(() => expect(routedHostCalls(fake, "evener/path/validate").length).toBeGreaterThan(0));
+  // The routed path questions are exactly two: whether the SELECTED host has
+  // the draft's directory (the switch's own resolution of it), and the verdict
+  // on the field's value. Any other ask would be a question for a machine the
+  // form has left.
+  const fieldAsks = routedHostCalls(fake, "evener/path/validate").filter(
+    (call) => (call.params as { kind?: string }).kind !== "dir",
+  );
+  expect(fieldAsks.length).toBeGreaterThan(0);
   for (const call of routedHostCalls(fake, "evener/path/validate")) {
-    expect(call.params).toMatchObject({
-      path: "review-agent",
-      kind: "command",
-    });
+    const params = call.params as { kind?: string };
+    expect(call.params).toMatchObject(
+      params.kind === "dir" ? { path: draft.cwd, kind: "dir" } : { path: "review-agent", kind: "command" },
+    );
   }
   await waitFor(() =>
     expect(draft.fields.getState().advancedValues).toEqual({ agent: { value: "review-agent", invalid: true } }),
@@ -9033,10 +9568,15 @@ test("a late pathList validation from the previous host cannot re-add its entry 
     f.on("evener/path/validate", ({ path }) =>
       path === "review-dir" ? localValidation.promise : { path, valid: true },
     );
-    // buildbox offers the same field but refuses the entry.
+    // buildbox offers the same field but refuses the entry - and has the
+    // working directory, so the switch's own resolution of that directory
+    // keeps it (only the entry is refused).
     readyRemoteHost(f, {
       "evener/launch/schema": { options: [pathListOption] },
-      "evener/path/validate": { path: "review-dir", valid: false, error: "no such dir on buildbox" },
+      "evener/path/validate": (params: { path?: string } | undefined) =>
+        params?.path === "review-dir"
+          ? { path: "review-dir", valid: false, error: "no such dir on buildbox" }
+          : { path: params?.path ?? "", valid: true },
     });
   });
   connectionStore.getState().connect(fake);
@@ -9055,7 +9595,13 @@ test("a late pathList validation from the previous host cannot re-add its entry 
 
   // The controller accepts it only after the user has left it.
   await act(async () => localValidation.resolve({ path: "review-dir", valid: true, error: "" }));
-  await waitFor(() => expect(routedHostCalls(fake, "evener/path/validate")).toHaveLength(1));
+  await waitFor(() =>
+    expect(
+      routedHostCalls(fake, "evener/path/validate").filter(
+        (call) => (call.params as { kind?: string }).kind === "command",
+      ),
+    ).toHaveLength(1),
+  );
   // buildbox refused it, so the entry never joins the draft's list - and so
   // never rides the launch to a host that never accepted it. (Its message is
   // the add row's own transient feedback; the host switch repopulates the
@@ -9349,4 +9895,22 @@ test("a ?host=local prefill overrides the draft's last-chosen host for the same 
   applySpawnURL();
   expect(spawnDraftsStore.getState().current?.fields.getState().source).toBe("local");
   window.history.replaceState({}, "", "/");
+});
+
+test("an open launch picker adopts a provider-file repair notification", async () => {
+  const user = setupUser();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await user.click(modelTrigger());
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.clear(combo);
+  await user.type(combo, "repaired-model");
+  expect(screen.queryByText("work/repaired-model")).toBeNull();
+  modelListOverride = [
+    { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+    { provider: "work", model: "repaired-model", displayName: "work/repaired-model" },
+  ];
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await screen.findByText("work/repaired-model");
 });

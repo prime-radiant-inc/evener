@@ -12194,9 +12194,12 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 // A rename whose credential move fails still reached providers.toml and the
 // registry, so every other client's instance list is stale by exactly as much
 // as it would be on success: the broadcast has to fire even though the call
-// comes back an error naming what was left behind. The failure is injected on
-// the credentials store's own temp path, so the whole move is the real one.
+// comes back an error naming what was left behind. The failure is injected in
+// the credentials store's own directory, which is a different directory from
+// providers.toml's, so the whole move is the real one and the config write still
+// lands.
 func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing.T) {
+	requireWritableDirRefusal(t)
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
@@ -12884,6 +12887,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerSessionPinUnpin,
 		appwire.MethodEvenerSessionSeenSet,
 		appwire.MethodEvenerSearch,
+		appwire.MethodEvenerArchivedList,
 		appwire.MethodEvenerActivityRead,
 		appwire.MethodEvenerNoticesList,
 		appwire.MethodEvenerInstanceList,

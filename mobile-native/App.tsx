@@ -23,9 +23,6 @@ import { displayPreferences, followAppearanceChoice } from "./src/display/native
 import { HubSheet } from "./src/hub/HubSheet";
 import { FirstRunScreen } from "./src/hubs/FirstRunScreen";
 import { ForkScreen } from "./src/ForkScreen";
-import { HubSettingsScreen } from "./src/HubSettingsScreen";
-import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
-import { LaunchSettingsScreen } from "./src/LaunchSettingsScreen";
 import { locationForRoute, restoredStack, routeToSave } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { locations } from "./src/nativeLocation";
@@ -33,6 +30,7 @@ import { NewSessionSheet } from "./src/newSession/NewSessionSheet";
 import { outboxFlush } from "./src/outbox/nativeOutboxFlush";
 import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
 import { PinSectionEditorScreen } from "./src/PinSectionEditorScreen";
+import { useRootStackOptions } from "./src/rootStack";
 import {
 	PinnedSectionScreen,
 	PinSectionsScreen,
@@ -133,6 +131,7 @@ function Navigation() {
 		}
 	}, [state, activeProfile?.id, loading]);
 	const colors = useColors();
+	const rootStackOptions = useRootStackOptions();
 	const dark = useColorScheme() === "dark";
 	if (loading)
 		return (
@@ -163,16 +162,7 @@ function Navigation() {
 				theme={dark ? DarkTheme : DefaultTheme}
 			>
 				<StatusBar style={dark ? "light" : "dark"} />
-				<Stack.Navigator
-					screenOptions={{
-						headerStyle: { backgroundColor: colors.background },
-						headerTintColor: colors.accent,
-						headerTitleStyle: { color: colors.text },
-						headerShadowVisible: false,
-						headerBackButtonDisplayMode: "minimal",
-						contentStyle: { backgroundColor: colors.background },
-					}}
-				>
+				<Stack.Navigator screenOptions={rootStackOptions}>
 					<Stack.Screen
 						name="Hubs"
 						component={FirstRunScreen}
@@ -209,26 +199,6 @@ function Navigation() {
 						name="PinAssignment"
 						component={PinAssignmentScreen}
 						options={{ title: "Pin session" }}
-					/>
-					<Stack.Screen
-						name="LaunchSettings"
-						component={LaunchSettingsScreen}
-						options={({ route }) => ({
-							title:
-								route.params.projectCwd === undefined
-									? "Launch defaults"
-									: "Project launch settings",
-						})}
-					/>
-					<Stack.Screen
-						name="KeybindingPreferences"
-						component={KeybindingPreferencesScreen}
-						options={{ title: "Keyboard shortcuts" }}
-					/>
-					<Stack.Screen
-						name="HubSettings"
-						component={HubSettingsScreen}
-						options={{ title: "Hub settings" }}
 					/>
 					<Stack.Screen
 						name="SessionLocation"

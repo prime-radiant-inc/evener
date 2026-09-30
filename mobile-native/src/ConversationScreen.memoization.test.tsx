@@ -10,9 +10,9 @@
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
-import { render, screenConnection } from "./renderNative.testkit";
+import { keyboard, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { TimelineItem } from "./TimelineItem";
 
@@ -43,6 +43,18 @@ vi.mock("react-native", async () => {
 		StatusBar: "StatusBar",
 		Modal: (props: { visible?: boolean; children?: ReactNode }) =>
 			props.visible ? createElement("Modal", null, props.children) : null,
+	};
+});
+// How many times a transcript row has rendered, for the keyboard probe below.
+const rows = vi.hoisted(() => ({ renders: 0 }));
+vi.mock("./TimelineItem", async (original) => {
+	const real = await original<typeof import("./TimelineItem")>();
+	return {
+		...real,
+		TimelineItem: (props: ComponentProps<typeof real.TimelineItem>) => {
+			rows.renders += 1;
+			return createElement(real.TimelineItem, props);
+		},
 	};
 });
 vi.mock("react-native-safe-area-context", () => ({
@@ -278,4 +290,66 @@ it("keeps one fork callback across the same re-render", async () => {
 	rerender(tree, route);
 	await settle();
 	expect(forkOf(tree)).toBe(before);
+});
+
+afterEach(() => keyboard.reset());
+
+/** Focuses the composer's field and raises the keyboard for it. */
+function typeInComposer(tree: ReactTestRenderer) {
+	act(() =>
+		tree.root
+			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message")
+			.props.onFocus(),
+	);
+	act(() => keyboard.show());
+}
+
+// The keyboard rising or falling, and the composer's focus, change only what
+// folds or steps aside over the composer (the queue, Next, the header's
+// chips); each reads them itself, so the flip never re-renders the screen
+// or its transcript rows. A screen-wide commit as the keyboard starts to
+// move holds back the keyboard controller's per-frame padding for as long as
+// it takes (#3247).
+it("re-renders no transcript row when the keyboard comes up or goes down", async () => {
+	const { tree } = await mount(twoTurns("ref-memo-keyboard"));
+	expect(tree.root.findAll((node) => node.type === TimelineItem)).not.toEqual([]);
+	rows.renders = 0;
+	typeInComposer(tree);
+	await settle();
+	act(() => keyboard.hide());
+	await settle();
+	expect(rows.renders).toBe(0);
+});
+
+// With a message queued, the fold as the keyboard rises changes the bottom
+// bar's height, and the bar's re-layout re-renders the screen. That render
+// changes nothing a transcript row reads, so no row re-renders: the list
+// hands its cells a stable renderer (strictMode), and they re-render only
+// for a new renderItem, new rows, or the extraData they read (#3247).
+it("re-renders no transcript row when the bottom bar re-lays out as the keyboard folds the queue", async () => {
+	const served = twoTurns("ref-memo-queued");
+	(served as unknown as { evener: { queue: unknown } }).evener.queue = {
+		revision: 1,
+		depth: 1,
+		preview: ["check the logs"],
+		texts: ["check the logs"],
+		ids: ["queue_1"],
+	};
+	const { tree } = await mount(served);
+	const bar = () =>
+		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 500, width: 390, height: 260 } } }));
+	await settle();
+	expect(renderedText(tree)).toContain("check the logs");
+	rows.renders = 0;
+	typeInComposer(tree);
+	// Folded to one line.
+	expect(renderedText(tree)).not.toContain("check the logs");
+	// The fold shrinks the bar, which reports its new height.
+	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 560, width: 390, height: 200 } } }));
+	await settle();
+	act(() => keyboard.hide());
+	act(() => bar().props.onLayout({ nativeEvent: { layout: { x: 0, y: 500, width: 390, height: 260 } } }));
+	await settle();
+	expect(rows.renders).toBe(0);
 });

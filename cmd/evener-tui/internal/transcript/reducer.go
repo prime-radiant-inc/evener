@@ -784,6 +784,7 @@ func subagentRunFromDelegate(delegate appwire.EvenerDelegateInfo) SubagentRunInf
 		Status:              strings.TrimSpace(delegate.Status),
 		Outcome:             strings.TrimSpace(delegate.Outcome),
 		Reason:              strings.TrimSpace(delegate.Reason),
+		Error:               strings.TrimSpace(delegate.Error),
 		Terminal:            delegate.Terminal,
 		Resumable:           delegate.Resumable,
 		NotResumableReason:  strings.TrimSpace(delegate.NotResumableReason),

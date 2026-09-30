@@ -66,6 +66,7 @@ type delegateFinish struct {
 	outcome             delegatestore.OutcomeStatus
 	disposition         delegatestore.RunDisposition
 	reason              string
+	errorText           string
 	packet              *delegatestore.TerminalPacket
 	endedAt             time.Time
 	exhaustionBudget    delegatestore.ExhaustionBudget
@@ -613,6 +614,12 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	}
 	aggregate := c.durable[delegateID]
 	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
+		return nil, errDelegateTargetBusy
+	}
+	// Idle but still finalizing: the finished generation's runtime has not
+	// reported quiescence, so it can't take another generation yet. Refusing
+	// here, under the lock the start commits under, leaves nothing written.
+	if live := c.live[delegateID]; live != nil && live.finalizing != nil && live.finalizing.runtime == live.runtime {
 		return nil, errDelegateTargetBusy
 	}
 	for _, existing := range c.reservations {

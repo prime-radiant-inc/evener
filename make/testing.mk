@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-native-bundle native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -115,6 +115,28 @@ native-preflight:
 ##   writes no iOS bundle.
 test-native-bundle: native-preflight
 	@scripts/native/test-native-bundle.sh
+
+# `pod install --deployment` refuses a lock missing a pod the Podfile asks for,
+# and only the TestFlight workflow runs it, on a tag: #3252 added a native
+# dependency without its pod and every PR check stayed green (#3294). This
+# compares the lock with what autolinking resolves, on any host.
+## Check that mobile-native/Podfile.lock locks exactly the iOS pods
+## autolinking resolves.
+## proves: every pod the Expo and React Native autolinking the generated
+##   Podfile runs would link, Expo's companion pods included, is in the lock's
+##   DEPENDENCIES under the same name and directory, and every autolinked pod
+##   the lock lists is still linked.
+## trigger: Native CI; local pre-merge when mobile-native/package.json,
+##   package-lock.json or Podfile.lock change.
+## requires: Node 22.13+ and an already-installed, real (not symlinked)
+##   mobile-native dependency tree; no macOS, CocoaPods, Xcode or generated
+##   ios/ project. Expo's precompiled mode and extraPods are not handled.
+## fails-when: an autolinked pod is not locked, or the lock lists an
+##   autolinked pod nothing links (a version change inside an already locked
+##   pod is not checked), or the script's own tests
+##   (check-podfile-lock.test.mjs) fail.
+check-podfile-lock: native-preflight
+	@status=0; scripts/native/check-podfile-lock.mjs || status=1; node --test scripts/native/check-podfile-lock.test.mjs || status=1; exit $$status
 
 # api-package-preflight turns the misleading failure a fresh checkout gets into
 # a message naming the missing install and the command to run (or repairs a

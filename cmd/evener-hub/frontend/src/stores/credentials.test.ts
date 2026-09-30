@@ -162,7 +162,7 @@ describe("fetch", () => {
     connectionStore.getState().connect(replacement);
     expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
 
-    await expect(credentialsStore.getState().setDefault("work")).rejects.toThrow(/replaced/);
+    await expect(credentialsStore.getState().setDefault("work")).rejects.toThrow(/connection changed/);
     expect(replacement.calls.filter((call) => call.method === "evener/instance/setDefault")).toHaveLength(0);
     expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
 

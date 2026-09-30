@@ -194,11 +194,10 @@ export function selectPinSections(state: NavigationStoreState): LoadedPinSection
     sessions: loadedSectionRows(state, (key) => key.kind === "pin_section" && key.sectionId === section.id),
   }));
 }
-/** No caller outside `selectExpanded` today, but kept exported: the core's
- * private `selectSummaries` in `store.ts` duplicates this scan for the boot
- * fan-out, unsorted where this sorts by catalog order then offset. Folding
- * the two would change which projects hydrate first under the boot pool, so
- * this stays a public, sorted counterpart until that's resolved (#1596). */
+/** The catalog's projects in catalog order then offset. The core's boot
+ * fan-out reads this to decide which expanded projects hydrate first, so the
+ * order is deterministic and independent of the resource map's insertion
+ * order. */
 export function selectProjectSummaries(state: NavigationStoreState): NavigationProjectSummary[] {
   const catalogOrder = { projects: 0, archived_projects: 1, test_runs: 2 } as const;
   return [...state.resources.values()]

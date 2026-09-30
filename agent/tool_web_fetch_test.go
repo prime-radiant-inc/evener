@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -726,5 +727,48 @@ func TestWebFetch_NonRefusalModelErrorRemainsError(t *testing.T) {
 	}
 	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
 		t.Fatalf("models addressed = %v, want no fallback %v", got, want)
+	}
+}
+
+// TestWebFetch_ModelContentTruncationNeverSplitsRune pins that the cheap-model
+// content cap lands on a rune boundary. A raw byte cut would send invalid
+// UTF-8 to the model: "ab" shifts the rune grid so byte webFetchMaxContent
+// falls inside a 3-byte rune.
+func TestWebFetch_ModelContentTruncationNeverSplitsRune(t *testing.T) {
+	body := "ab" + strings.Repeat("€", 40000)
+	if len(body) <= webFetchMaxContent {
+		t.Fatalf("fixture is %d bytes, must exceed webFetchMaxContent=%d", len(body), webFetchMaxContent)
+	}
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(page.Close)
+
+	var captured []llm.Request
+	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(req llm.Request) (llm.Response, error) {
+		captured = append(captured, req)
+		return finalResponse("ok"), nil
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	if _, err := sess.webFetch(context.Background(), page.URL, "q"); err != nil {
+		t.Fatalf("webFetch: %v", err)
+	}
+	if len(captured) == 0 {
+		t.Fatal("cheap model was never called")
+	}
+	for _, msg := range captured[0].Messages {
+		if !utf8.ValidString(msg.Text()) {
+			t.Fatalf("cheap-model request contains invalid UTF-8: the content cap split a rune")
+		}
 	}
 }

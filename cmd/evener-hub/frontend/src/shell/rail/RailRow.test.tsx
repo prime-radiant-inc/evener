@@ -18,12 +18,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
@@ -134,6 +136,7 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   topNotesStore.getState().resetForTests();
   seedPinCatalogForPicker();
+  resetActivitySidebarStoreForTests();
 });
 
 afterEach(() => {
@@ -1092,7 +1095,7 @@ describe("session row", () => {
     expect(label.nextElementSibling).toBeNull();
   });
 
-  test("shows a chevron for a branch session (subagent cluster) that calls info.toggle", async () => {
+  test("shows a chevron for a branch session (subagent) that calls info.toggle", async () => {
     const rowInfo = info({ hasChildren: true, expanded: false });
     render(<RailRow node={sessionRailNode(apiNode())} info={rowInfo} actions={actions()} />);
     // The chevron is deliberately aria-hidden (decorative mouse shortcut -
@@ -1192,32 +1195,6 @@ describe("session row", () => {
       />,
     );
     expect(screen.queryByTestId("favorite-star")).toBeNull();
-  });
-
-  // A CLUSTER row's own host_id is the synthetic scope prefix of its id
-  // ("cluster", from hubcore's nodeKind fallback), which names no machine -
-  // the row names its members' host instead, the same resolver the grouping
-  // uses, so it cannot sit under a devbox group wearing a "cluster" chip.
-  test("a cluster row names its members' host, not the synthetic cluster id", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(
-          apiNode({
-            row_id: "navigation:cluster:ab",
-            ref: "cluster:ab",
-            session_id: "ab",
-            kind: "cluster",
-            host_id: "cluster",
-            children: [
-              apiNode({ row_id: "navigation:devbox:m1", ref: "devbox:m1", session_id: "m1", host_id: "devbox" }),
-            ],
-          }),
-        )}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("rail-row-host").textContent).toBe("devbox");
   });
 
   // vbh8/§2.2: a derived amber count of needs-you descendants - distinct
@@ -1799,11 +1776,10 @@ describe("session row", () => {
   // act on it: the server stores one archive decision per session id, and a
   // nested row has no independent existence in the tree its parent isn't
   // already deciding for. hubcore's nodeKind (internal/hubcore/tree.go) names
-  // the three kinds that are never top-level - "subagent" (nested under its
-  // parent), "fork" (a snapshotted original nested under the branch that
-  // superseded it), and the synthetic "cluster" fold row - so `kind` is the
-  // whole test, at any depth.
-  for (const kind of ["subagent", "fork", "cluster"]) {
+  // the two kinds that are never top-level - "subagent" (nested under its
+  // parent) and "fork" (a snapshotted original nested under the branch that
+  // superseded it) - so `kind` is the whole test, at any depth.
+  for (const kind of ["subagent", "fork"]) {
     test(`menu omits Archive on a ${kind} row - only top-level sessions are archivable`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind, tier: "current" }))} info={info()} actions={actions()} />);
       // The unified menu is on every session row (the pane items are always
@@ -1843,8 +1819,8 @@ describe("session row", () => {
 
   // Delete is scoped like Archive: only a top-level row names a real,
   // independently deletable session (see the Archive loop's own comment
-  // above for why these three kinds are never top-level).
-  for (const kind of ["subagent", "fork", "cluster"]) {
+  // above for why these two kinds are never top-level).
+  for (const kind of ["subagent", "fork"]) {
     test(`menu omits Delete on a ${kind} row - only top-level sessions are deletable`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind, host_id: "local" }))} info={info()} actions={actions()} />);
       await openMenu(/actions for/i);
@@ -1853,9 +1829,8 @@ describe("session row", () => {
   }
 
   // Favorite is scoped for the same reason as Archive: session rows use the
-  // separate session-pin action, while cluster rows have a synthetic
-  // "cluster:<hex>" identity rather than an independently pinnable session.
-  for (const kind of ["subagent", "fork", "cluster"]) {
+  // separate session-pin action.
+  for (const kind of ["subagent", "fork"]) {
     test(`menu omits pin and unpin on a ${kind} row`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind }))} info={info()} actions={actions()} />);
       await openMenu(/actions for/i);
@@ -1918,6 +1893,48 @@ describe("session row", () => {
     const panes = workspaceStore.getState().panes.map((p) => p.type);
     expect(panes).toContain("session");
     expect(panes).toContain("sessionDetails");
+  });
+
+  test("the Activity check marks a sessionActivity pane open for this session on mobile", async () => {
+    // The ✓ names what the row's own Activity action opens. On mobile that
+    // is the sessionActivity pane (the desktop sidebar retarget never
+    // reaches the tree drawer), so the pane predicate marks the item there,
+    // beside the desktop sidebar predicate.
+    const restoreViewport = installMobileViewport();
+    try {
+      workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
+      renderRow();
+      await openMenu(/actions for/i);
+      expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  test("on desktop a leftover sessionActivity pane does not mark the Activity item", async () => {
+    // The chrome treats such a pane as an orphan on desktop (opening the
+    // sidebar retires it) and never marks it; the rail reads the same state
+    // per viewport, or the two menus disagree about the same session.
+    workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
+    renderRow();
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
+  });
+
+  test("a pure focus move refreshes the Activity check (the ✓ names the session the sidebar shows)", async () => {
+    // The sidebar's scope follows workspace focus. Subscribing to the sidebar
+    // store alone leaves the ✓ on the session the sidebar showed BEFORE the
+    // focus move - and clicking it re-scopes where a close was implied.
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    activitySidebarStore.getState().openWith();
+    renderRow();
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+    act(() => {
+      workspaceStore.getState().openPane("session", { ref: "local:other" });
+    });
+    // The row re-rendered on the focus change: the item is plain again.
+    expect(await screen.findByRole("menuitem", { name: "Activity" })).toBeTruthy();
   });
 
   test("shut down confirms through onShutdownSession", async () => {
@@ -2873,7 +2890,7 @@ describe("pin star follows the same scoping as the pin action", () => {
     expect(screen.getByTestId("favorite-star")).toBeTruthy();
   });
 
-  for (const kind of ["subagent", "fork", "cluster"]) {
+  for (const kind of ["subagent", "fork"]) {
     test(`a ${kind} row shows no star even when the wire carries a section assignment`, () => {
       render(
         <RailRow

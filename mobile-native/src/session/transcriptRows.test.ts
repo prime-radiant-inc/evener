@@ -11,7 +11,6 @@ import {
 	runSummary,
 	runSummaryText,
 	sessionRows,
-	stepTarget,
 	timeMarkerText,
 } from "./transcriptRows";
 
@@ -288,8 +287,13 @@ describe("the live run", () => {
 });
 
 describe("a run's one line", () => {
-	const shell = (id: string, command: string | undefined, over: Partial<Activity> = {}): RunStep =>
-		step(id, "shell", { detail: command === undefined ? {} : { arguments: JSON.stringify({ command }) }, ...over });
+	// A shell step as projectedRows builds it: its arguments, and its words,
+	// whose target is the command with the session's own cd left out.
+	const shell = (id: string, command: string | undefined, over: Partial<Activity> = {}): RunStep => {
+		const detail =
+			command === undefined ? {} : { arguments: JSON.stringify({ command }), words: { verb: "Ran", target: command } };
+		return step(id, "shell", { ...over, detail: { ...detail, ...over.detail } });
+	};
 
 	it("counts steps, says what they did, and how long the run took", () => {
 		const steps: RunStep[] = [
@@ -340,6 +344,13 @@ describe("a run's one line", () => {
 		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([
 			{ key: "shell", family: "shell", text: "ran ls", failed: 0 },
 		]);
+	});
+
+	it("names the program a command ran, not the cd to the session's own directory", () => {
+		const cd = shell("a", "go test ./...", {
+			detail: { arguments: JSON.stringify({ command: "cd /repo && go test ./..." }) },
+		});
+		expect(runSummary([cd]).parts).toEqual([{ key: "shell", family: "shell", text: "ran go test", failed: 0 }]);
 	});
 
 	// A step whose times the hub didn't send, or that don't parse, carries no
@@ -405,7 +416,7 @@ describe("a run's one line", () => {
 				step("c", "web_search"),
 				step("d", "use_skill", { detail: { arguments: JSON.stringify({ skill_name: "brainstorming" }) } }),
 			]).parts.map((part) => part.text),
-		).toEqual(["fetched 1 page", "used task list once", "searched the web once", "used skill brainstorming"]);
+		).toEqual(["fetched 1 page", "checked the task list", "searched the web once", "used skill brainstorming"]);
 	});
 
 	// Never "N other steps": MCP tools share one part, which names their
@@ -431,23 +442,84 @@ describe("a run's one line", () => {
 			runSummary([step("a", "github__create_issue"), step("b", "github__list_issues")]).parts.map((part) => part.text),
 		).toEqual(["used github 2 times"]);
 	});
+
+	it("says a run updated the task list, or only checked it", () => {
+		const tasks = (id: string, args: Record<string, unknown>): RunStep =>
+			step(id, "task_list", { detail: { arguments: JSON.stringify(args) } });
+		const update = { update: [{ id: 1, status: "done" }] };
+		expect(runSummary([tasks("a", update)]).parts.map((part) => part.text)).toEqual(["updated the task list"]);
+		expect(runSummary([tasks("a", {}), tasks("b", {})]).parts.map((part) => part.text)).toEqual([
+			"checked the task list 2 times",
+		]);
+		// One change among the reads makes the part an update.
+		expect(runSummary([tasks("a", {}), tasks("b", update)]).parts.map((part) => part.text)).toEqual([
+			"updated the task list 2 times",
+		]);
+	});
 });
 
-describe("a step's target", () => {
-	it.each([
-		["shell", { command: "go test ./agent/..." }, "go test ./agent/..."],
-		["shell", { file_path: "agent/session.go" }, undefined],
-		["read_file", { file_path: "agent/session.go" }, "agent/session.go"],
-		["edit_file", { file_path: "agent/session.go", path: "agent" }, "agent/session.go"],
-		["grep", { path: "agent", pattern: "Turn" }, "agent"],
-		["web_search", { query: "evener" }, undefined],
-	])("a %s step with %j reads %s", (label, args, target) => {
-		expect(stepTarget(label, JSON.stringify(args))).toBe(target);
+describe("a run's transcript reads and session searches", () => {
+	const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+
+	it("counts the transcripts a run read", () => {
+		expect(texts([step("a", "read_transcript")])).toEqual(["read a transcript"]);
+		expect(texts([step("a", "read_transcript"), step("b", "read_session_transcript")])).toEqual(["read 2 transcripts"]);
 	});
 
-	it("reads nothing from arguments that are missing or don't parse", () => {
-		expect(stepTarget("read_file", undefined)).toBeUndefined();
-		expect(stepTarget("read_file", '{"file_path": "agent/sess')).toBeUndefined();
+	it("says how often a run searched sessions", () => {
+		expect(texts([step("a", "find_session_transcripts")])).toEqual(["searched sessions"]);
+		expect(texts([step("a", "find_session_transcripts"), step("b", "find_session_transcripts")])).toEqual([
+			"searched sessions 2 times",
+		]);
+	});
+});
+
+// An ask_user call takes a row of its own (QuestionHistory), so it only
+// reaches a run's line when a caller hands one over directly.
+describe("a run's questions", () => {
+	it("says how many questions a run asked", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		const asking = (id: string, headers: string[]) =>
+			step(id, "ask_user", {
+				detail: {
+					arguments: JSON.stringify({
+						questions: headers.map((header) => ({ header, question: "?", options: [{ label: "Yes", detail: "." }] })),
+					}),
+				},
+			});
+		expect(texts([asking("a", ["Deploy"])])).toEqual(["asked a question"]);
+		// Questions, not calls: one call can ask several.
+		expect(texts([asking("a", ["Deploy", "Notify"])])).toEqual(["asked 2 questions"]);
+		expect(texts([asking("a", ["Deploy"]), asking("b", ["Notify", "Tag"])])).toEqual(["asked 3 questions"]);
+		// A call whose questions don't parse, or that lists none, still asked
+		// something: parseAskUserQuestions gives no list rather than an empty one.
+		expect(texts([step("a", "ask_user")])).toEqual(["asked a question"]);
+		expect(texts([asking("a", [])])).toEqual(["asked a question"]);
+	});
+});
+
+describe("a run's messages to subagents", () => {
+	// A send reads the same under the live name and the retired one.
+	it("says how many messages a run sent to subagents", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "delegate_send")])).toEqual(["sent a message"]);
+		expect(texts([step("a", "delegate_send"), step("b", "job_send_message")])).toEqual(["sent 2 messages"]);
+	});
+});
+
+describe("a run's job steps", () => {
+	it("says how often a run managed jobs", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "job_status")])).toEqual(["managed jobs once"]);
+		expect(texts([step("a", "job_list"), step("b", "job_stop")])).toEqual(["managed jobs 2 times"]);
+	});
+});
+
+describe("a run's worktree steps", () => {
+	it("says how often a run managed worktrees", () => {
+		const texts = (steps: RunStep[]) => runSummary(steps).parts.map((part) => part.text);
+		expect(texts([step("a", "manage_worktree")])).toEqual(["managed worktrees once"]);
+		expect(texts([step("a", "manage_worktree"), step("b", "manage_worktree")])).toEqual(["managed worktrees 2 times"]);
 	});
 });
 

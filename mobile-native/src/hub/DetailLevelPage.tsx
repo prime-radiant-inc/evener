@@ -17,6 +17,7 @@ import {
 } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef, useState } from "react";
+import { unreadableDraftDiscardDisabled } from "../keybindingOfflineRecovery";
 import { HUB_UNCONFIRMED_MESSAGE } from "../nativePreferences";
 import { useNativePreferences } from "../NativePreferencesProvider";
 import { DETAIL_LEVELS } from "../session/detailLevels";
@@ -117,20 +118,21 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	const failedChoice =
 		failed && !unsaved && !writeUncertain && !conflict && !state.storageUnavailable && !state.draftUnreadable;
 	const failedAction = failed && !writeUncertain && (conflict || state.draftUnreadable) && !stateErrorShown;
-	return (
-		<GroupedPage>
-			<SheetStatus />
-			{state.support === "unsupported" ? (
-				<GroupFooter>This hub doesn't keep a default detail level.</GroupFooter>
-			) : null}
+	// What happened to a choice, and what to do about it, reads beneath the
+	// levels it was made in; a page with no levels to show leads with it.
+	const status = (
+		<>
 			{state.draftUnreadable ? (
 				<>
 					<GroupFooter tone="danger">A saved change to this setting couldn't be read on this phone.</GroupFooter>
 					<Group>
+						{/* Discarding an unreadable record touches only this phone, so the
+						    hub being away must not hold it - the same rule the keybindings
+						    screen applies. */}
 						<Row
 							label="Discard it"
 							tone="danger"
-							disabled={!connected || state.loading || state.saving || writeUncertain}
+							disabled={unreadableDraftDiscardDisabled(connected, state)}
 							onPress={() => run(() => model.discardTranscriptDraft())}
 						/>
 					</Group>
@@ -184,9 +186,18 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 					</Group>
 				</>
 			) : null}
+		</>
+	);
+	return (
+		<GroupedPage>
+			<SheetStatus />
+			{state.support === "unsupported" ? (
+				<GroupFooter>This hub doesn't keep a default detail level.</GroupFooter>
+			) : null}
 			{config && state.support === "supported" ? (
 				<>
-					<Group label="Default detail level">
+					{/* The page's title names the setting. */}
+					<Group>
 						{DETAIL_LEVELS.map(({ level, label, description }) => (
 							<Row
 								key={level}
@@ -211,9 +222,12 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 							}}
 						/>
 					</Group>
+					{status}
 					{config.content.kind === "custom" ? <CustomChoices config={config} disabled={busy} choose={choose} /> : null}
 				</>
-			) : null}
+			) : (
+				status
+			)}
 		</GroupedPage>
 	);
 }

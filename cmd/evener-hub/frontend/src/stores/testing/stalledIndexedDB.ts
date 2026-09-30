@@ -1,6 +1,13 @@
 import { IDBDatabase } from "fake-indexeddb";
 import { vi } from "vitest";
 
+// A request that never fires success, error, or blocked: the wedged
+// connection-coordinator shape, where open()/deleteDatabase() return and then
+// no event ever arrives.
+export function neverSettlingRequest(): IDBOpenDBRequest {
+  return new EventTarget() as unknown as IDBOpenDBRequest;
+}
+
 // Hold browser callbacks while fake-indexeddb performs the real transaction.
 // This distinguishes an unobserved commit from a write that can still abort.
 export function holdIndexedDBEvent(target: EventTarget, type: string) {
@@ -83,4 +90,27 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
       hold?.release();
     },
   };
+}
+
+// One real macrotask hop, off the faked timers: MessageChannel is a task the
+// setTimeout fake does not touch. fake-indexeddb delivers open, delete and
+// versionchange events on such a task, which a fake-timer advance does not
+// reach.
+export function nextRealTask(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
+}
+
+// Yield to the real task queue until `ready()`, bounded, so parked work can
+// progress without its fake watchdog firing first. The bound is a tripwire, not
+// the mechanism.
+export async function settleRealTasks(ready: () => boolean): Promise<void> {
+  for (let i = 0; i < 20 && !ready(); i += 1) await nextRealTask();
 }

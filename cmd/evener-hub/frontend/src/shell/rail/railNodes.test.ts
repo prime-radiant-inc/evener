@@ -26,9 +26,63 @@ import {
   projectNodesWithHostBranches,
   revealExpansionIds,
   sessionNodes,
+  subagentIsCurrent,
   topLevelAncestorRef,
   watchCountLabel,
 } from "./railNodes";
+
+describe("subagentIsCurrent", () => {
+  test("a descendant in any current state makes the subagent current, not only an active one", () => {
+    // The direct level accepts the whole current set (awaiting counts); the
+    // subtree must read the same set, or the Agents tab folds an idle
+    // subagent whose own child is waiting on the user.
+    const grandchild = session({ ref: "local:grandchild", state: "awaiting" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("a descendant's running job makes the subagent current", () => {
+    const grandchild = session({
+      ref: "local:grandchild",
+      state: "idle",
+      running_jobs: [{ job_id: "j1", job_type: "shell", status: "running" }],
+    });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("an idle subagent with a quiet subtree is not current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "idle" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(false);
+  });
+
+  test("approval_pending makes an idle subagent current (it displays as awaiting)", () => {
+    // displayState folds approval_pending into "awaiting" - the rail's badge
+    // counts such a node as needs-you, so the activity surfaces must not
+    // fold it as inactive about the same node.
+    expect(subagentIsCurrent(session({ state: "idle", approval_pending: true }))).toBe(true);
+  });
+
+  test("a descendant's approval_pending makes the subagent current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "idle", approval_pending: true });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("an errored subagent is current (a failure needs the user more than a warning does)", () => {
+    // The fold hides work that is done; an errored subagent is not done in
+    // that sense - its row paints danger, and warning (the less severe
+    // signal) is already current.
+    expect(subagentIsCurrent(session({ state: "errored" }))).toBe(true);
+  });
+
+  test("a descendant's errored state makes the subagent current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "errored" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+});
 
 function session(overrides: Partial<RailSession> = {}): RailSession {
   return {
@@ -351,15 +405,6 @@ describe("resource projection semantics", () => {
     expect(watchCountLabel(0, 0, 8)).toBe("0 armed total · +8 more");
   });
 
-  test("renders cluster members inline", () => {
-    const cluster = session({
-      kind: "cluster",
-      row_id: "cluster",
-      ref: "cluster",
-      children: [session({ row_id: "member", ref: "member", state: "ended" })],
-    });
-    expect(sessionNodes([cluster], closed)[0]?.children.map((child) => child.id)).toEqual(["member"]);
-  });
   test("derives the attention count from recursive summaries", () => {
     const root = session({
       state: "active",
@@ -755,26 +800,7 @@ describe("host grouping (organize by)", () => {
     expect(revealExpansionIds([], [liveCarrier], "devbox:lchild", "flat")).toEqual(["lroot"]);
   });
 
-  test("a cluster carrier opens only its own row; deeper chains walk every ancestor", () => {
-    // The cluster's row is the only fold between a member and the top.
-    const clustered = project({
-      key: "cl",
-      sources: ["local"],
-      sessions: [
-        session({
-          ref: "cluster:abc",
-          row_id: "cluster:abc",
-          host_id: "local",
-          kind: "cluster",
-          children: [on("local", "member", { state: "ended" })],
-        }),
-      ],
-    });
-    expect(revealExpansionIds([clustered], [], "local:member", "host-project")).toEqual([
-      "host:local",
-      "projectnode:cl@local",
-      "cluster:abc",
-    ]);
+  test("a deeper leaf's reveal walks every session row above it", () => {
     // A deeper leaf names every session row above it.
     const deep = project({
       key: "deep",
@@ -1032,56 +1058,5 @@ describe("host grouping (organize by)", () => {
     const alphaAfter = second.find((node) => node.id === "host:render-farm")?.children[0];
     expect(childIds(devboxAfter)).toEqual(["navigation:devbox:d1", "projectnode:evener@devbox:overflow"]);
     expect(childIds(alphaAfter)).toEqual(["navigation:render-farm:r1"]);
-  });
-
-  test("a clustered project groups under its members' host, never a synthetic cluster host", () => {
-    const member = (host: string, ref: string) =>
-      session({
-        row_id: `navigation:${host}:${ref}`,
-        ref: `${host}:${ref}`,
-        session_id: ref,
-        host_id: host,
-        kind: "session",
-        state: "ended",
-        children: [],
-      });
-    // The hub names no host for a synthetic cluster row: its wire host_id
-    // is the "cluster" scope prefix of the row's id (navigationNodeRef
-    // falls back to the node ID), which names no manifest source.
-    const clustered = session({
-      row_id: "navigation:cluster:ab",
-      ref: "cluster:ab",
-      session_id: "ab",
-      host_id: "cluster",
-      kind: "cluster",
-      state: "ended",
-      children: [member("devbox", "m1")],
-    });
-    const evener = project({ key: "evener", sources: [], sessions: [clustered] });
-    const hosts = hostProjectNodes([evener], sources, closed);
-    expect(hosts.map((node) => node.id)).toEqual(["host:devbox"]);
-    expect(childIds(hosts[0]?.children[0])).toContain("navigation:cluster:ab");
-    // A reveal to a member walks the cluster's home host, not "cluster" -
-    // and opens the cluster's own row, the fold the member renders under.
-    expect(revealExpansionIds([evener], [], "devbox:m1", "host-project")).toEqual([
-      "host:devbox",
-      "projectnode:evener@devbox",
-      "navigation:cluster:ab",
-    ]);
-  });
-
-  test("a clustered live row groups under its members' host, like the project tiers", () => {
-    const clustered = session({
-      row_id: "navigation:cluster:ab",
-      ref: "cluster:ab",
-      session_id: "ab",
-      host_id: "cluster",
-      kind: "cluster",
-      state: "active",
-      children: [on("devbox", "m1")],
-    });
-    const rows = sessionNodes([clustered, on("local", "l1")], closed);
-    const grouped = liveNodesGroupedByHost(rows, sources, closed);
-    expect(grouped.map((node) => node.id)).toEqual(["livehost:local", "livehost:devbox"]);
   });
 });

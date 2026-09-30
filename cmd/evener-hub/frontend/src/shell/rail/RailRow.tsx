@@ -49,7 +49,7 @@ import {
   watchGloss,
   watchTitle,
 } from "@evener/appwire-client";
-import { sessionGroupHostId, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
+import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode } from "react";
 import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
@@ -62,8 +62,10 @@ import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../wi
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
+import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
+import { useIsMobile } from "../useIsMobile";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
@@ -515,7 +517,16 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   // same way).
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
-  const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
+  // The Activity ✓ marks what this row's Activity action opens, per viewport:
+  // the desktop sidebar (the predicate is shared with the session chrome so
+  // the two menus can never disagree), or the sessionActivity pane the mobile
+  // rail still opens from the tree drawer. On desktop a leftover pane is an
+  // orphan the chrome never marks (opening the sidebar retires it), so the
+  // pane half is mobile-only. Unconditional hook calls throughout.
+  const isMobile = useIsMobile();
+  const activitySidebarOpen = useActivitySidebarOpenFor(ref);
+  const activityPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
+  const activityOpen = activitySidebarOpen || (isMobile && activityPaneOpen);
   const notesOpen = useTopNotesExpanded(ref);
   // Navigation summaries do not carry notes capability. Observe only an
   // already-hydrated snapshot; opening the session owns any needed fetch.
@@ -641,12 +652,8 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const { session } = node;
   // A non-local row names its host on the title line (a LABEL, not a tree
   // re-layout); reachability comes from the manifest's sources, not from the
-  // row. A CLUSTER row names its members' host - its own host_id is the
-  // synthetic scope prefix of its id ("cluster"), which names no machine -
-  // the same resolver the grouping uses, so the chip cannot contradict the
-  // group the row sits under. Dormant keeps its own "never run" meaning -
-  // see useHostOnline.
-  const hostId = sessionGroupHostId(session);
+  // row. Dormant keeps its own "never run" meaning - see useHostOnline.
+  const hostId = session.host_id;
   const showsHost = hostId !== "" && hostId !== LOCAL_HOST;
   const hostOnline = useHostOnline(hostId);
   const needsYouCount = needsYouDescendantCount(session);

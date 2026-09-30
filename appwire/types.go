@@ -91,6 +91,7 @@ const (
 	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
 	MethodEvenerSessionSeenSet           = "evener/session/seen/set"
 	MethodEvenerSearch                   = "evener/search"
+	MethodEvenerArchivedList             = "evener/archived/list"
 	MethodEvenerActivityRead             = "evener/activity/read"
 	MethodEvenerNoticesList              = "evener/notices/list"
 	MethodEvenerHarnessesList            = "evener/harnesses/list"
@@ -669,6 +670,28 @@ type SessionSeenSetResponse struct {
 	Navigation NavigationMutation `json:"navigation"`
 }
 
+// ArchivedListParams names the project whose archived sessions to list: the
+// catalog its rail row came from ("projects", "archived_projects" or
+// "test_runs"; the same key can exist in two catalogs) and its key. Cursor is
+// the previous page's NextCursor; Limit defaults to 50.
+type ArchivedListParams struct {
+	Catalog    string `json:"catalog"`
+	ProjectKey string `json:"projectKey"`
+	Cursor     string `json:"cursor,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+// ArchivedListResponse is one page of a project's archived sessions, newest
+// first. Sessions is a JSON array of hubapi.NavigationSessionSummary: appwire
+// cannot import hubapi, so the rows travel as raw JSON the way a navigation
+// read's data does. NextCursor is empty on the last page. Total counts every
+// archived session of the project.
+type ArchivedListResponse struct {
+	Sessions   json.RawMessage `json:"sessions"`
+	NextCursor string          `json:"nextCursor,omitempty"`
+	Total      int             `json:"total"`
+}
+
 // SearchParams selects matching live and past sessions for the hub command
 // palette. An empty query returns the most recent past sessions and all live
 // sessions, matching the palette's initial result set.
@@ -825,9 +848,20 @@ type NoticesListResponse struct {
 	Notices []HubNotice `json:"notices"`
 }
 
+// ServerInfo names the serving hub and its machine: Name and Version identify
+// the build, while OS, Arch and Roots describe the hub's own machine — the same
+// system and project-root facts a HostRow carries for a host the hub reaches
+// over SSH. A client that already shows the hub's own machine (the phone's
+// Hosts) renders those fields instead of leaving the machine's system and roots
+// unknown. OS and Arch name the machine's system and are absent when a server
+// does not report them; Roots is the machine's project roots, absent when it
+// has none.
 type ServerInfo struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name    string   `json:"name"`
+	Version string   `json:"version"`
+	OS      string   `json:"os,omitempty"`
+	Arch    string   `json:"arch,omitempty"`
+	Roots   []string `json:"roots,omitempty"`
 }
 
 type FeatureSet struct {
@@ -1603,6 +1637,7 @@ type EvenerDelegateInfo struct {
 	Status              string               `json:"status"`
 	Outcome             string               `json:"outcome,omitempty"`
 	Reason              string               `json:"reason,omitempty"`
+	Error               string               `json:"error,omitempty"`
 	Terminal            bool                 `json:"terminal,omitempty"`
 	Resumable           bool                 `json:"resumable"`
 	NeedsAttention      bool                 `json:"needsAttention"`
@@ -2710,6 +2745,7 @@ type JobActivityDelegate struct {
 	ProjectionRevision  uint64                 `json:"projectionRevision,omitempty"`
 	Outcome             string                 `json:"outcome,omitempty"`
 	Reason              string                 `json:"reason,omitempty"`
+	Error               string                 `json:"error,omitempty"`
 	Terminal            bool                   `json:"terminal,omitempty"`
 	Resumable           bool                   `json:"resumable,omitempty"`
 	NotResumableReason  string                 `json:"notResumableReason,omitempty"`
@@ -3665,7 +3701,11 @@ type AuthDeviceStartResponse struct {
 	UserCode        string `json:"userCode"`
 	VerificationURL string `json:"verificationUrl"`
 	IntervalSeconds int    `json:"intervalSeconds"`
-	Fallback        bool   `json:"fallback,omitempty"`
+	// ExpiresInSeconds is how long the user code stays valid, so a client can
+	// say when it expires instead of repeating the hub's own TTL. Optional:
+	// zero (absent) leaves the client on its own wording.
+	ExpiresInSeconds int  `json:"expiresInSeconds,omitempty"`
+	Fallback         bool `json:"fallback,omitempty"`
 }
 
 // AuthDevicePollParams is the params for evener/auth/device/poll.

@@ -318,9 +318,9 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	case m.transcriptView != nil:
 		footer = tuiprim.ActionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
 	case m.session.scrollMode:
-		keys := []string{"esc/i/q: compose", "enter: expand selected", "ctrl+t: expand all"}
+		keys := []string{"esc: compose", "enter: expand selected", "ctrl+t: expand all"}
 		if m.detail.Capabilities.Fork {
-			keys = append(keys, "f: fork selected user message")
+			keys = append(keys, "ctrl+f: fork selected user message")
 		}
 		keys = append(keys, "ctrl+o: dashboard")
 		footer = tuiprim.ActionBarForWidth(m.width, keys...) + "\n" + m.sessionComposerPanel().View()
@@ -375,7 +375,7 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 
 // syncSessionViewport writes the current mainBody and correct geometry into
 // m.session.viewport so that browse-mode scroll handlers (moveBrowsePage,
-// updateSessionKey j/k/pgup/pgdown) operate against the same content and
+// updateSessionKey ctrl+up/ctrl+down/pgup/pgdown) operate against the same content and
 // dimensions the user actually sees. Must be called on an addressable *hubModel
 // so mutations persist. Called from Update (session mode) and from
 // enterSessionBrowse / exitSessionBrowse.

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { parseActivityTree } from "@evener/appwire-client";
-import { flattenSubagents, subagentWhy, tallySubagents, subagentLastLine } from "../subagents/subagentModel";
+import {
+	flattenActivity,
+	flattenSubagents,
+	shellJobMeta,
+	subagentWhy,
+	tallySubagents,
+	subagentLastLine,
+} from "../subagents/subagentModel";
 import {
 	createDemoDocuments,
 	type DemoCoordinator,
@@ -19,6 +26,7 @@ const coordinator: DemoCoordinator = {
 	title: "Get PR 2138 Test Clean",
 	model: "glm-5.3-vision",
 	subagentRef: (id) => `local:${id}`,
+	jobs: [{ id: "pr-build", command: "go build ./...", ago: 12 * MIN, elapsed: 40 }],
 	subagents: [
 		{
 			id: "g-settle",
@@ -74,7 +82,7 @@ describe("the demo fleet's subagents", () => {
 		const rows = flattenSubagents(tree as NonNullable<typeof tree>);
 		expect(rows).toHaveLength(55);
 		expect(tallySubagents(rows)).toEqual({ total: 55, failed: 2, running: 32, done: 21 });
-		const settle = rows.find((row) => row.id === "d-g-settle");
+		const settle = rows.find((row) => row.id === "g-settle");
 		expect(subagentWhy(settle as NonNullable<typeof settle>, NOW)).toEqual({
 			word: "Failed",
 			text: "go test exited 1 (3 times)",
@@ -83,10 +91,33 @@ describe("the demo fleet's subagents", () => {
 			branch: "fix-settle-race",
 			tokens: "1.2M tokens",
 		});
-		expect(rows.find((row) => row.id === "d-g-settle-1")?.parentTitle).toBe("Fix race in tree settle");
-		expect(subagentWhy(rows.find((row) => row.id === "d-g-run-0") as NonNullable<(typeof rows)[number]>, NOW)).toEqual({
+		expect(rows.find((row) => row.id === "g-settle-1")?.parentTitle).toBe("Fix race in tree settle");
+		expect(subagentWhy(rows.find((row) => row.id === "g-run-0") as NonNullable<(typeof rows)[number]>, NOW)).toEqual({
 			text: "Running go test ./agent/...",
 		});
+	});
+
+	// A transcript's subagent row finds its outcome in this tree by the id the
+	// session's roster gives it (demoSessions.ts delegatesOf), as on a hub,
+	// where both name the one delegate (audit G13).
+	it("names each subagent by its roster id, and a finished one's report", () => {
+		const tree = parseActivityTree(demoActivityTree(coordinator, NOW).data);
+		const rows = flattenSubagents(tree as NonNullable<typeof tree>);
+		const done = rows.find((row) => row.id === "g-done-0");
+		expect(subagentWhy(done as NonNullable<typeof done>, NOW)).toEqual({ text: "Tests pass." });
+	});
+
+	// The Activity list's shell jobs: the running command a subagent's line
+	// names, the command a failed one's line says exited, and the
+	// coordinator's own finished ones.
+	it("serves a shell job for each running command, each failed one, and the coordinator's own", () => {
+		const tree = parseActivityTree(demoActivityTree(coordinator, NOW).data);
+		const { jobs } = flattenActivity(tree as NonNullable<typeof tree>);
+		const shown = jobs.map((row) => [row.title, row.state, row.owner, shellJobMeta(row, NOW)]);
+		expect(shown).toContainEqual(["go build ./...", "done", "Get PR 2138 Test Clean", "40s"]);
+		expect(shown).toContainEqual(["go test", "failed", "Fix race in tree settle", "Command failed · 1m"]);
+		expect(shown).toContainEqual(["go test ./agent/...", "running", "Running subagent 0", "running · 42s"]);
+		expect(jobs.find((row) => row.state === "failed")?.job.exitCode).toBe(1);
 	});
 
 	it("reads data.js's token labels", () => {

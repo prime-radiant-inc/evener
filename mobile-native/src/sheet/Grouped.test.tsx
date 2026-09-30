@@ -1,10 +1,11 @@
-import { AccessibilityInfo, Platform, type TextInput, View } from "react-native";
+import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { render, renderedText } from "../renderNative.testkit";
 import { createRef } from "react";
-import { act } from "react-test-renderer";
+import { act, type ReactTestInstance } from "react-test-renderer";
 import {
+	Button,
 	FormError,
 	Group,
 	GroupedPage,
@@ -368,6 +369,17 @@ describe("labels, footers and tags", () => {
 			backgroundColor: light.inset,
 		});
 	});
+
+	it("draws a tag at the prototype's geometry: 11pt semibold on a 16pt line, 6 by 1 padding, 6pt corners (audit L2)", () => {
+		expect(texts(render(<Tag text="1 offline" tone="amber" />))[0]?.props.style).toMatchObject({
+			fontSize: 11,
+			lineHeight: 16,
+			fontWeight: "600",
+			paddingHorizontal: 6,
+			paddingVertical: 1,
+			borderRadius: 6,
+		});
+	});
 });
 
 describe("a row whose label and value can't share a line", () => {
@@ -439,6 +451,11 @@ describe("a row's value with a tag", () => {
 		expect(tag?.props.children).toBe("1 offline");
 	});
 
+	it("sets the value at 15pt, the prototype's .gv, so a value and a tag leave the label room (audit L3)", () => {
+		const tree = render(<Row label="Version" value="0.9.412" />);
+		expect(merged(texts(tree)[1]?.props.style)).toMatchObject({ fontSize: 15, lineHeight: 20 });
+	});
+
 	it("sets a value that needs a human in the attention ink", () => {
 		const tree = render(<RowValue text="Offline" tone="attention" />);
 		expect(merged(texts(tree)[0]?.props.style)).toMatchObject({ color: light.attentionInk });
@@ -478,6 +495,20 @@ describe("a text field row", () => {
 		expect(token.props.secureTextEntry).toBe(true);
 		expect(token.props.placeholder).toBe("New token");
 		expect(token.props.placeholderTextColor).toBe(light.inkLow);
+	});
+
+	it("draws a machine field's placeholder in the UI font, and switches to Menlo once it holds a value (spec 16.2)", () => {
+		// React Native draws a TextInput's placeholder in the input's own
+		// font, so an empty machine field must not be Menlo or the hint
+		// reads as machine text.
+		const empty = render(
+			<TextFieldRow label="From the address" value="" onChangeText={() => {}} placeholder="From the address" />,
+		).root.findByType("TextInput" as never);
+		expect(merged(empty.props.style).fontFamily).toBeUndefined();
+		const filled = render(
+			<TextFieldRow label="From the address" value="ws://attic.lan" onChangeText={() => {}} />,
+		).root.findByType("TextInput" as never);
+		expect(merged(filled.props.style).fontFamily).toBe(fonts.mono);
 	});
 
 	it("lets words someone chose be capitalized and corrected, and keeps a machine value as typed", () => {
@@ -521,5 +552,170 @@ describe("a text field row", () => {
 		).root.findByType("TextInput" as never);
 		expect(input.props.multiline).toBe(true);
 		expect(input.props.editable).toBe(false);
+	});
+});
+
+describe("a row's trailing control (audit M13)", () => {
+	it("draws its own control after the row's text, outside what a press on the row opens", () => {
+		const open = vi.fn();
+		const install = vi.fn();
+		const tree = render(
+			<Row
+				label="code-review"
+				sub="Review changes for correctness"
+				onPress={open}
+				accessory={<Pressable accessibilityRole="button" accessibilityLabel="Install" onPress={install} />}
+			/>,
+		);
+		const row = tree.root.find(
+			(node) => node.type === Pressable && node.props.accessibilityLabel?.startsWith("code-review"),
+		);
+		// The row's own button doesn't hold the control, so each is its own
+		// VoiceOver element and its own target.
+		expect(row.findAll((node) => node.props.accessibilityLabel === "Install")).toHaveLength(0);
+		const control = tree.root.find((node) => node.type === Pressable && node.props.accessibilityLabel === "Install");
+		act(() => control.props.onPress());
+		expect(install).toHaveBeenCalledTimes(1);
+		expect(open).not.toHaveBeenCalled();
+		act(() => row.props.onPress());
+		expect(open).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps a row with a control and no press a single reading for VoiceOver, beside the control", () => {
+		const tree = render(
+			<Row
+				label="pdf"
+				accessory={<Pressable accessibilityRole="button" accessibilityLabel="Install" onPress={() => {}} />}
+			/>,
+		);
+		const elements = tree.root.findAll(
+			(node) => typeof node.type === "string" && (node.props.accessible === true || String(node.type) === "Pressable"),
+		);
+		expect(elements.map((node) => [String(node.type), node.props.accessibilityLabel])).toEqual([
+			["View", "pdf"],
+			["Pressable", "Install"],
+		]);
+	});
+});
+
+describe("a mini button as a row's trailing control (audit M13)", () => {
+	it("has the row's whole height to reach into, since React Native clips a touch at its parent's bounds", () => {
+		const tree = render(<Row label="pdf" accessory={<Button label="Install" mini onPress={() => {}} />} />);
+		const holder = tree.root.findByProps({ testID: "row-accessory" });
+		// Stretched to the row, which is at least 44pt, the holder spans the
+		// mini button's 30pt plus its reach above and below.
+		expect(holder.props.style).toMatchObject({ alignSelf: "stretch", justifyContent: "center" });
+		const row = tree.root.find((node) => String(node.type) === "View" && node.props.accessibilityLabel === "pdf");
+		const button = holder.find((node) => String(node.type) === "Pressable");
+		expect(Object.assign({}, ...[row.props.style].flat()).minHeight).toBe(
+			30 + button.props.hitSlop.top + button.props.hitSlop.bottom,
+		);
+	});
+});
+
+describe("a switch row's text, pressed (audit M13)", () => {
+	it("shades like a row does, rather than dimming", () => {
+		const tree = render(<SwitchRow label="superpowers" value onChange={() => {}} onPress={() => {}} />);
+		const text = tree.root.find((node) => node.type === Pressable);
+		const pressed = merged(text.props.style({ pressed: true }));
+		expect(pressed.backgroundColor).toBe(light.pressed);
+		expect(pressed.opacity ?? 1).toBe(1);
+	});
+});
+
+describe("Button", () => {
+	const pressable = (tree: ReturnType<typeof render>) => tree.root.find((node) => node.type === Pressable);
+	const styleOf = (node: ReactTestInstance, pressed = false) =>
+		Object.assign(
+			{},
+			...[typeof node.props.style === "function" ? node.props.style({ pressed }) : node.props.style].flat(),
+		);
+
+	it("draws the primary call to action filled in the accent, full width and 50pt, as the prototype's .btn.primary.big", () => {
+		const onPress = vi.fn();
+		const tree = render(<Button label="Open sign-in page" primary onPress={onPress} />);
+		const button = pressable(tree);
+		expect(button.props.accessibilityRole).toBe("button");
+		expect(styleOf(button)).toMatchObject({ backgroundColor: light.accentFill, minHeight: 50, alignSelf: "stretch" });
+		// Pressed, it dims as the app's other buttons do.
+		expect(styleOf(button, true).opacity).toBe(0.65);
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
+			color: light.onFill,
+			fontSize: 17,
+			fontWeight: "600",
+		});
+		act(() => button.props.onPress());
+		expect(onPress).toHaveBeenCalledTimes(1);
+	});
+
+	it("draws a plain button as a 36pt capsule on the surface, as the prototype's .btn, touchable over 44pt", () => {
+		const tree = render(<Button label="Copy code" onPress={() => {}} />);
+		const button = pressable(tree);
+		expect(styleOf(button)).toMatchObject({ backgroundColor: light.surface, minHeight: 36 });
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({ color: light.inkHi, fontSize: 15 });
+	});
+
+	it("draws a mini button as the prototype's .mini-btn: accent text, no fill, shaded when pressed, touchable over 44pt (audit M13)", () => {
+		const tree = render(<Button label="Install" mini onPress={() => {}} />);
+		const button = pressable(tree);
+		expect(styleOf(button)).toMatchObject({ paddingVertical: 6, paddingHorizontal: 8, borderRadius: 8, minHeight: 30 });
+		expect(styleOf(button).backgroundColor).toBeUndefined();
+		expect(styleOf(button, true).backgroundColor).toBe(light.pressed);
+		const label = tree.root.find((node) => String(node.type) === "Text");
+		expect(Object.assign({}, ...[label.props.style].flat())).toMatchObject({
+			color: light.accentInk,
+			fontSize: 13,
+			fontWeight: "600",
+		});
+	});
+	const onOS = (os: string, check: () => void) => {
+		const saved = Platform.OS;
+		Object.assign(Platform, { OS: os });
+		try {
+			check();
+		} finally {
+			Object.assign(Platform, { OS: saved });
+		}
+	};
+
+	it.each([
+		["ios", 44],
+		["android", 48],
+	])("reaches a plain button's touch to the %s minimum of %ipt", (os, minimum) => {
+		onOS(os, () => {
+			const button = pressable(render(<Button label="Copy code" onPress={() => {}} />));
+			// The capsule is drawn at 36; its touch reaches the platform minimum.
+			expect(36 + button.props.hitSlop.top + button.props.hitSlop.bottom).toBe(minimum);
+		});
+	});
+
+	it.each(["ios", "android"])(
+		"reaches a mini button's touch to its 44pt row's edges on %s, never into the row above or below",
+		(os) => {
+			onOS(os, () => {
+				const button = pressable(render(<Button label="Install" mini onPress={() => {}} />));
+				expect(30 + button.props.hitSlop.top + button.props.hitSlop.bottom).toBe(44);
+			});
+		},
+	);
+
+	it("names a button for VoiceOver by its accessibilityLabel when given one, else by its label", () => {
+		const named = pressable(
+			render(<Button label="Install" mini accessibilityLabel="Install gadget from acme" onPress={() => {}} />),
+		);
+		expect(named.props.accessibilityLabel).toBe("Install gadget from acme");
+		expect(pressable(render(<Button label="Copy code" onPress={() => {}} />)).props.accessibilityLabel).toBeUndefined();
+	});
+
+	it("leaves a disabled mini button inert: Pressable's disabled holds its press, VoiceOver hears it dimmed", () => {
+		const onPress = vi.fn();
+		const button = pressable(render(<Button label="Install" mini disabled onPress={onPress} />));
+		// React Native's Pressable drops presses while disabled; the test
+		// renderer's stand-in doesn't, so the prop is the contract checked here.
+		expect(button.props.disabled).toBe(true);
+		expect(button.props.accessibilityState).toEqual({ disabled: true });
+		expect(styleOf(button).opacity).toBe(0.4);
 	});
 });

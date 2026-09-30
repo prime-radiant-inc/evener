@@ -126,6 +126,8 @@ export {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  endpointMoved,
+  endpointUncheckable,
   FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
@@ -139,8 +141,29 @@ export {
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
-export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
-export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
+export type {
+  DelegateEndingFields,
+  DelegateModelFields,
+  DelegateTiming,
+  DelegateTimingFields,
+} from "./delegateDetails";
+export {
+  delegateEndingText,
+  delegateModel,
+  delegateNotResumableText,
+  delegatePacket,
+  delegateTiming,
+} from "./delegateDetails";
+export {
+  type DelegateSendFooterInfo,
+  type DelegateSendRawState,
+  type DelegateSendStep,
+  delegateSendBase,
+  delegateSendFooter,
+  delegateSendSummary,
+  delegateSendTarget,
+  isDelegateSendResult,
+} from "./delegateSteps";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";
@@ -215,6 +238,7 @@ export {
   HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_ORDER,
   HOST_ENTRY_FIELD_TEXT,
+  HOST_ENTRY_FIELD_WHEN_EMPTY,
   HOST_GATE_TIMEOUT_MS,
   hostChangedSinceOpened,
   rootsFromText,
@@ -243,6 +267,20 @@ export {
 } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
+export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
+export {
+  endReasonPhrase,
+  isRecognizedWatchResult,
+  type JobWatchStep,
+  jobWatchEvidence,
+  jobWatchOperation,
+  jobWatchSummary,
+  rowConditionPhrase,
+  type TimerSpec,
+  timerSpec,
+  WATCH_DELIVERY_BUDGET,
+  watchRowStateWord,
+} from "./jobWatchSteps";
 export type { ActionId } from "./keybindingActions";
 export { ACTIONS } from "./keybindingActions";
 export type { Chord, KeybindingParser, KeybindingPress, KeySequence } from "./keybindingChord";
@@ -391,7 +429,6 @@ export {
   comparePositions,
   copyItemTextPresence,
   foldWarningParams,
-  hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
   invalidateHistory,
@@ -470,6 +507,7 @@ export {
   steeringNotificationFragments,
   stripSystemReminder,
 } from "./steeringNotifications";
+export { composeStepWords, type StepWords } from "./stepWords";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export {
   canDrainQueue,
@@ -496,6 +534,16 @@ export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
 export { parseTaskListData, taskAggregateLabel } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
 export { groupTasks } from "./taskListGroups";
+export {
+  freshNotes,
+  type MutationTouch,
+  mutationRows,
+  SUMMARY_MARK,
+  type TaskListStep,
+  type TouchedRow,
+  taskMutationRecap,
+  taskMutationSummary,
+} from "./taskListStep";
 export { absoluteTime, relativeTime } from "./taskListTime";
 export type {
   PanelLoadFailure,
@@ -533,8 +581,18 @@ export {
   trailingBracketFooter,
 } from "./toolCallText";
 export {
+  prettyJSON,
+  type ShellOutput,
+  shellOutput,
+  skillContext,
+  toolJSONResult,
+  webFetchResult,
+} from "./toolEvidence";
+export {
   applyPatchSummary,
+  askUserSummary,
   BINARY_PAYLOAD_HEADER,
+  delegateSummary,
   editFileSummary,
   fallbackToolSummary,
   filePathArg,
@@ -551,9 +609,11 @@ export {
   type ToolFamily,
   type ToolStep,
   type ToolSummaryContext,
+  taskListChanges,
   toolFamily,
   toolStepProgress,
   toolStepSummary,
+  toolStepWords,
   useSkillSummary,
   webFetchByteCount,
   webFetchSummary,
@@ -638,11 +698,33 @@ export type {
   TranscriptProjection,
 } from "./transcriptProjector";
 export { ACTION_SUMMARY_UNAVAILABLE, entryDisplayKey, projectThread } from "./transcriptProjector";
+export {
+  findSessionsSummary,
+  readTranscriptEnvelope,
+  readTranscriptSummary,
+  type TranscriptEnvelope,
+  type TranscriptStep,
+  turns,
+} from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
-export { isInformationalWarning, WarningCodeContextBudget } from "./warnings";
+export type { WarningWords } from "./warnings";
+export {
+  attentionWarningNotice,
+  isInformationalWarning,
+  WarningCodeContextBudget,
+  WarningCodeDelegateAttentionRestore,
+  warningWords,
+} from "./warnings";
+export { hasWarningText } from "./warningText";
+export {
+  filterSummaryPhrase,
+  type WatchTriggerPhrases,
+  watchEventLabel,
+  watchTriggerPhrases,
+} from "./watchConditionPhrase";
 export type { ConditionSpec, JsonObject, WatchDisplayState, WatchRow, WatchSummary } from "./watchRows";
 export {
   asJsonObject,
@@ -667,3 +749,4 @@ export {
   watchNextFireLabel,
   watchTitle,
 } from "./watchText";
+export { type WorktreeStep, worktreeMessage, worktreeSummary } from "./worktreeSteps";

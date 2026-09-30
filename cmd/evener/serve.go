@@ -1817,7 +1817,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			close(runnerDone)
 			clearMutationRunner(runnerDone)
 			if processErr != nil {
-				serveLogf(os.Stderr, sess.ID(), "error: %v", processErr)
+				serveLogf(os.Stderr, sess.ID(), "error: %s", turnFailureSummary(processErr))
 			}
 			_ = result
 			return processed
@@ -2208,7 +2208,7 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
 			ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
 			Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
-			Outcome: delegate.Outcome, Reason: delegate.Reason, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
+			Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,
 			NotResumableReason: delegate.NotResumableReason, ProjectionRevision: delegate.ProjectionRevision,
 			Task: delegate.Task, Description: delegate.Description, AgentType: delegate.AgentType, RequestedModel: delegate.RequestedModel,
 			ResolvedProfileID: delegate.ResolvedProfileID, ResolvedModel: delegate.ResolvedModel, Model: delegate.Model,

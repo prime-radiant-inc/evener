@@ -83,7 +83,11 @@ func judge(v identity, t Target) (Identity, error) {
 	if v.startedAt.After(t.StartedAt) {
 		return IdentityUnknown, errors.New("daemon process may have started after its rendezvous identity")
 	}
-	if len(v.argv) < 2 || v.argv[1] != "serve" {
+	// A retiring daemon mid-exit has released the memory its command line is
+	// read from; generation, owner and start still bind it, and its handle
+	// only waits (#3339). Any handle that may signal needs the command.
+	exitingRetiree := t.Retiring && v.exiting
+	if !exitingRetiree && (len(v.argv) < 2 || v.argv[1] != "serve") {
 		return IdentityUnknown, errors.New("daemon process is not a serve command")
 	}
 	if !v.ownsLog && !t.Retiring {
@@ -126,6 +130,10 @@ type identity struct {
 	startedAtLower time.Time
 	argv           []string
 	ownsLog        bool
+	// exiting: the process has begun exiting (Linux's PF_EXITING) but the OS
+	// does not yet report it gone. Its memory is released, so its command
+	// line reads empty, and its files are closing.
+	exiting bool
 }
 
 type processHandle interface {
@@ -215,6 +223,19 @@ func (p *process) Kill() error {
 			return nil
 		}
 		if gone, exitErr := p.handle.exited(); exitErr == nil && gone {
+			return nil
+		}
+		// A daemon that has begun exiting, before the OS reports it gone,
+		// no longer verifies: its memory is released, so its command line
+		// reads empty. When it is still the generation Open bound, it is the
+		// process this handle was asked to stop and it is already stopping:
+		// there is nothing to signal, and Wait confirms the exit (#3383).
+		// Generation plus exiting is enough: the OS handle (a pidfd on Linux)
+		// is bound to the process Open verified, so a reused PID can't answer.
+		// It may also finish exiting between the checks: the re-inspect then
+		// reports it gone, and the stop is done.
+		v, inspectErr := p.handle.inspect(p.target)
+		if errors.Is(inspectErr, ErrExited) || (inspectErr == nil && v.exiting && v.generation == p.generation) {
 			return nil
 		}
 		return err

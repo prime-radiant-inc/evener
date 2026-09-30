@@ -1,6 +1,19 @@
 // Descriptors for job_* and delegate_send follow-up calls.
 import type { ItemModel } from "@evener/appwire-client";
-import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "@evener/appwire-client";
+import {
+  clip,
+  delegateSendBase,
+  delegateSendFooter,
+  delegateSendSummary,
+  delegateSendTarget,
+  isDelegateSendResult,
+  jobListSummary,
+  jobStatusSummary,
+  jobStopSummary,
+  parseArgs,
+  str,
+  toolStepSummary,
+} from "@evener/appwire-client";
 import { CopyButton } from "../../../../widgets";
 import { jobStatusDisplay } from "../../chrome/activityFormat";
 import { EntityRef } from "../EntityRef";
@@ -9,7 +22,6 @@ import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
 import { DelegateStatusBody } from "./delegateStatus";
-import { statusWordFromText } from "./subagentModule";
 
 const ID_CLIP = 26;
 
@@ -90,30 +102,13 @@ function JobListBody({ item, live }: ToolRenderProps) {
   );
 }
 
-function jobControlTarget(item: ItemModel): string {
-  const args = parseArgs(item.argumentsJSON);
-  const parsedOutput = parseJSONObject(item.output);
-  return (
-    (parsedOutput && (str(parsedOutput, "id") ?? str(parsedOutput, "job_id"))) ??
-    str(args, "target") ??
-    str(args, "job_id") ??
-    ""
-  );
-}
-
 registerToolRenderer({
   match: (name) => name === "job_status" || name === "job_read_output",
   icon: "job",
   // Background work is state a reader tracks across a turn, so every job
   // row stays on its own line rather than folding into a run.
   fold: "never",
-  summary(item: ItemModel) {
-    const parsedOutput = parseJSONObject(item.output);
-    const jobId = jobControlTarget(item);
-    const status = parsedOutput ? str(parsedOutput, "status") : undefined;
-    const reason = parsedOutput ? str(parsedOutput, "reason") : undefined;
-    return status ? `Checked ${jobId} · ${jobStatusDisplay(status, reason)}` : `Checked ${jobId}`;
-  },
+  summary: jobStatusSummary,
   body: DelegateStatusBody,
 });
 
@@ -121,12 +116,7 @@ registerToolRenderer({
   match: "job_list",
   icon: "job",
   fold: "never",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const status = args.status;
-    const filter = Array.isArray(status) ? status.filter((s) => typeof s === "string").join(", ") : "";
-    return filter ? `Listed jobs (${filter})` : "Listed jobs";
-  },
+  summary: jobListSummary,
   body: JobListBody,
 });
 
@@ -134,122 +124,12 @@ registerToolRenderer({
   match: "job_stop",
   icon: "job",
   fold: "never",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const jobId = str(args, "target") ?? str(args, "job_id") ?? "";
-    const footer = trailingBracketFooter(item.output ?? "");
-    return footer ? `Stopped ${jobId} · ${footer}` : `Stopped ${jobId}`;
-  },
+  summary: jobStopSummary,
   body: HeadClippedOutputBody,
 });
 
-function delegateSendTarget(args: Record<string, unknown>): string {
-  // `to` is the live delegate_send arg; `target` is the retired
-  // job_send_message alias's own arg name (agent/transcript_render.go's
-  // historical rendering path still reads it this way).
-  return str(args, "to") ?? str(args, "target") ?? "";
-}
-
-type DelegateSendRawState = {
-  delegate_id?: string;
-  action: string;
-  running_in_background: boolean;
-  output?: string;
-  transcript_ref?: string;
-  wait_ignored_reason?: string;
-};
-
-function delegateSendResult(raw: unknown): raw is DelegateSendRawState {
-  const state = asJsonObject(raw);
-  return (
-    state !== undefined &&
-    typeof state.action === "string" &&
-    state.action.trim() !== "" &&
-    typeof state.running_in_background === "boolean" &&
-    (state.delegate_id === undefined || typeof state.delegate_id === "string") &&
-    (state.output === undefined || typeof state.output === "string") &&
-    (state.transcript_ref === undefined || typeof state.transcript_ref === "string") &&
-    (state.wait_ignored_reason === undefined || typeof state.wait_ignored_reason === "string")
-  );
-}
-
-const KNOWN_DELEGATE_SEND_STATUSES = new Set([
-  "running",
-  "completed",
-  "failed",
-  "exhausted",
-  "cancelled",
-  "stopped",
-  "delivered",
-  "not_delivered",
-]);
-
-type DelegateSendFooterInfo = { text: string; index: number };
-
-function delegateSendFooter(output: string): DelegateSendFooterInfo | undefined {
-  const trimmed = output.trimEnd();
-  const lines = trimmed.split("\n");
-
-  let index = lines.length - 1;
-  while (index >= 0) {
-    const line = lines[index] ?? "";
-    if (line.startsWith("structured_result (valid=") || line === "watches:" || line.startsWith("- ")) {
-      index -= 1;
-      continue;
-    }
-    break;
-  }
-
-  const footerLine = lines[index];
-  if (footerLine === undefined || !footerLine.startsWith("[") || !footerLine.endsWith("]")) return undefined;
-
-  const footer = footerLine.slice(1, -1);
-  const fields = footer.split(" · ");
-  if (fields.length < 2) return undefined;
-
-  let fieldIndex = 0;
-  const delegateField = fields[fieldIndex] ?? "";
-  if (!delegateField.startsWith("delegate_id ")) return undefined;
-  if (delegateField.slice("delegate_id ".length).trim() === "") return undefined;
-  fieldIndex += 1;
-
-  const actionField = fields[fieldIndex] ?? "";
-  if (actionField.trim() === "") return undefined;
-  fieldIndex += 1;
-
-  const startedJobField = fields[fieldIndex] ?? "";
-  if (startedJobField.startsWith("started_job_id ")) {
-    if (startedJobField.slice("started_job_id ".length).trim() === "") return undefined;
-    fieldIndex += 1;
-  }
-
-  const statusField = fields[fieldIndex];
-  if (statusField !== undefined && KNOWN_DELEGATE_SEND_STATUSES.has(statusField)) {
-    fieldIndex += 1;
-  }
-
-  const runningField = fields[fieldIndex] ?? "";
-  if (runningField === "running in background") {
-    fieldIndex += 1;
-  }
-
-  const watchingField = fields[fieldIndex] ?? "";
-  if (watchingField === "watching") {
-    fieldIndex += 1;
-  }
-
-  const waitIgnoredField = fields[fieldIndex] ?? "";
-  if (waitIgnoredField.startsWith("wait ignored: ")) {
-    if (waitIgnoredField.slice("wait ignored: ".length).trim() === "") return undefined;
-    fieldIndex += 1;
-  }
-
-  if (fieldIndex !== fields.length) return undefined;
-  return { text: footer, index };
-}
-
 function delegateSendResponse(item: ItemModel): string | undefined {
-  if (delegateSendResult(item.raw)) {
+  if (isDelegateSendResult(item.raw)) {
     const rawOutput = item.raw.output;
     if (rawOutput !== undefined && rawOutput.trim() !== "") return rawOutput;
   }
@@ -264,7 +144,7 @@ function delegateSendResponse(item: ItemModel): string | undefined {
 }
 
 function delegateSendWaitIgnoredReason(item: ItemModel): string | undefined {
-  if (delegateSendResult(item.raw)) {
+  if (isDelegateSendResult(item.raw)) {
     const reason = item.raw.wait_ignored_reason?.trim();
     if (reason) return reason;
   }
@@ -277,30 +157,9 @@ function delegateSendWaitIgnoredReason(item: ItemModel): string | undefined {
 
 // The target transcript ref enables the row's open-in-pane action.
 function delegateSendTranscriptRef(item: ItemModel): string | undefined {
-  if (!delegateSendResult(item.raw)) return undefined;
+  if (!isDelegateSendResult(item.raw)) return undefined;
   const ref = item.raw.transcript_ref;
   return ref !== undefined && ref.trim() !== "" ? ref : undefined;
-}
-
-// The collapsed summary names the target and, once the call settles, one
-// status word recovered from the footer's own text (statusWordFromText -
-// field order/presence in the footer is not fixed). The footer's remaining
-// metadata (delegate_id echo, started_job_id, "running in background") is
-// noise on a one-line summary and stays out of it.
-function delegateSendSummary(item: ItemModel): string {
-  return delegateSendBase(item) + delegateSendStatusSuffix(item);
-}
-
-function delegateSendBase(item: ItemModel): string {
-  const args = parseArgs(item.argumentsJSON);
-  const target = delegateSendTarget(args);
-  return target === "" ? "Sent a message to a delegate" : `Sent a message to delegate ${target}`;
-}
-
-function delegateSendStatusSuffix(item: ItemModel): string {
-  const footer = delegateSendFooter(item.output ?? "");
-  const status = footer ? statusWordFromText(footer.text) : undefined;
-  return status ? ` · ${status}` : "";
 }
 
 // DelegateSendBody renders the exchange as a two-party conversation through
@@ -315,7 +174,7 @@ function DelegateSendBody(props: ToolRenderProps) {
   const message = str(args, "message");
   const response = delegateSendResponse(item);
   const waitIgnoredReason = delegateSendWaitIgnoredReason(item);
-  const target = clip(delegateSendTarget(args), ID_CLIP);
+  const target = clip(delegateSendTarget(item), ID_CLIP);
 
   if (!message && !response) return null;
   return (
@@ -378,10 +237,8 @@ registerToolRenderer({
   match: (name) => name.startsWith("job_"),
   icon: "job",
   fold: "never",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const operation = str(args, "operation");
-    return operation ? `${item.toolName}: ${operation}` : (item.toolName ?? "");
-  },
+  // The package's words for a job tool this build doesn't know: which
+  // operation it ran, never the raw tool name.
+  summary: (item: ItemModel) => toolStepSummary(item),
   body: HeadClippedOutputBody,
 });

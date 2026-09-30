@@ -22,6 +22,7 @@ import {
 	render,
 	renderedText,
 	screenConnection,
+	systemGlass,
 	textOf,
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
@@ -30,6 +31,9 @@ import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure"
 import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
+import { FindBar } from "./session/FindBar";
+import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
+import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
@@ -330,6 +334,7 @@ afterEach(() => {
 	readHistory.live = false;
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	keyboard.reset();
+	systemGlass.reset();
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
 	coordinatorHub.readFails = null;
@@ -348,6 +353,7 @@ function hubClient(
 	olderCursor?: string,
 	olderTurns: unknown[] = [],
 	olderPage: Promise<void> = Promise.resolve(),
+	compacting: Promise<void> = Promise.resolve(),
 ) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
@@ -383,6 +389,7 @@ function hubClient(
 				};
 			}
 			// The page before the first read: older turns, and the start of history.
+			if (method === "thread/compact/start") await compacting;
 			if (method === "thread/turns/list") {
 				await olderPage;
 				return { data: olderTurns };
@@ -445,6 +452,9 @@ async function mount(
 		// Holds the older page until the promise settles, for what happens
 		// while one is on its way.
 		olderPage = Promise.resolve(),
+		// Holds a compact until the promise settles, so a session control stays
+		// pending.
+		compacting = Promise.resolve(),
 		openedBy = undefined as "next" | undefined,
 		// The bottom bar lays out as it would on a device (0pt here, so it
 		// leaves the transcript's geometry as it was); a test of what waits
@@ -452,7 +462,7 @@ async function mount(
 		barLaysOut = true,
 	} = {},
 ) {
-	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage);
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage, compacting);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
 		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
@@ -482,6 +492,12 @@ function field(tree: ReactTestRenderer) {
 	return tree.root
 		.findAll((node) => String(node.type) === "TextInput")
 		.find((node) => node.props.accessibilityLabel === "Message");
+}
+
+/** Puts the composer's field in focus, which raises the keyboard for it. */
+function typeInComposer(tree: ReactTestRenderer) {
+	act(() => field(tree)?.props.onFocus());
+	act(() => keyboard.show());
 }
 
 async function type(tree: ReactTestRenderer, text: string) {
@@ -644,6 +660,28 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		for (const label of ["Other answer…", "Send answer", "Fold"]) expect(body.holds(label)).toBe(false);
 	});
 
+	// The bar's cap is measured, not a percentage (#3248): arriving by a push,
+	// the screen first lays out at the full window, then shorter once the
+	// header's inset lands, and a dock's content arriving in that same pass left
+	// a percentage cap worked out against the old height until the next layout.
+	it("caps the bottom bar at four fifths of its room's latest height, in points", async () => {
+		const served = thread("ref-question-cap", "awaiting", true);
+		(served as unknown as { turns: unknown[] }).turns = [LONG_QUESTION_TURN];
+		const { tree } = await mount(served);
+		const bar = tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
+		const room = tree.root.find(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar-room",
+		);
+		// Before the room is measured, the cap is the same share as a percentage.
+		expect(flatStyle(bar).maxHeight).toBe("80%");
+		const layout = (height: number) => ({ nativeEvent: { layout: { x: 0, y: 0, width: 375, height } } });
+		act(() => room.props.onLayout(layout(667)));
+		expect(flatStyle(bar).maxHeight).toBeCloseTo(533.6);
+		// The header's inset lands: the room is shorter, and so is the cap.
+		act(() => room.props.onLayout(layout(593)));
+		expect(flatStyle(bar).maxHeight).toBeCloseTo(474.4);
+	});
+
 	it("wires only the dock's slot to shrink, with the dock alone and with the composer back", async () => {
 		const { tree } = await mount(thread("ref-question-room", "awaiting", true));
 		expectOnlyTheDockSlotShrinks(tree, "question-dock");
@@ -658,7 +696,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
 		await press(tree, "Other answer…");
 		expect(options()).not.toHaveLength(0);
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
 		expect(options()).toHaveLength(0);
 		expect(pressable(tree, "Send answer")).toBeUndefined();
@@ -669,11 +707,26 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(pressable(tree, "Send answer")).toBeDefined();
 	});
 
+	// The dock follows the same typing rule as the rest (useComposerTyping):
+	// a keyboard up for the find bar's field isn't the composer's.
+	it("keeps the options while the keyboard is up for the find bar", async () => {
+		const { tree } = await mount(thread("ref-question-find", "awaiting", true));
+		const options = () =>
+			tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "radio");
+		await press(tree, "Other answer…");
+		chooseMenu("Find in session");
+		act(() => keyboard.show());
+		expect(options()).not.toHaveLength(0);
+		act(() => keyboard.hide());
+	});
+
 	it("brings the options back from Show options, which lowers the keyboard", async () => {
 		const { tree } = await mount(thread("ref-question-show-options", "awaiting", true));
 		await press(tree, "Other answer…");
-		act(() => keyboard.show());
-		act(() => pressable(tree, "Show options")?.props.onPress());
+		typeInComposer(tree);
+		const showOptions = pressable(tree, "Show options");
+		expect(showOptions).toBeDefined();
+		act(() => showOptions?.props.onPress());
 		expect(pressable(tree, "Send answer")).toBeDefined();
 		expect(pressable(tree, "Show options")).toBeUndefined();
 	});
@@ -681,7 +734,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("sends what you typed as the answer while the keyboard is up", async () => {
 		const { tree, hub } = await mount(thread("ref-question-typed-send", "awaiting", true));
 		await press(tree, "Other answer…");
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		await type(tree, "Drop them");
 		const send = composerSend(tree, "Send your answer");
 		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
@@ -1487,6 +1540,94 @@ it("forgets a session's open rows when you leave it", async () => {
 	expect(inScope()).toEqual([]);
 });
 
+// Where the device has Liquid Glass (iOS 26 and later), the nav bar is the
+// system's glass over the transcript (spec 16.3), and the header's glass runs
+// on under the chips and note: the transcript runs under both, and its top
+// starts below them. Elsewhere, and while Reduce Transparency is on, the bar
+// is opaque and the screen starts below it.
+describe("the nav bar's glass (spec 16.3)", () => {
+	// The bar's options: transparent, and clear, since react-native-screens
+	// draws a transparent bar's background only when its color is itself
+	// clear; and no system edge effect where the header's own glass is drawn.
+	const lastBar = () => {
+		const options = (vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][])
+			.map(([options]) => options)
+			.findLast((options) => "headerTransparent" in options);
+		if (options?.headerTransparent === undefined) return undefined;
+		const background = (options.headerStyle as { backgroundColor?: string } | undefined)?.backgroundColor;
+		expect(background === "transparent").toBe(options.headerTransparent);
+		return { transparent: options.headerTransparent, topEdge: options.scrollEdgeEffects?.top };
+	};
+	const header = (tree: ReactTestRenderer) => tree.root.findByType(SessionHeader);
+	const panel = (tree: ReactTestRenderer) => header(tree).findByType(GlassHeaderPanel);
+	const layout = (tree: ReactTestRenderer) => ({
+		headerTop: Object.assign({}, ...[panel(tree).props.style].flat(Number.POSITIVE_INFINITY)).top,
+		glassTop: header(tree).props.glassTop,
+		listTop: transcriptList(tree).props.contentContainerStyle.paddingTop,
+		keyboardOffset: tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView")[0]?.props
+			.keyboardVerticalOffset,
+	});
+	const measureHeader = (tree: ReactTestRenderer, height: number) =>
+		act(() => panel(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }));
+
+	it("runs the transcript under one glass spanning the bar and the chips, its top below them", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass"));
+		await act(async () => {});
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		// Before the header has measured, the list keeps the bar's room.
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+		// The header's height covers the bar's room and the rows under it.
+		measureHeader(tree, 64 + 48);
+		expect(layout(tree).listTop).toBe(16 + 64 + 48);
+		// The find bar, in the chips' place, draws clear on the glass too.
+		chooseMenu("Find in session");
+		expect(tree.root.findByType(FindBar).props.onGlass).toBe(true);
+	});
+
+	// Turning the bar glass or opaque moves the list's frame by the bar's
+	// height and its top padding by the same, so the rows stay where they are
+	// with no scroll of the list's own; only the rows block growing or
+	// shrinking asks for one.
+	it("keeps the rows where they are when Reduce Transparency flips while scrolled", async () => {
+		systemGlass.available = true;
+		const { tree } = await mount(twoTurns("ref-glass-flip"));
+		await act(async () => {});
+		measureHeader(tree, 64 + 48);
+		scrollTo(tree, 500);
+		flatListCalls.length = 0;
+		act(() => systemGlass.setReduceTransparency(true));
+		measureHeader(tree, 48);
+		act(() => systemGlass.setReduceTransparency(false));
+		measureHeader(tree, 64 + 48);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([]);
+		// The rows block itself growing (the connection line arriving) still does.
+		measureHeader(tree, 64 + 48 + 24);
+		expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toEqual([
+			{ method: "scrollToOffset", args: { offset: 524, animated: false } },
+		]);
+	});
+
+	it("keeps an opaque bar the screen starts below where there is no glass", async () => {
+		const { tree } = await mount(twoTurns("ref-no-glass"));
+		await act(async () => {});
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
+	});
+
+	it("keeps an opaque bar while Reduce Transparency is on, following the setting", async () => {
+		systemGlass.available = true;
+		systemGlass.setReduceTransparency(true);
+		const { tree } = await mount(twoTurns("ref-reduce-transparency"));
+		await act(async () => {});
+		expect(lastBar()?.transparent).toBe(false);
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: undefined, listTop: 16, keyboardOffset: 64 });
+		act(() => systemGlass.setReduceTransparency(false));
+		expect(lastBar()).toEqual({ transparent: true, topEdge: "hidden" });
+		expect(layout(tree)).toEqual({ headerTop: 0, glassTop: 64, listTop: 16 + 64, keyboardOffset: 0 });
+	});
+});
+
 it("moves the Session with the keyboard through the keyboard controller", async () => {
 	const { tree } = await mount(twoTurns("ref-keyboard-controller"));
 	const avoiding = tree.root.findAll((node) => String(node.type) === "KeyboardControllerAvoidingView");
@@ -1704,6 +1845,35 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 	const start = hub.requests.find((request) => request.method === "turn/start");
 	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
 	expect(field(tree)?.props.value).toBe("keep this");
+});
+
+// Retry shows only while a press would send, which a session control going
+// pending (a compact) changes without changing the rows: the row still
+// follows it.
+it("hides Retry while a session control is pending, and brings it back once it settles", async () => {
+	const served = thread("ref-retry-pending", "idle");
+	served.evener = { ...served.evener, capabilities: { ...served.evener.capabilities, compact: true } };
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+		},
+	];
+	let settleCompact = () => {};
+	const compacting = new Promise<void>((resolve) => {
+		settleCompact = resolve;
+	});
+	const { tree } = await mount(served, { compacting });
+	expect(pressable(tree, "Retry")).toBeDefined();
+	await type(tree, "/compact");
+	await press(tree, "Compact transcript");
+	expect(pressable(tree, "Retry")).toBeUndefined();
+	await act(async () => settleCompact());
+	await settle();
+	expect(pressable(tree, "Retry")).toBeDefined();
 });
 
 it("opens a session switched to in place at its own newer reply, never the last session's rows", async () => {
@@ -2166,7 +2336,7 @@ describe("queued messages above the composer (spec 8.5)", () => {
 	// message, its action; with several, their count, which opens them.
 	it("folds one queued message while you type, steers from there, and shows it again when the keyboard lowers", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-typing", "active", false, ["check the logs"]));
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(renderedText(tree)).not.toContain("check the logs");
 		expect(pressable(tree, "1 queued")).toBeDefined();
 		await press(tree, "Steer now, check the logs");
@@ -2177,7 +2347,7 @@ describe("queued messages above the composer (spec 8.5)", () => {
 
 	it("folds several queued messages to their count while you type", async () => {
 		const { tree } = await mount(thread("ref-typing-several", "active", false, ["check the logs", "then deploy"]));
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(pressable(tree, "2 queued")).toBeDefined();
 		expect(pressable(tree, "Steer now, check the logs")).toBeUndefined();
 		act(() => keyboard.hide());
@@ -2185,7 +2355,7 @@ describe("queued messages above the composer (spec 8.5)", () => {
 
 	it("folds a held message to its count and Send now while you type", async () => {
 		const { tree } = await mount(thread("ref-typing-held", "idle", false, ["check the logs"]));
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(pressable(tree, "1 held")).toBeDefined();
 		expect(pressable(tree, "Send now, check the logs")).toBeDefined();
 		act(() => keyboard.hide());
@@ -2196,6 +2366,35 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		const { tree } = await mount(thread("ref-typing-find", "active", false, ["check the logs"]));
 		chooseMenu("Find in session");
 		act(() => keyboard.show());
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeUndefined();
+		act(() => keyboard.hide());
+	});
+
+	// Find stays open while you type in the composer: the keyboard is the
+	// composer's then, so the queue folds as it does without find (#3232).
+	it("folds the queue while you type in the composer with find open", async () => {
+		const { tree } = await mount(thread("ref-typing-find-composer", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		typeInComposer(tree);
+		expect(renderedText(tree)).not.toContain("check the logs");
+		expect(pressable(tree, "1 queued")).toBeDefined();
+		act(() => keyboard.hide());
+		expect(renderedText(tree)).toContain("check the logs");
+	});
+
+	// Moving from the composer to the find bar's field keeps the keyboard up;
+	// it isn't the composer's any more, so the queue opens again.
+	it("opens the queue again when you move from the composer to the find bar with the keyboard up", async () => {
+		const { tree } = await mount(thread("ref-typing-to-find", "active", false, ["check the logs"]));
+		chooseMenu("Find in session");
+		typeInComposer(tree);
+		expect(renderedText(tree)).not.toContain("check the logs");
+		const findField = tree.root.find(
+			(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Find in session",
+		);
+		act(() => field(tree)?.props.onBlur());
+		act(() => findField.props.onFocus?.());
 		expect(renderedText(tree)).toContain("check the logs");
 		expect(pressable(tree, "1 queued")).toBeUndefined();
 		act(() => keyboard.hide());
@@ -3263,7 +3462,7 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 	it("steps Next aside while you type, and brings it back when the keyboard lowers", async () => {
 		const { tree } = await mount(thread("ref-next-typing", "idle"));
 		expect(capsule(tree)).toBeDefined();
-		act(() => keyboard.show());
+		typeInComposer(tree);
 		expect(capsule(tree)).toBeUndefined();
 		act(() => keyboard.hide());
 		expect(capsule(tree)).toBeDefined();
@@ -3408,8 +3607,11 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(seenMarks()).toEqual([{ sessions: [{ ref: "ref-watching", seenThrough: Date.parse(at(7)) }] }]);
 	});
 
-	it("names the session's host from the manifest in the Session sheet", async () => {
-		fleet.sources = [{ id: "local", label: "Laptop" }];
+	// The hub calls its own machine "this host" in the manifest
+	// (cmd/evener-hub/web_api_tree.go); the Session sheet names it for the
+	// hub, as Hub > Hosts does, with its connection dot (spec 8.6, audit N6).
+	it("names the session's own-machine host for the hub in the Session sheet, with its dot", async () => {
+		fleet.sources = [{ id: "local", label: "this host" }];
 		await mount(thread("ref-host", "idle"));
 		const sheet = render(
 			<SessionInfoSheet
@@ -3423,8 +3625,9 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 				navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
 			/>,
 		);
-		expect(renderedText(sheet)).toContain("Laptop");
-		expect(renderedText(sheet)).not.toContain("Work hub");
+		expect(renderedText(sheet)).toContain("Work hub");
+		expect(renderedText(sheet)).not.toContain("this host");
+		expect(sheet.root.findAll((node) => node.props.accessibilityLabel === "Work hub, connected")).not.toEqual([]);
 	});
 });
 
@@ -3666,6 +3869,30 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
 	});
 
+	it("tells its screen the coordinator's thread it reads now, for the transcript's finished rows (#3326 review)", async () => {
+		// The screen holds the same tree for its transcript's finished subagent
+		// rows, and a tree asked for under the route's old thread is refused.
+		forgetSubagentTrees("hub-1");
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		await mountSubagent(subagent(true), { jobs: restarted, coordinatorId: "thread-restarted" });
+		const reported: string[] = [];
+		const panel = render(
+			<SubagentPanel
+				hubId="hub-1"
+				ref="local:fix"
+				coordinator={COORDINATOR}
+				inFront
+				barShown={false}
+				showToast={() => {}}
+				onTreeThread={(threadId) => void reported.push(threadId)}
+				navigation={navigation as never}
+			/>,
+		);
+		await settle();
+		expect(reported.at(-1)).toBe("thread-restarted");
+		act(() => panel.unmount());
+	});
+
 	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
 		coordinatorHub.stop = () => {
 			throw new WireError("method not found", -32601);
@@ -3857,6 +4084,66 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		});
 	});
 
+	// G13: a finished subagent's row shows its report's opening line, read
+	// from the coordinator's tree, which the screen holds and the list's rows
+	// read. The tree lands after the rows first render, so the rows must
+	// render again when it does.
+	it("shows a finished subagent's report once the coordinator's tree arrives", async () => {
+		forgetSubagentTrees("hub-1");
+		const endedAt = new Date(Date.now() - 60_000).toISOString();
+		coordinatorHub.tree = subagentTree({
+			terminal: true,
+			outcome: "completed",
+			packetKind: "reported",
+			message: "Fixed the race: settle now waits for the drain.",
+			runEndedAt: endedAt,
+		});
+		const served = thread(COORDINATOR.ref, "idle");
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "call-d",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "delegate",
+						status: "completed",
+						argumentsJson: JSON.stringify({ description: "Fix race in tree settle" }),
+					},
+				],
+			},
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: "d-fix",
+					ownerSessionId: "coord",
+					rootSessionId: "coord",
+					childSessionId: "fix",
+					transcriptRef: "local:fix",
+					originItemId: "call-d",
+					description: "Fix race in tree settle",
+					type: "subagent",
+					lifecycle: "idle",
+					phase: "idle",
+					status: "idle",
+					outcome: "completed",
+					terminal: true,
+					runEndedAt: endedAt,
+					resumable: true,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const { tree } = await mount(served);
+		await settle();
+		expect(renderedText(tree)).toContain("Fixed the race: settle now waits for the drain.");
+	});
+
 	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {
 		const served = thread(COORDINATOR.ref, "active");
 		(served as unknown as { turns: unknown[] }).turns = [
@@ -3909,6 +4196,64 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			ref: "local:fix",
 			title: "Fix race in tree settle",
 			coordinator: { ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, title: "Session" },
+		});
+	});
+
+	it("opens a subagent's own subagent under the coordinator's thread as it reads now (#3326 RoboRev)", async () => {
+		// The coordinator restarted since this screen opened: the screen it
+		// pushes asks for the coordinator's tree under the thread it runs now.
+		forgetSubagentTrees("hub-1");
+		const served = subagent(false);
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "call-n",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "delegate",
+						status: "completed",
+						argumentsJson: JSON.stringify({ description: "Check drain ordering" }),
+					},
+				],
+			},
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: "d-nested",
+					ownerSessionId: "fix",
+					rootSessionId: "coord",
+					childSessionId: "nested",
+					transcriptRef: "local:nested",
+					originItemId: "call-n",
+					description: "Check drain ordering",
+					type: "subagent",
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					resumable: false,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const restarted = { ...subagentTree(), root: { ...subagentTree().root, sessionId: "thread-restarted" } };
+		const { tree } = await mountSubagent(served, { jobs: restarted, coordinatorId: "thread-restarted" });
+		const row = tree.root.findAll(
+			(node) =>
+				String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Check drain ordering, "),
+		)[0];
+		if (!row) throw new Error("no subagent row");
+		act(() => row.props.onPress());
+		expect(navigation.push).toHaveBeenCalledWith("Subagent", {
+			hubId: "hub-1",
+			ref: "local:nested",
+			title: "Check drain ordering",
+			coordinator: { ...COORDINATOR, threadId: "thread-restarted" },
 		});
 	});
 

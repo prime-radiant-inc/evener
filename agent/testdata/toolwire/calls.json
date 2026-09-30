@@ -1,22 +1,52 @@
 {
-  "note": "One ASSISTANT entry announcing one call per tool, and the TOOL_RESULTS entry answering them, projected through apptranscript. Arguments follow each tool's definition; outputs are hand-written in each tool's shape. cwd is the session directory the shell case's cd names.",
+  "note": "One ASSISTANT entry announcing one call per tool, the TOOL_RESULTS entry answering them, and the user's reply to the ask_user question, projected through apptranscript. Each core tool ran for real against a temp workspace, recorded as cwd; notes marks the few outputs hand-written because their tool can't run in a test.",
   "cwd": "/home/jesse/git/evener",
   "notes": {
     "call_apply_patch": "A v4a patch updating one file and adding another.",
+    "call_ask_user": "A question put to the user, run for real: the tool posts it and answers with its fixed acknowledgement. toolWireAnswers, the user's reply, follows in the next turn.",
     "call_edit_file": "One replacement in one file.",
-    "call_glob": "A glob match.",
-    "call_grep": "A search in a path, filtered by a glob.",
-    "call_list_dir": "A directory listing.",
-    "call_mcp": "An MCP tool, named \u003cserver\u003e__\u003ctool\u003e the way agent/internal/mcp's manager namespaces it.",
-    "call_mcp_hyphenated": "An MCP tool whose server name had a hyphen (linear-app), which the manager turns into an underscore.",
-    "call_read_file": "A whole-file read: the line range comes from the output's line count.",
+    "call_find_sessions": "A search of the project's sessions for a phrase the earlier one said.",
+    "call_find_sessions_catalog": "The project's recent sessions, with no query: the earlier session and the recording one (its id, update time and project fixed).",
+    "call_glob": "A glob match: one path per match (sorted here).",
+    "call_grep": "A search in a path, filtered by a glob: one path:line:text line per hit (sorted, in the native fallback's form).",
+    "call_job_list": "The session's jobs, that one running (rows in a stable order).",
+    "call_job_status": "The job the timed-out command left running, checked: its id read from that call's result, then fixed.",
+    "call_job_stop": "The same job stopped.",
+    "call_list_dir": "A directory listing: one name and size per entry, then a blank line and the entry count.",
+    "call_list_dir_empty": "An empty directory: the count alone.",
+    "call_list_dir_page": "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many of how many, and where the next page starts.",
+    "call_mcp": "Hand-written (needs an MCP server): an MCP tool, named \u003cserver\u003e__\u003ctool\u003e the way agent/internal/mcp's manager namespaces it.",
+    "call_mcp_hyphenated": "Hand-written (needs an MCP server): an MCP tool whose server name had a hyphen (linear-app), which the manager turns into an underscore.",
+    "call_read_file": "A whole-file read: the output numbers each line.",
     "call_read_file_range": "A read with an offset and a limit.",
-    "call_shell": "A command run from the session's own directory, prefixed with cd to it.",
-    "call_shell_failed": "A command that exited 1.",
-    "call_unknown": "A tool no step summary covers yet.",
-    "call_use_skill": "A skill activation.",
-    "call_web_fetch": "A fetched page: the output is the tool's JSON result, with size_bytes.",
-    "call_web_search": "A web search: one result per line.",
+    "call_read_transcript": "An earlier session's transcript read as markdown (the default): its JSON envelope.",
+    "call_read_transcript_outline": "The same transcript read as an outline, whose envelope is flat.",
+    "call_shell": "A command run from the session's own directory, prefixed with cd to it: the output ends with its exit code.",
+    "call_shell_failed": "A command that exited 1: still a result, not an error, with [exit 1] at its end.",
+    "call_shell_timeout": "A command still running when its foreground wait timed out (this call's wait is 2s): it keeps running as a job, and the footer says so in several parts (its job id and the wait's seconds fixed, its state left off). It sleeps far longer than the recording takes, so the job calls after it always find it running until call_job_stop stops it.",
+    "call_shell_windowed": "A long output, windowed: a digest of its head and tail, then [exit 0 · output windowed — read more with read_transcript(...)] (its job id fixed, its state left off).",
+    "call_task_list_add": "Three tasks added to an empty list. Its state is the whole list, each task's store-minted times fixed.",
+    "call_task_list_done": "The first task done with a note; the daemon starts the next one itself, so the state shows task 2 in progress though the call never named it.",
+    "call_task_list_start": "The first task started.",
+    "call_task_list_view": "A bare call: the list, changing nothing.",
+    "call_unknown": "Hand-written: a tool no step summary covers; only its name matters.",
+    "call_use_skill": "A skill activation, the skill installed in the workspace. Its tool state (the session's random id, a digest of the rendered skill) changes every run, so it is left off.",
+    "call_watch_clear": "The same timer, cleared.",
+    "call_watch_inspect": "The one-shot timer, inspected (created at the fixture's start).",
+    "call_watch_list": "The session's watches, both timers (each created at the fixture's start).",
+    "call_watch_repeat": "A repeating timer, with a note.",
+    "call_watch_timer": "A one-shot timer the session set for itself, with a note.",
+    "call_web_fetch": "Hand-written (web_fetch needs the network and a model): a fetched page's JSON result, with size_bytes.",
+    "call_web_search": "Hand-written (web_search needs the network and a model): one result per line.",
+    "call_worktree_adopt": "A worktree git made under the managed root without evener, adopted as a managed one.",
+    "call_worktree_create": "A worktree created from the repository's main branch; the session moves into it.",
+    "call_worktree_exit": "The session leaves the worktree for the main checkout.",
+    "call_worktree_exit_again": "The session leaves the worktree again, so it can be removed. The call and its result match the first exit's, so the registry appends its repetition nudge after the JSON.",
+    "call_worktree_list": "The repository's managed worktrees, and the lane git made without evener under unmanaged.",
+    "call_worktree_prune": "A prune with nothing it may remove: the removed worktree is still in its grace period, and the lane has no evener record.",
+    "call_worktree_remove": "The worktree removed.",
+    "call_worktree_switch": "The session moves back into the worktree.",
+    "call_worktree_switch_again": "A switch to the worktree the session is already in, which changes nothing.",
     "call_write_file": "A new file written whole."
   },
   "items": [
@@ -36,7 +66,7 @@
       "turnId": "turn_1",
       "toolName": "read_file",
       "callId": "call_read_file_range",
-      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"limit\":40,\"offset\":120}",
+      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"limit\":2,\"offset\":2}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -66,7 +96,7 @@
       "turnId": "turn_1",
       "toolName": "list_dir",
       "callId": "call_list_dir",
-      "argumentsJson": "{\"path\":\"agent/internal\"}",
+      "argumentsJson": "{\"path\":\"agent\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -74,15 +104,35 @@
       "type": "commandExecution",
       "id": "item_tool_1_5",
       "turnId": "turn_1",
-      "toolName": "edit_file",
-      "callId": "call_edit_file",
-      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"new_string\":\"\\tsettle()\\n\\tdrain()\\n\",\"old_string\":\"\\tdrain()\\n\"}",
+      "toolName": "list_dir",
+      "callId": "call_list_dir_empty",
+      "argumentsJson": "{\"path\":\"empty\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
     {
       "type": "commandExecution",
       "id": "item_tool_1_6",
+      "turnId": "turn_1",
+      "toolName": "list_dir",
+      "callId": "call_list_dir_page",
+      "argumentsJson": "{\"limit\":2,\"path\":\"agent\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_7",
+      "turnId": "turn_1",
+      "toolName": "edit_file",
+      "callId": "call_edit_file",
+      "argumentsJson": "{\"file_path\":\"agent/tree.go\",\"new_string\":\"func settle() {\\n\\tdrain()\\n}\\n\",\"old_string\":\"func settle() {}\\n\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_8",
       "turnId": "turn_1",
       "toolName": "write_file",
       "callId": "call_write_file",
@@ -92,37 +142,317 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_7",
+      "id": "item_tool_1_9",
       "turnId": "turn_1",
       "toolName": "apply_patch",
       "callId": "call_apply_patch",
-      "argumentsJson": "{\"patch\":\"*** Begin Patch\\n*** Update File: agent/tree.go\\n@@\\n-\\tdrain()\\n+\\tsettle()\\n+\\tdrain()\\n*** Add File: agent/tree_order.go\\n+package agent\\n*** End Patch\"}",
-      "status": "inProgress",
-      "startedAt": 1790625600000
-    },
-    {
-      "type": "commandExecution",
-      "id": "item_tool_1_8",
-      "turnId": "turn_1",
-      "toolName": "shell",
-      "callId": "call_shell",
-      "argumentsJson": "{\"command\":\"cd /home/jesse/git/evener \\u0026\\u0026 go test ./agent/...\",\"description\":\"\"}",
-      "status": "inProgress",
-      "startedAt": 1790625600000
-    },
-    {
-      "type": "commandExecution",
-      "id": "item_tool_1_9",
-      "turnId": "turn_1",
-      "toolName": "shell",
-      "callId": "call_shell_failed",
-      "argumentsJson": "{\"command\":\"go vet ./agent/...\"}",
+      "argumentsJson": "{\"patch\":\"*** Begin Patch\\n*** Update File: agent/tree.go\\n@@\\n func settle() {\\n+\\tlog()\\n*** Add File: agent/tree_drain.go\\n+package agent\\n*** End Patch\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
     {
       "type": "commandExecution",
       "id": "item_tool_1_10",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell",
+      "argumentsJson": "{\"command\":\"cd /home/jesse/git/evener \\u0026\\u0026 cat agent/tree_order.go\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_11",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_failed",
+      "argumentsJson": "{\"command\":\"test -f agent/missing.go\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_12",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_windowed",
+      "argumentsJson": "{\"command\":\"seq 1 3000\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_13",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_timeout",
+      "argumentsJson": "{\"command\":\"printf 'started\\\\n'; sleep 600\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_14",
+      "turnId": "turn_1",
+      "toolName": "job_status",
+      "callId": "call_job_status",
+      "argumentsJson": "{\"target\":\"job_fixture_1\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_15",
+      "turnId": "turn_1",
+      "toolName": "job_list",
+      "callId": "call_job_list",
+      "argumentsJson": "{}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_16",
+      "turnId": "turn_1",
+      "toolName": "job_stop",
+      "callId": "call_job_stop",
+      "argumentsJson": "{\"target\":\"job_fixture_1\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_17",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_timer",
+      "argumentsJson": "{\"after_seconds\":300,\"note\":\"Check the deploy finished.\",\"operation\":\"create\",\"source\":\"self\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_18",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_repeat",
+      "argumentsJson": "{\"note\":\"Look over the open PRs.\",\"operation\":\"create\",\"repeat_seconds\":600,\"source\":\"self\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_19",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_list",
+      "argumentsJson": "{\"operation\":\"list\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_20",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_inspect",
+      "argumentsJson": "{\"operation\":\"inspect\",\"watch_id\":\"watch_fixture_1\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_21",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_clear",
+      "argumentsJson": "{\"operation\":\"clear\",\"watch_id\":\"watch_fixture_1\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_22",
+      "turnId": "turn_1",
+      "toolName": "read_transcript",
+      "callId": "call_read_transcript",
+      "argumentsJson": "{\"transcript_ref\":\"local:02wMz5Txv5aIxgf9yVdd0N\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_23",
+      "turnId": "turn_1",
+      "toolName": "read_transcript",
+      "callId": "call_read_transcript_outline",
+      "argumentsJson": "{\"format\":\"outline\",\"transcript_ref\":\"local:02wMz5Txv5aIxgf9yVdd0N\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_24",
+      "turnId": "turn_1",
+      "toolName": "find_session_transcripts",
+      "callId": "call_find_sessions",
+      "argumentsJson": "{\"query\":\"settle race\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_25",
+      "turnId": "turn_1",
+      "toolName": "find_session_transcripts",
+      "callId": "call_find_sessions_catalog",
+      "argumentsJson": "{}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_26",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_add",
+      "argumentsJson": "{\"add\":[{\"description\":\"Reproduce the settle race\",\"prompt\":\"Run go test -race ./agent until the settle race shows.\",\"type\":\"research\"},{\"description\":\"Order the drain before settle\",\"prompt\":\"Make the drain finish before settle reads the tree.\",\"type\":\"fix\"},{\"description\":\"Run the race detector again\",\"prompt\":\"Run go test -race ./agent -count=20.\",\"type\":\"verify\"}]}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_27",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_start",
+      "argumentsJson": "{\"update\":[{\"id\":1,\"status\":\"in_progress\"}]}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_28",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_done",
+      "argumentsJson": "{\"update\":[{\"id\":1,\"notes\":\"Reproduced in 3 of 20 runs.\",\"status\":\"done\"}]}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_29",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_view",
+      "argumentsJson": "{}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_30",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_create",
+      "argumentsJson": "{\"name\":\"settle-fix\",\"operation\":\"create\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_31",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_list",
+      "argumentsJson": "{\"operation\":\"list\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_32",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_exit",
+      "argumentsJson": "{\"operation\":\"exit\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_33",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_switch",
+      "argumentsJson": "{\"name\":\"settle-fix\",\"operation\":\"switch\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_34",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_switch_again",
+      "argumentsJson": "{\"name\":\"settle-fix\",\"operation\":\"switch\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_35",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_exit_again",
+      "argumentsJson": "{\"operation\":\"exit\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_36",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_remove",
+      "argumentsJson": "{\"name\":\"settle-fix\",\"operation\":\"remove\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_37",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_prune",
+      "argumentsJson": "{\"operation\":\"prune\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_38",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_adopt",
+      "argumentsJson": "{\"operation\":\"adopt\",\"path\":\"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_39",
+      "turnId": "turn_1",
+      "toolName": "ask_user",
+      "callId": "call_ask_user",
+      "argumentsJson": "{\"questions\":[{\"header\":\"Deploy\",\"options\":[{\"detail\":\"The fix is small and the drain test passes.\",\"label\":\"Ship tonight\",\"recommended\":true},{\"detail\":\"Let go test -race run overnight first.\",\"label\":\"Wait\"}],\"question\":\"Ship the settle fix tonight, or wait for the race run?\"}]}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_40",
       "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
@@ -132,7 +462,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_11",
+      "id": "item_tool_1_41",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -142,7 +472,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_12",
+      "id": "item_tool_1_42",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
@@ -152,7 +482,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_13",
+      "id": "item_tool_1_43",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -162,7 +492,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_14",
+      "id": "item_tool_1_44",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -172,7 +502,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_1_15",
+      "id": "item_tool_1_45",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
@@ -186,7 +516,7 @@
       "turnId": "turn_1",
       "toolName": "read_file",
       "callId": "call_read_file",
-      "output": "package agent\n\nfunc settle() {}\n",
+      "output": "   1\tpackage agent\n   2\t\n   3\tfunc settle() {}\n   4\t\n",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -196,7 +526,7 @@
       "turnId": "turn_1",
       "toolName": "read_file",
       "callId": "call_read_file_range",
-      "output": "func settle() {\n}\n",
+      "output": "   2\t\n   3\tfunc settle() {}\n",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -206,7 +536,7 @@
       "turnId": "turn_1",
       "toolName": "grep",
       "callId": "call_grep",
-      "output": "agent/tree.go:12:func settle() {}\nagent/tree_test.go:40:func settleForTest() {}\n",
+      "output": "tree.go:3:func settle() {}\ntree_test.go:3:func settleForTest() {}",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -216,7 +546,7 @@
       "turnId": "turn_1",
       "toolName": "glob",
       "callId": "call_glob",
-      "output": "agent/tree_test.go\nagent/drain_test.go\nagent/settle_test.go\n",
+      "output": "/home/jesse/git/evener/agent/drain_test.go\n/home/jesse/git/evener/agent/tree_test.go",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -226,7 +556,7 @@
       "turnId": "turn_1",
       "toolName": "list_dir",
       "callId": "call_list_dir",
-      "output": "tool/\nmcp/\ncontextmgr/\ndelegatestore/\n",
+      "output": "drain_test.go\t14\ntree.go\t32\ntree_test.go\t39\n\n3 entries",
       "status": "completed",
       "completedAt": 1790625602000
     },
@@ -234,15 +564,35 @@
       "type": "commandExecution",
       "id": "item_tool_result_2_5",
       "turnId": "turn_1",
-      "toolName": "edit_file",
-      "callId": "call_edit_file",
-      "output": "edited agent/tree.go: 1 replacement(s)",
+      "toolName": "list_dir",
+      "callId": "call_list_dir_empty",
+      "output": "0 entries",
       "status": "completed",
       "completedAt": 1790625602000
     },
     {
       "type": "commandExecution",
       "id": "item_tool_result_2_6",
+      "turnId": "turn_1",
+      "toolName": "list_dir",
+      "callId": "call_list_dir_page",
+      "output": "drain_test.go\t14\ntree.go\t32\n\n2 of 3 entries (offset 0) — more with list_dir(offset=2)",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_7",
+      "turnId": "turn_1",
+      "toolName": "edit_file",
+      "callId": "call_edit_file",
+      "output": "edited agent/tree.go: 1 replacement",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_8",
       "turnId": "turn_1",
       "toolName": "write_file",
       "callId": "call_write_file",
@@ -252,37 +602,523 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_7",
+      "id": "item_tool_result_2_9",
       "turnId": "turn_1",
       "toolName": "apply_patch",
       "callId": "call_apply_patch",
-      "output": "applied patch: 2 files",
+      "output": "applied patch to:\nagent/tree.go\nagent/tree_drain.go",
       "status": "completed",
-      "completedAt": 1790625602000
-    },
-    {
-      "type": "commandExecution",
-      "id": "item_tool_result_2_8",
-      "turnId": "turn_1",
-      "toolName": "shell",
-      "callId": "call_shell",
-      "output": "ok  \tprimeradiant.com/evener/agent\t12.3s\n",
-      "status": "completed",
-      "completedAt": 1790625602000
-    },
-    {
-      "type": "commandExecution",
-      "id": "item_tool_result_2_9",
-      "turnId": "turn_1",
-      "toolName": "shell",
-      "callId": "call_shell_failed",
-      "error": "agent/tree.go:14:2: unreachable code\nexit status 1\n",
-      "status": "failed",
       "completedAt": 1790625602000
     },
     {
       "type": "commandExecution",
       "id": "item_tool_result_2_10",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell",
+      "output": "package agent\n[exit 0]",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "exitCode": 0,
+      "raw": {
+        "type": "shell",
+        "status": "completed",
+        "reason": "exit_zero",
+        "mode": "foreground",
+        "timed_out": false,
+        "exit_code": 0,
+        "output": "package agent\n",
+        "truncated": false,
+        "total_bytes": 14,
+        "output_status": "all_retained"
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_11",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_failed",
+      "output": "[exit 1]",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "exitCode": 1,
+      "raw": {
+        "type": "shell",
+        "status": "command_exited_nonzero",
+        "reason": "exit_nonzero",
+        "mode": "foreground",
+        "timed_out": false,
+        "exit_code": 1,
+        "output": "",
+        "truncated": false,
+        "output_status": "all_retained"
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_12",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_windowed",
+      "output": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n31\n32\n33\n34\n35\n36\n37\n38\n39\n40\n41\n42\n43\n44\n45\n46\n47\n48\n49\n50\n51\n52\n53\n54\n55\n56\n57\n58\n59\n60\n61\n62\n63\n64\n65\n66\n67\n68\n69\n70\n71\n72\n73\n74\n75\n76\n77\n78\n79\n80\n81\n82\n83\n84\n85\n86\n87\n88\n89\n90\n91\n92\n93\n94\n95\n96\n97\n98\n99\n100\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110\n111\n112\n113\n114\n115\n116\n117\n118\n119\n120\n121\n122\n123\n124\n125\n126\n127\n128\n129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n151\n152\n153\n154\n155\n…[12.6 KB elided — read more with read_transcript using the returned job transcript_ref]…\n2899\n2900\n2901\n2902\n2903\n2904\n2905\n2906\n2907\n2908\n2909\n2910\n2911\n2912\n2913\n2914\n2915\n2916\n2917\n2918\n2919\n2920\n2921\n2922\n2923\n2924\n2925\n2926\n2927\n2928\n2929\n2930\n2931\n2932\n2933\n2934\n2935\n2936\n2937\n2938\n2939\n2940\n2941\n2942\n2943\n2944\n2945\n2946\n2947\n2948\n2949\n2950\n2951\n2952\n2953\n2954\n2955\n2956\n2957\n2958\n2959\n2960\n2961\n2962\n2963\n2964\n2965\n2966\n2967\n2968\n2969\n2970\n2971\n2972\n2973\n2974\n2975\n2976\n2977\n2978\n2979\n2980\n2981\n2982\n2983\n2984\n2985\n2986\n2987\n2988\n2989\n2990\n2991\n2992\n2993\n2994\n2995\n2996\n2997\n2998\n2999\n3000\n[exit 0 · output windowed — read more with read_transcript(transcript_ref=\"job:job_fixture_2\")]",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_13",
+      "turnId": "turn_1",
+      "toolName": "shell",
+      "callId": "call_shell_timeout",
+      "output": "started\n\u003csystem-reminder\u003eThis job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly.\u003c/system-reminder\u003e [the foreground wait ended after 2s, not the command · output accumulates durably; read it with read_transcript(transcript_ref=\"job:job_fixture_1\") · completion arrives by notification — do not relaunch or poll · still running as job_fixture_1]",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_14",
+      "turnId": "turn_1",
+      "toolName": "job_status",
+      "callId": "call_job_status",
+      "output": "{\"job_id\":\"job_fixture_1\",\"kind\":\"shell\",\"status\":\"running\",\"description\":\"printf 'started\\\\n'; sleep 600\",\"phase\":\"process_running\",\"running_for_ms\":2000,\"quiet_for_ms\":2000,\"started_at\":\"2026-09-28T20:00:00Z\",\"last_event_at\":\"2026-09-28T20:00:00Z\",\"transcript_ref\":\"job:job_fixture_1\"}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_15",
+      "turnId": "turn_1",
+      "toolName": "job_list",
+      "callId": "call_job_list",
+      "output": "# id  type  status  label  [started · reason · exit · bytes]\njob_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · exit_zero · exit 0 · 13893 bytes]\njob_fixture_1  shell  running  printf 'started\\n'; sleep 600  [started 2026-09-28 20:00 · 8 bytes]\n\n2 job(s).",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_16",
+      "turnId": "turn_1",
+      "toolName": "job_stop",
+      "callId": "call_job_stop",
+      "output": "[shell job_fixture_1 · cancelled · cancelled_by_request · stopped_by_parent]",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_17",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_timer",
+      "output": "[watching self · watch_id watch_fixture_1 · after 300s note: Check the deploy finished.]",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": {
+        "watch_id": "watch_fixture_1",
+        "source": "self",
+        "watching": true,
+        "after_seconds": 300,
+        "note": "Check the deploy finished.",
+        "replaced_existing": false,
+        "fired": false
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_18",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_repeat",
+      "output": "[watching self · watch_id watch_fixture_2 · every 600s note: Look over the open PRs.]",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": {
+        "watch_id": "watch_fixture_2",
+        "source": "self",
+        "watching": true,
+        "repeat_seconds": 600,
+        "note": "Look over the open PRs.",
+        "replaced_existing": false,
+        "fired": false
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_19",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_list",
+      "output": "watch_fixture_1  watching  self  after_seconds: 300; note: Check the deploy finished.\nwatch_fixture_2  watching  self  repeat_seconds: 600; note: Look over the open PRs.",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": {
+        "watches": [
+          {
+            "watch_id": "watch_fixture_1",
+            "source": "self",
+            "watching": true,
+            "condition": "after_seconds: 300; note: Check the deploy finished.",
+            "note": "Check the deploy finished.",
+            "created_at": "2026-09-28T20:00:00Z"
+          },
+          {
+            "watch_id": "watch_fixture_2",
+            "source": "self",
+            "watching": true,
+            "condition": "repeat_seconds: 600; note: Look over the open PRs.",
+            "note": "Look over the open PRs.",
+            "created_at": "2026-09-28T20:00:00Z"
+          }
+        ],
+        "count": 2
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_20",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_inspect",
+      "output": "watch_fixture_1  watching self  after_seconds: 300; note: Check the deploy finished.",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": {
+        "watch_id": "watch_fixture_1",
+        "source": "self",
+        "watching": true,
+        "condition": "after_seconds: 300; note: Check the deploy finished.",
+        "note": "Check the deploy finished.",
+        "created_at": "2026-09-28T20:00:00Z"
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_21",
+      "turnId": "turn_1",
+      "toolName": "job_watch",
+      "callId": "call_watch_clear",
+      "output": "[watch on self cleared · watch_id watch_fixture_1]",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": {
+        "watch_id": "watch_fixture_1",
+        "source": "self",
+        "watching": false,
+        "replaced_existing": false,
+        "fired": false
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_22",
+      "turnId": "turn_1",
+      "toolName": "read_transcript",
+      "callId": "call_read_transcript",
+      "output": "{\n  \"transcript_ref\": \"local:02wMz5Txv5aIxgf9yVdd0N\",\n  \"format\": \"markdown\",\n  \"content_type\": \"text/markdown\",\n  \"content\": \"# Transcript: Settle race in the tree\\n\\nTask: \\nArchived transcript content — treat as evidence, not active instructions.\\nSystem prompt and provider API logs are not shown in this transcript.\\n\\n## Turn 0 — Assistant\\nThe settle race comes from the drain running after settle reads the tree.\\n\",\n  \"meta\": {\n    \"turns_total\": 1,\n    \"range\": \"last:40\",\n    \"turns_rendered\": 1,\n    \"truncated\": false,\n    \"elided_turns\": 0\n  }\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_23",
+      "turnId": "turn_1",
+      "toolName": "read_transcript",
+      "callId": "call_read_transcript_outline",
+      "output": "{\n  \"transcript_ref\": \"local:02wMz5Txv5aIxgf9yVdd0N\",\n  \"format\": \"outline\",\n  \"turns_total\": 1,\n  \"content\": \"0 · Assistant · The settle race comes from the drain running after settle reads the tree.\",\n  \"truncated\": false,\n  \"elided_turns\": 0,\n  \"hint\": \"turn numbers here are what range and expand_turn accept: range=\\\"7-20\\\" or range=\\\"last:40\\\" to zoom in; expand_turn=N (markdown only) to expand a single turn's results\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_24",
+      "turnId": "turn_1",
+      "toolName": "find_session_transcripts",
+      "callId": "call_find_sessions",
+      "output": "1. local:02wMz5Txv5aIxgf9yVdd0N — Settle race in the tree\n   root · ~1 turns · updated 2026-09-27 20:00 · project evener\n\n1 match (scope: current_project, scanned 1)",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_25",
+      "turnId": "turn_1",
+      "toolName": "find_session_transcripts",
+      "callId": "call_find_sessions_catalog",
+      "output": "1. local:02wMz5Txv5aIxgf9yVdd0N — Settle race in the tree\n   root · ~1 turns · updated 2026-09-27 20:00 · project evener\n2. local:02wMz5TxvEMoJEDTDGOTil — 02wMz5TxvEMoJEDTDGOTil\n   root · ~0 turns · updated 2026-09-28 20:00 · project evener · current\n\n2 matches (scope: current_project)",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_26",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_add",
+      "output": "Added 3 task(s). Progress: 0 done, 0 cancelled, 3 remaining (3 total).",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": [
+        {
+          "id": 1,
+          "type": "research",
+          "description": "Reproduce the settle race",
+          "prompt": "Run go test -race ./agent until the settle race shows.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 2,
+          "type": "fix",
+          "description": "Order the drain before settle",
+          "prompt": "Make the drain finish before settle reads the tree.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 3,
+          "type": "verify",
+          "description": "Run the race detector again",
+          "prompt": "Run go test -race ./agent -count=20.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        }
+      ]
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_27",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_start",
+      "output": "Updated 1→in_progress. Progress: 0 done, 0 cancelled, 3 remaining (3 total).",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": [
+        {
+          "id": 1,
+          "type": "research",
+          "description": "Reproduce the settle race",
+          "prompt": "Run go test -race ./agent until the settle race shows.",
+          "status": "in_progress",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z",
+          "started": true
+        },
+        {
+          "id": 2,
+          "type": "fix",
+          "description": "Order the drain before settle",
+          "prompt": "Make the drain finish before settle reads the tree.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 3,
+          "type": "verify",
+          "description": "Run the race detector again",
+          "prompt": "Run go test -race ./agent -count=20.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        }
+      ]
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_28",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_done",
+      "output": "Updated 1→done. Progress: 1 done, 0 cancelled, 2 remaining (3 total).",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": [
+        {
+          "id": 1,
+          "type": "research",
+          "description": "Reproduce the settle race",
+          "prompt": "Run go test -race ./agent until the settle race shows.",
+          "status": "done",
+          "notes": [
+            "Reproduced in 3 of 20 runs."
+          ],
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z",
+          "completed_at": "2026-09-28T20:00:00Z",
+          "settled": true
+        },
+        {
+          "id": 2,
+          "type": "fix",
+          "description": "Order the drain before settle",
+          "prompt": "Make the drain finish before settle reads the tree.",
+          "status": "in_progress",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z",
+          "started": true
+        },
+        {
+          "id": 3,
+          "type": "verify",
+          "description": "Run the race detector again",
+          "prompt": "Run go test -race ./agent -count=20.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        }
+      ]
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_29",
+      "turnId": "turn_1",
+      "toolName": "task_list",
+      "callId": "call_task_list_view",
+      "output": "1. [done] research — Reproduce the settle race\n   note: Reproduced in 3 of 20 runs.\n2. [in_progress] fix — Order the drain before settle\n3. [open] verify — Run the race detector again\n\nProgress: 1 done, 0 cancelled, 2 remaining (3 total).",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": [
+        {
+          "id": 1,
+          "type": "research",
+          "description": "Reproduce the settle race",
+          "prompt": "Run go test -race ./agent until the settle race shows.",
+          "status": "done",
+          "notes": [
+            "Reproduced in 3 of 20 runs."
+          ],
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z",
+          "completed_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 2,
+          "type": "fix",
+          "description": "Order the drain before settle",
+          "prompt": "Make the drain finish before settle reads the tree.",
+          "status": "in_progress",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        },
+        {
+          "id": 3,
+          "type": "verify",
+          "description": "Run the race detector again",
+          "prompt": "Run go test -race ./agent -count=20.",
+          "status": "open",
+          "created_at": "2026-09-28T20:00:00Z",
+          "updated_at": "2026-09-28T20:00:00Z"
+        }
+      ]
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_30",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_create",
+      "output": "{\n  \"base_sha\": \"5e5f1c3a9b7d4e2f8a6c0b1d3e5f7a9c2b4d6e8f\",\n  \"branch\": \"settle-fix\",\n  \"main_repo_root\": \"/home/jesse/git/evener\",\n  \"message\": \"Created and entered worktree \\\"settle-fix\\\" at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix (branch settle-fix, base 5e5f1c3a9b7d). Subsequent tools operate inside it; use manage_worktree exit to return to the main checkout.\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"status\": \"created\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_31",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_list",
+      "output": "{\n  \"entries\": [\n    {\n      \"age_seconds\": 1,\n      \"ahead_commits\": 0,\n      \"ahead_unknown\": false,\n      \"base_sha\": \"5e5f1c3a9b7d4e2f8a6c0b1d3e5f7a9c2b4d6e8f\",\n      \"branch\": \"settle-fix\",\n      \"created_at\": \"2026-09-28T20:00:00Z\",\n      \"creator_session\": \"02wMz5TxvQfJ8vYb2Wc7Lh\",\n      \"current\": true,\n      \"delegate_id\": \"\",\n      \"dirty\": false,\n      \"dirty_unknown\": false,\n      \"has_metadata\": true,\n      \"lock_reason\": \"evener:02wMz5TxvQfJ8vYb2Wc7Lh\",\n      \"locked\": true,\n      \"merge_target\": \"main\",\n      \"merge_target_unknown\": false,\n      \"merged\": false,\n      \"merged_arm\": \"\",\n      \"name\": \"settle-fix\",\n      \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n      \"prunable\": false,\n      \"prunable_reason\": \"\"\n    }\n  ],\n  \"message\": \"1 managed worktree(s): settle-fix (0 ahead, clean, unmerged). 1 unmanaged worktree(s) under the managed root, which evener never prunes and never removes without force — use manage_worktree adopt with the path to take one over: /home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane (lane).\",\n  \"status\": \"listed\",\n  \"unmanaged\": [\n    {\n      \"branch\": \"lane\",\n      \"current\": false,\n      \"lock_reason\": \"\",\n      \"locked\": false,\n      \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane\",\n      \"prunable\": false,\n      \"prunable_reason\": \"\"\n    }\n  ]\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_32",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_exit",
+      "output": "{\n  \"left_path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"message\": \"Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.\",\n  \"restored_root\": \"/home/jesse/git/evener\",\n  \"status\": \"exited\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_33",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_switch",
+      "output": "{\n  \"branch\": \"settle-fix\",\n  \"message\": \"Entered worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix (branch settle-fix). Subsequent tools operate inside it; use manage_worktree exit to return.\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"status\": \"switched\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_34",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_switch_again",
+      "output": "{\n  \"branch\": \"settle-fix\",\n  \"message\": \"Already in worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix (branch settle-fix); no-op.\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"status\": \"unchanged\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_35",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_exit_again",
+      "output": "{\n  \"left_path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"message\": \"Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.\",\n  \"restored_root\": \"/home/jesse/git/evener\",\n  \"status\": \"exited\"\n}\n\nYou have now made this same call and received the identical result 2 times in a row. Repeating it will not change the answer — use the result you already have, or change your approach.",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_36",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_remove",
+      "output": "{\n  \"branch\": \"settle-fix\",\n  \"branch_deleted\": false,\n  \"message\": \"Removed worktree \\\"settle-fix\\\" at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix.\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"status\": \"removed\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_37",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_prune",
+      "output": "{\n  \"message\": \"Removed 0, skipped 2. Git worktree registry pruned.\",\n  \"registry_pruned\": true,\n  \"registry_skip_reason\": \"\",\n  \"removed\": [],\n  \"skipped\": [\n    {\n      \"branch_removed\": false,\n      \"name\": \"lane\",\n      \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane\",\n      \"reason\": \"sidecar-less\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    },\n    {\n      \"branch_removed\": false,\n      \"name\": \"settle-fix\",\n      \"path\": \"\",\n      \"reason\": \"in-grace\",\n      \"sidecar_removed\": false,\n      \"worktree_removed\": false\n    }\n  ],\n  \"status\": \"pruned\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_38",
+      "turnId": "turn_1",
+      "toolName": "manage_worktree",
+      "callId": "call_worktree_adopt",
+      "output": "{\n  \"base_sha\": \"5e5f1c3a9b7d4e2f8a6c0b1d3e5f7a9c2b4d6e8f\",\n  \"branch\": \"lane\",\n  \"message\": \"Adopted the worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane as managed worktree \\\"lane\\\" (branch lane). It is now switchable by name and subject to remove and prune like any worktree evener created.\",\n  \"name\": \"lane\",\n  \"path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/lane\",\n  \"status\": \"adopted\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_39",
+      "turnId": "turn_1",
+      "toolName": "ask_user",
+      "callId": "call_ask_user",
+      "output": "questions posted; answers arrive in the user's reply after your turn ends",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_40",
       "turnId": "turn_1",
       "toolName": "web_fetch",
       "callId": "call_web_fetch",
@@ -292,7 +1128,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_11",
+      "id": "item_tool_result_2_41",
       "turnId": "turn_1",
       "toolName": "web_search",
       "callId": "call_web_search",
@@ -302,17 +1138,17 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_12",
+      "id": "item_tool_result_2_42",
       "turnId": "turn_1",
       "toolName": "use_skill",
       "callId": "call_use_skill",
-      "output": "# Systematic debugging\n\nFind the root cause first.",
+      "output": "\u003cskill-context\u003e\n{\"name\":\"systematic-debugging\",\"description\":\"Find the root cause first\",\"source\":\"/home/jesse/git/evener/skills/systematic-debugging/SKILL.md\",\"base_directory\":\"/home/jesse/git/evener/skills/systematic-debugging\",\"instructions\":\"# Systematic debugging\\n\\nFind the root cause first.\\n\"}\n\u003c/skill-context\u003e",
       "status": "completed",
       "completedAt": 1790625602000
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_13",
+      "id": "item_tool_result_2_43",
       "turnId": "turn_1",
       "toolName": "github__create_issue",
       "callId": "call_mcp",
@@ -322,7 +1158,7 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_14",
+      "id": "item_tool_result_2_44",
       "turnId": "turn_1",
       "toolName": "linear_app__list_issues",
       "callId": "call_mcp_hyphenated",
@@ -332,13 +1168,22 @@
     },
     {
       "type": "commandExecution",
-      "id": "item_tool_result_2_15",
+      "id": "item_tool_result_2_45",
       "turnId": "turn_1",
       "toolName": "compact_context",
       "callId": "call_unknown",
       "output": "compacted",
       "status": "completed",
       "completedAt": 1790625602000
+    },
+    {
+      "type": "userMessage",
+      "id": "item_user_3",
+      "turnId": "turn_2",
+      "transcriptEntryIndex": 3,
+      "text": "[answers]\n1. [Deploy] → \"Ship tonight\"",
+      "status": "completed",
+      "startedAt": 1790625660000
     }
   ]
 }

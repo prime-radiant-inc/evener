@@ -19,6 +19,7 @@
 // - 11: s-retry, whose last turn failed on a sign-in error;
 // - 12: s-jobdisp, with an edit and a 60-line command output to open at Tools;
 // - 13a: s-pr2138's notes, and s-roster, shut down with read-only notes.
+// s-tools replays the recorded wire corpora: one step of every tool family.
 // s-stumble queues five messages, more than the Session shows inline, so its
 // "2 more queued" opens the Queue sheet.
 import type {
@@ -52,6 +53,7 @@ import {
 	type RawSubagent,
 } from "./demoFleet";
 import { demoRunStartedAt } from "./demoSubagents";
+import { recordedToolCwd, recordedToolFamilies } from "./demoToolFamilies";
 
 const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -86,11 +88,20 @@ type Entry =
 	| { ask: Question[] }
 	// A daemon steering item of kind "notification": a job or delegate
 	// notification as the daemon delivers it.
-	| { notice: string };
+	| { notice: string }
+	// An item recorded from a real run (demoToolFamilies.ts), served as it
+	// was, with its own id, on the demo turn and clock.
+	| { recorded: ThreadItem }
+	// A daemon warning, as the hub's overlay announces one
+	// (internal/appoverlay/notices.go warningAnnouncement): a systemMessage
+	// with eventKind "warning" and its title and hint on raw.warning.
+	| { warning: { text: string; title: string; hint: string } };
 
 // What a frame's session carries beyond its fleet row.
 interface SessionContent {
 	entries?: Entry[];
+	// The directory the session sits in, when it isn't its project's.
+	cwd?: string;
 	error?: TurnError;
 	model?: string;
 	effort?: string;
@@ -394,6 +405,13 @@ const CONTENT: Record<string, SessionContent> = {
 			{ subagent: "r-1" },
 			{ subagent: "r-2" },
 			{
+				warning: {
+					text: "inspect delegate attention: open delegates.jsonl: permission denied",
+					title: "Evener error",
+					hint: "Check that the session's state directory is writable.",
+				},
+			},
+			{
 				agent:
 					"The loop is in `llm/retry.go`: a 429 resets the attempt counter instead of incrementing it, so it never gives up. The test reproduces it. Now capping retries at 5 with exponential backoff.",
 			},
@@ -668,6 +686,10 @@ function genericEntries(session: FleetSession): Entry[] {
 	return entries;
 }
 
+// What a live thought has streamed so far: enough for the tray's estimate
+// ("Thinking… · 17 tokens").
+const DEMO_THOUGHT = "Weighing where the settle and drain passes each take the tree lock.";
+
 // A working row's activity line as the step it describes.
 function liveStep(activity = "Thinking"): Entry {
 	if (activity === "Thinking") return { thinking: true };
@@ -759,11 +781,30 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		if ("user" in entry) return { ...item, type: "userMessage", text: entry.user, status: "completed" };
 		if ("steer" in entry) return { ...item, type: "steering", source: "user", text: entry.steer, status: "completed" };
 		if ("agent" in entry) return { ...item, type: "agentMessage", text: entry.agent, status: "completed" };
-		// A thought with no text yet: the encoder leaves the empty text out.
-		if ("thinking" in entry) return { ...item, type: "reasoning", status: "inProgress" };
+		// A live thought as the hub's overlay serves it: opened by a delta
+		// with text, and with no startedAt, which the wire never carries for
+		// reasoning.
+		if ("thinking" in entry) return { id: item.id, type: "reasoning", text: DEMO_THOUGHT, status: "inProgress" };
 		if ("ask" in entry) return askItem(item.id, `${id}-ask`, entry.ask, item.startedAt, at);
 		if ("notice" in entry)
 			return { ...item, type: "steering", text: entry.notice, steeringKind: "notification", status: "completed" };
+		if ("warning" in entry) {
+			const { text, title, hint } = entry.warning;
+			return {
+				...item,
+				type: "systemMessage",
+				eventKind: "warning",
+				text,
+				raw: { warning: { source: "evener", title, hint } },
+				status: "completed",
+			};
+		}
+		if ("recorded" in entry) {
+			const recorded: ThreadItem = { ...entry.recorded, startedAt: item.startedAt, turnId: id };
+			return recorded.status === "inProgress" || !("completedAt" in recorded)
+				? recorded
+				: { ...recorded, completedAt: at };
+		}
 		if ("subagent" in entry) {
 			const subagent = subagents.get(entry.subagent);
 			if (!subagent) throw new Error(`${session.slug} has no subagent ${entry.subagent}`);
@@ -981,8 +1022,26 @@ function askItem(
 }
 
 // `parentRef` names the session a subagent's thread belongs to.
+// Every tool family the phone summarizes, replayed from the recorded wire
+// corpora rather than written by hand, to see and screenshot each one. Built
+// only when served, so the usual sessions never read agent/testdata.
+function toolFamiliesContent(): SessionContent {
+	return {
+		// The recorded shell calls cd here first, as a session's own directory.
+		cwd: recordedToolCwd(),
+		entries: [
+			{ user: "Show me one step of every tool family." },
+			...recordedToolFamilies().map((recorded): Entry => ({ recorded })),
+			{ agent: "That's one of each: the core tools, subagents, the task list, notifications and system events." },
+		],
+	};
+}
+
 function sessionThread(session: FleetSession, now: number, parentRef?: string, long = false): Thread {
-	const content = (long ? LONG_CONTENT[session.slug] : undefined) ?? CONTENT[session.slug] ?? {};
+	const content =
+		(long ? LONG_CONTENT[session.slug] : undefined) ??
+		(session.slug === "s-tools" ? toolFamiliesContent() : CONTENT[session.slug]) ??
+		{};
 	const usage = content.usage ?? BASE_USAGE;
 	const status = THREAD_STATUS[session.state];
 	const active = status === "active";
@@ -1003,7 +1062,7 @@ function sessionThread(session: FleetSession, now: number, parentRef?: string, l
 		createdAt: Math.floor((turn.startedAt ?? now) / 1000),
 		updatedAt,
 		status: { type: status },
-		cwd: session.workingDir,
+		cwd: content.cwd ?? session.workingDir,
 		projectPath: session.workingDir,
 		gitInfo: { branch: "main" },
 		cliVersion: "demo",
@@ -1086,13 +1145,15 @@ export interface DemoSessionsOptions {
 	now?: number;
 	// Mirrors EVENER_DEMO_LONG: LONG_CONTENT in place of the usual content.
 	long?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_TOOLS: a thread for the tool families session.
+	toolFamilies?: boolean;
 }
 
 // A thread for every fleet session, in the fleet's order, then one for every
 // subagent in their trees, so every transcript ref a delegate names reads.
 export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] {
 	const now = options.now ?? Date.now();
-	const sessions = fleetSessions();
+	const sessions = fleetSessions(options.toolFamilies);
 	return [
 		...sessions.map((session) => sessionThread(session, now, undefined, options.long)),
 		...sessions.flatMap((session) =>

@@ -34,6 +34,12 @@ import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
 import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
 import { useRef, useState } from "react";
+import {
+  activitySidebarOpenFor,
+  activitySidebarStore,
+  closeSessionActivityPanes,
+  useActivitySidebarOpenFor,
+} from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
@@ -113,7 +119,11 @@ export function SessionChrome({
   const toasts = useToasts();
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
-  const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
+  // The Activity menu item's checked state is the sidebar open ON THIS
+  // SESSION (the shared predicate hook); on mobile the item opens the Sheet
+  // and is never "checked".
+  const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
+  const activityOpen = !isMobile && sidebarOpenHere;
   const notesOpen = useTopNotesExpanded(sessionRef);
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
@@ -126,7 +136,7 @@ export function SessionChrome({
     : (locationResource?.data as NavigationSessionLocation | undefined);
   const navigationSession = location?.session;
   const fallbackSession = navigationSession ?? navigationSummaryFor(sessionRef, navigation);
-  const eligibleFallback = fallbackSession && !["subagent", "fork", "cluster"].includes(fallbackSession.kind);
+  const eligibleFallback = fallbackSession && !["subagent", "fork"].includes(fallbackSession.kind);
   const validIdentity =
     typeof fallbackSession?.host_id === "string" &&
     fallbackSession.host_id.trim() !== "" &&
@@ -212,8 +222,18 @@ export function SessionChrome({
     else workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef });
   };
   const openActivity = () => {
+    // Desktop: the activity sidebar (the zoom system's triage surface).
+    // Mobile: the per-session Sheet, unchanged. Desktop toggles only when the
+    // sidebar already shows THIS session; open on another session, the item
+    // re-scopes it here instead of closing it under the user. The open also
+    // retires a leftover sessionActivity pane for this session - nothing on
+    // desktop can open or mark one anymore.
     if (isMobile) activityRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionActivity", { ref: sessionRef });
+    else if (activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
+    else {
+      closeSessionActivityPanes(sessionRef);
+      activitySidebarStore.getState().openWith();
+    }
   };
   const openNotes = () => {
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;

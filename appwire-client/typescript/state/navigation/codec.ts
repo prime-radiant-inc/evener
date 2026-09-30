@@ -254,7 +254,6 @@ const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
     live: "required",
     children: "required",
     branch: "optional",
-    cluster_count: "optional",
     favorite: "optional",
     rename: "optional",
     ask_pending: "optional",
@@ -455,7 +454,9 @@ const failureValue = (value: unknown): boolean =>
   optional(value.provider, (item) => identity(item)) &&
   optional(value.status, count);
 
-function sessionValue(value: unknown): value is Record<string, unknown> {
+// sessionFieldsValue checks every field of a session summary except its
+// children, whose rule depends on where the summary travels.
+function sessionFieldsValue(value: unknown): value is Record<string, unknown> & { children: unknown[] } {
   return (
     knownKeys(value, SESSION_KEYS) &&
     identity(value.ref) &&
@@ -467,9 +468,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     identity(value.kind) &&
     bool(value.live) &&
     Array.isArray(value.children) &&
-    value.children.length === 0 &&
     optional(value.branch, (item) => boundedString(item, 512)) &&
-    optional(value.cluster_count, count) &&
     optional(value.favorite, bool) &&
     optional(value.rename, bool) &&
     optional(value.ask_pending, bool) &&
@@ -496,6 +495,38 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue)) &&
     optional(value.tasks, tasksValue)
   );
+}
+
+// A graph entity's children are edges, so its own children array is empty.
+function sessionValue(value: unknown): value is Record<string, unknown> {
+  return sessionFieldsValue(value) && value.children.length === 0;
+}
+
+// An evener/archived/list row is a plain summary with its children (fork
+// originals) nested inline, as the hub projects them. Every row and nested
+// child counts against `budget`, which starts at the entity bound a
+// navigation session may hold.
+function sessionTreeValue(value: unknown, depth: number, budget: { nodes: number }): boolean {
+  return (
+    depth <= MAX_NAVIGATION_DEPTH &&
+    --budget.nodes >= 0 &&
+    sessionFieldsValue(value) &&
+    value.children.every((child) => sessionTreeValue(child, depth + 1, budget))
+  );
+}
+
+/** Validates the `sessions` of an evener/archived/list response: at most one
+ * page of plain session summaries whose children are nested inline. Throws on
+ * any malformed row or an oversized page. */
+export function decodeArchivedListSessions(value: unknown): NavigationSessionSummary[] {
+  const budget = { nodes: MAX_NAVIGATION_SESSION_ENTITIES };
+  if (
+    !Array.isArray(value) ||
+    value.length > NAVIGATION_SECTION_LIMIT ||
+    !value.every((row) => sessionTreeValue(row, 1, budget))
+  )
+    throw schemaError("archived list");
+  return value as NavigationSessionSummary[];
 }
 
 function projectValue(value: unknown): value is Record<string, unknown> {
@@ -804,7 +835,7 @@ export function validateGraphForResource(
             ownerEntity.key === anchorKey &&
             ["current", "recent", "archived"].includes(ownerSlot);
       if (!allowed) throw schemaError("resource graph");
-      if (item.children.length > 50) throw schemaError("resource graph");
+      if (item.children.length > NAVIGATION_SECTION_LIMIT) throw schemaError("resource graph");
       const owned = slots.get(ownerEntity.key) ?? new Set<string>();
       owned.add(ownerSlot);
       slots.set(ownerEntity.key, owned);

@@ -138,5 +138,9 @@ func (m *Manager) Browse(ctx context.Context, name string) (Catalog, error) {
 	if err != nil {
 		return Catalog{}, err
 	}
-	return ParseCatalog(m.catalogRoot(ref))
+	cat, err := ParseCatalog(m.catalogRoot(ref))
+	if err != nil {
+		return Catalog{}, m.storeFileFailed(err, "reading marketplace.json for %s", name)
+	}
+	return cat, nil
 }

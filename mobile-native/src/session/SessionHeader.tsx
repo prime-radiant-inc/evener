@@ -5,12 +5,17 @@
 // position in it, never move.
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { Animated, Pressable, ScrollView, Text, View } from "react-native";
+import { Animated, type LayoutChangeEvent, Pressable, Text, View } from "react-native";
 import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useReduceMotion } from "../accessibilitySettings";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useComposerTyping } from "../useKeyboardShown";
 import { FreshDot } from "../reader/FreshDot";
+import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
+import { ChipStrip } from "../design/ChipStrip";
+import { headerRowFill } from "../design/systemGlass";
+import type { ComposerFocus } from "./composerFocus";
 import type { ChipKind, ContextChip } from "./sessionState";
 
 const SYMBOLS: Record<ChipKind, SFSymbol> = {
@@ -26,45 +31,70 @@ const SYMBOLS: Record<ChipKind, SFSymbol> = {
 const HIDE_AFTER_PT = 8;
 const HIDE_DURATION_MS = 200;
 
+/** The header floats over the list's top edge; the list reserves its room.
+ * It stays mounted, empty, when it has nothing to show, so the screen's last
+ * measure of it goes to nothing too. */
+const FLOATING = { position: "absolute", top: 0, left: 0, right: 0 } as const;
+
 export function SessionHeader({
 	status,
 	chips,
 	hidden,
+	composerFocus,
 	onChip,
 	notes,
 	find,
+	glassTop,
+	onLayout,
 }: {
 	status: string | null;
 	chips: readonly ContextChip[];
+	/** A downward scroll hid the chips. */
 	hidden: boolean;
+	/** The composer's focus: while you type in it (useComposerTyping), the
+	 * chips and note step aside too. */
+	composerFocus: ComposerFocus;
 	onChip: (kind: ChipKind) => void;
 	notes?: ReactNode;
 	/** The find bar, in the chips' place while find is open (spec 8.7). It
 	 * stays put while the list scrolls from match to match. */
 	find?: ReactNode;
+	/** Where the nav bar is the system's glass, its height: the header then
+	 * starts at the screen's top, leaves the bar that room, and spans one
+	 * glass under the bar and its rows, the iOS pattern for a bar with a
+	 * search field or segmented control (spec 16.3). */
+	glassTop?: number;
+	/** The header's layout, for the screen to keep the list clear of it. */
+	onLayout?: (event: LayoutChangeEvent) => void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const [rowHeight, setRowHeight] = useState(0);
+	const typing = useComposerTyping(composerFocus);
 	// The find bar never slides away: it stays put while the list scrolls from
 	// match to match, whatever hides the chips.
-	const slidAway = hidden && find == null;
-	const offset = useSlide(slidAway ? -rowHeight : 0);
+	const slidAway = (hidden || typing) && find == null;
 	const hasRow = chips.length > 0 || notes != null || find != null;
-	if (status === null && !hasRow) return null;
+	// With no rows left there is nothing slid away, whatever height they last
+	// had, so the glass comes back down to the bar.
+	const offset = useSlide(slidAway && hasRow ? -rowHeight : 0);
+	const onGlass = glassTop !== undefined;
 	return (
-		// Clipping keeps the slid-away row from drawing over the nav bar, and
-		// box-none lets touches on the list's uncovered top reach the list.
-		<View pointerEvents="box-none" style={{ overflow: "hidden" }}>
+		<GlassHeaderPanel
+			style={FLOATING}
+			glassTop={glassTop}
+			// The glass moves with the rows, so as they slide away its lower
+			// edge rises with them to the bar's.
+			slideOffset={offset}
+			onLayout={onLayout}
+		>
 			{status !== null ? (
 				<View
 					style={{
 						minHeight: 24,
 						justifyContent: "center",
 						paddingHorizontal: 16,
-						backgroundColor: palette.page,
-						// Above the chips row, which slides up behind it.
-						zIndex: 1,
+						backgroundColor: headerRowFill(onGlass, palette),
 					}}
 				>
 					<Text
@@ -88,54 +118,40 @@ export function SessionHeader({
 				</View>
 			) : null}
 			{hasRow ? (
-				<Animated.View
-					onLayout={(event) => setRowHeight(event.nativeEvent.layout.height)}
-					style={{ transform: [{ translateY: offset }] }}
-					// Slid away behind the nav bar, the row is out of VoiceOver's reach.
-					accessibilityElementsHidden={slidAway}
-					importantForAccessibility={slidAway ? "no-hide-descendants" : "auto"}
-				>
-					{find ?? (chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} /> : null)}
-					{notes}
-				</Animated.View>
+				// Clipping at the row's own top keeps it from drawing over the
+				// status line or the bar as it slides away.
+				<View pointerEvents="box-none" style={{ overflow: "hidden" }}>
+					<Animated.View
+						onLayout={(event) => setRowHeight(event.nativeEvent.layout.height)}
+						style={{ transform: [{ translateY: offset }] }}
+						// Slid away behind the nav bar, the row is out of VoiceOver's reach.
+						accessibilityElementsHidden={slidAway}
+						importantForAccessibility={slidAway ? "no-hide-descendants" : "auto"}
+					>
+						{find ?? (chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} onGlass={onGlass} /> : null)}
+						{notes}
+					</Animated.View>
+				</View>
 			) : null}
-		</View>
+		</GlassHeaderPanel>
 	);
 }
 
-function ChipsRow({ chips, onChip }: { chips: readonly ContextChip[]; onChip: (kind: ChipKind) => void }) {
-	const { palette } = useColors();
-	const [viewportWidth, setViewportWidth] = useState(0);
-	const [contentWidth, setContentWidth] = useState(0);
-	const overflows = viewportWidth > 0 && contentWidth > viewportWidth;
+function ChipsRow({
+	chips,
+	onChip,
+	onGlass,
+}: {
+	chips: readonly ContextChip[];
+	onChip: (kind: ChipKind) => void;
+	onGlass: boolean;
+}) {
 	return (
-		<View style={{ backgroundColor: palette.page }}>
-			<ScrollView
-				horizontal
-				showsHorizontalScrollIndicator={false}
-				onLayout={(event) => setViewportWidth(event.nativeEvent.layout.width)}
-				onContentSizeChange={(width) => setContentWidth(width)}
-				contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 8 }}
-			>
-				{chips.map((chip) => (
-					<Chip key={chip.kind} chip={chip} onPress={() => onChip(chip.kind)} />
-				))}
-			</ScrollView>
-			{overflows ? (
-				<View
-					testID="chips-fade"
-					pointerEvents="none"
-					style={{
-						position: "absolute",
-						top: 0,
-						bottom: 0,
-						right: 0,
-						width: 24,
-						experimental_backgroundImage: `linear-gradient(to right, ${palette.page}00, ${palette.page})`,
-					}}
-				/>
-			) : null}
-		</View>
+		<ChipStrip testID="chips-row" onGlass={onGlass}>
+			{chips.map((chip) => (
+				<Chip key={chip.kind} chip={chip} onPress={() => onChip(chip.kind)} />
+			))}
+		</ChipStrip>
 	);
 }
 

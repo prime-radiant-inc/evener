@@ -20,11 +20,12 @@ import {
 	questionAdvanceTarget,
 } from "../questionAnswers";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { useKeyboardShown } from "../useKeyboardShown";
+import { useComposerTyping } from "../useKeyboardShown";
 import { useReadingFace } from "../display/displayContext";
 import { foldedLabel, orderedOptions, primaryLabel, questionHeader } from "./askDockCopy";
 import { DockBody } from "./DockBody";
 import { dockCard } from "./dockCard";
+import type { ComposerFocus } from "./composerFocus";
 import { SymbolButton } from "./SymbolButton";
 import type { QuestionDraft } from "./useQuestionDraft";
 
@@ -45,10 +46,10 @@ export interface QuestionDockProps {
 	onSend(selections: QuestionSelections): void;
 	/** Why the last send didn't go, as one line. */
 	error?: string | null;
-	/** The composer is back beneath the dock ("Other answer…"). While the
-	 * keyboard is up for it, the dock shows only its header and the question:
+	/** The focus of the composer back beneath the dock ("Other answer…").
+	 * While you type in it, the dock shows only its header and the question:
 	 * the room is short, and the composer's Send is the answer. */
-	composerUp?: boolean;
+	composerFocus: ComposerFocus;
 }
 
 export function QuestionDock({
@@ -62,9 +63,9 @@ export function QuestionDock({
 	onOtherAnswer,
 	onSend,
 	error = null,
-	composerUp = false,
+	composerFocus,
 }: QuestionDockProps) {
-	const typing = useKeyboardShown() && composerUp;
+	const typing = useComposerTyping(composerFocus);
 	useOptionsReturnAnnounced(typing, folded);
 	const { palette } = useColors();
 	const scale = useTextScale();

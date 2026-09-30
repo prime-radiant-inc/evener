@@ -18,6 +18,7 @@ import type {
 	ArchiveParams,
 	ArchiveResponse,
 	AuthListResponse,
+	NoticesListResponse,
 	NavigationCapability,
 	NavigationInvalidatedPayload,
 	NavigationJobSummary,
@@ -30,7 +31,7 @@ import type {
 	SearchResponse,
 	Source,
 } from "@evener/appwire-client";
-import { type DemoCoordinator, type DemoSubagent, demoActivityTree } from "./demoSubagents.js";
+import { type DemoCoordinator, type DemoShellJob, type DemoSubagent, demoActivityTree } from "./demoSubagents.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireV2 response must carry the exact same id:
@@ -189,6 +190,7 @@ interface RawSession {
 	subs?: { run: number; fail: number; done: number }; // generic subagent counts (data.js genericSubs)
 	children?: RawSubagent[]; // explicitly named subagents (data.js's `subagents` map)
 	model?: string; // data.js's session model, for a coordinator's subagent tree
+	jobs?: DemoShellJob[]; // its own finished shell jobs, in its Activity list
 }
 
 // data.js's swarm for s-pr2138: two named failures plus 31 running, 3 waiting
@@ -493,6 +495,7 @@ const SESSIONS: RawSession[] = [
 		ago: 5,
 		category: "release",
 		children: PR2138_CHILDREN,
+		jobs: [{ id: "pr2138-build", command: "go build ./...", ago: 12 * M, elapsed: 40 }],
 		activity: "Waiting on 31 subagents",
 	},
 	{
@@ -754,6 +757,22 @@ function rawChildren(raw: RawSession): RawSubagent[] {
 	return [];
 }
 
+// A live root's whole-tree subagent tally (S3), as its daemon counts it: every
+// depth, not just the capped rows its children keep. The demo still nests its
+// subagent rows under children for the tree views, but the Board's chip and
+// working why line read this tally, not those rows.
+function subagentTally(subs: readonly RawSubagent[]): { running: number; failed: number; done: number } {
+	const tally = { running: 0, failed: 0, done: 0 };
+	for (const sub of subs) {
+		tally[sub.state] += 1;
+		const nested = subagentTally(sub.children ?? []);
+		tally.running += nested.running;
+		tally.failed += nested.failed;
+		tally.done += nested.done;
+	}
+	return tally;
+}
+
 // "Running <command>" activity lines become a running job; anything else
 // ("Thinking", "Editing ...", "Waiting on N subagents") is not a command.
 function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
@@ -802,16 +821,31 @@ export interface FleetSession {
 	runStartedAt?: number;
 }
 
+// Not in the Board mockup, so served only with EVENER_DEMO_FLEET_TOOLS: a
+// session whose transcript replays the recorded wire corpora, one step of
+// every tool family (demoToolFamilies.ts).
+const TOOL_FAMILIES_SESSION: RawSession = {
+	id: "s-tools",
+	title: "Show Every Tool Family",
+	state: "yourmove",
+	ago: 4 * H,
+};
+
+/** The fleet's sessions, with the tool families session when asked for. */
+function fleetList(toolFamilies = false): RawSession[] {
+	return toolFamilies ? [...SESSIONS, TOOL_FAMILIES_SESSION] : SESSIONS;
+}
+
 // The ref the fleet names a session by, from its fixture slug.
 export function fleetSessionRef(slug: string): string {
-	const raw = SESSIONS.find((candidate) => candidate.id === slug);
+	const raw = fleetList(true).find((candidate) => candidate.id === slug);
 	if (!raw) throw new Error(`Unknown demonstration session: ${slug}`);
 	return sessionRef(raw);
 }
 
 // Every session the fleet holds, in the fleet's own order.
-export function fleetSessions(): FleetSession[] {
-	return SESSIONS.map((raw) => {
+export function fleetSessions(toolFamilies = false): FleetSession[] {
+	return fleetList(toolFamilies).map((raw) => {
 		const projectKey = projectKeyOf(raw);
 		return {
 			slug: raw.id,
@@ -842,7 +876,8 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 	const { state, askPending, approvalPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
-	const { capped, omitted } = capChildren(rawChildren(raw));
+	const subs = rawChildren(raw);
+	const { capped, omitted } = capChildren(subs);
 	const jobs = runningJobs(raw);
 	return {
 		ref: sessionRef(raw),
@@ -858,6 +893,7 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 		...(offline ? { offline: true as const } : {}),
 		updated_at: new Date(startupMs - raw.ago * 1000).toISOString(),
 		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
+		...(live && subs.length > 0 ? { subagents: subagentTally(subs) } : {}),
 		...(jobs ? { running_jobs: jobs } : {}),
 		children: capped.map((child) => toChildRow(child, owner, project, startupMs, offline)),
 	};
@@ -922,6 +958,13 @@ export interface DemoFleetOptions {
 	// Mirrors EVENER_DEMO_LONG: demo-hub.mts serves the sessions' long content
 	// (demoSessions.ts LONG_CONTENT) in place of the usual.
 	long?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_TOOLS: adds "Show Every Tool Family" to
+	// Finished, a session replaying the recorded wire corpora.
+	toolFamilies?: boolean;
+	// The provider instance each model id runs on (demoSetup.ts's catalog),
+	// which the fleet's rows don't say: a sign-in notice counts the live
+	// sessions on its provider's models. None by default.
+	modelProviders?: Readonly<Record<string, string>>;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
@@ -934,6 +977,9 @@ interface FleetAnswers {
 	answerSearch(params: SearchParams): SearchResponse;
 	answerAuthList(): AuthListResponse;
 	answerPluginList(): PluginListResponse;
+	/** evener/notices/list (S11), derived as cmd/evener-hub/app_notices.go
+	 * derives it. */
+	answerNoticesList(): NoticesListResponse;
 }
 
 export interface DemoFleet extends FleetAnswers {
@@ -991,15 +1037,16 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
 	let offlineHost = options.offlineHost ?? false;
 	const clock = options.clock ?? Date.now;
+	const modelProviders = options.modelProviders ?? {};
 	// Building the fleet from an empty list, rather than special-casing each
 	// answer, keeps every count, section and catalog below in step for free:
 	// a hub with nothing live just has nothing to filter, page or search over.
 	// The fleet as it stands; each change replaces it with a changed copy.
-	let sessionsList = options.empty ? [] : SESSIONS;
+	let sessionsList = options.empty ? [] : fleetList(options.toolFamilies);
 	// Every resource's revision is one ahead of the navigation sequence: both
 	// start there and each change advances them together.
 	let sequence = 0;
-	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock);
+	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock, modelProviders);
 
 	// Moves the fleet to `changed` at the next sequence and revision, and
 	// returns the evener/navigation/invalidated payload for the targets the
@@ -1011,7 +1058,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		sessionsList = changed;
 		sequence += 1;
 		const revision = sequence + 1;
-		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock);
+		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock, modelProviders);
 		return { generationId: DEMO_FLEET_GENERATION, sequence, targets: targets(revision) };
 	}
 
@@ -1093,6 +1140,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerSearch: (params) => answers.answerSearch(params),
 		answerAuthList: () => answers.answerAuthList(),
 		answerPluginList: () => answers.answerPluginList(),
+		answerNoticesList: () => answers.answerNoticesList(),
 		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
 		step,
 		setSessionState: (ref, state) => {
@@ -1114,7 +1162,8 @@ function coordinatorFor(sessions: readonly RawSession[], ref: string): DemoCoord
 		const host = hostId(raw.host);
 		const subagentRef = (id: string) => hostSessionRef(host, id);
 		const model = raw.model ?? "";
-		if (sessionRef(raw) === ref) return { ref, title: raw.title, model, subagents: rawChildren(raw), subagentRef };
+		if (sessionRef(raw) === ref)
+			return { ref, title: raw.title, model, subagents: rawChildren(raw), jobs: raw.jobs, subagentRef };
 		const sub = findSubagent(rawChildren(raw), ref, subagentRef);
 		if (sub) return { ref, title: sub.title, model: sub.model ?? model, subagents: sub.children ?? [], subagentRef };
 	}
@@ -1142,6 +1191,7 @@ function fleetAnswers(
 	startupMs: number,
 	offlineHost: boolean,
 	clock: () => number,
+	modelProviders: Readonly<Record<string, string>>,
 ): FleetAnswers {
 	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
@@ -1441,6 +1491,8 @@ function fleetAnswers(
 	}
 
 	function answerPluginList(): PluginListResponse {
+		// Unix seconds, as the hub sends them (app_plugins.go UnixSeconds).
+		const startupSeconds = Math.floor(startupMs / 1000);
 		return {
 			plugins: PLUGINS.map((plugin) => ({
 				plugin: plugin.id,
@@ -1450,11 +1502,39 @@ function fleetAnswers(
 				autoUpgrade: false,
 				broken: false,
 				installPath: `~/.claude/plugins/${plugin.mp}/${plugin.id}`,
-				installedAt: startupMs - 30 * D * 1000,
-				lastUpdated: startupMs - 1 * D * 1000,
+				installedAt: startupSeconds - 30 * D,
+				lastUpdated: startupSeconds - 1 * D,
 			})),
 		};
 	}
 
-	return { answerNavigationRead, answerSearch, answerAuthList, answerPluginList };
+	// The hub's notices: each expired sign-in with the live top-level sessions
+	// whose model runs on that provider instance, then each offline host with
+	// its sessions that were live when last reached. No demo plugin is broken.
+	function answerNoticesList(): NoticesListResponse {
+		const counted = (affected: number) => (affected > 0 ? { affectedSessions: affected } : {});
+		const signIns = answerAuthList()
+			.providers.filter((status) => status.needsLogin)
+			.map((status) => ({
+				id: `signInRequired:${status.provider}`,
+				kind: "signInRequired",
+				subject: status.provider,
+				// A session with no model of its own runs the default, which is
+				// lunaroute's (demoSessions.ts DEFAULT_MODEL), never an expired one.
+				...counted(
+					liveRaw.filter((raw) => raw.model !== undefined && modelProviders[raw.model] === status.provider).length,
+				),
+			}));
+		const hosts = sources
+			.filter((source) => !source.online)
+			.map((source) => ({
+				id: `hostOffline:${source.id}`,
+				kind: "hostOffline",
+				subject: source.id,
+				...counted(liveSessions.filter((row) => row.host_id === source.id).length),
+			}));
+		return { notices: [...signIns, ...hosts] };
+	}
+
+	return { answerNavigationRead, answerSearch, answerAuthList, answerPluginList, answerNoticesList };
 }

@@ -154,9 +154,13 @@ type Aggregate struct {
 	ProjectionRevision uint64    `json:"projection_revision"`
 }
 
+// Outcome is how a run ended. Reason is a code (runtime_lost, cancelled…);
+// Error is a failed run's cause in words, its error's first line, empty for
+// any other ending and in journals written before it existed.
 type Outcome struct {
 	Status           OutcomeStatus    `json:"status"`
 	Reason           string           `json:"reason,omitempty"`
+	Error            string           `json:"error,omitempty"`
 	EndedAt          time.Time        `json:"ended_at"`
 	ExhaustionBudget ExhaustionBudget `json:"exhaustion_budget,omitempty"`
 	ExhaustionLimit  int              `json:"exhaustion_limit,omitempty"`

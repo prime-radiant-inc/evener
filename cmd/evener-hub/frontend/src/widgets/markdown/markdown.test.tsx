@@ -364,3 +364,76 @@ test("the stylesheet styles GFM tables: flat headers, edge borders, align select
   expect(css).toContain('th[align="center"]');
   expect(css).toContain('td[align="right"]');
 });
+
+// --- mermaid fences render as inline diagrams -------------------------------
+// A message whose source carries a closed mermaid fence splits into prose
+// slices and diagram containers (segments.ts), all under one root div that
+// carries the caller's ref. The diagram container is present synchronously
+// (MermaidDiagram's loading state) whether or not mermaid has rendered yet.
+
+test("renders a mermaid fence as a diagram container, prose as markdown", () => {
+  const { container } = render(<Markdown source={"before\n\n```mermaid\ngraph TD; A-->B\n```\n\nafter"} />);
+  expect(container.querySelectorAll("[data-mermaid-diagram]")).toHaveLength(1);
+  expect(container.textContent).toContain("before");
+  expect(container.textContent).toContain("after");
+});
+
+test("keeps an open mermaid fence a code block while live", () => {
+  const { container } = render(<Markdown live source={"before\n\n```mermaid\ngraph TD; A-->"} />);
+  expect(container.querySelector("[data-mermaid-diagram]")).toBeNull();
+  expect(container.textContent).toContain("graph TD; A-->");
+});
+
+test("resolves a link definition used on the far side of a diagram", () => {
+  const { container } = render(
+    <Markdown source={"See [the docs][d].\n\n```mermaid\ngraph TD; A-->B\n```\n\n[d]: https://example.com\n"} />,
+  );
+  const link = container.querySelector("a[href='https://example.com']");
+  expect(link).not.toBeNull();
+});
+
+test("keeps an open mermaid fence a code block when settled", () => {
+  // Settled renders must not promote a truncated trailing fence (no closer):
+  // the live path demotes it, and the settled path must agree instead of
+  // flipping to a diagram (or its error fallback) at settle.
+  const { container } = render(<Markdown source={"before\n\n```mermaid\ngraph TD; A-->"} />);
+  expect(container.querySelector("[data-mermaid-diagram]")).toBeNull();
+  expect(container.textContent).toContain("graph TD; A-->");
+});
+
+test("resolves a far-side link definition while live (use before def)", () => {
+  const { container } = render(
+    <Markdown live source={"See [the docs][d].\n\n```mermaid\ngraph TD; A-->B\n```\n\n[d]: https://example.com\n"} />,
+  );
+  expect(container.querySelector("a[href='https://example.com']")).not.toBeNull();
+});
+
+test("resolves a far-side link definition while live (def before use)", () => {
+  const { container } = render(
+    <Markdown live source={"[d]: https://example.com\n\n```mermaid\ngraph TD; A-->B\n```\n\nSee [the docs][d].\n"} />,
+  );
+  expect(container.querySelector("a[href='https://example.com']")).not.toBeNull();
+});
+
+// Issue #3208: a settled head holding a closed diagram, then a long streaming
+// prose tail. The tail's settled prefix is served from a cache and only the
+// bounded window re-parses, but the settled+window pair must still render into
+// the same single markdown div as a full parse - a naive extra slice would drop
+// the paragraph gap (`.root p:last-child { margin-bottom: 0 }`).
+test("live matches settled on a closed-diagram head with a long streaming prose tail", () => {
+  const sentence = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+  const paragraph = sentence.repeat(25).trim();
+  const source = `intro\n\n\`\`\`mermaid\ngraph TD; A-->B\n\`\`\`\n\n${paragraph}\n\n${paragraph}\n\n${sentence.repeat(8).trim()}`;
+  expect(source.length).toBeGreaterThan(2000);
+  // Engagement proof, not just output equality: the windowed path parses the
+  // head, the settled tail prefix, and the window separately while the
+  // full-parse fallback parses once, so the sanitize-call count separates them.
+  const sanitizeSpy = vi.spyOn(DOMPurify, "sanitize");
+  const live = render(<Markdown source={source} live />);
+  const settled = render(<Markdown source={source} />);
+  expect(live.container.innerHTML).toBe(settled.container.innerHTML);
+  // Live: intro slice + settled prefix + window = three sanitize calls; settled:
+  // intro slice + the whole tail = two. Four total would mean the live render
+  // fell back to the single full parse.
+  expect(sanitizeSpy.mock.calls.length).toBe(5);
+});

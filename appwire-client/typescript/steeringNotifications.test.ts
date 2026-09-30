@@ -1241,6 +1241,8 @@ test("a subagent's report parses its name, outcome and message from the packet b
   expect(n?.rawText).toBe(notificationWireItem("delegate-reported").text);
 });
 
+// The packet's metadata carries the run's cause beside its reason code
+// (#3327); the card says the cause, never the bare code.
 test("an unnamed subagent's failure parses as a failure carrying its message", () => {
   const [n] = wireNotifications("delegate-failed-unnamed");
   expect(n).toMatchObject({
@@ -1250,7 +1252,8 @@ test("an unnamed subagent's failure parses as a failure carrying its message", (
     outcome: "failed",
     delegateId: "dlg_2",
     message: "go test exited 1 three times",
-    secondary: "dlg_2 · failed",
+    reason: "go test exited 1 three times",
+    secondary: "dlg_2 · go test exited 1 three times",
   });
   expect(n?.name).toBeUndefined();
 });

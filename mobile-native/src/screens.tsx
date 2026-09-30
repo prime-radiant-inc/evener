@@ -38,6 +38,7 @@ import {
 	buildComposerInput,
 	formatQuoteBlock,
 	mergeDraftText,
+	type ModelListResponse,
 	type NavigationSessionSummary,
 	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
@@ -51,7 +52,6 @@ import {
 } from "../../mobile/src/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { ApprovalControls } from "./approvalControls";
-import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { useConnection } from "./ConnectionProvider";
 import {
@@ -88,6 +88,7 @@ import {
 	questionsIdentity,
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
+import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "./design/systemGlass";
 import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
@@ -146,6 +147,7 @@ import {
 import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
+import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import { FindBar } from "./session/FindBar";
@@ -167,27 +169,37 @@ import {
 } from "./session/SessionInfoSheet";
 import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
-import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
+import {
+	canDeleteSavedSession,
+	canOpenModelSheet,
+	latestForkPoint,
+	modelChipLabel,
+	sessionHosts,
+} from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
 import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
+import { hasFinishedSubagentRow } from "./session/subagentLine";
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
+import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
+import { transcriptTreeTarget, useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
-import { useKeyboardShown } from "./useKeyboardShown";
 import { haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
+/** The most of its room the Session's bottom bar may take (spec 8.1). */
+const BAR_MAX_SHARE = 0.8;
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
 
 /** Find in session while it's open: what you typed, the current match's
@@ -222,12 +234,6 @@ export type Routes = {
 	PinAssignment: { hubId: string; ref: string; title: string };
 	SessionLocation: { hubId: string; location: SessionLocation };
 	Projects: { hubId: string; archived?: boolean };
-	HubSettings: { hubId: string };
-	KeybindingPreferences: {
-		hubId: string;
-		editor?: { actionId: string; chord: string };
-	};
-	LaunchSettings: { hubId: string; projectCwd?: string };
 	Project: {
 		hubId: string;
 		projectKey: string;
@@ -344,7 +350,7 @@ export function ConversationScreen({
 	 * "Subagent" route): the coordinator whose tree it sits in. */
 	subagentOf?: Coordinator;
 }) {
-	const { activeProfile, client, state: connectionState } = useConnection();
+	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
@@ -352,6 +358,17 @@ export function ConversationScreen({
 	// remembered by its row's reader key, since older pages prepend rows.
 	const [find, setFind] = useState<FindState | null>(null);
 	const headerHeight = useHeaderHeight();
+	// Where the device has Liquid Glass, the nav bar is the system's glass
+	// over the transcript (spec 16.3): the screen starts under it, and the
+	// header's own glass spans the bar and the rows under it.
+	const navGlass = useSystemGlass();
+	const underNavBar = navGlass ? headerHeight : 0;
+	// Before paint, so a session never opens with an opaque bar that turns to
+	// glass; Reduce Transparency's last known value (accessibilitySettings)
+	// is there on the first render of every screen after the first.
+	useLayoutEffect(() => {
+		navigation.setOptions(navBarGlassOptions(navGlass, colors.background));
+	}, [navigation, navGlass, colors.background]);
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
 	// mutations database), and a connected host effect binds this screen's
@@ -464,6 +481,10 @@ export function ConversationScreen({
 	const captureSuppressed = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
+	// The composer field's focus, for what steps aside while you type in it
+	// (useComposerTyping); the find bar's or a sheet's field raising the
+	// keyboard isn't typing in it.
+	const [composerFocus] = useState(() => new ComposerFocus());
 	// Puts the caret at `caret` in the composer and focuses it, on the next
 	// frame so the field has the text the caret is placed in.
 	const focusComposerAt = useCallback((caret: number) => {
@@ -728,6 +749,10 @@ export function ConversationScreen({
 		},
 		[store, navigation, route.key, route.params, bindingInstance, bindingGeneration],
 	);
+	// The model catalog the screen last knew, handed to each new controls so
+	// the model keeps its name across a screen pushed over this one and a
+	// rebinding, while the catalog reads again (audit N6).
+	const knownCatalog = useRef<ModelListResponse | null>(null);
 	const controls = useMemo(() => {
 		if (!service || !connected || !focused) return null;
 		const refreshSession = async () => {
@@ -765,6 +790,7 @@ export function ConversationScreen({
 				!commandBusy.current &&
 				!document.getSnapshot().submitting &&
 				store.getState().pendingMutation?.status !== "pending",
+			knownCatalog.current,
 		);
 	}, [
 		service,
@@ -902,6 +928,7 @@ export function ConversationScreen({
 	// times how long ago it ended, which is no Working time, so a session still
 	// winding down times its turn instead.
 	const [subagentRow, setSubagentRow] = useState<SubagentRow | null>(null);
+	const [coordinatorThread, setCoordinatorThread] = useState<string | null>(null);
 	const runMs = useCallback(
 		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
 		[subagentRow],
@@ -911,7 +938,11 @@ export function ConversationScreen({
 	// How tall the bottom bar stands over the transcript's end, null until it
 	// lays out: the transcript runs under its glass (design/underBar).
 	const bottomBar = useBarHeight();
-	const keyboardShown = useKeyboardShown();
+	// The room the bottom bar sits over (useBarHeight measures any view's
+	// height). The bar is capped at BAR_MAX_SHARE of it in points, so the cap
+	// follows every re-layout of the room: a percentage cap could keep a height
+	// from before a push's header inset landed (#3248).
+	const bottomBarRoom = useBarHeight();
 	const barHeight = bottomBar.height ?? 0;
 	const listUnderBar = underBar(barHeight);
 	const listLaidOut = bottomBar.height !== null && readerViewportHeight.current > 0;
@@ -943,16 +974,25 @@ export function ConversationScreen({
 		: [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
-	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
+	// The block's measured height, and whether it was measured on the glass,
+	// where it includes the nav bar's room.
+	const [sessionHeader, setSessionHeader] = useState({ height: 0, onGlass: false });
+	// What the list's top keeps clear: the bar where the screen runs under it,
+	// and the rows.
+	const reservedTop = reservedUnderGlass(headerHeight, sessionHeader, navGlass);
+	// The block's rows (the connection line, the chips, the note).
+	const headerRows = reservedTop - underNavBar;
 	const listOffset = useRef(0);
-	const reservedHeaderHeight = useRef(0);
-	// When the block grows or shrinks (the connection bar comes or goes), the
+	const reservedRows = useRef(0);
+	// When the rows grow or shrink (the connection line comes or goes), the
 	// list's top padding moves by the same amount; scrolling the list by it
 	// too keeps every row where it was on screen. At the top the list stays
-	// at the top, and the rows make room for the block.
+	// at the top, and the rows make room. The bar turning glass or opaque
+	// asks for no scroll: it moves the list's frame by the bar's height as
+	// the padding moves by the same, so the rows stay where they are.
 	useLayoutEffect(() => {
-		const change = sessionHeaderHeight - reservedHeaderHeight.current;
-		reservedHeaderHeight.current = sessionHeaderHeight;
+		const change = headerRows - reservedRows.current;
+		reservedRows.current = headerRows;
 		if (change === 0 || listOffset.current <= 0) return;
 		const target = Math.max(0, listOffset.current + change);
 		// Set optimistically: the list's own onScroll is throttled
@@ -961,7 +1001,7 @@ export function ConversationScreen({
 		// with the last offset the list actually reported.
 		listOffset.current = target;
 		timeline.current?.scrollToOffset({ offset: target, animated: false });
-	}, [sessionHeaderHeight]);
+	}, [headerRows]);
 	function openChip(kind: ChipKind) {
 		if (kind === "queue") openQueue();
 		else if (kind === "files") openFiles();
@@ -984,8 +1024,6 @@ export function ConversationScreen({
 		});
 	}
 	const menuLevel = currentLevel(chosenLevel, hubDisplayConfig);
-	// The menu offers Subagents exactly when its chip shows.
-	const hasSubagents = chips.some((chip) => chip.kind === "subagents");
 	const canAside = connected && service !== null && !!conversation?.capabilities.forkFromTurn;
 	const canShutDown =
 		controls !== null && !!conversation?.capabilities.shutdown && !SHUT_DOWN.has(conversation.status.type);
@@ -1137,7 +1175,6 @@ export function ConversationScreen({
 				hasConversation
 					? sessionMenu({
 							current: menuLevel,
-							hasSubagents,
 							hasDocuments: documents.length > 0,
 							connected,
 							sharedNotes: !!conversation?.capabilities.sharedNotes,
@@ -1183,7 +1220,6 @@ export function ConversationScreen({
 		hasNext,
 		othersWaitingCount,
 		menuLevel,
-		hasSubagents,
 		documents.length,
 		conversation?.capabilities.sharedNotes,
 		canAside,
@@ -1212,17 +1248,42 @@ export function ConversationScreen({
 		[presentation.items, conversation?.turns, olderPage],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
-	// A subagent row opens the subagent's own session, under this session as
-	// its coordinator, or on a subagent's screen, under the same coordinator.
+	// A subagent row's coordinator: this session, or on a subagent's screen,
+	// the same coordinator. A row shows only in a loaded transcript, which
+	// names its thread.
+	const threadId = conversation?.threadId;
+	const coordinator = useMemo(
+		() => subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null),
+		[subagentOf, threadId, route.params.ref, route.params.title],
+	);
+	// A finished subagent's row reads its outcome from the coordinator's tree,
+	// which the screen holds while the transcript shows one.
+	const showsFinishedSubagent = hasFinishedSubagentRow(timelineRows, conversation?.delegates);
+	const subagentTreeTarget = useMemo(
+		() =>
+			transcriptTreeTarget({
+				showsFinished: showsFinishedSubagent,
+				coordinator,
+				onSubagentScreen: !!subagentOf,
+				panelThread: coordinatorThread,
+			}),
+		[showsFinishedSubagent, coordinator, subagentOf, coordinatorThread],
+	);
+	const subagentTree = useTranscriptSubagentTree(
+		route.params.hubId,
+		subagentTreeTarget,
+		liveClientFor({ client, state: connectionState, activeProfile }, route.params.hubId),
+		{ inFront: focused, receivesUpdates: !subagentOf },
+	);
+	// A subagent row opens the subagent's own session, under its coordinator,
+	// on the coordinator's thread as this screen's panel last read it.
 	const openSubagent = useCallback(
 		(ref: string, title: string) => {
-			// A row shows only in a loaded transcript, which names its thread.
-			const threadId = store.getState().conversation?.threadId;
-			const coordinator =
-				subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null);
-			if (coordinator) navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator });
+			if (!coordinator) return;
+			const current = subagentOf && coordinatorThread ? { ...coordinator, threadId: coordinatorThread } : coordinator;
+			navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator: current });
 		},
-		[navigation, route.params.hubId, route.params.ref, route.params.title, subagentOf, store],
+		[navigation, route.params.hubId, coordinator, subagentOf, coordinatorThread],
 	);
 	const answerFor = useCallback((itemId: string) => answerTo(conversation, itemId), [conversation]);
 	// Stable across renders, so a settled agent message keeps its memoized
@@ -1953,14 +2014,12 @@ export function ConversationScreen({
 	useEffect(() => {
 		goalActionsRef.current = { editGoal, clearGoal: () => void applyCommand(true) };
 	});
-	// A host is named by the manifest's label. Until the manifest has
-	// loaded, the hub's own sessions are named for the connected hub, and any
-	// other host by its id.
-	const hubName = activeProfile?.id === route.params.hubId ? activeProfile.name : null;
-	const hostLabel = useMemo(
-		() => hostLabeler(fleet.sources, (hostId) => (hostId === "local" && hubName ? hubName : hostId)),
-		[fleet.sources, hubName],
-	);
+	// The hub's own machine goes by the hub's name, as Hub > Hosts names it;
+	// any other host by the manifest's label, or its id until the manifest
+	// has loaded (sessionHosts). The hub list names this hub even while
+	// another hub is the active one.
+	const hubName = profiles.find((profile) => profile.id === route.params.hubId)?.name ?? null;
+	const host = useMemo(() => sessionHosts(fleet.sources, hubName, connected), [fleet.sources, hubName, connected]);
 	// The Board row names the model too (S17), for while the catalog is away.
 	const modelLabel = conversation
 		? modelChipLabel(conversation, controlsState?.catalog?.data, fleetRow?.model_name)
@@ -1973,7 +2032,7 @@ export function ConversationScreen({
 				? {
 						session: conversation,
 						controls,
-						hostLabel,
+						host,
 						modelLabel,
 						runMs,
 						ready,
@@ -1983,7 +2042,7 @@ export function ConversationScreen({
 						toast: toaster.show,
 					}
 				: undefined,
-		[conversation, controls, hostLabel, modelLabel, runMs, ready, toaster.show],
+		[conversation, controls, host, modelLabel, runMs, ready, toaster.show],
 	);
 	useProvideSheetHost(sessionInfoHosts, sheetKey(route.params.hubId, route.params.ref), sessionInfoHost);
 	// The model sheet's host (ruling 37).
@@ -2010,10 +2069,20 @@ export function ConversationScreen({
 	);
 	useProvideSheetHost(commandHosts, sheetKey(route.params.hubId, route.params.ref), commandsHost);
 	// The chip names the model the way the catalog does, so the screen loads
-	// the catalog once for each binding it opens connected.
+	// the catalog once for each binding it opens connected. Controls made
+	// while the session was still reopening can't read yet, so the read waits
+	// for the session to be open.
+	const sessionOpen = snapshot.status === "open";
 	useEffect(() => {
-		if (controls && hasConversation) void controls.loadModels();
-	}, [controls, hasConversation]);
+		if (controls && hasConversation && sessionOpen) void controls.loadModels();
+	}, [controls, hasConversation, sessionOpen]);
+	// The screen keeps what the current controls know of the catalog, so the
+	// controls made after a pushed screen closes start from it: a catalog they
+	// read, or none after a failed read cleared it.
+	const catalog = controlsState?.catalog ?? null;
+	useEffect(() => {
+		if (controls) knownCatalog.current = catalog;
+	}, [controls, catalog]);
 	// What takes the composer's place when the session can't take a message
 	// yet (ruling 20).
 	const notice =
@@ -2472,19 +2541,12 @@ export function ConversationScreen({
 		!conversation.capabilities.send &&
 		!conversation.capabilities.queue;
 	const composerShown = canCompose && bottom.composer && !subagentBar;
-	// Typing in the composer: Next and the header's chips and note step aside,
-	// and the queue folds to one line, so the transcript keeps its room; all of
-	// it returns when the keyboard lowers.
-	// A keyboard up for a dock's field or the find bar is not this: the find
-	// bar's own field raises it with the composer still mounted. (The header
-	// keeps the find bar in place itself, whatever hides the chips.)
-	const typing = keyboardShown && composerShown && find === null;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = follow.away ? newRowCount(timelineRows, follow.away) : 0;
 	// Next shows while someone else needs you, unless this session asks you
-	// something, you are finding in it (spec 8.3), or you are typing.
-	const nextTarget =
-		approval === null && questionBatch === null && find === null && !typing ? (queue[0] ?? null) : null;
+	// something, or you are finding in it (spec 8.3); FloatingStack steps it
+	// aside while you type.
+	const nextTarget = approval === null && questionBatch === null && find === null ? (queue[0] ?? null) : null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -2509,7 +2571,7 @@ export function ConversationScreen({
 				// Only one of the two places waitingForAgent shows is mounted.
 				backdrop={composerShown ? "surface" : "page"}
 				draftAttachments={<ImageAttachments document={document} selection={imageSelection} uncertain />}
-				typing={typing}
+				composerFocus={composerFocus}
 				onAction={(ghost, action) => {
 					void runGhostAction(ghost, action).then((message) => {
 						if (message) toaster.show(message);
@@ -2586,6 +2648,7 @@ export function ConversationScreen({
 						live={item.id === liveRun}
 						liveRunsOpen={presentation.liveRunsOpen}
 						delegates={conversation?.delegates}
+						subagentTree={subagentTree}
 						openSubagent={openSubagent}
 						answerFor={answerFor}
 						errorActionFor={(row) =>
@@ -2614,6 +2677,7 @@ export function ConversationScreen({
 			quote,
 			liveRun,
 			conversation,
+			subagentTree,
 			openSubagent,
 			answerFor,
 			liveSendKind,
@@ -2637,9 +2701,9 @@ export function ConversationScreen({
 			<KeyboardAvoidingView
 				style={styles.fill}
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
-				keyboardVerticalOffset={headerHeight}
+				keyboardVerticalOffset={headerHeight - underNavBar}
 			>
-				<View style={styles.fill}>
+				<View testID="session-bottom-bar-room" style={styles.fill} onLayout={bottomBarRoom.onLayout}>
 					<View style={{ flex: 1 }}>
 						<FlatList
 							ref={timeline}
@@ -2656,9 +2720,13 @@ export function ConversationScreen({
 									(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 							}}
 							data={timelineRows}
-							// The live run changes when a turn starts or ends, without the
-							// rows changing; its row must re-render to show or hide its fold control.
-							extraData={liveRun}
+							// Cells re-render only for a new renderItem or new rows, and
+							// renderItem changes with everything a row reads (the live run
+							// included): a screen render that changes nothing a row reads
+							// (the bottom bar re-laying out as the keyboard folds the queue)
+							// leaves them alone, where FlatList otherwise rebuilds its
+							// renderer, and so every visible cell, on every render (#3247).
+							strictMode
 							ListFooterComponent={presentation.usage ? <TranscriptUsage {...presentation.usage} /> : null}
 							CellRendererComponent={readerCellRenderer}
 							// A row keeps its reader key when history records it, so the
@@ -2676,7 +2744,7 @@ export function ConversationScreen({
 								minHeight: listContentMinHeight(readerViewportHeight.current, listUnderBar),
 								justifyContent: "flex-end",
 								padding: 16,
-								paddingTop: 16 + sessionHeaderHeight,
+								paddingTop: 16 + reservedTop,
 								paddingBottom: listUnderBar.endPadding + transcriptEnd,
 							}}
 							contentInset={listUnderBar.contentInset}
@@ -2835,52 +2903,51 @@ export function ConversationScreen({
 							// the composer's placeholder invites.
 							ListEmptyComponent={conversation ? null : <TranscriptSkeleton />}
 						/>
-						<View
-							pointerEvents="box-none"
-							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
-							onLayout={(event) => setSessionHeaderHeight(event.nativeEvent.layout.height)}
-						>
-							<SessionHeader
-								status={connectionText}
-								chips={chips}
-								find={
-									find ? (
-										<FindBar
-											query={find.query}
-											label={
-												find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
-											}
-											searchingOlder={find.seeking && snapshot.loadingOlder}
-											settled={!find.seeking}
-											onQuery={(query) => setFind(newFind(query))}
-											onStep={stepFind}
-											onDone={() => {
-												Keyboard.dismiss();
-												setFind(null);
-											}}
-										/>
-									) : undefined
-								}
-								hidden={headerHiding.hidden || typing}
-								onChip={openChip}
-								notes={
-									notesPreview ? (
-										<NotesBar
-											preview={notesPreview}
-											onPress={() => {
-												Keyboard.dismiss();
-												// Showing your note, the editor opens with the caret at its end.
-												navigation.navigate("NotesSheet", {
-													hubId: route.params.hubId,
-													ref: route.params.ref,
-													focusEditor: notesPreview.glyph === "person",
-												});
-											}}
-										/>
-									) : undefined
-								}
-							/>
-						</View>
+						<SessionHeader
+							glassTop={navGlass ? headerHeight : undefined}
+							onLayout={(event) => setSessionHeader({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
+							status={connectionText}
+							chips={chips}
+							find={
+								find ? (
+									<FindBar
+										query={find.query}
+										label={
+											find.exhausted ? "No older matches" : find.query.trim() ? matchLabel(findHits, findCurrent) : ""
+										}
+										searchingOlder={find.seeking && snapshot.loadingOlder}
+										settled={!find.seeking}
+										onQuery={(query) => setFind(newFind(query))}
+										onStep={stepFind}
+										onDone={() => {
+											Keyboard.dismiss();
+											setFind(null);
+										}}
+										onGlass={navGlass}
+									/>
+								) : undefined
+							}
+							hidden={headerHiding.hidden}
+							composerFocus={composerFocus}
+							onChip={openChip}
+							notes={
+								notesPreview ? (
+									<NotesBar
+										onGlass={navGlass}
+										preview={notesPreview}
+										onPress={() => {
+											Keyboard.dismiss();
+											// Showing your note, the editor opens with the caret at its end.
+											navigation.navigate("NotesSheet", {
+												hubId: route.params.hubId,
+												ref: route.params.ref,
+												focusEditor: notesPreview.glyph === "person",
+											});
+										}}
+									/>
+								) : undefined
+							}
+						/>
 						<FloatingStack
 							toast={toaster.toast ? <Toast toast={toaster.toast} dismiss={toaster.dismiss} /> : null}
 							next={
@@ -2890,14 +2957,25 @@ export function ConversationScreen({
 							}
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
 							barHeight={barHeight}
+							composerFocus={composerFocus}
 						/>
 					</View>
 					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,
 					    over the transcript's end so the transcript runs under its glass,
-					    and never taller than four fifths of the screen. */}
+					    and never taller than four fifths of its room. */}
 					<BarFrame
 						testID="session-bottom-bar"
-						style={{ position: "absolute", left: 0, right: 0, bottom: 0, maxHeight: "80%", paddingTop: 8 }}
+						style={{
+							position: "absolute",
+							left: 0,
+							right: 0,
+							bottom: 0,
+							maxHeight:
+								bottomBarRoom.height === null
+									? (`${BAR_MAX_SHARE * 100}%` as const)
+									: bottomBarRoom.height * BAR_MAX_SHARE,
+							paddingTop: 8,
+						}}
 						onLayout={bottomBar.onLayout}
 					>
 						<ScrollView
@@ -2963,7 +3041,7 @@ export function ConversationScreen({
 										void sendAnswers(questionBatch, selections);
 									}}
 									error={answerError}
-									composerUp={composerShown}
+									composerFocus={composerFocus}
 								/>
 							) : null}
 						</View>
@@ -2989,6 +3067,7 @@ export function ConversationScreen({
 								barShown={subagentBar}
 								showToast={showSubagentToast}
 								onRow={setSubagentRow}
+								onTreeThread={setCoordinatorThread}
 								navigation={navigation as never}
 							/>
 						) : null}
@@ -3006,6 +3085,7 @@ export function ConversationScreen({
 									document.edit(text);
 								}}
 								inputRef={composerInput}
+								focus={composerFocus}
 								placeholder={composerPlaceholder(onlineAction, answering)}
 								// Under an open dock, whose own button reads "Send answer",
 								// this Send says it sends what you typed.

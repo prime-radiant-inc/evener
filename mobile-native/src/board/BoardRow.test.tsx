@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { render } from "../renderNative.testkit";
 import type { BoardState, ClassifiedRow } from "./attention";
-import { BoardRow, type BoardRowProps } from "./BoardRow";
+import { BoardRow, type BoardRowProps, sessionSubagentChip } from "./BoardRow";
 import { PulseMeter } from "./PulseMeter";
 import { StateMark } from "./StateMark";
 
@@ -210,17 +210,70 @@ describe("a Board row (spec 7.2)", () => {
 		expect(unread.root.findByType(PulseMeter).props.perMinute).toBeUndefined();
 	});
 
-	it("says what a working row's activity read says in place of the children guess", () => {
+	it("says what a working row's activity read says in place of the row's own tally", () => {
 		const busy = item("working", {
 			state: "active",
-			children: [row({ ref: "local:child", state: "active" })],
-			more_subagents: 4,
+			subagents: { running: 1, failed: 0, done: 0 },
 		});
 		const guessed = mount({ item: busy });
-		expect(textWith(guessed, "Waiting on 1 subagent (+4 more)")).toHaveLength(1);
+		expect(textWith(guessed, "Waiting on 1 subagent")).toHaveLength(1);
 		const read = mount({ item: busy, activity: { ref: "local:fix", minutes: [1], runningSubagents: 3 } });
 		expect(textWith(read, "Waiting on 3 subagents")).toHaveLength(1);
-		expect(textWith(read, "Waiting on 1 subagent (+4 more)")).toEqual([]);
+		expect(textWith(read, "Waiting on 1 subagent")).toEqual([]);
+	});
+
+	it("chips a live root's subagent tally, with a failure in the danger ink", () => {
+		const running = mount({
+			item: item("working", { state: "active", subagents: { running: 2, failed: 0, done: 4 } }),
+		});
+		expect(textWith(running, "2 running")).toHaveLength(1);
+		const chip = running.root.findAll((node) => node.props.testID === "subagent-chip");
+		expect(chip).toHaveLength(1);
+		// The row is one accessibility element; it speaks the tally once. The why
+		// line already names the running count, so the chip adds nothing here.
+		expect(pressable(running).props.accessibilityLabel).toContain("Waiting on 2 subagents");
+		expect(pressable(running).props.accessibilityLabel).not.toContain("2 running");
+		// A quiet row has no why line to name the count, so the chip speaks it.
+		const quiet = mount({
+			variant: "quiet",
+			item: item("working", { state: "active", subagents: { running: 2, failed: 0, done: 0 } }),
+		});
+		expect(pressable(quiet).props.accessibilityLabel).toContain("2 running");
+
+		const failed = mount({ item: item("failed", { subagents: { running: 0, failed: 3, done: 4 } }) });
+		const chipText = textWith(failed, "3 failed")[0];
+		expect(styleOf(chipText)).toMatchObject({ color: palette.dangerInk });
+		// No why line names subagents on a failed row, so the row label carries
+		// the chip's count itself.
+		expect(pressable(failed).props.accessibilityLabel).toContain("3 failed");
+
+		// A mixed tally keeps the running run neutral and colors only the failure.
+		const mixed = mount({
+			item: item("working", { state: "active", subagents: { running: 2, failed: 3, done: 1 } }),
+		});
+		expect(styleOf(textWith(mixed, "2 running")[0])).toMatchObject({ color: palette.inkMid });
+		expect(styleOf(textWith(mixed, "3 failed")[0])).toMatchObject({ color: palette.dangerInk });
+
+		// A done-only tally is history (as the web rail's chip reads it), and a
+		// past row carries no tally at all (D6): neither shows a chip.
+		for (const settled of [
+			item("working", { state: "active", subagents: { running: 0, failed: 0, done: 5 } }),
+			item("working", { state: "active", live: false, subagents: { running: 2, failed: 0, done: 0 } }),
+			item("working", { state: "active", kind: "fork", subagents: { running: 2, failed: 0, done: 0 } }),
+		]) {
+			expect(mount({ item: settled }).root.findAll((node) => node.props.testID === "subagent-chip")).toEqual([]);
+		}
+	});
+
+	it("the shared chip renderer answers null when a row has nothing to show", () => {
+		// The lists gate their title row on this, so a row with no tally (or a
+		// done-only history) must not look like it has a chip.
+		expect(sessionSubagentChip(row())).toBeNull();
+		expect(sessionSubagentChip(row({ subagents: { running: 0, failed: 0, done: 3 } }))).toBeNull();
+		expect(sessionSubagentChip(row({ subagents: { running: 1, failed: 0, done: 0 } }))).not.toBeNull();
+		// Only a live root: a nested fork original shows no chip even with a tally,
+		// as the web rail's chip gates on isTopLevelSession.
+		expect(sessionSubagentChip(row({ kind: "fork", subagents: { running: 1, failed: 0, done: 0 } }))).toBeNull();
 	});
 
 	it("counts a working row's quiet time from its read, plus the time since that read landed", () => {
@@ -277,7 +330,7 @@ describe("a Board row (spec 7.2)", () => {
 			item: item("working", {
 				state: "active",
 				updated_at: minutesAgo(60),
-				children: [row({ ref: "local:child", state: "active" })],
+				subagents: { running: 1, failed: 0, done: 0 },
 			}),
 		});
 		expect(pressable(working).props.accessibilityLabel).toBe(

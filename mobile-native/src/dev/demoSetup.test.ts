@@ -1,11 +1,13 @@
 // The demo hub's answers for New session and the Hub (phase 5's Task 26):
 // every one is typed as its method's result in demoSetup.ts, so npm run check
 // holds them to the wire; these cases pin what the screenshots rely on.
+import { WireError } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import { createDemoFleet } from "./demoFleet.js";
-import { createDemoSetup } from "./demoSetup.js";
+import { createDemoSetup, DEMO_MODEL_PROVIDERS } from "./demoSetup.js";
 
-const setup = (offlineHost = false) => createDemoSetup(createDemoFleet({ offlineHost }), { offlineHost });
+const setup = (offlineHost = false) =>
+	createDemoSetup(createDemoFleet({ offlineHost, modelProviders: DEMO_MODEL_PROVIDERS }), { offlineHost });
 
 describe("hosts and updates", () => {
 	it("lists paradise-park from hub.toml, attached, on an older version", () => {
@@ -57,6 +59,45 @@ describe("providers", () => {
 		expect(instances.find((instance) => instance.name === "ollama")).toMatchObject({ credentialRequired: false });
 	});
 
+	it("turns a model off and back on, and lists it either way", () => {
+		const demo = setup();
+		const lunaroute = (list: { instances: { name: string; models?: { id: string; disabled?: boolean }[] }[] }) =>
+			list.instances.find((instance) => instance.name === "lunaroute")?.models;
+		const off = demo.answer("evener/instance/setModelDisabled", {
+			name: "lunaroute",
+			model: "glm-5.3",
+			disabled: true,
+		});
+		expect(lunaroute(off)).toContainEqual({ id: "glm-5.3", disabled: true });
+		expect(lunaroute(demo.answer("evener/instance/list", {}))).toContainEqual({ id: "glm-5.3", disabled: true });
+		const on = demo.answer("evener/instance/setModelDisabled", {
+			name: "lunaroute",
+			model: "glm-5.3",
+			disabled: false,
+		});
+		expect(lunaroute(on)).toContainEqual({ id: "glm-5.3" });
+	});
+
+	it("finds lunaroute's new model on a check, and nothing new elsewhere", () => {
+		const demo = setup();
+		const models = (list: { instances: { name: string; models?: { id: string }[] }[] }, name: string) =>
+			list.instances.find((instance) => instance.name === name)?.models?.map((model) => model.id);
+		expect(models(demo.answer("evener/instance/list", {}), "lunaroute")).not.toContain("glm-5.4");
+		const checked = demo.answer("evener/instance/refreshModels", { name: "lunaroute" });
+		expect(models(checked, "lunaroute")).toContain("glm-5.4");
+		expect(models(demo.answer("evener/instance/refreshModels", { name: "meta" }), "meta")).toEqual(["muse-spark-1.3"]);
+	});
+
+	it("refuses a model change or a check for a provider it doesn't have, as the hub does", () => {
+		const demo = setup();
+		expect(() =>
+			demo.answer("evener/instance/setModelDisabled", { name: "nowhere", model: "k3", disabled: true }),
+		).toThrow('instance "nowhere" not found');
+		expect(() => demo.answer("evener/instance/refreshModels", { name: "nowhere" })).toThrow(
+			'instance "nowhere" not found',
+		);
+	});
+
 	it("describes each provider's sign-in the way the hub does (app_auth.go's authModesFor)", () => {
 		const byName = new Map(
 			setup()
@@ -83,6 +124,33 @@ describe("providers", () => {
 		expect(statuses.map((status) => status.provider).sort()).toEqual(["codex-jesse-at-pr", "codex-jesse-fsck.com"]);
 		expect(statuses.find((status) => status.provider === "codex-jesse-fsck.com")?.needsLogin).toBe(true);
 		expect(statuses.filter((status) => status.needsLogin)).toHaveLength(1);
+	});
+});
+
+// The hub's notices (S11), as cmd/evener-hub/app_notices.go derives them: a
+// sign-in counts the live top-level sessions whose model runs on the provider
+// instance, and an offline host its sessions that were live when last reached.
+describe("notices", () => {
+	it("names the expired sign-in with the live sessions on its models, and no host while every host is attached", () => {
+		// s-retry is the one live top-level session on GPT-5.6; the other
+		// GPT-5.6 rows are subagents.
+		expect(setup().answer("evener/notices/list", {}).notices).toEqual([
+			{
+				id: "signInRequired:codex-jesse-fsck.com",
+				kind: "signInRequired",
+				subject: "codex-jesse-fsck.com",
+				affectedSessions: 1,
+			},
+		]);
+	});
+
+	it("adds paradise-park while it is offline, with its live sessions", () => {
+		const notices = setup(true).answer("evener/notices/list", {}).notices;
+		expect(notices.map((notice) => notice.id)).toEqual([
+			"signInRequired:codex-jesse-fsck.com",
+			"hostOffline:paradise-park",
+		]);
+		expect(notices[1]?.affectedSessions).toBeGreaterThan(0);
 	});
 });
 
@@ -143,6 +211,91 @@ describe("plugins", () => {
 			params: { cwd: "/Users/jesse/git/evener" },
 		}) as { diagnostics?: unknown[] };
 		expect(remote.diagnostics).toBeUndefined();
+	});
+});
+
+describe("transcript display", () => {
+	it("starts from the hub's shipped defaults: Tools on desktop, Intent on the phone", () => {
+		const defaults = setup().answer("evener/settings/transcriptDisplay/get", {});
+		expect(defaults.desktop).toMatchObject({ revision: 0, config: { content: { kind: "preset", level: "tools" } } });
+		expect(defaults.mobile).toMatchObject({ revision: 0, config: { content: { kind: "preset", level: "intent" } } });
+	});
+
+	it("takes a patch at the current revision and moves that layout's revision on", () => {
+		const demo = setup();
+		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
+		const config = { ...mobile.config, content: { kind: "preset", level: "full" } };
+		expect(
+			demo.answer("evener/settings/transcriptDisplay/patch", { layout: "mobile", expectedRevision: 0, config }),
+		).toEqual({ layout: "mobile", revision: 1, config });
+		const after = demo.answer("evener/settings/transcriptDisplay/get", {});
+		expect(after.mobile).toEqual({ revision: 1, config });
+		expect(after.desktop.revision).toBe(0);
+	});
+
+	it("refuses a patch against a revision that isn't current with the hub's conflict and the current value", () => {
+		const demo = setup();
+		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
+		let refusal: unknown;
+		try {
+			demo.answer("evener/settings/transcriptDisplay/patch", {
+				layout: "mobile",
+				expectedRevision: 4,
+				config: mobile.config,
+			});
+		} catch (error) {
+			refusal = error;
+		}
+		// hubcore's transcriptDisplayConflict: CodeConflict, with the layout and
+		// its current value, which the client store reads to offer Keep mine.
+		expect(refusal).toBeInstanceOf(WireError);
+		expect(refusal).toMatchObject({
+			code: -32013,
+			message: "transcript display mobile revision conflict: expected 4, current 0",
+			data: { evenerErrorInfo: "conflict", layout: "mobile", current: mobile },
+		});
+	});
+
+	it("keeps the revision when a patch changes nothing, as the hub does", () => {
+		const demo = setup();
+		const { mobile } = demo.answer("evener/settings/transcriptDisplay/get", {});
+		expect(
+			demo.answer("evener/settings/transcriptDisplay/patch", {
+				layout: "mobile",
+				expectedRevision: 0,
+				config: mobile.config,
+			}),
+		).toEqual({ layout: "mobile", revision: 0, config: mobile.config });
+	});
+});
+
+describe("device sign-in", () => {
+	it("starts a device flow for a Codex provider, as app_auth.go's DeviceStart answers", () => {
+		const started = setup().answer("evener/auth/device/start", { provider: "codex-jesse-fsck.com" });
+		expect(started).toEqual({
+			provider: "codex-jesse-fsck.com",
+			flowId: expect.any(String),
+			userCode: "WDJB-MJHT",
+			verificationUrl: "https://example.com/device",
+			intervalSeconds: 5,
+		});
+	});
+
+	it("keeps a started flow pending, and calls one it never started expired", () => {
+		const demo = setup();
+		const { flowId } = demo.answer("evener/auth/device/start", { provider: "codex-jesse-fsck.com" });
+		expect(demo.answer("evener/auth/device/poll", { provider: "codex-jesse-fsck.com", flowId })).toEqual({
+			state: "pending",
+		});
+		expect(demo.answer("evener/auth/device/poll", { provider: "codex-jesse-fsck.com", flowId: "nope" })).toEqual({
+			state: "expired",
+		});
+	});
+
+	it("refuses a provider that doesn't sign in with an account, as requiresCodex does", () => {
+		expect(() => setup().answer("evener/auth/device/start", { provider: "lunaroute" })).toThrow(
+			'OAuth is not supported for instance "lunaroute"',
+		);
 	});
 });
 

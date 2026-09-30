@@ -13,6 +13,7 @@ import {
 	createElement,
 	type ForwardedRef,
 	forwardRef,
+	memo,
 	type ReactElement,
 	type ReactNode,
 	type Ref,
@@ -32,6 +33,7 @@ import {
 import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
 import { expect, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { ComposerFocus } from "./session/composerFocus";
 import { shrinkingScroller } from "./session/dockCard";
 
 // React 19's act() only drives effects when it is told it is inside a test
@@ -160,12 +162,31 @@ export function nativeModuleMock() {
 			props.sections.length === 0 ? (props.ListEmptyComponent ?? null) : null,
 			props.ListFooterComponent ?? null,
 		);
+	type ListRowInfo = { item: unknown; index: number };
+	// A list's cell: VirtualizedList's CellRenderer is a PureComponent over
+	// the row, its renderer and extraData. Its own cell component wraps each
+	// row, as the real list does, so a test can lay a cell out (its onLayout)
+	// and measure the row.
+	const ListCell = memo(function ListCell(props: {
+		item: unknown;
+		index: number;
+		renderItem?: (info: ListRowInfo) => ReactNode;
+		/** Unread here: it's a prop only so a new value re-renders the cell,
+		 * as the real list's extraData does. */
+		extraData?: unknown;
+		Cell?: ComponentType<{ item: unknown; index: number; children?: ReactNode }>;
+	}) {
+		const row = props.renderItem?.({ item: props.item, index: props.index }) ?? null;
+		return props.Cell ? createElement(props.Cell, { item: props.item, index: props.index }, row) : row;
+	});
 	const FlatList = (props: {
 		ref?: Ref<unknown>;
 		data?: unknown[];
 		keyExtractor?: (item: unknown, index: number) => string;
 		renderItem?: (info: { item: unknown; index: number }) => ReactNode;
 		CellRendererComponent?: ComponentType<{ item: unknown; index: number; children?: ReactNode }>;
+		extraData?: unknown;
+		strictMode?: boolean;
 		ListHeaderComponent?: ReactNode;
 		ListFooterComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
@@ -200,17 +221,23 @@ export function nativeModuleMock() {
 			"FlatList",
 			null,
 			props.ListHeaderComponent ?? null,
-			...(props.data ?? []).map((item, index) => {
-				const row = props.renderItem?.({ item, index }) ?? null;
-				// A list's own cell wraps each row, as the real list does, so a
-				// test can lay a cell out (its onLayout) and measure the row.
-				const Cell = props.CellRendererComponent;
-				return createElement(
+			...(props.data ?? []).map((item, index) =>
+				createElement(
 					"Item",
 					{ key: props.keyExtractor?.(item, index) ?? index },
-					Cell ? createElement(Cell, { item, index }, row) : row,
-				);
-			}),
+					createElement(ListCell, {
+						item,
+						index,
+						// As the real FlatList does: without strictMode it wraps
+						// renderItem afresh on every render, so every cell re-renders
+						// with the list; with it, the wrapper is memoized, and a cell
+						// re-renders only for a new renderItem, row or extraData.
+						renderItem: props.strictMode ? props.renderItem : (info: ListRowInfo) => props.renderItem?.(info),
+						extraData: props.extraData,
+						Cell: props.CellRendererComponent,
+					}),
+				),
+			),
 			(props.data ?? []).length === 0 ? (props.ListEmptyComponent ?? null) : null,
 			props.ListFooterComponent ?? null,
 		);
@@ -566,6 +593,7 @@ export function screenConnection(client: unknown, state: ConnectionState): Recor
 	const downAt = state === "ready" ? null : Date.now();
 	return {
 		activeProfile: { id: "hub-1", name: "Work hub" },
+		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.example" }],
 		client,
 		state,
 		fatal: false,
@@ -643,10 +671,13 @@ export function textOf(node: ReactTestInstance): string {
 	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }
 
-/** The first mounted Pressable whose accessibility label is `label`, found
- * the way VoiceOver finds a button; undefined when there is none. */
+/** The first mounted Pressable VoiceOver names `label`: its accessibility
+ * label, or, with none, the text inside it, which iOS reads in its place;
+ * undefined when there is none. */
 export function pressable(tree: ReactTestRenderer, label: string): ReactTestInstance | undefined {
-	return tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
+	return tree.root.findAll(
+		(node) => String(node.type) === "Pressable" && (node.props.accessibilityLabel ?? textOf(node)) === label,
+	)[0];
 }
 
 /** The one scrolling body of the dock whose card carries `testID` (spec 8.4),
@@ -668,4 +699,11 @@ export function dockBody(tree: ReactTestRenderer, testID: string) {
 			return scroller.findAll((node) => node === target).length > 0;
 		},
 	};
+}
+
+/** The composer's focus as the Composer would report it: `focused` or not. */
+export function composerFocusedAs(focused: boolean): ComposerFocus {
+	const focus = new ComposerFocus();
+	focus.set(focused);
+	return focus;
 }

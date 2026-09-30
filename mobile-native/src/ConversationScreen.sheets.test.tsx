@@ -19,6 +19,7 @@ import type { Thread } from "@evener/appwire-client";
 import { alertRequests, keyboard, playedHaptics, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
+import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
@@ -322,6 +323,24 @@ const withCapabilities = (capabilities: Partial<Thread["evener"]["capabilities"]
 	evener: { ...thread.evener, capabilities: { ...thread.evener.capabilities, ...capabilities } },
 });
 
+// A session with shell jobs and no subagents has an Activity list too, and
+// the session can't tell from its read whether it has jobs, so the menu
+// offers Activity whenever it's connected, as it offers Tasks.
+it("offers Activity from the header menu with no subagents", async () => {
+	const { tree } = mount();
+	await flush();
+
+	act(() => menuAction("Activity").onPress());
+
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+	});
+	tree.unmount();
+});
+
 it("opens Tasks from the header menu as the TasksSheet route", async () => {
 	const { tree } = mount();
 	await flush();
@@ -421,6 +440,88 @@ function sessionInfoHost() {
 	if (!host) throw new Error("the screen provides no Session sheet host");
 	return host;
 }
+
+// The model's name comes from the catalog, which the screen keeps across a
+// screen pushed over it and back: its new controls start from it, so the
+// Session sheet never names the model by its raw id while the next read is
+// out (audit N6).
+it("keeps naming the model after a screen pushed over it closes, while the catalog reads again", async () => {
+	let modelReads = 0;
+	const { tree } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				// The first read answers; the one after the push never does.
+				return modelReads === 1
+					? { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] }
+					: new Promise<never>(() => {});
+			},
+		},
+	);
+	await flush();
+	expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await flush();
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await flush();
+	expect({ reads: modelReads, label: sessionInfoHost().modelLabel }).toEqual({ reads: 2, label: "DeepSeek 4.1 Flash" });
+	tree.unmount();
+});
+
+// The phone switched to another hub while this session stayed open: the
+// sheet still names this hub's own machine for this hub, from the hub list,
+// and shows it offline (audit N6).
+it("names the hub's own machine for its hub after another hub becomes active", async () => {
+	const profiles = [
+		{ id: "hub-1", name: "Work hub", origin: "https://work.example" },
+		{ id: "hub-2", name: "Home hub", origin: "https://home.example" },
+	];
+	const { tree } = mount(thread, {}, { profiles });
+	await flush();
+	expect(sessionInfoHost().host("local")).toEqual({ label: "Work hub", online: true });
+	harness.connection = { ...harness.connection, activeProfile: { id: "hub-2", name: "Home hub" } };
+	act(() => tree.update(screen()));
+	await flush();
+	expect(sessionInfoHost().host("local")).toEqual({ label: "Work hub", online: false });
+	tree.unmount();
+});
+
+// A failed catalog read clears the catalog, so the picker offers no stale
+// choices; the screen forgets it too, so controls made after a pushed screen
+// closes don't bring the old catalog back.
+it("brings no catalog back after a failed read and a screen pushed over it", async () => {
+	let modelReads = 0;
+	const { tree } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				if (modelReads === 1)
+					return { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] };
+				if (modelReads === 2) throw new Error("The hub couldn't list its models.");
+				return new Promise<never>(() => {});
+			},
+		},
+	);
+	await flush();
+	const pushAndReturn = async () => {
+		stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+		act(() => tree.update(screen()));
+		await flush();
+		stack.state = { index: 0, routes: [session] };
+		act(() => tree.update(screen()));
+		await flush();
+	};
+	await pushAndReturn();
+	expect(modelReads).toBe(2);
+	await pushAndReturn();
+	expect(modelReads).toBe(3);
+	expect(sessionInfoHost().controls?.getSnapshot().catalog).toBeNull();
+	tree.unmount();
+});
 
 it("runs the Session sheet's actions as the menu does, and hands back their toasts (ruling 37)", async () => {
 	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }), {
@@ -786,8 +887,13 @@ function sessionList(tree: ReturnType<typeof render>) {
 	return {
 		block,
 		list,
-		/** The block's wrapper reporting a new height, as layout would. */
-		measure: (height: number) => act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
+		/** The block's panel reporting a new height, as layout would. */
+		measure: (height: number) =>
+			act(() =>
+				block()
+					.findByType(GlassHeaderPanel)
+					.props.onLayout({ nativeEvent: { layout: { height } } }),
+			),
 		// contentSize/layoutMeasurement match ConversationScreen.send.test.tsx's
 		// own scrollTo: tall enough that these small offsets never cross the
 		// "near the live end" threshold onScroll also checks.
@@ -840,7 +946,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		title: "Session",
 	});
 	vi.mocked(navigation.navigate).mockClear();
-	act(() => menuAction("Subagents").onPress());
+	act(() => menuAction("Activity").onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
 		hubId: "hub-1",
 		ref,
@@ -933,15 +1039,31 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 
 // While you type in the composer, the chips and the note row step aside so
 // the transcript keeps its room; the nav bar stays (spec 8.1).
+// Whether the header's chips-and-note row is slid away behind the nav bar
+// (out of VoiceOver's reach while it is), whatever slid it: a downward scroll
+// or typing, which the header reads from the keyboard itself.
+const slidAway = (block: ReturnType<ReturnType<typeof sessionList>["block"]>) =>
+	block.findAll((node) => String(node.type) === "Animated.View")[0]?.props.accessibilityElementsHidden;
+
+/** Focuses the composer's field and raises the keyboard for it. */
+function typeInComposer(tree: ReturnType<typeof render>) {
+	act(() =>
+		tree.root
+			.find((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message")
+			.props.onFocus(),
+	);
+	act(() => keyboard.show());
+}
+
 it("steps the chips and note aside while you type, and brings them back when the keyboard lowers", async () => {
 	const { tree } = mount(busy);
 	await flush();
 	const session = sessionList(tree);
-	expect(session.block().props.hidden).toBe(false);
-	act(() => keyboard.show());
-	expect(session.block().props.hidden).toBe(true);
+	expect(slidAway(session.block())).toBe(false);
+	typeInComposer(tree);
+	expect(slidAway(session.block())).toBe(true);
 	act(() => keyboard.hide());
-	expect(session.block().props.hidden).toBe(false);
+	expect(slidAway(session.block())).toBe(false);
 	tree.unmount();
 });
 
@@ -962,7 +1084,7 @@ it("keeps the find bar in place while you type in it", async () => {
 	const session = sessionList(tree);
 	act(() => menuAction("Find in session").onPress());
 	act(() => keyboard.show());
-	expect(session.block().props.hidden).toBe(false);
+	expect(slidAway(session.block())).toBe(false);
 	expect(session.block().props.find).toBeDefined();
 	act(() => keyboard.hide());
 	tree.unmount();
@@ -974,11 +1096,11 @@ it("stays hidden after the keyboard lowers when a downward scroll hid the chips"
 	const session = sessionList(tree);
 	act(() => session.list().props.onScrollBeginDrag());
 	session.scroll(40);
-	expect(session.block().props.hidden).toBe(true);
-	act(() => keyboard.show());
-	expect(session.block().props.hidden).toBe(true);
+	expect(slidAway(session.block())).toBe(true);
+	typeInComposer(tree);
+	expect(slidAway(session.block())).toBe(true);
 	act(() => keyboard.hide());
-	expect(session.block().props.hidden).toBe(true);
+	expect(slidAway(session.block())).toBe(true);
 	tree.unmount();
 });
 

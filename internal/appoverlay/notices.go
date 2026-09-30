@@ -150,7 +150,7 @@ func noticeAnnouncement(ev events.SessionEvent) (apptranscript.NoticeAnnouncemen
 	case events.ForkSummaryData:
 		return apptranscript.ForkSummaryAnnouncement(data), true
 	case events.WarningData:
-		return warningAnnouncement(data.Source, data.Title, data.Hint, data.Message), true
+		return warningAnnouncement(data.Source, data.Title, data.Hint, data.Code, data.Message), true
 	case events.ErrorData:
 		// A recorded error is a TURN_FAILURE entry history already shows.
 		if data.Recorded {
@@ -163,7 +163,7 @@ func noticeAnnouncement(ev events.SessionEvent) (apptranscript.NoticeAnnouncemen
 		// A user-cancelled turn is not a failure: it shows as a warning, as
 		// the live projector has always shown it.
 		if apptranscript.IsCancellation(message) {
-			return warningAnnouncement(data.Source, data.Title, data.Hint, message), true
+			return warningAnnouncement(data.Source, data.Title, data.Hint, "", message), true
 		}
 		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, message)
 		return apptranscript.NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindError, Description: info.Title, Text: message}, true
@@ -184,15 +184,21 @@ func interruptedAnnouncement() apptranscript.NoticeAnnouncement {
 
 // warningAnnouncement shows a warning's title and message, and carries its
 // source, title and hint on Raw under "warning", the fields the warning
-// notification has always given clients.
-func warningAnnouncement(source, title, hint, message string) apptranscript.NoticeAnnouncement {
+// notification has always given clients, and its code when it has one, so a
+// client can tell a "no action needed" notice (events.WarningCodeContextBudget)
+// from a failure without reading its prose.
+func warningAnnouncement(source, title, hint, code, message string) apptranscript.NoticeAnnouncement {
 	info := diagnostic.FromFields(source, title, hint, message)
 	announcement := apptranscript.NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindWarning, Description: info.Title, Text: message}
-	raw, err := json.Marshal(map[string]map[string]string{"warning": {
+	fields := map[string]string{
 		"source": string(info.Source),
 		"title":  info.Title,
 		"hint":   info.Hint,
-	}})
+	}
+	if code != "" {
+		fields["code"] = code
+	}
+	raw, err := json.Marshal(map[string]map[string]string{"warning": fields})
 	if err == nil {
 		announcement.Raw = raw
 	}

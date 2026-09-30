@@ -6,7 +6,9 @@ import { SymbolView } from "expo-symbols";
 import { type ReactNode, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useComposerTyping } from "../useKeyboardShown";
 import { type GhostBackdrop, GhostBubble, GhostButton } from "./GhostBubble";
+import type { ComposerFocus } from "./composerFocus";
 import { foldQueue, type Ghost, type GhostAction, type QueueFold, shownGhosts } from "./ghosts";
 
 export interface QueuedMessagesProps {
@@ -19,9 +21,9 @@ export interface QueuedMessagesProps {
 	backdrop: GhostBackdrop;
 	/** The images an unconfirmed send carried, shown in its bubble. */
 	draftAttachments?: ReactNode;
-	/** Whether you're typing (the keyboard is up): the queue folds to one
-	 * line until you tap it open. */
-	typing?: boolean;
+	/** The composer's focus: while you type in it (useComposerTyping), the
+	 * queue folds to one line until you tap it open. */
+	composerFocus: ComposerFocus;
 	onAction(ghost: Ghost, action: GhostAction): void;
 	onMore(): void;
 }
@@ -33,12 +35,13 @@ export function QueuedMessages({
 	editHint,
 	backdrop,
 	draftAttachments,
-	typing = false,
+	composerFocus,
 	onAction,
 	onMore,
 }: QueuedMessagesProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const typing = useComposerTyping(composerFocus);
 	// Opened while typing; the next time you type, the queue folds again.
 	const [opened, setOpened] = useState(false);
 	if (!typing && opened) setOpened(false);

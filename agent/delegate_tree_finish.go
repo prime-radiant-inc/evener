@@ -8,9 +8,23 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 const delegateFinishReasonLimit = 512
+
+// cutFinishText bounds text a finish records to delegateFinishReasonLimit
+// bytes, cutting at a rune boundary so the journal and the wire never carry
+// half a character.
+func cutFinishText(text string) string {
+	return runetrim.Cut(text, delegateFinishReasonLimit)
+}
+
+// boundedFinishText is a finish's reason or error as recorded: trimmed, then
+// bounded (cutFinishText).
+func boundedFinishText(text string) string {
+	return cutFinishText(strings.TrimSpace(text))
+}
 
 type delegateSupervisionBoundary uint8
 
@@ -139,6 +153,11 @@ func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSett
 func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease, runtime *Session) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The finished generation's lease is no longer exact here, so the
+	// finalizing runtime is released by identity before the lease check.
+	if live := c.live[lease.delegateID]; live != nil && live.finalizing != nil && live.finalizing.runtime == runtime && live.finalizing.generation == lease.generation {
+		live.finalizing = nil
+	}
 	decision := c.reduceReportQuiescedIntent(finishIntent{lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
 	return decision.err
 }
@@ -228,13 +247,33 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 	return false
 }
 
+// finishGenerationLocked executes a generation finish and, when it finished
+// the generation, marks that generation's runtime as finalizing: every
+// caller of FinishGeneration and FinishNoAction reports quiescence for that
+// runtime and generation when its finalize tail is done. The caller holds
+// c.mu.
+func (c *delegateTreeController) finishGenerationLocked(intent finishIntent) (delegateMutationPlans, context.CancelFunc, error) {
+	var runtime *Session
+	if live := c.live[intent.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == intent.lease {
+		runtime = live.binding.runtime
+	}
+	decision := c.reduceGenerationFinishIntent(intent)
+	plans, cancel, err := c.executeFinishDecisionLocked(decision)
+	if err == nil && runtime != nil && decision.releaseGeneration && decision.events != nil {
+		if live := c.live[intent.lease.delegateID]; live != nil {
+			live.finalizing = &delegateFinalization{runtime: runtime, generation: intent.lease.generation}
+		}
+	}
+	return plans, cancel, err
+}
+
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+	plans, cancel, err := c.finishGenerationLocked(finishIntent{
 		lease:       lease,
 		finish:      finish,
 		stalePolicy: finishStaleSuppress,
-	}))
+	})
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -252,11 +291,11 @@ func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) 
 		c.mu.Unlock()
 		return delegateMutationPlans{}, noAction.err
 	}
-	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+	plans, cancel, err := c.finishGenerationLocked(finishIntent{
 		lease:              claim.lease,
 		finish:             noAction.finish,
 		authorizedNoAction: true,
-	}))
+	})
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -278,6 +317,13 @@ func cloneDelegateFinish(finish delegateFinish) delegateFinish {
 }
 
 func delegateFinishMetadataEvents(events []delegatestore.Event, lease delegateLease, finish delegateFinish, outcome delegatestore.OutcomeStatus, reason string) []delegatestore.Event {
+	if outcome == delegatestore.OutcomeFailed && finish.errorText != "" {
+		for i := range events {
+			if events[i].RunFinished != nil {
+				events[i].RunFinished.Outcome.Error = finish.errorText
+			}
+		}
+	}
 	if outcome != delegatestore.OutcomeExhausted {
 		return events
 	}
@@ -380,10 +426,7 @@ func delegateTerminalErrorPacket(reason string) delegatestore.TerminalPacket {
 	if message == "" {
 		message = "delegate generation ended before reporting a result"
 	}
-	if len(message) > delegateFinishReasonLimit {
-		message = message[:delegateFinishReasonLimit]
-	}
-	raw, _ := json.Marshal(message)
+	raw, _ := json.Marshal(cutFinishText(message))
 	return delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: raw}
 }
 
@@ -423,13 +466,10 @@ func delegatePreparedFinish(packet delegatestore.TerminalPacket) delegateFinish 
 		}
 		return finish
 	case delegatestore.OutcomeFailed:
-		reason := strings.TrimSpace(metadata.Reason)
-		if reason != "" {
-			if len(reason) > delegateFinishReasonLimit {
-				reason = reason[:delegateFinishReasonLimit]
-			}
+		if reason := boundedFinishText(metadata.Reason); reason != "" {
 			finish.reason = reason
 		}
+		finish.errorText = boundedFinishText(metadata.Error)
 		return finish
 	case delegatestore.OutcomeExhausted:
 	default:

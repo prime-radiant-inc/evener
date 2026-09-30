@@ -10,6 +10,7 @@ import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { NativePreferencesSnapshot } from "../nativePreferences";
 import { render, renderedText } from "../renderNative.testkit";
+import { Group, GroupFooter } from "../sheet/Grouped";
 import { DetailLevelPage } from "./DetailLevelPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -261,9 +262,14 @@ it("offers no discard when nothing unreadable is stored, or a readable draft is"
 	expect(mount(transcript({ draft: readable })).button("Discard it")).toBeNull();
 });
 
-it("holds the discard while the hub is away", () => {
-	const { button } = mount(transcript({ confirmed: null, draftUnreadable: true, storageUnavailable: true }), false);
-	expect(button("Discard it")?.props.disabled).toBe(true);
+it("lets the discard go through while the hub is away, since it touches only this phone", async () => {
+	const { fake, button, press } = mount(
+		transcript({ confirmed: null, draftUnreadable: true, storageUnavailable: true }),
+		false,
+	);
+	expect(button("Discard it")?.props.disabled).toBe(false);
+	await press("Discard it");
+	expect(fake.calls).toEqual([["discard"]]);
 });
 
 it("shows a failed load as a line with nothing to press", () => {
@@ -460,4 +466,26 @@ it("saves nothing when the level already chosen is chosen again", async () => {
 	const { fake, press } = mount(transcript());
 	await press("Intent, Plus one folded line for each run of steps");
 	expect(fake.calls).toEqual([]);
+});
+
+it.each([
+	["a conflict", { conflict: true }, "The hub's setting changed while you were choosing."],
+	["an unsaved choice", {}, "This change hasn't reached the hub yet."],
+])("leads with the levels and says %s beneath them (audit M12)", (_name, over, line) => {
+	const hubs = { revision: 4, config: PRESET };
+	const { tree } = mount(transcript({ draft: { revision: 3, config: CUSTOM }, confirmed: hubs, ...over }));
+	// In the page's own order: the levels' group, then the line about the
+	// choice made in it.
+	const nodes = tree.root.findAll(() => true);
+	const levels = nodes.findIndex((node) => node.type === Group && node.findAllByProps({ label: "Custom" }).length > 0);
+	const said = nodes.findIndex((node) => node.type === GroupFooter && node.props.children === line);
+	expect(levels).toBeGreaterThan(-1);
+	expect(said).toBeGreaterThan(levels);
+});
+
+it("lets the page's title name the setting, with no group label repeating it", () => {
+	const { tree } = mount(transcript());
+	expect(tree.root.findAll((node) => node.type === Group && node.props.label === "Default detail level")).toHaveLength(
+		0,
+	);
 });

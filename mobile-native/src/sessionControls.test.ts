@@ -238,6 +238,84 @@ describe("conversation-owned session controls", () => {
 		expect(await controls.changeVisionModel("one", "vision")).toBe(true);
 		expect(applied).toEqual(["one/vision"]);
 	});
+	// A load the binding moved on from must not strand the controls: the next
+	// load reads the catalog again, instead of returning early on a load that
+	// will never publish.
+	it("loads the catalog again after a load that answered once the binding had moved on", async () => {
+		let current = true;
+		let reads = 0;
+		const answered = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					if (reads === 1) await answered.promise;
+					return { data: [{ provider: "one", model: "m", displayName: "Model One" }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => current,
+			() => null,
+			() => true,
+		);
+		const first = controls.loadModels();
+		current = false;
+		answered.resolve();
+		await first;
+		current = true;
+		await controls.loadModels();
+		expect(reads).toBe(2);
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: false,
+			catalog: { data: [{ displayName: "Model One" }] },
+		});
+	});
+	// The model's name comes from the catalog: a reload keeps the one it has
+	// until the new one lands, so the label never falls back to the raw id.
+	it("keeps the last catalog while it reloads", async () => {
+		let reads = 0;
+		const second = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					if (reads === 2) await second.promise;
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${reads}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const reload = controls.loadModels();
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: true,
+			catalog: { data: [{ displayName: "Model One 1" }] },
+		});
+		second.resolve();
+		await reload;
+		expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 2");
+	});
+
+	// A screen that binds a session again hands its new controls the catalog
+	// it already knows, so the label doesn't wait on a read to name the model.
+	it("starts from the catalog it is given", async () => {
+		const known = { data: [{ provider: "one", model: "m", displayName: "Model One" }] };
+		const controls = new SessionControls(
+			await boundary({}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			known,
+		);
+		expect(controls.getSnapshot().catalog).toBe(known);
+	});
 	it("rejects a catalog model explicitly marked as not supporting vision", async () => {
 		let attempts = 0;
 		const service = await boundary({

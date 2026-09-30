@@ -73,6 +73,19 @@ export interface ArchiveResponse {
   navigation: NavigationMutation;
 }
 
+export interface ArchivedListParams {
+  catalog: string;
+  projectKey: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ArchivedListResponse {
+  sessions: unknown;
+  nextCursor?: string;
+  total: number;
+}
+
 export interface AttentionChanged {
   threadId: string;
   title: string;
@@ -189,6 +202,12 @@ export interface AuthDeviceStartResponse {
   userCode: string;
   verificationUrl: string;
   intervalSeconds: number;
+  /**
+   * ExpiresInSeconds is how long the user code stays valid, so a client can
+   * say when it expires instead of repeating the hub's own TTL. Optional:
+   * zero (absent) leaves the client on its own wording.
+   */
+  expiresInSeconds?: number;
   fallback?: boolean;
 }
 
@@ -485,6 +504,7 @@ export interface EvenerDelegateInfo {
   status: string;
   outcome?: string;
   reason?: string;
+  error?: string;
   terminal?: boolean;
   resumable: boolean;
   needsAttention: boolean;
@@ -1744,6 +1764,7 @@ export interface JobActivityDelegate {
   projectionRevision?: number;
   outcome?: string;
   reason?: string;
+  error?: string;
   terminal?: boolean;
   resumable?: boolean;
   notResumableReason?: string;
@@ -2395,7 +2416,6 @@ export interface NavigationSessionSummary {
   state: string;
   kind: string;
   branch?: string;
-  cluster_count?: number;
   favorite?: boolean;
   rename?: boolean;
   live: boolean;
@@ -3067,6 +3087,9 @@ export interface SearchSnippetPart {
 export interface ServerInfo {
   name: string;
   version: string;
+  os?: string;
+  arch?: string;
+  roots?: string[];
 }
 
 export interface SessionActivity {
@@ -4359,6 +4382,7 @@ export const METHOD_NAMES = [
   "evener/session-pin/unpin",
   "evener/session/seen/set",
   "evener/search",
+  "evener/archived/list",
   "evener/activity/read",
   "evener/notices/list",
   "evener/harnesses/list",
@@ -4583,6 +4607,7 @@ export interface MethodTypes {
   "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinUnpinResponse };
   "evener/session/seen/set": { params: SessionSeenSetParams; result: SessionSeenSetResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
+  "evener/archived/list": { params: ArchivedListParams; result: ArchivedListResponse };
   "evener/activity/read": { params: ActivityReadParams; result: ActivityReadResponse };
   "evener/notices/list": { params: EmptyParams; result: NoticesListResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };

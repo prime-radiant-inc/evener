@@ -220,13 +220,20 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 	}
 }
 
-// TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce drives
-// the hot path end to end: a resident root supervises an idle grandchild whose
-// pending attention sits under a parent delegate that closed permanently. The
-// wake must be refused and the exact original message transferred to the root
-// under its original attention ID, with the source durably resolved -- replays
-// append nothing new.
-func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *testing.T) {
+// fencedGrandchildAttention is a resident root supervising an idle grandchild
+// delegate whose transcript holds one undelivered attention message, under
+// the fixture's child delegate. Closing the child's resumability fences the
+// attention off for good, which the root must then escalate.
+type fencedGrandchildAttention struct {
+	fixture              coldStableDelegateFixture
+	root                 *Session
+	grandchildDelegateID string
+	grandchildSessionID  string
+	attentionID          string
+}
+
+func newFencedGrandchildAttention(t *testing.T) fencedGrandchildAttention {
+	t.Helper()
 	fixture := newColdStableDelegateFixture(t, "")
 	grandchildDelegateID := identifier.MustNewDelegateID()
 	grandchildSessionID := identifier.MustNewSessionID()
@@ -299,6 +306,25 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 	}
 
 	root := restoreSupervisionRoot(t, fixture, nil)
+	return fencedGrandchildAttention{
+		fixture:              fixture,
+		root:                 root,
+		grandchildDelegateID: grandchildDelegateID,
+		grandchildSessionID:  grandchildSessionID,
+		attentionID:          attentionID,
+	}
+}
+
+// TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce drives
+// the hot path end to end: a resident root supervises an idle grandchild whose
+// pending attention sits under a parent delegate that closed permanently. The
+// wake must be refused and the exact original message transferred to the root
+// under its original attention ID, with the source durably resolved -- replays
+// append nothing new.
+func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *testing.T) {
+	fenced := newFencedGrandchildAttention(t)
+	fixture, root := fenced.fixture, fenced.root
+	grandchildDelegateID, grandchildSessionID, attentionID := fenced.grandchildDelegateID, fenced.grandchildSessionID, fenced.attentionID
 	root.delegateController.mu.Lock()
 	childRevision := root.delegateController.durable[grandchildDelegateID].ProjectionRevision
 	var published []delegateUpdatePlan

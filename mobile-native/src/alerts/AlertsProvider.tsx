@@ -105,14 +105,9 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 					liveBands(live.rows, needsYou.rows, (row) => seen.isSeen(row)),
 					new Set(rows.filter((row) => row.offline).map((row) => row.ref)),
 				);
-			// The notice baseline is this controller's own first sign-in read.
-			if (snapshot.authRead && snapshot.manifest) {
-				const list = notices({
-					auth: snapshot.auth,
-					sources: snapshot.manifest.sources ?? [],
-					plugins: [],
-					loadedRows: rows,
-				});
+			// The notice baseline is this controller's own first notice read.
+			if (snapshot.noticesRead && snapshot.manifest) {
+				const list = notices({ hubNotices: snapshot.notices, sources: snapshot.manifest.sources ?? [] });
 				noticesByKey.current = new Map(list.map((notice) => [notice.key, notice]));
 				feed.observeNotices(list);
 			}

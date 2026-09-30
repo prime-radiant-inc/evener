@@ -37,31 +37,38 @@
 import {
 	ACTION_SUMMARY_UNAVAILABLE,
 	type AskQuestionRef,
+	attentionWarningNotice,
 	configFingerprint,
 	ERROR_EVENT_KIND,
 	echoesTurnError,
 	hasItemFailure,
-	hasWarningText,
 	isActiveItem,
+	isInformationalWarning,
 	isSuppressedSteeringKind,
+	jobWatchEvidence,
 	joinedReasoningParagraphs,
 	joinWarningParts,
 	liveAskQuestions,
 	makeTranscriptDisplayConfig,
 	parseAskUserQuestions,
+	parseTaskListData,
 	pendingTextJoined,
 	projectThread,
 	steeringLabel,
 	steeringNotificationFragments,
 	stripSystemReminder,
 	systemEventWords,
-	toolStepSummary,
+	composeStepWords,
+	toolStepWords,
+	warningWords,
 } from "@evener/appwire-client";
 import type {
 	ItemImage,
 	ItemModel,
 	ProjectedEntry,
 	SteeringFragment,
+	StepWords,
+	TaskRow,
 	ThreadModel,
 	TranscriptDisplayConfigV1,
 	Turn,
@@ -112,6 +119,9 @@ export interface ActivityDetail {
 	// · lines 1-40"): the package's toolStepSummary, the web's words, read once
 	// here from the whole step, since a summary-only row keeps no output.
 	summary?: string;
+	// The same words in parts (the package's toolStepWords), so a step line
+	// can set what the step acted on in Menlo.
+	words?: StepWords;
 	arguments?: string;
 	output?: string;
 	error?: string;
@@ -123,7 +133,20 @@ export interface ActivityDetail {
 	// parse.
 	startedAtMs?: number;
 	endedAtMs?: number;
+	// A task_list step's task list as the call returned it (the item's raw
+	// state), read once here like summary. Absent for every other tool, and
+	// for a call from a daemon that didn't return one.
+	tasks?: readonly DetailTask[];
+	// What a job_watch step shows when opened, in words (the package's
+	// jobWatchEvidence): "" when its line says it all. Absent for every other
+	// step, and for a watch result this build can't read.
+	watchEvidence?: string;
 }
+
+// A task as a step's detail carries it: only what the checklist draws. The
+// rest of a task (its prompt, notes and times) would ride every retained
+// task_list row, past the bound on what a row may cost.
+export type DetailTask = Pick<TaskRow, "id" | "status" | "description">;
 
 export interface ActivityMember {
 	id: string;
@@ -143,9 +166,10 @@ export interface ActivityMember {
 // Tone of a steering/lifecycle notice row. "info" for every daemon steer
 // (a loop-detected or provider-failure steer included: the failure it answers
 // shows as the turn's own error), "warning" for the loop_detection, turn_limit
-// and error system events (WARNING_EVENT_KINDS), and "system" for every other
-// system event.
-export type NoticeTone = "info" | "warning" | "system";
+// and error system events (WARNING_EVENT_KINDS), "attention" for a daemon
+// warning a human should see (attentionWarningNotice: amber, spec 8.2's
+// Warning), and "system" for every other system event.
+export type NoticeTone = "info" | "warning" | "attention" | "system";
 
 export type NoticeOrigin = "steering" | "system";
 
@@ -221,6 +245,8 @@ export type MobileTimelineItem =
 				// <job-notification> blocks, parsed: the transcript reads it as
 				// the notifications it carries (spec 8.2, 9), never as the markup.
 				notifications?: SteeringFragment[];
+				// A daemon warning's what-to-do, read as a quiet second line.
+				hint?: string;
 		  }
 		// The pending ask_user questions of one call, each carrying that call's id
 		// (AskQuestionRef.callId); the composer renders them as interactive cards
@@ -228,7 +254,8 @@ export type MobileTimelineItem =
 		| { kind: "question"; id: string; questions: AskQuestionRef[] }
 		// thought: a thought the projector didn't show (its redacted critical
 		// reasoning), which the transcript reads as one quiet line.
-		| { kind: "failure"; id: string; title: string; detail: string; thought?: boolean }
+		// attention: a warning, drawn amber (spec 8.2's Warning), not a failure's red.
+		| { kind: "failure"; id: string; title: string; detail: string; thought?: boolean; attention?: boolean }
 		| { kind: "attachments"; id: string; items: AttachmentRef[] }
 	) & {
 		transcriptKey?: string;
@@ -324,10 +351,13 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
-	const { startedAtMs, endedAtMs, callId, summary } = row.detail;
+	const { startedAtMs, endedAtMs, callId, summary, words } = row.detail;
+	// Its words' target names what it acted on, which its line sets in Menlo
+	// under a rationale as under its own words.
 	const metadata = {
 		...(startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {}),
 		...(callId !== undefined ? { callId } : {}),
+		...(words !== undefined ? { words } : {}),
 	};
 	// With no rationale of its own, the row keeps the step's words, read from
 	// the whole step before its output goes.
@@ -405,7 +435,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 			label: toolLabel(it),
 			family: "tool",
 			state: activityState(it, context.turnStatus),
-			detail: { ...activityDetail(it), summary: toolStepSummary(it, { cwd: context.cwd }) },
+			detail: { ...activityDetail(it), ...stepWordsOf(it, context.cwd) },
 			...identity,
 		};
 	}
@@ -417,8 +447,8 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 	if (it.type === "systemMessage") return { ...systemNotice(it), ...identity };
 
 	if (it.type === "warning") {
-		const failure = warningFailure(it);
-		return failure === null ? null : { ...failure, ...identity };
+		const row = isInformationalWarning(it) ? informationalWarningNotice(it) : warningFailure(it);
+		return row === null ? null : { ...row, ...identity };
 	}
 
 	// Unknown / forward-compatible type: a neutral collapsed activity that
@@ -559,8 +589,20 @@ function parsedTimes(startedAt: string | undefined, completedAt: string | undefi
 	return start === null || end === null ? {} : { start, end };
 }
 
-function activityDetail(it: ItemModel): ActivityDetail {
+// A tool step's words, in parts and composed, read once from the whole step.
+function stepWordsOf(it: ItemModel, cwd: string | undefined): Pick<ActivityDetail, "summary" | "words"> {
+	const words = toolStepWords(it, { cwd });
+	return { summary: composeStepWords(words), words };
+}
+
+/** A tool or reasoning item's expandable detail, read once from the item. */
+export function activityDetail(it: ItemModel): ActivityDetail {
 	const { start, end } = parsedTimes(it.startedAt, it.completedAt);
+	const tasks =
+		it.toolName === "task_list"
+			? parseTaskListData(it.raw)?.map(({ id, status, description }) => ({ id, status, description }))
+			: undefined;
+	const watchEvidence = it.toolName === "job_watch" ? jobWatchEvidence(it) : undefined;
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,
@@ -571,6 +613,8 @@ function activityDetail(it: ItemModel): ActivityDetail {
 		callId: it.callId,
 		startedAtMs: start,
 		endedAtMs: end,
+		...(tasks ? { tasks } : {}),
+		...(watchEvidence !== undefined ? { watchEvidence } : {}),
 	};
 }
 
@@ -714,6 +758,23 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
+	// A daemon warning a human should see (not an informational one) reads in
+	// the attention tone, with its hint beneath (#3387). The phone draws no
+	// title chip, so the row's words are the warning's message (warningWords,
+	// which falls back to its hint, then its title).
+	const attention = attentionWarningNotice(it);
+	if (attention) {
+		return {
+			kind: "notice",
+			id: it.id,
+			origin: "system",
+			family: "warning",
+			tone: "attention",
+			text: attention.message,
+			eventKind: "warning",
+			...(attention.hint ? { hint: attention.hint } : {}),
+		};
+	}
 	// A system family of "warning" IS the warning tone (systemFamily's own
 	// first branch), so the two are derived from one classification.
 	const family = systemFamily(it.eventKind);
@@ -731,20 +792,28 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 	};
 }
 
+// An informational warning item (a coded "no action needed" notice): one quiet
+// line, as the web's WarningItem draws it, never the amber attention row
+// (#3387); null when it carries nothing to show.
+function informationalWarningNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> | null {
+	const words = warningWords(it.text, it.warning?.title, it.warning?.hint);
+	if (words === null) return null;
+	return { kind: "notice", id: it.id, origin: "system", family: "informational", tone: "system", text: words.message };
+}
+
 // A warning's attention row, or null when it carries nothing to show (the web
 // renders no row for exactly that case).
 function warningFailure(it: ItemModel): Extract<MobileTimelineItem, { kind: "failure" }> | null {
-	const rawTitle = it.warning?.title;
-	// The blank check is exactly "no titled part AND no body part": a warning
-	// with nothing to show produces no row (the web renders none either). The
-	// body join is computed once and reused.
-	const detail = joinWarningParts([it.text, it.warning?.hint]);
-	if (!hasWarningText(rawTitle) && detail === "") return null;
+	// The web's words (warningWords): its title, or "Warning", over its
+	// message and hint.
+	const words = warningWords(it.text, it.warning?.title, it.warning?.hint);
+	if (words === null) return null;
 	return {
 		kind: "failure",
 		id: it.id,
-		title: hasWarningText(rawTitle) ? rawTitle : "Warning",
-		detail,
+		title: words.title ?? "Warning",
+		detail: joinWarningParts([words.message, words.hint]),
+		attention: true,
 	};
 }
 
@@ -1235,20 +1304,40 @@ export type BoundText = (text: string) => string;
 // description is the summary line a collapsed row shows
 // (mobile-native/src/transcriptPresentation.ts's actionSummary), so it is read
 // as much as the output is.
+// A step's words, each part cut to the bound like the summary they compose
+// (a command can run long); the source words when nothing was cut.
+function boundWords(words: StepWords, bound: BoundText): StepWords {
+	const verb = bound(words.verb);
+	const target = words.target === undefined ? undefined : bound(words.target);
+	const after = words.after === undefined ? undefined : bound(words.after);
+	const detail = words.detail === undefined ? undefined : bound(words.detail);
+	if (verb === words.verb && target === words.target && after === words.after && detail === words.detail) return words;
+	return {
+		verb,
+		...(target === undefined ? {} : { target }),
+		...(after === undefined ? {} : { after }),
+		...(detail === undefined ? {} : { detail }),
+	};
+}
+
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
 	const description = detail.description ? bound(detail.description) : detail.description;
 	const summary = detail.summary ? bound(detail.summary) : detail.summary;
+	const words = detail.words ? boundWords(detail.words, bound) : detail.words;
 	const args = detail.arguments ? bound(detail.arguments) : detail.arguments;
 	const output = detail.output ? bound(detail.output) : detail.output;
 	const error = detail.error ? bound(detail.error) : detail.error;
+	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
 	// Nothing was cut: hand back the source detail so a settled row keeps its
 	// identity across publishes (see truncateItem).
 	if (
 		description === detail.description &&
 		summary === detail.summary &&
+		words === detail.words &&
 		args === detail.arguments &&
 		output === detail.output &&
-		error === detail.error
+		error === detail.error &&
+		watchEvidence === detail.watchEvidence
 	) {
 		return detail;
 	}
@@ -1256,9 +1345,11 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		...detail,
 		description,
 		summary,
+		words,
 		arguments: args,
 		output,
 		error,
+		watchEvidence,
 	};
 }
 

@@ -43,7 +43,7 @@ import {
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
 import { latestPage, pageBefore, withOlderHistory } from "../src/dev/demoOlderHistory.js";
-import { createDemoSetup, demoUpdateCheck } from "../src/dev/demoSetup.js";
+import { createDemoSetup, DEMO_MODEL_PROVIDERS, demoUpdateCheck } from "../src/dev/demoSetup.js";
 
 // The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
 // answers model/list instead.
@@ -113,7 +113,7 @@ export async function createDemoHub(
 	// "ago" from, so a row and its thread agree on when it last changed.
 	const startedAt = fleetOptions?.now ?? Date.now();
 	const demoFleet = fleetOptions
-		? createDemoFleet({ ...fleetOptions, now: startedAt })
+		? createDemoFleet({ ...fleetOptions, now: startedAt, modelProviders: DEMO_MODEL_PROVIDERS })
 		: null;
 	// With the fleet on, New session and the Hub read the prototype's hosts,
 	// providers, plugins, models and folders (demoSetup.ts).
@@ -210,7 +210,11 @@ export async function createDemoHub(
 	// opening a row reads a real conversation. An empty fleet has none.
 	const fleetThreads =
 		fleetOptions && !fleetOptions.empty
-			? createDemoSessions({ now: startedAt, long: fleetOptions.long })
+			? createDemoSessions({
+					now: startedAt,
+					long: fleetOptions.long,
+					toolFamilies: fleetOptions.toolFamilies,
+				})
 			: [];
 	for (const fleetThread of fleetThreads)
 		threads.set(fleetThread.evener.ref, fleetThread);
@@ -237,6 +241,8 @@ export async function createDemoHub(
 			modelList: true,
 			directoryComplete: false,
 			auth: demoFleet !== null,
+			// The fleet's setup keeps the hub's transcript display defaults.
+			transcriptDisplaySettings: demoFleet !== null,
 		},
 	};
 	let turnNumber = 0;
@@ -247,11 +253,15 @@ export async function createDemoHub(
 	// Tells every socket connected at that moment that navigation changed,
 	// as a real hub broadcasts navigation changes to every navigation client.
 	function broadcastNavigation(payload: NavigationInvalidatedPayload) {
-		const notification = JSON.stringify({
-			jsonrpc: "2.0",
-			method: "evener/navigation/invalidated",
-			params: payload,
-		});
+		broadcast("evener/navigation/invalidated", payload);
+	}
+	// Tells every client the hub's notices changed, carrying the whole new
+	// list, as cmd/evener-hub/app_notices.go broadcasts evener/notices/changed.
+	function broadcastNotices() {
+		if (demoSetup) broadcast("evener/notices/changed", demoSetup.answer("evener/notices/list", {}));
+	}
+	function broadcast(method: string, params: unknown) {
+		const notification = JSON.stringify({ jsonrpc: "2.0", method, params });
 		for (const socket of server.clients) {
 			if (socket.readyState !== WebSocket.OPEN) continue;
 			// One socket that fails mid-send must not skip the rest of the
@@ -281,7 +291,10 @@ export async function createDemoHub(
 			return;
 		}
 		broadcastNavigation(requireFleet().step(step));
-		if (step === "host-offline" || step === "host-online") return;
+		if (step === "host-offline" || step === "host-online") {
+			broadcastNotices();
+			return;
+		}
 		// The session's own thread follows its row, as askQuestion's does.
 		const [id, state] = ROW_STEPS[step];
 		const thread = threads.get(fleetSessionRef(id));
@@ -920,6 +933,9 @@ environment variables:
   EVENER_DEMO_LONG=1                 with the fleet: long questions, approvals
                                      and messages, many steps and notifications,
                                      so screenshots exercise real-sized content
+  EVENER_DEMO_FLEET_TOOLS=1          with the fleet: add Show Every Tool Family,
+                                     one step of every tool family, replayed
+                                     from the recorded wire corpora
   EVENER_DEMO_COMMANDS=1             with the fleet: read commands from stdin
                                      (${COMMANDS})
   EVENER_DEMO_UNCONFIRMED=1          answer sends as a daemon that can't confirm them
@@ -950,6 +966,7 @@ if (
 					planRevised: process.env.EVENER_DEMO_FLEET_PLAN_REVISED === "1",
 					olderHistory: process.env.EVENER_DEMO_FLEET_OLDER === "1",
 					long: process.env.EVENER_DEMO_LONG === "1",
+					toolFamilies: process.env.EVENER_DEMO_FLEET_TOOLS === "1",
 				}
 			: undefined,
 		{

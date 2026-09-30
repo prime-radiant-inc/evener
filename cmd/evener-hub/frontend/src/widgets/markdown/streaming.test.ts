@@ -305,3 +305,29 @@ test("a new top-level heading discards prior paragraph emphasis but closes empha
   expect(closeOpenMarkdown(source)).toBe(`${source}*`);
   expect(closeOpenMarkdown("## heading *active")).toBe("## heading *active*");
 });
+
+// --- CRLF line endings ---------------------------------------------------------
+//
+// Every end-anchored line predicate below anchors at end-of-line, so a CRLF
+// stream must close exactly the way its LF control does. Each case compares
+// the appended suffix, which is what the closer logic produced.
+
+test("closes an open CRLF fence with a newline before the closer", () => {
+  expect(closeOpenMarkdown("```mermaid\r\ngraph LR\r\nA-->B\r\n")).toBe("```mermaid\r\ngraph LR\r\nA-->B\r\n\n```");
+});
+
+test("does not append a phantom fence for a CRLF closing fence at EOF", () => {
+  expect(closeOpenMarkdown("```mermaid\r\ngraph LR\r\nA-->B\r\n```")).toBe("```mermaid\r\ngraph LR\r\nA-->B\r\n```");
+});
+
+test.each([
+  ["thematic break", "**open\r\n***\r"],
+  ["setext underline", "**open\r\n===\r"],
+  ["empty ATX heading", "**open\r\n#\r"],
+  ["bare list marker", "**open\r\n-\r"],
+  ["bare ordered marker", "**open\r\n1.\r"],
+  ["quoted thematic break", "> **open\r\n> ---\r"],
+])("does not let a CRLF %s kill emphasis closing differently than LF", (_name, crlf) => {
+  const lf = crlf.replaceAll("\r", "");
+  expect(closeOpenMarkdown(crlf).slice(crlf.length)).toBe(closeOpenMarkdown(lf).slice(lf.length));
+});

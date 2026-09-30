@@ -47,6 +47,7 @@ describe("a subagent's row (spec 8.2)", () => {
 			stateText: "running · 4m",
 			activity: "Working",
 			ref: "local:child-1",
+			delegateId: "d1",
 		});
 	});
 
@@ -86,11 +87,37 @@ describe("a subagent's row (spec 8.2)", () => {
 		});
 	});
 
-	it("has no activity line once done", () => {
+	// The roster carries no report (appwire.SlimDelegateForRoster); the row
+	// shows the report from the coordinator's tree when it has one (G13).
+	it("says Finished once done, from the roster alone", () => {
 		const done = delegate({ status: "completed", terminal: true, runEndedAt: ago(120_000) });
-		const line = subagentLine(row({ state: "completed" }), [done], NOW);
-		expect(line).toMatchObject({ state: "done", stateText: "done · 2m" });
-		expect(line.activity).toBeUndefined();
+		expect(subagentLine(row({ state: "completed" }), [done], NOW)).toMatchObject({
+			state: "done",
+			stateText: "done · 2m",
+			activity: "Finished",
+			delegateId: "d1",
+		});
+	});
+
+	it("says Stopped once a stop ended it, from the roster alone", () => {
+		const stopped = delegate({ status: "cancelled", outcome: "cancelled", terminal: true, runEndedAt: ago(120_000) });
+		expect(subagentLine(row({ state: "completed" }), [stopped], NOW)).toMatchObject({
+			state: "stopped",
+			activity: "Stopped",
+		});
+	});
+
+	// The hub's reason is a code; a failed run's cause rides beside it (#3327).
+	it("says a failed one's cause, else its reason code in words", () => {
+		const failed = (over: Partial<EvenerDelegateInfo>) =>
+			delegate({ status: "failed", outcome: "failed", terminal: true, runEndedAt: ago(60_000), ...over });
+		expect(
+			subagentLine(row({ state: "failed" }), [failed({ reason: "failed", error: "provider returned 500" })], NOW)
+				.activity,
+		).toBe("provider returned 500");
+		expect(subagentLine(row({ state: "failed" }), [failed({ reason: "runtime_lost" })], NOW).activity).toBe(
+			"runtime lost",
+		);
 	});
 
 	it("finds its subagent by the call that started it", () => {

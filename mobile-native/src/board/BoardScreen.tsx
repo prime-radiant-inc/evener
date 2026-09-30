@@ -5,6 +5,7 @@ import {
 	quietState,
 	type SearchResult,
 } from "@evener/appwire-client";
+import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
@@ -13,6 +14,7 @@ import {
 	type RefObject,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useReducer,
 	useRef,
@@ -42,6 +44,10 @@ import type { NavigationActions } from "../navigationActions";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../accessibilitySettings";
+import { GlassHeaderPanel } from "../design/GlassHeaderPanel";
+import { ChipStrip } from "../design/ChipStrip";
+import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "../design/systemGlass";
+import { useHeaderTextScale } from "../headerText";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -358,8 +364,8 @@ function Board({
 	useSyncExternalStore(documents.subscribe, documents.getRevision);
 	const continueReading = documents.continueReading();
 	const hubNotices = useMemo(
-		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
-		[snapshot.auth, sources, snapshot.plugins, loadedRows],
+		() => notices({ hubNotices: snapshot.notices, sources: sources ?? [] }),
+		[snapshot.notices, sources],
 	);
 
 	const [idleFolded, setIdleFolded] = useState(() => foldedSections(hubId).isFolded("idle", true));
@@ -369,6 +375,14 @@ function Board({
 	};
 
 	const scroller = useRef<ScrollView>(null);
+	// Where the device has Liquid Glass, one glass spans the nav bar and the
+	// chips under it (spec 16.3), and the Board scrolls under both: its
+	// content is inset by them (underGlass), and every scroll it makes itself
+	// lands clear of them. Until the glass has measured, that's the bar alone.
+	const headerHeight = useHeaderHeight();
+	const navGlass = useSystemGlass();
+	const [headerPanel, setHeaderPanel] = useState({ height: 0, onGlass: false });
+	const underGlass = navGlass ? reservedUnderGlass(headerHeight, headerPanel, true) : 0;
 	// Search is bound only while the Board is in view (the plugin poll's
 	// rule): a reconnect while a pushed screen covers the Board must not send
 	// one `evener/search` for the query the field still holds. A sheet over
@@ -476,7 +490,12 @@ function Board({
 	};
 	const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
 		const { contentOffset, layoutMeasurement } = event.nativeEvent;
-		viewport.current = { offset: contentOffset.y, height: layoutMeasurement.height };
+		// While the Board's own scroll is under way, scrollerOffset holds where
+		// it's headed, which a glass change re-targets; its progress would
+		// overwrite that.
+		if (list.state !== "appScrolling") scrollerOffset.current = contentOffset.y;
+		// What shows below the glass, in the Board's content.
+		viewport.current = { offset: contentOffset.y + underGlass, height: layoutMeasurement.height - underGlass };
 		scrolledFromTuck.current = true;
 		readMoreLiveIfNear();
 		readVisibleMore();
@@ -494,8 +513,12 @@ function Board({
 		tuckedHeight.current = searchFieldHeight;
 		if (searching) return;
 		if (scrolledFromTuck.current && Math.abs(viewport.current.offset - was) > 1) return;
-		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: false });
+		scroller.current?.scrollTo?.({ y: searchFieldHeight - underGlass, animated: false });
 	}, [searchFieldHeight, searching]);
+	// The scroller's own offset, which the glass's inset shifts from the
+	// content's: where it starts (contentOffset below), then each scroll, or
+	// where a scroll the Board makes itself is headed.
+	const scrollerOffset = useRef(searchFieldHeight - underGlass);
 
 	const manifest = snapshot.manifest;
 	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
@@ -750,20 +773,35 @@ function Board({
 	// Every animated scroll the Board starts holds the list until it ends.
 	// Under Reduce Motion it jumps instead, and holds nothing. A test
 	// renderer's host ScrollView has no instance to scroll.
+	// `y` is where in the Board's content to show at its top, which on the
+	// glass is the glass's lower edge.
 	const scrollBoardTo = useCallback(
 		(y: number) => {
 			if (!reduceMotion) list.send("appScrollStart");
-			scroller.current?.scrollTo?.({ y, animated: !reduceMotion });
+			scrollerOffset.current = y - underGlass;
+			scroller.current?.scrollTo?.({ y: scrollerOffset.current, animated: !reduceMotion });
 		},
-		[list, reduceMotion],
+		[list, reduceMotion, underGlass],
 	);
+	// When the glass comes or goes, or grows or shrinks (the chips appear, or
+	// search hides them), the same content stays at the glass's lower edge.
+	// A scroll the Board is making (Search's reveal, which hides the chips as
+	// it starts) goes on to its content's new place instead of stopping.
+	const shownUnderGlass = useRef(underGlass);
+	useLayoutEffect(() => {
+		const change = underGlass - shownUnderGlass.current;
+		shownUnderGlass.current = underGlass;
+		if (change === 0) return;
+		scrollerOffset.current -= change;
+		scroller.current?.scrollTo?.({ y: scrollerOffset.current, animated: list.state === "appScrolling" });
+	}, [underGlass, list]);
 	// The field sits above the Board, scrolled out of view, so Search brings
 	// it down (spec 7.4).
 	const revealSearch = useCallback(() => {
 		scrollBoardTo(0);
 		searchInput.current?.focus?.();
 	}, [scrollBoardTo]);
-	useHeader(navigation, hubId, hubName, revealSearch);
+	useHeader(navigation, hubId, hubName, revealSearch, navGlass, palette.page);
 	// Leaving lets go (ruling 22): a screen pushed over the Board (its own
 	// sheets are part of it, ruling 28), or the app leaving the foreground.
 	useEffect(() => {
@@ -1149,15 +1187,23 @@ function Board({
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			{/* Fixed under the header; their sections aren't there while
-			    search results are. */}
-			{chips.length && !searching ? <Chips chips={chips} /> : null}
+			    search results are. On the glass the Board runs under them, and
+			    the panel's zIndex raises it over the scroller. */}
+			<GlassHeaderPanel
+				testID="board-header"
+				style={navGlass ? GLASS_PANEL : undefined}
+				glassTop={navGlass ? headerHeight : undefined}
+				onLayout={(event) => setHeaderPanel({ height: event.nativeEvent.layout.height, onGlass: navGlass })}
+			>
+				{chips.length && !searching ? <Chips chips={chips} onGlass={navGlass} /> : null}
+			</GlassHeaderPanel>
 			<View style={{ flex: 1 }}>
 				<Animated.ScrollView
 					ref={scroller}
 					style={{ flex: 1 }}
 					// Starts just past the search field: pulling down reveals it
 					// (spec 7.3). iOS applies this once, when the scroller mounts.
-					contentOffset={{ x: 0, y: searchFieldHeight }}
+					contentOffset={{ x: 0, y: searchFieldHeight - underGlass }}
 					keyboardShouldPersistTaps="handled"
 					keyboardDismissMode="on-drag"
 					// iOS keeps that offset only while the content is taller than the
@@ -1169,11 +1215,13 @@ function Board({
 					}}
 					// The Board runs under its toolbar's glass, its end and its
 					// scroll indicator clear of the toolbar.
-					contentInset={boardUnderBar.contentInset}
-					scrollIndicatorInsets={boardUnderBar.scrollIndicatorInsets}
+					contentInset={navGlass ? { ...boardUnderBar.contentInset, top: underGlass } : boardUnderBar.contentInset}
+					scrollIndicatorInsets={
+						navGlass ? { ...boardUnderBar.scrollIndicatorInsets, top: underGlass } : boardUnderBar.scrollIndicatorInsets
+					}
 					onScroll={onScroll}
 					onLayout={(event) => {
-						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
+						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height - underGlass };
 						readMoreLiveIfNear();
 						readVisibleMore();
 					}}
@@ -1499,6 +1547,9 @@ function useSearch(client: ConversationClientLike | null) {
 	return { controller, snapshot };
 }
 
+/** The chips' panel on the glass: over the Board's top, which runs under it. */
+const GLASS_PANEL = { position: "absolute", top: 0, left: 0, right: 0, zIndex: 1 } as const;
+
 /** The search field's row: an 8pt margin around a field that grows with the
  * text size, never shorter than the 44pt touch target. */
 const searchFieldHeightAt = (scale: number) => Math.max(44, 16 + Math.round(36 * scale));
@@ -1735,7 +1786,14 @@ function useHubSeenMarks(
 	}, [hubMarks, loadedRows]);
 }
 
-function useHeader(navigation: Navigation, hubId: string, hubName: string, revealSearch: () => void) {
+function useHeader(
+	navigation: Navigation,
+	hubId: string,
+	hubName: string,
+	revealSearch: () => void,
+	glass: boolean,
+	page: string,
+) {
 	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
 		const hubButton = (
@@ -1745,6 +1803,7 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, revea
 			/>
 		);
 		navigation.setOptions({
+			...navBarGlassOptions(glass, page),
 			title: "",
 			unstable_headerLeftItems: () => [{ type: "custom", element: hubButton }],
 			unstable_headerRightItems: () => [
@@ -1763,23 +1822,27 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, revea
 				</Action>
 			),
 		});
-	}, [navigation, hubId, hubName, revealSearch, fontScale]);
+	}, [navigation, hubId, hubName, revealSearch, fontScale, glass, page]);
 }
 
 /** The hub button (spec 7.1): the hub's name and a chevron as one control,
  * opening the Hub sheet (spec 12). A native bar item given both a label and an
  * icon draws only the icon, so this is a custom header view. The Hub opens
  * while the hub is out of reach too: it keeps its last data and says why its
- * controls wait. */
+ * controls wait. Its text follows Dynamic Type up to xxxLarge only, since the
+ * bar's height is fixed, so a long press shows the whole name in the Large
+ * Content Viewer, as Apple asks of text that stops growing. */
 function HubButton({ hubName, onOpen }: { hubName: string; onOpen: () => void }) {
 	const { palette } = useColors();
-	const scale = useTextScale();
+	const scale = useHeaderTextScale();
 	const { width } = useWindowDimensions();
 	return (
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={hubName}
 			accessibilityHint="Opens the Hub"
+			accessibilityShowsLargeContentViewer
+			accessibilityLargeContentTitle={hubName}
 			onPress={onOpen}
 			style={{
 				// A custom header view sizes itself, so a long hub name needs a
@@ -1814,97 +1877,80 @@ interface ChipProps {
 	onPress: () => void;
 }
 
-/** The section chips, fixed under the header (spec 7.1). The row fades at its
- * trailing edge, so a cut-off chip reads as "there's more". */
-function Chips({ chips }: { chips: ChipProps[] }) {
+/** The section chips, fixed under the header (spec 7.1), in the shared chip
+ * strip that owns the row's fill and its overflow fade. */
+function Chips({ chips, onGlass }: { chips: ChipProps[]; onGlass: boolean }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View testID="chips" style={{ backgroundColor: palette.page }}>
-			<ScrollView
-				horizontal
-				showsHorizontalScrollIndicator={false}
-				contentContainerStyle={{ columnGap: 8, paddingHorizontal: 16, paddingVertical: 8 }}
-			>
-				{chips.map((chip) => (
-					<Pressable
-						key={chip.key}
-						testID="chip"
-						accessibilityRole="button"
-						accessibilityLabel={chip.label}
-						onPress={() => {
-							haptic("selection");
-							chip.onPress();
-						}}
-						// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
-						hitSlop={{ top: 6, bottom: 6 }}
-						style={({ pressed }) => ({
-							minHeight: 32,
-							paddingHorizontal: 12,
-							borderRadius: 16,
-							flexDirection: "row",
-							alignItems: "center",
-							columnGap: 6,
-							backgroundColor: pressed ? palette.pressed : palette.surface,
-							borderWidth: 0.5,
-							borderColor: palette.edge,
-						})}
+		<ChipStrip testID="chips" onGlass={onGlass}>
+			{chips.map((chip) => (
+				<Pressable
+					key={chip.key}
+					testID="chip"
+					accessibilityRole="button"
+					accessibilityLabel={chip.label}
+					onPress={() => {
+						haptic("selection");
+						chip.onPress();
+					}}
+					// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
+					hitSlop={{ top: 6, bottom: 6 }}
+					style={({ pressed }) => ({
+						minHeight: 32,
+						paddingHorizontal: 12,
+						borderRadius: 16,
+						flexDirection: "row",
+						alignItems: "center",
+						columnGap: 6,
+						backgroundColor: pressed ? palette.pressed : palette.surface,
+						borderWidth: 0.5,
+						borderColor: palette.edge,
+					})}
+				>
+					{chip.pinned ? <SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} /> : null}
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 14 * scale, fontWeight: "600", color: palette.inkHi }}
 					>
-						{chip.pinned ? <SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} /> : null}
-						<Text
-							allowFontScaling={allowFontScaling}
-							style={{ fontSize: 14 * scale, fontWeight: "600", color: palette.inkHi }}
+						{chip.name}
+					</Text>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 14 * scale, fontWeight: "500", color: palette.inkLow, fontVariant: ["tabular-nums"] }}
+					>
+						{String(chip.count)}
+					</Text>
+					{chip.badge ? (
+						<View
+							style={{
+								minWidth: 18 * scale,
+								height: 18 * scale,
+								paddingHorizontal: 5,
+								borderRadius: 9 * scale,
+								alignItems: "center",
+								justifyContent: "center",
+								backgroundColor: palette.attention,
+							}}
 						>
-							{chip.name}
-						</Text>
-						<Text
-							allowFontScaling={allowFontScaling}
-							style={{ fontSize: 14 * scale, fontWeight: "500", color: palette.inkLow, fontVariant: ["tabular-nums"] }}
-						>
-							{String(chip.count)}
-						</Text>
-						{chip.badge ? (
-							<View
+							<Text
+								allowFontScaling={allowFontScaling}
 								style={{
-									minWidth: 18 * scale,
-									height: 18 * scale,
-									paddingHorizontal: 5,
-									borderRadius: 9 * scale,
-									alignItems: "center",
-									justifyContent: "center",
-									backgroundColor: palette.attention,
+									fontSize: 11 * scale,
+									fontWeight: "700",
+									fontVariant: ["tabular-nums"],
+									// Dark ink on amber in both themes: the light theme's ink,
+									// the dark theme's page.
+									color: palette.scheme === "dark" ? palette.page : palette.inkHi,
 								}}
 							>
-								<Text
-									allowFontScaling={allowFontScaling}
-									style={{
-										fontSize: 11 * scale,
-										fontWeight: "700",
-										fontVariant: ["tabular-nums"],
-										// Dark ink on amber in both themes: the light theme's ink,
-										// the dark theme's page.
-										color: palette.scheme === "dark" ? palette.page : palette.inkHi,
-									}}
-								>
-									{String(chip.badge)}
-								</Text>
-							</View>
-						) : null}
-					</Pressable>
-				))}
-			</ScrollView>
-			<View
-				pointerEvents="none"
-				style={{
-					position: "absolute",
-					top: 0,
-					bottom: 0,
-					right: 0,
-					width: 28,
-					experimental_backgroundImage: `linear-gradient(to right, ${palette.page}00, ${palette.page})`,
-				}}
-			/>
-		</View>
+								{String(chip.badge)}
+							</Text>
+						</View>
+					) : null}
+				</Pressable>
+			))}
+		</ChipStrip>
 	);
 }
 
@@ -1939,12 +1985,9 @@ function SummaryLine({
 			}}
 		>
 			{entries.map((band, index) => (
+				// Each count carries the separator after it, so the line wraps
+				// after a dot and no wrapped line starts with one.
 				<View key={band} style={{ flexDirection: "row", alignItems: "center" }}>
-					{index > 0 ? (
-						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 14 * scale, color: palette.inkLow }}>
-							{" · "}
-						</Text>
-					) : null}
 					<Pressable
 						accessibilityRole="button"
 						onPress={() => {
@@ -1974,6 +2017,11 @@ function SummaryLine({
 							{summaryText(band, summary[band])}
 						</Text>
 					</Pressable>
+					{index < entries.length - 1 ? (
+						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 14 * scale, color: palette.inkLow }}>
+							{" · "}
+						</Text>
+					) : null}
 				</View>
 			))}
 		</View>

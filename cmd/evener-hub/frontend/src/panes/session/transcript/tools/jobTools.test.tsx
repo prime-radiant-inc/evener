@@ -1,10 +1,12 @@
 import type { ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
+import { subagentWireStep } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, render, screen, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";
+import "./subagentModule";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -372,6 +374,23 @@ test("job_status: body renders not-resumable reason diagnostic", () => {
   expect(screen.getByText(/Not resumable: Delegate was disposed/)).toBeTruthy();
 });
 
+// not_resumable_reason carries its own codes; the card says them in words too
+// (#3362). turn_budget_exhausted is a run-ending code the shared table already
+// carries; isolation_disposed and working_dir_missing are closure-only codes
+// the not-resumable table carries.
+test.each([
+  ["turn_budget_exhausted", /Not resumable: ran out of turns/],
+  ["isolation_disposed", /Not resumable: its isolation was disposed/],
+  ["working_dir_missing", /Not resumable: its working directory is missing/],
+])("job_status: body says not-resumable code %s in words", (reason, words) => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({ not_resumable_reason: reason });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(words)).toBeTruthy();
+  expect(screen.queryByText(new RegExp(reason))).toBeNull();
+});
+
 test("job_status: body renders failed outcome reason in danger text", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
@@ -382,6 +401,32 @@ test("job_status: body renders failed outcome reason in danger text", () => {
   render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
   expect(screen.getByTestId("delegate-outcome-reason")).toBeTruthy();
   expect(screen.getByText(/Last run failed: exec: command not found/)).toBeTruthy();
+});
+
+// A reason is a code; the card says it in words, never as snake_case (#3327).
+test.each([
+  ["failed", "runtime_lost", /Last run failed: runtime lost/],
+  ["exhausted", "tool_round_budget_exhausted", /Last run exhausted: ran out of tool rounds/],
+])("job_status: body says a %s outcome's code %s in words", (status, reason, words) => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({ status: "idle", last_outcome: { status, reason } });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(words)).toBeTruthy();
+  expect(screen.queryByText(new RegExp(reason))).toBeNull();
+});
+
+// last_outcome is the daemon's delegatestore.Outcome, which carries a failed
+// run's cause beside its reason code (#3356): the body says the cause.
+test("job_status: body says a failed run's recorded cause, not its reason code", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    status: "idle",
+    last_outcome: { status: "failed", reason: "run_error", error: "provider returned 500" },
+  });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(/Last run failed: provider returned 500/)).toBeTruthy();
 });
 
 test("job_status: body renders exhausted outcome reason without danger text", () => {
@@ -409,7 +454,8 @@ test("job_status: body renders stopped outcome reason without danger text", () =
   render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
   const diag = screen.getByTestId("delegate-outcome-reason");
   expect(diag).toBeTruthy();
-  expect(screen.getByText(/Last run stopped: stopped_by_parent/)).toBeTruthy();
+  // The reason is a code; the card says it in words (#3327).
+  expect(screen.getByText(/Last run stopped: stopped by its coordinator/)).toBeTruthy();
   expect(diag.querySelector("[class]")?.className).not.toMatch(/dangerText/);
 });
 
@@ -602,13 +648,11 @@ test("job_list: rows join a legacy failed record to the display word by its reas
 
 // --- job_stop -----------------------------------------------------------
 
-test("job_stop: summary shows the target job and the tool's own outcome footer", () => {
+test("job_stop: summary shows the target job and the status its footer reports", () => {
   const d = toolRendererFor("job_stop");
   const args = JSON.stringify({ target: "job_7" });
   const output = "[job job_7 · cancelled · cancelled_by_request]";
-  expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output }))).toBe(
-    "Stopped job_7 · job job_7 · cancelled · cancelled_by_request",
-  );
+  expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output }))).toBe("Stopped job_7 · cancelled");
 });
 
 test("job_stop: no footer yet (request in flight) shows just the target", () => {
@@ -696,7 +740,7 @@ test("delegate_send: openTranscriptRef reads transcript_ref from valid raw state
 test("delegate_send: openTranscriptRef is undefined for absent, malformed, or blank-ref raw state", () => {
   const d = toolRendererFor("delegate_send");
   expect(d.openTranscriptRef?.(item({ toolName: "delegate_send" }))).toBeUndefined();
-  // Missing running_in_background: not a valid delegateSendResult at all.
+  // Missing running_in_background: not a valid isDelegateSendResult state at all.
   expect(
     d.openTranscriptRef?.(item({ toolName: "delegate_send", raw: { action: "steered", transcript_ref: "local:c" } })),
   ).toBeUndefined();
@@ -905,17 +949,19 @@ test("job_send_message aliases to the same descriptor as delegate_send, reading 
 // unlisted job_* name. These pin the predicate with a name no exact
 // descriptor claims, plus the exact-wins-over-predicate precedence rule.
 
-test("an unlisted job_* tool falls to the generic family descriptor, mentioning its operation arg when present", () => {
+test("an unlisted job_* tool falls to the generic family descriptor, in words with its operation arg when present", () => {
   const d = toolRendererFor("job_zzz_unlisted");
   const args = JSON.stringify({ operation: "frobnicate" });
   expect(d.summary(item({ id: "jw_1", toolName: "job_zzz_unlisted", argumentsJSON: args }))).toBe(
-    "job_zzz_unlisted: frobnicate",
+    "Used job zzz unlisted: frobnicate",
   );
 });
 
-test("the generic job_* descriptor degrades to the bare tool name with no operation arg", () => {
+test("the generic job_* descriptor says the tool in words with no operation arg, never its raw name", () => {
   const d = toolRendererFor("job_zzz_unlisted");
-  expect(d.summary(item({ id: "jw_2", toolName: "job_zzz_unlisted", argumentsJSON: "{}" }))).toBe("job_zzz_unlisted");
+  expect(d.summary(item({ id: "jw_2", toolName: "job_zzz_unlisted", argumentsJSON: "{}" }))).toBe(
+    "Used job zzz unlisted",
+  );
 });
 
 test("the generic job_* descriptor never wins over an exact match", () => {
@@ -924,4 +970,14 @@ test("the generic job_* descriptor never wins over an exact match", () => {
 
 test("job_watch resolves to its own descriptor, not the generic family fallback", () => {
   expect(toolRendererFor("job_watch")).not.toBe(toolRendererFor("job_zzz_unlisted"));
+});
+
+// The recorded delegate and delegate_send calls (agent/testdata/subagentwire),
+// as their rows' lines: a delegate's is its intent, a send's names the
+// delegate and the status its footer reports.
+test("says the recorded delegate and delegate_send calls as their rows' lines", () => {
+  expect(toolRendererFor("delegate").summary(subagentWireStep("call_delegate_1"))).toBe("Fix race in tree settle");
+  expect(toolRendererFor("delegate_send").summary(subagentWireStep("call_send_1"))).toBe(
+    "Sent a message to delegate dlg_02wMz5TxvSettleRace001 · running",
+  );
 });

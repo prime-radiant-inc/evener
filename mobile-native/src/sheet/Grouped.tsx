@@ -17,7 +17,7 @@ import {
 	useState,
 } from "react";
 import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
-import { fonts, scaledType, space, uiType } from "../design/tokens";
+import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
 /** Above a section label. */
@@ -174,6 +174,10 @@ export interface RowProps {
 	onPress?: () => void;
 	/** VoiceOver's reading when the visible text isn't enough. */
 	accessibilityLabel?: string;
+	/** A control of its own at the row's end, such as a mini button
+	 * ("Install"): outside what a press on the row opens, so each is its own
+	 * target and its own VoiceOver element. */
+	accessory?: ReactNode;
 }
 
 /** Between the label and a value that wrapped under it. */
@@ -273,6 +277,7 @@ export function Row({
 	disabled = false,
 	onPress,
 	accessibilityLabel,
+	accessory,
 }: RowProps) {
 	const { palette } = useColors();
 	const labelColor = tone === "accent" ? palette.accentInk : tone === "danger" ? palette.dangerInk : palette.inkHi;
@@ -314,23 +319,38 @@ export function Row({
 		opacity: disabled ? 0.4 : 1,
 	} as const;
 	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
-	if (!onPress)
-		return (
-			<View accessible accessibilityLabel={reading} accessibilityState={state} style={style}>
-				{body}
-			</View>
-		);
-	return (
+	// With a control at its end, the row's own part takes the rest of the
+	// width and the control sits beside it, inset like the row's text.
+	const own = accessory ? [style, { flex: 1, paddingRight: 0 }] : style;
+	const row = !onPress ? (
+		<View accessible accessibilityLabel={reading} accessibilityState={state} style={own}>
+			{body}
+		</View>
+	) : (
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={reading}
 			accessibilityState={state}
 			disabled={disabled}
 			onPress={onPress}
-			style={({ pressed }) => [style, pressed ? { backgroundColor: palette.pressed } : null]}
+			style={({ pressed }) => [own, pressed ? { backgroundColor: palette.pressed } : null]}
 		>
 			{body}
 		</Pressable>
+	);
+	if (!accessory) return row;
+	return (
+		<View style={{ flexDirection: "row", alignItems: "center" }}>
+			{row}
+			{/* Stretched to the row's height: React Native clips a touch at its
+			    parent's bounds, so a control's reach needs the row's room. */}
+			<View
+				testID="row-accessory"
+				style={{ alignSelf: "stretch", justifyContent: "center", paddingHorizontal: space.rowInset }}
+			>
+				{accessory}
+			</View>
+		</View>
 	);
 }
 
@@ -391,11 +411,12 @@ export function SwitchRow({
 					accessibilityRole="button"
 					accessibilityLabel={accessibilityLabel ?? [label, sub].filter(Boolean).join(", ")}
 					onPress={onPress}
+					// Pressed, it shades as a Row does.
 					style={({ pressed }) => ({
 						flex: 1,
 						alignSelf: "stretch",
 						justifyContent: "center",
-						opacity: pressed ? 0.6 : 1,
+						backgroundColor: pressed ? palette.pressed : undefined,
 					})}
 				>
 					{text}
@@ -473,9 +494,12 @@ export function TextFieldRow({
 			allowFontScaling={allowFontScaling}
 			style={{
 				color: palette.inkHi,
-				...(machine
-					? { fontFamily: fonts.mono, fontSize: uiType.subheadline.fontSize * scale }
-					: { fontSize: uiType.listRow.fontSize * scale }),
+				// React Native draws a TextInput's placeholder in the input's
+				// own font, so a machine field shows hint words in the UI font
+				// while empty and its value in Menlo once there is one (spec
+				// 16.2).
+				...(machine && value !== "" ? { fontFamily: fonts.mono } : null),
+				fontSize: (machine ? uiType.subheadline : uiType.listRow).fontSize * scale,
 				minHeight: multiline ? 88 : 44,
 				paddingHorizontal: space.rowInset,
 				paddingVertical: space.rowPadding,
@@ -483,6 +507,115 @@ export function TextFieldRow({
 				opacity: disabled ? 0.4 : 1,
 			}}
 		/>
+	);
+}
+
+/** Each Button kind, from the prototype's .btn.primary.big, .btn and
+ * .mini-btn. `reach` is how far the touch extends: a primary or plain button
+ * reaches the platform's minimum target, and a mini button, which sits inside
+ * a 44pt row, reaches the row's edges and no further. */
+const BUTTON_KINDS = {
+	primary: {
+		drawn: 50,
+		reach: "platform",
+		shape: { borderRadius: 25, paddingHorizontal: 20, paddingVertical: 6, alignSelf: "stretch" },
+		fill: "accentFill",
+		ink: "onFill",
+		type: uiType.listRow,
+		pressed: "dim",
+	},
+	plain: {
+		drawn: 36,
+		reach: "platform",
+		shape: { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 0.5 },
+		fill: "surface",
+		ink: "inkHi",
+		type: uiType.subheadline,
+		pressed: "dim",
+	},
+	mini: {
+		drawn: 30,
+		reach: "row",
+		shape: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 },
+		fill: undefined,
+		ink: "accentInk",
+		type: uiType.footnote,
+		pressed: "shade",
+	},
+} as const satisfies Record<
+	string,
+	{
+		drawn: number;
+		reach: "platform" | "row";
+		shape: object;
+		fill: keyof Palette | undefined;
+		ink: keyof Palette;
+		type: { fontSize: number; lineHeight: number };
+		pressed: "dim" | "shade";
+	}
+>;
+
+/** A button, as the prototype draws one (styles.css):
+ * - `primary`, the page's call to action: filled in the accent and full width
+ *   at 50pt (.btn.primary.big). It dims when pressed, as the app's other
+ *   buttons do.
+ * - plain, beside what it acts on: a 36pt capsule on the surface (.btn),
+ *   dimming when pressed.
+ * - `mini`, a row's own control such as Install (.mini-btn): 13pt accent text
+ *   with no fill, shaded when pressed.
+ * A plain button's touch reaches the 44pt minimum (48 on Android, as Action's
+ * does); a mini button's reaches its 44pt row's edges. Its label follows
+ * Dynamic Type, so the height is a minimum.
+ * Most actions are rows; a page's one call to action is `primary`. */
+export function Button({
+	label,
+	onPress,
+	primary = false,
+	mini = false,
+	disabled = false,
+	accessibilityLabel,
+}: {
+	label: string;
+	onPress(): void;
+	primary?: boolean;
+	mini?: boolean;
+	disabled?: boolean;
+	/** VoiceOver's name when the label alone doesn't say what it acts on, as
+	 * for a row's "Install" ("Install tool from acme"). */
+	accessibilityLabel?: string;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const kind = BUTTON_KINDS[primary ? "primary" : mini ? "mini" : "plain"];
+	const target = kind.reach === "row" ? 44 : Platform.OS === "android" ? 48 : 44;
+	const reach = (target - kind.drawn) / 2;
+	const fill = kind.fill && palette[kind.fill];
+	const outline = "borderWidth" in kind.shape ? { borderColor: palette.edgeStrong } : null;
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={accessibilityLabel}
+			accessibilityState={{ disabled }}
+			disabled={disabled}
+			onPress={onPress}
+			hitSlop={reach > 0 ? { top: reach, bottom: reach } : undefined}
+			style={({ pressed }) => ({
+				minHeight: kind.drawn,
+				alignItems: "center",
+				justifyContent: "center",
+				...kind.shape,
+				...outline,
+				backgroundColor: pressed && kind.pressed === "shade" ? palette.pressed : fill,
+				opacity: disabled ? 0.4 : pressed && kind.pressed === "dim" ? 0.65 : 1,
+			})}
+		>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ color: palette[kind.ink], fontWeight: "600", ...scaledType(kind.type, scale) }}
+			>
+				{label}
+			</Text>
+		</Pressable>
 	);
 }
 
@@ -653,12 +786,13 @@ export function Tag({ text, tone }: { text: string; tone: keyof typeof TAG_TONES
 			style={{
 				color: palette[ink],
 				backgroundColor: palette[fill],
+				// The prototype's .tag (styles.css): 11pt semibold on a 16pt line.
 				fontSize: 11 * scale,
-				lineHeight: 13 * scale,
+				lineHeight: 16 * scale,
 				fontWeight: "600",
-				paddingHorizontal: 5,
-				paddingVertical: 2,
-				borderRadius: 4,
+				paddingHorizontal: 6,
+				paddingVertical: 1,
+				borderRadius: 6,
 				overflow: "hidden",
 			}}
 		>
@@ -689,7 +823,8 @@ export function RowValue({
 					style={{
 						flexShrink: 1,
 						color: tone === "attention" ? palette.attentionInk : palette.inkMid,
-						fontSize: uiType.listRow.fontSize * scale,
+						// The prototype's .gv: a value sits a step under the 17pt label.
+						...scaledType(uiType.subheadline, scale),
 						fontVariant: ["tabular-nums"],
 					}}
 				>

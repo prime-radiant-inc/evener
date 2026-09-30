@@ -43,10 +43,12 @@ test("message-only (no title, no hint) still renders, with a generic label", () 
   expect(screen.queryByTestId("warning-hint")).toBeNull();
 });
 
-test("title-only (no message, no hint) renders the title with no message/hint lines", () => {
+// A warning's words show once each (warningWords), as the phone shows them:
+// a title-only warning's title is its message, under the generic chip.
+test("title-only (no message, no hint) reads the title as its message, under the generic chip", () => {
   render(<WarningItem item={item({ text: "", warning: { title: "Heads up" } })} turn={turn} live={false} />);
-  expect(screen.getByText("Heads up")).toBeTruthy();
-  expect(screen.queryByTestId("warning-message")).toBeNull();
+  expect(screen.getByTestId("warning-message").textContent).toBe("Heads up");
+  expect(screen.getByText("Warning")).toBeTruthy();
   expect(screen.queryByTestId("warning-hint")).toBeNull();
 });
 
@@ -157,7 +159,7 @@ test.each([
 });
 
 // An informational warning (a coded "no action needed" notice, the projector
-// only lets through at high verbosity) renders as ONE quiet line instead of
+// only lets through at Full) renders as ONE quiet line instead of
 // the attention-chip block: no chip, no separate hint row, the message as the
 // line's text, the hint reachable on the line's hover title.
 test("an informational warning renders one quiet line with the hint on the hover title", () => {

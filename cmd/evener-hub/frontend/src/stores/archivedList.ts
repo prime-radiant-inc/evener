@@ -1,0 +1,163 @@
+// archivedList.ts — one project's archived sessions, read a page at a time
+// from evener/archived/list. Archived rows are not part of navigation: the
+// list has no revisions or invalidations, so it is refetched when the rail
+// sees the navigation archived count move to a total the list does not hold,
+// and after an action that can change the project's archived rows (archive,
+// unarchive, pin, delete). A replaced or recovered connection drops every
+// list, so none outlives the connection that served it.
+//
+// Lists are keyed by catalog and project key, because one project key can
+// exist in two catalogs.
+
+import type { ArchivedListParams, NavigationSessionSummary } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
+import { decodeArchivedListSessions } from "@evener/appwire-client/state/navigation";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
+import { connectedClientPort, onConnectionReplacedOrRecovered } from "./connection";
+
+export type ArchivedListCatalog = "projects" | "archived_projects" | "test_runs";
+
+export interface ArchivedList {
+  rows: NavigationSessionSummary[];
+  /** The cursor for the next page; absent on the last page. */
+  nextCursor?: string;
+  /** Every archived session of the project, loaded or not. */
+  total: number;
+  /** Whether a page has arrived. Until one does, total is unknown. */
+  loaded: boolean;
+  loading: boolean;
+  /** Non-null when the most recent request failed. Loaded rows are kept. */
+  error: string | null;
+}
+
+export interface ArchivedListState {
+  lists: Record<string, ArchivedList>;
+}
+
+// archivedListKey is an encoded pair, so a project key holding any character
+// still parses back (refreshLoadedArchivedLists).
+export function archivedListKey(catalog: ArchivedListCatalog, projectKey: string): string {
+  return JSON.stringify([catalog, projectKey]);
+}
+
+export const archivedListStore = createStore<ArchivedListState>(() => ({ lists: {} }));
+
+const { requireClient } = connectedClientPort("archivedList");
+
+// generations counts requests per list, so a response from a request that a
+// newer one has overtaken (a load-more answered after a refresh) is dropped.
+const generations = new Map<string, number>();
+
+const emptyList: ArchivedList = { rows: [], total: 0, loaded: false, loading: false, error: null };
+
+// A new connection may serve another hub's rows, or rows that changed while
+// this one was away. Every list is dropped, and each list's generation moves
+// on so an answer the old connection still owes lands nowhere.
+onConnectionReplacedOrRecovered(() => {
+  for (const [key, generation] of generations) generations.set(key, generation + 1);
+  archivedListStore.setState({ lists: {} });
+});
+
+function patch(key: string, change: (list: ArchivedList) => Partial<ArchivedList>): void {
+  archivedListStore.setState((state) => {
+    const list = state.lists[key] ?? emptyList;
+    return { lists: { ...state.lists, [key]: { ...list, ...change(list) } } };
+  });
+}
+
+// startRequest moves the list's generation on, so any request already in
+// flight for it is dropped, and returns a check for whether this one is still
+// the newest.
+function startRequest(key: string): () => boolean {
+  const generation = (generations.get(key) ?? 0) + 1;
+  generations.set(key, generation);
+  patch(key, () => ({ loading: true, error: null }));
+  return () => generations.get(key) === generation;
+}
+
+async function requestPage(catalog: ArchivedListCatalog, projectKey: string, cursor: string | undefined) {
+  const params: ArchivedListParams = { catalog, projectKey, ...(cursor ? { cursor } : {}) };
+  const response = await requireClient().request("evener/archived/list", params);
+  return {
+    rows: decodeArchivedListSessions(response.sessions),
+    nextCursor: response.nextCursor,
+    total: response.total,
+  };
+}
+
+async function loadMore(catalog: ArchivedListCatalog, projectKey: string, cursor: string): Promise<void> {
+  const key = archivedListKey(catalog, projectKey);
+  const isNewest = startRequest(key);
+  try {
+    const page = await requestPage(catalog, projectKey, cursor);
+    if (!isNewest()) return;
+    patch(key, (list) => ({
+      rows: [...list.rows, ...page.rows],
+      nextCursor: page.nextCursor,
+      total: page.total,
+      loaded: true,
+      loading: false,
+    }));
+  } catch (err) {
+    if (!isNewest()) return;
+    patch(key, () => ({ loading: false, error: errorText(err) }));
+  }
+}
+
+/** Reloads the project's archived list from its first page, through as many
+ * pages as the list already held (at least one), so a refresh does not undo
+ * the user's "+N older" paging. The rows are swapped in once, when the last
+ * page has arrived. Opening a fold and refreshing it are the same request. */
+export async function refreshArchivedList(catalog: ArchivedListCatalog, projectKey: string): Promise<void> {
+  const key = archivedListKey(catalog, projectKey);
+  const wanted = archivedListStore.getState().lists[key]?.rows.length ?? 0;
+  const isNewest = startRequest(key);
+  try {
+    let page = await requestPage(catalog, projectKey, undefined);
+    const rows = [...page.rows];
+    while (isNewest() && rows.length < wanted && page.nextCursor) {
+      page = await requestPage(catalog, projectKey, page.nextCursor);
+      rows.push(...page.rows);
+    }
+    if (!isNewest()) return;
+    patch(key, () => ({ rows, nextCursor: page.nextCursor, total: page.total, loaded: true, loading: false }));
+  } catch (err) {
+    if (!isNewest()) return;
+    patch(key, () => ({ loading: false, error: errorText(err) }));
+  }
+}
+
+/** Appends the next page; does nothing on the last page or before the first. */
+export function loadMoreArchivedList(catalog: ArchivedListCatalog, projectKey: string): Promise<void> {
+  const cursor = archivedListStore.getState().lists[archivedListKey(catalog, projectKey)]?.nextCursor;
+  if (!cursor) return Promise.resolve();
+  return loadMore(catalog, projectKey, cursor);
+}
+
+/** Refreshes every loaded list: an archive, unarchive, pin, unpin or delete
+ * can move rows in or out of a project's archived tier, and only the lists a
+ * user has opened are loaded, so refreshing them all is cheap. */
+export async function refreshLoadedArchivedLists(): Promise<void> {
+  const keys = Object.keys(archivedListStore.getState().lists);
+  await Promise.all(
+    keys.map((key) => {
+      const [catalog, projectKey] = JSON.parse(key) as [ArchivedListCatalog, string];
+      return refreshArchivedList(catalog, projectKey);
+    }),
+  );
+}
+
+export function useArchivedList(catalog: ArchivedListCatalog, projectKey: string): ArchivedList | undefined {
+  return useStore(archivedListStore, (state) => state.lists[archivedListKey(catalog, projectKey)]);
+}
+
+export function useArchivedLists(): Record<string, ArchivedList> {
+  return useStore(archivedListStore, (state) => state.lists);
+}
+
+// Test-only.
+export function resetArchivedListStoreForTests(): void {
+  generations.clear();
+  archivedListStore.setState({ lists: {} });
+}

@@ -25,6 +25,32 @@ export interface WhereFacts {
 	branch?: string;
 }
 
+/** A host as the Session sheet shows it (spec 8.6): its name, and whether
+ * it's connected, for its dot; null when nothing says. */
+export interface SessionHost {
+	label: string;
+	online: boolean | null;
+}
+
+/** Names each host a session can run on. The hub's own machine goes by the
+ * hub's name, as Hub > Hosts names it, where the manifest calls it "this
+ * host", and is as connected as the hub; any other host goes by its manifest
+ * label and state, or by its id while the manifest doesn't list it. While the
+ * hub is away every host it lists reads offline, since the phone can't reach
+ * any of them. */
+export function sessionHosts(
+	sources: readonly { id: string; label: string; online: boolean }[] | undefined,
+	hubName: string | null,
+	hubConnected: boolean,
+): (hostId: string) => SessionHost {
+	const byId = new Map((sources ?? []).map((source) => [source.id, source]));
+	return (hostId) => {
+		const source = byId.get(hostId);
+		if (hostId === "local") return { label: hubName ?? source?.label ?? hostId, online: hubConnected };
+		return { label: source?.label ?? hostId, online: source ? hubConnected && source.online : null };
+	};
+}
+
 export function whereFacts(
 	session: Pick<ThreadModel, "ref" | "cwd" | "projectPath" | "gitBranch">,
 	hostLabel: (hostId: string) => string,
@@ -115,8 +141,8 @@ export function effortName(level: string): string {
 }
 
 /** A model as the catalog names it (a model is called one way everywhere
- * people read it). While the catalog is away (it clears while it reloads and
- * after a failed load) the hub's session row names it (S17's model_name, the
+ * people read it). While the catalog is away (before the first load, and
+ * after a failed load clears it; a reload keeps it) the hub's session row names it (S17's model_name, the
  * same name model/list gives), and only then the id. Right after a switch the
  * row may lag until the fleet re-reads it; that only shows while the catalog
  * is away too. */

@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
@@ -220,6 +221,49 @@ func TestRenderSubagentRailConsolidates(t *testing.T) {
 	}
 }
 
+// A failed run's reason is a code (run_error, #3327); its cause rides beside
+// it as error. The rail leads with the cause and never shows the bare code
+// when there is one.
+func TestRenderSubagentRailShowsAFailedRunsCause(t *testing.T) {
+	withTestColorProfile(t)
+	runs := []transcript.SubagentRunInfo{
+		{DelegateID: "dlg_1", Task: "update lockfile", Status: "idle", Outcome: "failed", Terminal: true, Reason: "run_error", Error: "provider returned 500"},
+	}
+	out := RenderSubagentRail(runs, 80)
+	if !strings.Contains(out, "provider returned 500") || strings.Contains(out, "run_error") {
+		t.Fatalf("failed row should show its cause, not its code: %q", out)
+	}
+}
+
+// With no error, the rail says the reason code in words, never snake_case,
+// as the web and phone do (delegateEndingText).
+func TestRenderSubagentRailSaysAReasonCodeInWords(t *testing.T) {
+	withTestColorProfile(t)
+	runs := []transcript.SubagentRunInfo{
+		{DelegateID: "dlg_1", Task: "update lockfile", Status: "idle", Outcome: "failed", Terminal: true, Reason: "ended_without_report"},
+	}
+	out := RenderSubagentRail(runs, 80)
+	if !strings.Contains(out, "ended without reporting") || strings.Contains(out, "ended_without_report") {
+		t.Fatalf("failed row should say its reason code in words: %q", out)
+	}
+}
+
+// A long cause is cut on a character boundary, never mid-rune.
+func TestRenderSubagentRailCutsALongCauseOnARune(t *testing.T) {
+	withTestColorProfile(t)
+	runs := []transcript.SubagentRunInfo{
+		{DelegateID: "dlg_1", Task: "t", Status: "idle", Outcome: "failed", Terminal: true, Reason: "run_error", Error: strings.Repeat("é", 60)},
+	}
+	out := RenderSubagentRail(runs, 200)
+	if !utf8.ValidString(out) {
+		t.Fatalf("rail split a character: %q", out)
+	}
+	// The cause is longer than the row's 40 columns, so it was cut.
+	if !strings.Contains(out, "é…") {
+		t.Fatalf("a 60-rune cause was not cut: %q", out)
+	}
+}
+
 func TestSubagentRailClass_CommandOutcomes(t *testing.T) {
 	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
 		if got := subagentRailClass(status); got != "failed" {
@@ -271,7 +315,8 @@ func TestSubagentRailClass_Exhausted(t *testing.T) {
 		t.Fatalf("subagent body did not retain exhausted status: %q", body)
 	}
 	rail := RenderSubagentRail([]transcript.SubagentRunInfo{run}, 80)
-	if !strings.Contains(rail, "1 failed") || !strings.Contains(rail, "tool_round_budget_exhausted") {
+	// The reason code reads in words (#3327).
+	if !strings.Contains(rail, "1 failed") || !strings.Contains(rail, "ran out of tool rounds") {
 		t.Fatalf("exhausted rail did not retain terminal non-success reason: %q", rail)
 	}
 	if strings.Contains(rail, "running") || strings.Contains(rail, "1 done") {

@@ -407,6 +407,11 @@ type testConfig struct {
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
+	// subagentAfterFinalizationQuiesced observes a stable child's finalize
+	// tail right after it reports its generation quiesced to the controller,
+	// the point from which the delegate takes its next start. Nil in
+	// production.
+	subagentAfterFinalizationQuiesced func(*subagent)
 
 	// registerTool injects deterministic registration failures. Nil preserves
 	// direct Registry.Register calls.
@@ -539,6 +544,12 @@ type testConfig struct {
 	// before the attention reservation commits, on the root session's own
 	// goroutine. Nil in production.
 	afterDelegateAttentionRestore func(delegateID string, restored *subagent)
+
+	// delegateAttentionGiveUpAfter overrides how many consecutive counted
+	// restore failures the attention drive tolerates before it hands a
+	// delegate's attention to the root (maxDelegateAttentionRestoreFailures).
+	// Zero keeps the default.
+	delegateAttentionGiveUpAfter int
 
 	// namerClient, when non-nil, is the llm.Client the background session namer
 	// uses instead of the session's own. The namer runs on a detached goroutine,

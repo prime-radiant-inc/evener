@@ -6,8 +6,9 @@
 // boardMemory.ts's fallback. S5 (activity) has landed: whyLine and liveBands
 // take the activity poll's own data (its caller polls evener/activity/read
 // and hands the read back in - this file has no client of its own), with no
-// fallback left when it's given. Subagent failures never appear on a Board
-// row; they show only in the session's Subagents chip and list.
+// fallback left when it's given. A subagent failure never puts a Board row in
+// Needs you; the row's subagent chip (subagentChip) counts it, and the
+// session's Subagents list holds the detail.
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { quietState } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
@@ -185,7 +186,8 @@ function workingOrder(isStuck: (row: NavigationSessionSummary) => boolean) {
 /** Splits Live into the spec's four bands. Rows from the needs_you section
  * join when Live's loaded pages don't hold them yet, so a session that needs
  * you is never hidden behind "load more"; a row in both keeps its Live copy,
- * which carries children. Working keeps the hub's Live order (ruling 10),
+ * which carries the row's children (fork originals and cluster members).
+ * Working keeps the hub's Live order (ruling 10),
  * except a row isStuck marks (S5's quietState "stuck", from the activity
  * poll), which floats to the top of the band (spec 7.1). */
 export function liveBands(
@@ -230,7 +232,10 @@ export function liveSummary(bands: LiveBands): LiveSummary | null {
 	return Object.values(counts).filter((count) => count > 0).length >= 2 ? counts : null;
 }
 
-export const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** "1 session", "3 sessions": `separator` joins the count to its noun, a
+ * no-break space where the two must stay on one line. */
+export const plural = (count: number, noun: string, separator = " ") =>
+	`${count}${separator}${noun}${count === 1 ? "" : "s"}`;
 /** A section's VoiceOver label, shared by its chip and its header. */
 export const sectionLabel = (name: string, count: number, noun: string) => `${name}, ${plural(count, noun)}`;
 
@@ -275,12 +280,12 @@ function subagentsText(count: number): string {
 
 /** whyLine's working-row text once a real activity read exists (S5): the
  * read's own subagent tally is authoritative and wins outright, never mixed
- * with the row's children-based guess (a stale local count must not survive
- * a fresh read of zero). Quiet and stuck read from quietState, which itself
+ * with the row's own tally guess (a stale local count must not survive a
+ * fresh read of zero). Quiet and stuck read from quietState, which itself
  * withholds both while a subagent runs. Absent either, this is the same
- * command-or-Working text workingActivity falls back to, without its
- * children-based guess: a real read already answered the subagent question,
- * even when the answer is zero. */
+ * command-or-Working text workingActivity falls back to, without its own
+ * tally guess: a real read already answered the subagent question, even when
+ * the answer is zero. */
 function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity, msSinceReadMs: number): WhyLine {
 	if (activity.runningSubagents > 0) return { text: subagentsText(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
@@ -308,14 +313,26 @@ function commandOrWorking(row: NavigationSessionSummary): string {
 
 /** What a working session is doing when there is no activity read at all (an
  * older hub, before the first poll, or while disconnected): the row's own
- * children stand in for S5's subagent tally, and more_subagents says how many
- * more there are past the hub's per-row cap (spec 18, S3's eventual
- * replacement for this guess). */
+ * subagents tally stands in for S5's read (S3). The row no longer nests
+ * subagents under its children -- those hold only fork originals and cluster
+ * members -- so the tally is the only place a subagent count comes from. */
 export function workingActivity(row: NavigationSessionSummary): string {
-	const subagents = row.children.filter((child) => child.state === "active").length;
-	const more = row.more_subagents ?? 0;
-	if (subagents > 0) return `${subagentsText(subagents)}${more > 0 ? ` (+${more} more)` : ""}`;
+	const running = row.subagents?.running ?? 0;
+	if (running > 0) return subagentsText(running);
 	return commandOrWorking(row);
+}
+
+/** The subagent chip's text from the counts the shared gate shows
+ * (subagentTallyToShow, the same one the web rail reads): "3 running",
+ * "2 failed", or "2 running · 3 failed". The chip colors each run on its own,
+ * so the running count stays in the neutral ink and only the failure reads in
+ * the danger ink (D2): a failed subagent is not something the user must act
+ * on, so it must not wear the Needs you attention ink. */
+export function subagentChipText(tally: { running: number; failed: number }): string {
+	const parts: string[] = [];
+	if (tally.running > 0) parts.push(`${tally.running} running`);
+	if (tally.failed > 0) parts.push(`${tally.failed} failed`);
+	return parts.join(" · ");
 }
 
 export interface Usual {

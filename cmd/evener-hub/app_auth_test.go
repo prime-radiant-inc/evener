@@ -912,6 +912,24 @@ func TestAuth_DeviceStart_ReturnsCodeAndStoresFlow(t *testing.T) {
 	}
 }
 
+func TestAuth_DeviceStart_ReportsTheFlowTTL(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	attachTestRegistry(t, c)
+	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		return authopenai.DeviceCode{UserCode: "USER-1", VerificationURL: "https://auth.openai.com/codex/device", DeviceAuthID: "dev-1", Interval: 5 * time.Second}, nil
+	}
+	got, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai-codex"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	if want := int(hubAuthFlowTTL / time.Second); got.ExpiresInSeconds != want {
+		t.Fatalf("ExpiresInSeconds = %d, want %d (the flow's TTL)", got.ExpiresInSeconds, want)
+	}
+}
+
 func TestAuth_DeviceStart_FallbackWhenNotEnabled(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()

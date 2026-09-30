@@ -4,8 +4,10 @@ import { expect, test, vi } from "vitest";
 // consumer's test runner uses, and package-test-files.mjs refuses one.
 import timestampFixture from "../../../../cmd/evener-hub/testdata/navigation/timestamps.json?raw";
 import valueRecordsFixture from "../../../../cmd/evener-hub/testdata/navigation/value-records.json?raw";
+import { completeSession } from "../../testing/navigation";
 import type { NavigationSessionSummary, NavigationSnapshot } from "../../types.gen";
 import {
+  decodeArchivedListSessions,
   decodeNavigationResponse,
   materializeNavigationResource,
   materializeSnapshot,
@@ -16,6 +18,7 @@ import {
 } from "./codec";
 import { applyDelta, reconcileSnapshot } from "./merge";
 import {
+  NAVIGATION_SECTION_LIMIT,
   NavigationBaseInvalidError,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
@@ -1546,4 +1549,60 @@ test("a snapshot read runs each session value's validator twice, not five times"
   }
 
   expect(timestampChecks).toHaveLength(2);
+});
+
+test("an archived list decodes rows with nested fork-original children", () => {
+  const rows = [
+    completeSession({
+      ref: "local:root",
+      updated_at: "2026-09-01T00:00:00Z",
+      favorite: true,
+      children: [{ ref: "local:original", kind: "fork" }],
+    }),
+    completeSession({ ref: "devbox:remote", host_id: "devbox", offline: true }),
+  ];
+  expect(decodeArchivedListSessions(rows)).toEqual(rows);
+});
+
+test("an archived list rejects a malformed row, a malformed child, and a non-array", () => {
+  const missingRef = { ...completeSession({ ref: "local:root" }) };
+  delete missingRef.ref;
+  const badChild = {
+    ...completeSession({ ref: "local:root" }),
+    children: [{ ...completeSession({ ref: "local:child" }), session_id: undefined }],
+  };
+  for (const value of [[missingRef], [badChild], { sessions: [] }, null]) {
+    expect(() => decodeArchivedListSessions(value)).toThrow("navigation protocol: invalid archived list");
+  }
+});
+
+test("an archived list rejects children nested deeper than the navigation depth bound", () => {
+  let row = completeSession({ ref: "local:leaf" });
+  for (let depth = 0; depth < 40; depth++) {
+    row = completeSession({ ref: `local:level-${depth}`, children: [row] });
+  }
+  expect(() => decodeArchivedListSessions([row])).toThrow("navigation protocol: invalid archived list");
+});
+
+test("an archived list decodes a full page and rejects one row more than the section limit", () => {
+  const page = (rows: number) =>
+    Array.from({ length: rows }, (_, index) => completeSession({ ref: `local:row-${index}` }));
+  expect(decodeArchivedListSessions(page(NAVIGATION_SECTION_LIMIT))).toHaveLength(NAVIGATION_SECTION_LIMIT);
+  expect(() => decodeArchivedListSessions(page(NAVIGATION_SECTION_LIMIT + 1))).toThrow(
+    "navigation protocol: invalid archived list",
+  );
+});
+
+test("an archived list rejects more nested nodes than a navigation session may hold", () => {
+  // Two shallow rows keep the row and depth bounds satisfied; only the total
+  // node count overflows.
+  const fanOut = (prefix: string, count: number) =>
+    completeSession({
+      ref: `local:${prefix}`,
+      children: Array.from({ length: count }, (_, index) => completeSession({ ref: `local:${prefix}-${index}` })),
+    });
+  expect(decodeArchivedListSessions([fanOut("a", 999), fanOut("b", 999)])).toHaveLength(2);
+  expect(() => decodeArchivedListSessions([fanOut("a", 1000), fanOut("b", 1000)])).toThrow(
+    "navigation protocol: invalid archived list",
+  );
 });

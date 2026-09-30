@@ -10,14 +10,11 @@
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
-	filePathOf,
-	type ItemModel,
 	mcpToolParts,
-	parseArgs,
 	parseAskUserQuestions,
-	shellCommand,
 	skillName,
 	type ThreadModel,
+	taskListChanges,
 	type ToolFamily,
 	type TurnModel,
 	toolFamily,
@@ -122,9 +119,7 @@ export function sessionRows(
 /** The questions an earlier ask_user row shows (QuestionHistory), or
  * undefined when its arguments name none it can read. */
 export function askRowQuestions(row: Extract<TimelineRow, { kind: "activity" }>): AskUserQuestion[] | undefined {
-	return row.label === "ask_user"
-		? parseAskUserQuestions({ argumentsJSON: row.detail.arguments } as ItemModel)
-		: undefined;
+	return row.label === "ask_user" ? parseAskUserQuestions({ argumentsJSON: row.detail.arguments }) : undefined;
 }
 
 // A composed answer reply: "[answers]" and then numbered lines like
@@ -300,19 +295,6 @@ export interface RunSummary {
 	failed: number;
 }
 
-/** What a step acted on: the command for a shell step, else the file or path
- * it named. `parsed` is the arguments already decoded, for a caller that read
- * them itself. */
-export function stepTarget(
-	label: string,
-	argumentsJSON: string | undefined,
-	parsed?: Record<string, unknown>,
-): string | undefined {
-	const args = parsed ?? parseArgs(argumentsJSON);
-	if (toolFamily(label) === "shell") return shellCommand(args) || undefined;
-	return filePathOf(args);
-}
-
 /** What a step says it did: the words its row was built with (projectedRows
  * reads them once from the whole step with the package's toolStepSummary),
  * else its label. The one place a renderer reads a step's words from. */
@@ -331,6 +313,10 @@ interface Group {
 	 * activated. */
 	names: Set<string>;
 	unnamed: number;
+	/** Whether a task_list step in the part changed the list, not only read it. */
+	changedTasks: boolean;
+	/** How many questions a part's ask_user calls asked: a call can ask several. */
+	questions: number;
 }
 
 // "go test ./agent/..." runs "go test"; "ls -la" runs "ls".
@@ -354,7 +340,8 @@ function partOf(label: string): { key: string; family: ToolFamily; name: string 
 // What a step contributes to its part's words: the program a shell command
 // ran, the skill a skill step activated, or the server an MCP tool is on.
 function namedBy(family: ToolFamily, step: RunStep): string | undefined {
-	if (family === "shell") return programOf(stepTarget(step.label, step.detail.arguments));
+	// A shell step's target is its command, the session's own cd left out.
+	if (family === "shell") return programOf(step.detail.words?.target);
 	if (family === "skill") return skillName({ argumentsJSON: step.detail.arguments }) || undefined;
 	if (family === "mcp") return mcpToolParts(step.label)?.server;
 	return undefined;
@@ -382,6 +369,20 @@ function partText(group: Group): string {
 			return oneName ? `ran ${oneName}` : `ran ${n} ${plural("command", "commands")}`;
 		case "skill":
 			return oneName ? `used skill ${oneName}` : `used ${n} ${plural("skill", "skills")}`;
+		case "tasks":
+			return `${group.changedTasks ? "updated" : "checked"} the task list${n === 1 ? "" : ` ${n} times`}`;
+		case "transcript":
+			return n === 1 ? "read a transcript" : `read ${n} transcripts`;
+		case "sessions":
+			return n === 1 ? "searched sessions" : `searched sessions ${n} times`;
+		case "worktree":
+			return `managed worktrees ${times}`;
+		case "ask":
+			return group.questions === 1 ? "asked a question" : `asked ${group.questions} questions`;
+		case "jobs":
+			return `managed jobs ${times}`;
+		case "message":
+			return n === 1 ? "sent a message" : `sent ${n} messages`;
 		case "mcp":
 			// One server reads by name; several read as how many MCP tools ran.
 			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;
@@ -412,7 +413,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 		const part = partOf(step.label);
 		let group = groups.get(part.key);
 		if (!group) {
-			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0 };
+			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false, questions: 0 };
 			groups.set(part.key, group);
 		}
 		group.count += 1;
@@ -420,6 +421,10 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			group.failed += 1;
 			failed += 1;
 		}
+		if (part.family === "tasks" && taskListChanges({ argumentsJSON: step.detail.arguments })) group.changedTasks = true;
+		// A call whose questions don't parse still asked one.
+		if (part.family === "ask")
+			group.questions += parseAskUserQuestions({ argumentsJSON: step.detail.arguments })?.length ?? 1;
 		if (part.family === "shell" || part.family === "skill" || part.family === "mcp") {
 			const name = namedBy(part.family, step);
 			if (name) group.names.add(name);

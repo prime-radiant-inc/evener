@@ -6,7 +6,6 @@ import type { SyncStringStorage } from "./syncStringStorage";
 
 export interface SavedLocation {
 	hubId: string;
-	keybindings?: { editor?: { actionId: string; chord: string } };
 	conversation?: { ref: string; title: string };
 	reader?: { sessionRef: string; path: string; updatedAt?: string };
 	pinAssignment?: true;
@@ -57,16 +56,6 @@ function fork(value: unknown): ForkTarget | null {
 		return null;
 	}
 }
-function keybindings(value: unknown): value is NonNullable<SavedLocation["keybindings"]> {
-	if (!isPlainObject(value)) return false;
-	return (
-		value.editor === undefined ||
-		(isPlainObject(value.editor) &&
-			typeof value.editor.actionId === "string" &&
-			!!value.editor.actionId.trim() &&
-			typeof value.editor.chord === "string")
-	);
-}
 function projects(value: unknown): value is NonNullable<SavedLocation["projects"]> {
 	if (!isPlainObject(value) || typeof value.archived !== "boolean") return false;
 	const project = value.project;
@@ -92,14 +81,6 @@ export class LocationRepository {
 		}
 		if (!isPlainObject(value) || typeof value.hubId !== "string" || !savedHubIds.includes(value.hubId)) return null;
 		if (value.conversation !== undefined && !conversation(value.conversation)) return null;
-		if (
-			value.keybindings !== undefined &&
-			(!keybindings(value.keybindings) ||
-				["conversation", "pinned", "pinAssignment", "fork", "deleteSession", "projects"].some(
-					(key) => value[key] !== undefined,
-				))
-		)
-			return null;
 		if (
 			value.projects !== undefined &&
 			(!projects(value.projects) ||
@@ -134,14 +115,11 @@ export class LocationRepository {
 			value.reader !== undefined &&
 			(!reader(value.reader) ||
 				!conversation(value.conversation) ||
-				["pinAssignment", "fork", "deleteSession", "pinned", "projects", "keybindings"].some(
-					(key) => value[key] !== undefined,
-				))
+				["pinAssignment", "fork", "deleteSession", "pinned", "projects"].some((key) => value[key] !== undefined))
 		)
 			return null;
 		return {
 			hubId: value.hubId,
-			...(keybindings(value.keybindings) ? { keybindings: value.keybindings } : {}),
 			...(projects(value.projects) ? { projects: value.projects } : {}),
 			...(target ? { fork: target } : {}),
 			...(pinned(value.pinned) ? { pinned: value.pinned } : {}),
@@ -184,11 +162,6 @@ export function locationForRoute(
 	hubId: string | null,
 ): SavedLocation | null {
 	if (!hubId || route.name === "Hubs") return null;
-	if (route.name === "KeybindingPreferences") {
-		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
-		const destination = route.params.editor === undefined ? {} : { editor: route.params.editor };
-		return keybindings(destination) ? { hubId, keybindings: destination } : null;
-	}
 	if (route.name === "Projects" || route.name === "Project") {
 		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
 		const destination = {
@@ -269,7 +242,6 @@ export function restoredStack(location: SavedLocation | null) {
 		name: string;
 		params?: {
 			hubId: string;
-			editor?: { actionId: string; chord: string };
 			ref?: string;
 			sectionId?: string;
 			title?: string;
@@ -286,12 +258,6 @@ export function restoredStack(location: SavedLocation | null) {
 		};
 	}[] = [{ name: "Hubs" }];
 	if (location) routes.push({ name: "Sessions" });
-	if (location?.keybindings) {
-		routes.push({
-			name: "KeybindingPreferences",
-			params: { hubId: location.hubId, ...location.keybindings },
-		});
-	}
 	if (location?.projects) {
 		const params = {
 			hubId: location.hubId,
