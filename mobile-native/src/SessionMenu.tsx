@@ -53,7 +53,7 @@ export function SessionMenu({
 							Tasks
 						</Action>
 						<Action disabled={!connected} onPress={() => choose("subagents")}>
-							Subagents
+							Activity
 						</Action>
 						<Action tone="quiet" onPress={close}>
 							Cancel

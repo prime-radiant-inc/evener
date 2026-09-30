@@ -22,12 +22,24 @@ export interface DemoSubagent {
 	children?: DemoSubagent[];
 }
 
+/** A shell job a coordinator ran itself that has finished. */
+export interface DemoShellJob {
+	id: string;
+	command: string;
+	/** Seconds since it ended. */
+	ago: number;
+	/** Seconds it ran. */
+	elapsed: number;
+}
+
 export interface DemoCoordinator {
 	/** Its ref, "local:s-pr2138". */
 	ref: string;
 	title: string;
 	model: string;
 	subagents: readonly DemoSubagent[];
+	/** Its own finished shell jobs, listed beside its subagents. */
+	jobs?: readonly DemoShellJob[];
 	/** How the fleet names a subagent's own session (demoFleet.ts hostSessionRef). */
 	subagentRef: (id: string) => string;
 }
@@ -91,24 +103,38 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 		const childEntries: unknown[] = [];
 		const childCounts = noCounts();
 		if (running && sub.line?.startsWith("Running ")) {
-			childEntries.push({
-				kind: "shell",
-				job: {
+			const command = sub.line.slice("Running ".length);
+			childEntries.push(
+				shellEntry(sessionId, ref, {
 					jobId: `job-${sub.id}`,
-					ownerSessionId: sessionId,
-					ownerRef: ref,
-					type: "shell",
 					status: "running",
 					terminal: false,
-					background: true,
-					hasOutput: true,
-					description: sub.line,
-					command: sub.line.slice("Running ".length),
+					description: command,
+					command,
 					startedAt: iso(startupMs - 42_000),
-					outputBytes: 2048,
-				},
-			});
+				}),
+			);
 			childCounts.active += 1;
+		}
+		// A failure its line blames on a command ("Failed: go test exited 1")
+		// ran that command as a job that failed as the subagent ended.
+		const exited = sub.state === "failed" ? /^Failed: (.+?) exited (\d+)/.exec(sub.line ?? "") : null;
+		if (exited) {
+			const [, command = "", code = ""] = exited;
+			childEntries.push(
+				shellEntry(sessionId, ref, {
+					jobId: `job-${sub.id}`,
+					status: "command_exited_nonzero",
+					terminal: true,
+					outcome: "failure",
+					exitCode: Number(code),
+					description: command,
+					command,
+					startedAt: iso(lastEvent - 60_000),
+					endedAt: iso(lastEvent),
+				}),
+			);
+			childCounts.failed += 1;
 		}
 		for (const child of sub.children ?? []) {
 			const nested = toEntry(child, sessionId);
@@ -156,13 +182,36 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 		return { entry: { kind: "delegate", delegate }, counts };
 	};
 	const counts = noCounts();
-	const entries = coordinator.subagents.map((sub) => {
+	const entries: unknown[] = (coordinator.jobs ?? []).map((job) => {
+		counts.completed += 1;
+		const ended = startupMs - job.ago * 1000;
+		return shellEntry(idOf(coordinator.ref), coordinator.ref, {
+			jobId: `job-${job.id}`,
+			status: "completed",
+			terminal: true,
+			outcome: "success",
+			exitCode: 0,
+			description: job.command,
+			command: job.command,
+			startedAt: iso(ended - job.elapsed * 1000),
+			endedAt: iso(ended),
+		});
+	});
+	for (const sub of coordinator.subagents) {
 		const built = toEntry(sub, idOf(coordinator.ref));
 		addCounts(counts, built.counts);
-		return built.entry;
-	});
+		entries.push(built.entry);
+	}
 	return {
 		data: { revision: 1, root: session(idOf(coordinator.ref), coordinator.ref, coordinator.title, entries, counts) },
+	};
+}
+
+/** A shell job in the tree, owned by the session it names. */
+function shellEntry(ownerSessionId: string, ownerRef: string, fields: Record<string, unknown>) {
+	return {
+		kind: "shell",
+		job: { ownerSessionId, ownerRef, type: "shell", background: true, hasOutput: true, outputBytes: 2048, ...fields },
 	};
 }
 
