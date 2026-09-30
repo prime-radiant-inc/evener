@@ -1265,8 +1265,10 @@ func (s *Session) childStartBlocked(childID string) bool {
 const delegateFinalizationWaitCeiling = 10 * time.Second
 
 // awaitDelegateFinalization waits for released to close, bounded by ctx and
-// by delegateFinalizationWaitCeiling, and reports whether it closed.
-func (s *Session) awaitDelegateFinalization(ctx context.Context, released <-chan struct{}) bool {
+// by delegateFinalizationWaitCeiling. It returns nil once released, the
+// context's error when the send is cancelled, and errDelegateTargetBusy when
+// the ceiling passes (the delegate is still busy, as a refusal says).
+func (s *Session) awaitDelegateFinalization(ctx context.Context, released <-chan struct{}) error {
 	ceiling := delegateFinalizationWaitCeiling
 	if override := s.cfg.testOnly.delegateFinalizationWaitCeiling; override != nil {
 		ceiling = *override
@@ -1278,11 +1280,11 @@ func (s *Session) awaitDelegateFinalization(ctx context.Context, released <-chan
 	}
 	select {
 	case <-released:
-		return true
+		return nil
 	case <-ctx.Done():
-		return false
+		return ctx.Err()
 	case <-timer.C():
-		return false
+		return errDelegateTargetBusy
 	}
 }
 
@@ -1355,8 +1357,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// waits out that step and reserves once more.
 	var finalizing delegateFinalizingError
 	if errors.As(err, &finalizing) {
-		if !s.awaitDelegateFinalization(ctx, finalizing.released) {
-			return failed(errDelegateTargetBusy)
+		if waitErr := s.awaitDelegateFinalization(ctx, finalizing.released); waitErr != nil {
+			return failed(waitErr)
 		}
 		reservation, err = s.delegateController.ReserveStart(actor, delegateID)
 	}

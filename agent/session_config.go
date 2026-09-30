@@ -407,6 +407,11 @@ type testConfig struct {
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
+	// subagentBeforeGenerationAnnounced observes a stable child's finalize
+	// tail just before it announces and releases its finished generation:
+	// the child has stopped finalizing, the delegate is idle but not yet
+	// released. Nil in production.
+	subagentBeforeGenerationAnnounced func(*subagent)
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that

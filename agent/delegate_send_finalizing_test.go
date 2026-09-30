@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -332,39 +333,120 @@ func TestDelegateControllerAUnlaunchedGenerationLeavesTheDelegateStartable(t *te
 	assertStartAdmitted(t, c, "dlg_target", "after an unlaunched generation failed")
 }
 
-// A finished generation's idle snapshot and result are held back from
-// FinishGenerationForTail's plans and handed to its tail once, with the delegate
-// still refused a start; the tail's release admits it even when announcing
-// failed.
-func TestDelegateControllerAnnouncesAFinishedGenerationThenReleasesIt(t *testing.T) {
+// A finalize tail whose announcement fails still releases the delegate: the
+// release doesn't depend on the result reaching anyone.
+func TestDelegateTailReleasesADelegateWhoseAnnouncementFails(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	runtime := newSession(t)
+	// The runtime reports to the harness controller for the test; its own
+	// goes back before it closes (cleanups run last-registered first), or
+	// closing would tear down the harness tree it sits in.
+	own := runtime.delegateController
+	runtime.delegateController = c
+	t.Cleanup(func() { runtime.delegateController = own })
+	reservation, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), "dlg_target")
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+		t.Fatalf("AttachRuntime: %v", err)
+	}
 	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
-	plans, err := c.FinishGenerationForTail(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"})
+	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	assertStartRefused(t, c, "dlg_target", "before the tail announces")
+	// A delivery with no controller fails outright (stale lease).
+	failing := delegateMutationPlans{deliveries: []delegateDeliveryPlan{{receiver: committedCallerDeliveryReceiver{}, deliveryID: "dlg_target/delivery/1"}}}
+	if err := runtime.executeDelegateMutationPlans(failing); err == nil {
+		t.Fatal("the failing announcement didn't fail")
+	}
+	(&subagent{sess: runtime}).announceFinishedGeneration(started.lease, failing)
+	assertStartAdmitted(t, c, "dlg_target", "after the tail released, though announcing failed")
+}
+
+// While a finished generation is still finalizing, its delegate is not
+// eligible for an attention wake either, so an attention successor can't
+// start ahead of the result; the release makes it eligible again.
+func TestDelegateControllerRefusesAnAttentionWakeWhileFinalizing(t *testing.T) {
+	c, lease, runtime := finishedDelegateStillFinalizing(t)
+	eligible := func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.delegateAttentionWakeEligibleLocked("dlg_target")
+	}
+	if eligible() {
+		t.Fatal("an attention wake was eligible while the finished generation finalized")
+	}
+	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced: %v", err)
+	}
+	if !eligible() {
+		t.Fatal("an attention wake was still refused after the release")
+	}
+}
+
+// A send waiting for the release gives up when its caller does, with the
+// caller's own error, and commits nothing.
+func TestDelegateSendWaitingForTheReleaseStopsWithItsContext(t *testing.T) {
+	t.Parallel()
+	held := holdDelegateFinalizing(t)
+	defer held.release()
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), ctxToolCallID, "call_send"))
+	defer cancel()
+	updateSessionTestConfig(held.s, func(cfg *testConfig) { cfg.delegateSendAwaitingFinalization = cancel })
+	before := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID)
+	raw, err := json.Marshal(map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
 	if err != nil {
-		t.Fatalf("FinishGenerationForTail: %v", err)
+		t.Fatal(err)
 	}
-	if len(plans.updates) != 0 || len(plans.deliveries) != 0 {
-		t.Fatalf("FinishGenerationForTail handed out %d updates and %d deliveries, want them held for the tail", len(plans.updates), len(plans.deliveries))
+	res := held.s.reg.ExecuteCall(ctx, held.s.currentEnv(), llm.ToolCallData{ID: "call_send", Name: "delegate_send", Arguments: raw})
+	if !res.IsError || !strings.Contains(res.Output, context.Canceled.Error()) {
+		t.Fatalf("a cancelled waiting send = %q (error %v), want the cancellation", res.Output, res.IsError)
 	}
-	var announced delegateMutationPlans
-	boom := errors.New("announcing failed")
-	err = c.announceAndReleaseFinalization(started.lease, runtime, func(held delegateMutationPlans) error {
-		announced = held
-		assertStartRefused(t, c, "dlg_target", "while the generation is being announced")
-		return boom
-	})
-	if !errors.Is(err, boom) {
-		t.Fatalf("announceAndReleaseFinalization error = %v, want the announcing failure", err)
+	if after := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID); after.Generation != before.Generation || !reflect.DeepEqual(after.LatestOutcome, before.LatestOutcome) {
+		t.Fatalf("the cancelled send changed the delegate: generation %d → %d, outcome %+v → %+v", before.Generation, after.Generation, before.LatestOutcome, after.LatestOutcome)
 	}
-	if len(announced.updates) == 0 {
-		t.Fatal("the tail was handed no idle snapshot to announce")
+}
+
+// A client that sends as soon as it sees the delegate go idle
+// (DELEGATE_UPDATED, from the real finalize tail) is taken: the idle snapshot
+// goes out as the tail announces the generation, and the send waits out the
+// release that follows.
+func TestDelegateSendOnTheIdleEventIsTaken(t *testing.T) {
+	t.Parallel()
+	held := holdDelegateFinalizing(t)
+	before := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID)
+	result := make(chan tool.ExecResult, 1)
+	stream := held.s.Events()
+	go func() {
+		for ev := range stream {
+			if data, ok := ev.Data.(events.DelegateUpdatedData); ok && data.DelegateID == held.delegateID && data.Lifecycle == string(delegateLifecycleIdle) {
+				result <- executeDelegateTool(t, held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+				return
+			}
+		}
+	}()
+	held.release()
+	var res tool.ExecResult
+	select {
+	case res = <-result:
+	// TRIPWIRE: a hang guard only; the idle event and the release follow
+	// within milliseconds.
+	case <-time.After(30 * time.Second):
+		t.Fatal("no send followed the idle event")
 	}
-	if again := c.takeFinalizationAnnouncements(started.lease, runtime); len(again.updates) != 0 || len(again.deliveries) != 0 {
-		t.Fatalf("announcements handed out twice: %+v", again)
+	if res.IsError || !strings.Contains(res.Output, "started") {
+		t.Fatalf("the send on the idle event = %q (error %v), want it started", res.Output, res.IsError)
 	}
-	assertStartAdmitted(t, c, "dlg_target", "after the release, though announcing failed")
+	if got := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation; got != before.Generation+1 {
+		t.Fatalf("generation after the send = %d, want %d", got, before.Generation+1)
+	}
 }

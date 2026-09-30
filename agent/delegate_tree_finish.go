@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -250,6 +249,19 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 	return false
 }
 
+// finalizingLocked is delegateID's finished generation still finalizing on
+// its resident runtime, which holds the delegate from any new generation
+// until the finalize tail releases it; nil otherwise. A finalizing runtime a
+// restore replaced, or that was released as idle, no longer holds it. The
+// caller holds c.mu.
+func (c *delegateTreeController) finalizingLocked(delegateID string) *delegateFinalization {
+	live := c.live[delegateID]
+	if live == nil || live.finalizing == nil || live.finalizing.runtime != live.runtime {
+		return nil
+	}
+	return live.finalizing
+}
+
 // finalizationLocked is lease's generation's finalization when runtime is
 // the one finalizing it, else nil. The caller holds c.mu.
 func (c *delegateTreeController) finalizationLocked(lease delegateLease, runtime *Session) *delegateFinalization {
@@ -260,38 +272,12 @@ func (c *delegateTreeController) finalizationLocked(lease delegateLease, runtime
 	return live.finalizing
 }
 
-// takeFinalizationAnnouncements hands the finished generation's held idle
-// snapshot and result deliveries to its finalize tail, once. The delegate
-// stays refused until the tail releases the finalization.
-func (c *delegateTreeController) takeFinalizationAnnouncements(lease delegateLease, runtime *Session) delegateMutationPlans {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	finalizing := c.finalizationLocked(lease, runtime)
-	if finalizing == nil {
-		return delegateMutationPlans{}
-	}
-	announcements := finalizing.announcements
-	finalizing.announcements = delegateMutationPlans{}
-	return announcements
-}
-
-// announceAndReleaseFinalization is a finished generation's last step: it
-// announces the generation (its idle snapshot and its result, to the parent
-// and to any waiting send) through execute, then releases the finalization,
-// whether or not execute failed. Announcing before releasing keeps a
-// successor generation from starting ahead of the result; a send that hears
-// the result waits out the release (see send).
-func (c *delegateTreeController) announceAndReleaseFinalization(lease delegateLease, runtime *Session, execute func(delegateMutationPlans) error) (err error) {
-	defer func() { err = errors.Join(err, c.ReportFinalizationQuiesced(lease, runtime)) }()
-	return execute(c.takeFinalizationAnnouncements(lease, runtime))
-}
-
 // finishGenerationLocked executes a generation finish and, when it finished
-// the generation, marks that generation's runtime as finalizing: every
-// caller of FinishGeneration and FinishNoAction reports quiescence for that
-// runtime and generation when its finalize tail is done. The caller holds
-// c.mu.
-func (c *delegateTreeController) finishGenerationLocked(intent finishIntent, holdAnnouncements bool) (delegateMutationPlans, context.CancelFunc, error) {
+// the generation, marks that generation's runtime as finalizing until its
+// finalize tail (or, for a generation no run finalizes, its caller) reports
+// quiescence for that runtime and generation. A finalization it replaces is
+// released first, so nothing waits on it forever. The caller holds c.mu.
+func (c *delegateTreeController) finishGenerationLocked(intent finishIntent) (delegateMutationPlans, context.CancelFunc, error) {
 	var runtime *Session
 	if live := c.live[intent.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == intent.lease {
 		runtime = live.binding.runtime
@@ -300,14 +286,13 @@ func (c *delegateTreeController) finishGenerationLocked(intent finishIntent, hol
 	plans, cancel, err := c.executeFinishDecisionLocked(decision)
 	if err == nil && runtime != nil && decision.releaseGeneration && decision.events != nil {
 		if live := c.live[intent.lease.delegateID]; live != nil {
+			if live.finalizing != nil {
+				close(live.finalizing.released)
+			}
 			live.finalizing = &delegateFinalization{
 				runtime:    runtime,
 				generation: intent.lease.generation,
 				released:   make(chan struct{}),
-			}
-			if holdAnnouncements {
-				live.finalizing.announcements = delegateMutationPlans{updates: plans.updates, deliveries: plans.deliveries}
-				plans.updates, plans.deliveries = nil, nil
 			}
 		}
 	}
@@ -315,25 +300,12 @@ func (c *delegateTreeController) finishGenerationLocked(intent finishIntent, hol
 }
 
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
-	return c.finishGeneration(lease, finish, false)
-}
-
-// FinishGenerationForTail is FinishGeneration as a run's finalize tail calls
-// it: the finished generation's idle snapshot and result deliveries are held
-// back for announceAndReleaseFinalization to announce as the tail's last
-// step, so nothing hears the generation finished before the delegate is
-// ready for a send.
-func (c *delegateTreeController) FinishGenerationForTail(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
-	return c.finishGeneration(lease, finish, true)
-}
-
-func (c *delegateTreeController) finishGeneration(lease delegateLease, finish delegateFinish, holdAnnouncements bool) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	plans, cancel, err := c.finishGenerationLocked(finishIntent{
 		lease:       lease,
 		finish:      finish,
 		stalePolicy: finishStaleSuppress,
-	}, holdAnnouncements)
+	})
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -345,16 +317,6 @@ func (c *delegateTreeController) finishGeneration(lease delegateLease, finish de
 // generation. Its exact ordinary claim and retained fallback were fenced by
 // prepareNoAction before process-local terminal state publication.
 func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
-	return c.finishNoAction(claim, false)
-}
-
-// FinishNoActionForTail is FinishNoAction as a run's finalize tail calls it,
-// holding the idle snapshot back as FinishGenerationForTail does.
-func (c *delegateTreeController) FinishNoActionForTail(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
-	return c.finishNoAction(claim, true)
-}
-
-func (c *delegateTreeController) finishNoAction(claim *delegateSettlementClaim, holdAnnouncements bool) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	noAction := c.reduceNoActionFinishIntent(finishIntent{claim: claim})
 	if noAction.err != nil {
@@ -365,7 +327,7 @@ func (c *delegateTreeController) finishNoAction(claim *delegateSettlementClaim, 
 		lease:              claim.lease,
 		finish:             noAction.finish,
 		authorizedNoAction: true,
-	}, holdAnnouncements)
+	})
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()

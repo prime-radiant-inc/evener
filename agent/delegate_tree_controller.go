@@ -160,11 +160,6 @@ type delegateRuntimeBinding struct {
 type delegateFinalization struct {
 	runtime    *Session
 	generation uint64
-	// announcements are the finished generation's idle snapshot and result
-	// deliveries, held back from FinishGeneration's plans until the tail
-	// takes them, so nothing hears the generation finished before the
-	// delegate is ready for a send.
-	announcements delegateMutationPlans
 	// released closes when the finalization is released, so a send refused
 	// in the meantime can wait for it.
 	released chan struct{}
