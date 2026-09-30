@@ -1159,10 +1159,20 @@ approval in the owning chat and automatically continue the delegate when access
 is granted. Preserve the child's assignment: a parent's edit grant does not
 implicitly authorize a read-only child to edit. Implementation remains pending.
 
-**Discuss — tool coverage and unattended delivery.** Define usable batch and
-browse paths and how other tools honor the same grant. Resolve unattended
-delivery without assuming that an absent subscriber means the user rejected the
-request. Preserve the scope the user actually approved.
+**Decision — unattended managed chats.** An absent client does not reject an
+access request or grant new permission. Reuse applicable existing access;
+otherwise, retain the request as waiting for access across disconnects and
+ordinary chat resumes, and present it when the user returns. Continue independent
+work within its existing access and resume the affected work automatically after
+approval. Honor cancellation and newer instructions. Waiting for the user when
+new permission is genuinely needed is an accepted tradeoff. Implementation
+remains pending.
+
+**Discuss — tool coverage and one-shot commands.** Define usable batch and browse
+paths and how other tools honor the same grant. Decide how a one-shot command
+without a channel for receiving approval reports an unmet access need. The
+managed-chat decision does not require such a command to wait indefinitely.
+Preserve the scope the user actually approved.
 
 **Acceptance.** A grant with clearly presented scope permits the intended
 read/edit/read sequence without repeated prompts, including after reconnect or
@@ -1171,8 +1181,12 @@ named resource or beyond the approved operation is not implicitly granted. A
 single-use approval still applies only to its original invocation. A delegate
 reuses applicable access without another prompt, routes a genuinely new request
 to its owning chat and resumes automatically after approval. A read-only child
-retains that constraint even when its parent can edit. Batch and unattended
-acceptance criteria depend on the remaining product decisions.
+retains that constraint even when its parent can edit. An access need first
+encountered without an attached client remains pending, is visible on return and
+survives an ordinary chat resume. Independent permitted work can continue;
+approval resumes the affected work without a new user instruction. Cancellation
+or superseding instructions prevent obsolete work from restarting. Batch and
+one-shot command acceptance criteria depend on the remaining product decisions.
 
 ### U01 TUI uncertain submission
 
