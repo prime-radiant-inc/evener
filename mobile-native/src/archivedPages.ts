@@ -93,6 +93,9 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 		});
 	}
 	more() {
+		// A failed read with no next page has nothing to page to: read it again.
+		const list = this.store.getState().lists[this.key];
+		if (list?.error && !list.nextCursor) return this.refresh();
 		return this.store.loadMore(this.catalog, this.projectKey);
 	}
 	/** Reads the list again when the hub announces a change to this project's

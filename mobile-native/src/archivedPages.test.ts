@@ -111,6 +111,26 @@ it("reports a failed read and keeps the loaded rows", async () => {
 	expect(pages.getSnapshot().error).toContain("no such page");
 });
 
+// A list whose read failed with no next page has nothing to page to, so the
+// retry a failed page offers (more) reads it again from the top.
+it("reads a list again on more once its read failed with no next page", async () => {
+	const client = new FakeClient("ready");
+	let fail = false;
+	client.on("evener/archived/list", () => {
+		if (fail) throw new Error("offline");
+		return { sessions: [row("local:a")], total: 1 };
+	});
+	const pages = new ArchivedPages(client, "projects", "p");
+	await pages.refresh();
+	fail = true;
+	await pages.refresh();
+	expect(pages.getSnapshot()).toMatchObject({ loaded: true, remaining: 0, error: "offline" });
+
+	fail = false;
+	await pages.more();
+	expect(pages.getSnapshot()).toMatchObject({ loaded: true, error: null, rows: [{ ref: "local:a" }] });
+});
+
 // An accepted organize change has already read every loaded archived list
 // again (navigationActions.ts), so the page's own read after it starts none:
 // a loaded list holds that read's rows, or waits for it while it is out.
