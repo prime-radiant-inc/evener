@@ -16,10 +16,10 @@ used to say:
 - **There is no `section[data-tier="needs-you"]` and no `a.sb-row`.** The Rail deliberately
   does not render a "Needs you" section at all (`shell/rail/Rail.tsx:563-573`, kata `vbh8`)
   — attention surfaces inline on the session's own row. A row is
-  `[data-session-ref="local:<SID>"]` (`shell/rail/RailRow.tsx:509`) and its state word lives
-  in `[data-testid="rail-row-activity"]` (`:531`), **lowercased** by `humanizeState`
-  (`:138-152`) rather than in `hubapi.StateWord`'s sentence case. So there is exactly one
-  row per session now, not two, and no `data-state` attribute to read.
+  `[data-session-ref="local:<SID>"]`; its compact status signal is
+  `[data-testid="rail-status-spinner"]` or `[data-testid="rail-status-dot"]`, with an
+  accessible `Running`, `Needs you`, or `Broken` label. So there is exactly one row per
+  session now, not two, and no row-level `data-state` attribute to read.
 - **Title and favicon default OFF**, not on. `loadNotifications` lands all four
   notification prefs at `false` (`stores/prefs.ts:268-273`), which the engine's own header
   calls the top cross-wave trap (`notifications/index.ts:7-13`: the legacy's title/favicon
@@ -104,7 +104,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
      port: location.port,
      path: location.pathname,
      steerRendered: !!document.querySelector('[data-testid="composer-steer"]'),
-     activity: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-row-activity"]')?.textContent,
+     indicator: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-status-spinner"], [data-session-ref="local:<SID>"] [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
      title: document.title,
    })
    ```
@@ -128,7 +128,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
      return {
        port: location.port,
        rowPresent: !!row,
-       activity: row?.querySelector('[data-testid="rail-row-activity"]')?.textContent,
+       indicator: row?.querySelector('[data-testid="rail-status-spinner"], [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
        title: document.title,
        faviconAmber: /r='18'/.test(href) && /fill='#e0af68'/.test(href),
        steerRendered: !!document.querySelector('[data-testid="composer-steer"]'),
@@ -150,7 +150,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
      const link = document.querySelector("link[rel='icon']");
      const href = link ? decodeURIComponent(link.href) : "";
      return {
-       activity: row?.querySelector('[data-testid="rail-row-activity"]')?.textContent,
+       indicator: row?.querySelector('[data-testid="rail-status-spinner"], [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
        title: document.title,
        faviconAmber: /r='18'/.test(href) && /fill='#e0af68'/.test(href),
      };
@@ -208,14 +208,13 @@ those pass instead of driving a live goal session here.
 
 ## Expected
 
-- **Step 2**: `steerRendered` is `true` and `activity` reads `working` while the turn runs
-  (`humanizeState("active")`, `shell/rail/RailRow.tsx:140-141`). If `steerRendered` never
+- **Step 2**: `steerRendered` is `true` and `indicator` reads `Running` while the turn runs.
+  If `steerRendered` never
   appears while REST reports `active`, the AppWire socket did not hydrate — check
   `$run/hub.log` and the `location.port` assertion before suspecting attention.
 - **Step 3 (all three channels agree, one tab, no refresh)**: within ~10 s of the turn
   settling —
-  - `activity` reads `your move` (`awaiting` with no pending ask,
-    `shell/rail/RailRow.tsx:143`);
+  - `indicator` reads `Needs you`;
   - `title` matches `/^\(\d+\) /` — the `(needsYou + error)` prefix
     (`notifications/title.ts:35-38`), present only because step 2 opted in;
   - `faviconAmber` is `true` — the amber `needs_you` corner dot
@@ -225,8 +224,9 @@ those pass instead of driving a live goal session here.
   Falsify: `awaiting` shows in only one of the three (e.g. the row flipped but the title
   didn't) — a channel is wired to a stale source of truth. Or the prefix appears **without**
   the step-2 opt-in, which means a notification default was flipped back on.
-- **Step 4**: both the title prefix and the favicon dot clear, and `activity` leaves
-  `your move`. The tab's own reply emits `thread/started`, which is on the tree store's
+- **Step 4**: both the title prefix and the favicon dot clear, and `indicator` leaves
+  `Needs you` (normally reading `Running` while the reply runs). The tab's own reply emits
+  `thread/started`, which is on the tree store's
   refresh-trigger list (`stores/navigation/store.ts:443-451`), so this should land within a second —
   well inside the 6 s ceiling. Falsify: clearing consistently needs the full ~6 s, meaning
   the own-tab trigger regressed to the broadcast-only path (the 5 s attention-watcher tick,
@@ -264,13 +264,9 @@ concurrent agent's test hub.
   opposite.** All four notification prefs read `false` when unset, so a wiped profile
   fails the title assertion by design. Seed, then reload; a write into a running page does
   nothing (`stores/prefs.ts:344-378`).
-- **The row's word is lowercase.** `humanizeState` deliberately diverges from
-  `hubapi.StateWord`'s sentence case ("Your move" / "Question waiting") to match the gloss
-  line's own casing (`shell/rail/RailRow.tsx:127-129`). Compare case-insensitively, or
-  compare against the lowercase form.
-- **The gloss line can carry more than the state word.** `activityGloss` joins the state
-  with the session's branch, and `secondLine` can prepend the project on flat tiers
-  (`shell/rail/RailRow.tsx:231-235,246-251`), so assert `includes`, not equality.
+- **The rail signal is categorical.** It says `Running`, `Needs you`, or `Broken`; hover
+  `[data-testid="rail-row-title"]` and read `[role="tooltip"]` when a scenario needs the
+  detailed status (`Question waiting`, `Restart required`, and so on).
 - **`.value = "…"` does not reach a React-controlled composer.** Use the browser tool's
   `type` action (real key events) for step 4's reply. Same trap as the ask dock's inputs —
   see `ask-web-answer.md`'s Sharp edges for the `eval`-only workaround.

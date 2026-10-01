@@ -34,7 +34,12 @@ import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { LOCAL_HOST } from "../../stores/hostRouting";
-import { relativeAge, selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
+import {
+  relativeAge,
+  selectDisplaySources,
+  selectPinSectionSummaries,
+  selectSources,
+} from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { useTopNotesExpanded } from "../../stores/topNotes";
@@ -549,6 +554,13 @@ function ContextAgeRow({ updatedAt }: { updatedAt?: string }) {
 
 function SessionContextCard({ session, effectiveState }: { session: RailSession; effectiveState: string }) {
   const hostOnline = useHostOnline(session.host_id);
+  const pinSection = useNavigationStore((state) => {
+    if (session.pin_section_id === undefined) return undefined;
+    return (
+      selectPinSectionSummaries(state).find((section) => section.id === session.pin_section_id)?.name ??
+      session.pin_section_id
+    );
+  });
   const jobs = session.running_job_count ?? 0;
   const watches = session.watch_count ?? 0;
   const armedWatches = activeWatchCount(session);
@@ -571,6 +583,7 @@ function SessionContextCard({ session, effectiveState }: { session: RailSession;
         <ContextRow label="Jobs" value={jobs > 0 ? `${jobs} running` : undefined} />
         <ContextRow label="Subagents" value={subagentContext(session)} />
         <ContextRow label="Watches" value={watches > 0 ? watchCountLabel(armedWatches, watches) : undefined} />
+        <ContextRow label="Pinned" value={pinSection} />
         <ContextRow
           label="Tier"
           value={session.tier !== undefined && session.tier !== "current" ? session.tier : undefined}
@@ -601,12 +614,14 @@ function SessionTitle({
           <button
             type="button"
             tabIndex={-1}
+            data-testid="rail-row-title"
             className={CLASS.label}
             aria-describedby={describedBy}
             onMouseDown={(event) => {
               event.preventDefault();
-              if (focusTarget()?.contains(document.activeElement)) return;
-              if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+              const target = focusTarget();
+              if (target?.contains(document.activeElement)) return;
+              target?.focus();
             }}
           >
             {session.title}

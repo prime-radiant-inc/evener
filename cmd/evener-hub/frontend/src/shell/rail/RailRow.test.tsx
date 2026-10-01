@@ -603,6 +603,14 @@ describe("compact session status", () => {
     expect(within(panel).getByText("2m")).toBeTruthy();
   });
 
+  test("the session context panel identifies its pinned section", () => {
+    render(<RailRow node={sessionRailNode(apiNode({ pin_section_id: "sec_1" }))} info={info()} actions={actions()} />);
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("Pinned")).toBeTruthy();
+    expect(within(panel).getByText("Client")).toBeTruthy();
+  });
+
   test("the context panel marks an offline host", () => {
     seedSources([
       { id: "local", label: "Local", kind: "local", online: true },
@@ -1898,6 +1906,22 @@ describe("roving-tabindex integration (Tree + RailRow)", () => {
 
     expect(activate).toHaveBeenCalledOnce();
     expect(document.activeElement).toBe(row);
+  });
+
+  test("clicking an unfocused session title moves the tree's roving focus to that row", async () => {
+    const activate = vi.fn();
+    const user = userEvent.setup();
+    renderTree(twoSessionRows(), activate);
+    const rowA = screen.getByRole("treeitem", { name: /Row A/ });
+    const rowB = screen.getByRole("treeitem", { name: /Row B/ });
+    act(() => rowA.focus());
+
+    await user.click(within(rowB).getByRole("button", { name: "Row B" }));
+
+    expect(activate).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(rowB);
+    expect(rowA.tabIndex).toBe(-1);
+    expect(rowB.tabIndex).toBe(0);
   });
 
   test("clicking a session title releases unrelated editable focus", async () => {
