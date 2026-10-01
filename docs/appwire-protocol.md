@@ -2219,6 +2219,16 @@ _(no fields)_
 | `match` | `bool` | yes |  |
 
 
+### `SessionActivityAncestor`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `delegateId` | `string` | yes |  |
+| `title` | `string` |  |  |
+
+
 ### `SessionActivityChangedParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2229,6 +2239,40 @@ _(no fields)_
 | `resources` | `[]appwire.SessionActivityResource` |  |  |
 
 
+### `SessionActivityContext`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `rootRef` | `string` |  |  |
+| `parentRef` | `string` | yes |  |
+| `delegateId` | `string` | yes |  |
+| `ancestors` | `[]appwire.SessionActivityAncestor` |  |  |
+| `ancestryKnown` | `bool` |  |  |
+| `epoch` | `string` |  |  |
+| `availability` | `string` |  |  |
+
+
+### `SessionActivityCounts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `known` | `bool` |  |  |
+| `total` | `int` |  |  |
+| `active` | `int` |  |  |
+| `failed` | `int` |  |  |
+| `completed` | `int` |  |  |
+
+
+### `SessionActivityIssue`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `code` | `string` |  |  |
+
+
 ### `SessionActivityListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2237,6 +2281,15 @@ _(no fields)_
 | `scope` | `appwire.SessionActivityScope` | yes |  |
 | `cursor` | `string` | yes |  |
 | `limit` | `int` | yes |  |
+
+
+### `SessionActivityPage`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `nextCursor` | `string` | yes |  |
+| `complete` | `bool` |  |  |
+| `issues` | `[]appwire.SessionActivityIssue` |  |  |
 
 
 ### `SessionActivityReadParams`
@@ -2256,6 +2309,39 @@ _(no fields)_
 | `delegates` | `appwire.SessionActivityCounts` |  |  |
 | `jobs` | `appwire.SessionActivityCounts` |  |  |
 | `watches` | `appwire.SessionActivityCounts` |  |  |
+
+
+### `SessionDelegate`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `runGeneration` | `uint64` |  |  |
+| `reportPreview` | `string` | yes |  |
+| `reportPreviewTruncated` | `bool` | yes |  |
+| `delegateId` | `string` |  |  |
+| `ownerRef` | `string` |  |  |
+| `rootRef` | `string` |  |  |
+| `childRef` | `string` |  |  |
+| `parentDelegateId` | `string` | yes |  |
+| `description` | `string` |  |  |
+| `task` | `string` |  |  |
+| `type` | `string` |  |  |
+| `lifecycle` | `string` |  |  |
+| `phase` | `string` |  |  |
+| `status` | `string` |  |  |
+| `outcome` | `string` | yes |  |
+| `reason` | `string` | yes |  |
+| `error` | `string` | yes |  |
+| `terminal` | `bool` |  |  |
+| `resumable` | `bool` |  |  |
+| `notResumableReason` | `string` | yes |  |
+| `model` | `string` | yes |  |
+| `reasoningEffort` | `string` | yes |  |
+| `runStartedAt` | `string` | yes |  |
+| `runEndedAt` | `string` | yes |  |
+| `latestActivityAt` | `string` | yes |  |
+| `usage` | `*appwire.EvenerUsage` | yes |  |
+| `worktree` | `*appwire.JobActivityWorktree` | yes |  |
 
 
 ### `SessionDelegatesResponse`
@@ -2381,6 +2467,16 @@ _(no fields)_
 | `ok` | `bool` |  |  |
 | `changed` | `bool` |  |  |
 | `navigation` | `appwire.NavigationMutation` |  |  |
+
+
+### `SessionWatch`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ownerRef` | `string` |  |  |
+| `receiverRef` | `string` |  |  |
+| `state` | `appwire.SessionWatchState` |  |  |
+| `watch` | `appwire.EvenerWatchInfo` |  |  |
 
 
 ### `SessionWatchesResponse`

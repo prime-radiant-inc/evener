@@ -133,6 +133,10 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 // needs one more byte. This also bounds whitespace and malformed input work.
 const activityMaxReportPreviewBytes = 1 + 12*(activityMaxDelegateProseRunes+1)
 
+// Stop capture after reaching this owned-report allowance, with at most one
+// already-bounded candidate overshoot. Other candidate facts have separate bounds.
+const activityReportCaptureBudgetBytes = sessionActivityPageBytes
+
 type sessionActivityDelegateCandidate struct {
 	key             sessionActivityKey
 	included        bool
@@ -171,6 +175,7 @@ func (read *sessionActivityRead) captureDelegateCandidates(ctx context.Context, 
 	}
 	candidates := make([]sessionActivityDelegateCandidate, 0, params.Limit)
 	matched := 0
+	capturedReportBytes := 0
 	for ; start >= 0 && read.budget > 0; start-- {
 		if err := ctx.Err(); err != nil {
 			return nil, false, err
@@ -198,7 +203,8 @@ func (read *sessionActivityRead) captureDelegateCandidates(ctx context.Context, 
 		}
 		candidates = append(candidates, candidate)
 		matched++
-		if matched >= params.Limit {
+		capturedReportBytes += len(candidate.report)
+		if matched >= params.Limit || capturedReportBytes >= activityReportCaptureBudgetBytes {
 			start--
 			break
 		}
