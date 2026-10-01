@@ -610,7 +610,7 @@ function OpenWatchMeta({ watch }: { watch: SessionWatch }): ReactNode {
 // The header uses authoritative summary counts when supplied. Pending counts
 // remain unknown while loaded watch rows can already be useful.
 function WatchGroupHeader({ armed }: { armed: number | null }): ReactNode {
-  const count = `${armed === null ? "…" : armed} armed`;
+  const count = armed === null ? "Armed count unknown" : `${armed} armed`;
   return (
     <div className={CLASS.watchGroup} data-testid="watch-group">
       <span className={CLASS.watchGroupTitle}>Watches</span>
