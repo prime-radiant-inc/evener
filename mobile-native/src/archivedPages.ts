@@ -30,15 +30,13 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	readonly navigationVersioned = false;
 	private readonly key: string;
 	private list: ArchivedList | undefined;
-	private snapshot: PageState<NavigationSessionSummary>;
+	private snapshot = pageState(undefined);
 	constructor(
 		private readonly store: ArchivedListStore,
 		private readonly catalog: ArchivedListCatalog,
 		private readonly projectKey: string,
 	) {
 		this.key = archivedListKey(catalog, projectKey);
-		this.list = store.getState().lists[this.key];
-		this.snapshot = pageState(this.list);
 	}
 	/** One snapshot until this project's list changes, as a view binding needs. */
 	getSnapshot = () => {
@@ -54,14 +52,22 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 		this.store.subscribe((state, previous) => {
 			if (state.lists[this.key] !== previous.lists[this.key]) listener();
 		});
-	refresh = () => this.store.refresh(this.catalog, this.projectKey);
+	refresh() {
+		return this.store.refresh(this.catalog, this.projectKey);
+	}
 	// An archived list is read from the hub's current navigation, which an
 	// accepted change has already rebuilt, so the receipt adds nothing.
-	refreshAfter = () => this.refresh();
-	more = () => this.store.loadMore(this.catalog, this.projectKey);
+	refreshAfter() {
+		return this.refresh();
+	}
+	more() {
+		return this.store.loadMore(this.catalog, this.projectKey);
+	}
 	// The list follows no invalidations and holds no read to pause, so there
 	// is nothing to watch, cancel or resume.
-	watch = () => () => {};
+	watch() {
+		return () => {};
+	}
 	cancel() {}
 	resume() {}
 }

@@ -66,6 +66,12 @@ const locationProps = (revealRef = "local:a") =>
 		},
 		navigation: { navigate: () => {}, setParams: () => {} },
 	}) as unknown as ComponentProps<typeof SessionLocationScreen>;
+/** Project "p"'s screen, on the tier and catalog `params` name. */
+const projectProps = (params: Record<string, unknown>) =>
+	({
+		route: { params: { hubId: "hub-1", projectKey: "p", title: "Project", ...params } },
+		navigation: { navigate: () => {}, setParams: () => {} },
+	}) as unknown as ComponentProps<typeof ProjectScreen>;
 
 it("offers no pull to refresh: the projects list keeps itself current", async () => {
 	const hub = new FakeClient("ready");
@@ -205,11 +211,7 @@ it("lists a project's archived sessions from the archived list, a page at a time
 			: { sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 2, nextCursor: "c1" };
 	});
 	harness.connection = screenConnection(hub, "ready");
-	const projectProps = {
-		route: { params: { hubId: "hub-1", projectKey: "p", title: "Project", tier: "archived", archived: true } },
-		navigation: { navigate: () => {}, setParams: () => {} },
-	} as unknown as ComponentProps<typeof ProjectScreen>;
-	const tree = render(<ProjectScreen {...projectProps} />);
+	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Alpha");
 	await act(async () => pressable(tree, "Load more · 1 remaining")?.props.onPress());
@@ -252,11 +254,7 @@ it("unarchives an archived row and reads the archived list again", async () => {
 		return response;
 	});
 	harness.connection = screenConnection(hub, "ready");
-	const projectProps = {
-		route: { params: { hubId: "hub-1", projectKey: "p", title: "Project", tier: "archived" } },
-		navigation: { navigate: () => {}, setParams: () => {} },
-	} as unknown as ComponentProps<typeof ProjectScreen>;
-	const tree = render(<ProjectScreen {...projectProps} />);
+	const tree = render(<ProjectScreen {...projectProps({ tier: "archived" })} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Alpha");
 	alertRequests.length = 0;
