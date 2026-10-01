@@ -43,7 +43,8 @@ export async function locateSession(
 	// rows alone, and the archived list keeps a fork original inside its
 	// continuation's row. The hub answers any other location (a subagent, a
 	// nested fork original) with top_level_ref = the top-level row that
-	// carries it, so reveal that row, as the web's rail does.
+	// carries it, so reveal that row. (The web's rail does the same outside
+	// the archived tier, which it renders with fork originals inline.)
 	const revealRef = location.top_level ? ref : (location.top_level_ref ?? ref);
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
