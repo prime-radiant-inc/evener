@@ -627,8 +627,9 @@ class anywhere. The row is one line. Its status signal is either
 `failed` and whose accessible label is `Needs you` or `Broken`. Quiet rows
 have no signal. Hover `[data-testid="rail-row-title"]` to expose the rich
 `[role="tooltip"]` context card, whose header carries the detailed status
-word (`Question waiting`, `Restart required`, and so on). Other row hooks are
-`[data-testid="rail-row-time"]`, `[data-testid="rail-row-not-started"]`,
+word (`Question waiting`, `Restart required`, and so on); on a touch-only
+device, long-press the title to expose it, since a tap opens the session. Other
+row hooks are `[data-testid="rail-row-time"]`, `[data-testid="rail-row-not-started"]`,
 and `[data-testid="rail-row-overflow"]`; `[data-testid="favorite-star"]`
 belongs to pinned project rows, not sessions.
 Rail chrome: `[data-testid="rail-search"]`, `[data-testid="rail-settings"]`,
