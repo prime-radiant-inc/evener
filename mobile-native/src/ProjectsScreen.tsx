@@ -17,7 +17,6 @@ import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
-import { archivedListStoreFor } from "./archivedLists";
 import { ArchivedPages } from "./archivedPages";
 import { NavigationPages, type PageSource, updating } from "./navigationPages";
 import { revealNavigationRow } from "./navigationReveal";
@@ -568,7 +567,7 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 	const pages = useMemo((): PageSource<NavigationSessionSummary> | null => {
 		if (!client || !belongs) return null;
 		// Navigation serves no archived rows; the archived list does.
-		if (tier === "archived") return new ArchivedPages(archivedListStoreFor(client), catalog, route.params.projectKey);
+		if (tier === "archived") return new ArchivedPages(client, catalog, route.params.projectKey);
 		return new NavigationPages<NavigationSessionSummary>(
 			client,
 			{ resource: "project_page", projectKey: route.params.projectKey, tier },

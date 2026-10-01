@@ -4,7 +4,7 @@
 import type { ArchivedListParams } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession } from "@evener/appwire-client/testing/navigation";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { archivedListStoreFor } from "./archivedLists";
 import { ArchivedPages } from "./archivedPages";
 
@@ -31,7 +31,7 @@ it("reads the project's archived list from its catalog, and pages on with the cu
 		"": { refs: ["local:a"], total: 2, nextCursor: "c1" },
 		c1: { refs: ["local:b"], total: 2 },
 	});
-	const pages = new ArchivedPages(archivedListStoreFor(client), "archived_projects", "p");
+	const pages = new ArchivedPages(client, "archived_projects", "p");
 	expect(pages.getSnapshot()).toEqual({
 		loaded: false,
 		rows: [],
@@ -56,9 +56,8 @@ it("reads the project's archived list from its catalog, and pages on with the cu
 
 it("keeps one snapshot until its own list changes, and tells only its own listeners", async () => {
 	const { client } = hub({ "": { refs: ["local:a"], total: 1 } });
-	const store = archivedListStoreFor(client);
-	const mine = new ArchivedPages(store, "projects", "p");
-	const other = new ArchivedPages(store, "projects", "q");
+	const mine = new ArchivedPages(client, "projects", "p");
+	const other = new ArchivedPages(client, "projects", "q");
 	let heard = 0;
 	const stop = mine.subscribe(() => heard++);
 
@@ -79,25 +78,25 @@ it("keeps one snapshot until its own list changes, and tells only its own listen
 // Only a cursor says another page exists; its count is the rows not loaded.
 it("counts what remains only while the list has a next page", async () => {
 	const { client } = hub({ "": { refs: ["local:a"], total: 5, nextCursor: "c1" } });
-	const paged = new ArchivedPages(archivedListStoreFor(client), "projects", "p");
+	const paged = new ArchivedPages(client, "projects", "p");
 	await paged.refresh();
 	expect(paged.getSnapshot().remaining).toBe(4);
 
 	const { client: other } = hub({ "": { refs: ["local:a"], total: 5 } });
-	const last = new ArchivedPages(archivedListStoreFor(other), "projects", "p");
+	const last = new ArchivedPages(other, "projects", "p");
 	await last.refresh();
 	expect(last.getSnapshot().remaining).toBe(0);
 
 	// A total that lags the rows still leaves the cursor's next page to load.
 	const { client: lagging } = hub({ "": { refs: ["local:a", "local:b"], total: 2, nextCursor: "c1" } });
-	const behind = new ArchivedPages(archivedListStoreFor(lagging), "projects", "p");
+	const behind = new ArchivedPages(lagging, "projects", "p");
 	await behind.refresh();
 	expect(behind.getSnapshot().remaining).toBe(1);
 });
 
 it("reports a failed read and keeps the loaded rows", async () => {
 	const { client } = hub({ "": { refs: ["local:a"], total: 2, nextCursor: "c1" } });
-	const pages = new ArchivedPages(archivedListStoreFor(client), "projects", "p");
+	const pages = new ArchivedPages(client, "projects", "p");
 	await pages.refresh();
 	await pages.more();
 	expect(pages.getSnapshot().rows.map((r) => r.ref)).toEqual(["local:a"]);
@@ -108,7 +107,7 @@ it("reports a failed read and keeps the loaded rows", async () => {
 // confirm a change against, and no invalidation to follow.
 it("declares it has no navigation version", () => {
 	const { client } = hub({});
-	const pages = new ArchivedPages(archivedListStoreFor(client), "projects", "p");
+	const pages = new ArchivedPages(client, "projects", "p");
 	expect(pages.navigationVersioned).toBe(false);
 	expect(pages.getResourceVersion()).toBeNull();
 });
@@ -125,7 +124,7 @@ it("shares one store per connection", () => {
 // that changed while it was away.
 it("drops a connection's loaded lists when it recovers", async () => {
 	const { client } = hub({ "": { refs: ["local:a"], total: 1 } });
-	const pages = new ArchivedPages(archivedListStoreFor(client), "projects", "p");
+	const pages = new ArchivedPages(client, "projects", "p");
 	await pages.refresh();
 	expect(pages.getSnapshot().loaded).toBe(true);
 
@@ -133,4 +132,33 @@ it("drops a connection's loaded lists when it recovers", async () => {
 	client.emitReady();
 
 	expect(pages.getSnapshot()).toMatchObject({ loaded: false, rows: [] });
+});
+
+// Archived lists follow no invalidations of their own; a change the hub
+// announces for the project (made on another device, or a session ageing into
+// the archived tier) reads the list again.
+it("reads its list again when the hub announces its project changed", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(client, "projects", "p");
+	await pages.refresh();
+	const stop = pages.watch();
+	const announce = (targets: unknown[]) =>
+		client.emitNotification({
+			method: "evener/navigation/invalidated",
+			params: { generationId: "g", sequence: 1, targets },
+		} as never);
+
+	announce([{ kind: "project", projectKey: "q" }, { kind: "section", section: "live" }]);
+	await Promise.resolve();
+	expect(seen).toHaveLength(1);
+
+	announce([{ kind: "project", projectKey: "p" }]);
+	await vi.waitFor(() => expect(seen).toHaveLength(2));
+	announce([{ kind: "all_loaded_projects" }]);
+	await vi.waitFor(() => expect(seen).toHaveLength(3));
+
+	stop();
+	announce([{ kind: "project", projectKey: "p" }]);
+	await Promise.resolve();
+	expect(seen).toHaveLength(3);
 });

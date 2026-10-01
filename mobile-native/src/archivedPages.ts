@@ -1,17 +1,20 @@
 // A project's archived sessions as a page source. Navigation v3 serves no
 // archived rows: they come from evener/archived/list through the connection's
-// archived list store (archivedLists.ts). The list has no revisions and no
-// invalidations: it is read when a screen opens it unloaded, again after any
-// accepted organize change (navigationActions.ts, and the Conversation
-// screen's own Archive and Undo), and from the top once its connection
-// recovers.
+// archived list store (archivedLists.ts). The list has no revisions of its
+// own: it is read when a screen opens it unloaded, again when the hub
+// announces its project changed, after any accepted organize change
+// (navigationActions.ts, and the Conversation screen's own Archive and Undo),
+// and from the top once its connection recovers.
 import {
 	type ArchivedList,
 	type ArchivedListCatalog,
 	type ArchivedListStore,
 	archivedListKey,
+	type NavigationInvalidationTarget,
 	type NavigationSessionSummary,
 } from "@evener/appwire-client";
+import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { archivedListStoreFor } from "./archivedLists";
 import type { PageSource, PageState } from "./navigationPages";
 
 function pageState(list: ArchivedList | undefined): PageState<NavigationSessionSummary> {
@@ -30,13 +33,15 @@ function pageState(list: ArchivedList | undefined): PageState<NavigationSessionS
 export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	readonly navigationVersioned = false;
 	private readonly key: string;
+	private readonly store: ArchivedListStore;
 	private list: ArchivedList | undefined;
 	private snapshot = pageState(undefined);
 	constructor(
-		private readonly store: ArchivedListStore,
+		private readonly client: ConversationClientLike,
 		private readonly catalog: ArchivedListCatalog,
 		private readonly projectKey: string,
 	) {
+		this.store = archivedListStoreFor(client);
 		this.key = archivedListKey(catalog, projectKey);
 	}
 	/** One snapshot until this project's list changes, as a view binding needs. */
@@ -64,11 +69,17 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	more() {
 		return this.store.loadMore(this.catalog, this.projectKey);
 	}
-	// The list follows no invalidations and holds no read to pause, so there
-	// is nothing to watch, cancel or resume.
+	/** Reads the list again when the hub announces a change to this project's
+	 * pages (a session archived on another device, or one ageing into the
+	 * archived tier); the hub's navigation names no archived list itself. */
 	watch() {
-		return () => {};
+		return this.client.onNotification((event) => {
+			if (event.method === "evener/navigation/invalidated" && event.params.targets.some(this.names)) void this.refresh();
+		});
 	}
+	private names = (target: NavigationInvalidationTarget) =>
+		target.kind === "all_loaded_projects" || (target.kind === "project" && target.projectKey === this.projectKey);
+	// The list holds no read to pause, so there is nothing to cancel or resume.
 	cancel() {}
 	resume() {}
 }
