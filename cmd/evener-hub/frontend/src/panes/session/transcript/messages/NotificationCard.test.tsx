@@ -136,6 +136,7 @@ function notificationEntities() {
     status: "completed",
   };
   const delegate: EvenerDelegateInfo = {
+    runGeneration: 1,
     delegateId: ENTITY_DELEGATE,
     ownerSessionId: "02wMz5TxvEMoJEDTDGOTil",
     rootSessionId: "02wMz5TxvEMoJEDTDGOTil",

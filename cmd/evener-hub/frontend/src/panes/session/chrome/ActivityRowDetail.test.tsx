@@ -68,6 +68,7 @@ function delegateRow(
   rowOverrides: Partial<ActivityDelegateRow> = {},
 ): ActivityDelegateRow {
   const delegate = {
+    runGeneration: 1,
     delegateId: "dlg_x",
     ownerSessionId: "sess_root",
     rootSessionId: "sess_root",
@@ -106,6 +107,7 @@ const DELEGATE_ID = "dlg_034HQ2kSDXfKFq1mm3idL1";
 
 function delegateEntities(id: string, task: string) {
   const delegate: EvenerDelegateInfo = {
+    runGeneration: 1,
     delegateId: id,
     ownerSessionId: "sess_root",
     rootSessionId: "sess_root",

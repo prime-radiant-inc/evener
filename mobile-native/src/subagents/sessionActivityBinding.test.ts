@@ -12,6 +12,7 @@ const context: SessionActivityContext = {
 	availability: "retained",
 };
 const delegate = (id: string, ownerRef = "remote:root"): SessionDelegate => ({
+	runGeneration: 1,
 	delegateId: id,
 	ownerRef,
 	rootRef: context.rootRef,

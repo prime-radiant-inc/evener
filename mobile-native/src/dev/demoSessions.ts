@@ -740,6 +740,7 @@ function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 		const running = subagent.state === "running";
 		const lastActive = now - subagent.ago * 1000;
 		return {
+			runGeneration: 1,
 			delegateId: subagent.id,
 			ownerSessionId: demoSessionId(parent ?? session.slug),
 			rootSessionId: demoSessionId(session.slug),

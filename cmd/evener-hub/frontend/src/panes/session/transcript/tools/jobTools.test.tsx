@@ -47,6 +47,7 @@ function jobEntityViews(ids: string[]) {
 
 function delegateEntityViews(id: string) {
   const delegate: EvenerDelegateInfo = {
+    runGeneration: 1,
     delegateId: id,
     ownerSessionId: "s",
     rootSessionId: "s",

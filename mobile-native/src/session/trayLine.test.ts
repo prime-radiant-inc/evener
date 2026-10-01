@@ -15,6 +15,7 @@ const item = (over: Partial<ItemModel>): ItemModel => ({
 });
 const turn = (items: ItemModel[], status = "inProgress"): TurnModel => ({ id: "turn_1", status, items });
 const delegate = (status: string, n: number): EvenerDelegateInfo => ({
+	runGeneration: 1,
 	delegateId: `d-${n}`,
 	ownerSessionId: "root",
 	rootSessionId: "root",

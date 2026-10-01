@@ -52,6 +52,7 @@ export function delegateView(
     sessionRef: "local:s",
     delegates: [
       {
+        runGeneration: 1,
         ownerSessionId: "s",
         rootSessionId: "s",
         childSessionId: "child",

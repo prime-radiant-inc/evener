@@ -452,7 +452,7 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 		ChildSessionID: data.ChildSessionID, TranscriptRef: data.TranscriptRef, ParentDelegateID: data.ParentDelegateID,
 		Type: data.Type, Lifecycle: data.Lifecycle, Phase: data.Phase, Status: data.Status, Outcome: data.Outcome,
 		Reason: data.Reason, Error: data.Error, Terminal: data.Terminal, Resumable: data.Resumable, NeedsAttention: data.NeedsAttention, NotResumableReason: data.NotResumableReason,
-		ProjectionRevision: data.ProjectionRevision, Task: data.Task, Description: data.Description, AgentType: data.AgentType,
+		RunGeneration: data.RunGeneration, ProjectionRevision: data.ProjectionRevision, Task: data.Task, Description: data.Description, AgentType: data.AgentType,
 		RequestedModel: data.RequestedModel, ResolvedProfileID: data.ResolvedProfileID, ResolvedModel: data.ResolvedModel,
 		Model: data.Model, ReasoningEffort: data.ReasoningEffort, OriginTurnID: data.OriginTurnID,
 		OriginToolCallID: data.OriginToolCallID, OriginItemID: data.OriginItemID, RunStartedAt: data.RunStartedAt,
