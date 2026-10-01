@@ -6,6 +6,7 @@
 import {
 	type ItemModel,
 	isActiveItem,
+	isInProgressStatus,
 	formatTokenCount,
 	type ModelRetryState,
 	pendingTextJoined,
@@ -95,7 +96,7 @@ function retryText(retry: ModelRetryState): string {
 }
 
 function runningTurn(session: TraySource) {
-	return session.turns.find((turn) => turn.id === session.runningTurnId && turn.status === "inProgress");
+	return session.turns.find((turn) => turn.id === session.runningTurnId && isInProgressStatus(turn.status));
 }
 
 function latestToolIntent(session: TraySource): string | null {
