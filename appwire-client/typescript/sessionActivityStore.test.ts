@@ -961,6 +961,7 @@ test.each([
 
 const retainedWatch = (id: string, state: "armed" | "ended" = "armed"): SessionWatch => ({
   ownerRef: activityRef,
+  sourceRef: activityRef,
   receiverRef: activityRef,
   state,
   watch: { id, source: "job", createdAt: "2026-09-30T12:00:00Z", active: state === "armed", deliveries: 0 },

@@ -25,6 +25,7 @@ export interface JobEntityView extends EntityViewState {
 
 interface DelegateEntityViewBase extends EntityViewState {
   kind: "delegate";
+  name?: string;
   open: OpenTarget;
 }
 
@@ -76,6 +77,7 @@ function jobEntity(row: ActivityJobRow, stale: boolean, ended: boolean): JobEnti
 function treeDelegateEntity(row: ActivityDelegateRow, stale: boolean, ended: boolean): DelegateEntityView {
   return {
     kind: "delegate",
+    name: row.delegate.name,
     id: row.id,
     logicalId: row.delegate.delegateId,
     ownerRef: row.parentRef,
@@ -91,9 +93,11 @@ function liveDelegateEntity(
   sessionRef: string,
   stale: boolean,
   ended: boolean,
+  name?: string,
 ): DelegateEntityView {
   return {
     kind: "delegate",
+    name,
     id: activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef }),
     logicalId: stable.delegateId,
     ownerRef: sessionRef,
@@ -128,7 +132,15 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
     ) {
       continue;
     }
-    entities.set(id, liveDelegateEntity(stable, sources.sessionRef, sources.stale, sources.ended));
+    // Status overlays retain an immutable name only for the same owned delegate.
+    const name =
+      existing?.kind === "delegate" &&
+      existing.ownerRef === sources.sessionRef &&
+      existing.logicalId === stable.delegateId &&
+      existing.open.ref === stable.transcriptRef
+        ? existing.name
+        : undefined;
+    entities.set(id, liveDelegateEntity(stable, sources.sessionRef, sources.stale, sources.ended, name));
   }
 
   for (const [id, watch] of foldWatchSummaries(watchItems(sources.turns))) {

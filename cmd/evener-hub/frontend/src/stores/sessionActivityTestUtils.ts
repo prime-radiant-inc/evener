@@ -140,5 +140,5 @@ export function activityWatch(overrides: Partial<EvenerWatchInfo> = {}, receiver
     active: true,
     ...overrides,
   };
-  return { ownerRef: activityRef, receiverRef, state: watch.active ? "armed" : "ended", watch };
+  return { sourceRef: activityRef, ownerRef: receiverRef, receiverRef, state: watch.active ? "armed" : "ended", watch };
 }
