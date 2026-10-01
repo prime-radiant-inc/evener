@@ -12,6 +12,7 @@ import { AnimatePresence, m, spatialTransition } from "../../motion";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { IconButton, SegmentedControl } from "../../widgets";
+import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
@@ -120,10 +121,9 @@ export function ActivitySidebar() {
               }))}
             />
           </div>
-          {/* key on the leaf: the tab's fold/paging state belongs to the
-              scope, and a re-scope must not inherit the previous leaf's
-              open folds and page offsets. */}
-          <div className={CLASS.body}>{Body === null ? null : <Body key={scope.leaf.ref} scope={scope} />}</div>
+          <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
+            <div className={CLASS.body}>{Body === null ? null : <Body key={scope.leaf.ref} scope={scope} />}</div>
+          </DisclosurePersistenceContext.Provider>
         </m.aside>
       ) : null}
     </AnimatePresence>

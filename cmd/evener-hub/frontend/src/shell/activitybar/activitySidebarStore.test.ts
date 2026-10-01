@@ -1,8 +1,73 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import {
+  ACTIVITY_VIEW_LIMIT,
+  ACTIVITY_VIEW_STORAGE_KEY,
+  activitySidebarStore,
+  resetActivitySidebarStoreForTests,
+} from "./activitySidebarStore";
+
+beforeEach(() => installLocalStorage(new MemoryStorage()));
 
 afterEach(() => {
   resetActivitySidebarStoreForTests();
+  resetWorkspaceStoreForTests();
+  vi.restoreAllMocks();
+});
+
+test("empty workspace bootstrap and passive restore never overwrite retained intent", () => {
+  const retained = { "source:owner": { open: true, tab: "jobs", categories: {} } };
+  localStorage.setItem(ACTIVITY_VIEW_STORAGE_KEY, JSON.stringify(retained));
+  const writes = vi.spyOn(localStorage, "setItem");
+  workspaceStore.setState({ panes: [], focusedPaneId: null });
+  activitySidebarStore.getState().retarget(null);
+  expect(writes).not.toHaveBeenCalled();
+  activitySidebarStore.getState().retarget("source:owner");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
+  expect(writes).not.toHaveBeenCalled();
+});
+
+test.each(["{broken", "[]", '{"source:owner":{"open":true,"tab":"unknown"}}'])(
+  "malformed saved state %s leaves the live controls usable",
+  (raw) => {
+    localStorage.setItem(ACTIVITY_VIEW_STORAGE_KEY, raw);
+    activitySidebarStore.getState().retarget("source:owner");
+    expect(activitySidebarStore.getState().open).toBe(false);
+    activitySidebarStore.getState().openWith("tasks");
+    expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "tasks" });
+  },
+);
+
+test("blocked storage preserves current open, tab and close choices", () => {
+  vi.spyOn(localStorage, "getItem").mockImplementation(() => {
+    throw new Error("blocked");
+  });
+  vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    throw new Error("full");
+  });
+  activitySidebarStore.getState().retarget("source:owner");
+  activitySidebarStore.getState().openWith("jobs");
+  activitySidebarStore.getState().setTab("watches");
+  activitySidebarStore.getState().close();
+  expect(activitySidebarStore.getState()).toMatchObject({ open: false, tab: "watches" });
+});
+
+test("retained session intent is bounded and a recently revisited scope keeps its choices", () => {
+  const state = activitySidebarStore.getState();
+  for (let index = 0; index < ACTIVITY_VIEW_LIMIT; index++) {
+    state.retarget(`source:${index}`);
+    state.openWith("jobs");
+  }
+  state.retarget("source:0");
+  state.setTab("watches");
+  state.retarget("source:new");
+  state.openWith("tasks");
+  expect(activitySidebarStore.getState().views.size).toBe(ACTIVITY_VIEW_LIMIT);
+  const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
+  expect(Object.keys(saved)).toHaveLength(ACTIVITY_VIEW_LIMIT);
+  expect(saved["source:1"]).toBeUndefined();
+  expect(saved["source:0"].tab).toBe("watches");
 });
 
 describe("activitySidebarStore", () => {
