@@ -77,7 +77,7 @@ import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
-import { makeSourceId } from "./transcriptDisplay/crossTabSync";
+import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "./versionedChannel";
 
 export type { InputAttachment } from "@evener/appwire-client";
 
@@ -5326,23 +5326,17 @@ function onCacheEpochObserved(observed: number): void {
 // fire-time gates hold correctness without it.
 const CACHE_CHANNEL_NAME = "evener.session-cache.v1";
 const cacheSourceId = makeSourceId();
-type CacheChannelMessage =
-  | { version: 1; sourceId: string; kind: "deletion"; refs: string[] }
-  | { version: 1; sourceId: string; kind: "clear"; epoch: number };
+type CacheChannelMessage = VersionedChannelMessage &
+  ({ kind: "deletion"; refs: string[] } | { kind: "clear"; epoch: number });
 
-function isCacheChannelMessage(value: unknown): value is CacheChannelMessage {
-  if (typeof value !== "object" || value === null) return false;
+function isCacheChannelMessage(value: VersionedChannelMessage): value is CacheChannelMessage {
   const candidate = value as Partial<CacheChannelMessage>;
   return (
-    candidate.version === 1 &&
-    candidate.sourceId !== undefined &&
-    candidate.sourceId !== "" &&
-    ((candidate.kind === "deletion" && Array.isArray(candidate.refs)) ||
-      (candidate.kind === "clear" && typeof candidate.epoch === "number"))
+    (candidate.kind === "deletion" && Array.isArray(candidate.refs)) ||
+    (candidate.kind === "clear" && typeof candidate.epoch === "number")
   );
 }
 
-let cacheChannel: BroadcastChannel | null = null;
 // In tests the default factory answers null: the jsdom window has no
 // BroadcastChannel, so the visible one is Node's own — which crosses worker
 // threads and keeps an open event loop alive, so a real channel would let one
@@ -5352,37 +5346,23 @@ let cacheChannel: BroadcastChannel | null = null;
 const defaultCacheChannelFactory = (name: string): BroadcastChannel | null =>
   typeof BroadcastChannel !== "undefined" && import.meta.env.MODE !== "test" ? new BroadcastChannel(name) : null;
 let createCacheChannel: (name: string) => BroadcastChannel | null = defaultCacheChannelFactory;
+const cacheChannel = createVersionedChannel<CacheChannelMessage>({
+  name: CACHE_CHANNEL_NAME,
+  getSourceId: () => cacheSourceId,
+  isMessage: isCacheChannelMessage,
+  onMessage: onCacheChannelMessage,
+  createChannel: (name) => createCacheChannel(name),
+});
 export function setCacheChannelFactoryForTests(factory: (name: string) => BroadcastChannel | null): void {
-  cacheChannel?.close();
-  cacheChannel = null;
+  cacheChannel.close();
   createCacheChannel = factory;
   // The installed factory's channel is attached at once: a peer's post must
   // reach this tab's handler even before this tab ever broadcasts, which is
   // the receiving half the channel exists for.
-  cacheChannelEnsure();
-}
-function cacheChannelEnsure(): BroadcastChannel | null {
-  if (cacheChannel === null) {
-    try {
-      cacheChannel = createCacheChannel(CACHE_CHANNEL_NAME);
-      cacheChannel?.addEventListener("message", onCacheChannelMessage);
-    } catch {
-      cacheChannel = null;
-    }
-  }
-  return cacheChannel;
-}
-function broadcastCacheMessage(message: CacheChannelMessage): void {
-  try {
-    cacheChannelEnsure()?.postMessage(message);
-  } catch {
-    // The channel is a latency optimization, never the guard.
-  }
+  cacheChannel.connect();
 }
 
-function onCacheChannelMessage(event: MessageEvent<unknown>): void {
-  const message = isCacheChannelMessage(event.data) ? event.data : undefined;
-  if (message === undefined || message.sourceId === cacheSourceId) return;
+function onCacheChannelMessage(message: CacheChannelMessage): void {
   if (message.kind === "deletion") {
     // Two things, not one, in one step (spec): arm the suppression and heal
     // the storage. The heal cannot be lost: IndexedDB serializes this delete
@@ -5404,7 +5384,7 @@ function onCacheChannelMessage(event: MessageEvent<unknown>): void {
 // anything itself, which is the common tab. A browser without
 // BroadcastChannel stays single-tab (the factory answers null); a failure to
 // attach stays single-tab too.
-cacheChannelEnsure();
+cacheChannel.connect();
 
 /** The deletion response's cache hook (spec, "The write seam"): keyed on the
  * response, not the caller — any deletion response that reports removed
@@ -5421,7 +5401,8 @@ export function markCacheSessionsDeleted(refs: string[]): void {
   });
   for (const ref of refs) cancelCacheWrite(ref);
   void currentSessionCache().deleteRecords(refs);
-  broadcastCacheMessage({ version: 1, sourceId: cacheSourceId, kind: "deletion", refs });
+  cacheChannel.connect();
+  cacheChannel.postMessage({ kind: "deletion", refs });
 }
 
 /** Clear cached session content (spec, "The clear-cached-sessions setting").
@@ -5461,7 +5442,8 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
       ? { cacheSuppressed: suppressed, clearInFlight: undefined }
       : { cacheSuppressed: suppressed };
   });
-  broadcastCacheMessage({ version: 1, sourceId: cacheSourceId, kind: "clear", epoch: result.epoch });
+  cacheChannel.connect();
+  cacheChannel.postMessage({ kind: "clear", epoch: result.epoch });
   return { committed: true };
 }
 

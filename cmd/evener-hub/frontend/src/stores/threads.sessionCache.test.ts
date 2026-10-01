@@ -2026,6 +2026,43 @@ describe("deletion", () => {
     }
   });
 
+  it("the channel ignores wrong versions, invalid payloads and its own source id", async () => {
+    const { peer, posted } = installTestCacheChannel();
+    markCacheSessionsDeleted(["local:source-id"]);
+    const own = posted[0] as { sourceId: string };
+    const ref = "local:channel-validation";
+    await seedCacheDirect(ref, {});
+    const message = { version: 1, sourceId: "peer", kind: "deletion", refs: [ref] };
+    for (const invalid of [
+      null,
+      { ...message, version: 2 },
+      { ...message, sourceId: "" },
+      { ...message, sourceId: undefined },
+      { ...message, sourceId: own.sourceId },
+      { ...message, kind: "unknown" },
+      { ...message, refs: ref },
+      { version: 1, sourceId: "peer", kind: "clear", epoch: "1" },
+    ])
+      peer.post(invalid);
+    await settleProjectionWorkForTests();
+    expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(false);
+    expect(await cacheRecord(ref)).toBeDefined();
+    peer.post(message);
+    await settleProjectionWorkForTests();
+    expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(true);
+    expect(await cacheRecord(ref)).toBeUndefined();
+  });
+
+  it.each([null, 7])("the cache v1 envelope still accepts source %s and extra fields", async (sourceId) => {
+    const { peer } = installTestCacheChannel();
+    const ref = "local:channel-compatibility";
+    await seedCacheDirect(ref, {});
+    peer.post({ version: 1, sourceId, kind: "deletion", refs: [ref], extra: true });
+    await settleProjectionWorkForTests();
+    expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(true);
+    expect(await cacheRecord(ref)).toBeUndefined();
+  });
+
   it("the channel message: a sibling holding the ref open stops writing without a reload and never re-creates the record", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
