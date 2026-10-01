@@ -133,15 +133,16 @@ it("reads a list again on more once its read failed with no next page", async ()
 
 // An accepted organize change has already read every loaded archived list
 // again (navigationActions.ts), so the page's own read after it starts none:
-// a loaded list holds that read's rows, or waits for it while it is out.
+// a list that loaded cleanly holds that read's rows, or waits for it while it
+// is out.
 it("starts no read after an accepted change, waiting for the one still out", async () => {
 	const client = new FakeClient("ready");
 	const later = deferred<ArchivedListResponse>();
 	let reads = 0;
+	let organizeRead = false;
 	client.on("evener/archived/list", () => {
 		reads++;
-		if (reads === 1) return { sessions: [row("local:a")], total: 1 };
-		return reads === 2 ? later.promise : { sessions: [row("local:extra")], total: 1 };
+		return organizeRead ? later.promise : { sessions: [row("local:a")], total: 1 };
 	});
 	const pages = new ArchivedPages(client, "projects", "p");
 	await pages.refresh();
@@ -149,6 +150,7 @@ it("starts no read after an accepted change, waiting for the one still out", asy
 	await pages.refreshAfter();
 	expect(reads).toBe(1);
 
+	organizeRead = true;
 	void archivedListStoreFor(client).refreshLoaded();
 	let settled = false;
 	const waiting = pages.refreshAfter().then(() => {

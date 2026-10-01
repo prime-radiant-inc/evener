@@ -760,9 +760,10 @@ it("archives the session, with an Undo that restores it", async () => {
 });
 
 const acceptedArchive = { ok: true, navigation: { generation_id: "g", targets: [] } };
+
 /** The screen over a connection with one archived list loaded, and a count
  * of that list's reads. */
-async function mountWithLoadedArchivedList(archive: Answers[string]) {
+async function mountWithLoadedArchivedList(archive: unknown) {
 	const { tree, client, requests } = mount(thread, {
 		"evener/archive/set": archive,
 		"evener/archived/list": { sessions: [], total: 0 },
