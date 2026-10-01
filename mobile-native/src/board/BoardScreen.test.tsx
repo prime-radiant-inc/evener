@@ -2406,6 +2406,34 @@ it("words a working row from the session's latest tool intent, where it would re
 	act(() => tree.unmount());
 });
 
+// The session's own words lead the job it is running, because they say what
+// the job is for. A read that states none still leaves the job to say itself.
+it("shows the latest tool intent over the job a working row is running", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const rebuilding = session("local:rebuild", {
+		title: "Rebuild index",
+		state: "active",
+		running_job_count: 1,
+		running_job_command: "go test ./agent/...",
+		updated_at: minutesAgo(1),
+	});
+	const shape: Fleet = {
+		...busyFleet,
+		live: [[rebuilding]],
+		activity: [
+			{ ref: "local:rebuild", minutes: [1, 0, 0], runningSubagents: 0, latestIntent: "Reading the board's row tests." },
+		],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const row = rowTitled(tree, "Rebuild index");
+	expect(textsIn(row)).toContain("Reading the board's row tests.");
+	expect(textsIn(row)).not.toContain("Running go test ./agent/...");
+	act(() => tree.unmount());
+});
+
 it("shows no stuck label or reordering from a stale read while offline (Jesse's ruling)", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

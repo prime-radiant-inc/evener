@@ -3520,10 +3520,10 @@ export interface ThreadActivity {
   /**
    * LatestIntent is the newest intent a tool call of the session's own root
    * turn stated ("Reading the board's row tests."), one line of at most
-   * MaxIntentRunes. A Working row shows it where it has nothing more
-   * concrete to say. Empty until this turn's first tool call that stated
-   * one, cleared when a turn begins, and absent from a daemon that predates
-   * it.
+   * MaxIntentRunes. A Working row shows it in place of the job it is
+   * running, because it says what the job is for. Empty until this turn's
+   * first tool call that stated one, cleared when a turn begins, and absent
+   * from a daemon that predates it.
    */
   latestIntent?: string;
 }
