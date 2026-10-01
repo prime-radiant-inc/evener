@@ -4,6 +4,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
   ACTIVITY_VIEW_LIMIT,
   ACTIVITY_VIEW_STORAGE_KEY,
+  activitySidebarReturnFocusTarget,
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
 } from "./activitySidebarStore";
@@ -26,6 +27,29 @@ test("empty workspace bootstrap and passive restore never overwrite retained int
   activitySidebarStore.getState().retarget("source:owner");
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
   expect(writes).not.toHaveBeenCalled();
+});
+
+test("retargeting into an open view returns focus to the current navigation control", () => {
+  const priorOpener = document.body.appendChild(document.createElement("button"));
+  const currentOpener = document.body.appendChild(document.createElement("button"));
+  try {
+    const state = activitySidebarStore.getState();
+    state.retarget("source:open");
+    state.openWith("jobs");
+    state.retarget("source:closed");
+    state.close();
+    state.openWith("agents", priorOpener);
+    state.close();
+
+    currentOpener.focus();
+    state.retarget("source:open");
+
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(currentOpener);
+  } finally {
+    priorOpener.remove();
+    currentOpener.remove();
+  }
 });
 
 test("a focus change while the desktop sidebar is unmounted does not persist inherited open intent", () => {

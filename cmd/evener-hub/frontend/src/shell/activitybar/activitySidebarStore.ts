@@ -168,6 +168,7 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       // A fresh child keeps the ongoing inspection open on its current kind;
       // a visited session restores its own category and explicit close choice.
       const view = views.get(ref) ?? { open: state.open, tab: state.tab, categories: {} };
+      if (view.open && !state.open) captureActivitySidebarOpener();
       set({ ref, open: view.open, tab: view.tab, views: rememberView(views, ref, view) });
     },
     retainOpenView(ref) {
