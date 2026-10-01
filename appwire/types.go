@@ -3861,9 +3861,9 @@ type InstanceEntry struct {
 	// what is missing and how to supply it.
 	Warnings []string `json:"warnings,omitempty"`
 	// Models is the instance's known models with their effective
-	// disabled state, for the sheet's per-model toggles: exact catalog
-	// rows plus cached live ids, alias rows included. Empty for an
-	// instance with no rows.
+	// disabled state, for the sheet's per-model toggles: live ids plus
+	// additive overlay/config rows when usable, otherwise static fallback
+	// rows, with aliases included. Empty for an instance with no rows.
 	Models []InstanceModelEntry `json:"models,omitempty"`
 }
 
@@ -4026,7 +4026,7 @@ type InstanceSetDefaultParams struct {
 
 // InstanceRefreshModelsParams is the params for
 // evener/instance/refreshModels: fetch the instance's live listing, then
-// answer with the updated list (exact catalog rows plus cached live ids).
+// answer with its live-authoritative or static-fallback model list.
 type InstanceRefreshModelsParams struct {
 	Name string `json:"name"`
 	// OriginClientId is the client identity the hub echoes into the

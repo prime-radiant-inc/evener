@@ -81,7 +81,7 @@
       "hasStoredOAuth": true,
       "email": "bot@example.com",
       "storedEmail": "bot@example.com",
-      "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38"
+      "configRevision": "e1c99efbe21464f01838156386753d3cb929d0c34b7fd17084a7e4ad0edf1d74"
     }
   },
   {
@@ -100,7 +100,7 @@
       "email": "bot@example.com",
       "storedEmail": "bot@example.com",
       "needsRefresh": true,
-      "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38"
+      "configRevision": "e1c99efbe21464f01838156386753d3cb929d0c34b7fd17084a7e4ad0edf1d74"
     }
   },
   {
@@ -119,7 +119,7 @@
       "email": "bot@example.com",
       "storedEmail": "bot@example.com",
       "needsRefresh": true,
-      "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38"
+      "configRevision": "e1c99efbe21464f01838156386753d3cb929d0c34b7fd17084a7e4ad0edf1d74"
     }
   },
   {
@@ -138,7 +138,7 @@
       "email": "bot@example.com",
       "storedEmail": "bot@example.com",
       "needsLogin": true,
-      "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38"
+      "configRevision": "e1c99efbe21464f01838156386753d3cb929d0c34b7fd17084a7e4ad0edf1d74"
     }
   },
   {
@@ -158,7 +158,7 @@
       "storedEmail": "bot@example.com",
       "needsLogin": true,
       "refreshRejected": true,
-      "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38"
+      "configRevision": "e1c99efbe21464f01838156386753d3cb929d0c34b7fd17084a7e4ad0edf1d74"
     }
   },
   {
@@ -174,7 +174,7 @@
         "oauth"
       ],
       "hasStoredOAuth": false,
-      "configRevision": "f6b6a30675b1c1ab35f46162c86e5cb24d2ecd68ee28a79fe30bc1c3622c351d"
+      "configRevision": "6ced5c85cc1231dce3050fb3469cf61da6d9667cd861d4c29bc42a90e51db703"
     }
   },
   {
@@ -271,7 +271,7 @@
           "oauth"
         ],
         "hasStoredOAuth": false,
-        "configRevision": "f6b6a30675b1c1ab35f46162c86e5cb24d2ecd68ee28a79fe30bc1c3622c351d"
+        "configRevision": "6ced5c85cc1231dce3050fb3469cf61da6d9667cd861d4c29bc42a90e51db703"
       }
     }
   },
@@ -309,7 +309,7 @@
           "oauth"
         ],
         "hasStoredOAuth": false,
-        "configRevision": "f6b6a30675b1c1ab35f46162c86e5cb24d2ecd68ee28a79fe30bc1c3622c351d"
+        "configRevision": "6ced5c85cc1231dce3050fb3469cf61da6d9667cd861d4c29bc42a90e51db703"
       }
     }
   },
@@ -407,7 +407,7 @@
         "surface": "openai",
         "auth": "oauth-openai-codex",
         "baseUrl": "https://chatgpt.com/backend-api/codex",
-        "endpointFingerprint": "60e7b06303c74677c149dd6480e72ed7dd71e5fd1daa53409e2204ad0d5fd709",
+        "endpointFingerprint": "385f35018b7eed1d36e742e78274c35b770d1dfdd2d6488ab3804ab77bb06487",
         "implicit": true,
         "isDefault": false,
         "authModes": [
@@ -416,7 +416,7 @@
         "activeSource": "oauth",
         "hasStoredOAuth": true,
         "storedEmail": "bot@example.com",
-        "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38",
+        "configRevision": "e1c99efbe21464f01838156386753d3cb929d0c34b7fd17084a7e4ad0edf1d74",
         "credentialRequired": true,
         "models": [
           {
@@ -433,6 +433,15 @@
           },
           {
             "id": "gpt-6-astra"
+          },
+          {
+            "id": "gpt-6-luna"
+          },
+          {
+            "id": "gpt-6.1-sol"
+          },
+          {
+            "id": "gpt-6.1-sol-1m"
           }
         ]
       },

@@ -141,12 +141,13 @@ func liveFacts(m Model) Model {
 	return out
 }
 
-// ApplyLive records an instance's live listing. Non-chat ids are dropped and
-// only advertised facts are kept; the listing replaces any previous one.
+// ApplyLive records an instance's live listing. Non-chat and hidden rows are
+// dropped and only advertised facts are kept; the listing replaces any
+// previous one.
 func (r *Registry) ApplyLive(instance string, rows []Model) {
 	listing := liveListing{rows: map[string]Model{}}
 	for _, m := range rows {
-		if !IsChatModelID(m.ID) {
+		if !IsChatModelID(m.ID) || m.Hidden {
 			continue
 		}
 		listing.rows[m.ID] = liveFacts(m)
@@ -161,8 +162,8 @@ func (r *Registry) ApplyLive(instance string, rows []Model) {
 
 // SnapshotLive returns the cached live listings by instance, for carriers
 // like a registry reload that must preserve them across a fresh object.
-// ApplyLive restores each entry; the round trip keeps exactly the chat ids
-// with their advertised facts.
+// ApplyLive restores each entry; the round trip keeps exactly the visible chat
+// ids with their advertised facts.
 func (r *Registry) SnapshotLive() map[string][]Model {
 	r.liveMu.RLock()
 	defer r.liveMu.RUnlock()
@@ -212,6 +213,10 @@ type lookupHit struct {
 // removed, live listing, else synthesized. Steps 1–2 use the row's wire id;
 // the rest send the reference verbatim.
 func (r *Registry) lookupRow(rec *record, model string) lookupHit {
+	return r.lookupRowMode(rec, model, true)
+}
+
+func (r *Registry) lookupRowMode(rec *record, model string, includeLive bool) lookupHit {
 	rows := rec.head.Models
 	if m, ok := rows[model]; ok && !isGlob(model) {
 		wire := m.WireID
@@ -230,7 +235,7 @@ func (r *Registry) lookupRow(rec *record, model string) lookupHit {
 			return lookupHit{rowID: s, wireID: model, step: "dated"}
 		}
 	}
-	if r.liveRow(rec.name, model) != nil {
+	if includeLive && r.liveRow(rec.name, model) != nil {
 		return lookupHit{wireID: model, step: "live"}
 	}
 	return lookupHit{wireID: model, step: "synthesized", synthesized: true}
@@ -250,6 +255,24 @@ func exactRowIDs(rec *record) []string {
 // Resolve is the single lookup path (spec §7): reference → instance record →
 // row → layered caps → transport, headers, credential → derived caps.
 func (r *Registry) Resolve(ref string) (Resolved, error) {
+	return r.resolveMode(ref, true, false)
+}
+
+// ResolveFallback resolves a model from the snapshot/cache, curated overlay,
+// and user config without reading or changing the cached live listing.
+func (r *Registry) ResolveFallback(ref string) (Resolved, error) {
+	return r.resolveMode(ref, false, false)
+}
+
+// ResolveLiveCandidate resolves a model whose existence a fresh live listing
+// supplied against the non-live layers. Unlike ResolveFallback it permits an
+// otherwise unknown Codex id, so config globs can hide or disable that candidate
+// before any live snapshot is published.
+func (r *Registry) ResolveLiveCandidate(ref string) (Resolved, error) {
+	return r.resolveMode(ref, false, true)
+}
+
+func (r *Registry) resolveMode(ref string, includeLive, allowCodexCandidate bool) (Resolved, error) {
 	pr := ParseRef(ref)
 	if pr.Model == "" {
 		return Resolved{}, fmt.Errorf("%q: empty model reference", ref)
@@ -267,7 +290,7 @@ func (r *Registry) Resolve(ref string) (Resolved, error) {
 	if !ok {
 		return Resolved{}, r.unknownInstance(pr.Instance)
 	}
-	return r.resolveOn(rec, pr, warnings)
+	return r.resolveOnMode(rec, pr, warnings, includeLive, allowCodexCandidate)
 }
 
 // unknownInstance reports a reference or ResolveInstance call naming an
@@ -645,7 +668,11 @@ func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record
 }
 
 func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved, error) {
-	res, err := r.resolveLayers(rec, ref, warnings)
+	return r.resolveOnMode(rec, ref, warnings, true, false)
+}
+
+func (r *Registry) resolveOnMode(rec *record, ref Ref, warnings []string, includeLive, allowCodexCandidate bool) (Resolved, error) {
+	res, err := r.resolveLayersModeLive(rec, ref, warnings, resolveFull, includeLive, allowCodexCandidate)
 	if err != nil {
 		return Resolved{}, err
 	}
@@ -661,10 +688,6 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 // Resolve, while alias seeding needs the facts of a target a flag disables
 // (a cross-provider alias resolves from a target whose own connection
 // disabled it).
-func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resolved, error) {
-	return r.resolveLayersMode(rec, ref, warnings, resolveFull)
-}
-
 // resolveDepth names how far a replay goes. resolveFull materializes the
 // credential stage — the only depth that expands $(command) expressions, so
 // the launch path alone runs it. resolveFacts runs the whole replay except
@@ -689,8 +712,12 @@ const (
 // the hub-side views — listings, fingerprints, alias seeding — free of
 // the launches' mints.
 func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, depth resolveDepth) (Resolved, error) {
-	hit := r.lookupRow(rec, ref.Model)
-	if hit.synthesized && rec.head.Transport.Auth == AuthOAuthOpenAICodex {
+	return r.resolveLayersModeLive(rec, ref, warnings, depth, true, false)
+}
+
+func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string, depth resolveDepth, includeLive, allowCodexCandidate bool) (Resolved, error) {
+	hit := r.lookupRowMode(rec, ref.Model, includeLive)
+	if hit.synthesized && rec.head.Transport.Auth == AuthOAuthOpenAICodex && !allowCodexCandidate {
 		return Resolved{}, fmt.Errorf("%s/%s: unknown model on the Codex transport (valid: %s)", rec.name, ref.Model, strings.Join(exactRowIDs(rec), ", "))
 	}
 	prov := map[string]string{"model": hit.step}
@@ -724,7 +751,7 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, de
 	var aliasDisabled *bool
 	var aliasDefault *bool
 	if row.AliasOf != "" {
-		target, same, err := r.resolveAliasTarget(rec, row.AliasOf)
+		target, same, err := r.resolveAliasTarget(rec, row.AliasOf, includeLive)
 		if err != nil {
 			// A dangling alias stays a warning: the row resolves from what
 			// it says itself.
@@ -804,7 +831,7 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, de
 				seenTag[tag] = true
 			}
 		}
-		if layer.tag == LayerConfig && !liveApplied {
+		if includeLive && layer.tag == LayerConfig && !liveApplied {
 			r.applyLive(&caps, rec, ref.Model, hit, prov)
 			liveApplied = true
 		}
@@ -836,7 +863,7 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, de
 			seenTag[tag] = true
 		}
 	}
-	if !liveApplied {
+	if includeLive && !liveApplied {
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
 	}
 	applyConfigExtras()
@@ -954,7 +981,7 @@ func (r *Registry) aliasTargetRow(rec *record, aliasOf string) (*record, string,
 	return nil, "", false
 }
 
-func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bool, error) {
+func (r *Registry) resolveAliasTarget(rec *record, aliasOf string, includeLive bool) (Resolved, bool, error) {
 	target, id, ok := r.aliasTargetRow(rec, aliasOf)
 	if !ok {
 		return Resolved{}, false, fmt.Errorf("alias_of %q does not name an existing non-alias row", aliasOf)
@@ -962,7 +989,7 @@ func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bo
 	// The replay hands back the target's facts even when the target's own
 	// flag disables it: a cross-provider alias seeds from that target either
 	// way, and the caller refuses a same-provider one.
-	res, err := r.resolveLayersMode(target, Ref{Instance: target.name, Model: id}, nil, resolveFacts)
+	res, err := r.resolveLayersModeLive(target, Ref{Instance: target.name, Model: id}, nil, resolveFacts, includeLive, false)
 	return res, target == rec, err
 }
 
@@ -1501,7 +1528,7 @@ func (r *Registry) recordMayDisableSeen(rec *record, seen map[*record]bool) bool
 
 // InstanceModels lists an instance's known models with their effective
 // disabled state, sorted by id, for the Providers pane's per-model toggles:
-// exact catalog rows plus cached live ids (the same set ModelIDs lists),
+// the same live-authoritative or static-fallback set ModelIDs lists, with
 // alias rows included.
 //
 // An alias row names a model the provider serves under another id (the Codex
@@ -1548,9 +1575,8 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	return out, nil
 }
 
-// instanceRecordIDs resolves an instance to its record plus its known
-// model ids (exact catalog rows plus cached live ids, sorted) — the
-// prologue InstanceModels and ModelIDs share.
+// instanceRecordIDs resolves an instance to its record plus its visible model
+// ids — the prologue InstanceModels and ModelIDs share.
 func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error) {
 	rec, ok := r.recordFor(instance)
 	if !ok {
@@ -1559,16 +1585,28 @@ func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error)
 	return rec, modelIDs(rec, r.LiveModels(instance)), nil
 }
 
-// ModelIDs lists an instance's exact catalog rows plus its cached live ids,
-// sorted (for `evener models list`).
+// ModelIDs lists an instance's visible model ids, sorted. A usable live
+// listing hides snapshot/cache-only ids while curated overlay and user rows
+// remain additive. Without live rows, the exact catalog rows are the fallback.
 func (r *Registry) ModelIDs(instance string) ([]string, error) {
 	_, ids, err := r.instanceRecordIDs(instance)
 	return ids, err
 }
 
-// CatalogModelIDs lists a curated provider's exact catalog rows plus its
-// cached live ids, sorted. It needs no instance, so `evener models list`
-// can show a provider nobody has configured (spec §11.1's --all).
+// FallbackModelIDs lists an instance's exact non-live rows, sorted. Callers use
+// this when a live endpoint answered unusably but must retain that failure as a
+// diagnostic instead of pretending the catalog itself was live.
+func (r *Registry) FallbackModelIDs(instance string) ([]string, error) {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return nil, r.unknownInstance(instance)
+	}
+	return exactRowIDs(rec), nil
+}
+
+// CatalogModelIDs lists a curated provider's visible model ids, sorted. It
+// needs no instance, so `evener models list` can show a provider nobody has
+// configured (spec §11.1's --all).
 func (r *Registry) CatalogModelIDs(id string) ([]string, error) {
 	rec, ok := r.curated[id]
 	if !ok {
@@ -1579,8 +1617,21 @@ func (r *Registry) CatalogModelIDs(id string) ([]string, error) {
 
 func modelIDs(rec *record, live []Model) []string {
 	seen := map[string]bool{}
-	for _, id := range exactRowIDs(rec) {
-		seen[id] = true
+	if len(live) == 0 {
+		for _, id := range exactRowIDs(rec) {
+			seen[id] = true
+		}
+	} else {
+		for _, layer := range rec.layers {
+			if layer.tag != LayerOverlay && layer.tag != LayerConfig {
+				continue
+			}
+			for id := range layer.rows {
+				if !isGlob(id) {
+					seen[id] = true
+				}
+			}
+		}
 	}
 	for _, m := range live {
 		seen[m.ID] = true
