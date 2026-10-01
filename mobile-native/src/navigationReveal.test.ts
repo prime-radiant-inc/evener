@@ -85,6 +85,15 @@ it("reveals a nested fork original's own row, not its parent (it has one)", asyn
 		revealRef: "child",
 	});
 });
+it("reveals an archived fork original through the row that carries it", async () => {
+	// The archived list keeps a fork original inside its continuation's row,
+	// with no row of its own, so /project lands on the continuation.
+	const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier: "archived" };
+	expect(await locateSession(locationClient(fields, { kind: "fork" }), "child")).toMatchObject({
+		ref: "child",
+		revealRef: "root",
+	});
+});
 it.each(["local:orphan", "host:remote-subagent"])(
 	"shows the existing could-not-be-located message for a gone ref: %s",
 	async (ref) => {
