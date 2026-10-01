@@ -16,6 +16,7 @@ import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { Button, EmptyState, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityTree } from "./ActivityTree";
+import { activityActionLabel } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 
 export interface ActivityPanelProps {
@@ -140,14 +141,12 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   const { snapshot } = useSessionActivity(
     !hideTrigger || refreshWhenHidden || discoverWhenHidden || open ? sessionRef : null,
   );
-  const summary = snapshot?.summary;
-  const active = summary?.delegates.known && summary.jobs.known ? summary.delegates.active + summary.jobs.active : null;
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), [setOpen]);
   return (
     <>
       {!hideTrigger ? (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          {active === null ? "Activity" : `Activity · ${active} active`}
+          {activityActionLabel(snapshot?.summary)}
         </Button>
       ) : null}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">

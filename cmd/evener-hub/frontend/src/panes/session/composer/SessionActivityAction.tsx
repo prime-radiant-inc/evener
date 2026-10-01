@@ -1,15 +1,11 @@
 import { activityPanelStore } from "../../../stores/activityPanel";
 import { useSessionActivity } from "../../../stores/sessionActivity";
 import { Button } from "../../../widgets";
+import { activityActionLabel } from "../chrome/activityFormat";
 
 /** Opens SessionChrome's existing sheet; the shared binding owns summary demand. */
 export function SessionActivityAction({ sessionRef }: { sessionRef: string }) {
   const { snapshot } = useSessionActivity(sessionRef);
-  const summary = snapshot?.summary;
-  const label =
-    summary?.delegates.known && summary.jobs.known
-      ? `Activity · ${summary.delegates.active + summary.jobs.active} active`
-      : "Activity";
   return (
     <Button
       variant="quiet"
@@ -19,7 +15,7 @@ export function SessionActivityAction({ sessionRef }: { sessionRef: string }) {
       title="Activity: active jobs and agents in this session"
       onClick={() => activityPanelStore.getState().setSheetOpen(sessionRef, true)}
     >
-      {label}
+      {activityActionLabel(snapshot?.summary)}
     </Button>
   );
 }

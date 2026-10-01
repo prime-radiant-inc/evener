@@ -60,6 +60,7 @@ import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
+import { activityActionLabel } from "./activityFormat";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
@@ -244,10 +245,7 @@ export function SessionChrome({
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
     topNotesStore.getState().toggleAndFocus(sessionRef);
   };
-  const activityLabel =
-    activitySummary?.delegates.known && activitySummary.jobs.known
-      ? `Activity · ${activitySummary.delegates.active + activitySummary.jobs.active} active`
-      : "Activity";
+  const activityLabel = activityActionLabel(activitySummary);
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:
