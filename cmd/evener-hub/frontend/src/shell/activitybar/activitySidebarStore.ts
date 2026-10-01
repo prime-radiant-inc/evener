@@ -12,20 +12,43 @@ import { workspaceStore } from "../workspace";
 export interface ActivitySidebarState {
   open: boolean;
   tab: ActivityTab;
-  openWith(tab?: ActivityTab): void;
+  openWith(tab?: ActivityTab, opener?: HTMLElement): void;
   close(): void;
   setTab(tab: ActivityTab): void;
   toggle(): void;
 }
 
+let activitySidebarOpener: HTMLElement | null = null;
+let activitySidebarOpenerPaneId: string | null = null;
+
+function captureActivitySidebarOpener(opener?: HTMLElement): void {
+  const active = opener ?? document.activeElement;
+  activitySidebarOpener = active instanceof HTMLElement && active !== document.body ? active : null;
+  activitySidebarOpenerPaneId = workspaceStore.getState().focusedPaneId;
+}
+
 export const activitySidebarStore = createStore<ActivitySidebarState>()((set) => ({
   open: false,
   tab: "agents",
-  openWith: (tab) => set((state) => ({ open: true, tab: tab ?? state.tab })),
+  openWith: (tab, opener) => {
+    captureActivitySidebarOpener(opener);
+    set((state) => ({ open: true, tab: tab ?? state.tab }));
+  },
   close: () => set({ open: false }),
   setTab: (tab) => set({ tab }),
-  toggle: () => set((state) => ({ open: !state.open })),
+  toggle: () =>
+    set((state) => {
+      if (!state.open) captureActivitySidebarOpener();
+      return { open: !state.open };
+    }),
 }));
+
+export function activitySidebarReturnFocusTarget(tab: ActivityTab): HTMLElement | null {
+  if (activitySidebarOpener?.isConnected) return activitySidebarOpener;
+  const candidates = document.querySelectorAll<HTMLElement>(`[data-activity-tab="${tab}"]`);
+  if (activitySidebarOpenerPaneId === null) return candidates.item(0);
+  return Array.from(candidates).find((candidate) => candidate.dataset.paneId === activitySidebarOpenerPaneId) ?? null;
+}
 
 export function useActivitySidebarStore<T>(selector: (state: ActivitySidebarState) => T): T {
   return useStore(activitySidebarStore, selector);
@@ -68,5 +91,7 @@ export function closeSessionActivityPanes(ref: string): void {
 // mirrors chromeStore's resetChromeStoreForTests precedent. No production code
 // should ever call this.
 export function resetActivitySidebarStoreForTests(): void {
+  activitySidebarOpener = null;
+  activitySidebarOpenerPaneId = null;
   activitySidebarStore.setState({ open: false, tab: "agents" });
 }

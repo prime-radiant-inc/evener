@@ -273,10 +273,11 @@ that collection, retaining useful displayed rows until the new result is ready.
 
 ## Client integration and navigation
 
-The browser status bar reads the selected session's summary and context. The
-Agents, Jobs, and Watches tabs acquire their corresponding collection. They
-render domain records and drill through the returned public references. Tasks
-continue to use the existing task owner and unfold in the sidebar.
+Each desktop session pane's status footer reads that pane's session summary and
+context. The Agents, Jobs, and Watches tabs acquire their corresponding
+collection. They render domain records and drill through the returned public
+references. Tasks continue to use the existing task owner and unfold in the
+shared sidebar.
 
 The recursive browser activity panel requests subtree scope while it is open.
 Its closed trigger uses the selected session's summary. Store bindings share one
