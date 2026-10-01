@@ -45,7 +45,7 @@
 }
 
 @media (hover: none) {
-  .bubble:not([data-tap-enabled="true"]) {
+  .bubble:not([data-long-press-enabled="true"]) {
     display: none;
   }
 }
