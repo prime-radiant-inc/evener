@@ -159,6 +159,12 @@ it("loads later pages and reveals the flat destination", async () => {
 	).toBe(true);
 	expect(offsets).toEqual([0, 1]);
 });
+it("says so once every page is read and the row isn't there", async () => {
+	const list = pages(() => response([{ ref: "other" }], 0));
+	await expect(revealNavigationRow(list, "child", (r) => r.ref, () => true)).rejects.toThrow(
+		"The session is not in the returned list. It may have moved.",
+	);
+});
 it("does not continue paging after leaving", async () => {
 	let current = true,
 		calls = 0;
@@ -177,7 +183,7 @@ it("does not continue paging after leaving", async () => {
 	).toBe(false);
 	expect(calls).toBe(1);
 });
-it("rejects a revision change rather than mixing a false path", async () => {
+it("rejects a revision change while paging rather than mixing pages", async () => {
 	let calls = 0;
 	const list = pages(() => response([{ ref: String(++calls) }], 1, calls));
 	await expect(

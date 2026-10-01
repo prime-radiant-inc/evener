@@ -150,8 +150,8 @@ export function PageList<T>({
 
 	useEffect(() => pages.watch(), [pages]);
 	const list = useRef<FlatList<T>>(null);
-	const access = useRef({ rowKey });
-	access.current = { rowKey };
+	const rowKeyNow = useRef(rowKey);
+	rowKeyNow.current = rowKey;
 	const [revealError, setRevealError] = useState<string | null>(null);
 	const [revealRequest, setRevealRequest] = useState(0);
 	const [loadingMore, setLoadingMore] = useState(false);
@@ -205,7 +205,7 @@ export function PageList<T>({
 				void revealNavigationRow(
 					pages,
 					revealRef,
-					access.current.rowKey,
+					rowKeyNow.current,
 					() => active && revealEpoch.current === revealRequest,
 				)
 					.then((found) => {
