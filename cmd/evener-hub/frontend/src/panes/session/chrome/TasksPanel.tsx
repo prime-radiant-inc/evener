@@ -318,7 +318,7 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
     // No className here: Disclosure's own .summary/.body already lay out
     // the full row width - this <li> exists only to keep the <ul>'s
     // children real <li>s, the list semantics screen readers rely on.
-    <li data-testid="task-row">
+    <li data-testid="task-row" data-activity-anchor={taskDisclosureId(sessionRef, task.id)}>
       <Disclosure id={taskDisclosureId(sessionRef, task.id)} summary={summary}>
         <TaskExpandedBody task={task} sessionRef={sessionRef} />
       </Disclosure>

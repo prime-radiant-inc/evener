@@ -174,9 +174,8 @@ describe("ActivityTree watch rows", () => {
 
     const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
     expect(row.getAttribute("aria-expanded")).toBe("true");
-    // The row's own name already shows this short note in full; the detail must
-    // not repeat it as a lead paragraph.
-    expect(screen.queryByTestId("watch-note")).toBeNull();
+    // Expanded details reveal the note independently of compact row width.
+    expect(screen.getByTestId("watch-note").textContent).toBe("Poll the queue depth");
     expect(screen.getByTestId("watch-facts").textContent).toBe(
       `Fires every 10m · armed ${armedLabel()} ago · no deliveries yet`,
     );
