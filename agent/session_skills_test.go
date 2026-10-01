@@ -730,6 +730,40 @@ func TestSkillCatalogInspectionCopiesFullMetadata(t *testing.T) {
 	}
 }
 
+func TestInitPlugins_SkillCompatibilityWarningsAreInformational(t *testing.T) {
+	t.Parallel()
+	pluginDir := makePluginDir(t, "compatibility-plugin")
+	writeSkillMD(t, pluginDir, "advisory", "---\nname: advisory\ndescription: fixture\nallowed-tools: [read_file]\ncontext: fork\n---\nBODY\n")
+	writeSkillMD(t, pluginDir, "invalid", "---\nname: invalid\ndescription: fixture\nuser-invocable: \"true\"\n---\nBODY\n")
+
+	warnings := sessionWarnings(t, pluginDir)
+	wantWarnings := map[string]struct {
+		skillName string
+		code      string
+	}{
+		"allowed_tools_not_enforced": {skillName: "advisory", code: events.WarningCodePluginCompatibility},
+		"unsupported_control":        {skillName: "advisory", code: events.WarningCodePluginCompatibility},
+		"invalid_control":            {skillName: "invalid"},
+	}
+	seen := make(map[string]bool, len(wantWarnings))
+	for _, warning := range warnings {
+		for category, want := range wantWarnings {
+			if !strings.Contains(warning.Message, "skill compatibility-plugin:"+want.skillName+" ["+category+"]") {
+				continue
+			}
+			seen[category] = true
+			if warning.Code != want.code {
+				t.Errorf("%s warning code = %q, want %q", category, warning.Code, want.code)
+			}
+		}
+	}
+	for category := range wantWarnings {
+		if !seen[category] {
+			t.Errorf("missing %s warning in %+v", category, warnings)
+		}
+	}
+}
+
 func TestSkillCatalogPluginStartupMetadataOnly(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

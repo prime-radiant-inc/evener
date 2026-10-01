@@ -755,6 +755,7 @@ export {
   WarningCodeContextBudget,
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
+  WarningCodePluginCompatibility,
   warningWords,
 } from "./warnings";
 export { hasWarningText } from "./warningText";

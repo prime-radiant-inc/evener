@@ -290,10 +290,11 @@ export async function waitForHttp(
  * Find Chrome's page target over CDP and open a command channel to it.
  * send() rejects on a CDP error response so a failing command can never read
  * as a successful measurement. Callers close() in a finally.
+ * An optional targetId selects a real tab without depending on /json/list order.
  */
-export async function connectPage(endpoint) {
+export async function connectPage(endpoint, targetId) {
   const targets = await (await fetch(devtoolsHttpURL(endpoint, "/json/list"))).json();
-  const target = targets.find((entry) => entry.type === "page");
+  const target = targets.find((entry) => entry.type === "page" && (targetId === undefined || entry.id === targetId));
   if (!target) throw new Error("chrome exposed no page target");
 
   const ws = new WebSocket(target.webSocketDebuggerUrl);
@@ -322,6 +323,25 @@ export async function connectPage(endpoint) {
     });
 
   return { ws, send, close: () => ws.close() };
+}
+
+async function requestDevtools(endpoint, pathname, operation, method = "GET") {
+  const response = await fetch(devtoolsHttpURL(endpoint, pathname), {
+    method,
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`${operation}: HTTP ${response.status}`);
+  return response;
+}
+
+/** Chrome's browser WS announcement also names the DevTools HTTP listener. */
+export async function openPage(endpoint, url) {
+  const response = await requestDevtools(endpoint, `/json/new?${encodeURIComponent(url)}`, "openPage", "PUT");
+  return response.json();
+}
+
+export async function closePage(endpoint, targetId) {
+  await requestDevtools(endpoint, `/json/close/${encodeURIComponent(targetId)}`, `closePage ${targetId}`);
 }
 
 // The bounded re-navigation budget navigateTo's boot options use: a harness
