@@ -22,6 +22,8 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { blockBody, mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import { LONG_PRESS_MS } from "../../widgets/hovercard";
+import { installHoverlessMatchMedia } from "../../widgets/hovercard/hovercardTestUtils";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -146,6 +148,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
 });
@@ -638,6 +642,38 @@ describe("compact session status", () => {
     expect(within(panel).getByText("2m")).toBeTruthy();
   });
 
+  // The bug this pins: on a touch-only device the row's own tap must open the
+  // session, and only a long press may expose the context card. A real tap
+  // first fires mousedown, which RailRow uses to focus the owning tree row -
+  // exactly the focus that used to pop the card on its own.
+  test("a hoverless tap opens the session and only a long press opens the context panel", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    installHoverlessMatchMedia();
+    const rowInfo = info();
+    render(
+      <div role="treeitem" tabIndex={0}>
+        <RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={rowInfo} actions={actions()} />
+      </div>,
+    );
+    const title = screen.getByTestId("rail-row-title");
+
+    fireEvent.mouseDown(title, { button: 0 });
+    fireEvent.click(title);
+    expect(rowInfo.activate).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    fireEvent.pointerDown(title, { button: 0, clientX: 5, clientY: 5 });
+    act(() => {
+      vi.advanceTimersByTime(LONG_PRESS_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+
+    fireEvent.pointerUp(title, { clientX: 5, clientY: 5 });
+    fireEvent.click(title);
+    expect(rowInfo.activate).toHaveBeenCalledOnce();
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+  });
+
   test.each([
     ["warning", { state: "warning" }, "Warning"],
     ["plain awaiting", { state: "awaiting", ask_pending: false }, "Your move"],
@@ -913,7 +949,7 @@ describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
     expect(rule).toContain("min-height: var(--tap-min)");
   });
 
-  test("tap-enabled session titles meet the 44px floor in both dimensions", () => {
+  test("long-press-enabled session titles meet the 44px floor in both dimensions", () => {
     const rule = nestedRuleBlock(coarseBlock, ".sessionTitle button.label");
     expect(rule).toContain("min-width: var(--tap-min)");
     expect(rule).toContain("min-height: var(--tap-min)");

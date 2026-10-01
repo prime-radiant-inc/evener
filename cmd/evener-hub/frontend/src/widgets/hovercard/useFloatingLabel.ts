@@ -10,6 +10,17 @@ import {
 
 export const SHOW_DELAY_MS = 300;
 
+/** Whether the pointer that would hover or focus a floating label has no hover
+ * capability. On such a device hover and focus show nothing: a tap fires both
+ * itself, and nothing then fires a mouseleave or blur to dismiss what they
+ * showed. Only an explicit touch affordance (HoverCard's long press) reveals a
+ * label there. Tooltip and the un-enabled HoverCard already hide themselves on
+ * touch via CSS. Optional-chained, so a browser without matchMedia reads as
+ * hover-capable. */
+export function isHoverless(): boolean {
+  return typeof window !== "undefined" && !!window.matchMedia?.("(hover: none)")?.matches;
+}
+
 interface UseFloatingLabelArgs {
   measure: () => void;
   observe: RefObject<HTMLElement | null>;
@@ -115,6 +126,7 @@ export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingL
     const target = focusTarget?.();
     if (!target) return;
     const handleFocus = () => {
+      if (isHoverless()) return;
       activeRef.current.externalFocused = true;
       showImmediately();
     };
@@ -139,6 +151,7 @@ export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingL
     dismiss: hide,
     triggerProps: {
       onMouseEnter: () => {
+        if (isHoverless()) return;
         activeRef.current.hovered = true;
         show();
       },
@@ -148,6 +161,7 @@ export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingL
       },
       // Bubbling focus events within a multi-control wrapper must not flicker the label.
       onFocus: (event) => {
+        if (isHoverless()) return;
         if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
         activeRef.current.wrapperFocused = true;
         show();

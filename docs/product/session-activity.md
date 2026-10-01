@@ -5,10 +5,9 @@ conversation. The primary navigation rail reduces each navigation summary to a
 one-line status and title; its title HoverCard exposes the summary's project,
 host, branch, running-job, subagent, watch, pin-section, tier and age context. This remains a
 navigation-domain read. Hovering the title or focusing its tree row reveals that
-context; on a hoverless device, tapping the title reveals it without activating
-the session, and tapping it again activates the session. Reading a session's
-activity is a separate operation, so browsing navigation does not load every
-session's work tree.
+context; on a hoverless device, a long press on the title reveals it, and a tap
+activates the session. Reading a session's activity is a separate operation, so
+browsing navigation does not load every session's work tree.
 
 ## APIs and ownership
 
