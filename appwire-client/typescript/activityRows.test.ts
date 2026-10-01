@@ -326,8 +326,7 @@ test("failed entries stay visible with their nested failures while successful wo
     parentID: delegateID("parent"),
     live: false,
   });
-  for (const row of rows.filter((row) => row.kind === "fold"))
-    expect(row).toMatchObject({ inactiveCount: 1, failedCount: 0 });
+  for (const row of rows.filter((row) => row.kind === "fold")) expect(row).toMatchObject({ inactiveCount: 1 });
   expect(indexActivityEntities(activityTree).get(delegateID("parent"))).toEqual(
     rows.find((row) => row.id === delegateID("parent")),
   );
@@ -345,7 +344,7 @@ test("fold row excludes visible failures from its inactive count", () => {
   failed.job.outcome = "failure";
   const rows = buildActivityRows(tree([failed, shell("y", true)]), new Set());
   const fold = rows.find((r) => r.kind === "fold");
-  expect(fold).toMatchObject({ inactiveCount: 1, failedCount: 0 });
+  expect(fold).toMatchObject({ inactiveCount: 1 });
   expect(rows[0]).toMatchObject({ kind: "job", id: jobID("x"), live: false });
 });
 
@@ -372,7 +371,6 @@ test.each(["error", "failed", "exhausted"])(
     const rows = buildActivityRows(tree([job, stable, turns]), new Set());
     expect(rows.find((row) => row.kind === "fold")).toMatchObject({
       inactiveCount: 3,
-      failedCount: 0,
     });
     expect(activityDelegateState(stable.delegate)).toMatchObject({
       failed: false,
@@ -396,7 +394,6 @@ test("terminal rows read each entry kind's own failure vocabulary", () => {
   const rows = buildActivityRows(tree([job, stable]), new Set());
   expect(rows.find((row) => row.kind === "fold")).toMatchObject({
     inactiveCount: 2,
-    failedCount: 0,
   });
   expect(activityDelegateState(stable.delegate)).toMatchObject({
     failed: false,
@@ -553,7 +550,6 @@ test("empty turn-container rows follow child activity rather than container meta
   expect(rows.map((row) => row.id)).toEqual(["session:ref_root:inactive-fold"]);
   expect(rows.find((row) => row.kind === "fold")).toMatchObject({
     inactiveCount: 2,
-    failedCount: 0,
   });
   expect(activityDelegateState(active.delegate)).toMatchObject({
     active: false,

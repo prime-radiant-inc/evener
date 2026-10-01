@@ -249,6 +249,8 @@ returned job owner ref, delegate stopping addresses its controller root, and a
 child transcript opens the returned child ref. A rendering key never becomes an
 action argument. The [delegate stop handler](../../server/appwire_runtime.go)
 checks that root mutation boundary. Optional usage fields stay absent when unknown.
+Job output panes keep the logical job ID as their title when descriptive
+metadata is unavailable, while independently readable output remains usable.
 
 See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.ts),
 [lease tests](../../appwire-client/typescript/threadSubscription.test.ts) and
@@ -289,7 +291,8 @@ starts with compact job, delegate and watch details, each one disclosure away.
 Expanded watch details reveal the full user note as wrapped text, regardless of
 how much fits in the compact collapsed row.
 Failed entries remain visible outside the inactive fold, including parent rows
-needed to expose failed descendants; successful inactive work stays folded.
+needed to expose failed descendants. The fold count covers only the other
+inactive entries grouped beneath it.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
 retains sheet visibility and disclosure choices by session ref for the lifetime
 of its retained workspace panes. Opening a child transcript releases the hidden
