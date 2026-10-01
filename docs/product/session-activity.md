@@ -263,6 +263,11 @@ subtree read demand; Back restores the Activity inspection context and acquires
 demand again through the shared binding. Explicitly closing the sheet keeps it
 closed across navigation. Closing the last retaining pane evicts this view state.
 
+Activity delegate rows use the shared transcript opener, which retains the
+enclosing conversation and canonicalizes restored variants of the same child
+pane before focusing it. Nested drills keep the child’s parent context so an
+unchanged root URL does not steal focus.
+
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection
 holders acquire demand separately, and client replacement fences old replies.
