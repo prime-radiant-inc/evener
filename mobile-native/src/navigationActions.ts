@@ -14,6 +14,7 @@ import type {
 	NavigationOperation,
 } from "./navigationActionRepository";
 import { type SessionDeletionResult, sessionDeletionResult } from "./sessionDeletionResult";
+import { archivedListStoreFor } from "./archivedPages";
 
 const unresolved = "A previous organization change needs to be checked. Check it before making another change.";
 const storageError =
@@ -234,6 +235,9 @@ export class NavigationActions {
 			const response = await request();
 			if (response.ok !== true) throw Error("not accepted");
 			accepted = true;
+			// Archived lists follow no invalidations, and an accepted change can
+			// move rows in or out of any project's archived tier.
+			void archivedListStoreFor(this.client).refreshLoaded();
 			if (checkpoint && this.storage) {
 				savingRecovery = true;
 				// Preserve a known result even when its screen has gone away. Exact
