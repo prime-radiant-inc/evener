@@ -510,6 +510,107 @@ test("warm summary polling pauses offline and resumes through the existing ready
   expect(callsTo(client, "evener/thread/watches/list")).toBe(0);
 });
 
+test("summary failure publication is atomic and cannot publish or retry across subscriber resync", async () => {
+  const client = activityClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  await store.load("jobs");
+  const rows = store.getSnapshot().jobs.rows;
+  const context = store.getSnapshot().context;
+  const error = new WireError("old source failed", -32014, {
+    evenerErrorInfo: "actionUnavailable",
+    retryDisposition: "automatic",
+  });
+  const entered = deferred<void>();
+  const next = deferred<SessionActivitySummary>();
+  let reads = 0;
+  client.on("evener/thread/activity/read", () => {
+    if (++reads === 1) throw error;
+    entered.resolve();
+    return next.promise;
+  });
+  let resynced = false;
+  const clearedErrors: unknown[] = [],
+    postFenceErrors: unknown[] = [];
+  store.subscribe(() => {
+    const state = store.getSnapshot();
+    if (!resynced && state.summary === null) {
+      clearedErrors.push(state.summaryState.error);
+      resynced = true;
+      client.emitNotification({ method: "evener/thread/resync", params: { ref: activityRef, threadId: "session" } });
+    } else if (resynced) postFenceErrors.push(state.summaryState.error);
+  });
+  const refresh = store.refresh("summary");
+  await entered.promise;
+  next.resolve(summaryFixture());
+  await refresh;
+  expect(clearedErrors).toEqual([error]);
+  expect(postFenceErrors).not.toContain(error);
+  expect(store.getSnapshot().context).toEqual(context);
+  expect(store.getSnapshot().jobs.rows).toBe(rows);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(reads).toBe(2);
+});
+
+test("warm summary publication cannot install an old poll across subscriber resync", async () => {
+  const client = activityClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  let reads = 0;
+  client.on("evener/thread/activity/read", () => ({ ...summaryFixture(), refreshPending: ++reads === 1 }));
+  let resynced = false;
+  store.subscribe(() => {
+    if (!resynced && store.getSnapshot().summary?.refreshPending) {
+      resynced = true;
+      client.emitNotification({ method: "evener/thread/resync", params: { ref: activityRef, threadId: "session" } });
+    }
+  });
+  await store.refresh("summary");
+  expect(resynced).toBe(true);
+  expect(store.getSnapshot().summaryState.pending).toBe(false);
+  expect(reads).toBe(2);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(reads).toBe(2);
+});
+
+test.each(["failure", "warm success"])(
+  "subscriber disposal during summary %s preserves its atomic publication and stops recovery",
+  async (result) => {
+    const client = activityClient();
+    const store = owner(client);
+    store.start();
+    await activityState(store, () => store.getSnapshot().summary !== null);
+    await store.load("jobs");
+    const rows = store.getSnapshot().jobs.rows;
+    const context = store.getSnapshot().context;
+    const error = new WireError("source failed", -32014, {
+      evenerErrorInfo: "actionUnavailable",
+      retryDisposition: "automatic",
+    });
+    client.on("evener/thread/activity/read", () => {
+      if (result === "failure") throw error;
+      return { ...summaryFixture(), refreshPending: true };
+    });
+    let disposed = false;
+    store.subscribe(() => {
+      const state = store.getSnapshot();
+      if (state.summary === null || state.summary.refreshPending) {
+        disposed = true;
+        store.dispose();
+      }
+    });
+    await store.refresh("summary");
+    expect(disposed).toBe(true);
+    expect(store.getSnapshot().summaryState.error).toBe(result === "failure" ? error : null);
+    expect(store.getSnapshot().context).toEqual(context);
+    expect(store.getSnapshot().jobs.rows).toBe(rows);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  },
+);
+
 test("alias resync fences delayed pre-clear summary and collection replies", async () => {
   const client = activityClient();
   const oldSummary = deferred<SessionActivitySummary>(),

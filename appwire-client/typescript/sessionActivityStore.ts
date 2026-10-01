@@ -364,6 +364,7 @@ export class SessionActivityStore {
               permanent: false,
             },
           });
+          if (this.disposed || generation !== this.generation) continue;
           if (!summary.context.ancestryKnown || summary.refreshPending) this.schedule(resource, 100);
         } else {
           const page = result as ActivityPage;
@@ -473,8 +474,13 @@ export class SessionActivityStore {
         read.pageQueued = false;
         read.failures += 1;
         const permanent = permanentError(error);
-        if (resource === "summary") this.publish({ summary: null });
-        this.change(resource, { error, permanent, unavailable: unavailableError(error), pending: false });
+        const update = { error, permanent, unavailable: unavailableError(error), pending: false };
+        if (resource === "summary") {
+          this.publish({ summary: null, summaryState: { ...this.state.summaryState, ...update } });
+        } else {
+          this.change(resource, update);
+        }
+        if (this.disposed || generation !== this.generation) continue;
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
     }
