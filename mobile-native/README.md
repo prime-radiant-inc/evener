@@ -110,8 +110,11 @@ lasts for the app lifetime and adds no disk persistence.
   navigation has paged catalogs, archived views, favorites and archive actions.
   Complete organization/pinning and management acceptance remain open.
 - Conversations render native Markdown and expandable tool/activity details,
-  images and a gallery. Image selection and durable draft attachments exist.
-  Rich-content, authenticated-image and accessibility qualification remain open.
+  images and a gallery. While a turn runs, the status line above the composer
+  shows its most recent nonblank tool-call intent; until one arrives, it keeps
+  the existing progress and status fallbacks. Image selection and durable draft
+  attachments exist. Rich-content, authenticated-image and accessibility
+  qualification remain open.
 - New session opens on the selected hub with recent project directories,
   harnesses, searchable models and compatible reasoning effort. Defaults defer
   to hub configuration. Opening text is preserved exactly; uncertain creation
