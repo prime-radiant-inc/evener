@@ -14,9 +14,8 @@
  * stay on the fixed document ramp below regardless - the known boundary.
  *
  * --markdown-font is the family the --markdown-ink pattern already set:
- * serif is the conversation's reading voice, and the one caller that renders
- * a subagent's report as a message (NotificationCard's delegate bubble) takes
- * the sans face without reaching into this module's descendants. */
+ * serif is the conversation's reading voice, and report bubbles take the sans
+ * face without reaching into this module's descendants. */
 .root {
   color: var(--markdown-ink, var(--ink-hi));
   /* Long unbreakable tokens (paths, URLs) wrap at any point rather than
@@ -179,4 +178,26 @@
 
 .root :where(th[align="left"], td[align="left"]) {
   text-align: left;
+}
+
+/* Markdown bubbles are the shared report treatment. The compact variant is
+ * used by activity detail, where the surrounding strip already supplies the
+ * larger reading surface's breathing room. */
+.markdownBubble {
+  margin-top: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-inset);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-body);
+  color: var(--ink-hi);
+  --markdown-font: var(--font-sans);
+  overflow-wrap: anywhere;
+}
+
+.markdownBubbleCompact {
+  margin-top: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  --markdown-ink: var(--ink-mid);
+  font-size: var(--font-size-caption);
 }
