@@ -764,10 +764,11 @@ func TestInheritOperatorEnvFlagParses(t *testing.T) {
 }
 
 // TestCliProbeArgsHermeticByDefaultDisablesOperatorPlugins pins the other
-// half of #3227: EVENER_NO_USER_SKILLS (agent/session_init.go) only hides the
-// operator's home and user-config skills. Their installed, enabled plugins
-// still load in full (hooks, agents, commands) whenever `evener run` resolves
-// plugins against its default root, because the CLI harness spawns evener
+// half of #3227: EVENER_NO_USER_SKILLS (agent/session_init.go) hides the
+// operator's user-global skills, global MCP config, and evener-wide commands,
+// but their installed, enabled plugins still load in full (hooks, agents,
+// commands) whenever `evener run` resolves plugins against its default root,
+// because the CLI harness spawns evener
 // with no --enabled-plugins/--plugin-dir of its own. A hermetic run must pass
 // --enabled-plugins with an explicit empty selection so plugin resolution
 // (internal/plugins.ResolveForLaunch) selects nothing, however many plugins

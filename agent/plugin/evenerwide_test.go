@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars"
 )
 
 // writeEvenerwideCommand writes dir/<name>.md with content and returns dir.
@@ -135,6 +136,32 @@ func TestDiscoverEvenerWideCommands_IsolatedXDGConfigHome(t *testing.T) {
 	}
 	if _, ok := got["first"]; ok {
 		t.Fatalf("second scan leaked first command: %v", maps.Keys(got))
+	}
+}
+
+// TestDiscoverEvenerWideCommands_HidesUserGlobalWhenNoUserSkills pins #3487:
+// the tool-fluency harness sets EVENER_NO_USER_SKILLS so an eval round depends
+// only on the revision under test, and the operator's user-global commands are
+// one source that must not reach it. Project commands stay, so a probe still
+// sees the commands its own fixture declares.
+func TestDiscoverEvenerWideCommands_HidesUserGlobalWhenNoUserSkills(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	writeEvenerwideCommand(t, filepath.Join(xdg, "evener", "commands"), "operator-cmd", "operator body")
+
+	workDir := t.TempDir()
+	writeEvenerwideCommand(t, filepath.Join(workDir, ".evener", "commands"), "project-cmd", "project body")
+
+	got, warnings := DiscoverEvenerWideCommands(execenv.NewLocalExecutionEnvironment(workDir))
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if _, ok := got["operator-cmd"]; ok {
+		t.Errorf("operator user-global command reached a hermetic round: %v", maps.Keys(got))
+	}
+	if cmd, ok := got["project-cmd"]; !ok || cmd.Source != "project" {
+		t.Errorf("project command must remain; got %+v", cmd)
 	}
 }
 

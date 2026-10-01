@@ -1,8 +1,9 @@
 // A project's archived sessions as a page source. Navigation v3 serves no
 // archived rows: they come from evener/archived/list through the connection's
 // archived list store (archivedLists.ts). The list has no revisions of its
-// own: it is read when a screen opens it unloaded, again when the hub
-// announces its project changed, after any accepted organize change
+// own: it is read when a screen opens it unloaded or starts following the
+// hub with it loaded, again when the hub announces its project changed (once
+// shown, if it was out of view), after any accepted organize change
 // (navigationActions.ts, and the Conversation screen's own Archive and Undo),
 // and from the top once its connection recovers.
 import {
@@ -36,6 +37,9 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	private readonly store: ArchivedListStore;
 	private list: ArchivedList | undefined;
 	private snapshot = pageState(undefined);
+	private paused = false;
+	/** The hub announced a change while the list was paused. */
+	private owed = false;
 	constructor(
 		private readonly client: ConversationClientLike,
 		private readonly catalog: ArchivedListCatalog,
@@ -58,7 +62,11 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 		this.store.subscribe((state, previous) => {
 			if (state.lists[this.key] !== previous.lists[this.key]) listener();
 		});
+	/** An explicit read means the list is shown again, and stands in for any
+	 * read owed while it was paused. */
 	refresh() {
+		this.paused = false;
+		this.owed = false;
 		return this.store.refresh(this.catalog, this.projectKey);
 	}
 	// An archived list is read from the hub's current navigation, which an
@@ -71,16 +79,34 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	}
 	/** Reads the list again when the hub announces a change to this project's
 	 * pages (a session archived on another device, or one ageing into the
-	 * archived tier); the hub's navigation names no archived list itself. */
+	 * archived tier); the hub's navigation names no archived list itself. A
+	 * list already loaded is read again now: nothing followed the hub for it
+	 * since the view that loaded it closed. */
 	watch() {
+		if (this.getSnapshot().loaded) this.follow();
 		return this.client.onNotification((event) => {
-			if (event.method === "evener/navigation/invalidated" && event.params.targets.some(this.names))
-				void this.refresh();
+			if (event.method === "evener/navigation/invalidated" && event.params.targets.some(this.names)) this.follow();
 		});
 	}
 	private names = (target: NavigationInvalidationTarget) =>
 		target.kind === "all_loaded_projects" || (target.kind === "project" && target.projectKey === this.projectKey);
-	// The list holds no read to pause, so there is nothing to cancel or resume.
-	cancel() {}
-	resume() {}
+	/** A read on the hub's behalf: owed until resume while paused, and none
+	 * on a connection that isn't ready, which would reject it (once ready, it
+	 * has dropped every list, which its view reads afresh). */
+	private follow() {
+		if (this.paused) this.owed = true;
+		else if (this.client.state === "ready") {
+			this.owed = false;
+			void this.store.refresh(this.catalog, this.projectKey);
+		}
+	}
+	/** Out of view, the list reads nothing on the hub's behalf; what it owes
+	 * is read on resume. A read already out lands. */
+	cancel() {
+		this.paused = true;
+	}
+	resume() {
+		this.paused = false;
+		if (this.owed) this.follow();
+	}
 }
