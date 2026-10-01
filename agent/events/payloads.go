@@ -589,6 +589,12 @@ const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 // these warnings by this stable code, never by matching their prose.
 const WarningCodeContextBudget = "context_budget"
 
+// WarningCodePluginCompatibility identifies plugin, skill, and evener-wide
+// command settings that Evener preserves but does not enforce. The affected
+// content remains available, so clients show this advisory only in full
+// transcript detail.
+const WarningCodePluginCompatibility = "plugin_compatibility"
+
 // WarningCodeMCPReconnected identifies a restored MCP connection. Clients show
 // it as quiet detail; the retried tool call reports its own outcome separately.
 const WarningCodeMCPReconnected = "mcp_reconnected"
