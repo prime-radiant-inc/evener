@@ -203,6 +203,42 @@ it("stops retrying once a read lands", async () => {
 	expect(fake.methods).toHaveLength(1);
 });
 
+it("lets a notification's read supersede a pending retry", async () => {
+	vi.useFakeTimers();
+	const handlers = new Set<(n: AnyNotification) => void>();
+	const methods: string[] = [];
+	let reads = 0;
+	let answerSecond: (r: { providers: AuthStatusResponse[] }) => void = () => {};
+	const client = {
+		request: (method: string) => {
+			methods.push(method);
+			reads += 1;
+			if (reads === 1) return Promise.reject(new Error("the hub is busy"));
+			return new Promise<{ providers: AuthStatusResponse[] }>((resolve) => {
+				answerSecond = resolve;
+			});
+		},
+		onNotification: (handler: (n: AnyNotification) => void) => {
+			handlers.add(handler);
+			return () => handlers.delete(handler);
+		},
+	} as unknown as ConversationClientLike;
+	const { result } = renderHook(() => useAuthStatuses(client));
+	await flushInitial();
+	expect(methods).toHaveLength(1);
+	// A notification starts the store's own read while the retry is still
+	// armed; the retry must stand down rather than send a read on top of it.
+	for (const handler of handlers) handler({ method: "evener/auth/updated", params: {} } as AnyNotification);
+	await afterDebounce();
+	expect(methods).toHaveLength(2);
+	await advance(AUTH_RETRY_MS);
+	expect(methods).toHaveLength(2);
+	await act(async () => {
+		answerSecond({ providers: [expired] });
+	});
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+});
+
 it("keeps the last statuses through a flap that drops the client", async () => {
 	const fake = hub([[expired]]);
 	let current: ConversationClientLike | null = fake.client;

@@ -40,15 +40,24 @@ export function useAuthStatuses(client: AuthStatusesClient | null): ReadonlyMap<
 			if (state.authStatuses !== null && state.authStatuses !== landed) {
 				landed = state.authStatuses;
 				wait = AUTH_RETRY_MS;
+			}
+			// The store clears its error before every attempt (its own
+			// notification refetch included), so a null error with a retry
+			// pending means a read is starting that supersedes it: cancel the
+			// timer rather than send a second read on top of that one. `wait`
+			// is deliberately untouched - the error clearing is not a landing,
+			// so the backoff keeps growing across attempts.
+			if (state.authStatusesError === null) {
 				clearTimeout(retry);
 				retry = undefined;
+				return;
 			}
 			// A failed read records its error and schedules nothing: with no
 			// notification or connection transition to follow, this hook is
 			// what asks again. `fetchAuthStatuses` never rejects, so the retry
 			// is driven off the error the store records, not a rejected
 			// promise, and one timer is enough however many writes follow.
-			if (state.authStatusesError === null || retry !== undefined) return;
+			if (retry !== undefined) return;
 			const delay = wait;
 			wait = Math.min(wait * 2, AUTH_RETRY_MAX_MS);
 			retry = setTimeout(() => {
