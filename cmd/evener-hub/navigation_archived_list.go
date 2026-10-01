@@ -22,10 +22,13 @@ type navigationArchivedPage struct {
 	Sessions   hubapi.NavigationArray[hubapi.NavigationSessionSummary]
 	NextCursor string
 	Total      int
+	// Catalog is the catalog read; the zero kind when none holds the key.
+	Catalog navigationResourceKind
 }
 
 // navigationArchivedListRequest is a validated evener/archived/list request.
-// After is the key of the last row the caller holds; nil starts at the top.
+// Catalog is the caller's hint, the zero kind when it gave none. After is the
+// key of the last row the caller holds; nil starts at the top.
 type navigationArchivedListRequest struct {
 	Catalog    navigationResourceKind
 	ProjectKey string
@@ -34,13 +37,18 @@ type navigationArchivedListRequest struct {
 }
 
 // parseNavigationArchivedListParams validates the wire params the way a
-// navigation read validates its own: a known catalog, a project key that is a
-// navigation identity, a limit in 0..maxNavigationSectionRows (0 or absent
-// means the maximum), and a cursor this hub minted.
+// navigation read validates its own: a known catalog when one is given, a
+// project key that is a navigation identity, a limit in
+// 0..maxNavigationSectionRows (0 or absent means the maximum), and a cursor
+// this hub minted.
 func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navigationArchivedListRequest, error) {
-	catalog, err := parseNavigationCatalog(params.Catalog)
-	if err != nil {
-		return navigationArchivedListRequest{}, err
+	var catalog navigationResourceKind
+	if params.Catalog != "" {
+		parsed, err := parseNavigationCatalog(params.Catalog)
+		if err != nil {
+			return navigationArchivedListRequest{}, err
+		}
+		catalog = parsed
 	}
 	if err := validateNavigationIdentity("project key", params.ProjectKey, false); err != nil {
 		return navigationArchivedListRequest{}, err
@@ -93,19 +101,38 @@ func decodeArchivedCursor(cursor string, catalog navigationResourceKind, project
 	return hubcore.SessionOrderKey{Updated: c.Updated, Created: c.Created, Title: c.Title, ID: c.ID}, nil
 }
 
-// ArchivedList returns the page of archived rows of request's catalog project
-// that follows request.After in the rail's order. A project the catalog does
-// not hold answers an empty page: it moved or was deleted since the rail listed
-// it. The same key can exist in two catalogs, so the catalog names which
-// project's rows (and which summary's count) the list is.
-func (p navigationProjection) ArchivedList(request navigationArchivedListRequest) (navigationArchivedPage, error) {
-	var project hubcore.TreeProject
-	for _, candidate := range p.catalogs[request.Catalog] {
-		if candidate.Key == request.ProjectKey {
-			project = candidate
-			break
+// archivedListCatalog finds the catalog holding key now. The same key can
+// exist in more than one catalog, so a hinted catalog that holds it wins. A
+// project moves between Projects and Archived projects as its sessions are
+// archived and unarchived (hubcore's Tree), so a hint to one member of that
+// pair falls back to the other. With no hint, the first catalog holding the
+// key. The zero kind means no catalog holds it.
+func (p navigationProjection) archivedListCatalog(hint navigationResourceKind, key string) (navigationResourceKind, hubcore.TreeProject) {
+	candidates := []navigationResourceKind{hint}
+	switch hint {
+	case "":
+		candidates = []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
+	case navigationResourceProjects:
+		candidates = append(candidates, navigationResourceArchivedProjects)
+	case navigationResourceArchivedProjects:
+		candidates = append(candidates, navigationResourceProjects)
+	}
+	for _, catalog := range candidates {
+		for _, project := range p.catalogs[catalog] {
+			if project.Key == key {
+				return catalog, project
+			}
 		}
 	}
+	return "", hubcore.TreeProject{}
+}
+
+// ArchivedList returns the page of archived rows of request's project that
+// follows request.After in the rail's order, from the catalog holding the
+// project now (archivedListCatalog). A project no catalog holds answers an
+// empty page: it was deleted since the rail listed it.
+func (p navigationProjection) ArchivedList(request navigationArchivedListRequest) (navigationArchivedPage, error) {
+	catalog, project := p.archivedListCatalog(request.Catalog, request.ProjectKey)
 	rows, _ := project.TierRows("archived")
 	start := 0
 	if request.After != nil {
@@ -129,7 +156,7 @@ func (p navigationProjection) ArchivedList(request navigationArchivedListRequest
 	if len(page.Sessions) == 0 && page.Remaining > 0 {
 		return navigationArchivedPage{}, navigationPageProgressInvariantError{kind: navigationResourceProjectPage}
 	}
-	out := navigationArchivedPage{Sessions: page.Sessions, Total: len(rows)}
+	out := navigationArchivedPage{Sessions: page.Sessions, Total: len(rows), Catalog: catalog}
 	if page.Remaining > 0 {
 		out.NextCursor = encodeArchivedCursor(request.Catalog, request.ProjectKey, hubcore.TreeNodeOrderKey(rows[start+len(page.Sessions)-1]))
 	}
@@ -182,7 +209,7 @@ func countArchivedForkNodes(rows []hubcore.TreeNode) int {
 
 // ArchivedList serves evener/archived/list from the current core. It waits
 // for a current build the way a navigation read does, then reads the archived
-// tier of the named catalog's project.
+// tier of the project from the catalog holding it now.
 func (s *NavigationService) ArchivedList(ctx context.Context, request navigationArchivedListRequest) (appwire.ArchivedListResponse, error) {
 	if _, err := s.ensureSnapshot(ctx, false, nil); err != nil {
 		return appwire.ArchivedListResponse{}, err
@@ -201,7 +228,7 @@ func (s *NavigationService) ArchivedList(ctx context.Context, request navigation
 	if err != nil {
 		return appwire.ArchivedListResponse{}, err
 	}
-	return appwire.ArchivedListResponse{Sessions: sessions, NextCursor: page.NextCursor, Total: page.Total}, nil
+	return appwire.ArchivedListResponse{Sessions: sessions, NextCursor: page.NextCursor, Total: page.Total, Catalog: string(page.Catalog)}, nil
 }
 
 // archivedCount is the number of archived sessions in a catalog's project: the
