@@ -45,6 +45,7 @@ import {
   markCacheSessionsDeleted,
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
+  setCacheWriteTimersForTests,
   setSessionCacheAdapterForTests,
   threadsStore,
 } from "./threads";
@@ -920,6 +921,49 @@ describe("cached write seam", () => {
   // setImmediate, which a bare useFakeTimers() fakes too — freezing the
   // debounced write's own transaction mid-test — while the debounce rides
   // setTimeout either way.
+
+  it.each([
+    { cadence: "injected", reset: false, debounceMs: 40, maxWaitMs: 100, stepMs: 25 },
+    { cadence: "default after reset", reset: true, debounceMs: 1_000, maxWaitMs: 5_000, stepMs: 500 },
+  ])("uses the $cadence write cadence for debounce and max-wait", async ({ reset, debounceMs, maxWaitMs, stepMs }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      setCacheWriteTimersForTests({ debounceMs: 40, maxWaitMs: 100 });
+      if (reset) resetThreadsStoreForTests();
+      const adapter = new SessionCacheIndexedDB();
+      const putSpy = vi.spyOn(adapter, "put");
+      installCacheAdapter(adapter);
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:cadence");
+      await resolveEverything(fake);
+
+      await vi.advanceTimersByTimeAsync(debounceMs - 1);
+      expect(putSpy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      expect(await cacheRecord("local:cadence")).toBeDefined();
+
+      // Publications faster than the debounce keep postponing it, leaving
+      // only the max-wait to commit the latest fold at its exact boundary.
+      let lastFold = "";
+      for (let elapsed = 0; elapsed < maxWaitMs; elapsed += stepMs) {
+        lastFold = `turn_${elapsed}`;
+        emitHistoryUpdated("local:cadence", { fold: lastFold });
+        await vi.advanceTimersByTimeAsync(stepMs - 1);
+        expect(putSpy).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(putSpy).toHaveBeenCalledTimes(2);
+      expect((await cacheRecord("local:cadence"))?.history.turns.map((turn) => turn.id)).toContain(lastFold);
+      await vi.advanceTimersByTimeAsync(maxWaitMs);
+      expect(putSpy).toHaveBeenCalledTimes(2); // neither timer survives its burst
+    } finally {
+      resetThreadsStoreForTests();
+      vi.useRealTimers();
+      restoreCacheAdapter();
+    }
+  });
 
   it("shell safety: the shell and its bumped base publish without a write, and the first read merge resumes writes", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

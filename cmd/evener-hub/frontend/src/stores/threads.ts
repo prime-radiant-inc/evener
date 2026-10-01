@@ -5181,8 +5181,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 // The debounce and starvation bounds (spec, "The write seam"): a burst's
 // trailing write fires 1 s after its last publication, and a streaming burst
 // never starves past 5 s.
-const CACHE_WRITE_DEBOUNCE_MS = 1_000;
-const CACHE_WRITE_MAX_WAIT_MS = 5_000;
+const DEFAULT_CACHE_WRITE_TIMERS = { debounceMs: 1_000, maxWaitMs: 5_000 };
+let cacheWriteTimers = DEFAULT_CACHE_WRITE_TIMERS;
+
+/** Tests inject cadence before arming writes; existing schedules keep their timers. */
+export function setCacheWriteTimersForTests(timers: typeof DEFAULT_CACHE_WRITE_TIMERS): void {
+  cacheWriteTimers = timers;
+}
 
 interface CacheWriteSchedule {
   trailing: ReturnType<typeof setTimeout>;
@@ -5230,8 +5235,8 @@ function scheduleCacheWrite(ref: string): void {
     if (model !== undefined) writeCacheRecord(ref, model);
   };
   const schedule: CacheWriteSchedule = {
-    trailing: setTimeout(fire, CACHE_WRITE_DEBOUNCE_MS),
-    maxWait: existing?.maxWait ?? setTimeout(fire, CACHE_WRITE_MAX_WAIT_MS), // max-wait: a streaming session never starves
+    trailing: setTimeout(fire, cacheWriteTimers.debounceMs),
+    maxWait: existing?.maxWait ?? setTimeout(fire, cacheWriteTimers.maxWaitMs), // max-wait: a streaming session never starves
   };
   cacheWriteSchedules.set(ref, schedule);
 }
@@ -5584,6 +5589,7 @@ export function resetThreadsStoreForTests(): void {
     clearTimeout(schedule.maxWait);
   }
   cacheWriteSchedules.clear();
+  cacheWriteTimers = DEFAULT_CACHE_WRITE_TIMERS;
   oversizeMemo.clear();
   cacheHistoryLifetimes.clear();
   // The cache channel's module state: a test's installed factory and its
