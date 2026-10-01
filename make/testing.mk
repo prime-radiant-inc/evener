@@ -26,12 +26,15 @@ test-web: web-preflight build-dev
 # failing case does not hide the remaining guard's verdict; exit status is the
 # first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
-## shellguard, spawnguard, transcriptscrollguard, retirementguard) plus the
+## shellguard, spawnguard, transcriptscrollguard, sessioncacheguard,
+## retirementguard, mermaidguard) plus the
 ##   full-stack `web-skillguard` (TestSkillComposerBrowser behind the
 ##   `browserguard` tag) that jsdom cannot evaluate.
 ## proves: Headless Chrome evaluates real CSS geometry, the real Session
 ##   reducer/tree, the real Spawn staging/breakpoint path, the real transcript
-##   scroll/jump-to-latest path, and the real selected-thread recovery contract
+##   scroll/jump-to-latest path, session-cache deletion healing, clear-epoch
+##   suppression and envelope filtering across two real tabs with native
+##   BroadcastChannel and IndexedDB, and the real selected-thread recovery contract
 ##   when its daemon retires and is replaced; the skill guard additionally
 ##   drives the production composer through a REAL hub and two REAL
 ##   `evener serve` daemons with only the LLM provider scripted.
