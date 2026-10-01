@@ -26,7 +26,8 @@ Four facts that invert what this card used to say:
   render one (`shell/rail/Rail.tsx:563-573`, kata `vbh8`): attention surfaces inline on the
   session's own row instead. `tree.needs_you` itself is untouched and is still what the
   notification engine snapshots (`notifications/attention.ts:53-67`) — so the tier
-  assertion moves to the REST response, and the DOM assertion moves to the row's gloss.
+  assertion moves to the REST response. The DOM signal reads `Needs you`; hovering the
+  row title exposes the ask-specific `Question waiting` status in its context card.
 - **The client's edge detection is snapshot-diffing, not `prevLevel`.** A `evener/attention/changed`
   broadcast triggers a debounced AppWire navigation-manifest read
   (`stores/navigation/store.ts:443-453`, 250 ms);
@@ -130,7 +131,8 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
 4. **(browser)** From Session B's tab — never navigated away, this is the "different
    session's viewport" — wait out the hub's attention watcher (it ticks every 5 s,
    `cmd/evener-hub/main_background.go:50`) plus the client's 250 ms refetch debounce, then
-   read all three channels:
+   hover `[data-session-ref="local:<SIDA>"] [data-testid="rail-row-title"]` and read all
+   three channels:
    ```
    sleep 8
    ```
@@ -139,6 +141,8 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
      const link = document.querySelector("link[rel='icon']");
      const href = link ? decodeURIComponent(link.href) : "";
      const row = document.querySelector('[data-session-ref="local:<SIDA>"]');
+     const title = row?.querySelector('[data-testid="rail-row-title"]');
+     const contextID = title?.getAttribute("aria-describedby");
      return {
        port: location.port,
        path: location.pathname,                              // still /s/local:<SIDB>
@@ -147,7 +151,8 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
        faviconAmber: /fill='#e0af68'/.test(href),
        captured: window.__asked,
        railRowPresent: !!row,
-       railRowActivity: row?.querySelector('[data-testid="rail-row-activity"]')?.textContent,
+       railRowSignal: row?.querySelector('[data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
+       railRowContext: contextID ? document.getElementById(contextID)?.textContent : null,
      };
    })()
    ```
@@ -193,12 +198,11 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
   (`notifications/attention.ts:70-84`), fired only because the tab is unfocused, is the
   Web-Locks leader, and opted in (`notifications/index.ts:77-82`). Falsify: nothing
   captured — the cross-session edge never fired.
-- **Step 4 (rail, qualitative)**: `railRowPresent` is `true` and `railRowActivity` reads
-  `question waiting` — the ask band of `awaiting`, lowercased by `humanizeState`
-  (`shell/rail/RailRow.tsx:138-147`, rendered at `:531`). Do **not** look for a "needs you"
-  section; there isn't one by design. Falsify: the row reads `your move` (the wire's
-  `ask_pending` never reached the rail) or the row never appears without a reload (the
-  broadcast-driven refetch regressed).
+- **Step 4 (rail, qualitative)**: `railRowPresent` is `true`, `railRowSignal` reads
+  `Needs you`, and `railRowContext` contains `Question waiting`. Do **not** look for a
+  "needs you" section; there isn't one by design. Falsify: the context card reads only the
+  generic `Needs you` status (the wire's `ask_pending` never reached the rail) or the row
+  never appears without a reload (the broadcast-driven refetch regressed).
 - **Step 5 (exact)**: `rowA.state` is `"awaiting"`, `rowA.ask_pending` is `true`
   (`hubapi/types.go:114`), `rowA.ref` is `local:<SIDA>`, and
   `summary.needsYou` is ≥ 1 (`hubapi/types.go:50-55`). Assert on presence and identity,

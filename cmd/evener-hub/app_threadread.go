@@ -74,7 +74,51 @@ func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwir
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
-	if response, ok, err := pastThreadReadResponse(ctx, cfg, params); ok || err != nil {
+	var entry hubcore.PastEntry
+	var hasPast bool
+	if params.Subscribe {
+		knownTarget := false
+		captured, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, "", func() (bool, error) {
+			delivery := ""
+			// Use one retained candidate for delivery identity and disk projection.
+			entry, hasPast = pastEntryForRead(cfg, params)
+			if hasPast && entry.ID != "" {
+				delivery = "local:" + entry.ID
+			} else if cfg.Roster != nil {
+				if _, ok := cfg.Roster.RestartRequiredRootRef(normalizedAdmissionRef(params)); ok {
+					delivery = normalizedAdmissionRef(params)
+				}
+			}
+			if delivery == "" {
+				return true, nil
+			}
+			knownTarget = true
+			// Saved history has no live sequence cut. Buffer future relay frames
+			// before reading disk, then release them after the successful response.
+			// The ingress admission retains its lifecycle owner, which can differ
+			// from a child's delivery identity. Failed hydration restores membership.
+			return appserver.CaptureSubscriptionWithHandoff(
+				ctx, params.ReplaceSubscription,
+				func() string { return delivery },
+				func() uint64 { return 0 },
+				func() bool { return true },
+				appserver.CaptureSubscriptionHandoff{},
+			), nil
+		})
+		if err != nil {
+			return appwire.ThreadReadResponse{}, false, err
+		}
+		if !captured {
+			return appwire.ThreadReadResponse{}, false, appwire.SessionUnavailable("thread subscription is unavailable")
+		}
+		if !knownTarget {
+			return appwire.ThreadReadResponse{}, false, nil
+		}
+	} else {
+		entry, hasPast = pastEntryForRead(cfg, params)
+	}
+	if hasPast {
+		response, ok, err := pastEntryItemReadResponse(ctx, cfg, params, entry)
 		return response, ok, daemonlessReadError(err)
 	}
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
@@ -146,6 +190,10 @@ func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, para
 	if !ok {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
+	return pastEntryItemReadResponse(ctx, cfg, params, entry)
+}
+
+func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, entry hubcore.PastEntry) (appwire.ThreadReadResponse, bool, error) {
 	thread, err := pastEntryThread(ctx, cfg, entry, false)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err

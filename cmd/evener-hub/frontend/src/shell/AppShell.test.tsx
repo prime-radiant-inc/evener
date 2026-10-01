@@ -4470,3 +4470,68 @@ test.each([false, true])(
     }
   },
 );
+
+test.each([false, true])(
+  "rail session activation opens live chrome with retained transcript and nested=%s",
+  async (nested) => {
+    const user = userEvent.setup();
+    const client = navClient();
+    client.on("thread/read", ({ ref }) => {
+      if (!ref) throw new Error("session ref required");
+      return { thread: threadStartResponse(ref).thread };
+    });
+    if (nested)
+      client.on("evener/navigation/read", (params) =>
+        params.resource === "location" && params.ref === "local:s1"
+          ? wireSnapshot(
+              params,
+              {
+                ref: "local:s1",
+                top_level_ref: "local:owner",
+                top_level: false,
+                session: { ...TREE_SESSION, kind: "subagent" },
+              },
+              '"nested"',
+            )
+          : navigationRead(params),
+      );
+    window.history.pushState({}, "", "/s/local%3Aowner");
+    render(<AppShell client={client} />);
+    await rail().findByText("Session one");
+    await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" }));
+    const owner = workspaceStore.getState().mainPane();
+    const transcript = await act(async () =>
+      workspaceStore
+        .getState()
+        .openPane("transcript", { ref: "local:s1", parentRef: "local:owner" }, { slot: "secondary" }),
+    );
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(transcript));
+    if (nested)
+      act(() =>
+        installLocation({
+          generation_id: "generation_test",
+          revision: 1,
+          ref: "local:s1",
+          top_level_ref: "local:owner",
+          top_level: false,
+          session: { ...TREE_SESSION, kind: "subagent", state: "idle" },
+        }),
+      );
+    await user.click(rail().getByText("Session one"));
+    expect(window.location.pathname).toBe("/s/local%3As1");
+    await waitFor(() => {
+      const state = workspaceStore.getState();
+      const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+      expect(focused?.type).toBe("session");
+      expect(focused?.params).toEqual({ ref: "local:s1" });
+    });
+    expect(workspaceStore.getState().mainPane()?.type).toBe("session");
+    if (nested) {
+      expect(workspaceStore.getState().mainPane()?.id).toBe(owner?.id);
+      expect(
+        workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId)?.slot,
+      ).toBe("secondary");
+      expect(await screen.findAllByRole("textbox", { name: "Message" })).toHaveLength(2);
+    } else expect(await screen.findByRole("textbox", { name: "Message" })).toBeTruthy();
+  },
+);
