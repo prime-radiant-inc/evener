@@ -658,7 +658,13 @@ describe("compact session status", () => {
     );
     const title = screen.getByTestId("rail-row-title");
 
+    // Real touch order: the pointer lifts, then the compatibility mousedown
+    // focuses the row. That focus must not open the card on its own.
+    fireEvent.pointerDown(title, { button: 0 });
+    fireEvent.pointerUp(title, { button: 0 });
     fireEvent.mouseDown(title, { button: 0 });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
     fireEvent.click(title);
     expect(rowInfo.activate).toHaveBeenCalledOnce();
     expect(screen.queryByRole("tooltip")).toBeNull();
