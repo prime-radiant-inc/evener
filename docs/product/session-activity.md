@@ -292,7 +292,10 @@ and category. The browser disclosure binding opts Activity into retaining explic
 fold choices, including task and watch details. These are bounded, best-effort UI
 preferences: 100 recent session views and 2,000 disclosure choices. Loading them
 does not rewrite storage or acquire a collection for a closed sidebar. These
-preferences never contain activity rows or continuation/retry state.
+preferences never contain activity rows or continuation/retry state. A committed
+desktop revisit preserves the session's recency through the existing coalesced
+save, so a reload does not make that session an older eviction candidate. Focus
+changes while the sidebar is unmounted do not persist inherited view intent.
 
 Without a retained choice, the desktop [Jobs tab](../../cmd/evener-hub/frontend/src/shell/activitybar/JobsTab.tsx)
 starts successful completed job history folded, and the shared

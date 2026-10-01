@@ -160,7 +160,7 @@ function triggerLabel(tasks: ThreadModel["tasks"]): string {
 // session's panel opens. Mirrors subagentModuleStore.ts's itemScopeKey (same
 // NUL-separator idiom); no "" fallback is needed here since TasksPanelProps'
 // sessionRef is never optional.
-function taskDisclosureId(sessionRef: string, taskId: number): string {
+export function taskDisclosureId(sessionRef: string, taskId: number): string {
   return `${sessionRef}\0${taskId}`;
 }
 

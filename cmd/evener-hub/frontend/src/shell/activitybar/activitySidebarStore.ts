@@ -161,8 +161,13 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       if (!view || !state.open || state.ref !== ref) return;
       // A committed desktop view records inherited child inspection intent.
       // Global focus can also move on mobile, where this sidebar is absent.
-      const saved = readViews().get(ref);
-      if (saved?.open === view.open && saved.tab === view.tab) return;
+      const savedViews = readViews();
+      const saved = savedViews.get(ref);
+      if (saved?.open === view.open && saved.tab === view.tab) {
+        // Revisiting a committed view must retain its recency across reload.
+        if ([...savedViews.keys()].at(-1) !== ref) scheduleSave();
+        return;
+      }
       saveViews(state.views);
     },
     setCategoryView(ref, tab, patch) {
