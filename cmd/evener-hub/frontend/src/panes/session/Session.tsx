@@ -28,6 +28,8 @@ import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
+import { StatusBar } from "../../shell/statusbar/StatusBar";
+import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
@@ -43,6 +45,7 @@ import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPen
 import { Composer } from "./composer/Composer";
 import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
+import { RepoLocation } from "./composer/RepoLocation";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { PendingChips } from "./pending/PendingChips";
@@ -223,6 +226,7 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
 
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
+  const isMobile = useIsMobile();
   const blockedMutations = useBlockedMutationEntries(ref);
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
@@ -466,11 +470,24 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     workspaceStore.getState().closePane(paneId);
   }
 
+  const footerCwd = !deletedRef && model ? model.cwd : null;
+  const edgeFooter = useMemo(() => {
+    if (isMobile) return undefined;
+    const location = footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} />;
+    return <StatusBar sessionRef={ref} paneId={paneId} leading={location} />;
+  }, [footerCwd, isMobile, paneId, ref]);
+
   // The deleted surface outranks any cached model: a durably deleted target
   // can never hydrate a fresh one, and its last cached snapshot is stale.
   if (deletedRef) {
     return (
-      <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
+      <PaneScaffold
+        paneId={paneId}
+        focused={paneFocused}
+        scaffoldMarker={`session:${ref}`}
+        title={title}
+        edgeFooter={edgeFooter}
+      >
         <EmptyState
           title="This session was deleted"
           hint="Its transcript is gone. You can close this pane."
@@ -486,7 +503,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   if (!model) {
     return (
-      <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
+      <PaneScaffold
+        paneId={paneId}
+        focused={paneFocused}
+        scaffoldMarker={`session:${ref}`}
+        title={title}
+        edgeFooter={edgeFooter}
+      >
         <EmptyState
           title="Loading transcript…"
           hint={
@@ -667,6 +690,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           </div>
         </div>
       }
+      edgeFooter={edgeFooter}
     >
       <div className={styles.contentColumn}>
         <TopNotesPanel sessionRef={ref} model={model} />
