@@ -54,6 +54,16 @@ it("reads the project's archived list from its catalog, and pages on with the cu
 	]);
 });
 
+// A session's location names its project but no catalog: the hub reads the
+// catalog holding the project now.
+it("reads with no catalog when given none", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(client, undefined, "p");
+	await pages.refresh();
+	expect(seen).toEqual([{ projectKey: "p" }]);
+	expect(pages.getSnapshot().rows.map((r) => r.ref)).toEqual(["local:a"]);
+});
+
 it("keeps one snapshot until its own list changes, and tells only its own listeners", async () => {
 	const { client } = hub({ "": { refs: ["local:a"], total: 1 } });
 	const mine = new ArchivedPages(client, "projects", "p");

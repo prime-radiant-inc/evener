@@ -38,7 +38,9 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	private snapshot = pageState(undefined);
 	constructor(
 		private readonly client: ConversationClientLike,
-		private readonly catalog: ArchivedListCatalog,
+		/** Undefined reads the catalog holding the project now (a session's
+		 * location names none). */
+		private readonly catalog: ArchivedListCatalog | undefined,
 		private readonly projectKey: string,
 	) {
 		this.store = archivedListStoreFor(client);

@@ -633,13 +633,15 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 	const colors = useColors();
 	const belongs = activeProfile?.id === route.params.hubId;
 	const { location } = route.params;
-	const pages = useMemo(
-		() =>
-			client && belongs
-				? new NavigationPages<NavigationSessionSummary>(client, location.params, "sessions", sessionRef)
-				: null,
-		[client, belongs, location],
-	);
+	// Navigation serves a project's archived tier empty, so an archived session
+	// is revealed from the project's archived list. A location names no
+	// catalog, and the hub reads the one holding the project now.
+	const pages = useMemo((): PageSource<NavigationSessionSummary> | null => {
+		if (!client || !belongs) return null;
+		const { tier, projectKey } = location.params;
+		if (tier === "archived" && projectKey) return new ArchivedPages(client, undefined, projectKey);
+		return new NavigationPages<NavigationSessionSummary>(client, location.params, "sessions", sessionRef);
+	}, [client, belongs, location]);
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<View style={{ paddingHorizontal: 20, gap: 8 }}>

@@ -51,7 +51,7 @@ const props = {
 	navigation: { navigate: () => {}, setParams: () => {} },
 } as unknown as ComponentProps<typeof ProjectsScreen>;
 /** A project page located for `revealRef`, as locating a session opens it. */
-const locationProps = (revealRef = "local:a") =>
+const locationProps = (revealRef = "local:a", tier = "current") =>
 	({
 		route: {
 			params: {
@@ -60,7 +60,7 @@ const locationProps = (revealRef = "local:a") =>
 					ref: revealRef,
 					revealRef,
 					title: "Project",
-					params: { resource: "project_page", projectKey: "p", tier: "current" },
+					params: { resource: "project_page", projectKey: "p", tier },
 				},
 			},
 		},
@@ -171,6 +171,29 @@ it("pages a page the hub cut short through Load more, with no partial-tree notic
 	expect(shown).not.toContain("related session");
 	await act(async () => pressable(tree, "Load more · 1 remaining")?.props.onPress());
 	expect(renderedText(tree)).toContain("Beta");
+	tree.unmount();
+});
+
+// Navigation serves a project's archived tier empty, and a location names no
+// catalog: an archived session is revealed from the project's archived list,
+// read from whichever catalog holds the project now.
+it("reveals a located archived session from the project's archived list", async () => {
+	const hub = new FakeClient("ready");
+	const archivedReads: unknown[] = [];
+	hub.on("evener/archived/list", (params) => {
+		archivedReads.push(params);
+		return params.cursor
+			? { sessions: [completeSession({ ref: "local:b", title: "Beta" })], total: 2 }
+			: { sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 2, nextCursor: "c1" };
+	});
+	harness.connection = screenConnection(hub, "ready");
+	flatListCalls.length = 0;
+	const tree = render(<SessionLocationScreen {...locationProps("local:b", "archived")} />);
+	await act(async () => {});
+	expect(archivedReads).toEqual([{ projectKey: "p" }, { projectKey: "p", cursor: "c1" }]);
+	expect(hub.calls.filter((call) => call.method === "evener/navigation/read")).toEqual([]);
+	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
+	expect(renderedText(tree)).not.toContain("not in the returned list");
 	tree.unmount();
 });
 
