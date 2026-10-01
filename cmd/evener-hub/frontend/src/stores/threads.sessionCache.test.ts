@@ -33,7 +33,12 @@ import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "./projectionWork";
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
+import {
+  bumpCacheEpochRow,
+  deleteIndexedDatabase,
+  holdNextWriteTransaction,
+  neverSettlingFactory,
+} from "./testing/stalledIndexedDB";
 import {
   clearCachedSessions,
   installHydrationRetrySchedulerForTests,
@@ -226,28 +231,6 @@ async function deleteMutationDatabase(): Promise<void> {
   });
 }
 
-// Mirrors deleteMutationDatabase for the cache database, so no record one
-// test seeded survives into the next one's lookup.
-async function deleteCacheDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-session-cache");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("session cache database deletion blocked")), {
-      once: true,
-    });
-  });
-}
-
-// The tree's neverSettlingRequest() takes no factory — it IS the dead open
-// request. A wedged-open adapter needs a factory whose open() returns it
-// (the same spy wrap sessionCacheIndexedDB.test.ts uses).
-function neverSettlingFactory(): IDBFactory {
-  const indexedDB = new IDBFactory();
-  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
-  return indexedDB;
-}
-
 function installWedgedCacheAdapter(): void {
   setSessionCacheAdapterForTests(new SessionCacheIndexedDB({ indexedDB: neverSettlingFactory() }));
 }
@@ -282,35 +265,6 @@ async function cacheRecord(ref: string): Promise<CachedSessionRecord | undefined
   } finally {
     if (reader !== installedCacheAdapter) reader.close();
   }
-}
-
-// bumpDurableCacheEpoch moves the reserved epoch row behind the adapter's
-// back, exactly sessionCacheIndexedDB.test.ts's bumpEpochRow: the durable
-// fact a sibling tab's clear committed, whose channel message this tab never
-// receives (the missed-message backstop's premise).
-async function bumpDurableCacheEpoch(epoch: number): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.open("evener-session-cache", 1);
-    request.addEventListener(
-      "success",
-      () => {
-        const database = request.result;
-        const tx = database.transaction("meta", "readwrite");
-        tx.objectStore("meta").put({ ref: "__clearEpoch", epoch });
-        tx.addEventListener(
-          "complete",
-          () => {
-            database.close();
-            resolve();
-          },
-          { once: true },
-        );
-        tx.addEventListener("error", () => reject(tx.error), { once: true });
-      },
-      { once: true },
-    );
-    request.addEventListener("error", () => reject(request.error), { once: true });
-  });
 }
 
 // echoingReadHandler answers a thread/read with the file's fixture, echoing
@@ -502,7 +456,7 @@ interface CacheTestBed {
 }
 
 // Every adapter a test installed on the singleton seam, closed in afterEach
-// so the next beforeEach's deleteCacheDatabase never fires "blocked".
+// so the next beforeEach's cache-database deletion never fires "blocked".
 const beds: SessionCacheIndexedDB[] = [];
 
 // cacheTestBed installs a cache adapter on the store's singleton seam and
@@ -650,7 +604,7 @@ beforeEach(async () => {
     };
   });
   await deleteMutationDatabase();
-  await deleteCacheDatabase();
+  await deleteIndexedDatabase("evener-session-cache");
 });
 
 afterEach(() => {
@@ -1252,7 +1206,7 @@ describe("cached write seam", () => {
       fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 40 } }));
       await threadsStore.getState().ensureThread("local:backstop");
       await adapter.deleteRecords(["local:backstop"]); // observe only this tab's writes from here
-      await bumpDurableCacheEpoch(5); // a sibling's clear committed; the message has not arrived
+      await bumpCacheEpochRow(indexedDB, 5); // a sibling's clear committed; the message has not arrived
       emitHistoryUpdated("local:backstop", { fold: "turn_y" });
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:backstop")).toBeUndefined(); // the aborted write armed suppression...
@@ -2337,7 +2291,7 @@ describe("the clear", () => {
       await threadsStore.getState().ensureThread("local:epoch_b");
       await resolveEverything(fake);
       await adapter.deleteRecords(["local:epoch_a"]); // observe only this tab's writes for the leased ref
-      await bumpDurableCacheEpoch(5); // a sibling's clear committed; the message never arrives
+      await bumpCacheEpochRow(indexedDB, 5); // a sibling's clear committed; the message never arrives
       const held = installHeldAbortingClearAdapter();
       // The double parks clear() before any base call, so it would never
       // open its connection; a real aborting clear ran against an open one.
@@ -2435,7 +2389,7 @@ describe("the clear", () => {
       await threadsStore.getState().ensureThread("local:mm");
       await resolveEverything(fake);
       await adapter.deleteRecords(["local:mm"]); // observe only this tab's writes from here
-      await bumpDurableCacheEpoch(3); // a sibling's clear committed; this tab never got the message
+      await bumpCacheEpochRow(indexedDB, 3); // a sibling's clear committed; this tab never got the message
       emitHistoryUpdated("local:mm", { fold: "turn_b" });
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:mm")).toBeUndefined(); // the aborted write armed the suppression itself

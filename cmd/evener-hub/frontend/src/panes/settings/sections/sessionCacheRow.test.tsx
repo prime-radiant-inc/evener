@@ -13,15 +13,20 @@
 // keeps in its own bed (importing another test file is not allowed):
 // fake-indexeddb's global factory, a seeded SessionCacheIndexedDB installed
 // on the singleton seam, a wedged-open adapter for "unavailable", and a
-// deleteDatabase between tests so no record one test seeded survives.
+// deleteDatabase between tests so no record one test seeded survives — the
+// wedged factory and the delete come from the shared testing module
+// (stores/testing/stalledIndexedDB), which no test file owns.
 import "fake-indexeddb/auto";
 import type { CachedSessionRecord } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearProjectionWorkForTests, settleProjectionWorkForTests } from "../../../stores/projectionWork";
 import { SessionCacheIndexedDB } from "../../../stores/sessionCacheIndexedDB";
-import { holdNextWriteTransaction, neverSettlingRequest } from "../../../stores/testing/stalledIndexedDB";
+import {
+  deleteIndexedDatabase,
+  holdNextWriteTransaction,
+  neverSettlingFactory,
+} from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setSessionCacheAdapterForTests } from "../../../stores/threads";
 import { resetSessionCacheRowStoreForTests, SessionCacheRow, sessionCacheRowStore } from "./sessionCacheRow";
 
@@ -56,22 +61,9 @@ function seededRecord(ref: string): CachedSessionRecord {
 }
 
 // Every adapter a test installed on the singleton seam, closed in afterEach
-// so the next beforeEach's deleteCacheDatabase never fires "blocked" — the
+// so the next beforeEach's cache-database deletion never fires "blocked" — the
 // beds discipline threads.sessionCache.test.ts itself documents.
 const installedAdapters: SessionCacheIndexedDB[] = [];
-
-// Mirrors threads.sessionCache.test.ts's deleteCacheDatabase, so no record
-// one test seeded survives into the next one's count.
-async function deleteCacheDatabase(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("evener-session-cache");
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("session cache database deletion blocked")), {
-      once: true,
-    });
-  });
-}
 
 // Installs a fresh adapter on the singleton seam — the row counts through
 // it — and writes `count` records into the store the row will read. The
@@ -94,14 +86,11 @@ async function seedEmptyCache(): Promise<void> {
   setSessionCacheAdapterForTests(adapter);
 }
 
-// The wedged-open adapter: fake-indexeddb's IDBFactory with open() mocked to
-// the tree's neverSettlingRequest — the connection-coordinator shape where
-// open() returns and then no event ever arrives (threads.sessionCache.test.ts's
-// neverSettlingFactory mirror).
+// The wedged-open adapter: the shared module's neverSettlingFactory — the
+// connection-coordinator shape where open() returns and then no event ever
+// arrives.
 function installWedgedCacheAdapter(): void {
-  const factory = new IDBFactory();
-  vi.spyOn(factory, "open").mockImplementation(() => neverSettlingRequest());
-  const adapter = new SessionCacheIndexedDB({ indexedDB: factory });
+  const adapter = new SessionCacheIndexedDB({ indexedDB: neverSettlingFactory() });
   installedAdapters.push(adapter);
   setSessionCacheAdapterForTests(adapter);
 }
@@ -126,7 +115,7 @@ beforeEach(async () => {
   // clears would leave the refill's scheduled epoch dependent on test order.
   resetThreadsStoreForTests();
   resetSessionCacheRowStoreForTests();
-  await deleteCacheDatabase();
+  await deleteIndexedDatabase("evener-session-cache");
 });
 
 afterEach(() => {

@@ -3,7 +3,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import { SessionCacheIndexedDB, type SessionCacheOpenDiagnostic } from "./sessionCacheIndexedDB";
-import { holdIndexedDBEvent, neverSettlingRequest } from "./testing/stalledIndexedDB";
+import { bumpCacheEpochRow, holdIndexedDBEvent, neverSettlingFactory } from "./testing/stalledIndexedDB";
 
 // These fixtures use millisecond 1_000 as "now", including opens whose expiry
 // sweep has no injected timestamp. Keep the real event-delivery timers.
@@ -98,11 +98,6 @@ function countStoreRows(factory: IDBFactory, store: "records" | "meta"): Promise
   });
 }
 
-// The records store's row count, the raw-read helper the Task 2 tests use.
-function countRecordsRows(factory: IDBFactory): Promise<number> {
-  return countStoreRows(factory, "records");
-}
-
 // Poison a record body row (valid meta row kept): opens the cache database
 // directly on the adapter's own factory and writes a structurally invalid
 // body row beside a real meta row, in one readwrite transaction. put's cap
@@ -119,34 +114,6 @@ async function poisonRecordBody(factory: IDBFactory, ref: string): Promise<void>
         const tx = db.transaction(["records", "meta"], "readwrite");
         tx.objectStore("records").put(body);
         tx.objectStore("meta").put({ ref, bytes: JSON.stringify(body).length, savedAt: 1_000 });
-        tx.addEventListener(
-          "complete",
-          () => {
-            db.close();
-            resolve();
-          },
-          { once: true },
-        );
-        tx.addEventListener("error", () => reject(tx.error), { once: true });
-      },
-      { once: true },
-    );
-    request.addEventListener("error", () => reject(request.error), { once: true });
-  });
-}
-
-// Bump the durable epoch row on the same factory: Task 4's clear() is the
-// production bumper; a test moves the row behind the adapter's back to prove
-// a scheduled write reads it before committing anything.
-async function bumpEpochRow(factory: IDBFactory, epoch: number): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = factory.open("evener-session-cache", 1);
-    request.addEventListener(
-      "success",
-      () => {
-        const db = request.result;
-        const tx = db.transaction("meta", "readwrite");
-        tx.objectStore("meta").put({ ref: "__clearEpoch", epoch });
         tx.addEventListener(
           "complete",
           () => {
@@ -191,15 +158,6 @@ async function seedOrphanMetaRow(factory: IDBFactory, ref: string): Promise<void
   });
 }
 
-// The tree's neverSettlingRequest() takes no factory - it IS the dead open
-// request. A wedged-open adapter needs a factory whose open() returns it,
-// which is the spy wrap the outbox's open-diagnostic tests use.
-function neverSettlingFactory(): IDBFactory {
-  const indexedDB = new IDBFactory();
-  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
-  return indexedDB;
-}
-
 function freshAdapter(): {
   adapter: SessionCacheIndexedDB;
   factory: IDBFactory;
@@ -234,7 +192,7 @@ describe("SessionCacheIndexedDB get", () => {
   it("sweeps untouched expired rows on reopen before count, preserving the epoch", async () => {
     const { adapter, factory, write } = freshAdapter();
     await write(record({ savedAt: Date.now() - 15 * 24 * 60 * 60 * 1000 }));
-    await bumpEpochRow(factory, 7);
+    await bumpCacheEpochRow(factory, 7);
     adapter.close();
     const reopened = new SessionCacheIndexedDB({ indexedDB: factory });
     expect(await reopened.count()).toBe(0);
@@ -311,7 +269,7 @@ describe("SessionCacheIndexedDB get", () => {
     expect(miss).toBeUndefined();
     await settleProjectionWorkForTests();
     expect(await adapter.get("local:thr_1", stale.savedAt + TTL_MS + 2)).toBeUndefined();
-    expect(await countRecordsRows(factory)).toBe(0); // the expired row was deleted, not just missed
+    expect(await countStoreRows(factory, "records")).toBe(0); // the expired row was deleted, not just missed
     adapter.close();
   });
 
@@ -347,7 +305,7 @@ describe("SessionCacheIndexedDB get", () => {
     await poison;
     expect(await adapter.get("local:thr_1", 2_000)).toBeUndefined();
     await settleProjectionWorkForTests();
-    expect(await countRecordsRows(indexedDB)).toBe(0); // the corrupt row was deleted, not left behind
+    expect(await countStoreRows(indexedDB, "records")).toBe(0); // the corrupt row was deleted, not left behind
     adapter.close();
   });
 });
@@ -437,10 +395,10 @@ describe("SessionCacheIndexedDB put", () => {
     const other = record({ ref: "local:other", savedAt: 1_500 });
     expect(await adapter.put(other, 0, 1_500)).toMatchObject({ outcome: "written" }); // the enumeration never decoded the poison
     await settleProjectionWorkForTests();
-    expect(await countRecordsRows(factory)).toBe(3); // count() still counts it: the poisoned row exists
+    expect(await countStoreRows(factory, "records")).toBe(3); // count() still counts it: the poisoned row exists
     expect(await adapter.get("local:poison", 2_000)).toBeUndefined(); // a poisoned body reads as a miss...
     await settleProjectionWorkForTests();
-    expect(await countRecordsRows(factory)).toBe(2); // ...the miss deleted it...
+    expect(await countStoreRows(factory, "records")).toBe(2); // ...the miss deleted it...
     expect(await adapter.get("local:other", 2_000)).toBeDefined(); // ...while the healthy row survived the sweep
     adapter.close();
   });
@@ -508,7 +466,7 @@ describe("SessionCacheIndexedDB put", () => {
   it("aborts a write scheduled under an older epoch and reports the observed one", async () => {
     const { adapter, factory, write } = freshAdapter();
     await write(record()); // durable epoch is 0
-    await bumpEpochRow(factory, 5); // Task 4's clear() is the production bumper; here the row moves behind its back
+    await bumpCacheEpochRow(factory, 5); // clear() is the production bumper; here the row moves behind its back
     const newer = record({ savedAt: 2_000, history: { ...record().history, length: 30 } });
     expect(await adapter.put(newer, 0, 2_000)).toEqual({ outcome: "aborted", observedEpoch: 5 });
     await settleProjectionWorkForTests();
@@ -529,7 +487,7 @@ describe("SessionCacheIndexedDB put", () => {
     await settleProjectionWorkForTests();
     // Counted before any get: the read path also expires-and-deletes, so only
     // the row count here proves the WRITE transaction did the sweeping.
-    expect(await countRecordsRows(factory)).toBe(1); // the stale body died inside the write
+    expect(await countStoreRows(factory, "records")).toBe(1); // the stale body died inside the write
     expect(await adapter.get("local:stale", stale.savedAt + TTL_MS + 2)).toBeUndefined(); // swept by the write
     expect((await adapter.get("local:fresh", stale.savedAt + TTL_MS + 2))?.record.ref).toBe("local:fresh");
     adapter.close();
@@ -684,7 +642,7 @@ describe("SessionCacheIndexedDB open discipline", () => {
     ]);
     // The schema the abandoned attempt committed is durable: the records store
     // a fresh connection reads was already there, with no upgrade to run.
-    expect(await countRecordsRows(factory)).toBe(0);
+    expect(await countStoreRows(factory, "records")).toBe(0);
   });
 
   it("records the abandoned path when an upgrade arrives for an open the watchdog already failed", async () => {
