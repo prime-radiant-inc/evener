@@ -15,6 +15,7 @@ import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
 import { SessionActivityStore, projectSessionActivity, parseJobLogTail } from "@evener/appwire-client";
 import { readDocFile } from "@evener/appwire-client/docContent";
+import { decodeArchivedListSessions } from "@evener/appwire-client/state/navigation";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
 import { nativeDocPort } from "./nativeDocPort";
 import { flattenActivity, isJobRow, isSubagentRow } from "./subagents/subagentModel";
@@ -687,9 +688,34 @@ describe("native demonstration hub's redesign fleet", () => {
 			await expect(client.request("evener/search", {})).rejects.toThrow();
 			await expect(client.request("evener/auth/list", {})).rejects.toThrow();
 			await expect(client.request("evener/plugin/list", {})).rejects.toThrow();
+			await expect(
+				client.request("evener/archived/list", { catalog: "archived_projects", projectKey: "evener" }),
+			).rejects.toThrow();
 			// The flag being off doesn't touch the existing demo flows.
 			const roster = await client.request("thread/list", { limit: 5 });
 			expect(roster.data.map((thread) => thread.evener.ref)).toContain("demo:playground");
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	// A project's archived rows come from evener/archived/list, as on a real
+	// hub; navigation's archived tier is empty.
+	it("pages a project's archived sessions through the archived list over a real socket", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			const list = { catalog: "archived_projects", projectKey: "evener" };
+			const first = await client.request("evener/archived/list", list);
+			expect(first.total).toBe(271);
+			expect(decodeArchivedListSessions(first.sessions)).toHaveLength(50);
+			expect(first.nextCursor).toBeDefined();
+			const next = await client.request("evener/archived/list", { ...list, cursor: first.nextCursor });
+			const [firstRow] = decodeArchivedListSessions(first.sessions);
+			const [nextRow] = decodeArchivedListSessions(next.sessions);
+			expect(nextRow?.ref).not.toBe(firstRow?.ref);
 		} finally {
 			client.close();
 			await hub.close();

@@ -198,6 +198,7 @@ import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
+import { refreshLoadedArchivedLists } from "./archivedLists";
 import { Action, Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { haptic } from "./haptics";
 
@@ -1057,13 +1058,17 @@ export function ConversationScreen({
 			title,
 		});
 	}
-	function archive(archived: boolean) {
-		if (!client) return Promise.reject(new Error("Not connected"));
-		return client.request("evener/archive/set", {
+	async function archive(archived: boolean) {
+		if (!client) throw new Error("Not connected");
+		const response = await client.request("evener/archive/set", {
 			kind: "session",
 			id: route.params.ref,
 			archived,
 		});
+		// The session moves in or out of its project's archived tier, and
+		// archived lists follow no invalidations.
+		if (response.ok) refreshLoadedArchivedLists(client);
+		return response;
 	}
 	// What each session action does, for the ⋯ menu and the Session sheet. It
 	// returns its toast rather than showing it: the menu shows it on the
