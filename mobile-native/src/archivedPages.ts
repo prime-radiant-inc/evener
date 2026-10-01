@@ -2,8 +2,9 @@
 // archived rows: they come from evener/archived/list through the connection's
 // archived list store (archivedLists.ts). The list has no revisions and no
 // invalidations: it is read when a screen opens it unloaded, again after any
-// accepted organize change (navigationActions.ts), and from the top once its
-// connection recovers.
+// accepted organize change (navigationActions.ts, and the Conversation
+// screen's own Archive and Undo), and from the top once its connection
+// recovers.
 import {
 	type ArchivedList,
 	type ArchivedListCatalog,
