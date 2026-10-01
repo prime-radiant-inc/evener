@@ -628,8 +628,8 @@ const SESSIONS: RawSession[] = [
 
 	// data.js pins archivedTotal at 271 (Board mockup: "ARCHIVED · 271")
 	// without individually naming 266 of them. These fill that count with
-	// plain, clearly-generic entries so the archived tier is a real, fully
-	// pageable list of 271 -- the hub's own archived tier is real paged rows,
+	// plain, clearly-generic entries so the archived list is a real, fully
+	// pageable list of 271 -- the hub's own archived list is real paged rows,
 	// never five real ones plus a promise of 266 more that never arrive --
 	// instead of a page that stalls the moment a client asks for more than
 	// the 5 named above.
@@ -1175,28 +1175,29 @@ function findSubagent(
 	return undefined;
 }
 
-// Every answer the fleet gives, for one fixed list of sessions at one
-// revision; each change swaps in a new one rather than mutating this.
-// An archived list cursor is opaque on the wire. The demo's names the list it
-// continues and where, so a cursor from another list is refused, as the hub
-// refuses one.
-function archivedCursor(catalog: string, projectKey: string, offset: number): string {
+// An archived list's cursor names the list it continues and where, so a
+// cursor from another list is refused with the hub's own words
+// (navigation_archived_list.go's encodeArchivedCursor/decodeArchivedCursor).
+function encodeArchivedCursor(catalog: string, projectKey: string, offset: number): string {
 	return JSON.stringify({ catalog, projectKey, offset });
 }
-function archivedCursorOffset(cursor: string, catalog: string, projectKey: string): number {
-	let parsed: { catalog?: unknown; projectKey?: unknown; offset?: unknown } | null;
+
+function decodeArchivedCursorOffset(cursor: string, catalog: string, projectKey: string): number {
+	let decoded: { catalog?: unknown; projectKey?: unknown; offset?: unknown };
 	try {
-		parsed = JSON.parse(cursor);
+		decoded = JSON.parse(cursor) ?? {};
 	} catch {
 		throw new Error("invalid cursor");
 	}
-	const offset = parsed?.offset;
+	const { offset } = decoded;
 	if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0) throw new Error("invalid cursor");
-	if (parsed?.catalog !== catalog || parsed?.projectKey !== projectKey)
+	if (decoded.catalog !== catalog || decoded.projectKey !== projectKey)
 		throw new Error("cursor belongs to another archived list");
 	return offset;
 }
 
+// Every answer the fleet gives, for one fixed list of sessions at one
+// revision; each change swaps in a new one rather than mutating this.
 function fleetAnswers(
 	sessionsList: RawSession[],
 	revision: number,
@@ -1273,8 +1274,9 @@ function fleetAnswers(
 	}
 
 	// The tier a row is served under, in one place: the location branch reports
-	// this tier and a reveal then asks that exact project_page tier, so the two
-	// must come from one computation. An archived row's is "archived", a
+	// this tier and a reveal then reads that tier's rows (an archived row's
+	// from the archived list), so the two must come from one computation. An
+	// archived row's is "archived", a
 	// hub-test-env test-run row's is "current" (test runs are never split by
 	// age), every other row's current or recent by the same 24h boundary.
 	function servedTier(raw: RawSession): "current" | "recent" | "archived" {
@@ -1299,7 +1301,7 @@ function fleetAnswers(
 		const limit = params.limit ?? 0;
 		if (!Number.isInteger(limit) || limit < 0 || limit > NAVIGATION_SECTION_LIMIT)
 			throw new Error(`limit must be between 0 and ${NAVIGATION_SECTION_LIMIT}`);
-		const offset = params.cursor ? archivedCursorOffset(params.cursor, params.catalog, params.projectKey) : 0;
+		const offset = params.cursor ? decodeArchivedCursorOffset(params.cursor, params.catalog, params.projectKey) : 0;
 		const rows = listed.some((project) => project.key === params.projectKey)
 			? tierRows(params.projectKey, "archived")
 			: [];
@@ -1308,14 +1310,14 @@ function fleetAnswers(
 		return {
 			sessions,
 			total: rows.length,
-			...(next < rows.length ? { nextCursor: archivedCursor(params.catalog, params.projectKey, next) } : {}),
+			...(next < rows.length ? { nextCursor: encodeArchivedCursor(params.catalog, params.projectKey, next) } : {}),
 		};
 	}
 
-	// Every tier is a real, fully pageable list -- including archived, now
-	// that SESSIONS carries all 271 (5 named plus the generated filler) --
-	// so callers page it with the same page() every other resource uses
-	// instead of a bespoke "5 rows, 266 remaining forever" shortcut.
+	// A tier's rows. Current and recent are paged through project_page with
+	// the same page() every other resource uses; the archived rows (all 271,
+	// 5 named plus the generated filler) are served only by the archived
+	// list, and navigation answers that tier empty, as the hub does.
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
 		if (tier === "archived") return archivedIn(projectKey).map(rowOf);
 		if (projectKey === "hub-test-env") return testRunRaw.filter((raw) => servedTier(raw) === tier).map(rowOf);
@@ -1442,8 +1444,8 @@ function fleetAnswers(
 				// The hub's location is a shallow summary (navigation_projection.go's
 				// projectShallow), not a row with its descendants: a location resource
 				// holds exactly one entity. servedTier is the one place this
-				// row's tier is decided, so the reveal that asks this exact tier's
-				// project_page cannot drift from what tierRows serves it under.
+				// row's tier is decided, so the reveal that reads this tier's rows
+				// cannot drift from what tierRows serves it under.
 				const tier = servedTier(raw);
 				const shallow = rowOf(raw);
 				const response = respond(revision, params, {
