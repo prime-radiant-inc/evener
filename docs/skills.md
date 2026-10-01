@@ -51,7 +51,10 @@ A skill is a directory containing a `SKILL.md` with YAML frontmatter.
 Evener marks the skill unavailable and reports a machine-readable diagnostic
 with its source and invalid field. Other descriptive metadata remains inert
 data. Unsupported behavioral metadata such as `context: fork` is diagnosed but
-not acted on.
+not acted on. Compatibility diagnostics for well-formed metadata that Evener
+preserves but does not enforce are advisory and appear only at Full transcript
+detail. Invalid metadata and unreadable or unavailable skills remain visible at
+less verbose levels because they require action.
 
 `allowed-tools` may be one string or an ordered array of strings. Evener
 preserves it and diagnoses that it is not enforced: it neither grants nor
@@ -528,7 +531,8 @@ The filename is the command name. Names cannot contain whitespace
 never run) or colons (`:` is the plugin-namespace separator; evener skips
 such files with a warning). Invoke it by typing `/name args` in a session. Optional
 frontmatter: `description`, `argument-hint`, `model`, `allowed-tools` (the
-last two are parsed but not enforced; evener warns when they appear).
+last two are parsed but not enforced; their compatibility advisory appears
+only at Full transcript detail).
 
 Expansion substitutes `$ARGUMENTS` and `$1..$9` as inert text. `!`cmd``
 spans and `@file` references in a evener-wide command body never execute or
@@ -577,6 +581,11 @@ client built-in intercepts it (the client caveats above apply to plugin
 commands too). If two plugins define the same command name, the bare form
 resolves to one of them — which one is not guaranteed; use the qualified
 form to be sure.
+
+Evener parses a plugin command's `model` and `allowed-tools` frontmatter but
+does not yet enforce either override per turn. The command runs with the
+session's default model and tools. Its load-time compatibility advisory appears
+only at Full transcript detail.
 
 ## Security checklist for command authors
 

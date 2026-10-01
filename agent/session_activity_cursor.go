@@ -90,6 +90,9 @@ type sessionActivityJobIndex struct {
 	DeliveryCounts  map[string]int
 	Ended           []string
 	Complete        bool
+	// Established proves a complete fold in the current source incarnation,
+	// even while a later append is being folded in bounded steps.
+	Established bool
 }
 type sessionActivityIndex struct {
 	scanCalls uint64
@@ -116,6 +119,7 @@ type sessionActivityIndex struct {
 	delegateOffsets  map[string]int64
 	delegateComplete bool
 	jobs             map[string]*sessionActivityJobIndex
+	summaryOwner     string
 	walks            map[string]*sessionActivityWalk
 	walkOrder        []string
 	progress         uint64
@@ -179,6 +183,7 @@ func (index *sessionActivityIndex) reset() {
 	index.delegateOffsets = make(map[string]int64)
 	index.delegateComplete = false
 	index.jobs = make(map[string]*sessionActivityJobIndex)
+	index.summaryOwner = ""
 	index.walks = make(map[string]*sessionActivityWalk)
 	index.walkOrder = nil
 	index.progress = 0

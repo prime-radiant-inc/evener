@@ -4,9 +4,11 @@
 // app's own formatters (jobStatusDisplay, watchMeta, watchName) so the
 // sidebar can never drift from the rail or the activity panel.
 
-import type { JobActivityJob, SessionDelegate, SessionWatch } from "@evener/appwire-client";
-import { activityDelegateState, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
+import type { ActivityWatchRow, JobActivityJob, SessionDelegate } from "@evener/appwire-client";
+import { activityDelegateState, activityNodeID, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
+import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
+import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 
@@ -74,50 +76,71 @@ function AgentRowBody({ sub }: { sub: SessionDelegate }) {
 }
 
 export function AgentRow({ sub, onDrill }: { sub: SessionDelegate; onDrill?: () => void }) {
+  const anchor = activityNodeID({ ...sub, kind: "delegate" });
   if (onDrill === undefined) {
     return (
-      <div className={CLASS.row}>
+      <div className={CLASS.row} data-activity-anchor={anchor}>
         <AgentRowBody sub={sub} />
       </div>
     );
   }
   return (
-    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onDrill}>
+    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onDrill} data-activity-anchor={anchor}>
       <AgentRowBody sub={sub} />
     </button>
   );
 }
 
 export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => void }) {
+  const anchor = activityNodeID({ ...job, kind: "shell" });
+  const description = job.description?.trim();
+  const label = description || job.command?.trim() || job.jobId;
   const body = (
     <>
       <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job.status)]}`} aria-hidden="true">
         $
       </span>
       <span className={CLASS.rowBody}>
-        <span className={`${CLASS.rowName} ${CLASS.rowMono}`}>{job.command ?? job.jobId}</span>
+        <span className={`${CLASS.rowName}${description ? "" : ` ${CLASS.rowMono}`}`} title={job.command}>
+          {label}
+        </span>
         <span className={CLASS.rowMeta}>{jobStatusDisplay(job.status, job.reason)}</span>
       </span>
     </>
   );
-  if (onOpen === undefined) return <div className={CLASS.row}>{body}</div>;
+  if (onOpen === undefined)
+    return (
+      <div className={CLASS.row} data-activity-anchor={anchor}>
+        {body}
+      </div>
+    );
   return (
-    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onOpen}>
+    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onOpen} data-activity-anchor={anchor}>
       {body}
     </button>
   );
 }
 
-export function WatchRow({ watch, now }: { watch: SessionWatch; now: number }) {
+export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
+  const { watch } = row;
   return (
-    <div className={CLASS.row}>
-      <span className={`${CLASS.rowGlyph} ${CLASS.glyphQuiet}`}>
-        <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
-      </span>
-      <span className={CLASS.rowBody}>
-        <span className={CLASS.rowName}>{watchName(watch)}</span>
-        <span className={CLASS.rowMeta}>{watchMeta(watch, now)}</span>
-      </span>
+    <div data-activity-anchor={row.id}>
+      <Disclosure
+        id={`sidebar-${row.id}`}
+        summary={
+          <span className={CLASS.row}>
+            <span className={`${CLASS.rowGlyph} ${CLASS.glyphQuiet}`}>
+              <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
+            </span>
+            <span className={CLASS.rowBody}>
+              <span className={CLASS.rowName}>{watchName(watch)}</span>
+              <span className={CLASS.rowMeta}>{watchMeta(watch, now)}</span>
+            </span>
+          </span>
+        }
+      >
+        <ActivityWatchDetail row={row} now={now} />
+      </Disclosure>
     </div>
   );
 }

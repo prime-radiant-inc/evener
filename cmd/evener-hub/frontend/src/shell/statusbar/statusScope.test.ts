@@ -11,7 +11,14 @@ describe("typed activity scope", () => {
     const scope = deriveScope(navigation(), "remote:deep", null);
     expect(scope?.leaf.ref).toBe("remote:deep");
     expect(scope?.ancestryKnown).toBe(false);
-    expect(scope?.counts).toMatchObject({ activeSubagents: null, runningJobs: null, armedWatches: null });
+    expect(scope?.counts).toMatchObject({
+      activeSubagents: null,
+      runningJobs: null,
+      armedWatches: null,
+      delegatesTotal: null,
+      jobsTotal: null,
+      watchesTotal: null,
+    });
   });
   it("takes ancestry and authoritative counts from context and summary, not loaded rows", async () => {
     const client = activityClient();
@@ -30,6 +37,8 @@ describe("typed activity scope", () => {
     const scope = deriveScope(navigation(), "remote:deep", store.getSnapshot());
     expect(scope?.path.map((crumb) => crumb.ref)).toEqual(["remote:root", "remote:parent", "remote:deep"]);
     expect(scope?.counts.runningJobs).toBe(2);
+    expect(scope?.counts.jobsTotal).toBe(201);
+    expect(scope?.counts.delegatesTotal).toBeNull();
     expect(scope?.counts.activeSubagents).toBeNull();
     store.dispose();
   });

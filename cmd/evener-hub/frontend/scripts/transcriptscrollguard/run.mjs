@@ -337,6 +337,43 @@ async function main() {
         await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
       );
       assertPagedOpenContract(failures, "the read-only transcript pane", readOnlyOpened, { paneFooter: false });
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?dock=1`, BOOT);
+      await waitForFonts(send);
+      const dock = JSON.parse(await evaluate(send, `(async () => {
+        await window.waitForTranscriptSettled();
+        const ports = () => [...document.querySelectorAll('[data-testid="transcript-virtual-list"] > div')];
+        const root = ports()[0];
+        const click = name => [...document.querySelectorAll('button')].find(button => button.textContent === name).click();
+        const geometry = port => ({ top: port.scrollTop, height: port.clientHeight, total: port.scrollHeight });
+        const visible = port => {
+          const viewport = port.getBoundingClientRect();
+          return [...port.querySelectorAll('[data-index]')].some(row => {
+            const rect = row.getBoundingClientRect();
+            return rect.bottom > viewport.top && rect.top < viewport.bottom;
+          });
+        };
+        root.scrollTop = Math.max(0, root.scrollHeight - root.clientHeight - 700);
+        await window.waitForTranscriptSettled();
+        click('Open observer'); await window.waitForTranscriptSettled();
+        click('Open grandchild'); await window.waitForTranscriptSettled();
+        const secondary = ports().find(port => port !== root);
+        secondary.scrollTop = Math.max(0, secondary.scrollHeight - secondary.clientHeight - 200);
+        await window.waitForTranscriptSettled();
+        const before = { root: geometry(root), secondary: geometry(secondary), visible: visible(root) && visible(secondary) };
+        click('Focus root'); await window.waitForTranscriptSettled();
+        const after = { root: geometry(root), secondary: geometry(secondary), visible: visible(root) && visible(secondary), connected: root.isConnected && secondary.isConnected };
+        click('Focus observer'); await window.waitForTranscriptSettled();
+        const observerSelected = [...document.querySelectorAll('.dv-tab.dv-active-tab')].some(tab => tab.textContent.includes('local:observer'));
+        return JSON.stringify({ before, after, observerSelected, switchedRoot: geometry(root), switchedRootVisible: visible(root) });
+      })()`));
+      console.log("dock focus geometry", dock);
+      if (!dock.before.visible || !dock.after.visible || !dock.after.connected) failures.push("Dock group focus stranded mounted transcript content");
+      for (const pane of ["root", "secondary"]) {
+        if (Math.abs(dock.before[pane].top - dock.after[pane].top) > 1 || dock.before[pane].height !== dock.after[pane].height) failures.push(`Dock group focus changed ${pane} viewport position`);
+      }
+      if (!dock.observerSelected) failures.push("Dock focus did not select the other retained transcript tab");
+      if (!dock.switchedRootVisible || Math.abs(dock.switchedRoot.top - dock.before.root.top) > 1) failures.push("Selecting another secondary tab changed the retained root viewport");
+
     } finally {
       await clearViewportOverride(send);
       page.close();

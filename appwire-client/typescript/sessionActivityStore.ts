@@ -352,19 +352,24 @@ export class SessionActivityStore {
         if (this.disposed || generation !== this.generation) continue;
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
-          read.failures = 0;
+          const unavailable = (summary.issues?.length ?? 0) > 0;
+          if (!unavailable) read.failures = 0;
           this.publish({
             context: summary.context,
             summary,
             summaryState: {
               ...this.state.summaryState,
-              pending: !summary.context.ancestryKnown,
+              pending: unavailable || !summary.context.ancestryKnown || summary.refreshPending === true,
               error: null,
               unavailable: false,
               permanent: false,
             },
           });
-          if (!summary.context.ancestryKnown) this.schedule(resource, 100);
+          if (this.disposed || generation !== this.generation) continue;
+          if (unavailable) {
+            read.failures += 1;
+            this.retry(resource);
+          } else if (!summary.context.ancestryKnown || summary.refreshPending) this.schedule(resource, 100);
         } else {
           const page = result as ActivityPage;
           if (!root && (page.context.epoch !== read.epoch || page.context.sessionId !== read.sessionId)) {
@@ -473,7 +478,13 @@ export class SessionActivityStore {
         read.pageQueued = false;
         read.failures += 1;
         const permanent = permanentError(error);
-        this.change(resource, { error, permanent, unavailable: unavailableError(error), pending: false });
+        const update = { error, permanent, unavailable: unavailableError(error), pending: false };
+        if (resource === "summary") {
+          this.publish({ summary: null, summaryState: { ...this.state.summaryState, ...update } });
+        } else {
+          this.change(resource, update);
+        }
+        if (this.disposed || generation !== this.generation) continue;
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
     }

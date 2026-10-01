@@ -170,6 +170,7 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 	}
 	if info == nil {
 		index.Complete = true
+		index.Established = true
 		index.Version = version
 		return true, nil
 	}
@@ -283,11 +284,81 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 	}
 
 	index.Complete = index.PendingComplete
+	index.Established = index.Established || index.Complete
 	index.Version = version
 	index.Pending = nil
 	index.PendingEnds = nil
 	index.PendingPosition = 0
 	return index.Complete, nil
+}
+
+// Summary demand catches up only sources whose complete authority was already
+// established. Source replacement retires that eligibility with the index.
+func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners map[string]bool, pageBudget *sessionActivityPageBudget) (bool, []appwire.SessionActivityIssue, error) {
+	var ordered []string
+	for owner := range owners {
+		source := read.index.jobs[owner]
+		if source == nil || !source.Established || source.Complete && source.Version == read.index.revision.Load() {
+			continue
+		}
+		ordered = append(ordered, owner)
+	}
+	if len(ordered) == 0 {
+		return false, nil, nil
+	}
+	sort.Strings(ordered)
+	// Start after the previous admitted source so a growing journal cannot
+	// consume every summary budget while another established source waits.
+	start := sort.SearchStrings(ordered, read.index.summaryOwner)
+	if start < len(ordered) && ordered[start] == read.index.summaryOwner {
+		start++
+	}
+	ordered = append(ordered[start:], ordered[:start]...)
+	walk := &sessionActivityWalk{}
+	for owner := range owners {
+		walk.Owners = append(walk.Owners, owner)
+	}
+	pending := false
+	for _, owner := range ordered {
+		source := read.index.jobs[owner]
+		if source == nil || !source.Established || source.Complete && source.Version == read.index.revision.Load() {
+			continue
+		}
+		if read.budget == 0 || read.bytes <= 128 {
+			pending = true
+			break
+		}
+		// Reserve a possible failure before probing; admit its bytes only if
+		// this source is actually unavailable. The cursor stays at the last
+		// attempted owner so the next pass starts with the unvisited source.
+		candidate := *pageBudget
+		issue := appwire.SessionActivityIssue{Ref: encodeRef("", owner), Code: "unavailable"}
+		if !candidate.fits(issue, nil) {
+			if pageBudget.rows == 0 {
+				return false, nil, appwire.Unavailable("session activity summary context and issue exceed response budget")
+			}
+			pending = true
+			break
+		}
+		read.index.summaryOwner = owner
+		complete, err := read.advanceJobs(ctx, owner)
+		if err != nil {
+			// Source checks can fail before journal scanning spends allowance.
+			// Failed scans already consume the remaining request budget.
+			read.budget = max(0, read.budget-1)
+			var wire appwire.WireError
+			if errors.As(err, &wire) && read.context.Epoch != read.index.epoch {
+				return false, nil, nil
+			}
+			if read.excludeUnavailableSource(walk, owner, err) {
+				*pageBudget = candidate
+				continue
+			}
+			return false, nil, err
+		}
+		pending = pending || !complete
+	}
+	return pending, walk.Issues, nil
 }
 
 func (read *sessionActivityRead) acceptJobPage(path string, index *sessionActivityJobIndex, cursor jobstore.PageCursor, events []jobstore.Event, complete bool) error {

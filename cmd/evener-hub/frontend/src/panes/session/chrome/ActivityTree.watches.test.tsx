@@ -30,7 +30,13 @@ function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
     active: true,
     ...overrides,
   };
-  return { ownerRef: "ref_root", receiverRef: "ref_root", state: info.active ? "armed" : "ended", watch: info };
+  return {
+    ownerRef: "ref_root",
+    sourceRef: "ref_root",
+    receiverRef: "ref_root",
+    state: info.active ? "armed" : "ended",
+    watch: info,
+  };
 }
 
 function armedLabel(): string {
@@ -127,7 +133,7 @@ describe("ActivityTree watch rows", () => {
       failed: 0,
       completed: 0,
     });
-    expect(screen.getByText("… armed")).toBeTruthy();
+    expect(screen.getByText("Armed count unknown")).toBeTruthy();
     expect(screen.queryByText("1 armed")).toBeNull();
   });
 
@@ -168,9 +174,8 @@ describe("ActivityTree watch rows", () => {
 
     const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
     expect(row.getAttribute("aria-expanded")).toBe("true");
-    // The row's own name already shows this short note in full; the detail must
-    // not repeat it as a lead paragraph.
-    expect(screen.queryByTestId("watch-note")).toBeNull();
+    // Expanded details reveal the note independently of compact row width.
+    expect(screen.getByTestId("watch-note").textContent).toBe("Poll the queue depth");
     expect(screen.getByTestId("watch-facts").textContent).toBe(
       `Fires every 10m · armed ${armedLabel()} ago · no deliveries yet`,
     );
@@ -288,7 +293,7 @@ describe("ActivityTree watch rows", () => {
     ]);
     expect(screen.getByTestId("watch-timeline")).toBeTruthy();
     expect(screen.getAllByTestId("watch-timeline-dot")).toHaveLength(3);
-    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Delivered to this session");
+    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Delivered");
     expect(screen.queryByTestId("watch-no-schedule")).toBeNull();
   });
 
