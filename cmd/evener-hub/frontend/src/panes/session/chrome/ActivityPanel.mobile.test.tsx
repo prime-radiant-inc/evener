@@ -21,6 +21,7 @@ import {
   activityWatch,
 } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { SessionActivityAction } from "../composer/SessionActivityAction";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ActivityPanel, ActivityPanelBody } from "./ActivityPanel";
 import { SessionChrome } from "./SessionChrome";
@@ -178,7 +179,7 @@ test("mobile child transcript Back restores Activity and disclosures until expli
   }
 });
 
-test("narrow session chrome opens Activity directly and labels only known active counts", async () => {
+test("narrow Activity action opens the single chrome sheet and labels only known active counts", async () => {
   const client = connectActivity();
   let known = false;
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
@@ -189,6 +190,7 @@ test("narrow session chrome opens Activity directly and labels only known active
   await threadsStore.getState().ensureThread(ref);
   render(
     <ClientProvider client={client}>
+      <SessionActivityAction sessionRef={ref} />
       <SessionChrome ref={ref} placement="composer" />
     </ClientProvider>,
   );

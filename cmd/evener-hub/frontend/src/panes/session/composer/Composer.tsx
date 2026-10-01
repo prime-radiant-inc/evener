@@ -131,6 +131,7 @@ import {
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import { SessionActivityAction } from "./SessionActivityAction";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
 import {
@@ -154,6 +155,7 @@ const CLASS = {
   composer: requireClass(styles.composer, "composer.module.css", "composer"),
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   recipient: requireClass(styles.recipient, "composer.module.css", "recipient"),
+  recipientRow: requireClass(styles.recipientRow, "composer.module.css", "recipientRow"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
@@ -1706,8 +1708,11 @@ export function Composer({ ref, focused }: ComposerProps) {
                 hidden={askPending}
                 field={
                   <>
-                    <div id={recipientId} className={CLASS.recipient} title={recipientName}>
-                      To: {recipientName}
+                    <div className={CLASS.recipientRow}>
+                      <div id={recipientId} className={CLASS.recipient} title={recipientName}>
+                        To: {recipientName}
+                      </div>
+                      {isMobile ? <SessionActivityAction sessionRef={ref} /> : null}
                     </div>
                     <SkillEditor
                       ref={editorRef}

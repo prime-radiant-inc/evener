@@ -22,7 +22,19 @@
   font-size: var(--font-size-caption);
 }
 
+.recipientRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.recipientRow > button {
+  flex-shrink: 0;
+}
+
 .recipient {
+  flex: 1;
+  min-width: 0;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
   overflow: hidden;
