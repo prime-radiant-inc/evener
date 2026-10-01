@@ -144,6 +144,8 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
   }
 
   function reset(): void {
+    // Each list's generation moves on rather than starting over, so an
+    // answer a request still owes can't match a later request's generation.
     for (const [key, generation] of generations) generations.set(key, generation + 1);
     store.setState({ lists: {} });
   }

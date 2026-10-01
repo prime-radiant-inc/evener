@@ -25,12 +25,10 @@ function connectFakeClient(): FakeClient {
 const row = (ref: string) => completeSession({ ref, updated_at: "2026-09-01T00:00:00Z" });
 
 function page(refs: string[], total: number, nextCursor?: string): ArchivedListResponse {
-  return {
-    sessions: refs.map(row) as unknown as ArchivedListResponse["sessions"],
-    total,
-    ...(nextCursor ? { nextCursor } : {}),
-  };
+  return { sessions: refs.map(row), total, ...(nextCursor ? { nextCursor } : {}) };
 }
+
+const list = (projectKey: string) => archivedListStore.getState().lists[archivedListKey("projects", projectKey)];
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -49,9 +47,13 @@ describe("the web's archived lists", () => {
     await refreshArchivedList("projects", "proj");
 
     expect(seen).toEqual([{ catalog: "projects", projectKey: "proj" }]);
-    expect(archivedListStore.getState().lists[archivedListKey("projects", "proj")]?.rows.map((r) => r.ref)).toEqual([
-      "local:a",
-    ]);
+    expect(list("proj")?.rows.map((r) => r.ref)).toEqual(["local:a"]);
+  });
+
+  test("record a read with no client connected as the list's error", async () => {
+    await refreshArchivedList("projects", "proj");
+
+    expect(list("proj")?.error).toContain("archivedList store: no client connected");
   });
 
   test("drop every loaded list and the answer the old connection still owes when it is replaced", async () => {

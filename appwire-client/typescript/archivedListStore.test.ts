@@ -16,11 +16,7 @@ import type { ArchivedListParams, ArchivedListResponse } from "./types.gen";
 const row = (ref: string) => completeSession({ ref, updated_at: "2026-09-01T00:00:00Z" });
 
 function page(refs: string[], total: number, nextCursor?: string): ArchivedListResponse {
-  return {
-    sessions: refs.map(row) as unknown as ArchivedListResponse["sessions"],
-    total,
-    ...(nextCursor ? { nextCursor } : {}),
-  };
+  return { sessions: refs.map(row), total, ...(nextCursor ? { nextCursor } : {}) };
 }
 
 let fake: FakeClient;
@@ -84,7 +80,7 @@ describe("refresh", () => {
   test("rejects malformed rows as an error and keeps the old rows", async () => {
     let call = 0;
     fake.on("evener/archived/list", () =>
-      ++call === 1 ? page(["local:a"], 1) : ({ sessions: [{ ref: "local:bad" }], total: 1 } as never),
+      ++call === 1 ? page(["local:a"], 1) : { sessions: [{ ref: "local:bad" }], total: 1 },
     );
 
     await store.refresh("projects", "proj");
@@ -301,6 +297,23 @@ describe("a list's total before its first page", () => {
     await pending;
 
     expect(entry("projects", "proj").loaded).toBe(true);
+  });
+});
+
+// A host binds its view layer through the framework-free triple.
+describe("subscribing", () => {
+  test("hears each change until it unsubscribes, and reset returns the initial state", async () => {
+    fake.on("evener/archived/list", () => page(["local:a"], 1));
+    const heard: number[] = [];
+    const stop = store.subscribe((state) => heard.push(Object.keys(state.lists).length));
+
+    await store.refresh("projects", "proj");
+    stop();
+    store.reset();
+
+    expect(heard.length).toBeGreaterThan(0);
+    expect(heard.every((count) => count === 1)).toBe(true);
+    expect(store.getState()).toEqual(store.getInitialState());
   });
 });
 
