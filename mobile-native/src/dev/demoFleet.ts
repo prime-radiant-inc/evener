@@ -1185,6 +1185,7 @@ function encodeArchivedCursor(catalog: string, projectKey: string, offset: numbe
 function decodeArchivedCursorOffset(cursor: string, catalog: string, projectKey: string): number {
 	let decoded: { catalog?: unknown; projectKey?: unknown; offset?: unknown };
 	try {
+		// A "null" cursor parses to null; it is as invalid as any other.
 		decoded = JSON.parse(cursor) ?? {};
 	} catch {
 		throw new Error("invalid cursor");
@@ -1276,9 +1277,9 @@ function fleetAnswers(
 	// The tier a row is served under, in one place: the location branch reports
 	// this tier and a reveal then reads that tier's rows (an archived row's
 	// from the archived list), so the two must come from one computation. An
-	// archived row's is "archived", a
-	// hub-test-env test-run row's is "current" (test runs are never split by
-	// age), every other row's current or recent by the same 24h boundary.
+	// archived row's is "archived", a hub-test-env test-run row's is "current"
+	// (test runs are never split by age), every other row's current or recent
+	// by the same 24h boundary.
 	function servedTier(raw: RawSession): "current" | "recent" | "archived" {
 		return raw.archived ? "archived" : raw.test || raw.ago < D ? "current" : "recent";
 	}
