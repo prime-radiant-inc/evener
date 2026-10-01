@@ -53,6 +53,11 @@ session ref determine which readers remain open; replacing a pane record does
 not itself abandon its demand. The thread store owns loaded content and page
 merging, and an already-started read can still merge after cancellation.
 
+The workspace Dock integration activates an already selected pane by activating
+its group, preserving the mounted transcript and its native scroll position.
+Selecting a different tab still activates that panel. Transcript scroll and
+history recovery remain owned by the existing reader and virtual viewport.
+
 ## Directory fields
 
 All directory selection uses the [shared directory-picker contract](design-system.md#directory-selection-one-shared-interaction). Read it before adding or changing a path field; older plans and parity checklists describe retired interactions.

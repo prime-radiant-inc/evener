@@ -371,7 +371,11 @@ export function DockHost() {
   useEffect(() => {
     if (!api || !focusedPaneId) return;
     if (api.activePanel?.id !== focusedPaneId) {
-      api.getPanel(focusedPaneId)?.api.setActive();
+      const panel = api.getPanel(focusedPaneId);
+      // Activating an already selected panel reattaches its content in Dockview,
+      // resetting nested native scroll positions. Group activation preserves it.
+      if (panel?.group.activePanel?.id === focusedPaneId) panel.group.api.setActive();
+      else panel?.api.setActive();
     }
   }, [api, focusedPaneId, panes]);
 
