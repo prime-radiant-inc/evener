@@ -537,7 +537,7 @@ async function seedAndReload(ref: string, options: ReloadOptions = {}): Promise<
   void pending.catch(() => {});
   await nextModelPublished(ref);
   await firstReadArmed; // the read is armed the moment the shell publishes
-  if (threadsStore.getState().cacheShellRefs.has(ref) !== true) {
+  if (threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true) {
     throw new Error(`seedAndReload: ${ref} must publish as a cached shell`);
   }
   const readSettledInFailure = options.failFirstRead === true || options.historyFailed === true;
@@ -644,7 +644,7 @@ describe("cached shell load seam", () => {
     expect(shell.history?.turns.map((t) => t.id)).toEqual(["turn_1"]); // painted from the cache
     expect(shell.capabilities.send).toBe(false); // the empty set admits nothing
     expect(threadInstanceIDForTest(shell)).toBe("thr_1"); // non-gated actions fence on the cached threadId
-    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(true);
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBe(true);
     expect(shell.history?.issuedGeneration).toBeGreaterThan(0); // the bumped base, not the raw record
     const call = fake.calls.find((c) => c.method === "thread/read");
     if (call === undefined) throw new Error("the read must be armed once the shell publishes");
@@ -661,7 +661,39 @@ describe("cached shell load seam", () => {
       }),
     );
     await pending;
-    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false); // the first authoritative read cleared the flag
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBeUndefined(); // the first authoritative read cleared the flag
+  });
+
+  it("an anchorless cached shell keeps its shell gate until the authoritative publish", async () => {
+    const ref = "local:anchorless";
+    const { adapter } = cacheTestBed();
+    await seedCache(adapter, ref, { turns: [] });
+    const fake = connectFakeClient();
+    let resolveRead: ((response: ThreadReadResponse) => void) | undefined;
+    const readArmed = nextHandledRequest(
+      fake,
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    const pending = threadsStore.getState().ensureThread(ref);
+    const params = await readArmed;
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.shell).toBe(true);
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.anchor).toBeUndefined();
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBe(0);
+    await threadsStore.getState().loadOlderTurns(ref);
+    expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+    if (resolveRead === undefined) throw new Error("the shell's read must still be pending");
+    resolveRead(readResponse(ref, { requestGeneration: params.requestGeneration }));
+    await pending;
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.shell).toBeUndefined();
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.anchor).toBeUndefined();
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBe(0); // verification does not end the lifetime
+    threadsStore.getState().releaseThread(ref);
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBeUndefined();
+    expect(threadsStore.getState().cacheLifetimes.has(ref)).toBe(false);
   });
 
   it("miss: an absent ref arms the ordinary cold hydration exactly as today (no heldSnapshot)", async () => {
@@ -771,7 +803,7 @@ describe("cached shell load seam", () => {
       await Promise.all([first, second]);
       expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1); // never double-armed
       expect(threadsStore.getState().threads.get("local:thr_1")?.history?.incarnation).toBe("inc-1"); // the one read published
-      expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false); // the cold path: no shell ever
+      expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBeUndefined(); // the cold path: no shell ever
     } finally {
       vi.useRealTimers();
       // The wedged lookup's open never settles, so the storage work it
@@ -796,7 +828,8 @@ describe("cached shell load seam", () => {
     gate.release();
     await first;
     expect(threadsStore.getState().threads.has("local:thr_1")).toBe(false); // never published, never armed
-    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false);
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBeUndefined();
+    expect(threadsStore.getState().cacheLifetimes.has("local:thr_1")).toBe(false);
     expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(0); // a closed pane sends no read
   });
 
@@ -814,18 +847,20 @@ describe("cached shell load seam", () => {
     );
     const pending = threadsStore.getState().ensureThread("local:thr_1");
     await vi.waitFor(() => expect(threadsStore.getState().threads.get("local:thr_1")).toBeDefined());
-    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(true); // the shell window is open
-    expect(threadsStore.getState().cacheAnchors.has("local:thr_1")).toBe(true);
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBe(true); // the shell window is open
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.anchor).toBeDefined();
     threadsStore.getState().releaseThread("local:thr_1"); // final release before the authoritative read resolves
     expect(threadsStore.getState().threads.has("local:thr_1")).toBe(false); // the model is gone
-    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false); // and no unverified shell remains named
-    expect(threadsStore.getState().cacheAnchors.has("local:thr_1")).toBe(false); // the anchor went with it
-    expect(threadsStore.getState().cacheLeases.has("local:thr_1")).toBe(false); // Task 10: the lease ends with the same final release, so the clear's suppression decays with it
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBeUndefined(); // and no unverified shell remains named
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.anchor).toBeUndefined(); // the anchor went with it
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.leaseEpoch).toBeUndefined(); // Task 10: the lease ends with the same final release, so the clear's suppression decays with it
+    expect(threadsStore.getState().cacheLifetimes.has("local:thr_1")).toBe(false);
     if (resolveRead === undefined) throw new Error("the read must still be parked at release");
     resolveRead(readResponse("local:thr_1"));
     await pending; // the refused publish settles the owner without resurrecting anything
-    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false);
-    expect(threadsStore.getState().cacheAnchors.has("local:thr_1")).toBe(false);
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBeUndefined();
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.anchor).toBeUndefined();
+    expect(threadsStore.getState().cacheLifetimes.has("local:thr_1")).toBe(false);
   });
 
   it("a lookup that lost its own deadline race resolves late and publishes nothing", async () => {
@@ -840,7 +875,7 @@ describe("cached shell load seam", () => {
       lateGate.settle(); // the record arrives after the race was lost
       await pending;
       const model = threadsStore.getState().threads.get("local:thr_1");
-      expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false); // the shell never published
+      expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBeUndefined(); // the shell never published
       expect(model?.history?.incarnation).toBe(readResponse("local:thr_1").snapshot?.incarnation); // the cold path won: ...
       expect(model?.history?.issuedGeneration).toBe(readResponse("local:thr_1").requestGeneration ?? 1); // ...from the fresh read, not the record
     } finally {
@@ -911,7 +946,7 @@ describe("cached shell load seam", () => {
     const model = threadsStore.getState().threads.get("local:thr_1");
     expect(model?.history?.turns.map((t) => t.id)).toEqual(["turn_1"]); // the recorded page survived the merge
     expect(model?.capabilities.send).toBe(true); // the authoritative read published over the shell
-    expect(threadsStore.getState().cacheShellRefs.has("local:thr_1")).toBe(false); // and closed the shell window
+    expect(threadsStore.getState().cacheLifetimes.get("local:thr_1")?.shell).toBeUndefined(); // and closed the shell window
   });
 });
 
@@ -1257,7 +1292,7 @@ describe("cached write seam", () => {
       // The arming itself, not just the absence: without the backstop the
       // in-transaction epoch check would still abort this tab's writes, but
       // nothing would ever arm the suppression the missed message owed us.
-      expect(threadsStore.getState().cacheSuppressed.has("local:backstop")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:backstop")?.suppressed).toBe(true);
       emitHistoryUpdated("local:backstop", { fold: "turn_y2" });
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:backstop")).toBeUndefined(); // ...so repeated notifications never re-persist the ref
@@ -1375,19 +1410,20 @@ describe("cached write seam", () => {
       emitHistoryUpdated(ref, { fold: "turn_after_clear" });
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord(ref)).toBeUndefined();
-      expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(true);
-      expect(threadsStore.getState().cacheLeases.get(ref)).toBe(0);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBe(0);
 
       const drained = nextModelRemoved(ref);
       emitAppliedQueuedNotification(ref, "mutation-pinned-clear");
       await drained;
       expect(await cacheRecord(ref)).toBeUndefined(); // final-release flush must also respect suppression
-      expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(false);
-      expect(threadsStore.getState().cacheLeases.has(ref)).toBe(false);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.has(ref)).toBe(false);
       await threadsStore.getState().ensureThread(ref); // the first pane claim starts a new lifetime
       await vi.advanceTimersByTimeAsync(1_000);
       expect(await cacheRecord(ref)).toBeDefined();
-      expect(threadsStore.getState().cacheLeases.get(ref)).toBe(1);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBe(1);
     } finally {
       vi.useRealTimers();
     }
@@ -1409,18 +1445,19 @@ describe("cached write seam", () => {
       threadsStore.getState().releaseThread("local:pinned_sup"); // pinned: the model stays
       expect(threadsStore.getState().threads.has("local:pinned_sup")).toBe(true);
       expect(await clearCachedSessions()).toEqual({ committed: true });
-      expect(threadsStore.getState().cacheSuppressed.has("local:pinned_sup")).toBe(true);
-      expect(threadsStore.getState().cacheLeases.has("local:pinned_sup")).toBe(true);
-      expect(threadsStore.getState().cacheShellRefs.has("local:pinned_sup")).toBe(true);
-      expect(threadsStore.getState().cacheAnchors.has("local:pinned_sup")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:pinned_sup")?.suppressed).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:pinned_sup")?.leaseEpoch).toBeDefined();
+      expect(threadsStore.getState().cacheLifetimes.get("local:pinned_sup")?.shell).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:pinned_sup")?.anchor).toBeDefined();
       const drained = nextModelRemoved("local:pinned_sup");
       emitAppliedQueuedNotification("local:pinned_sup", row.clientMutationId);
       await drained;
       expect(threadsStore.getState().threads.has("local:pinned_sup")).toBe(false);
-      expect(threadsStore.getState().cacheSuppressed.has("local:pinned_sup")).toBe(false);
-      expect(threadsStore.getState().cacheLeases.has("local:pinned_sup")).toBe(false);
-      expect(threadsStore.getState().cacheShellRefs.has("local:pinned_sup")).toBe(false);
-      expect(threadsStore.getState().cacheAnchors.has("local:pinned_sup")).toBe(false);
+      expect(threadsStore.getState().cacheLifetimes.get("local:pinned_sup")?.suppressed).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.get("local:pinned_sup")?.leaseEpoch).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.get("local:pinned_sup")?.shell).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.get("local:pinned_sup")?.anchor).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.has("local:pinned_sup")).toBe(false);
       expect(await cacheRecord("local:pinned_sup")).toBeUndefined();
       resolvePendingRead(); // the retired read cannot revive the shell
     } finally {
@@ -1518,7 +1555,7 @@ async function reloadWithDeferredRead(ref: string): Promise<{ resolveRead: (resp
   void pending.catch(() => {}); // the fixture owns the claim's failure modes
   await nextModelPublished(ref);
   await armed;
-  if (threadsStore.getState().cacheShellRefs.has(ref) !== true) {
+  if (threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true) {
     throw new Error(`reloadWithDeferredRead: ${ref} must publish as a cached shell`);
   }
   if (pendingReloadResolve === undefined) throw new Error("reloadWithDeferredRead: the read must stay parked");
@@ -1550,7 +1587,7 @@ async function reloadWithStaleSnapshot(ref: string): Promise<{
   void pending.catch(() => {}); // the fixture owns the claim's failure modes
   await nextModelPublished(ref);
   await retryArmed;
-  if (threadsStore.getState().cacheShellRefs.has(ref) !== true) {
+  if (threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true) {
     throw new Error(`reloadWithStaleSnapshot: ${ref} must publish as a cached shell`);
   }
   if (pendingReloadResolve === undefined) throw new Error("reloadWithStaleSnapshot: the retry must stay parked");
@@ -1597,7 +1634,7 @@ async function reloadWithFailedFirstRead(ref: string): Promise<void> {
   if (scheduledHydrationRetries.length === 0) {
     throw new Error("reloadWithFailedFirstRead: the failed read must schedule its retry");
   }
-  if (threadsStore.getState().cacheShellRefs.has(ref) !== true) {
+  if (threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true) {
     throw new Error(`reloadWithFailedFirstRead: ${ref} must still be a cached shell`);
   }
 }
@@ -1668,7 +1705,7 @@ describe("the live gap rule", () => {
       await settleReload("local:gap");
       const { history } = requireOpenHistory("the live gap rule: scenario 7 fold", "local:gap");
       expect(history.turns.map((t) => t.id)).toEqual(["w40", "w41", "w42", "turn_fold"]); // replace, then replay
-      expect(threadsStore.getState().cacheShellRefs.has("local:gap")).toBe(false); // the first authoritative read cleared the shell
+      expect(threadsStore.getState().cacheLifetimes.get("local:gap")?.shell).toBeUndefined(); // the first authoritative read cleared the shell
       await vi.advanceTimersByTimeAsync(1_000);
       const record = await cacheRecord("local:gap");
       if (record === undefined) throw new Error("scenario 7 fold: the debounced write must have landed");
@@ -1794,7 +1831,7 @@ describe("scroll-back, the volume case", () => {
     // gap rule replaces the shell and the response's cursor is taken.
     resolveRead(settledWindowResponse("local:scroll"));
     await settleReload("local:scroll");
-    expect(threadsStore.getState().cacheShellRefs.has("local:scroll")).toBe(false); // the authoritative read ended the shell
+    expect(threadsStore.getState().cacheLifetimes.get("local:scroll")?.shell).toBeUndefined(); // the authoritative read ended the shell
     await threadsStore.getState().loadOlderTurns("local:scroll");
     expect(listCalls).toHaveLength(1); // one page: the two already-held pages were never re-requested
     expect(listCalls[0]?.cursor).toBe("cur-settled"); // continues from where the settled window left off
@@ -2045,11 +2082,11 @@ describe("deletion", () => {
     ])
       peer.post(invalid);
     await settleProjectionWorkForTests();
-    expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(false);
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
     expect(await cacheRecord(ref)).toBeDefined();
     peer.post(message);
     await settleProjectionWorkForTests();
-    expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(true);
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
     expect(await cacheRecord(ref)).toBeUndefined();
   });
 
@@ -2059,8 +2096,47 @@ describe("deletion", () => {
     await seedCacheDirect(ref, {});
     peer.post({ version: 1, sourceId, kind: "deletion", refs: [ref], extra: true });
     await settleProjectionWorkForTests();
-    expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(true);
+    expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
     expect(await cacheRecord(ref)).toBeUndefined();
+  });
+
+  it("a suppression-only ref still cold-reads, stays suppressed while owned, and expires on final release", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const ref = "local:suppression-only";
+      const { peer } = installTestCacheChannel();
+      peer.post({ version: 1, sourceId: "peer", kind: "deletion", refs: [ref] });
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.shell).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.anchor).toBeUndefined();
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler());
+      await threadsStore.getState().ensureThread(ref);
+      const reads = fake.calls.filter((call) => call.method === "thread/read");
+      expect(reads).toHaveLength(1);
+      expect(reads[0]?.params).not.toHaveProperty("heldSnapshot");
+      expect(threadsStore.getState().threads.has(ref)).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBe(0);
+      await threadsStore.getState().ensureThread(ref); // a second pane shares this lifetime
+      threadsStore.getState().releaseThread(ref);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBe(0);
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord(ref)).toBeUndefined();
+      threadsStore.getState().releaseThread(ref);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.leaseEpoch).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.has(ref)).toBe(false);
+      expect(await cacheRecord(ref)).toBeUndefined(); // the pre-release flush was suppressed too
+      await threadsStore.getState().ensureThread(ref);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await cacheRecord(ref)).toBeDefined();
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("the channel message: a sibling holding the ref open stops writing without a reload and never re-creates the record", async () => {
@@ -2252,7 +2328,7 @@ describe("the clear", () => {
       await vi.advanceTimersByTimeAsync(10_001);
       expect(threadsStore.getState().clearInFlight).toBeUndefined();
       expect(await clearing).toEqual({ committed: false });
-      expect(threadsStore.getState().cacheSuppressed.has("local:uncertain-clear")).toBe(false);
+      expect(threadsStore.getState().cacheLifetimes.get("local:uncertain-clear")?.suppressed).toBeUndefined();
       expect(posted).toEqual([]);
       hold.release();
       await settleProjectionWorkForTests();
@@ -2264,7 +2340,7 @@ describe("the clear", () => {
       await vi.advanceTimersByTimeAsync(1_000);
       await settleProjectionWorkForTests();
       expect(await adapter.count()).toBe(0);
-      expect(threadsStore.getState().cacheSuppressed.has("local:uncertain-clear")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:uncertain-clear")?.suppressed).toBe(true);
     } finally {
       hold.release();
       await clearing;
@@ -2322,7 +2398,7 @@ describe("the clear", () => {
       installFaultedClearAdapter(); // beforeCommit("clear") throws: the honest no-op
       expect(await clearCachedSessions()).toEqual({ committed: false });
       expect(posted).toEqual([]); // commit-gated: no message for a clear that did not happen
-      expect(threadsStore.getState().cacheSuppressed.has("local:resume")).toBe(false); // the abort left nothing behind: the arm never touched cacheSuppressed
+      expect(threadsStore.getState().cacheLifetimes.get("local:resume")?.suppressed).toBeUndefined(); // the abort left nothing behind: the arm never touched lifetime suppression
       emitHistoryUpdated("local:resume", { fold: "turn_m" }); // suppression disarmed: caching resumes
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:resume")).toBeDefined();
@@ -2345,20 +2421,21 @@ describe("the clear", () => {
       // Clear #1 commits: the open lease's ref is suppressed through its
       // final release, and the durable epoch is now 1.
       expect(await clearCachedSessions()).toEqual({ committed: true });
-      expect(threadsStore.getState().cacheSuppressed.has("local:stack")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:stack")?.suppressed).toBe(true);
       installFaultedClearAdapter(); // clear #2 aborts: beforeCommit("clear") throws
       expect(await clearCachedSessions()).toEqual({ committed: false });
       // The abort reverts exactly what clear #2 armed — nothing, the ref was
       // already suppressed by clear #1 — so an earlier committed clear's
       // suppression stands and the pane's next write stays refused.
-      expect(threadsStore.getState().cacheSuppressed.has("local:stack")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:stack")?.suppressed).toBe(true);
       emitHistoryUpdated("local:stack", { fold: "turn_x" }); // the pane keeps receiving pushes
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:stack")).toBeUndefined(); // no content re-cached after a committed clear
       // The final release is still what lifts the suppression the committed clear armed.
       threadsStore.getState().releaseThread("local:stack");
-      expect(threadsStore.getState().cacheSuppressed.has("local:stack")).toBe(false);
-      expect(threadsStore.getState().cacheLeases.has("local:stack")).toBe(false);
+      expect(threadsStore.getState().cacheLifetimes.get("local:stack")?.suppressed).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.get("local:stack")?.leaseEpoch).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.has("local:stack")).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -2380,12 +2457,12 @@ describe("the clear", () => {
       // message arrives: it arms the suppression itself and heals storage.
       peer.post({ version: 1, sourceId: "other-tab", kind: "deletion", refs: ["local:race"] });
       await settleProjectionWorkForTests();
-      expect(threadsStore.getState().cacheSuppressed.has("local:race")).toBe(true); // the deletion message's own arm
+      expect(threadsStore.getState().cacheLifetimes.get("local:race")?.suppressed).toBe(true); // the deletion message's own arm
       expect(await cacheRecord("local:race")).toBeUndefined(); // and its heal removed the record
       releaseHeldAbortingClear(); // the clear aborts: committed: false
       expect(await clearing).toEqual({ committed: false });
       // (a) The abort left the deletion message's suppression standing.
-      expect(threadsStore.getState().cacheSuppressed.has("local:race")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:race")?.suppressed).toBe(true);
       // (b) The T9 sibling property: a post-abort fold never resurrects the record the sibling deleted.
       emitHistoryUpdated("local:race", { fold: "turn_r" });
       await vi.advanceTimersByTimeAsync(6_000);
@@ -2420,11 +2497,11 @@ describe("the clear", () => {
       emitHistoryUpdated("local:epoch_b", { fold: "turn_e" });
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:epoch_b")).toBeUndefined(); // the write aborted on the newer epoch...
-      expect(threadsStore.getState().cacheSuppressed.has("local:epoch_a")).toBe(true); // ...and the backstop armed the leased ref
+      expect(threadsStore.getState().cacheLifetimes.get("local:epoch_a")?.suppressed).toBe(true); // ...and the backstop armed the leased ref
       releaseHeldAbortingClear();
       expect(await clearing).toEqual({ committed: false });
       // The abort neither disarmed the backstop's suppression...
-      expect(threadsStore.getState().cacheSuppressed.has("local:epoch_a")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:epoch_a")?.suppressed).toBe(true);
       emitHistoryUpdated("local:epoch_a", { fold: "turn_e2" }); // the leased ref's post-abort fold stays refused
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:epoch_a")).toBeUndefined();
@@ -2510,10 +2587,10 @@ describe("the clear", () => {
       emitHistoryUpdated("local:mm", { fold: "turn_b" });
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await cacheRecord("local:mm")).toBeUndefined(); // the aborted write armed the suppression itself
-      expect(threadsStore.getState().cacheSuppressed.has("local:mm")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:mm")?.suppressed).toBe(true);
       peer.post({ version: 1, sourceId: "other-tab", kind: "clear", epoch: 3 }); // the message finally arrives
       await settleProjectionWorkForTests();
-      expect(threadsStore.getState().cacheSuppressed.has("local:mm")).toBe(true); // idempotent: nothing double-armed, nothing disarmed
+      expect(threadsStore.getState().cacheLifetimes.get("local:mm")?.suppressed).toBe(true); // idempotent: nothing double-armed, nothing disarmed
       expect(await cacheRecord("local:mm")).toBeUndefined();
     } finally {
       vi.useRealTimers();
@@ -2555,13 +2632,13 @@ describe("the clear", () => {
       );
       const pending = threadsStore.getState().ensureThread(ref);
       const params = await readArmed;
-      expect(threadsStore.getState().cacheShellRefs.has(ref)).toBe(true);
-      expect(threadsStore.getState().cacheAnchors.has(ref)).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.shell).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.anchor).toBeDefined();
 
       await driveThreadClear(ref, fake);
       expect(threadsStore.getState().threads.get(ref)?.history).toBeUndefined();
-      expect(threadsStore.getState().cacheShellRefs.has(ref)).toBe(false);
-      expect(threadsStore.getState().cacheAnchors.has(ref)).toBe(false);
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.shell).toBeUndefined();
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.anchor).toBeUndefined();
       expect(await cacheRecord(ref)).toBeUndefined();
       if (resolveRead === undefined) throw new Error("the pre-clear read must still be pending");
       resolveRead(readResponse(ref, { requestGeneration: params.requestGeneration, turns: [turnFixture("old")] }));
@@ -2622,10 +2699,10 @@ describe("the clear", () => {
     // The discard, through the epochMatch === false branch (threads.ts:4398-4400):
     // the capture does not match the clear's epoch view, so the found branch
     // publishes no shell and arms nothing.
-    expect(threadsStore.getState().cacheShellRefs.has("local:sc")).toBe(false);
-    expect(threadsStore.getState().cacheLeases.get("local:sc")).toBe(0);
-    expect(threadsStore.getState().cacheAnchors.has("local:sc")).toBe(false);
-    expect(threadsStore.getState().cacheSuppressed.has("local:sc")).toBe(true);
+    expect(threadsStore.getState().cacheLifetimes.get("local:sc")?.shell).toBeUndefined();
+    expect(threadsStore.getState().cacheLifetimes.get("local:sc")?.leaseEpoch).toBe(0);
+    expect(threadsStore.getState().cacheLifetimes.get("local:sc")?.anchor).toBeUndefined();
+    expect(threadsStore.getState().cacheLifetimes.get("local:sc")?.suppressed).toBe(true);
     // The reconcile proceeded as a cold read: the model is the wire's
     // (inc-2), not the pre-clear record's (the seed's identity is inc-1).
     expect(threadsStore.getState().threads.get("local:sc")?.history?.incarnation).toBe("inc-2");
@@ -2664,16 +2741,16 @@ describe("the clear", () => {
       // No channel message is delivered. Release the genuinely pre-clear capture.
       releaseLookup?.();
       await nextModelPublished("local:sib");
-      expect(threadsStore.getState().cacheShellRefs.has("local:sib")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:sib")?.shell).toBe(true);
       await vi.advanceTimersByTimeAsync(6_000);
       expect(await sibling.count()).toBe(0); // the shell itself is never written
       resolveReloadRead(readResponse("local:sib", { snapshot: { incarnation: "inc-2", length: 2 } }));
       await pending;
-      expect(threadsStore.getState().cacheShellRefs.has("local:sib")).toBe(false);
+      expect(threadsStore.getState().cacheLifetimes.get("local:sib")?.shell).toBeUndefined();
       expect(threadsStore.getState().threads.get("local:sib")?.history?.incarnation).toBe("inc-2");
       await vi.advanceTimersByTimeAsync(1_000);
       await settleProjectionWorkForTests();
-      expect(threadsStore.getState().cacheSuppressed.has("local:sib")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:sib")?.suppressed).toBe(true);
       emitHistoryUpdated("local:sib", { fold: "later", entry: 3 });
       await vi.advanceTimersByTimeAsync(6_000);
       threadsStore.getState().releaseThread("local:sib");
@@ -2724,7 +2801,7 @@ describe("degradation", () => {
       expect((call?.params as { heldSnapshot?: unknown } | undefined)?.heldSnapshot).toBeUndefined(); // no heldSnapshot
       await threadsStore.getState().loadOlderTurns("local:thr_1");
       expect(listCalls).toEqual(["local:thr_1"]); // scroll-back pages fetched as before
-      expect(threadsStore.getState().cacheShellRefs.size).toBe(0); // no shell ever published
+      expect([...threadsStore.getState().cacheLifetimes.values()].filter((lifetime) => lifetime.shell)).toHaveLength(0); // no shell ever published
     } finally {
       vi.useRealTimers();
       // The wedged lookup's open never settles, so the storage work it
@@ -2750,7 +2827,7 @@ describe("cache privacy and history regressions", () => {
       await vi.advanceTimersByTimeAsync(250);
       await pending;
       gate.release();
-      expect(threadsStore.getState().cacheShellRefs.has("local:deadline-clear")).toBe(false);
+      expect(threadsStore.getState().cacheLifetimes.get("local:deadline-clear")?.shell).toBeUndefined();
       expect(await clearCachedSessions()).toEqual({ committed: true });
       emitHistoryUpdated("local:deadline-clear", { fold: "after-clear", entry: 2 });
       await vi.advanceTimersByTimeAsync(1_000);
@@ -2773,7 +2850,7 @@ describe("cache privacy and history regressions", () => {
     gate.release();
     await pending;
     await threadsStore.getState().ensureThread("local:after-stale");
-    expect(threadsStore.getState().cacheLeases.get("local:after-stale")).toBe(1);
+    expect(threadsStore.getState().cacheLifetimes.get("local:after-stale")?.leaseEpoch).toBe(1);
     threadsStore.getState().releaseThread("local:after-stale");
     await settleProjectionWorkForTests();
     expect(await adapter.get("local:after-stale", Date.now())).toBeDefined();
@@ -2808,14 +2885,14 @@ describe("cache privacy and history regressions", () => {
       const fake = connectFakeClient();
       fake.on("thread/read", echoingReadHandler());
       await threadsStore.getState().ensureThread("local:old-lease");
-      expect(threadsStore.getState().cacheLeases.get("local:old-lease")).toBe(0);
+      expect(threadsStore.getState().cacheLifetimes.get("local:old-lease")?.leaseEpoch).toBe(0);
       const sibling = new SessionCacheIndexedDB();
       beds.push(sibling);
       expect(await sibling.clear()).toEqual({ committed: true, epoch: 1 });
       const refill = seededRecord("local:fresh-lookup", {});
       if (kind === "hit") expect(await sibling.put(refill, 1, Date.now())).toEqual({ outcome: "written" });
       await threadsStore.getState().ensureThread("local:fresh-lookup");
-      expect(threadsStore.getState().cacheSuppressed.has("local:old-lease")).toBe(true);
+      expect(threadsStore.getState().cacheLifetimes.get("local:old-lease")?.suppressed).toBe(true);
       emitHistoryUpdated("local:old-lease", { fold: "after-sibling-clear", entry: 3 });
       await vi.advanceTimersByTimeAsync(1000);
       await settleProjectionWorkForTests();
