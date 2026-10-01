@@ -531,7 +531,8 @@ The filename is the command name. Names cannot contain whitespace
 never run) or colons (`:` is the plugin-namespace separator; evener skips
 such files with a warning). Invoke it by typing `/name args` in a session. Optional
 frontmatter: `description`, `argument-hint`, `model`, `allowed-tools` (the
-last two are parsed but not enforced; evener warns when they appear).
+last two are parsed but not enforced; their compatibility advisory appears
+only at Full transcript detail).
 
 Expansion substitutes `$ARGUMENTS` and `$1..$9` as inert text. `!`cmd``
 spans and `@file` references in a evener-wide command body never execute or
