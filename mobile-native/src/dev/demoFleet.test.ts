@@ -14,7 +14,7 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { archiveTarget } from "../board/rowActions.js";
 import { localSessionId } from "../sessionDeletionResult.js";
-import { createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId } from "./demoFleet.js";
+import { createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId, fleetSessionRef } from "./demoFleet.js";
 import { DEMO_MODEL_NAMES } from "./demoSetup.js";
 
 const STARTUP = Date.parse("2026-09-26T18:00:00.000Z");
@@ -1171,7 +1171,9 @@ describe("demo fleet archived lists", () => {
 describe("demo fleet pulse activity (evener/activity/read)", () => {
 	const fleet = createDemoFleet({ now: STARTUP, clock: () => STARTUP });
 	const read = (params: { refs?: string[] } = {}) => decodeActivityRead(fleet.answerPulseRead(params));
-	const refOf = (slug: string) => `local:${demoSessionId(slug)}`;
+	// fleetSessionRef resolves a slug's real host-prefixed ref, so a remote slug
+	// like s-wasm (paradise-park) can't silently resolve to undefined.
+	const refOf = fleetSessionRef;
 	const byRef = (sessions: ReturnType<typeof read>) => new Map(sessions.map((session) => [session.ref, session]));
 
 	it("answers a decoder-valid entry for every live top-level session, and none for an ended or archived one", () => {
@@ -1228,6 +1230,9 @@ describe("demo fleet pulse activity (evener/activity/read)", () => {
 	it("withholds quiet time from every session that is not silently working", () => {
 		const bySession = byRef(read());
 		expect(bySession.get(refOf("s-diff"))?.quietForMs).toBeUndefined(); // idle
+		// s-wasm runs on paradise-park: assert the entry is really there, or the
+		// lookup would pass whether or not quiet time is emitted.
+		expect(bySession.has(refOf("s-wasm"))).toBe(true);
 		expect(bySession.get(refOf("s-wasm"))?.quietForMs).toBeUndefined(); // working, two subagents run
 		for (const session of bySession.values()) expect(session.quietForMs ?? 0).toBeGreaterThanOrEqual(0);
 	});
