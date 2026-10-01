@@ -439,7 +439,7 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	}
 	for owner := range sourceOwners {
 		source := read.index.jobs[owner]
-		if source != nil && source.Established && !unavailable[encodeRef("", owner)] && (!source.Complete || source.Version != version) {
+		if source != nil && source.Established && (!source.Complete || source.Version != version) && !unavailable[encodeRef("", owner)] {
 			result.RefreshPending = true
 		}
 	}
