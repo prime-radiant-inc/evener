@@ -71,7 +71,8 @@ type retirementBrowserRelaySource struct {
 	gen2 relayGeneration
 	// The third generation is held behind replacementReady so the browser can
 	// submit once after gen2 closes but before its replacement is available.
-	gen3 relayGeneration
+	gen3                   relayGeneration
+	replacementFeedRetired bool
 
 	// retired is closed when the /fixture/retire endpoint is triggered.
 	retired chan struct{}
@@ -99,17 +100,18 @@ type retirementBrowserRelaySource struct {
 	// replacementStarting closes when the live replacement feed is retired.
 	// AcquireRelaySession and StartTurn then wait for replacementReady, which the
 	// fixture endpoint releases after the browser has proved its intent durable.
-	replacementStarting    chan struct{}
-	replacementRetired     chan struct{}
-	replacementAcquiring   chan struct{}
-	replacementReady       chan struct{}
-	replacementStartOnce   sync.Once
-	replacementRetireOnce  sync.Once
-	replacementAcquireOnce sync.Once
-	replacementReadyOnce   sync.Once
-	publishRestartResync   func()
-	restartWaitTimeout     time.Duration
-	restartMu              sync.Mutex
+	replacementStarting     chan struct{}
+	replacementRetired      chan struct{}
+	replacementAcquiring    chan struct{}
+	replacementReady        chan struct{}
+	replacementStartOnce    sync.Once
+	replacementRetireOnce   sync.Once
+	replacementAcquireOnce  sync.Once
+	replacementReadyOnce    sync.Once
+	publishRestartResync    func()
+	restartWaitTimeout      time.Duration
+	replacementReadyTimeout time.Duration
+	restartMu               sync.Mutex
 	// The gate latch, entries, and accepted IDs prove the browser submitted while
 	// acquisition was blocked, StartTurn was not entered early, and one identity
 	// was accepted after readiness.
@@ -153,21 +155,22 @@ type restartStartAttempt struct {
 
 func newRetirementBrowserRelaySource(threadID, ref string) *retirementBrowserRelaySource {
 	source := &retirementBrowserRelaySource{
-		gen1:                 relayGeneration{instanceID: "instance_v1", deliveries: make(chan appsource.RelayDelivery, 8)},
-		gen2:                 relayGeneration{instanceID: "instance_v2", deliveries: make(chan appsource.RelayDelivery, 8)},
-		gen3:                 relayGeneration{instanceID: "instance_v3", deliveries: make(chan appsource.RelayDelivery, 8)},
-		retired:              make(chan struct{}),
-		turnAccepted:         make(chan struct{}),
-		staleForwarded:       make(chan struct{}),
-		retryAccepted:        make(chan struct{}),
-		replacementStarting:  make(chan struct{}),
-		replacementRetired:   make(chan struct{}),
-		replacementAcquiring: make(chan struct{}),
-		replacementReady:     make(chan struct{}),
-		publishRestartResync: func() {},
-		restartWaitTimeout:   5 * time.Second,
-		threadID:             threadID,
-		ref:                  ref,
+		gen1:                    relayGeneration{instanceID: "instance_v1", deliveries: make(chan appsource.RelayDelivery, 8)},
+		gen2:                    relayGeneration{instanceID: "instance_v2", deliveries: make(chan appsource.RelayDelivery, 8)},
+		gen3:                    relayGeneration{instanceID: "instance_v3", deliveries: make(chan appsource.RelayDelivery, 8)},
+		retired:                 make(chan struct{}),
+		turnAccepted:            make(chan struct{}),
+		staleForwarded:          make(chan struct{}),
+		retryAccepted:           make(chan struct{}),
+		replacementStarting:     make(chan struct{}),
+		replacementRetired:      make(chan struct{}),
+		replacementAcquiring:    make(chan struct{}),
+		replacementReady:        make(chan struct{}),
+		publishRestartResync:    func() {},
+		restartWaitTimeout:      5 * time.Second,
+		replacementReadyTimeout: 30 * time.Second,
+		threadID:                threadID,
+		ref:                     ref,
 	}
 	source.gen2.closeHook = func() {
 		source.replacementRetireOnce.Do(func() { close(source.replacementRetired) })
@@ -203,6 +206,18 @@ func TestRetirementBrowserRestartDoesNotPublishResyncOnRetiringFeed(t *testing.T
 			t.Fatal("restart resync was published on generation two before that relay retired")
 		}
 	}
+}
+
+func TestRetirementBrowserRestartDropsPublicationsForRetiredGeneration(t *testing.T) {
+	source := newRetirementBrowserRelaySource("sess_test", "local:sess_test")
+	source.replacementRetireOnce.Do(func() { close(source.replacementRetired) })
+	source.replacementAcquireOnce.Do(func() { close(source.replacementAcquiring) })
+
+	if err := source.restartReplacement(); err != nil {
+		t.Fatalf("restartReplacement: %v", err)
+	}
+
+	source.pushCurrentResync()
 }
 
 func TestRetirementBrowserRestartFailsWhenReplacementLeaseDoesNotRetire(t *testing.T) {
@@ -296,6 +311,7 @@ func (s *retirementBrowserRelaySource) restartReplacement() error {
 	s.replacementStartOnce.Do(func() {
 		close(s.replacementStarting)
 		s.mu.Lock()
+		s.replacementFeedRetired = true
 		close(s.gen2.deliveries)
 		s.mu.Unlock()
 		select {
@@ -488,29 +504,41 @@ func (s *retirementBrowserRelaySource) emitTurn(newTurn appwire.Turn) {
 		Turns: []appwire.Turn{newTurn},
 	})
 	ack := func() {}
-	deliver := func(method string) {
-		ch := s.currentReplacementGeneration().deliveries
-		select {
-		case ch <- appsource.RelayDelivery{Notification: appwire.Notification{Method: method, Params: params}, Acknowledge: ack, Proceed: ack}:
-		case <-time.After(5 * time.Second):
-		}
-	}
 	go func() {
-		deliver(appwire.NotifyHistoryUpdated)
+		s.publishToCurrentReplacement(appsource.RelayDelivery{
+			Notification: appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: params},
+			Acknowledge:  ack,
+			Proceed:      ack,
+		})
 	}()
 }
 
 func (s *retirementBrowserRelaySource) pushCurrentResync() {
 	ack := func() {}
-	ch := s.currentReplacementGeneration().deliveries
-	select {
-	case ch <- appsource.RelayDelivery{
+	s.publishToCurrentReplacement(appsource.RelayDelivery{
 		Notification: appwire.Notification{
 			Method: appwire.NotifyEvenerThreadResync,
 			Params: mustMarshalJSON(map[string]any{"threadId": s.threadID, "ref": s.ref}),
 		},
-		Acknowledge: ack, Proceed: ack,
-	}:
+		Acknowledge: ack,
+		Proceed:     ack,
+	})
+}
+
+func (s *retirementBrowserRelaySource) publishToCurrentReplacement(delivery appsource.RelayDelivery) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	generation := &s.gen2
+	select {
+	case <-s.replacementReady:
+		generation = &s.gen3
+	default:
+	}
+	if generation == &s.gen2 && s.replacementFeedRetired {
+		return
+	}
+	select {
+	case generation.deliveries <- delivery:
 	case <-time.After(5 * time.Second):
 	}
 }
@@ -548,7 +576,11 @@ func (s *retirementBrowserRelaySource) AcquireRelaySession(ref appwire.Ref) (app
 		select {
 		case <-s.replacementStarting:
 			s.replacementAcquireOnce.Do(func() { close(s.replacementAcquiring) })
-			<-s.replacementReady
+			select {
+			case <-s.replacementReady:
+			case <-time.After(s.replacementReadyTimeout):
+				return nil, errors.New("replacement stayed gated before acquisition timeout")
+			}
 		default:
 		}
 		generation = s.currentReplacementGeneration()
@@ -570,6 +602,62 @@ func (s *retirementBrowserRelaySource) AcquireRelaySession(ref appwire.Ref) (app
 		closeHook:  generation.closeHook,
 	}
 	return routeAwareTestLease(lease), nil
+}
+
+func TestRetirementBrowserAcquireFailsWhenReplacementStaysGated(t *testing.T) {
+	source := newRetirementBrowserRelaySource("sess_test", "local:sess_test")
+	source.replacementReadyTimeout = time.Millisecond
+	close(source.retired)
+	close(source.replacementStarting)
+	defer source.releaseReplacement()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := source.AcquireRelaySession(appwire.Ref{SourceID: "local", ThreadID: "sess_test"})
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "replacement stayed gated") {
+			t.Fatalf("AcquireRelaySession error = %v, want replacement gate timeout", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("AcquireRelaySession did not return after the replacement gate timeout")
+	}
+}
+
+func TestRetirementBrowserAcquireWaitsForExplicitReplacementRelease(t *testing.T) {
+	source := newRetirementBrowserRelaySource("sess_test", "local:sess_test")
+	source.restartWaitTimeout = time.Millisecond
+	close(source.retired)
+	close(source.replacementStarting)
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := source.AcquireRelaySession(appwire.Ref{SourceID: "local", ThreadID: "sess_test"})
+		result <- err
+	}()
+
+	select {
+	case <-source.replacementAcquiring:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("AcquireRelaySession did not enter the replacement gate")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("AcquireRelaySession returned before explicit release: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	source.releaseReplacement()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("AcquireRelaySession after release: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("AcquireRelaySession did not return after explicit release")
+	}
 }
 
 // buildThread constructs the fixture thread with two completed turns and the
