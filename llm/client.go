@@ -411,12 +411,16 @@ func shapeAndApplyTokenBudget(req Request, res registry.Resolved) (Request, erro
 // ModelListing is what Models returns: the instance's visible live-authoritative
 // or static-fallback rows.
 type ModelListing struct {
-	// Live is true when a usable live listing was fetched; false means the rows
-	// are registry-only fallback (spec §8.1). A client with no registry of its
-	// own reports Live over snapshot rows: it
+	// Live is true when the instance's models endpoint answered successfully;
+	// false means the endpoint is unsupported or failed (spec §8.1). A client
+	// with no registry of its own reports Live over snapshot rows: it
 	// fetches the listing but does not write it into the registry it shares
 	// with every other such client, so the rows below are the snapshot's.
 	Live bool
+	// Usable is true when the live response contains a visible chat model and
+	// Models therefore contains the live-authoritative rows. Live can be true
+	// while Usable is false; Models then contains the static fallback.
+	Usable bool
 	// Models are the visible rows — hidden rows, disabled rows (registry
 	// ErrModelDisabled), and rows whose live layer says Tools = false are
 	// dropped (spec §5) — sorted by model id.
@@ -448,7 +452,7 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 		if c.isOverride(instance) {
 			return ModelListing{}, err
 		}
-		listing, fallbackErr := c.resolveFallbackListing(instance)
+		listing, fallbackErr := c.resolveFallbackListing(instance, false)
 		if fallbackErr != nil {
 			return ModelListing{}, errors.Join(err, fallbackErr)
 		}
@@ -458,23 +462,24 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 		// An override has no registry record behind it: its rows are
 		// returned as they came, never written anywhere.
 		models := standaloneRows(instance, rows)
-		return ModelListing{Live: len(models) > 0, Models: models}, nil
+		return ModelListing{Live: true, Usable: len(models) > 0, Models: models}, nil
 	}
 	if !live {
-		return c.resolveFallbackListing(instance)
+		return c.resolveFallbackListing(instance, false)
 	}
 	if !c.LiveListingUsable(instance, rows) {
 		if c.hasRegistry {
 			c.Registry().ApplyLive(instance, nil)
 		}
-		return c.resolveFallbackListing(instance)
+		return c.resolveFallbackListing(instance, true)
 	}
-	if c.hasRegistry {
-		// Only a client that owns its registry records what an instance's
-		// transport said. A client without WithRegistry resolves against the
-		// process-wide EmbeddedRegistry shared by every bare client.
-		c.Registry().ApplyLive(instance, rows)
+	if !c.hasRegistry {
+		return c.resolveFallbackListing(instance, true)
 	}
+	// Only a client that owns its registry records what an instance's
+	// transport said. A client without WithRegistry resolves against the
+	// process-wide EmbeddedRegistry shared by every bare client.
+	c.Registry().ApplyLive(instance, rows)
 	return c.resolveListing(instance)
 }
 
@@ -583,22 +588,20 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 
 // resolveListing resolves every visible id the registry knows for instance --
 // after the caller applied the live rows -- and filters by the §5
-// visibility rule. live reports whether a usable live listing was fetched;
-// false means registry-only (spec §8.1: an unsupported models endpoint
-// is not a failure). A lookup failure is an error, not an empty
+// visibility rule. A lookup failure is an error, not an empty
 // listing: swallowing it would silently drop a fetched live listing
 // under a mismatched key.
 func (c *Client) resolveListing(instance string) (ModelListing, error) {
 	ids, err := c.Registry().ModelIDs(instance)
-	return c.resolveListingIDs(instance, true, ids, err, c.Registry().Resolve)
+	return c.resolveListingIDs(instance, true, true, ids, err, c.Registry().Resolve)
 }
 
-func (c *Client) resolveFallbackListing(instance string) (ModelListing, error) {
+func (c *Client) resolveFallbackListing(instance string, live bool) (ModelListing, error) {
 	ids, err := c.Registry().FallbackModelIDs(instance)
-	return c.resolveListingIDs(instance, false, ids, err, c.Registry().ResolveFallback)
+	return c.resolveListingIDs(instance, live, false, ids, err, c.Registry().ResolveFallback)
 }
 
-func (c *Client) resolveListingIDs(instance string, live bool, ids []string, err error, resolveModel func(string) (registry.Resolved, error)) (ModelListing, error) {
+func (c *Client) resolveListingIDs(instance string, live, usable bool, ids []string, err error, resolveModel func(string) (registry.Resolved, error)) (ModelListing, error) {
 	if err != nil {
 		return ModelListing{}, &ConfigurationError{Message: err.Error()}
 	}
@@ -610,7 +613,7 @@ func (c *Client) resolveListingIDs(instance string, live bool, ids []string, err
 		}
 		out = append(out, row)
 	}
-	return ModelListing{Live: live, Models: out}, nil
+	return ModelListing{Live: live, Usable: usable, Models: out}, nil
 }
 
 // LiveSaysNoTools reports the §5 visibility rule: a row is hidden when the
@@ -630,7 +633,7 @@ func LiveSaysNoTools(row registry.Resolved) bool {
 func standaloneRows(instance string, rows []registry.Model) []registry.Resolved {
 	out := make([]registry.Resolved, 0, len(rows))
 	for _, m := range rows {
-		if m.Hidden || (m.Caps.Tools != nil && !*m.Caps.Tools) {
+		if !registry.IsChatModelID(m.ID) || m.Hidden || (m.Caps.Tools != nil && !*m.Caps.Tools) {
 			continue
 		}
 		out = append(out, registry.Resolved{Instance: instance, ModelID: m.ID, WireID: m.ID, Model: m, Caps: m.Caps})

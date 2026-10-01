@@ -114,6 +114,7 @@ func TestCredentialRejection_RefreshModelsRecordsAndClearsIt(t *testing.T) {
 		t.Fatalf("error after a refused refresh = %q, want %q", got, gwRejected)
 	}
 	gw.status.Store(http.StatusOK)
+	gw.noTools.Store(true)
 	if err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"}); err != nil {
 		t.Fatalf("RefreshModels: %v", err)
 	}

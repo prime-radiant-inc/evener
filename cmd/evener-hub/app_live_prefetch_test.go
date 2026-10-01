@@ -254,10 +254,13 @@ func TestFetchInstanceLiveFallsBackAfterProviderFailure(t *testing.T) {
 func TestFetchInstanceLiveFallsBackAfterUnusableListing(t *testing.T) {
 	ctl, gw := newListingController(t)
 	gw.status.Store(http.StatusOK)
+	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "gw"); err != nil {
+		t.Fatalf("initial live fetch: %v", err)
+	}
 	gw.noTools.Store(true)
 
 	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "gw"); err != nil {
-		t.Fatalf("live fetch: %v", err)
+		t.Fatalf("unusable live fetch: %v", err)
 	}
 	got := entry(t, ctl.List(), "gw")
 	if slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) ||

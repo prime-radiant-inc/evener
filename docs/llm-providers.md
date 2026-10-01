@@ -132,8 +132,10 @@ exact user-config rows**; snapshot/cache-only IDs disappear. If the endpoint
 is unsupported, errors, times out, or returns no usable chat rows, the visible
 set falls back to **snapshot/cache + curated overlay + user config**. The
 original fetch error remains available to diagnostics while callers such as
-the hub picker can still display the fallback. A caller-cancelled hub prefetch
-does not erase a previously healthy live snapshot.
+the hub picker can still display the fallback. A successful response remains
+a live endpoint and credential signal even when every row is unusable and the
+visible IDs fall back. A caller-cancelled hub prefetch does not erase a
+previously healthy live snapshot.
 
 For facts on a visible ID, the live layer sits between the curated overlay and
 the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,

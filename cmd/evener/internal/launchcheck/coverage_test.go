@@ -176,6 +176,13 @@ func TestValidateLaunchCheckModelRemainingBranches(t *testing.T) {
 			t.Fatalf("a listing the instance could not fetch is not evidence of absence: %v", err)
 		}
 	})
+	t.Run("unusable listing passes", func(t *testing.T) {
+		client := launchCheckClient(t, gatewayInstances(), &launchCheckFakeAdapter{name: "fake"})
+		withLaunchCheckLoadClient(t, fixedLaunchCheckClient(client))
+		if err := validateLaunchCheckModel(cmdutil.ModelRef{Provider: "fake", Model: "m"}); err != nil {
+			t.Fatalf("a listing with no usable rows is not evidence of absence: %v", err)
+		}
+	})
 	t.Run("live listing without the model fails", func(t *testing.T) {
 		client := launchCheckClient(t, gatewayInstances(),
 			&launchCheckFakeAdapter{name: "fake", models: []registry.Model{{ID: "other"}}})

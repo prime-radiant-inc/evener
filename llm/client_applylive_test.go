@@ -88,6 +88,12 @@ func TestModelsAppliesLiveListingOnlyToARegistryTheClientOwns(t *testing.T) {
 		if !listing.Live {
 			t.Fatal("listing not marked live: the transport did answer")
 		}
+		if listing.Usable {
+			t.Fatal("borrowed registry listing marked usable without recording its live rows")
+		}
+		if got := modelIDs(listing.Models); slices.Contains(got, "live-only-model") || !slices.Contains(got, "catalog-model") {
+			t.Fatalf("models = %v, want static fallback without the unrecorded live row", got)
+		}
 		if got := r.LiveModels("listing"); len(got) != 0 {
 			t.Fatalf("live rows = %+v, want none: a client that does not own the registry must not write to it", got)
 		}
@@ -105,6 +111,9 @@ func TestModelsFallsBackToRegistryWhenLiveListingFails(t *testing.T) {
 		t.Fatalf("Models error = %v, want the live listing failure", err)
 	}
 	if listing.Live {
+		t.Fatal("failed live listing marked live")
+	}
+	if listing.Usable {
 		t.Fatal("failed live listing marked usable")
 	}
 	if got := modelIDs(listing.Models); !slices.Contains(got, "catalog-model") || !slices.Contains(got, "gpt-4o") || slices.Contains(got, "stale-live-model") {
@@ -122,6 +131,9 @@ func TestModelsFallsBackToRegistryWhenLiveListingIsUnsupported(t *testing.T) {
 		t.Fatalf("Models: %v", err)
 	}
 	if listing.Live {
+		t.Fatal("unsupported live listing marked live")
+	}
+	if listing.Usable {
 		t.Fatal("unsupported live listing marked usable")
 	}
 	if got := modelIDs(listing.Models); !slices.Contains(got, "catalog-model") || !slices.Contains(got, "gpt-4o") || slices.Contains(got, "stale-live-model") {
@@ -166,7 +178,10 @@ func TestModelsFallsBackToRegistryWhenLiveListingIsUnusable(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Models: %v", err)
 			}
-			if listing.Live {
+			if !listing.Live {
+				t.Fatal("unusable live listing not marked live: the transport answered")
+			}
+			if listing.Usable {
 				t.Fatal("unusable live listing marked usable")
 			}
 			if got := modelIDs(listing.Models); !slices.Contains(got, "catalog-model") || !slices.Contains(got, "gpt-4o") || slices.Contains(got, tc.filteredID) {
@@ -188,6 +203,9 @@ func TestModelsDropsHiddenRowsFromUsableLiveListing(t *testing.T) {
 	}
 	if !listing.Live {
 		t.Fatal("listing with a visible row not marked live")
+	}
+	if !listing.Usable {
+		t.Fatal("listing with a visible row not marked usable")
 	}
 	if got := modelIDs(listing.Models); !slices.Contains(got, "visible-live") || slices.Contains(got, "hidden-live") {
 		t.Fatalf("live model ids = %v, want visible-live without hidden-live", got)
