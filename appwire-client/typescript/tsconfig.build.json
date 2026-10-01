@@ -57,6 +57,7 @@
     "jobOutput.ts",
     "hostMutations.ts",
     "hubOverview.ts",
+    "archivedListStore.ts",
     "hubUpdate.ts",
     "model.ts",
     "chunkview.ts",
