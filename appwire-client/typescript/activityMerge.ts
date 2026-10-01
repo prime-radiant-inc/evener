@@ -9,7 +9,6 @@ import {
   isFailedJobOutcome,
   isTurnContainer,
 } from "./activityData";
-import type { EvenerDelegateInfo } from "./types.gen";
 
 function cloneEntry(entry: ActivityEntry): ActivityEntry {
   return entry.kind === "shell"
@@ -290,67 +289,4 @@ export function graftContinuationTree(current: ActivityTree, targetID: string, p
   const root = mergeSession(current.root, patch.root, targetID, false);
   // Revisions are equal here (checked above), so the retained revision stands.
   return { revision: current.revision, root };
-}
-
-// applyDelegateUpdate folds an evener/delegate/updated notification into the
-// held tree without a fetch, and returns null when only a fetch can say what
-// the tree should now show: the delegate is not one of the root's entries, or
-// the update changes something the tree derives more from than the delegate
-// itself. The notification carries the delegate's full merged state, but the
-// tree's counts and aggregate follow terminal and outcome, its terminal packet
-// (message, structured result, usage, worktree, warnings) is bounded by the
-// daemon's activity projection, and a turn container's state lives in its
-// turns. So the update is applied only when it leaves those alone and moves the
-// delegate's lifecycle and timing fields, which is all a running delegate's
-// once-a-second updates change. The rest of the notification's snapshot is
-// descriptor data fixed at spawn (task, description, models, allowances) or
-// comes from the terminal packet and the last outcome (usage, worktree,
-// warnings, diagnostics, exhaustion), which change only together with
-// packetKind or outcome, so those cases refetch. The same revision fence as a refetch decides
-// which side speaks: an update older than the held delegate only moves its
-// latest activity forward. Returns the same tree object when nothing changed.
-export function applyDelegateUpdate(tree: ActivityTree, info: EvenerDelegateInfo): ActivityTree | null {
-  const index = tree.root.entries.findIndex(
-    (entry) => entry.kind === "delegate" && entry.delegate.delegateId === info.delegateId,
-  );
-  const entry = tree.root.entries[index];
-  if (entry?.kind !== "delegate") return null;
-  const held = entry.delegate;
-  const newer = info.projectionRevision > (held.projectionRevision ?? 0);
-  // An update older than what is held has nothing to say beyond how recently
-  // the delegate was active, whatever state it describes.
-  if (
-    newer &&
-    (isTurnContainer(held) ||
-      isTurnContainer(info) ||
-      held.childSessionId !== info.childSessionId ||
-      (held.terminal === true) !== (info.terminal === true) ||
-      (held.outcome ?? "") !== (info.outcome ?? "") ||
-      (held.packetKind ?? "") !== (info.packetKind ?? ""))
-  )
-    return null;
-  const latestActivityAt = maxActivity(held.latestActivityAt, info.latestActivityAt);
-  if (!newer && latestActivityAt === held.latestActivityAt) return tree;
-  const base: ActivityDelegate = newer
-    ? {
-        ...held,
-        projectionRevision: info.projectionRevision,
-        lifecycle: info.lifecycle,
-        phase: info.phase,
-        status: info.status,
-        reason: info.reason,
-        error: info.error,
-        resumable: info.resumable,
-        notResumableReason: info.notResumableReason,
-        runStartedAt: info.runStartedAt,
-        runEndedAt: info.runEndedAt,
-        runningForMs: info.runningForMs,
-        quietForMs: info.quietForMs,
-        durationMs: info.durationMs,
-      }
-    : held;
-  const delegate = { ...base, latestActivityAt };
-  const entries = [...tree.root.entries];
-  entries[index] = { kind: "delegate", delegate };
-  return { ...tree, root: { ...tree.root, entries } };
 }

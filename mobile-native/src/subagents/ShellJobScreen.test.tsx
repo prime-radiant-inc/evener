@@ -4,7 +4,6 @@ import { installActivityFixture } from "./sessionActivityTestUtils";
 // and its output's tail from evener/jobs/output, read again whenever the job
 // writes more or changes state. It offers no Refresh and no Stop.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { ACTIVITY_REFRESH_MIN_INTERVAL_MS } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -133,22 +132,21 @@ async function mount(over: { ownerRef?: string } = {}) {
 	return screen;
 }
 
-// The tree changes; the list paces its reads, so the read runs once the
-// minimum interval has passed. Each change starts its fake clock past the
-// last one's, since the pacing measures from when the last read ended.
-let clock = Date.now();
+// The tree changes; the activity store re-reads what the notification names
+// at once.
 async function treeChanges(next: { revision: number; root: unknown }) {
 	tree = next;
-	clock += 10 * ACTIVITY_REFRESH_MIN_INTERVAL_MS;
-	vi.useFakeTimers({ now: clock });
-	client.emitNotification({
-		method: "evener/thread/activity/changed",
-		params: { threadId: "coord", sessionId: "coord", ref: "local:coord", resources: ["summary", "delegates", "jobs"] },
-	} as never);
-	await act(async () => {
-		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-	});
-	vi.useRealTimers();
+	act(() =>
+		client.emitNotification({
+			method: "evener/thread/activity/changed",
+			params: {
+				threadId: "coord",
+				sessionId: "coord",
+				ref: "local:coord",
+				resources: ["summary", "delegates", "jobs"],
+			},
+		} as never),
+	);
 	await settle();
 }
 

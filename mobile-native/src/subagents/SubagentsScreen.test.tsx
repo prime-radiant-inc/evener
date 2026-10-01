@@ -3,7 +3,7 @@ import { installActivityFixture } from "./sessionActivityTestUtils";
 // through the typed activity reads, in failed, running and done sections, with
 // the strip, the chips, search, and each row's why and last line.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { ACTIVITY_REFRESH_MIN_INTERVAL_MS, WireError } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
@@ -149,18 +149,19 @@ async function settle() {
 	});
 }
 
-// The list paces whole-tree reads, so the read a notification asks for runs
-// once the minimum interval has passed.
+// The activity store re-reads what a notification names at once.
 async function treeUpdatedAndRead(hubClient: FakeClient) {
-	vi.useFakeTimers();
-	hubClient.emitNotification({
-		method: "evener/thread/activity/changed",
-		params: { threadId: "coord", sessionId: "coord", ref: "local:coord", resources: ["summary", "delegates", "jobs"] },
-	} as never);
-	await act(async () => {
-		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-	});
-	vi.useRealTimers();
+	act(() =>
+		hubClient.emitNotification({
+			method: "evener/thread/activity/changed",
+			params: {
+				threadId: "coord",
+				sessionId: "coord",
+				ref: "local:coord",
+				resources: ["summary", "delegates", "jobs"],
+			},
+		} as never),
+	);
 	await settle();
 }
 
