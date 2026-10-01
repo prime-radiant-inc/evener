@@ -295,8 +295,9 @@ and disclosure choices. Closing the last retaining pane evicts this view state.
 The [read-only child transcript](../../cmd/evener-hub/frontend/src/panes/transcript/Transcript.tsx)
 shows the same proven scope hierarchy above its content while preserving its
 chosen transcript title. Its existing session binding supplies summary context;
-the Back target alone is not ancestry evidence, and no parent transcript is read
-to obtain a name.
+direct links and restored panes obtain the same context without requiring a Back
+target. The Back target alone is not ancestry evidence, and no parent transcript
+is read to obtain a name. Root sessions omit redundant ancestry.
 
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection

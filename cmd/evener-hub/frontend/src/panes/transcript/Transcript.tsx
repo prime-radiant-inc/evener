@@ -77,7 +77,7 @@ export default function Transcript({ params, paneId }: PaneProps<TranscriptParam
 function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId?: string }) {
   const { ref } = params;
   const now = useNowTick(NOW_TICK_MS);
-  const { snapshot: activity } = useSessionActivity(params.parentRef ? ref : null);
+  const { snapshot: activity } = useSessionActivity(ref);
   const scope = deriveScope(navigationStore.getState(), ref, activity);
   const ancestry =
     scope.ancestryKnown && scope.path.length > 1 ? (
