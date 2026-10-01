@@ -125,3 +125,36 @@ it("renders a live tally's chip in the shared list and none without one", async 
 	expect(labels).toContain("Open Beta");
 	tree.unmount();
 });
+
+// A v3 page the hub cut short by its node or byte budget is only paged: the
+// rows it dropped count in `remaining` and arrive through Load more. The list
+// says nothing about a partial tree or missing related sessions.
+it("pages a page the hub cut short through Load more, with no partial-tree notice", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/navigation/read", (params) =>
+		wireSnapshot(params as never, { sessions: [{ ref: "local:a", title: "Alpha" }], remaining: 1, truncated: true }),
+	);
+	harness.connection = screenConnection(hub, "ready");
+	const screenProps = {
+		route: {
+			params: {
+				hubId: "hub-1",
+				location: {
+					ref: "local:a",
+					revealRef: "local:a",
+					title: "Project",
+					params: { resource: "project_page", projectKey: "p", tier: "current" },
+				},
+			},
+		},
+		navigation: { navigate: () => {}, setParams: () => {} },
+	} as unknown as ComponentProps<typeof SessionLocationScreen>;
+	const tree = render(<SessionLocationScreen {...screenProps} />);
+	await act(async () => {});
+	const shown = renderedText(tree);
+	expect(shown).toContain("Alpha");
+	expect(shown).toContain("Load more · 1 remaining");
+	expect(shown).not.toContain("partial session tree");
+	expect(shown).not.toContain("related session");
+	tree.unmount();
+});

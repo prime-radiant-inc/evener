@@ -108,7 +108,6 @@ it.each([
 });
 interface Row {
 	ref: string;
-	children?: Row[];
 }
 function pages(
 	read: (offset: number) => unknown,
@@ -155,10 +154,9 @@ it("loads later pages and reveals the flat destination", async () => {
 			list,
 			"child",
 			(r) => r.ref,
-			(r) => r.children ?? [],
 			() => true,
 		),
-	).toEqual(["child"]);
+	).toBe(true);
 	expect(offsets).toEqual([0, 1]);
 });
 it("does not continue paging after leaving", async () => {
@@ -174,10 +172,9 @@ it("does not continue paging after leaving", async () => {
 			list,
 			"child",
 			(r) => r.ref,
-			undefined,
 			() => current,
 		),
-	).toBeNull();
+	).toBe(false);
 	expect(calls).toBe(1);
 });
 it("rejects a revision change rather than mixing a false path", async () => {
@@ -188,7 +185,6 @@ it("rejects a revision change rather than mixing a false path", async () => {
 			list,
 			"child",
 			(r) => r.ref,
-			undefined,
 			() => true,
 		),
 	).rejects.toThrow();

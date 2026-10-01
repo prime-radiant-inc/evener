@@ -112,8 +112,6 @@ export function PinnedSectionScreen({ route, navigation }: NativeStackScreenProp
 					pages={pages}
 					ready={ready}
 					rowKey={sessionKey}
-					childRows={(row) => row.children ?? []}
-					omitted={(row) => row.omitted_descendants ?? 0}
 					chip={sessionSubagentChip}
 					chipLabel={sessionSubagentChipLabel}
 					organization={() => null}
