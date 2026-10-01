@@ -138,7 +138,11 @@ it("starts no read after an accepted change, waiting for the one still out", asy
 	const client = new FakeClient("ready");
 	const later = deferred<ArchivedListResponse>();
 	let reads = 0;
-	client.on("evener/archived/list", () => (++reads === 1 ? { sessions: [row("local:a")], total: 1 } : later.promise));
+	client.on("evener/archived/list", () => {
+		reads++;
+		if (reads === 1) return { sessions: [row("local:a")], total: 1 };
+		return reads === 2 ? later.promise : { sessions: [row("local:extra")], total: 1 };
+	});
 	const pages = new ArchivedPages(client, "projects", "p");
 	await pages.refresh();
 
@@ -156,6 +160,47 @@ it("starts no read after an accepted change, waiting for the one still out", asy
 	await waiting;
 	expect(reads).toBe(2);
 	expect(pages.getSnapshot()).toMatchObject({ loaded: true, loading: false, rows: [{ ref: "local:b" }] });
+});
+
+// The organize flow's read can fail: the page reads the list again rather
+// than confirm the change against rows from before it.
+it("reads a list again after an accepted change whose own read failed", async () => {
+	const client = new FakeClient("ready");
+	let reads = 0;
+	client.on("evener/archived/list", () => {
+		reads++;
+		if (reads === 2) throw new Error("offline");
+		return { sessions: [row(reads === 1 ? "local:before" : "local:after")], total: 1 };
+	});
+	const pages = new ArchivedPages(client, "projects", "p");
+	await pages.refresh();
+	await archivedListStoreFor(client).refreshLoaded();
+	expect(pages.getSnapshot().error).toBe("offline");
+
+	await pages.refreshAfter();
+	expect(reads).toBe(3);
+	expect(pages.getSnapshot()).toMatchObject({ loaded: true, error: null, rows: [{ ref: "local:after" }] });
+});
+
+// A connection that recovers while the page waits drops the list; the page
+// reads it again on the recovered connection.
+it("reads a list again after an accepted change when its connection recovered meanwhile", async () => {
+	const client = new FakeClient("ready");
+	const owed = deferred<ArchivedListResponse>();
+	let reads = 0;
+	client.on("evener/archived/list", () =>
+		++reads === 2 ? owed.promise : { sessions: [row(`local:${reads}`)], total: 1 },
+	);
+	const pages = new ArchivedPages(client, "projects", "p");
+	await pages.refresh();
+	void archivedListStoreFor(client).refreshLoaded();
+	const after = pages.refreshAfter();
+
+	client.emitStateChange("reconnecting");
+	client.emitReady();
+	await after;
+	expect(reads).toBe(3);
+	expect(pages.getSnapshot()).toMatchObject({ loaded: true, error: null, rows: [{ ref: "local:3" }] });
 });
 
 it("reads a list no one loaded after an accepted change", async () => {

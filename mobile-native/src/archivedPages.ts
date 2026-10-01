@@ -71,16 +71,17 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	}
 	/** After an accepted organize change, which has already read every loaded
 	 * archived list again (navigationActions.ts, refreshLoadedArchivedLists):
-	 * a loaded list holds that read's rows, or waits for it while it is out,
-	 * and only a list no one loaded reads now. The receipt adds nothing: the
-	 * list is read from the hub's current navigation. */
-	refreshAfter() {
+	 * wait for that read while it is out; a list it loaded cleanly holds its
+	 * rows, and one whose read failed, or that no one loaded, reads now. The
+	 * receipt adds nothing: the list is read from the hub's current
+	 * navigation. */
+	async refreshAfter() {
 		this.paused = false;
 		this.owed = false;
+		if (this.store.getState().lists[this.key]?.loading) await this.landed();
 		const list = this.store.getState().lists[this.key];
-		if (list?.loading) return this.landed();
-		if (list?.loaded) return Promise.resolve();
-		return this.store.refresh(this.catalog, this.projectKey);
+		if (list?.loaded && !list.error) return;
+		await this.store.refresh(this.catalog, this.projectKey);
 	}
 	/** Settles once the read out for this list has landed. */
 	private landed() {
