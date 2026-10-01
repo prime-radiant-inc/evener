@@ -19,7 +19,11 @@ import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
 import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
-import { activitySidebarStore, useActivitySidebarStore } from "./activitySidebarStore";
+import {
+  activitySidebarReturnFocusTarget,
+  activitySidebarStore,
+  useActivitySidebarStore,
+} from "./activitySidebarStore";
 import { ACTIVITY_TABS, activityTabSpec } from "./activityTabs";
 
 const CLASS = {
@@ -35,23 +39,13 @@ export function ActivitySidebar() {
   const open = useActivitySidebarStore((state) => state.open);
   const tab = useActivitySidebarStore((state) => state.tab);
   const sidebar = useRef<HTMLElement>(null);
-  const opener = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    if (open) {
-      const active = document.activeElement;
-      opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
-    }
-  }, [open]);
   const close = useCallback(() => {
     const focusInside = sidebar.current?.contains(document.activeElement);
     activitySidebarStore.getState().close();
     if (!focusInside) return;
     // Menus may remove the original opener; the matching footer chip remains
     // a useful return point. Other pane changes never restore sidebar focus.
-    const target = opener.current?.isConnected
-      ? opener.current
-      : document.querySelector<HTMLElement>(`[data-activity-tab="${activitySidebarStore.getState().tab}"]`);
-    target?.focus();
+    activitySidebarReturnFocusTarget(activitySidebarStore.getState().tab)?.focus();
   }, []);
   // Narrow subscriptions: re-render on the resources map (nav data) or the
   // scope's ref, not on every store touch.

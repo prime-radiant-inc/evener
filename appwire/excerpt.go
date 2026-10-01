@@ -22,6 +22,11 @@ const (
 	// MaxMessageExcerptRunes bounds the opening of a session's last agent
 	// message, a Finished row's why line (spec 18, S1: "about 200 characters").
 	MaxMessageExcerptRunes = 200
+	// MaxIntentRunes bounds what a tool call said it was doing, a Working
+	// row's why line ("Reading the board's row tests."). The agent already
+	// words each call's intent as one sentence, so this only holds a runaway
+	// one to a row's length.
+	MaxIntentRunes = 200
 )
 
 // BoundedPendingQuestion is a pending question cut to the wire's bounds: its

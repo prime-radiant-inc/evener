@@ -61,6 +61,12 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
+- **Keep session status inside its pane.** Every visible desktop session pane ends with its own
+  flush status footer, never one strip spanning sibling panes. The footer leads with that
+  session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
+  counts. A count click focuses the owning pane before opening the shared activity sidebar.
+  The sidebar retains its scope breadcrumb and an accessible, visually hidden “Activity kind”
+  label. Phones omit the activity footer and keep repository location below the composer.
 
 The provenance corrections and nested navigation/focus repairs change behavior. Folding,
 disclosure persistence, keyboard rules, preferences and semantic hue roles are retained
@@ -177,8 +183,8 @@ dot = needs you, red diamond = broken, grey spinning ring = running; the shape d
 needs-you and broken distinct without hue. Precedence is broken, needs-you, running. Idle and ended
 rows reserve no indicator. The visible face is indicator, title, and age/actions only. Project,
 host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
-the title. Hovering the title or focusing the owning tree row exposes it; tapping the title does so
-on hoverless devices without activating the row, and a second tap activates it. Session pin stars
+the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
+long press on the title exposes it and a tap activates the row. Session pin stars
 and textual state lines do not appear on the row.
 
 ---
@@ -375,8 +381,8 @@ during implementation (noted inline); this table is the one to trust.
 | **Dialog** | `{open; onClose; title; children; footer?}` | Modal: centered, 120ms fade-scale, Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. |
 | **Sheet** | `{side?: "right"\|"bottom"; open; onClose; title; children; footer?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry/slide-in animation differs. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. |
 | **FocusScope** | `{trap?: boolean; children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. Does not (yet) set `inert` on anything outside the scope — see §4. |
-| **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, hidden on touch via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
-| **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; tapEnabled?: boolean}` | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. Hidden on touch unless `tapEnabled`, which lets a semantic child reveal it without bubbling the tap into its container. |
+| **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, neither triggered on touch (a tap fires both and dismisses neither) and hidden there via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
+| **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; longPressEnabled?: boolean}` | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. On a touch device neither hover nor the focus a tap takes reveals it; `longPressEnabled` adds a long press that does, a plain tap activates the trigger's own control, and keyboard or assistive-tech focus still reveals it. |
 | **Toast** + `useToasts()` | `useToasts(): {push: (kind, text) => void}`; `<Toast/>` takes no props | Module-singleton queue (`useSyncExternalStore`), mounted once near the app root. 5s auto-dismiss, true pause/resume on hover (tracks remaining time, doesn't restart the full window — fix-wave, see §4). |
 | **PaneScaffold** | `{title; cadence?; actions?; footer?; children}` | The standard pane chrome: header (title + cadence slot + actions) + scrollable body + optional footer. Most-copied layout primitive in the app. |
 | **CodeBlock** | `{text: string; language?: string; showLineNumbers?: boolean}` | Mono block with a copy button (renders a real `Button` internally); no syntax highlighting (YAGNI this wave). |

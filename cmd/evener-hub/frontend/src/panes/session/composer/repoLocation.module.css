@@ -1,8 +1,6 @@
-/* One quiet caption line under the prompt card: the session's working dir and
- * git branch. No border or background of its own - it is a fact beside the
- * composer, not another box under it. The inline padding matches
- * widgets/promptcard's own (`var(--space-2)`) so the path starts on the same
- * column as the card's text. */
+/* One quiet caption line for the session's working dir and git branch. It sits
+ * in the desktop pane footer or under the mobile prompt card. No border or
+ * background of its own. The inline padding aligns it with nearby content. */
 .line {
   display: flex;
   align-items: center;
@@ -75,12 +73,12 @@
 
 .link:focus-visible {
   outline: var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: -2px;
   border-radius: var(--radius-control);
 }
 
-/* On the phone the footer's bottom padding is a wide home-indicator band
- * (12px of breathing room plus the inset), and this caption line sat at the
+/* On the phone the composer's footer bottom padding is a wide home-indicator
+ * band (12px of breathing room plus the inset), and this caption line sits at the
  * top of it, hugging the card, leaving a strip of dead padding under itself
  * taller than the line. The line spends up to one of its own line-heights of
  * that band instead: it translates down, the strip below shrinks, and the gap
