@@ -272,6 +272,7 @@ it("unarchives an archived row and reads the archived list again", async () => {
 	expect(renderedText(tree)).not.toContain("Alpha");
 	expect(renderedText(tree)).not.toContain("could not be confirmed");
 	tree.unmount();
+	harness.kv.clear();
 });
 
 // An organize change is confirmed against the page read after it. A

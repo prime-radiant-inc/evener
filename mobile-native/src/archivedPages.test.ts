@@ -73,6 +73,12 @@ it("counts what remains only while the list has a next page", async () => {
 	const last = new ArchivedPages(archivedListStoreFor(other), "projects", "p");
 	await last.refresh();
 	expect(last.getSnapshot().remaining).toBe(0);
+
+	// A total that lags the rows still leaves the cursor's next page to load.
+	const { client: lagging } = hub({ "": { refs: ["local:a", "local:b"], total: 2, nextCursor: "c1" } });
+	const behind = new ArchivedPages(archivedListStoreFor(lagging), "projects", "p");
+	await behind.refresh();
+	expect(behind.getSnapshot().remaining).toBe(1);
 });
 
 it("reports a failed read and keeps the loaded rows", async () => {
@@ -95,7 +101,9 @@ it("declares it has no navigation version", () => {
 
 it("shares one store per connection", () => {
 	const { client } = hub({});
+	const before = client.listenerCount;
 	expect(archivedListStoreFor(client)).toBe(archivedListStoreFor(client));
+	expect(client.listenerCount).toBe(before + 1);
 	expect(archivedListStoreFor(hub({}).client)).not.toBe(archivedListStoreFor(client));
 });
 
