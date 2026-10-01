@@ -14,3 +14,17 @@ test("ended delegate preserves the supplied failed outcome", () => {
   );
   expect(screen.getByText(/failed/)).toBeTruthy();
 });
+
+test("delegate row prefers compact name while unnamed rows retain their prompt fallback", () => {
+  const { rerender } = render(
+    <AgentRow
+      sub={{ ...activityDelegate({ description: "Inspect the complete cache ownership" }), name: "inspect-cache" }}
+    />,
+  );
+  expect(screen.getByText("inspect-cache")).toBeTruthy();
+  expect(screen.queryByText("Inspect the complete cache ownership")).toBeNull();
+  rerender(
+    <AgentRow sub={{ ...activityDelegate({ description: "Inspect the complete cache ownership" }), name: " " }} />,
+  );
+  expect(screen.getByText("Inspect the complete cache ownership")).toBeTruthy();
+});

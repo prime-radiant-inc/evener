@@ -30,6 +30,7 @@ import { SessionTitle } from "./session/SessionTitle";
 import { readerKey } from "./readerPosition";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 import { sheetKey } from "./sheet/sheetHosts";
+import { archivedListStoreFor } from "./archivedLists";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -755,6 +756,26 @@ it("archives the session, with an Undo that restores it", async () => {
 		{ kind: "session", id: ref, archived: true },
 		{ kind: "session", id: ref, archived: false },
 	]);
+	tree.unmount();
+});
+
+// Archived lists follow no invalidations, and archiving a session moves it
+// into its project's archived tier, so the connection's loaded archived lists
+// read again.
+it("reads the connection's loaded archived lists again once the hub accepts an archive", async () => {
+	const { tree, client, requests } = mount(thread, {
+		"evener/archive/set": { ok: true, navigation: { generation_id: "g", targets: [] } },
+		"evener/archived/list": { sessions: [], total: 0 },
+	});
+	await flush();
+	await archivedListStoreFor(client).refresh("projects", "p");
+	const archivedReads = () => requests.filter(({ method }) => method === "evener/archived/list");
+	expect(archivedReads()).toHaveLength(1);
+
+	act(() => menuAction("Archive").onPress());
+	await flush();
+
+	expect(archivedReads()).toHaveLength(2);
 	tree.unmount();
 });
 

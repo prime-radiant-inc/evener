@@ -142,6 +142,7 @@
     },
     "delegates": [
       {
+        "name": "stopped-delegate",
         "runGeneration": 1,
         "delegateId": "dlg_stopped",
         "ownerRef": "local:root",
@@ -163,6 +164,7 @@
         "latestActivityAt": "2026-09-28T20:01:30Z"
       },
       {
+        "name": "reported-delegate",
         "runGeneration": 1,
         "reportPreview": "Fixed the race: settle now waits for the drain.\n\nThe new test covers both orders.",
         "delegateId": "dlg_reported",
@@ -184,6 +186,7 @@
         "latestActivityAt": "2026-09-28T20:00:30Z"
       },
       {
+        "name": "failed-delegate",
         "runGeneration": 1,
         "delegateId": "dlg_failed",
         "ownerRef": "local:root",
@@ -224,6 +227,7 @@
     },
     "delegates": [
       {
+        "name": "stopped-delegate",
         "runGeneration": 1,
         "delegateId": "dlg_stopped",
         "ownerRef": "local:root",
@@ -245,6 +249,7 @@
         "latestActivityAt": "2026-09-28T20:01:30Z"
       },
       {
+        "name": "reported-delegate",
         "runGeneration": 2,
         "reportPreview": "Second run report.",
         "delegateId": "dlg_reported",
@@ -266,6 +271,7 @@
         "latestActivityAt": "2026-09-28T20:00:30Z"
       },
       {
+        "name": "failed-delegate",
         "runGeneration": 1,
         "delegateId": "dlg_failed",
         "ownerRef": "local:root",

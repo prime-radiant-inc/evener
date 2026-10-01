@@ -99,6 +99,9 @@ type SessionActivityPage struct {
 // SessionDelegate is a stable compact resource, independent of its activation
 // jobs and child runtime. ChildRef addresses retained child history when available.
 type SessionDelegate struct {
+	// Name is the immutable caller display label, capped at 200 Unicode code points.
+	// Unnamed descriptors omit it; delegate IDs and refs remain the addressing keys.
+	Name string `json:"name,omitempty"`
 	// RunGeneration identifies the current activation; zero means no run has started.
 	RunGeneration uint64 `json:"runGeneration"`
 	// ReportPreview is the settled current run's reported text, capped at 4096
