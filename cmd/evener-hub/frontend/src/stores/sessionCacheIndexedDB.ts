@@ -145,6 +145,33 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// Exact UTF-8 byte count of `text` without materializing the whole encoding:
+// a cached record can reach the 32 MB cap, and encode() would hold a full
+// Uint8Array copy of it just to read its length. Each code-point-aligned
+// window is encoded into one reused chunk buffer; UTF-8 is a per-code-point
+// encoding, so the per-window written counts sum to exactly the number
+// encode().byteLength would report.
+function countUtf8Bytes(text: string): number {
+  const CHUNK_CODE_UNITS = 4_096;
+  // 3 bytes is the most any UTF-16 code unit contributes to UTF-8, so one
+  // window always fits the chunk in a single encodeInto pass.
+  const chunk = new Uint8Array(3 * CHUNK_CODE_UNITS);
+  const encoder = new TextEncoder();
+  let total = 0;
+  let offset = 0;
+  while (offset < text.length) {
+    let end = Math.min(offset + CHUNK_CODE_UNITS, text.length);
+    // A window must not end inside a surrogate pair: a lone half encodes as
+    // U+FFFD and would inflate the count.
+    const boundary = text.charCodeAt(end - 1);
+    if (end < text.length && boundary >= 0xd800 && boundary <= 0xdbff) end -= 1;
+    const { read, written } = encoder.encodeInto(text.slice(offset, end), chunk);
+    total += written;
+    offset += read;
+  }
+  return total;
+}
+
 export class SessionCacheIndexedDB {
   readonly #indexedDB: IDBFactory;
   readonly #databaseName: string;
@@ -192,28 +219,28 @@ export class SessionCacheIndexedDB {
     // A readwrite transaction so an expired (or corrupt) row can be deleted
     // in the same step that found it: the guarantee is that an expired record
     // does not survive any storage access that sees it.
-    const found = await this.#readwrite(
-      "get",
-      async (tx) => {
-        const epochRow = await requestResult(
-          tx.objectStore(META_STORE).get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>,
-        );
-        const epoch = epochRow?.epoch ?? 0;
-        const row = await requestResult(tx.objectStore(RECORDS_STORE).get(ref));
-        const record = decodeRecord(row);
-        if (record === undefined) {
-          if (row !== undefined) await this.#deleteRows(tx, ref); // corrupt: a miss, never a throw, never a leftover
-          return { record: undefined, epoch };
-        }
-        const meta = await requestResult(tx.objectStore(META_STORE).get(ref) as IDBRequest<CacheMetaRow | undefined>);
-        if (meta !== undefined && meta.savedAt + TTL_MS <= now) {
-          await this.#deleteRows(tx, ref);
-          return { record: undefined, epoch };
-        }
-        return { record, epoch };
-      },
-      now,
-    );
+    const found = await this.#readwrite(async (tx) => {
+      // The epoch row, the record body, and its meta row are independent
+      // keyed reads: issue all three in this one transaction and await them
+      // together, then decide the deletes exactly as before - the same
+      // decisions, without serial round trips.
+      const [epochRow, row, meta] = await Promise.all([
+        requestResult(tx.objectStore(META_STORE).get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>),
+        requestResult(tx.objectStore(RECORDS_STORE).get(ref)),
+        requestResult(tx.objectStore(META_STORE).get(ref) as IDBRequest<CacheMetaRow | undefined>),
+      ]);
+      const epoch = epochRow?.epoch ?? 0;
+      const record = decodeRecord(row);
+      if (record === undefined) {
+        if (row !== undefined) await this.#deleteRows(tx, ref); // corrupt: a miss, never a throw, never a leftover
+        return { record: undefined, epoch };
+      }
+      if (meta !== undefined && meta.savedAt + TTL_MS <= now) {
+        await this.#deleteRows(tx, ref);
+        return { record: undefined, epoch };
+      }
+      return { record, epoch };
+    }, now);
     if (found === undefined) return undefined;
     this.#observedEpoch = Math.max(this.#observedEpoch ?? 0, found.epoch);
     return found.record === undefined ? undefined : { record: found.record, epoch: found.epoch };
@@ -222,7 +249,7 @@ export class SessionCacheIndexedDB {
   async put(record: CachedSessionRecord, scheduledEpoch: number, now: number): Promise<SessionCacheWriteOutcome> {
     // UTF-8 JSON payload bytes, not JS UTF-16 code units or IndexedDB overhead.
     const encoded = JSON.stringify(record);
-    const bytes = new TextEncoder().encode(encoded).byteLength;
+    const bytes = countUtf8Bytes(encoded);
     const result = await this.#readwriteOutcome(
       "put",
       async (tx) => {
@@ -233,21 +260,25 @@ export class SessionCacheIndexedDB {
           return { outcome: "aborted", observedEpoch: observed } as SessionCacheWriteOutcome;
 
         const rows = await requestResult(metaStore.getAll() as IDBRequest<CacheMetaRow[]>);
-        const live = rows.filter((row) => row.ref !== EPOCH_ROW_KEY);
+        // A re-write replaces its own accounting, so its previous meta row is
+        // not live; the epoch row is not a record's accounting either. Keys
+        // are unique, so the exclusion below is exactly the set of rows the
+        // old find-and-splice removed, in one pass.
+        const live = rows.filter((row) => row.ref !== EPOCH_ROW_KEY && row.ref !== record.ref);
         if (bytes > this.#maxBytes) {
           await this.#deleteRows(tx, record.ref); // a session that outgrew its cache leaves nothing stale behind
           return { outcome: "oversize" } as SessionCacheWriteOutcome;
         }
-        const previous = live.find((row) => row.ref === record.ref);
-        if (previous) live.splice(live.indexOf(previous), 1); // a re-write replaces its own accounting
         metaStore.put({ ref: record.ref, bytes, savedAt: record.savedAt } satisfies CacheMetaRow);
         tx.objectStore(RECORDS_STORE).put(JSON.parse(encoded) as CachedSessionRecord);
         let total = live.reduce((sum, row) => sum + row.bytes, 0) + bytes;
-        live.sort((a, b) => a.savedAt - b.savedAt); // whole-record LRU by last write
-        for (const victim of live) {
-          if (total <= this.#maxBytes) break;
-          await this.#deleteRows(tx, victim.ref);
-          total -= victim.bytes;
+        if (total > this.#maxBytes) {
+          live.sort((a, b) => a.savedAt - b.savedAt); // whole-record LRU by last write
+          for (const victim of live) {
+            if (total <= this.#maxBytes) break;
+            await this.#deleteRows(tx, victim.ref);
+            total -= victim.bytes;
+          }
         }
         return { outcome: "written" } as SessionCacheWriteOutcome;
       },
@@ -260,9 +291,10 @@ export class SessionCacheIndexedDB {
   }
 
   // The commit-observed clear: one readwrite transaction deletes every
-  // records row and every meta row except the reserved epoch row - by each
-  // store's own keys, so an orphan meta row no record backs dies too - and
-  // increments the epoch row in the same commit. `committed` is read off the
+  // records row - the records store cleared whole, since it holds nothing
+  // but records rows - and every meta row except the reserved epoch row, so
+  // an orphan meta row no record backs dies too, and increments the epoch
+  // row in the same commit. `committed` is read off the
   // value the transaction runner delivers, which only arrives after the
   // completion event - an abort (the fault
   // seam's throw, a request error, a commit-time failure) reads as
@@ -270,15 +302,12 @@ export class SessionCacheIndexedDB {
   // broadcasts a clear that did not land.
   async clear(): Promise<{ committed: boolean; epoch: number }> {
     let observed = 0;
-    const landed = await this.#readwrite("clear", async (tx) => {
+    const landed = await this.#readwrite(async (tx) => {
       const metaStore = tx.objectStore(META_STORE);
       const recordsStore = tx.objectStore(RECORDS_STORE);
       const epochRow = await requestResult(metaStore.get(EPOCH_ROW_KEY) as IDBRequest<EpochRow | undefined>);
       observed = epochRow?.epoch ?? 0;
-      const refs = await requestResult(recordsStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
-      for (const ref of refs) {
-        recordsStore.delete(ref);
-      }
+      recordsStore.clear();
       const metaKeys = await requestResult(metaStore.getAllKeys() as IDBRequest<IDBValidKey[]>);
       for (const ref of metaKeys) {
         if (ref === EPOCH_ROW_KEY) continue; // exempt by construction: the reserved epoch row survives every clear
@@ -295,7 +324,7 @@ export class SessionCacheIndexedDB {
   // delivered-result rule: true only when the transaction's completion was
   // observed, so an abort reads false and the caller retries idempotently.
   async deleteRecords(refs: string[]): Promise<boolean> {
-    const landed = await this.#readwrite("deleteRecords", async (tx) => {
+    const landed = await this.#readwrite(async (tx) => {
       for (const ref of refs) await this.#deleteRows(tx, ref);
       this.#beforeCommit?.("deleteRecords");
       return true;
@@ -332,11 +361,7 @@ export class SessionCacheIndexedDB {
     return trackProjectionWork(this.#runTransaction(stores, mode, body));
   }
 
-  async #readwrite<T>(
-    _label: string,
-    body: (tx: IDBTransaction) => Promise<T>,
-    now = Date.now(),
-  ): Promise<T | undefined> {
+  async #readwrite<T>(body: (tx: IDBTransaction) => Promise<T>, now = Date.now()): Promise<T | undefined> {
     try {
       return await this.#transaction([RECORDS_STORE, META_STORE], "readwrite", async (tx) => {
         await this.#sweepExpired(tx, now);
@@ -353,28 +378,21 @@ export class SessionCacheIndexedDB {
   // The beforeCommit seam fires inside this wrapper, after every completed
   // put body's requests are queued - the written, oversize, and stale-epoch
   // paths alike - while a throw can still abort the transaction, which is
-  // what proves the rollback: the operation label threaded to the shared
-  // end-of-transaction path, the brief's alternative wiring.
+  // what proves the rollback. The operation argument is the one thing this
+  // wrapper threads to the #beforeCommit seam.
   async #readwriteOutcome(
     operation: "put",
     body: (tx: IDBTransaction) => Promise<SessionCacheWriteOutcome>,
     now: number,
   ): Promise<SessionCacheWriteOutcome> {
-    const outcome = await this.#readwrite(
-      operation,
-      async (tx) => {
-        const result = await body(tx);
-        this.#beforeCommit?.(operation);
-        return result;
-      },
-      now,
-    );
+    const outcome = await this.#readwrite(async (tx) => {
+      const result = await body(tx);
+      this.#beforeCommit?.(operation);
+      return result;
+    }, now);
     return outcome ?? { outcome: "failed" };
   }
 
-  // One attempt per call: a timeout fails this call and the next call tries
-  // the open afresh (the outbox's rule). The lookup's Promise.race against
-  // SESSION_CACHE_LOOKUP_DEADLINE_MS lives in the store seam, not here.
   async #runTransaction<T>(
     stores: string[],
     mode: IDBTransactionMode,

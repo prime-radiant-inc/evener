@@ -1307,6 +1307,15 @@ export function cachedSessionRecord(model: ThreadModel, now: number): CachedSess
   };
 }
 
+// stampThreadImageURLs (output_images.go) prefers the wire session id and
+// falls back to the thread id, trimming both (strings.TrimSpace); the
+// client-side rebuild matches it exactly — a whitespace-padded session id
+// must not win the fallback and escape to a /s/%20.../images route the hub
+// would 404 on while the trimmed thread id would have served.
+function wireImageSessionId(thread: Thread): string {
+  return thread.sessionId.trim() || thread.id.trim();
+}
+
 /** The first and last item positions of a read response's fresh window: the
  * bounds the store's shell seam compares against the captured anchor and the
  * model's current newest (spec, "The two serving paths, the live gap, and
@@ -1316,12 +1325,9 @@ export function readWindowBounds(resp: ThreadReadResponse): {
   end: ThreadItemPosition | undefined;
 } {
   // threadFields' own session-id derivation (the wire sessionId, falling back
-  // to the thread id, trimmed), inlined here so the bounds read the same
+  // to the thread id, trimmed), shared here so the bounds read the same
   // image session route the read itself would.
-  const fresh = splitWireTurns(
-    resp.thread.turns ?? [],
-    imageSessionRouteForSession(resp.thread.sessionId.trim() || resp.thread.id.trim()),
-  );
+  const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRouteForSession(wireImageSessionId(resp.thread)));
   const range = fragmentRange(fresh.items);
   return { start: range?.[0], end: range?.[1] };
 }
@@ -1347,12 +1353,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
   // precedence); the route only matters for sha-bearing images that arrived
   // WITHOUT a stamp — replayed input images from a read path that didn't
   // re-stamp, or older-producer frames.
-  // stampThreadImageURLs (output_images.go) prefers the wire session id and
-  // falls back to the thread id, trimming both (strings.TrimSpace); the
-  // client-side rebuild matches it exactly — a whitespace-padded session id
-  // must not win the fallback and escape to a /s/%20.../images route the hub
-  // would 404 on while the trimmed thread id would have served.
-  const imageSessionId = thread.sessionId.trim() || thread.id.trim();
+  const imageSessionId = wireImageSessionId(thread);
   return {
     ref,
     threadId: thread.id,
@@ -2924,13 +2925,13 @@ export function applyHistoryReadFailure<M extends ThreadModel>(
   return publicModel<M>({ ...model, history: { ...history, failed: diagnostic } });
 }
 
-export type ReadDisposition = "discard" | "replace" | "merge";
+type ReadDisposition = "discard" | "replace" | "merge";
 
 // The read identity fields readDisposition needs, structurally — satisfied by
 // a wire ThreadReadResponse and, for applyReadModel below (a caller whose own
 // service layer hydrates the wire response before the merge boundary), by a
 // HistoryState the caller already holds.
-export interface ReadDispositionSignal {
+interface ReadDispositionSignal {
   requestGeneration?: number;
   bootGeneration?: string;
   epoch?: number;

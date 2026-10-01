@@ -418,6 +418,10 @@ function joinCacheLookup(ref: string): Promise<CacheLookup | undefined> {
   const existing = inflightCacheLookups.get(ref);
   if (existing) return existing;
   const race = (async () => {
+    // The deadline's timer is cleared the moment the race settles: the losing
+    // timer's resolve was a no-op by then, so this only keeps an armed timer
+    // from outliving the lookup.
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         (async (): Promise<CacheLookup | undefined> => {
@@ -426,10 +430,14 @@ function joinCacheLookup(ref: string): Promise<CacheLookup | undefined> {
           const epoch = found?.epoch ?? adapter.observedEpoch;
           return epoch === undefined ? undefined : { record: found?.record, epoch };
         })(),
-        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS)),
+        new Promise<undefined>((resolve) => {
+          deadlineTimer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
+        }),
       ]);
     } catch {
       return undefined; // every failure is a miss
+    } finally {
+      clearTimeout(deadlineTimer);
     }
   })();
   // The cleanup is a reaction registered here — before any awaiter's — so it
@@ -5217,12 +5225,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 // The write seam (spec, "The write seam"): a subscription to the threads map,
 // not a funnel. Publications flow through putThreadModel(s) and the
 // notification handler's own setState; a subscription sees them all.
-let cacheWriteDebounceMs = 1_000;
-let cacheWriteMaxWaitMs = 5_000;
-export function setCacheWriteTimersForTests(debounceMs: number, maxWaitMs: number): void {
-  cacheWriteDebounceMs = debounceMs;
-  cacheWriteMaxWaitMs = maxWaitMs;
-}
+// The debounce and starvation bounds (spec, "The write seam"): a burst's
+// trailing write fires 1 s after its last publication, and a streaming burst
+// never starves past 5 s.
+const CACHE_WRITE_DEBOUNCE_MS = 1_000;
+const CACHE_WRITE_MAX_WAIT_MS = 5_000;
 
 interface CacheWriteSchedule {
   trailing: ReturnType<typeof setTimeout>;
@@ -5270,8 +5277,8 @@ function scheduleCacheWrite(ref: string): void {
     if (model !== undefined) writeCacheRecord(ref, model);
   };
   const schedule: CacheWriteSchedule = {
-    trailing: setTimeout(fire, cacheWriteDebounceMs),
-    maxWait: existing?.maxWait ?? setTimeout(fire, cacheWriteMaxWaitMs), // max-wait: a streaming session never starves
+    trailing: setTimeout(fire, CACHE_WRITE_DEBOUNCE_MS),
+    maxWait: existing?.maxWait ?? setTimeout(fire, CACHE_WRITE_MAX_WAIT_MS), // max-wait: a streaming session never starves
   };
   cacheWriteSchedules.set(ref, schedule);
 }
@@ -5618,8 +5625,8 @@ export function resetThreadsStoreForTests(): void {
   setSessionCacheAdapterForTests(undefined);
   sessionCacheAdapter.close();
   // The write seam's module state: a pending debounced write must not fire
-  // into the fresh state, the oversize memo dies with the models it
-  // memoized, and the injected timers return to the spec's defaults.
+  // into the fresh state, and the oversize memo dies with the models it
+  // memoized.
   for (const schedule of cacheWriteSchedules.values()) {
     clearTimeout(schedule.trailing);
     clearTimeout(schedule.maxWait);
@@ -5627,8 +5634,6 @@ export function resetThreadsStoreForTests(): void {
   cacheWriteSchedules.clear();
   oversizeMemo.clear();
   cacheHistoryLifetimes.clear();
-  cacheWriteDebounceMs = 1_000;
-  cacheWriteMaxWaitMs = 5_000;
   // The cache channel's module state: a test's installed factory and its
   // channel go with the reset, so the next test attaches a fresh channel
   // under the default factory (the seam's own close-and-reattach).
