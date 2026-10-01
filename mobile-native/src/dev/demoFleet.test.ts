@@ -1237,9 +1237,13 @@ describe("demo fleet pulse activity (evener/activity/read)", () => {
 		for (const session of bySession.values()) expect(session.quietForMs ?? 0).toBeGreaterThanOrEqual(0);
 	});
 
-	it("leaves a resting session's minutes empty and gives a working session a pulse", () => {
+	it("draws a pulse, and flattens the minutes a silent session's quiet gap covers", () => {
 		const bySession = byRef(read());
-		expect(bySession.get(refOf("s-diff"))?.minutes).toEqual([0, 0, 0, 0, 0, 0, 0]);
-		expect(bySession.get(refOf("s-gateway"))?.minutes.some((events) => events > 0)).toBe(true);
+		expect(bySession.get(refOf("s-diff"))?.minutes).toEqual([0, 0, 0, 0, 0, 0, 0]); // idle
+		expect(bySession.get(refOf("s-tasklist"))?.minutes).toEqual([4, 8, 4, 12, 8, 16, 8]); // busy
+		// s-landing has been quiet 4m: its newest four minutes drew nothing.
+		expect(bySession.get(refOf("s-landing"))?.minutes).toEqual([1, 2, 1, 0, 0, 0, 0]);
+		// s-gateway has been quiet 12m: its whole window is flat.
+		expect(bySession.get(refOf("s-gateway"))?.minutes).toEqual([0, 0, 0, 0, 0, 0, 0]);
 	});
 });

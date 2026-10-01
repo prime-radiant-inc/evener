@@ -782,11 +782,13 @@ function latestIntentOf(raw: RawSession): string | undefined {
 // The pace of a working session over the seven minutes the meter draws, oldest
 // first. The fixture models no per-minute history, so the counts are the demo's
 // scripted shape scaled by how much work is in flight; a session at rest emits
-// nothing.
-function pulseMinutes(working: boolean, level: number): number[] {
+// nothing, and the newest minutes a quiet gap covers are zeroed so a Quiet or
+// May-be-stuck row does not draw an active meter.
+function pulseMinutes(working: boolean, level: number, quietForMs?: number): number[] {
 	if (!working) return [0, 0, 0, 0, 0, 0, 0];
 	const shape = [1, 2, 1, 3, 2, 4, 2];
-	return shape.map((events) => events * Math.max(1, level));
+	const silent = quietForMs === undefined ? 0 : Math.floor(quietForMs / 60_000);
+	return shape.map((events, index) => (index >= shape.length - silent ? 0 : events * Math.max(1, level)));
 }
 
 // The project a fleet session belongs to; the fixture leaves evener's unset.
@@ -1202,14 +1204,15 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 						const level = runningSubagents + (runningCommand(raw) ? 1 : 0);
 						const latestIntent = latestIntentOf(raw);
 						const quietBase = raw.quietMinutes !== undefined ? raw.quietMinutes * 60_000 : raw.ago * 1000;
+						// An agent waiting on subagents is never quiet (Jesse's
+						// ruling for S5), and neither is a session that is not
+						// working: only a silently working session carries the gap.
+						const quietForMs = raw.state === "working" && runningSubagents === 0 ? quietBase + elapsed : undefined;
 						return {
 							ref: sessionRef(raw),
-							minutes: pulseMinutes(raw.state === "working", level),
+							minutes: pulseMinutes(raw.state === "working", level, quietForMs),
 							runningSubagents,
-							// An agent waiting on subagents is never quiet (Jesse's
-							// ruling for S5), and neither is a session that is not
-							// working: only a silently working session carries the gap.
-							...(raw.state === "working" && runningSubagents === 0 ? { quietForMs: quietBase + elapsed } : {}),
+							...(quietForMs === undefined ? {} : { quietForMs }),
 							...(latestIntent === undefined ? {} : { latestIntent }),
 						};
 					})
