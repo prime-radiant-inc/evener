@@ -282,17 +282,17 @@ function subagentsText(count: number): string {
  * read's own subagent tally is authoritative and wins outright, never mixed
  * with the row's own tally guess (a stale local count must not survive a
  * fresh read of zero). Quiet and stuck read from quietState, which itself
- * withholds both while a subagent runs. Absent either, this is the same
- * command-or-Working text workingActivity falls back to, without its own
- * tally guess: a real read already answered the subagent question, even when
- * the answer is zero. */
+ * withholds both while a subagent runs. Absent either, the row names the job
+ * it is running, else what the session last set out to do, else "Working":
+ * this never falls back to the row's own tally, because a real read already
+ * answered the subagent question, even when the answer is zero. */
 function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity, msSinceReadMs: number): WhyLine {
 	if (activity.runningSubagents > 0) return { text: subagentsText(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
 	if (quiet?.state === "stuck")
 		return { text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, stuck: true };
 	if (quiet?.state === "quiet") return { text: `Quiet ${durationLabel(quiet.forMs)}` };
-	return { text: commandOrWorking(row) };
+	return { text: commandOrWorking(row, activity.latestIntent) };
 }
 
 /** The row's why line. activity and msSinceReadMs are S5's live read (the
@@ -306,9 +306,14 @@ export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSince
 	return reason ? { word: WORDS[item.state], ...reason } : null;
 }
 
-function commandOrWorking(row: NavigationSessionSummary): string {
+/** A working row with nothing more concrete to say: the job it is running,
+ * else the intent of the newest tool call the session itself made ("Reading
+ * the board's row tests."), else the bare state word. The daemon cuts an
+ * intent to one line and drops it when a turn begins (activity_meter.go), so
+ * the row shows the session's own words about the work in front of it. */
+function commandOrWorking(row: NavigationSessionSummary, latestIntent?: string): string {
 	const command = row.running_job_command;
-	return command ? `Running ${command}` : "Working";
+	return command ? `Running ${command}` : latestIntent || "Working";
 }
 
 /** What a working session is doing when there is no activity read at all (an

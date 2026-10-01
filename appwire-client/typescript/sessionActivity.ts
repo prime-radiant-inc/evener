@@ -1,6 +1,7 @@
-// The pulse meter's data (spec 16.4) and the Quiet and May be stuck labels
-// (spec 13.1), read from evener/activity/read (server addition S5). Both apps
-// decode the read here and ask quietState which label a working session shows.
+// The pulse meter's data (spec 16.4), the Quiet and May be stuck labels
+// (spec 13.1) and the working row's latest tool intent, read from
+// evener/activity/read (server addition S5). Both apps decode the read here
+// and ask quietState which label a working session shows.
 import { isPlainObject } from "./plainObject";
 import type { SessionActivity } from "./types.gen";
 
@@ -8,6 +9,11 @@ import type { SessionActivity } from "./types.gen";
 export const QUIET_AFTER_MS = 3 * 60_000;
 /** A working session reads May be stuck after ten. */
 export const STUCK_AFTER_MS = 10 * 60_000;
+/** The longest string this client keeps for a session's latest tool intent.
+ * The daemon cuts each one to the wire's bound (appwire.MaxIntentRunes, 200
+ * runes), so this only holds a runaway to something a row could never show: it
+ * never rejects an intent a hub may legitimately send. */
+export const MAX_INTENT_LENGTH = 800;
 
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 
@@ -17,12 +23,20 @@ const count = (value: unknown): value is number => Number.isSafeInteger(value) &
 // every meter.
 function sessionActivity(value: unknown): SessionActivity | null {
   if (!isPlainObject(value)) return null;
-  const { ref, minutes, runningSubagents, quietForMs } = value;
+  const { ref, minutes, runningSubagents, quietForMs, latestIntent } = value;
   if (typeof ref !== "string" || ref === "" || ref.length > 1024) return null;
   if (!Array.isArray(minutes) || minutes.length === 0 || minutes.length > 60 || !minutes.every(count)) return null;
   if (!count(runningSubagents)) return null;
   if (quietForMs !== undefined && !count(quietForMs)) return null;
-  return { ref, minutes: [...minutes], runningSubagents, ...(quietForMs === undefined ? {} : { quietForMs }) };
+  if (latestIntent !== undefined && (typeof latestIntent !== "string" || latestIntent.length > MAX_INTENT_LENGTH))
+    return null;
+  return {
+    ref,
+    minutes: [...minutes],
+    runningSubagents,
+    ...(quietForMs === undefined ? {} : { quietForMs }),
+    ...(latestIntent === undefined ? {} : { latestIntent }),
+  };
 }
 
 /** Decodes an evener/activity/read result. A result that is not a session

@@ -820,6 +820,12 @@ type SessionActivity struct {
 	// is never quiet or stuck (Jesse's ruling for S5), and a subagent inside
 	// one long model call emits nothing for minutes.
 	QuietForMS *int64 `json:"quietForMs,omitempty"`
+	// LatestIntent is what the session's own root turn last set out to do
+	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+	// the daemon's own tool-call intent, re-cut here. Absent when this turn has
+	// stated none, which is most of a session's life before its first tool
+	// call, and when the daemon predates the field.
+	LatestIntent string `json:"latestIntent,omitempty"`
 }
 
 // The kinds of hub notice (S11, spec 7.1).
@@ -1157,6 +1163,13 @@ type ThreadAccess struct {
 type ThreadActivity struct {
 	Minutes        []int `json:"minutes"`
 	LastActivityAt int64 `json:"lastActivityAt"`
+	// LatestIntent is the newest intent a tool call of the session's own root
+	// turn stated ("Reading the board's row tests."), one line of at most
+	// MaxIntentRunes. A Working row shows it where it has nothing more
+	// concrete to say. Empty until this turn's first tool call that stated
+	// one, cleared when a turn begins, and absent from a daemon that predates
+	// it.
+	LatestIntent string `json:"latestIntent,omitempty"`
 }
 
 // SubagentTally counts a live root session's subagents, at every depth, by how

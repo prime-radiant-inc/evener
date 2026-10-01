@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { decodeActivityRead, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
+import { decodeActivityRead, MAX_INTENT_LENGTH, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
 
 const minutes = [0, 0, 1, 4, 9, 2, 0];
 
@@ -39,6 +39,38 @@ test("decodeActivityRead throws on a result that is not a session list", () => {
   for (const value of [null, [], {}, { sessions: "none" }]) {
     expect(() => decodeActivityRead(value)).toThrow("activity read: invalid response");
   }
+});
+
+// A Working row says what the session last set out to do, so the read keeps
+// each session's latest tool intent, and a session whose daemon has stated none
+// carries no key at all rather than an empty one.
+test("decodeActivityRead keeps the latest tool intent", () => {
+  expect(
+    decodeActivityRead({
+      sessions: [
+        { ref: "local:a", minutes, runningSubagents: 0, latestIntent: "Reading the board's row tests." },
+        { ref: "local:b", minutes, runningSubagents: 0 },
+      ],
+    }),
+  ).toEqual([
+    { ref: "local:a", minutes, runningSubagents: 0, latestIntent: "Reading the board's row tests." },
+    { ref: "local:b", minutes, runningSubagents: 0 },
+  ]);
+});
+
+// An intent a hub could not have cut to the wire's bound is a malformed entry
+// like any other, and drops its own row alone.
+test("decodeActivityRead drops a session whose intent is unusable", () => {
+  const good = { ref: "local:a", minutes, runningSubagents: 0 };
+  expect(
+    decodeActivityRead({
+      sessions: [
+        good,
+        { ref: "local:b", minutes, runningSubagents: 0, latestIntent: 42 },
+        { ref: "local:c", minutes, runningSubagents: 0, latestIntent: "x".repeat(MAX_INTENT_LENGTH + 1) },
+      ],
+    }),
+  ).toEqual([good]);
 });
 
 test("a working session reads Quiet from three minutes and May be stuck from ten", () => {

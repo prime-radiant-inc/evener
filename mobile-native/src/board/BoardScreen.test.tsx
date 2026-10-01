@@ -2384,6 +2384,28 @@ it("shows each working row's activity read: its meter, the hub's subagent tally,
 	act(() => tree.unmount());
 });
 
+// The Board holds no transcript of its own, so a working row's words about the
+// work come from the hub's activity read, which carries the daemon's own latest
+// tool intent (the agent states one for every call). A session whose read names
+// none keeps the bare state word.
+it("words a working row from the session's latest tool intent, where it would read Working", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [
+			{ ref: "local:tidy", minutes: [1, 0, 0], runningSubagents: 0, latestIntent: "Reading the board's row tests." },
+			{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0 },
+		],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Reading the board's row tests.");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	act(() => tree.unmount());
+});
+
 it("shows no stuck label or reordering from a stale read while offline (Jesse's ruling)", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

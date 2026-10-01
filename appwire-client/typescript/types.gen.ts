@@ -3055,6 +3055,14 @@ export interface SessionActivity {
    * one long model call emits nothing for minutes.
    */
   quietForMs?: number;
+  /**
+   * LatestIntent is what the session's own root turn last set out to do
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the daemon's own tool-call intent, re-cut here. Absent when this turn has
+   * stated none, which is most of a session's life before its first tool
+   * call, and when the daemon predates the field.
+   */
+  latestIntent?: string;
 }
 
 export interface SessionActivityAncestor {
@@ -3509,6 +3517,15 @@ export interface ThreadAccess {
 export interface ThreadActivity {
   minutes: number[];
   lastActivityAt: number;
+  /**
+   * LatestIntent is the newest intent a tool call of the session's own root
+   * turn stated ("Reading the board's row tests."), one line of at most
+   * MaxIntentRunes. A Working row shows it where it has nothing more
+   * concrete to say. Empty until this turn's first tool call that stated
+   * one, cleared when a turn begins, and absent from a daemon that predates
+   * it.
+   */
+  latestIntent?: string;
 }
 
 export interface ThreadCapabilities {
