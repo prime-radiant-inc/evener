@@ -1,0 +1,83 @@
+// A project's archived sessions as a page source over the connection's shared
+// archived list store: what the Project screen's Archived tab reads, since
+// navigation v3 serves no archived rows.
+import type { ArchivedListParams } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { completeSession } from "@evener/appwire-client/testing/navigation";
+import { expect, it } from "vitest";
+import { ArchivedPages, archivedListStoreFor } from "./archivedPages";
+
+const row = (ref: string) => completeSession({ ref, title: ref, updated_at: "2026-09-01T00:00:00Z" });
+
+function hub(pages: Record<string, { refs: string[]; total: number; nextCursor?: string }>) {
+	const client = new FakeClient("ready");
+	const seen: ArchivedListParams[] = [];
+	client.on("evener/archived/list", (params) => {
+		seen.push(params);
+		const page = pages[params.cursor ?? ""];
+		if (!page) throw new Error("no such page");
+		return { sessions: page.refs.map(row), total: page.total, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+	});
+	return { client, seen };
+}
+
+it("reads the project's archived list from its catalog, and pages on with the cursor", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 2, nextCursor: "c1" }, c1: { refs: ["local:b"], total: 2 } });
+	const pages = new ArchivedPages(archivedListStoreFor(client), "archived_projects", "p");
+	expect(pages.getSnapshot()).toEqual({ loaded: false, rows: [], remaining: 0, loading: false, error: null, stale: false });
+
+	await pages.refresh();
+	expect(pages.getSnapshot()).toMatchObject({ loaded: true, remaining: 1, loading: false, error: null });
+	expect(pages.getSnapshot().rows.map((r) => r.ref)).toEqual(["local:a"]);
+
+	await pages.more();
+	expect(pages.getSnapshot()).toMatchObject({ loaded: true, remaining: 0 });
+	expect(pages.getSnapshot().rows.map((r) => r.ref)).toEqual(["local:a", "local:b"]);
+	expect(seen).toEqual([
+		{ catalog: "archived_projects", projectKey: "p" },
+		{ catalog: "archived_projects", projectKey: "p", cursor: "c1" },
+	]);
+});
+
+it("keeps one snapshot until its own list changes, and tells only its own listeners", async () => {
+	const { client } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const store = archivedListStoreFor(client);
+	const mine = new ArchivedPages(store, "projects", "p");
+	const other = new ArchivedPages(store, "projects", "q");
+	let heard = 0;
+	const stop = mine.subscribe(() => heard++);
+
+	await other.refresh();
+	expect(heard).toBe(0);
+	const before = mine.getSnapshot();
+	expect(mine.getSnapshot()).toBe(before);
+
+	await mine.refresh();
+	expect(heard).toBeGreaterThan(0);
+	expect(mine.getSnapshot()).not.toBe(before);
+	stop();
+});
+
+it("says a failed read and keeps the loaded rows", async () => {
+	const { client } = hub({ "": { refs: ["local:a"], total: 2, nextCursor: "c1" } });
+	const pages = new ArchivedPages(archivedListStoreFor(client), "projects", "p");
+	await pages.refresh();
+	await pages.more();
+	expect(pages.getSnapshot().rows.map((r) => r.ref)).toEqual(["local:a"]);
+	expect(pages.getSnapshot().error).toContain("no such page");
+});
+
+// Archived rows aren't part of navigation: there is no navigation version to
+// confirm a change against, and no invalidation to follow.
+it("declares it has no navigation version", () => {
+	const { client } = hub({});
+	const pages = new ArchivedPages(archivedListStoreFor(client), "projects", "p");
+	expect(pages.navigationVersioned).toBe(false);
+	expect(pages.getResourceVersion()).toBeNull();
+});
+
+it("shares one store per connection", () => {
+	const { client } = hub({});
+	expect(archivedListStoreFor(client)).toBe(archivedListStoreFor(client));
+	expect(archivedListStoreFor(hub({}).client)).not.toBe(archivedListStoreFor(client));
+});
