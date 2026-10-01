@@ -204,6 +204,27 @@ describe("SessionCacheIndexedDB get", () => {
     reopened.close();
   });
 
+  it("preserves the committed clear epoch across a database version upgrade", async () => {
+    const factory = new IDBFactory();
+    const original = new SessionCacheIndexedDB({ indexedDB: factory, databaseVersion: 1 });
+    const upgraded = new SessionCacheIndexedDB({ indexedDB: factory, databaseVersion: 2 });
+    try {
+      expect(await original.clear()).toEqual({ committed: true, epoch: 1 });
+      expect(await original.put(record(), 1, 1_000)).toEqual({ outcome: "written" });
+      original.close();
+
+      const found = await upgraded.get("local:thr_1", 2_000);
+      expect(await factory.databases()).toEqual([{ name: "evener-session-cache", version: 2 }]);
+      expect(found?.epoch).toBe(1);
+      expect(found?.record).toEqual(record());
+      expect(await upgraded.put(record(), 0, 2_000)).toEqual({ outcome: "aborted", observedEpoch: 1 });
+      expect(await upgraded.clear()).toEqual({ committed: true, epoch: 2 });
+    } finally {
+      original.close();
+      upgraded.close();
+    }
+  });
+
   it("sweeps untouched expired pairs in a deleteRecords write", async () => {
     const { adapter, factory, write } = freshAdapter();
     await write(record({ savedAt: Date.now() - 15 * 24 * 60 * 60 * 1000 }));

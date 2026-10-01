@@ -35,6 +35,7 @@ export interface SessionCacheOpenDiagnostic {
 export interface SessionCacheIndexedDBOptions {
   indexedDB?: IDBFactory;
   databaseName?: string;
+  databaseVersion?: number;
   // The cap on the sum of encoded record bytes. The spec pins the default;
   // injection is the test discipline, the way the debounce intervals are
   // injected, so tests exercise eviction with small records.
@@ -175,6 +176,7 @@ function countUtf8Bytes(text: string): number {
 export class SessionCacheIndexedDB {
   readonly #indexedDB: IDBFactory;
   readonly #databaseName: string;
+  readonly #databaseVersion: number;
   readonly #maxBytes: number;
   #database: IDBDatabase | undefined;
   #databasePromise: Promise<IDBDatabase> | undefined;
@@ -186,6 +188,7 @@ export class SessionCacheIndexedDB {
   constructor(options: SessionCacheIndexedDBOptions = {}) {
     this.#indexedDB = options.indexedDB ?? globalThis.indexedDB;
     this.#databaseName = options.databaseName ?? DATABASE_NAME;
+    this.#databaseVersion = options.databaseVersion ?? DATABASE_VERSION;
     this.#maxBytes = options.maxBytes ?? SESSION_CACHE_MAX_BYTES;
     this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
     this.#beforeCommit = options.beforeCommit;
@@ -447,7 +450,7 @@ export class SessionCacheIndexedDB {
     try {
       this.#onOpenDiagnostic({
         database: this.#databaseName,
-        version: DATABASE_VERSION,
+        version: this.#databaseVersion,
         path,
         versionchangeTransaction,
       });
@@ -465,7 +468,7 @@ export class SessionCacheIndexedDB {
     if (this.#database) return Promise.resolve(this.#database);
     if (this.#databasePromise) return this.#databasePromise;
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = this.#indexedDB.open(this.#databaseName, DATABASE_VERSION);
+      const request = this.#indexedDB.open(this.#databaseName, this.#databaseVersion);
       let abandoned = false;
       const timer = setTimeout(() => {
         // The watchdog fired: fail this one attempt. A later call attempts
@@ -495,11 +498,10 @@ export class SessionCacheIndexedDB {
             database.createObjectStore(RECORDS_STORE, { keyPath: "ref" });
           }
           if (!database.objectStoreNames.contains(META_STORE)) {
-            database.createObjectStore(META_STORE, { keyPath: "ref" });
+            // Initialize once: later version upgrades must retain committed clears.
+            const meta = database.createObjectStore(META_STORE, { keyPath: "ref" });
+            meta.put({ ref: EPOCH_ROW_KEY, epoch: 0 } satisfies EpochRow);
           }
-          // Seed the epoch row so every reader sees a number, never an absent row.
-          const tx = request.transaction;
-          if (tx !== null) tx.objectStore(META_STORE).put({ ref: EPOCH_ROW_KEY, epoch: 0 } satisfies EpochRow);
         },
         { once: true },
       );
