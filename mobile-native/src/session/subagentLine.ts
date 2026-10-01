@@ -19,6 +19,7 @@ export interface SubagentLine {
 	ref?: string;
 	/** The subagent's id, for its outcome in the coordinator's tree. */
 	delegateId?: string;
+	runGeneration?: number;
 }
 
 /** A subagent is quiet once no update came for this long (the web's
@@ -70,7 +71,14 @@ export function subagentLine(
 	const ended = hubTime(delegate.runEndedAt);
 	const since = timing ? timing.durationMs : ended === null ? undefined : now - ended;
 	const stateText = since === undefined ? state : `${state} · ${compactDuration(since)}`;
-	const line: SubagentLine = { title, state, stateText, ref: delegate.transcriptRef, delegateId: delegate.delegateId };
+	const line: SubagentLine = {
+		title,
+		state,
+		stateText,
+		ref: delegate.transcriptRef,
+		delegateId: delegate.delegateId,
+		runGeneration: delegate.runGeneration,
+	};
 	if (state === "failed") {
 		const ending = delegateEndingText(delegate);
 		if (ending) line.activity = ending;

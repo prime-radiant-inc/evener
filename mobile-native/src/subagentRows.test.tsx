@@ -6,6 +6,7 @@ import { installActivityFixture } from "./subagents/sessionActivityTestUtils";
 // returns, so the row's state has to come from the subagent, never the call.
 import {
 	type EvenerDelegateInfo,
+	parseActivityTree,
 	hydrateThread,
 	type JobsListResponse,
 	type Thread,
@@ -13,7 +14,12 @@ import {
 } from "@evener/appwire-client";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { subagentCallItems, subagentOutcomesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
+import {
+	subagentCallItems,
+	subagentOutcomesResponse,
+	subagentOutcomesDelegatesResponse,
+	subagentResumedDelegatesResponse,
+} from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
@@ -66,6 +72,7 @@ function subagent(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
 		resumable: false,
 		needsAttention: false,
 		projectionRevision: 1,
+		runGeneration: 1,
 		description: "Fix race in tree settle",
 		originToolCallId: DELEGATE_CALL_ID,
 		originItemId: "fc_provider_item_1",
@@ -372,7 +379,7 @@ describe("Chat", () => {
 // A finished subagent's row reads its outcome as the Subagents list does
 // (spec 8.2: "it reads the same as in the Subagents list"). thread/read's
 // roster carries no report (appwire.SlimDelegateForRoster), so the screen
-// holds the coordinator's tree from evener/jobs/list, recorded in
+// holds the coordinator's delegates/list projection, recorded in
 // agent/testdata/subagentwire/outcomes.json, and a row says what the roster
 // knows until the tree shows it done. The corpus's subagents have no child
 // sessions on disk, so each carries a branch.error and the tree reads as
@@ -396,6 +403,22 @@ describe("a finished subagent's outcome (audit G13)", () => {
 	function hub(answer: () => unknown = () => subagentOutcomesResponse()) {
 		const client = new FakeClient("ready");
 		installActivityFixture(client, async () => ((await answer()) as JobsListResponse).data);
+		client.on("evener/thread/delegates/list", async () => {
+			const old = (await answer()) as JobsListResponse;
+			const parsed = parseActivityTree(old.data);
+			if (!parsed) throw new Error("invalid recorded activity");
+			const actual = subagentOutcomesDelegatesResponse();
+			return {
+				...actual,
+				delegates: actual.delegates.map((row) => {
+					const entry = parsed.root.entries.find(
+						(entry) => entry.kind === "delegate" && entry.delegate.delegateId === row.delegateId,
+					);
+					const recorded = entry?.kind === "delegate" ? entry.delegate : undefined;
+					return recorded?.terminal ? row : { ...row, terminal: false, reportPreview: undefined };
+				}),
+			};
+		});
 		client.on("thread/read", () => ({ thread: { id: "root", modelProvider: "scripted" } }) as never);
 		harness.client = client;
 		return client;
@@ -468,10 +491,54 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const screen = transcript({ delegates: [finished("dlg_reported")] });
 		expect(renderedText(screen)).toContain("Finished");
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Finished");
-		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
 		expect(renderedText(screen)).not.toContain("The new test covers both orders.");
 		expect(jobsLists(client)).toHaveLength(1);
+	});
+
+	it("does not borrow the prior generation report while a resumed completion awaits its activity read", async () => {
+		vi.useFakeTimers();
+		const client = hub();
+		const old = subagentOutcomesDelegatesResponse();
+		const next = subagentResumedDelegatesResponse();
+		const prior = old.delegates.find((row) => row.delegateId === "dlg_reported");
+		const resumed = next.delegates.find((row) => row.delegateId === "dlg_reported");
+		if (!prior || !resumed) throw new Error("producer corpus missing resumed run");
+		expect(resumed.runStartedAt).toBe(prior.runStartedAt);
+		expect(resumed.runEndedAt).toBe(prior.runEndedAt);
+		let reply = old;
+		client.on("evener/thread/delegates/list", () => reply);
+		const screen = transcript({ delegates: [finished("dlg_reported", { runGeneration: prior.runGeneration })] });
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
+		const running = subagent({ delegateId: "dlg_reported", runGeneration: resumed.runGeneration });
+		act(() => screen.update(<Transcript delegates={[running]} />));
+		const done = finished("dlg_reported", { runGeneration: resumed.runGeneration });
+		act(() => screen.update(<Transcript delegates={[done]} />));
+		expect(renderedText(screen)).toContain("Finished");
+		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
+		reply = next;
+		await act(async () => {
+			client.emitNotification({
+				method: "evener/thread/activity/changed",
+				params: { ref: COORDINATOR.ref, threadId: "root", sessionId: "root", resources: ["delegates"] },
+			});
+			await vi.runOnlyPendingTimersAsync();
+		});
+		expect(renderedText(screen)).toContain("Second run report.");
+	});
+
+	it("does not borrow a recorded report belonging to another owner with the same delegate ID", async () => {
+		const client = hub();
+		const actual = subagentOutcomesDelegatesResponse();
+		client.on("evener/thread/delegates/list", () => ({
+			...actual,
+			delegates: actual.delegates.map((row) => ({ ...row, ownerRef: "local:unrelated" })),
+		}));
+		const screen = transcript({ delegates: [finished("dlg_reported")] });
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("Finished");
+		expect(renderedText(screen)).not.toContain("Fixed the race: settle now waits for the drain.");
 	});
 
 	it("says Stopped for a subagent the user stopped, with no tree to read", async () => {
@@ -506,7 +573,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const failed = finished("dlg_failed", { status: "failed", outcome: "failed", reason: "go test exited 1" });
 		const screen = transcript({ delegates: [finished("dlg_reported"), failed] });
 		await act(async () => {});
-		expect(rowText(screen, "dlg_reported")).toContain("Finished");
+		expect(rowText(screen, "dlg_reported")).toContain("Fixed the race: settle now waits for the drain.");
 		expect(rowText(screen, "dlg_failed")).toContain("go test exited 1");
 		expect(rowText(screen, "dlg_failed")).not.toContain("provider returned 500");
 	});
@@ -523,7 +590,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 			delegates: [finished("dlg_reported"), finished("dlg_stopped", { outcome: "completed" })],
 		});
 		await act(async () => {});
-		expect(rowText(screen, "dlg_reported")).toContain("Finished");
+		expect(rowText(screen, "dlg_reported")).toContain("Fixed the race: settle now waits for the drain.");
 		expect(jobsLists(client)).toHaveLength(1);
 		release();
 	});
@@ -537,7 +604,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		act(() => screen.update(<Transcript delegates={delegates} mounted={[]} />));
 		act(() => screen.update(<Transcript delegates={delegates} />));
 		await act(async () => {});
-		expect(renderedText(screen)).toContain("Finished");
+		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
 		expect(jobsLists(client)).toHaveLength(1);
 	});
 
@@ -570,7 +637,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 			});
 		});
 		expect(jobsLists(client)).toHaveLength(2);
-		expect(renderedText(screen)).toContain("Finished");
+		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
 	});
 
 	// A subagent's screen follows the subagent, so nothing announces that one

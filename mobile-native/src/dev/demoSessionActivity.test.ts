@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { SessionActivityStore } from "@evener/appwire-client";
+import { parseActivityTree, SessionActivityStore } from "@evener/appwire-client";
 import { FakeClient, callsTo } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { createDemoFleet, demoSessionId } from "./demoFleet";
+
+import { createDemoSessionActivity } from "./demoSessionActivity";
+import { demoActivityTree } from "./demoSubagents";
 
 const ref = `local:${demoSessionId("s-pr2138")}`;
 const params = { ref, scope: "subtree" as const, limit: 1 };
@@ -109,4 +112,29 @@ describe("bounded demo activity continuations", () => {
 			vi.useRealTimers();
 		}
 	});
+});
+
+it("preserves the producer's finished report and truncation through typed demo reads", () => {
+	const tree = parseActivityTree(
+		demoActivityTree(
+			{
+				ref: "local:demo",
+				title: "Demo",
+				model: "demo-model",
+				subagentRef: (id) => `local:${id}`,
+				subagents: [{ id: "done", title: "Check", state: "done", ago: 1, line: "Tests pass" }],
+			},
+			Date.parse("2026-09-26T18:00:00Z"),
+		).data,
+	);
+	if (!tree) throw new Error("missing producer tree");
+	const entry = tree.root.entries.find((row) => row.kind === "delegate");
+	if (!entry || entry.kind !== "delegate") throw new Error("missing producer delegate");
+	entry.delegate.reportPreviewTruncated = true;
+	const source = createDemoSessionActivity(() => ({ tree, availability: "live" }), "epoch");
+	const row = source.delegates({ ref: tree.root.ref }).delegates[0];
+	expect(entry.delegate.reportPreview).toBe("Tests pass.");
+	expect(row?.reportPreview).toBe(entry.delegate.reportPreview);
+	expect(row?.reportPreviewTruncated).toBe(true);
+	expect(row?.runGeneration).toBe(entry.delegate.runGeneration);
 });

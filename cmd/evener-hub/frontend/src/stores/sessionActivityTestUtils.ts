@@ -32,6 +32,7 @@ export function activitySummary(ref = activityRef): SessionActivitySummary {
 }
 export function activityDelegate(overrides: Partial<SessionDelegate> = {}): SessionDelegate {
   return {
+    runGeneration: 1,
     delegateId: "delegate-1",
     ownerRef: activityRef,
     rootRef: activityRef,
