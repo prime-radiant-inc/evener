@@ -1,3 +1,7 @@
+// The outbox's sibling-wakeup channel (appwire-client's
+// state/mutation/outbox.ts) deliberately does not use this helper: its wire is
+// source-less — a sourceId floor would be a wire change — and its transport is
+// host-injected and structural. See that module's channel comment and #3619.
 export interface VersionedChannelMessage {
   version: 1;
   sourceId: string;

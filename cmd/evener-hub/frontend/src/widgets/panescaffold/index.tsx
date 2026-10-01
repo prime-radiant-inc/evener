@@ -46,10 +46,8 @@ export function PaneScaffold({
   footer,
   children,
 }: PaneScaffoldProps) {
-  // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
-  // decision 2): publish the title ALWAYS, host-agnostically - StackHost
-  // renders it in the mobile top bar, DockHost never reads it, so this widget
-  // never asks which host is showing it. mobileTitle wins where both are
+  // The focused-title channel supplies StackHost's mobile top bar without
+  // asking which host is showing this pane. mobileTitle wins where both are
   // given: the top bar is exactly the cramped slot mobileTitle exists for.
   // The cleanup clears on unmount so a closed pane never leaves a stale
   // title behind (breakpoint crossings unmount every pane - StackHost.tsx's
@@ -59,6 +57,14 @@ export function PaneScaffold({
     chromeStore.getState().setPaneTitle(publishedTitle);
     return () => chromeStore.getState().setPaneTitle(null);
   }, [publishedTitle]);
+
+  // A hydrated pane owns its display title. Desktop tabs consume that same
+  // title without fetching another copy of the pane's underlying resource.
+  useEffect(() => {
+    if (paneId === undefined) return;
+    chromeStore.getState().setPaneTitleFor(paneId, title);
+    return () => chromeStore.getState().setPaneTitleFor(paneId, null);
+  }, [paneId, title]);
 
   const bodyRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
