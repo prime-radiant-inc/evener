@@ -368,8 +368,11 @@ hooks, agents, commands) never reach a probe. Both harnesses run with
 `EVENER_NO_USER_SKILLS=1`. The CLI harness also passes `--enabled-plugins`
 with an explicit empty selection, so plugin resolution selects nothing
 whatever is installed; the live harness never loads plugins. The
-operator's global MCP config and their evener-wide commands still reach a
-probe (#3487). Pass `--inherit-operator-env` to restore the operator's real skills
+operator's global MCP config and their evener-wide commands are hidden too:
+`EVENER_NO_USER_SKILLS` also suppresses the user-global MCP config
+(`~/.config/evener/mcp.json`) and the user-global commands directory
+(`~/.config/evener/commands`), while project layers still reach a probe
+(#3487). Pass `--inherit-operator-env` to restore the operator's real skills
 and plugins for debugging; `result.json`'s `env_mode` field
 (`"hermetic"` or `"inherit_operator_env"`) records which mode a run used.
 A hermetic CLI run refuses an evener older than `--enabled-plugins`
