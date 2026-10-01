@@ -359,6 +359,7 @@ function assertComposerFooter(measurement, width) {
       failures.push(`card-to-footer gap=${measurement.gap}px, required safe-area clearance=${requiredClearance}px`);
     }
   } else {
+    // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
     if (
       measurement.metadataCount !== 1 || !measurement.metadataVisible || !measurement.pathVisible ||
       !measurement.metadataInEdgeFooter || measurement.path !== "/Users/jesse/prime-radiant/toil-suite/evener"
