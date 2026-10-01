@@ -269,6 +269,13 @@ preferences: 100 recent session views and 2,000 disclosure choices. Loading them
 does not rewrite storage or acquire a collection for a closed sidebar. These
 preferences never contain activity rows or continuation/retry state.
 
+Without a retained choice, the desktop [Jobs tab](../../cmd/evener-hub/frontend/src/shell/activitybar/JobsTab.tsx)
+starts successful completed job history folded, and the shared
+[task panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx)
+starts settled done/cancelled task history folded. Running and unsuccessful jobs
+remain visible, as do the Current and Remaining task sections. Task details
+remain an explicit disclosure choice.
+
 The [Activity viewport](../../cmd/evener-hub/frontend/src/shell/activitybar/ActivityViewport.tsx)
 restores the retained row after its collection and disclosures render. A row
 that is already loaded can still need trailing page extent to reach its saved
@@ -276,8 +283,11 @@ viewport offset; restoration remains pending until that position is reachable
 or the collection is authoritative complete. For cold
 pages it positions the existing page boundary in view; each new visibility
 observation supplies demand through `ActivityPageBoundary`. It starts no fetch
-or retry loop. A changed scope/category, close, reader scroll/navigation gesture,
-or deliberate control activation cancels pending positioning. Focus-only keys
+or retry loop. Closing the sidebar pauses positioning and page admission while
+it is closed. Reopening during its exit animation can resume the same mounted
+viewport's pending intent; a completed exit or scope/category replacement retires
+that viewport's pending work. Reader scroll/navigation gestures and deliberate
+control activation cancel pending positioning. Focus-only keys
 such as Tab, modifier keys and text keys preserve it when the viewport does not
 scroll. Scroll anchors update in memory immediately; the existing view store
 coalesces their storage writes after a gesture. Closing, changing category or
