@@ -194,6 +194,14 @@ remain independent. Only the last holder unsubscribes. Transcript and activity
 owners must both use this seam, because a raw unsubscribe or replacing read can
 otherwise remove another view's subscription.
 
+A successful subscribed saved-history read keeps that connection’s future event
+membership even when no daemon is live. The hub buffers events before reading
+the bounded saved response and releases them after it enters the connection’s
+send queue. A separate connection can resume the session without making existing
+transcript and activity consumers reload. Failed hydration, unsubscribe and
+connection closure withdraw pending membership. Reading saved history alone does
+not launch a daemon.
+
 The [presentation adapter](../../appwire-client/typescript/sessionActivityPresentation.ts)
 builds rendering models without network calls, retry timers or lifecycle
 authority. Loaded descendants whose parents have not arrived remain visible
