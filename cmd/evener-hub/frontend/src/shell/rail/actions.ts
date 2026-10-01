@@ -18,6 +18,7 @@ import { WireError } from "@evener/appwire-client";
 import { refreshLoadedArchivedLists } from "../../stores/archivedList";
 import { connectionStore } from "../../stores/connection";
 import type { NavigationPinSectionSummary } from "../../stores/navigation/selectors";
+import { markDeletedSessionCaches } from "../deletedSessionPanes";
 
 export type PinSectionSummary = NavigationPinSectionSummary;
 
@@ -312,6 +313,7 @@ export async function deleteProject(
     throw new Error("project delete action: no client connected; call connectionStore.connect(client) first");
   }
   const result = await client.request("evener/project/delete", { key, workingDir });
+  markDeletedSessionCaches(result.deleted);
   void refreshLoadedArchivedLists();
   return result;
 }
@@ -321,6 +323,7 @@ export async function deleteProject(
  * server failures reject through AppWire. */
 export async function deleteSession(client: AppwireClientLike, ref: string): Promise<SessionDeleteResponse> {
   const response = await client.request("evener/session/delete", { ref });
+  markDeletedSessionCaches(response.deleted);
   void refreshLoadedArchivedLists();
   return response;
 }

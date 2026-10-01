@@ -93,7 +93,7 @@ describe("openNestedSessionWithOwner", () => {
   });
 });
 
-test("session links restore parent focus from a grandchild while the root URL is unchanged", () => {
+test("session links request live routing instead of reusing read-only transcripts", () => {
   window.history.replaceState({}, "", "/s/local%3Aroot");
   openTopLevelSession("local:root");
   const root = workspaceStore.getState().mainPane();
@@ -104,8 +104,8 @@ test("session links restore parent focus from a grandchild while the root URL is
     .getState()
     .openPane("transcript", { ref: "local:grandchild", parentRef: "local:child" }, { slot: "secondary" });
   openSessionByRef("local:child");
-  expect(workspaceStore.getState().focusedPaneId).toBe(child);
-  expect(window.location.pathname).toBe("/s/local%3Aroot");
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(child);
+  expect(window.location.pathname).toBe("/s/local%3Achild");
   openSessionByRef("local:root");
   expect(workspaceStore.getState().focusedPaneId).toBe(root?.id);
   expect(workspaceStore.getState().panes).toHaveLength(3);

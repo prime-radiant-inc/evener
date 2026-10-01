@@ -2,7 +2,8 @@ import { navigate, paneToURL, refParam } from "./routing";
 import { workspaceStore } from "./workspace";
 
 // openSessionByRef is how anything in the app follows a link to a session.
-// Existing session and transcript panes retain their identity and regain focus.
+// Existing live session panes retain their identity and regain focus.
+// Read-only transcript context belongs to its contextual callers.
 // Unopened sessions route through the URL, so the
 // router's own rules apply to every such link: a nested session opens beside
 // its top-level owner instead of landing in main next to an unrelated root
@@ -10,12 +11,9 @@ import { workspaceStore } from "./workspace";
 // use the two helpers below directly.
 export function openSessionByRef(ref: string): void {
   const workspace = workspaceStore.getState();
-  const existing =
-    workspace.panes.find((pane) => pane.type === "session" && refParam(pane.params) === ref) ??
-    workspace.panes.find((pane) => pane.type === "transcript" && refParam(pane.params) === ref);
+  const existing = workspace.panes.find((pane) => pane.type === "session" && refParam(pane.params) === ref);
   if (existing) {
     workspace.focusPane(existing.id);
-    if (existing.type === "transcript") return;
   }
   const url = paneToURL("session", { ref });
   if (url) navigate(url);
