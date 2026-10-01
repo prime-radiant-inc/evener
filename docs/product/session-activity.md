@@ -258,7 +258,8 @@ the session's authoritative job and delegate active counts only when both are
 known; watches and completed work are not part of that number. The mobile sheet
 starts with compact job, delegate and watch details, each one disclosure away.
 Failed entries remain visible outside the inactive fold, including parent rows
-needed to expose failed descendants; successful inactive work stays folded.
+needed to expose failed descendants. The fold count covers only the other
+inactive entries grouped beneath it.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
 retains sheet visibility and disclosure choices by session ref for the lifetime
 of its retained workspace panes. Opening a child transcript releases the hidden

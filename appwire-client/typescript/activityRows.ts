@@ -54,7 +54,6 @@ export interface ActivityFoldRow extends ActivityRowBase {
   kind: "fold";
   foldParentID: string;
   inactiveCount: number;
-  failedCount: number;
 }
 
 // A watch is pending work the session is waiting on, carried on the session
@@ -513,7 +512,6 @@ export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet
         level: walk.level,
         foldParentID: activityNodeID(walk.session),
         inactiveCount: inactive.length,
-        failedCount: 0,
       });
       if (!expandedFolds.has(id)) return;
       for (const entry of inactive) walk.emit(entry, true);
