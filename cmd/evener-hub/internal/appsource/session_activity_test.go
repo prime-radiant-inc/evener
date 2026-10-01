@@ -48,9 +48,9 @@ func TestSessionActivityRemoteReferences(t *testing.T) {
 			t.Fatalf("jobs = %+v", jobs)
 		}
 	}})
-	watches := appwire.SessionWatchesResponse{Context: context, Page: page, Watches: []appwire.SessionWatch{{OwnerRef: "local:root", ReceiverRef: "local:root", Watch: appwire.EvenerWatchInfo{ID: "opaque", Source: "shell-1"}}}}
+	watches := appwire.SessionWatchesResponse{Context: context, Page: page, Watches: []appwire.SessionWatch{{SourceRef: "local:child", OwnerRef: "local:root", ReceiverRef: "local:root", Watch: appwire.EvenerWatchInfo{ID: "opaque", Source: "shell-1"}}}}
 	tests = append(tests, translationCase{"watches", &watches, func(t *testing.T) {
-		if !reflect.DeepEqual(watches.Context, wantContext) || watches.Page.Issues[0].Ref != "remote:grandchild" || watches.Watches[0].OwnerRef != "remote:root" || watches.Watches[0].ReceiverRef != "remote:root" || watches.Watches[0].Watch.Source != "shell-1" {
+		if !reflect.DeepEqual(watches.Context, wantContext) || watches.Page.Issues[0].Ref != "remote:grandchild" || watches.Watches[0].OwnerRef != "remote:root" || watches.Watches[0].ReceiverRef != "remote:root" || watches.Watches[0].Watch.Source != "shell-1" || watches.Watches[0].SourceRef != "remote:child" {
 			t.Fatalf("watches = %+v", watches)
 		}
 	}})

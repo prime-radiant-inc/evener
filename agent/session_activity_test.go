@@ -178,7 +178,7 @@ func TestSessionActivityWatchReceiverOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Watches) != 1 || page.Watches[0].Watch.ID != result.WatchID || page.Watches[0].State != appwire.SessionWatchStateArmed || page.Watches[0].ReceiverRef != params.Ref {
+	if len(page.Watches) != 1 || page.Watches[0].Watch.ID != result.WatchID || page.Watches[0].State != appwire.SessionWatchStateArmed || page.Watches[0].ReceiverRef != params.Ref || page.Watches[0].OwnerRef != params.Ref || page.Watches[0].SourceRef != encodeRef("", fixture.source.ID()) {
 		t.Fatalf("receiver row=%+v", page)
 	}
 	childPage, err := fixture.root.ListActivityWatches(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", fixture.source.ID())})

@@ -25,7 +25,17 @@ Every request names an explicit public session `ref`. The default `session`
 scope selects resources logically owned by that session. `subtree` includes
 resources owned by its delegate descendants. Neither scope includes fork
 originals or unrelated sessions. A watch belongs in its receiver's collection
-even when another session's manager observes the source.
+even when another session's manager observes the source. Watch `ownerRef` and
+`receiverRef` identify that logical recipient; required `sourceRef` identifies
+the physical source session whose manager and journal own the watch and scope
+its resolved job target. Detail rows show “Notifies” with the known recipient
+name, an already loaded compact delegate name, or its stable ref. Status overlays
+retain compact names only for the same owned delegate; they do not transfer
+report or run state between generations. Releasing a child transcript does not
+remove a recipient identity still present in the parent’s loaded activity.
+Output conditions use a job description only from an
+already loaded entity with that exact source ref and job ID; missing metadata
+keeps the raw target. Naming never adds collection demand or network reads.
 
 The [typed contracts](../../appwire/session_activity.go) and
 [generated API catalog](../appwire-protocol.md) define the fields. The
@@ -239,6 +249,8 @@ returned job owner ref, delegate stopping addresses its controller root, and a
 child transcript opens the returned child ref. A rendering key never becomes an
 action argument. The [delegate stop handler](../../server/appwire_runtime.go)
 checks that root mutation boundary. Optional usage fields stay absent when unknown.
+Job output panes keep the logical job ID as their title when descriptive
+metadata is unavailable, while independently readable output remains usable.
 
 See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.ts),
 [lease tests](../../appwire-client/typescript/threadSubscription.test.ts) and
@@ -277,7 +289,8 @@ the session's authoritative job and delegate active counts only when both are
 known; watches and completed work are not part of that number. The mobile sheet
 starts with compact job, delegate and watch details, each one disclosure away.
 Failed entries remain visible outside the inactive fold, including parent rows
-needed to expose failed descendants; successful inactive work stays folded.
+needed to expose failed descendants. The fold count covers only the other
+inactive entries grouped beneath it.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
 retains sheet visibility and disclosure choices by session ref for the lifetime
 of its retained workspace panes. Opening a child transcript releases the hidden
