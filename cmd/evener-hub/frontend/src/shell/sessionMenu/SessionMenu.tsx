@@ -19,6 +19,8 @@
 // and menu-only mounts never see them. They lead the menu in their own
 // group - a turn running away on a phone is the most time-critical thing
 // this menu can act on.
+
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { type ChangeEvent, useState } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { Button, Dialog, Input } from "../../widgets";
@@ -36,6 +38,7 @@ export interface NavigationSessionModel {
   host_id: string;
   session_id: string;
   kind: string;
+  failure?: NavigationSessionSummary["failure"];
   top_level?: boolean;
   tier?: string;
   pin_section_id?: string;
@@ -78,7 +81,7 @@ export interface SessionMenuProps {
   session?: NavigationSessionModel;
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
-  panesOpen: { details: boolean; tasks: boolean; activity: boolean };
+  panesOpen: { details: boolean; activity: boolean };
   activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
   /** Pane-only action. Rail/sidebar callers omit it. */
   onOpenVerbosity?: () => void;

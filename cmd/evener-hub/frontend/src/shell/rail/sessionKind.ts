@@ -13,3 +13,9 @@ const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork"]);
 export function isTopLevelSession(session: Pick<NavigationSessionSummary, "kind">): boolean {
   return !NESTED_KINDS.has(session.kind);
 }
+
+export function isConfirmedCrashedSession(
+  session: Pick<NavigationSessionSummary, "state" | "failure"> | undefined,
+): boolean {
+  return session?.state === "errored" && session.failure?.cause_kind === "crashed";
+}

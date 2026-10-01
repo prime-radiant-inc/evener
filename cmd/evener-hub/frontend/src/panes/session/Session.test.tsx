@@ -2940,7 +2940,7 @@ test("explains that an incompatible daemon needs an explicit restart", async () 
   // The notice tells the operator to stop the older daemon, so the control that
   // does it must be present: the Refresh button only re-reads and can never
   // clear an incompatible daemon on its own.
-  expect(screen.getByRole("button", { name: "Force stop…" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Force shutdown…" })).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
 
@@ -3142,7 +3142,7 @@ test("explicit Resume follows the returned identity through transcript and new s
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(resumed).toBe(false);
   // Reconnect starts discovery after hydration. Observe that original promise
@@ -3459,12 +3459,12 @@ test.each(["success", "refused"])(
     expect(threadsStore.getState().threads.has(ref)).toBe(false);
     const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Force stop…" }));
+    await user.click(screen.getByRole("button", { name: "Force shutdown…" }));
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-    await user.click(screen.getByRole("button", { name: "Force stop…" }));
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    await user.click(screen.getByRole("button", { name: "Force shutdown…" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     if (outcome === "success") {
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       // Hydration publishes Resume before storage reconciliation completes.
@@ -3477,7 +3477,8 @@ test.each(["success", "refused"])(
     } else {
       expect(await screen.findByText("no direct daemon ownership claim")).toBeTruthy();
       expect(
-        (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+        (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement)
+          .disabled,
       ).toBe(false);
     }
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(1);
@@ -3517,7 +3518,7 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
   // land after the click resolves; wait for it rather than racing the write.
   await flushPendingTurnsProjectionForTests();
@@ -3528,7 +3529,8 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   if (outcome === "refused") {
     expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();
     expect(
-      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement)
+        .disabled,
     ).toBe(false);
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("restartRequired");
   } else {
@@ -3574,7 +3576,7 @@ test("confirmed force stop refreshes the session and exposes explicit Resume", a
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   const resume = await screen.findByRole("button", { name: "Resume session" });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
@@ -3728,7 +3730,7 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   // pane: the owner directs recovery (the notice above links to it).
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.queryByRole("menuitem", { name: /Force stop/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Force shutdown/ })).toBeNull();
   await user.keyboard("{Escape}");
   owned = false;
   fireEvent.click(refresh);
@@ -3781,7 +3783,7 @@ test.each(["idle", "active"])(
     const user = userEvent.setup();
     await openForceStopDialog(user);
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
@@ -3865,7 +3867,7 @@ test.each(["pending", "failed"])(
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
       await flushPendingTurnsProjectionForTests();
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
@@ -4040,7 +4042,7 @@ test.each(["pending", "failed"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       refresh.mockClear();
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
       await waitFor(() => expect(stopped).toBe(true));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
@@ -4111,7 +4113,7 @@ test.each(["model", "compact"])(
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
       // Force stop's work runs past the click: the durable cancellation, the
       // stop RPC (whose handler rejects the pending action), the recovery
       // obligation, and the refresh after which the dialog closes. Awaiting
@@ -4184,7 +4186,7 @@ test.each(["idle", "active"])(
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await openForceStopDialog(user);
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
@@ -4257,7 +4259,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(menuTrigger);
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
     { method: "evener/thread/forceStop", params: { ref } },

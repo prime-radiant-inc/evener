@@ -2254,7 +2254,7 @@ describe("resource-backed Rail", () => {
     fireEvent.click(screen.getByRole("button", { name: /actions for unresponsive/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
     expect(client.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(client.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
       { method: "evener/thread/forceStop", params: { ref: "local:a" } },

@@ -617,13 +617,6 @@ export function Composer({ ref, focused }: ComposerProps) {
     else activitySidebarStore.getState().openWith("tasks");
   };
 
-  // Stable so the memoized chrome below skips re-rendering on every keystroke
-  // of the draft.
-  const toggleTasks = useCallback((): void => {
-    if (isMobile) tasksPanelRef.current?.open();
-    else activitySidebarStore.getState().openWith("tasks");
-  }, [isMobile]);
-
   // A shared projection can outlive a Composer remount while its durable
   // discard is still being projected. Only auto-activate after this mount
   // has observed a successful IndexedDB refresh for the current session.
@@ -1759,13 +1752,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                           onClick={() => fileInputRef.current?.click()}
                         />
                       </Tooltip>
-                      <MemoizedSessionChrome
-                        ref={ref}
-                        placement="composer"
-                        onOpenTasks={toggleTasks}
-                        discoverActivity
-                        turnVerbs={turnVerbs}
-                      />
+                      <MemoizedSessionChrome ref={ref} placement="composer" discoverActivity turnVerbs={turnVerbs} />
                     </div>
                   )
                 }

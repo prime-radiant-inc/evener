@@ -326,33 +326,6 @@ test("status row has no inline pane buttons; Details and Activity live in the me
   expect(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
 });
 
-// Exercise the shared SessionMenu through its real chrome adapter, proving
-// capability reaches the menu instead of testing only the menu's boolean prop.
-test.each(["desktop", "mobile"] as const)(
-  "%s Notes menu must not expose an unsupported blank panel",
-  async (viewport) => {
-    const restoreViewport = viewport === "mobile" ? installMobileViewport() : () => {};
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("thread/read", () =>
-      readResponse("ref_no_notes", {
-        evener: { ref: "ref_no_notes", capabilities: { ...CAPABILITIES, sharedNotes: false }, queue: { revision: 0 } },
-      }),
-    );
-    await threadsStore.getState().ensureThread("ref_no_notes");
-
-    try {
-      render(<SessionChrome ref="ref_no_notes" placement="composer" />);
-      await user.click(screen.getByRole("button", { name: "Session actions" }));
-      const opener = screen.queryByRole("menuitem", { name: "Notes" });
-      expect.soft(opener).toBeNull();
-      if (opener) await user.click(opener);
-    } finally {
-      restoreViewport();
-    }
-  },
-);
-
 test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
   "Notes is absent from the menu for supported %s sessions",
   async (status) => {

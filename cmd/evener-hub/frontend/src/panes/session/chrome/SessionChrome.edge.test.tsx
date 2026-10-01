@@ -523,7 +523,7 @@ test.each(["success", "failure"])("force stop requires confirmation and waits fo
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
   // land after the click resolves; wait for it rather than racing the write.
   await flushPendingTurnsProjectionForTests();
@@ -531,7 +531,7 @@ test.each(["success", "failure"])("force stop requires confirmation and waits fo
     expect.objectContaining({ params: { ref } }),
   ]);
   expect(
-    (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+    (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement).disabled,
   ).toBe(true);
   expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("restartRequired");
   finish?.();
@@ -541,7 +541,8 @@ test.each(["success", "failure"])("force stop requires confirmation and waits fo
   } else {
     expect(await screen.findByText("Couldn't force stop session: exit not confirmed")).toBeTruthy();
     expect(
-      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement)
+        .disabled,
     ).toBe(false);
   }
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
@@ -555,36 +556,40 @@ test.each(["success", "failure"])("force stop requires confirmation and waits fo
 // fork whose owning session is unresponsive. This pins that behavior: the
 // menu still offers the action for a nested session, and confirming surfaces
 // the hub's rejection.
-test.each(["subagent", "fork"])("a nested %s session still offers Force stop and surfaces rejection", async (kind) => {
-  const user = userEvent.setup();
-  const ref = `local:nested-${kind}`;
-  const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse(ref, {
-      status: { type: "restartRequired" },
-      evener: {
-        ref,
-        kind,
-        parentRef: "local:parent",
-        capabilities: { ...CAPABILITIES, shutdown: false },
-        queue: { revision: 0 },
-      },
-    }),
-  );
-  fake.on("evener/thread/forceStop", () => {
-    throw new Error("no direct daemon ownership claim");
-  });
-  setLocation(ref);
-  await threadsStore.getState().ensureThread(ref);
-  renderWithToast(<SessionChromeView ref={ref} />);
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-  // The refused stop has settled once the confirm button is usable again.
-  await waitFor(() =>
-    expect(
-      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
-    ).toBe(false),
-  );
-  expect(screen.getAllByText("Couldn't force stop session: no direct daemon ownership claim")).toHaveLength(1);
-});
+test.each(["subagent", "fork"])(
+  "a nested %s session still offers Force shutdown and surfaces rejection",
+  async (kind) => {
+    const user = userEvent.setup();
+    const ref = `local:nested-${kind}`;
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse(ref, {
+        status: { type: "restartRequired" },
+        evener: {
+          ref,
+          kind,
+          parentRef: "local:parent",
+          capabilities: { ...CAPABILITIES, shutdown: false },
+          queue: { revision: 0 },
+        },
+      }),
+    );
+    fake.on("evener/thread/forceStop", () => {
+      throw new Error("no direct daemon ownership claim");
+    });
+    setLocation(ref);
+    await threadsStore.getState().ensureThread(ref);
+    renderWithToast(<SessionChromeView ref={ref} />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
+    // The refused stop has settled once the confirm button is usable again.
+    await waitFor(() =>
+      expect(
+        (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    expect(screen.getAllByText("Couldn't force stop session: no direct daemon ownership claim")).toHaveLength(1);
+  },
+);

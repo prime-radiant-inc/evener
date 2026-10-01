@@ -61,7 +61,7 @@ function renderMenu(overrides: Partial<SessionMenuProps> = {}, actionOverrides: 
       canRename
       canShutdown
       stopped
-      panesOpen={{ details: false, tasks: true, activity: false }}
+      panesOpen={{ details: false, activity: false }}
       actions={actions}
       {...overrides}
     />,

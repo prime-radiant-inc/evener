@@ -39,11 +39,11 @@ import {
   activitySidebarStore,
   closeSessionActivityPanes,
   useActivitySidebarOpenFor,
-  useActivitySidebarStore,
 } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
+import { isConfirmedCrashedSession } from "../../../shell/rail/sessionKind";
 import { navigate, paneToURL } from "../../../shell/routing";
 import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
@@ -63,7 +63,6 @@ import { activityActionLabel } from "./activityFormat";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
-import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
 import "../../sessionPanels";
 
 export type SessionChromePlacement = "footer" | "composer" | "menu";
@@ -71,7 +70,6 @@ export type SessionChromePlacement = "footer" | "composer" | "menu";
 export interface SessionChromeProps {
   ref: string;
   placement?: SessionChromePlacement;
-  onOpenTasks?: () => void;
   /** Live session mounts opt into the hidden panel's initial activity discovery. */
   discoverActivity?: boolean;
   /**
@@ -108,7 +106,6 @@ const EMPTY_FRAME_TIMES: number[] = [];
 export function SessionChrome({
   ref: sessionRef,
   placement = "footer",
-  onOpenTasks,
   discoverActivity = false,
   discoveryOnly = false,
   turnVerbs,
@@ -119,14 +116,11 @@ export function SessionChrome({
   const [verbosityOpen, setVerbosityOpen] = useState(false);
   const toasts = useToasts();
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
-  const tasksPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   // The Activity menu item's checked state is the sidebar open ON THIS
   // SESSION (the shared predicate hook); on mobile the item opens the Sheet
   // and is never "checked".
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
   const activityOpen = !isMobile && sidebarOpenHere;
-  const sidebarTab = useActivitySidebarStore((state) => state.tab);
-  const tasksOpen = tasksPaneOpen || (activityOpen && sidebarTab === "tasks");
   const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
   const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
@@ -155,6 +149,7 @@ export function SessionChrome({
           host_id: fallbackSession.host_id,
           session_id: fallbackSession.session_id,
           kind: fallbackSession.kind,
+          failure: fallbackSession.failure,
           top_level: location?.top_level ?? eligibleFallback,
           tier: location?.tier,
           pin_section_id: location?.pin_section_id,
@@ -175,7 +170,6 @@ export function SessionChrome({
   // liveness.ts's own useNowTick doc comment: "transient by design").
   const now = useNowTick(NOW_TICK_MS);
   const detailsRef = useRef<DetailsPanelHandle>(null);
-  const tasksRef = useRef<TasksPanelHandle>(null);
   const activityRef = useRef<ActivityPanelHandle>(null);
   if (!model) return null;
 
@@ -215,15 +209,6 @@ export function SessionChrome({
   const openDetails = () => {
     if (isMobile) detailsRef.current?.open();
     else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
-  };
-  const openTasks = () => {
-    // Desktop: the activity sidebar, preselected to its Tasks tab (the same
-    // retarget the rail row and the composer's current-task button share).
-    // Mobile: the per-session Sheet, unchanged. An idempotent open - the
-    // chrome navigates, it does not toggle.
-    if (onOpenTasks) onOpenTasks();
-    else if (isMobile) tasksRef.current?.open();
-    else activitySidebarStore.getState().openWith("tasks");
   };
   const openActivity = () => {
     // Desktop: the activity sidebar (the zoom system's triage surface).
@@ -363,7 +348,6 @@ export function SessionChrome({
         )}
         <div className={CLASS.right}>
           <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
-          {!onOpenTasks && <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />}
           {hiddenActivityPanel}
           <SessionMenu
             sessionRef={sessionRef}
@@ -371,9 +355,9 @@ export function SessionChrome({
             triggerLabel="Session actions"
             canRename={model.capabilities.rename}
             canShutdown={model.capabilities.shutdown}
-            stopped={SHUT_DOWN_STATUSES.has(model.status.type)}
+            stopped={SHUT_DOWN_STATUSES.has(model.status.type) || isConfirmedCrashedSession(fallbackSession)}
             session={menuSession}
-            panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
+            panesOpen={{ details: detailsOpen, activity: activityOpen }}
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
             // Composer placement only: the header comment on the prop says
@@ -382,7 +366,6 @@ export function SessionChrome({
             actions={{
               onOpenPane: (pane) => {
                 if (pane === "details") openDetails();
-                else if (pane === "tasks") openTasks();
                 else openActivity();
               },
               onRename: async (name) => {

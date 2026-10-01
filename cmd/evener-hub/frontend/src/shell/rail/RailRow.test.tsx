@@ -1183,7 +1183,6 @@ describe("session row", () => {
       onOpenSessionPane: (target, pane) => {
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: target.ref });
-        if (pane === "notes") return;
         workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
       },
     });

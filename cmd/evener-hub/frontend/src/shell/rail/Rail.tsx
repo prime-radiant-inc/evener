@@ -6,7 +6,7 @@ import type {
   NavigationSessionSummary,
   Source,
 } from "@evener/appwire-client";
-import { canReadSharedNotes, errorText } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import {
   isSettledGone,
   keyID,
@@ -51,7 +51,6 @@ import { buildShutdownConvergence } from "../../stores/navigation/shutdownConver
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
-import { topNotesStore } from "../../stores/topNotes";
 import {
   Badge,
   Button,
@@ -1577,20 +1576,9 @@ function NavigationRail({
   const rowActions = useMemo<RailRowActions>(
     () => ({
       onOpenSessionPane: (session, pane) => {
-        // A menu rendered while the session still had the notes capability
-        // can be clicked before React processes the revocation, so the notes
-        // action rechecks the capability - the same guard SessionChrome's
-        // own Notes entry applies. Without it a stale click leaves expanded
-        // and focus state for a panel that cannot render.
-        if (pane === "notes" && !canReadSharedNotes(threadsStore.getState().threads.get(session.ref))) return;
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: session.ref });
-        if (pane === "notes") {
-          // Idempotent open, like the sibling branches below: the rail
-          // navigates, it does not toggle - closing notes belongs to the
-          // panel's own header and the palette's Toggle command.
-          topNotesStore.getState().openAndFocus(session.ref);
-        } else if (pane === "activity") {
+        if (pane === "activity") {
           // Desktop Activity everywhere is the zoom system's sidebar, scoped
           // by the just-focused session. On mobile there is no sidebar (the
           // rail lives in the tree drawer), so the sessionActivity pane keeps
@@ -1603,14 +1591,6 @@ function NavigationRail({
             closeSessionActivityPanes(session.ref);
             activitySidebarStore.getState().openWith();
           }
-        } else if (pane === "tasks") {
-          // Desktop Tasks everywhere is the zoom system's sidebar, preselected
-          // to its Tasks tab and scoped by the just-focused session. On mobile
-          // there is no sidebar (the rail lives in the tree drawer), so the
-          // sessionTasks pane keeps its pre-sidebar behavior. Both idempotent
-          // opens: the rail navigates, it never toggles closed.
-          if (isMobile) workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
-          else activitySidebarStore.getState().openWith("tasks");
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }

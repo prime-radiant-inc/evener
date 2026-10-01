@@ -54,7 +54,7 @@ import { HoverCard } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
-import { useActivitySidebarOpenFor, useActivitySidebarStore } from "../activitybar/activitySidebarStore";
+import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { useIsMobile } from "../useIsMobile";
@@ -74,7 +74,7 @@ import {
 } from "./railNodes";
 import { useRailNow } from "./railNow";
 import { useRailRenderObserver } from "./railRenderObserver";
-import { isTopLevelSession } from "./sessionKind";
+import { isConfirmedCrashedSession, isTopLevelSession } from "./sessionKind";
 
 export { isTopLevelSession } from "./sessionKind";
 
@@ -198,7 +198,7 @@ function Signal({ wireState }: { wireState: string }) {
 export { watchCadenceLabel, watchDurationLabel, watchGloss };
 
 export interface RailRowActions {
-  onOpenSessionPane(session: RailSession, pane: SessionPanelKind | "notes"): void;
+  onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
   onForceStopSession(session: RailSession): Promise<void>;
@@ -394,7 +394,7 @@ function saysNotStarted(session: RailSession, hasSignal: boolean): boolean {
 function SessionMenuRow({ session, actions }: { session: RailSession; actions: RailRowActions }) {
   const ref = session.ref;
   // Separate boolean selectors, NOT one object-literal selector: a
-  // fresh { details, tasks, activity, notes } object every call would fail the
+  // fresh { details, activity } object every call would fail the
   // store's reference-equality check and re-render the row on every
   // workspace change (SessionChrome selects the same four booleans the
   // same way).
@@ -409,14 +409,6 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   const activitySidebarOpen = useActivitySidebarOpenFor(ref);
   const activityPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
   const activityOpen = activitySidebarOpen || (isMobile && activityPaneOpen);
-  // The Tasks ✓ follows the Activity check's per-viewport rule: the desktop
-  // Tasks action opens the sidebar's Tasks tab, so the mark is the sidebar
-  // open ON that tab, scoped to this session; the sessionTasks pane it
-  // replaced is a desktop orphan the check never marks, and stays the mobile
-  // half (the tree drawer has no sidebar).
-  const sidebarTab = useActivitySidebarStore((state) => state.tab);
-  const tasksPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
-  const tasksOpen = (activitySidebarOpen && sidebarTab === "tasks") || (isMobile && tasksPaneOpen);
   return (
     <SessionMenu
       sessionRef={ref}
@@ -424,9 +416,9 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       triggerLabel={`Actions for ${session.title}`}
       canRename={session.rename === true}
       canShutdown={session.live && session.state !== "restartRequired"}
-      stopped={SHUT_DOWN_STATUSES.has(session.state)}
+      stopped={SHUT_DOWN_STATUSES.has(session.state) || isConfirmedCrashedSession(session)}
       treeNode={session}
-      panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
+      panesOpen={{ details: detailsOpen, activity: activityOpen }}
       actions={{
         onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
         onRename: (name) => actions.onRenameSession(session, name),

@@ -31,14 +31,14 @@ export function ForceStopDialog({
       onClose={() => {
         if (!busy) onClose();
       }}
-      title="Force stop this session?"
+      title="Force shutdown this session?"
       footer={
         <div className={requireClass(styles.footer, "sessionmenu.module.css", "footer")}>
           <Button variant="quiet" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
           <Button variant="danger" disabled={busy} onClick={() => void confirm()}>
-            Force stop
+            Force shutdown
           </Button>
         </div>
       }
