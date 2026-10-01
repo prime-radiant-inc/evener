@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -217,7 +218,7 @@ func TestSessionActivityTranslatedSummaryEnvelope(t *testing.T) {
 
 func TestSessionActivitySummaryIssuesQualifiedEnvelopeBound(t *testing.T) {
 	for _, count := range []int{1, 200} {
-		t.Run(fmt.Sprint(count), func(t *testing.T) {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			sourceID := strings.Repeat("remote-", 260)
 			summary := appwire.SessionActivitySummary{Context: appwire.SessionActivityContext{Ref: "local:root", RootRef: "local:root", SessionID: "root", AncestryKnown: true}}
 			for i := range count {

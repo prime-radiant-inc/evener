@@ -342,15 +342,6 @@ func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners 
 		}
 		pending = pending || !complete
 	}
-	// Invalidation may arrive during a fold or after another source was skipped.
-	// Completion is authoritative only for the final observed revision.
-	version := read.index.revision.Load()
-	for owner := range owners {
-		source := read.index.jobs[owner]
-		if source != nil && source.Established && !walk.UnavailableSources[owner] && (!source.Complete || source.Version != version) {
-			pending = true
-		}
-	}
 	return pending, walk.Issues, nil
 }
 

@@ -430,6 +430,19 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	if err != nil {
 		return result, err
 	}
+	// Counts and bounded recovery demand describe one observed revision.
+	// An invalidation after this capture belongs to the next summary response.
+	version := read.index.revision.Load()
+	unavailable := make(map[string]bool, len(result.Issues))
+	for _, issue := range result.Issues {
+		unavailable[issue.Ref] = true
+	}
+	for owner := range sourceOwners {
+		source := read.index.jobs[owner]
+		if source != nil && source.Established && !unavailable[encodeRef("", owner)] && (!source.Complete || source.Version != version) {
+			result.RefreshPending = true
+		}
+	}
 	result.Context.Epoch = read.index.epoch
 	if controller == nil && !read.index.delegateComplete {
 		result.Delegates = appwire.SessionActivityCounts{}
@@ -438,7 +451,7 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	result.Jobs.Known = true
 	for owner := range owners {
 		index := read.index.jobs[owner]
-		if index == nil || !index.Complete || index.Version != read.index.revision.Load() {
+		if index == nil || !index.Complete || index.Version != version {
 			result.Jobs = appwire.SessionActivityCounts{}
 			break
 		}
@@ -462,7 +475,7 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	result.Watches = appwire.SessionActivityCounts{Known: true}
 	for owner := range sourceOwners {
 		source := read.index.jobs[owner]
-		if source == nil || !source.Complete || source.Version != read.index.revision.Load() {
+		if source == nil || !source.Complete || source.Version != version {
 			result.Watches = appwire.SessionActivityCounts{}
 			break
 		}

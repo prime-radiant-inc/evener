@@ -439,3 +439,41 @@ func TestSessionActivityWarmCountsUnavailableDescendantPreservesRootJobs(t *test
 		})
 	}
 }
+
+func TestSessionActivityWarmCountsInvalidationIncludesInitiallyCurrentOwner(t *testing.T) {
+	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
+	at := time.Unix(100, 0).UTC()
+	child, store := newSessionActivityChildJournal(t, s, "dlg_invalidation", at)
+	writeJobLogFast(t, s.stateDir, s.ID(), 1)
+	params := appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID())}
+	if _, err := s.ListActivityWatches(t.Context(), appwire.SessionActivityListParams{Ref: params.Ref}); err != nil {
+		t.Fatal(err)
+	}
+	appendJob := func(id string) {
+		t.Helper()
+		if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: id, Type: jobstore.JobShell, OwnerSessionID: child, TS: at, StartedAt: &at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendJob("second")
+	appendJob("third")
+	s.emitSessionActivityChanged(child, appwire.SessionActivityResourceJobs)
+	// Establish the root at the new revision while the child still needs folding.
+	if _, err := s.ListActivityJobs(t.Context(), appwire.SessionActivityListParams{Ref: params.Ref}); err != nil {
+		t.Fatal(err)
+	}
+	index, err := acquireSessionActivityIndex(t.Context(), s.stateDir+"\x00"+s.ID(), s.delegateController)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index.release()
+	ctx := &sessionActivityInvalidateDuringFold{Context: t.Context(), source: index.jobs[child], invalidate: func() { appendJob("fourth"); s.emitSessionActivityChanged(child, appwire.SessionActivityResourceJobs) }}
+	summary, err := s.ActivitySummary(ctx, params)
+	if err != nil || !ctx.fired || summary.Jobs.Known || !summary.RefreshPending {
+		t.Fatalf("initially current owner summary=%+v fired=%v error=%v", summary, ctx.fired, err)
+	}
+	summary, err = s.ActivitySummary(t.Context(), params)
+	if err != nil || !summary.Jobs.Known || summary.Jobs.Total != 1 || summary.RefreshPending {
+		t.Fatalf("recovered summary=%+v error=%v", summary, err)
+	}
+}
