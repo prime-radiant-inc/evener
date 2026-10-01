@@ -3284,6 +3284,10 @@ export interface SessionURL {
 
 export interface SessionWatch {
   ownerRef: string;
+  /**
+   * SourceRef identifies the physical source session whose manager owns the watch and target job.
+   */
+  sourceRef: string;
   receiverRef: string;
   state: SessionWatchState;
   watch: EvenerWatchInfo;

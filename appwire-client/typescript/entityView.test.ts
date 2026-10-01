@@ -1,7 +1,13 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import type { ActivityDelegate, ActivityEntry, ActivityJob, ActivityTree } from "./activityData";
+import {
+  type ActivityDelegate,
+  type ActivityEntry,
+  type ActivityJob,
+  type ActivityTree,
+  activityNodeID,
+} from "./activityData";
 import {
   buildEntityView,
   type DelegateEntityView,
@@ -357,4 +363,47 @@ test("watchFoldKey is order-canonical across a mixed positioned and positionless
   expect(watchFoldKey([turn([positionless]), turn([positioned])])).toBe(
     watchFoldKey([turn([positioned]), turn([positionless])]),
   );
+});
+
+test.each([3, 4])("keeps immutable delegate names through status overlay revision %s", (revision) => {
+  const row = { ...delegate("same", 3), name: "Compact observer", reportPreview: "Previous run report" };
+  const stable = { ...liveDelegate("same", revision, row.childRef), runGeneration: 2 };
+  const entity = findEntityView(
+    buildEntityView({
+      sessionRef: "local:s",
+      tree: treeWithEntries([{ kind: "delegate", delegate: row }]),
+      delegates: [stable],
+      turns: [],
+      stale: false,
+      ended: false,
+    }),
+    "delegate",
+    "same",
+    "local:s",
+  );
+  if (entity?.kind !== "delegate") throw new Error("expected delegate entity");
+  expect(entity.name).toBe("Compact observer");
+  expect(entity.stable).toBe(stable);
+  expect(entity.row).toBeUndefined();
+});
+
+test.each(["owner", "delegate", "child"])("does not graft a compact name across a different %s", (identity) => {
+  const row = { ...delegate("same", 3), name: "Other identity" };
+  const stable = liveDelegate(
+    identity === "delegate" ? "different" : "same",
+    4,
+    identity === "child" ? "local:different" : row.childRef,
+  );
+  if (identity === "owner") row.ownerRef = "local:another";
+  const entity = buildEntityView({
+    sessionRef: "local:s",
+    tree: treeWithEntries([{ kind: "delegate", delegate: row }]),
+    delegates: [stable],
+    turns: [],
+    stale: false,
+    ended: false,
+  }).get(activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef }));
+  if (entity?.kind !== "delegate") throw new Error("expected delegate entity");
+  expect(entity.name).toBeUndefined();
+  expect(entity.stable).toBe(stable);
 });

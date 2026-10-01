@@ -5,8 +5,10 @@
 // pin.
 
 import type { ActivityJob } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { JobLog } from "./JobLog";
@@ -54,6 +56,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetChromeStoreForTests();
   connectionStore.setState({ state: "idle", client: null });
   vi.restoreAllMocks();
 });
@@ -124,3 +127,26 @@ describe("JobLog", () => {
     expect((await screen.findByTestId("joblog-command")).textContent).toBe("second command");
   });
 });
+
+test.each(["unavailable", "unnamed"])(
+  "%s metadata preserves job identity while real output reads succeed",
+  async (kind) => {
+    vi.restoreAllMocks();
+    const client = new FakeClient();
+    client.on("evener/jobs/get", () => {
+      if (kind === "unavailable") throw new Error("metadata unavailable");
+      return { data: job({ description: "", command: "" }) };
+    });
+    client.on("evener/jobs/output", () => ({
+      data: { tail: "IDENTIFIABLE_OUTPUT", totalBytes: 19, retainedStart: 0 },
+    }));
+    connectionStore.setState({ state: "ready", client });
+    render(<JobLog jobRef="job:job_x" parentRef="ref_root" paneId="output-pane" />);
+    expect((await screen.findByTestId("joblog-content")).textContent).toContain("IDENTIFIABLE_OUTPUT");
+    expect(screen.getByRole("heading", { name: "job_x" })).toBeTruthy();
+    expect(chromeStore.getState().paneTitles.get("output-pane")).toBe("job_x");
+    expect(client.calls.filter((call) => call.method === "evener/jobs/get").map((call) => call.params)).toEqual([
+      { ref: "ref_root", jobId: "job_x" },
+    ]);
+  },
+);
