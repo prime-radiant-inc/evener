@@ -1,4 +1,4 @@
-/* The status bar: the zoom system's glance strip under the workspace.
+/* The status bar: a session pane's glance strip at its bottom edge.
  * Tokens only; neutral inks throughout (the counters are information, not
  * attention - the attention hues belong to states, not counts). */
 
@@ -15,6 +15,12 @@
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
   flex: none;
+}
+
+.leading {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .chips {
@@ -64,5 +70,26 @@
 
   .chips {
     gap: var(--space-1);
+  }
+}
+
+/* Four three-digit fractions cannot fit one 220px pane row at caption size.
+ * Keep every control and its full count by using two compact rows rather than
+ * shrinking the type or making the footer scroll. */
+@container statusbar (max-width: 320px) {
+  .chipGlyph {
+    display: none;
+  }
+
+  .chips {
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    justify-items: end;
+    gap: 0;
+  }
+
+  .chip {
+    gap: 0;
+    padding-inline: 1px;
   }
 }
