@@ -63,15 +63,6 @@ const CLASS = {
 export const WATCH_NO_SCHEDULE_LINE =
   "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
 
-// The row header already prints a watch's note as the row's own name, in a
-// sidebar name column that fits roughly 40 characters at its narrow width.
-// Repeating the note as the detail's lead paragraph would therefore print every
-// row's title twice within a few pixels. The lead paragraph exists only to show
-// what that column truncated, so it renders only for notes longer than this
-// budget - 48, a little above the ~40-character column so a note that just fits
-// the title never duplicates.
-export const WATCH_NOTE_LEAD_BUDGET = 48;
-
 // The now marker is taller than a delivery dot, and a dot at the rail's far end
 // would land underneath it and read as the marker. Dots therefore never pass
 // this percent: the unstretched rail clamps into the reserve, and the stretched
@@ -405,9 +396,8 @@ export function ActivityRowDetail({
   );
 }
 
-// ActivityWatchDetail is a watch row's expanded block: the note once more only
-// when the row title's name column could not show it in full, one facts
-// sentence, and - for a clock-driven watch with retained instants - the
+// ActivityWatchDetail reveals the full note independently of the compact
+// header width, one facts sentence, and - for a clock-driven watch - the
 // delivery timeline. A condition watch gets the explanatory line instead:
 // there is no period to draw, and the block must not pretend there is.
 //
@@ -438,12 +428,11 @@ export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?:
   const contextNow = useTreeNow();
   const effectiveNow = now ?? contextNow;
   const note = watch.watch.note?.trim();
-  const leadNote = note !== undefined && note.length > WATCH_NOTE_LEAD_BUDGET ? note : undefined;
   return (
     <div className={CLASS.detailStrip}>
-      {leadNote ? (
+      {note ? (
         <p className={CLASS.watchNote} data-testid="watch-note">
-          {leadNote}
+          {note}
         </p>
       ) : null}
       <p className={CLASS.watchFacts} data-testid="watch-facts">

@@ -1,10 +1,12 @@
 import {
+  activityNodeID,
   buildEntityView,
   projectSessionActivity,
   type SessionActivityCollection,
   type ThreadModel,
+  watchRowID,
 } from "@evener/appwire-client";
-import { forwardRef, memo, useCallback, useImperativeHandle, useMemo } from "react";
+import { forwardRef, memo, useCallback, useImperativeHandle, useLayoutEffect, useMemo } from "react";
 import { ActivityPageBoundary } from "../../../shell/activitybar/ActivityPageBoundary";
 import { ScopeCrumbs } from "../../../shell/statusbar/ScopeCrumbs";
 import { deriveScope } from "../../../shell/statusbar/statusScope";
@@ -52,6 +54,30 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
   );
   const presentation = useMemo(() => (snapshot ? projectSessionActivity(snapshot) : null), [snapshot]);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
+  const progress = useMemo(
+    () => ({
+      delegates: {
+        sessionId: snapshot?.delegates.context?.sessionId,
+        ids: snapshot?.delegates.rows.map((delegate) => activityNodeID({ kind: "delegate", ...delegate })) ?? [],
+        complete: snapshot?.delegates.complete ?? false,
+      },
+      jobs: {
+        sessionId: snapshot?.jobs.context?.sessionId,
+        ids: snapshot?.jobs.rows.map((job) => activityNodeID({ kind: "shell", ...job })) ?? [],
+        complete: snapshot?.jobs.complete ?? false,
+      },
+      watches: {
+        sessionId: snapshot?.watches.context?.sessionId,
+        ids: snapshot?.watches.rows.map((watch) => watchRowID(watch.receiverRef, watch.watch.id)) ?? [],
+        complete: snapshot?.watches.complete ?? false,
+      },
+    }),
+    [snapshot?.delegates, snapshot?.jobs, snapshot?.watches],
+  );
+  const resolvedSessionId = snapshot?.context?.sessionId;
+  useLayoutEffect(() => {
+    if (resolvedSessionId) activityPanelStore.getState().recordLoadedExtent(sessionRef, resolvedSessionId, progress);
+  }, [sessionRef, resolvedSessionId, progress]);
   const detailDisclosure = useMemo(
     () => ({
       overrides: entry.detailOverrides,
@@ -112,7 +138,7 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
         {COLLECTIONS.map((resource) =>
           snapshot ? (
             <ActivityPageBoundary
-              key={resource}
+              key={`${resource}:${resolvedSessionId}`}
               resource={resource}
               label={resource}
               rows={snapshot[resource].rows}
@@ -120,6 +146,13 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
               loading={snapshot[resource].loading}
               error={snapshot[resource].error}
               permanent={snapshot[resource].permanent}
+              restore={
+                entry.resolvedSessionId === resolvedSessionId &&
+                progress[resource].sessionId === resolvedSessionId &&
+                !progress[resource].complete &&
+                !!entry.loadedExtent[resource] &&
+                !progress[resource].ids.includes(entry.loadedExtent[resource])
+              }
               loadMore={loadMore}
             />
           ) : null,
