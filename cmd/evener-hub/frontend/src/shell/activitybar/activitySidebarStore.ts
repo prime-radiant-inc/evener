@@ -12,6 +12,8 @@ export const ACTIVITY_VIEW_STORAGE_KEY = "evener.activity-sidebar.v1";
 export const ACTIVITY_VIEW_LIMIT = 100;
 const TABS: readonly ActivityTab[] = ["agents", "jobs", "watches", "tasks"];
 let hydrated = false;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+const SAVE_DELAY_MS = 400;
 
 export interface ActivityScrollAnchor {
   id: string;
@@ -86,12 +88,27 @@ function rememberView(views: ReadonlyMap<string, ActivitySessionView>, ref: stri
 }
 
 function saveViews(views: ReadonlyMap<string, ActivitySessionView>): void {
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
   try {
     localStorage.setItem(ACTIVITY_VIEW_STORAGE_KEY, JSON.stringify(Object.fromEntries(views)));
   } catch {
     // This is best-effort UI intent, like the workspace layout.
   }
 }
+
+function flushViews(): void {
+  if (saveTimer === undefined) return;
+  saveViews(activitySidebarStore.getState().views);
+}
+
+function scheduleSave(): void {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushViews, SAVE_DELAY_MS);
+}
+
+// Page departure must retain the latest gesture even before its trailing save.
+if (typeof window !== "undefined") window.addEventListener("pagehide", flushViews);
 
 export interface ActivitySidebarState {
   open: boolean;
@@ -129,6 +146,7 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
     retarget(ref) {
       const state = get();
       if (ref === state.ref) return;
+      flushViews();
       if (ref === null) return set({ ref });
       const views = hydrated ? state.views : readViews();
       hydrated = true;
@@ -163,8 +181,9 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
         categories: { ...previous.categories, [tab]: category },
       };
       const views = rememberView(state.views, ref, view);
-      saveViews(views);
       set({ views });
+      if (patch.shown !== undefined) saveViews(views);
+      else scheduleSave();
     },
   };
 });
@@ -222,6 +241,8 @@ export function resetActivitySidebarStoreForTests({ preserveStorage = false } = 
       /* best effort */
     }
   }
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
   hydrated = false;
   activitySidebarStore.setState({ open: false, tab: "agents", ref: null, views: new Map() });
 }

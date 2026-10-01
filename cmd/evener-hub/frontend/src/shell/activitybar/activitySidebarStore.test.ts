@@ -91,6 +91,8 @@ test("equivalent scroll and disclosure-count choices do not rewrite storage or n
   expect(writes).not.toHaveBeenCalled();
   expect(activitySidebarStore.getState()).toBe(snapshot);
   state.setCategoryView("source:owner", "agents", { anchor: { id: "delegate:one", offset: -13 } });
+  expect(writes).not.toHaveBeenCalled();
+  window.dispatchEvent(new Event("pagehide"));
   expect(writes).toHaveBeenCalledTimes(1);
 });
 
@@ -128,4 +130,76 @@ describe("activitySidebarStore", () => {
     activitySidebarStore.getState().toggle();
     expect(activitySidebarStore.getState().open).toBe(false);
   });
+});
+
+test("scroll bursts retain latest intent without synchronous persistence per frame", () => {
+  vi.useFakeTimers();
+  try {
+    const state = activitySidebarStore.getState();
+    state.retarget("source:owner");
+    state.openWith("jobs");
+    const writes = vi.spyOn(localStorage, "setItem");
+    for (let offset = 0; offset < 20; offset++)
+      state.setCategoryView("source:owner", "jobs", { anchor: { id: "row", offset } });
+    expect(activitySidebarStore.getState().views.get("source:owner")?.categories.jobs?.anchor?.offset).toBe(19);
+    expect(writes).not.toHaveBeenCalled();
+    vi.runOnlyPendingTimers();
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}")["source:owner"].categories.jobs.anchor.offset,
+    ).toBe(19);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test.each(["close", "category", "retarget", "pagehide", "shown"])(
+  "%s flushes the latest pending anchor and absorbs its timer",
+  (boundary) => {
+    vi.useFakeTimers();
+    try {
+      const state = activitySidebarStore.getState();
+      state.retarget("source:owner");
+      state.openWith("jobs");
+      state.setCategoryView("source:owner", "jobs", { anchor: { id: "row", offset: 19 } });
+      const writes = vi.spyOn(localStorage, "setItem");
+      if (boundary === "close") state.close();
+      if (boundary === "category") state.setTab("watches");
+      if (boundary === "retarget") state.retarget("source:child");
+      if (boundary === "pagehide") window.dispatchEvent(new Event("pagehide"));
+      if (boundary === "shown") state.setCategoryView("source:owner", "jobs", { shown: 40 });
+      const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
+      expect(saved["source:owner"].categories.jobs.anchor.offset).toBe(19);
+      expect(writes).toHaveBeenCalledTimes(1);
+      vi.runOnlyPendingTimers();
+      expect(writes).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+test("reset cancels pending persistence and blocked storage leaves current anchors usable", () => {
+  vi.useFakeTimers();
+  try {
+    const state = activitySidebarStore.getState();
+    state.retarget("source:owner");
+    state.openWith("jobs");
+    state.setCategoryView("source:owner", "jobs", { anchor: { id: "row", offset: 12 } });
+    const writes = vi.spyOn(localStorage, "setItem");
+    resetActivitySidebarStoreForTests();
+    vi.runOnlyPendingTimers();
+    expect(writes).not.toHaveBeenCalled();
+    writes.mockImplementation(() => {
+      throw new Error("full");
+    });
+    state.retarget("source:other");
+    state.openWith("jobs");
+    state.setCategoryView("source:other", "jobs", { anchor: { id: "other-row", offset: 7 } });
+    expect(() => window.dispatchEvent(new Event("pagehide"))).not.toThrow();
+    expect(activitySidebarStore.getState().views.get("source:other")?.categories.jobs?.anchor?.offset).toBe(7);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });

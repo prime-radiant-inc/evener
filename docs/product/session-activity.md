@@ -260,7 +260,11 @@ observation supplies demand through `ActivityPageBoundary`. It starts no fetch
 or retry loop. A changed scope/category, close, reader scroll/navigation gesture,
 or deliberate control activation cancels pending positioning. Focus-only keys
 such as Tab, modifier keys and text keys preserve it when the viewport does not
-scroll. Partial results keep a missing anchor; an authoritative
+scroll. Scroll anchors update in memory immediately; the existing view store
+coalesces their storage writes after a gesture. Closing, changing category or
+session, and page departure flush the latest position. Other explicit view
+choices remain immediately durable; unavailable storage never blocks use.
+Partial results keep a missing anchor; an authoritative
 complete collection can prove it absent. A row inside a closed fold does not
 authorize opening that fold. A new child scope keeps an ongoing sidebar
 inspection open on its current category with fresh child-specific view choices;
