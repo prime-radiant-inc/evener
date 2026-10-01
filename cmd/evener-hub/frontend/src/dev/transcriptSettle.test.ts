@@ -180,9 +180,12 @@ test("paged-open readiness waits through absent scroll geometry and restarts sti
   expect(tracker.observe({ turns: TURNS, geometry: null })).toBe(false);
   holdPaged(tracker, pagedSample(rendered()), SETTLE_QUIESCENT_FRAMES - 1);
   expect(tracker.observe({ turns: TURNS, geometry: null })).toBe(false);
-  // The unmount must restart the stillness run: without the reset, readiness
-  // arrives on the second remount frame (the null frame leaves the run at 18,
-  // so two more rendered frames reach 20). Pin every sample of a fresh run.
+  // The unmount must restart the stillness run. The null branch clears
+  // lastTurns, which is what makes the next rendered frame begin a fresh run:
+  // without that clear the stale 18-frame run survives the remount and
+  // readiness arrives on the second frame instead of the twenty-first (mutant
+  // observed). The counter reset rides along and is not separable here. Pin
+  // every sample of the run.
   for (let frame = 0; frame < SETTLE_QUIESCENT_FRAMES; frame++) {
     expect(tracker.observe(pagedSample(rendered()))).toBe(false);
   }
