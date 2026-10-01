@@ -4460,6 +4460,10 @@ test.each([false, true])(
       expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
       expect(screen.getByText("report-local:owner")).toBeTruthy();
       act(() => activitySidebarStore.getState().openWith("agents"));
+      // Disclosure persistence belongs to the retention suite; this journey
+      // verifies navigation and focus with the core sidebar's local disclosure.
+      if (!screen.queryByRole("button", { name: /observer/ }))
+        await user.click(await screen.findByRole("button", { name: "Inactive subagents (1)" }));
       expect(await screen.findByRole("button", { name: /observer/ })).toBeTruthy();
     } finally {
       act(() => resetActivitySidebarStoreForTests());

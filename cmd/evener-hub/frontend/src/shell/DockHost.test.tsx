@@ -1331,3 +1331,22 @@ test("a reload at the root route does not spawn a spurious focused welcome tab o
   expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
   expect(tabIsActive("Doc ref_a")).toBe(true);
 });
+
+test("workspace focus activates a selected group and switches a different retained tab", async () => {
+  const main = workspaceStore.getState().openPane("doc", { ref: "group_main" });
+  render(<DockHost />);
+  await screen.findByText(/doc pane: group_main/);
+  const observer = await act(async () => workspaceStore.getState().openPane("doc", { ref: "group_observer" }));
+  await screen.findByText(/doc pane: group_observer/);
+  await act(async () => workspaceStore.getState().openPane("doc", { ref: "group_grandchild" }));
+  await screen.findByText(/doc pane: group_grandchild/);
+  act(() => workspaceStore.getState().focusPane(main));
+  expect(await screen.findByText(/doc pane: group_main \(focused=true\)/)).toBeTruthy();
+  expect(workspaceStore.getState().focusedPaneId).toBe(main);
+  expect(tabIsActive("Doc group_grandchild")).toBe(true);
+  act(() => workspaceStore.getState().focusPane(observer));
+  expect(await screen.findByText(/doc pane: group_observer \(focused=true\)/)).toBeTruthy();
+  expect(workspaceStore.getState().focusedPaneId).toBe(observer);
+  expect(tabIsActive("Doc group_observer")).toBe(true);
+  expect(tabIsActive("Doc group_grandchild")).toBe(false);
+});

@@ -27,9 +27,15 @@
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, Turn } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createRoot } from "react-dom/client";
+import "../panes/session";
+import "../panes/transcript";
+import "../panes/welcome";
 import Session from "../panes/session/Session";
+import { openTranscript } from "../panes/session/transcript/openTranscript";
 import Transcript from "../panes/transcript/Transcript";
 import { ClientProvider } from "../shell/clientContext";
+import { DockHost } from "../shell/DockHost";
+import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
 import { Toast } from "../widgets";
@@ -61,7 +67,10 @@ function throwOnPageErrors(context: string): void {
   if (errors.length > 0) throw new Error(`transcriptscrollguard page errors during ${context}: ${errors.join("\n")}`);
 }
 
-const REF = "local:transcriptscrollguard";
+const REF =
+  new URLSearchParams(window.location.search).get("dock") === "1"
+    ? "local:transcriptscrollguard-dock"
+    : "local:transcriptscrollguard";
 const THREAD_ID = "thr_transcriptscrollguard";
 
 // Deterministic PRNG (mulberry32): the transcript's row heights must be
@@ -143,7 +152,16 @@ const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) =
 // It runs the same useTranscriptScroll coordinator (#2963), so its paging and
 // landing must behave identically - the pass the guard lacked.
 const PAGED = new URLSearchParams(window.location.search).get("paged") === "1";
+const DOCK = new URLSearchParams(window.location.search).get("dock") === "1";
 const READONLY = new URLSearchParams(window.location.search).get("readonly") === "1";
+// Hold hydration explicitly so the browser guard exercises pre-mount frames.
+const DEFER_READ = new URLSearchParams(window.location.search).get("deferRead") === "1";
+let releaseRead: (() => void) | undefined;
+const readAdmission = DEFER_READ
+  ? new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    })
+  : undefined;
 const OLDER_CURSOR = "cursor_page_1";
 const OLDER_PAGE_TURNS = 12;
 let olderPageCalls = 0;
@@ -205,18 +223,28 @@ const INCARNATION = "inc-1";
 // generation-less response is discarded as superseded (readDisposition) —
 // stranding the pane on the cursor-less shell. The suites' echoingReadHandler
 // exists for the same contract.
-fake.on(
-  "thread/read",
-  (params) =>
-    ({
-      thread: THREAD,
-      bootGeneration: BOOT_GENERATION,
-      epoch: EPOCH,
-      snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
-      requestGeneration: params.requestGeneration,
-      ...(PAGED ? { olderCursor: OLDER_CURSOR } : {}),
-    }) satisfies ThreadReadResponse,
-);
+fake.on("thread/read", async (params) => {
+  await readAdmission;
+  if (!params.ref) throw new Error("transcript fixture requires a session ref");
+  return {
+    thread:
+      params.ref === REF
+        ? THREAD
+        : {
+            ...THREAD,
+            name: params.ref,
+            id: `thr_${params.ref}`,
+            sessionId: `sess_${params.ref}`,
+            evener: { ...THREAD.evener, ref: params.ref },
+            turns: initialTurns.slice(0, 8),
+          },
+    bootGeneration: BOOT_GENERATION,
+    epoch: EPOCH,
+    snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
+    requestGeneration: params.requestGeneration,
+    ...(PAGED ? { olderCursor: OLDER_CURSOR } : {}),
+  } satisfies ThreadReadResponse;
+});
 // SessionChrome/Composer idle-time reads; scripted so nothing rejects into an
 // unhandledrejection and pollutes the page-error probe.
 fake.on("evener/tasks/list", () => ({ data: [] }));
@@ -247,10 +275,36 @@ document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 rootEl.style.height = "100%";
 
+if (DOCK) workspaceStore.getState().openPane("session", { ref: REF });
+
 createRoot(rootEl).render(
   <ClientProvider client={fake}>
     <div id="transcriptscrollguard-pane" style={{ height: "100%" }}>
-      {READONLY ? (
+      {DOCK ? (
+        <>
+          <div style={{ position: "fixed", bottom: 0, right: 0, zIndex: 10000 }}>
+            <button type="button" onClick={() => openTranscript("local:observer", REF)}>
+              Open observer
+            </button>
+            <button type="button" onClick={() => openTranscript("local:grandchild", "local:observer")}>
+              Open grandchild
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const pane = workspaceStore.getState().mainPane();
+                if (pane) workspaceStore.getState().focusPane(pane.id);
+              }}
+            >
+              Focus root
+            </button>
+            <button type="button" onClick={() => openTranscript("local:observer", REF)}>
+              Focus observer
+            </button>
+          </div>
+          <DockHost />
+        </>
+      ) : READONLY ? (
         <Transcript params={{ ref: REF }} paneId="transcriptscrollguard" focused={false} />
       ) : (
         <Session params={{ ref: REF }} paneId="transcriptscrollguard" focused />
@@ -384,10 +438,11 @@ async function waitForPagedOpenSettled(): Promise<TranscriptScrollMetrics> {
   for (;;) {
     await nextFrame();
     throwOnPageErrors("paged open");
-    const m = metrics();
-    if (tracker.observe({ turns: m.turns, geometry: m })) return m;
+    const el = findScrollElement();
+    const sample = { turns: modelTurnCount, geometry: el === null ? null : geometryOf(el) };
+    if (tracker.observe(sample)) return metrics();
     if (performance.now() > deadline) {
-      throw new Error(`transcript harness: the paged open never settled; ${JSON.stringify(m)}`);
+      throw new Error(`transcript harness: the paged open never settled; ${JSON.stringify(sample)}`);
     }
   }
 }
@@ -619,6 +674,7 @@ async function shrinkPortAndSettle(): Promise<
 
 declare global {
   interface Window {
+    releaseTranscriptRead: () => void;
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
     waitForPagedOpenSettled: typeof waitForPagedOpenSettled;
     transcriptScrollMetrics: typeof metrics;
@@ -630,6 +686,9 @@ declare global {
   }
 }
 
+window.releaseTranscriptRead = () => {
+  releaseRead?.();
+};
 window.waitForTranscriptSettled = waitForTranscriptSettled;
 window.waitForPagedOpenSettled = waitForPagedOpenSettled;
 window.transcriptScrollMetrics = metrics;
