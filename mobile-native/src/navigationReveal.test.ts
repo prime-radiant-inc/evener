@@ -45,12 +45,13 @@ it.each([
 		revealRef: "child",
 	});
 });
-const locationClient = (fields: Record<string, unknown>) =>
+/** A hub answering one location, for a session of the given kind. */
+const locationClient = (fields: Record<string, unknown>, kind = "session") =>
 	Object.assign(new FakeClient("ready"), {
 		request: async () => {
 			const snapshot = wireSnapshot({ representationVersion: 3, resource: "location", ref: "child" } as never, {
 				ref: "child",
-				session: { ref: "child", project: "Project" },
+				session: { ref: "child", project: "Project", kind },
 				...fields,
 			});
 			return {
@@ -71,7 +72,7 @@ it.each([
 		"cluster-row",
 	],
 ])("reveals a subagent by %s, not by the subagent itself", async (_name, fields, revealRef) => {
-	expect(await locateSession(locationClient(fields), "child")).toMatchObject({
+	expect(await locateSession(locationClient(fields, "subagent"), "child")).toMatchObject({
 		ref: "child",
 		revealRef,
 	});
@@ -83,7 +84,7 @@ it.each(["current", "recent", "archived"])(
 	"reveals a nested fork original through the top-level row that carries it (%s)",
 	async (tier) => {
 		const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier };
-		expect(await locateSession(locationClient(fields), "child")).toMatchObject({
+		expect(await locateSession(locationClient(fields, "fork"), "child")).toMatchObject({
 			ref: "child",
 			revealRef: "root",
 		});
@@ -91,10 +92,18 @@ it.each(["current", "recent", "archived"])(
 );
 it("reveals a top-level fork original by its own row", async () => {
 	const fields = { top_level: true, top_level_ref: "child", project_key: "p", tier: "current" };
-	expect(await locateSession(locationClient(fields), "child")).toMatchObject({
+	expect(await locateSession(locationClient(fields, "fork"), "child")).toMatchObject({
 		ref: "child",
 		revealRef: "child",
 	});
+});
+// The hub names the row carrying every location; one that names none is
+// refused like any other malformed location, so a reveal never lacks a row.
+it("refuses a location that names no top-level row", async () => {
+	const fields = { top_level: false, top_level_ref: undefined, project_key: "p", tier: "current" };
+	await expect(locateSession(locationClient(fields, "fork"), "child")).rejects.toThrow(
+		"This session could not be located. Try again.",
+	);
 });
 it.each(["local:orphan", "host:remote-subagent"])(
 	"shows the existing could-not-be-located message for a gone ref: %s",
