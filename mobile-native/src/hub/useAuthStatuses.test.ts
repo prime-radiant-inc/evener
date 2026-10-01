@@ -4,7 +4,7 @@ import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { renderHook } from "../renderNative.testkit";
-import { useAuthStatuses } from "./useAuthStatuses";
+import { AUTH_RETRY_MS, useAuthStatuses } from "./useAuthStatuses";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -124,6 +124,67 @@ it("reads again on a later update after the first read failed", async () => {
 	expect(result.current).toBeNull();
 	fake.notify("evener/auth/updated");
 	await afterDebounce();
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+});
+
+// The store's own triggers are a notification or a connection transition, and
+// neither follows a read that fails while the socket stays ready. The hook
+// retries the failed read itself rather than leaving the statuses null.
+it("retries a failed read on its own, with no notification", async () => {
+	vi.useFakeTimers();
+	const fake = hub([new Error("the hub is busy"), [expired]]);
+	const { result } = renderHook(() => useAuthStatuses(fake.client));
+	await flushInitial();
+	expect(fake.methods).toHaveLength(1);
+	expect(result.current).toBeNull();
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS);
+	});
+	expect(fake.methods).toHaveLength(2);
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+});
+
+it("retries a failed refetch after a read has landed", async () => {
+	vi.useFakeTimers();
+	const fake = hub([[expired], new Error("the hub is busy"), [renewed]]);
+	const { result } = renderHook(() => useAuthStatuses(fake.client));
+	await flushInitial();
+	fake.notify("evener/auth/updated");
+	await afterDebounce();
+	expect(fake.methods).toHaveLength(2);
+	// The failed refetch keeps the last statuses and, with no further
+	// notification, the hook reads again on its own.
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS);
+	});
+	expect(fake.methods).toHaveLength(3);
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(false);
+});
+
+it("keeps the replaced client's reply off the new client's statuses", async () => {
+	let answerA: (r: { providers: AuthStatusResponse[] }) => void = () => {};
+	const clientA = {
+		request: () =>
+			new Promise<{ providers: AuthStatusResponse[] }>((resolve) => {
+				answerA = resolve;
+			}),
+		onNotification: () => () => {},
+	} as unknown as ConversationClientLike;
+	const b = hub([[expired]]);
+	let current: ConversationClientLike | null = clientA;
+	const { result, rerender } = renderHook(() => useAuthStatuses(current));
+	await act(settle);
+	current = b.client;
+	rerender();
+	await act(settle);
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+	// A's read lands after B is the client: the replaced store is disposed, so
+	// it publishes nothing and B's statuses stand.
+	await act(async () => {
+		answerA({ providers: [renewed] });
+		await settle();
+	});
 	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
 });
 
