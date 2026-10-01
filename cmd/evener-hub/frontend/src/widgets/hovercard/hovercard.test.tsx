@@ -6,6 +6,7 @@ import { HoverCard } from ".";
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 test("the plain-node gallery child keeps the automatic description association", () => {
@@ -139,6 +140,31 @@ test("the first hoverless tap opens an enabled card and the second activates its
   } finally {
     window.matchMedia = originalMatchMedia;
   }
+});
+
+test("tap-enabled cards still activate when the browser has no matchMedia API", () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("matchMedia", undefined);
+  const activate = vi.fn();
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard behavior is covered by the external focus tests
+    <div onClick={activate}>
+      <HoverCard label={<div>Project prime-radiant</div>} tapEnabled>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>
+    </div>,
+  );
+
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+  expect(() => {
+    fireEvent.focus(trigger);
+    act(() => vi.advanceTimersByTime(300));
+  }).not.toThrow();
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+
+  expect(() => fireEvent.click(trigger)).not.toThrow();
+  expect(activate).toHaveBeenCalledOnce();
 });
 
 test("focus before a hoverless click still treats that click as the first tap", async () => {

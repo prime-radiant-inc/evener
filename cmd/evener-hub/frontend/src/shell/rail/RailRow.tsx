@@ -29,7 +29,13 @@
 // keeps the actions visible beside the occupant - in flow, not stacked -
 // with no hover to reveal them).
 
-import { canReadSharedNotes, watchCadenceLabel, watchDurationLabel, watchGloss } from "@evener/appwire-client";
+import {
+  canReadSharedNotes,
+  humanizeState,
+  watchCadenceLabel,
+  watchDurationLabel,
+  watchGloss,
+} from "@evener/appwire-client";
 import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
@@ -517,14 +523,13 @@ function effectiveSessionState(session: RailSession): string {
   return presented;
 }
 
-function sessionStatusLabel(session: RailSession, effectiveState: string): string {
+function sessionStatusLabel(session: RailSession, effectiveState: string, notStarted: boolean): string {
   const state = cadenceStateFor(effectiveState);
-  if (session.dormant === true && state === "idle") return "Not started";
+  if (notStarted) return "Not started";
   if (state === "failed") return CADENCE_LABEL.failed;
-  if (session.state === "restartRequired") return "Restart required";
-  if (session.approval_pending === true) return "Approval waiting";
-  if (session.ask_pending === true) return "Question waiting";
-  return CADENCE_LABEL[state];
+  if (state === "working") return CADENCE_LABEL.working;
+  const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
 function ContextRow({ label, value, mono = false }: { label: string; value?: ReactNode; mono?: boolean }) {
@@ -552,7 +557,15 @@ function ContextAgeRow({ updatedAt }: { updatedAt?: string }) {
   return <ContextRow label="Age" value={relativeAge(updatedAt, now)} />;
 }
 
-function SessionContextCard({ session, effectiveState }: { session: RailSession; effectiveState: string }) {
+function SessionContextCard({
+  session,
+  effectiveState,
+  notStarted,
+}: {
+  session: RailSession;
+  effectiveState: string;
+  notStarted: boolean;
+}) {
   const hostOnline = useHostOnline(session.host_id);
   const pinSection = useNavigationStore((state) => {
     if (session.pin_section_id === undefined) return undefined;
@@ -564,7 +577,7 @@ function SessionContextCard({ session, effectiveState }: { session: RailSession;
   const jobs = session.running_job_count ?? 0;
   const watches = session.watch_count ?? 0;
   const armedWatches = activeWatchCount(session);
-  const status = sessionStatusLabel(session, effectiveState);
+  const status = sessionStatusLabel(session, effectiveState, notStarted);
   return (
     <div className={CLASS.contextCard} data-state={cadenceStateFor(effectiveState)}>
       <div className={CLASS.contextHead}>
@@ -597,16 +610,18 @@ function SessionContextCard({ session, effectiveState }: { session: RailSession;
 function SessionTitle({
   session,
   effectiveState,
+  notStarted,
   focusTarget,
 }: {
   session: RailSession;
   effectiveState: string;
+  notStarted: boolean;
   focusTarget: () => HTMLElement | null;
 }) {
   return (
     <span className={CLASS.sessionTitle}>
       <HoverCard
-        label={<SessionContextCard session={session} effectiveState={effectiveState} />}
+        label={<SessionContextCard session={session} effectiveState={effectiveState} notStarted={notStarted} />}
         focusTarget={focusTarget}
         tapEnabled
       >
@@ -618,9 +633,10 @@ function SessionTitle({
             className={CLASS.label}
             aria-describedby={describedBy}
             onMouseDown={(event) => {
+              if (event.button !== 0) return;
               event.preventDefault();
               const target = focusTarget();
-              if (target?.contains(document.activeElement)) return;
+              if (target === document.activeElement) return;
               target?.focus();
             }}
           >
@@ -653,7 +669,12 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             separate aria-label on the row). */}
         <span className={CLASS.titleLine}>
           <Signal wireState={effectiveState} />
-          <SessionTitle session={session} effectiveState={effectiveState} focusTarget={focusTarget} />
+          <SessionTitle
+            session={session}
+            effectiveState={effectiveState}
+            notStarted={notStarted}
+            focusTarget={focusTarget}
+          />
           <TrailingChevron info={info} />
         </span>
       </span>

@@ -603,6 +603,53 @@ describe("compact session status", () => {
     expect(within(panel).getByText("2m")).toBeTruthy();
   });
 
+  test.each([
+    ["warning", "Warning"],
+    ["awaiting", "Your move"],
+  ] as const)("the context panel preserves the %s status as %s", (state, expected) => {
+    render(
+      <RailRow node={sessionRailNode(apiNode({ state, ask_pending: false }))} info={info()} actions={actions()} />,
+    );
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText(expected)).toBeTruthy();
+  });
+
+  test("the context panel agrees that a quiet dormant ended session has not started", () => {
+    render(
+      <RailRow node={sessionRailNode(apiNode({ state: "ended", dormant: true }))} info={info()} actions={actions()} />,
+    );
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("Not started")).toBeTruthy();
+  });
+
+  test("the context panel age advances with the rail clock", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-01-01T00:00:00Z");
+      vi.setSystemTime(start);
+      render(
+        <RailTickProvider>
+          <RailRow
+            node={sessionRailNode(apiNode({ updated_at: new Date(start - 1_000).toISOString() }))}
+            info={info()}
+            actions={actions()}
+          />
+        </RailTickProvider>,
+      );
+
+      fireEvent.mouseEnter(screen.getByText("Fix flaky test"));
+      act(() => vi.advanceTimersByTime(300));
+      const panel = screen.getByRole("tooltip");
+      expect(within(panel).getByText("now")).toBeTruthy();
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(within(panel).getByText("1m")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("the session context panel identifies its pinned section", () => {
     render(<RailRow node={sessionRailNode(apiNode({ pin_section_id: "sec_1" }))} info={info()} actions={actions()} />);
 
@@ -626,6 +673,36 @@ describe("compact session status", () => {
 
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
     expect(within(panel).getByText("buildbox (offline)")).toBeTruthy();
+  });
+
+  test("the open context panel keeps an offline host during manifest revalidation", () => {
+    const sources: NavigationManifest["sources"] = [
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+    ];
+    seedSources(sources);
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ ref: "buildbox:abc", host_id: "buildbox" }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("buildbox (offline)")).toBeTruthy();
+
+    act(() => seedSources(sources, { loading: true, stale: true }));
+    expect(within(panel).getByText("buildbox (offline)")).toBeTruthy();
+
+    act(() =>
+      seedSources([
+        { id: "local", label: "Local", kind: "local", online: true },
+        { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+      ]),
+    );
+    expect(within(panel).getByText("buildbox")).toBeTruthy();
+    expect(within(panel).queryByText("buildbox (offline)")).toBeNull();
   });
 
   test("a truncated title stays recoverable from the context panel", () => {
@@ -1922,6 +1999,32 @@ describe("roving-tabindex integration (Tree + RailRow)", () => {
     expect(document.activeElement).toBe(rowB);
     expect(rowA.tabIndex).toBe(-1);
     expect(rowB.tabIndex).toBe(0);
+  });
+
+  test("clicking a title moves focus from another control in the same row to the treeitem", async () => {
+    const user = userEvent.setup();
+    renderTree(twoSessionRows());
+    const row = screen.getByRole("treeitem", { name: /Row A/ });
+    const action = within(row).getByRole("button", { name: /actions for/i });
+    act(() => action.focus());
+
+    await user.click(within(row).getByRole("button", { name: "Row A" }));
+
+    expect(document.activeElement).toBe(row);
+  });
+
+  test("a non-primary press on a title leaves focus and the event's default behavior alone", () => {
+    renderTree(twoSessionRows());
+    const rowA = screen.getByRole("treeitem", { name: /Row A/ });
+    const rowB = screen.getByRole("treeitem", { name: /Row B/ });
+    act(() => rowA.focus());
+
+    const allowed = fireEvent.mouseDown(within(rowB).getByRole("button", { name: "Row B" }), { button: 1 });
+
+    expect(allowed).toBe(true);
+    expect(document.activeElement).toBe(rowA);
+    expect(rowA.tabIndex).toBe(0);
+    expect(rowB.tabIndex).toBe(-1);
   });
 
   test("clicking a session title releases unrelated editable focus", async () => {
