@@ -1,15 +1,15 @@
 // Two real documents load this entry: only the AppWire boundary is scripted.
 // The store's module-scope BroadcastChannel and IndexedDB adapter are untouched.
 import type { CachedSessionRecord, ThreadReadResponse, Turn, TurnModel } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { deleteSession } from "../shell/rail/actions";
 import { connectionStore } from "../stores/connection";
 import { settleProjectionWorkForTests } from "../stores/projectionWork";
 import { SessionCacheIndexedDB } from "../stores/sessionCacheIndexedDB";
 import { clearCachedSessions, resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 
-const instance = new URLSearchParams(location.search).get("instance");
-if (instance !== "a" && instance !== "b") throw new Error("sessioncacheguard needs ?instance=a|b");
 const errors: string[] = [];
 window.addEventListener("error", (event) => errors.push(event.error?.stack ?? event.message));
 window.addEventListener("unhandledrejection", (event) => errors.push(String(event.reason)));
@@ -42,10 +42,14 @@ function turn(): Turn & TurnModel {
   };
 }
 
+function localSessionId(ref: string): string {
+  return ref.slice("local:".length);
+}
+
 function record(ref: string): CachedSessionRecord {
   return {
     ref,
-    threadId: ref.slice("local:".length),
+    threadId: localSessionId(ref),
     name: "sessioncacheguard seed",
     modelProvider: "guard",
     model: "guard",
@@ -63,56 +67,21 @@ function record(ref: string): CachedSessionRecord {
 }
 
 function response(ref: string, requestGeneration: number | undefined): ThreadReadResponse {
-  const cached = record(ref);
   return {
-    thread: {
-      id: cached.threadId,
-      sessionId: cached.threadId,
+    thread: wireThread(ref, {
+      id: localSessionId(ref),
+      sessionId: localSessionId(ref),
       name: "sessioncacheguard live",
       preview: "sessioncacheguard",
-      ephemeral: false,
       modelProvider: "guard",
-      createdAt: 1000,
-      updatedAt: 1000,
-      status: { type: "idle" },
       cwd: "/tmp/sessioncacheguard",
       cliVersion: "guard",
-      source: "evener",
-      evener: {
-        ref,
-        queue: { revision: 0 },
-        capabilities: {
-          send: true,
-          steer: true,
-          interrupt: true,
-          compact: true,
-          clear: true,
-          forkFromTurn: true,
-          shutdown: true,
-          changeModel: true,
-          changeVisionModel: true,
-          queue: true,
-          goal: true,
-          sharedNotes: true,
-          rename: true,
-        },
-      },
       turns: [turn()],
-    },
+    }),
     bootGeneration: "1",
     epoch: 1,
     snapshot: { incarnation: "guard-incarnation", length: 1 },
     requestGeneration,
-  };
-}
-
-function deferred() {
-  let resolve: () => void;
-  return {
-    promise: new Promise<void>((done) => {
-      resolve = done;
-    }),
-    resolve: () => resolve(),
   };
 }
 
@@ -133,7 +102,7 @@ function connectFakeClient(): FakeClient {
     return response(params.ref, params.requestGeneration);
   });
   fake.on("evener/session/delete", ({ ref }) => ({
-    deleted: [ref.slice("local:".length)],
+    deleted: [localSessionId(ref)],
     skipped: [],
     navigation: { generation_id: "guard", targets: [] },
   }));
@@ -146,7 +115,6 @@ const reader = new SessionCacheIndexedDB();
 function snapshot(ref: string) {
   const state = threadsStore.getState();
   return {
-    instance,
     sourceId,
     deletedRefs: [...state.deletedRefs].sort(),
     lifetime: state.cacheLifetimes.get(ref) ?? null,
@@ -172,8 +140,8 @@ const api = {
   },
   clear: clearCachedSessions,
   async armLease(ref: string) {
-    const entered = deferred();
-    const admission = deferred();
+    const entered = deferred<void>();
+    const admission = deferred<void>();
     const held: HeldRead = {
       entered: entered.resolve,
       admission: admission.promise,
@@ -205,15 +173,13 @@ const api = {
     await settleProjectionWorkForTests();
     return api.durable(ref);
   },
+  clearShared: () => reader.clear(), // fixture cleanup, deliberately no broadcast
   async reset() {
     for (const ref of heldReads.keys()) await api.fireWrite(ref);
     await settleProjectionWorkForTests();
     resetThreadsStoreForTests();
-    const result = await reader.clear(); // fixture cleanup, deliberately no broadcast
-    if (!result.committed) throw new Error("sessioncacheguard reset did not commit");
     fake = connectFakeClient();
-    return result;
   },
 };
 
-Object.assign(window, { [`${instance}Guard`]: api });
+Object.assign(window, { sessionCacheGuard: api });

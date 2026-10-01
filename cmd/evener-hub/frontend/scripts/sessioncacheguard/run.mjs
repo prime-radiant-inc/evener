@@ -3,10 +3,11 @@
 import path from "node:path";
 import { setTimeout as poll } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import {
   assertGuardOrigin,
   closePage,
-  connectPageMatching,
+  connectPage,
   evaluate,
   navigateTo,
   openPage,
@@ -33,22 +34,30 @@ async function waitFor(message, read, accepts) {
   throw new Error(`${message} (${WAIT_MS}ms deadline); observed ${JSON.stringify(observed)}`);
 }
 
-function tabAPI(page, instance) {
+function tabAPI(page, label) {
   const call = (method, ...args) =>
-    evaluate(page.send, `window.${instance}Guard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+    evaluate(page.send, `window.sessionCacheGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
   return {
     call,
     async snapshot(ref) {
       const state = await call("snapshot", ref);
-      check(state.errors.length === 0, `tab ${instance} page errors`, state);
+      check(state.errors.length === 0, `tab ${label} page errors`, state);
       return state;
     },
   };
 }
 
+async function resetTabs(a, b) {
+  await a.call("reset");
+  await b.call("reset");
+  const cleared = await a.call("clearShared");
+  check(cleared.committed, "sessioncacheguard reset did not commit", cleared);
+}
+
 async function siblingDeletion(a, b) {
   const ref = "local:sessioncacheguard-delete";
-  check((await b.call("seed", ref)).outcome === "written", "B seed must commit", await b.call("durable", ref));
+  const seeded = (await b.call("seed", ref)).outcome === "written";
+  check(seeded, "B seed must commit", seeded ? null : await b.call("durable", ref));
   check((await a.call("durable", ref)).record?.ref === ref, "A must see B's shared durable seed", ref);
   // Baseline the SAME flush used by the refusal check, not just the seed adapter.
   await b.call("armLease", ref);
@@ -58,7 +67,8 @@ async function siblingDeletion(a, b) {
     "B control write must replace the seed before deletion",
     written,
   );
-  check((await b.snapshot(ref)).lifetime === null, "B must start without an open lease", await b.snapshot(ref));
+  const idle = await b.snapshot(ref);
+  check(idle.lifetime === null, "B must start without an open lease", idle);
   await a.call("delete", ref); // action-owned fence, never markCacheSessionsDeleted directly
   const healed = await waitFor(
     "sibling deletion heal: B never gained suppression-only state",
@@ -66,7 +76,7 @@ async function siblingDeletion(a, b) {
     (state) => state.lifetime?.suppressed === true,
   );
   check(
-    JSON.stringify(healed.lifetime) === '{"suppressed":true}' && !healed.deletedRefs.includes(ref),
+    isDeepStrictEqual(healed.lifetime, { suppressed: true }) && !healed.deletedRefs.includes(ref),
     "B must suppress without joining the deleting tab's deletedRefs",
     healed,
   );
@@ -146,7 +156,8 @@ async function driverRealm(page) {
   };
 }
 
-async function channelFiltering(a, b, pages) {
+async function channelFiltering(a, b, tabs) {
+  const snapshotBoth = (ref) => Promise.all([a.snapshot(ref), b.snapshot(ref)]);
   // Learn each real sourceId from an actual action's native outgoing envelope.
   await a.call("delete", "local:sessioncacheguard-source-a");
   await b.call("delete", "local:sessioncacheguard-source-b");
@@ -163,18 +174,17 @@ async function channelFiltering(a, b, pages) {
       ),
   );
   check(sources[0].sourceId !== sources[1].sourceId, "real tabs must own distinct source IDs", sources);
-  await a.call("reset");
-  await b.call("reset");
+  await resetTabs(a, b);
   const drivers = [];
   try {
-    for (const page of pages) drivers.push(await driverRealm(page));
+    for (const { page } of tabs) drivers.push(await driverRealm(page));
     const stateOnly = (state) => ({
       deletedRefs: state.deletedRefs,
       lifetimes: state.lifetimes,
       clearInFlight: state.clearInFlight,
     });
     const ref = "local:sessioncacheguard-filter";
-    const baseline = [stateOnly(await a.snapshot(ref)), stateOnly(await b.snapshot(ref))];
+    const baseline = (await snapshotBoth(ref)).map(stateOnly);
     const wrong = {
       version: 2,
       sourceId: "sessioncacheguard-driver",
@@ -187,12 +197,8 @@ async function channelFiltering(a, b, pages) {
       "channel filtering: wrong-version probe never reached both tabs",
       async () => {
         const delivered = await Promise.all(drivers.map((driver) => driver.seen(wrong.guardProbe)));
-        const states = [stateOnly(await a.snapshot(ref)), stateOnly(await b.snapshot(ref))];
-        check(
-          JSON.stringify(states) === JSON.stringify(baseline),
-          "channel filtering: wrong-version envelope changed a tab",
-          states,
-        );
+        const states = (await snapshotBoth(ref)).map(stateOnly);
+        check(isDeepStrictEqual(states, baseline), "channel filtering: wrong-version envelope changed a tab", states);
         return delivered;
       },
       (seen) => seen.every(Boolean),
@@ -203,9 +209,9 @@ async function channelFiltering(a, b, pages) {
       "channel filtering: B did not accept A's sourceId",
       async () => {
         const delivered = await Promise.all(drivers.map((driver) => driver.seen("own-source")));
-        const states = [await a.snapshot(ref), await b.snapshot(ref)];
+        const states = await snapshotBoth(ref);
         check(
-          JSON.stringify(stateOnly(states[0])) === JSON.stringify(baseline[0]),
+          isDeepStrictEqual(stateOnly(states[0]), baseline[0]),
           "channel filtering: A accepted its own sourceId",
           states[0],
         );
@@ -222,36 +228,38 @@ async function channelFiltering(a, b, pages) {
 async function main() {
   const started = performance.now();
   const guard = await startBrowserGuard({ frontend: FRONTEND, profilePrefix: "sessioncacheguard-chrome-" });
-  const pages = [];
-  const targets = [];
+  const tabs = [];
   const failures = [];
   let endpoint;
   try {
     const origin = `http://127.0.0.1:${guard.vitePort}`;
     await waitForHttp(`${origin}/sessioncacheguard.html`, "sessioncacheguard Vite", guard.getViteLaunchError);
     endpoint = await waitForBrowserReady(guard);
-    for (const instance of ["a", "b"]) {
+    for (const label of ["A", "B"]) {
       const target = await openPage(endpoint, "about:blank");
-      targets.push(target.id);
-      const page = await connectPageMatching(endpoint, (entry) => entry.id === target.id);
-      pages.push(page);
-      await navigateTo(page, `${origin}/sessioncacheguard.html?instance=${instance}`, {
-        bootExpression: `typeof window.${instance}Guard !== 'undefined'`,
-        bootLabel: `sessioncacheguard tab ${instance}`,
+      const tab = { label, page: null, targetId: target.id };
+      tabs.push(tab);
+      tab.page = await connectPage(endpoint, tab.targetId);
+      await navigateTo(tab.page, `${origin}/sessioncacheguard.html`, {
+        bootExpression: "typeof window.sessionCacheGuard !== 'undefined'",
+        bootLabel: `sessioncacheguard tab ${label}`,
       });
-      await assertGuardOrigin(page.send, `127.0.0.1:${guard.vitePort}`);
+      await assertGuardOrigin(tab.page.send, `127.0.0.1:${guard.vitePort}`);
     }
-    check(targets[0] !== targets[1], "guard must drive two distinct real tabs", targets);
-    const [a, b] = pages.map((page, index) => tabAPI(page, index === 0 ? "a" : "b"));
+    check(
+      tabs[0].targetId !== tabs[1].targetId,
+      "guard must drive two distinct real tabs",
+      tabs.map((tab) => tab.targetId),
+    );
+    const [a, b] = tabs.map(({ page, label }) => tabAPI(page, label));
     for (const [name, scenario] of [
       ["sibling deletion heal", siblingDeletion],
       ["clear-epoch suppression", clearEpoch],
       ["channel filtering", channelFiltering],
     ]) {
-      await a.call("reset");
-      await b.call("reset");
+      await resetTabs(a, b);
       try {
-        await scenario(a, b, pages);
+        await scenario(a, b, tabs);
       } catch (error) {
         throw new Error(`${name}: ${error.message}`, { cause: error });
       }
@@ -260,8 +268,8 @@ async function main() {
   } catch (error) {
     failures.push(error);
   } finally {
-    for (const page of pages) page.close();
-    const closed = await Promise.allSettled(targets.map((id) => closePage(endpoint, id)));
+    for (const { page } of tabs) page?.close();
+    const closed = await Promise.allSettled(tabs.map(({ targetId }) => closePage(endpoint, targetId)));
     const cleaned = await Promise.allSettled([guard.cleanup()]);
     for (const result of [...closed, ...cleaned]) if (result.status === "rejected") failures.push(result.reason);
   }
