@@ -31,6 +31,17 @@ const WEB_TEXT: Record<ToolWireCall, string> = {
   call_task_list_start: "→ Reproduce the settle race",
   call_task_list_done: "→ Order the drain before settle",
   call_task_list_view: "Checked the task list",
+  // The session's housekeeping tools, each read from its own recording: a call
+  // that cleared a note or a goal the session never set says so.
+  call_notes_agent_set: "Cleared its note",
+  call_notes_read: "Read the session notes",
+  call_urls_add: "Added link CI run",
+  call_urls_remove: "Removed a link",
+  call_update_goal: "Marked the goal complete · no goal set",
+  call_compact_context: "Cleared its compaction note",
+  call_model_list: "Listed the available models",
+  call_model_list_next: "Listed more models",
+  call_doctor_evener: "Checked evener's records 02wMz5Txv5aIxgf9yVdd0N · transcript",
   call_worktree_create: "Created worktree settle-fix",
   call_worktree_list: "Listed worktrees · 1 found",
   call_worktree_exit: "Exited worktree at /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix",

@@ -676,12 +676,17 @@ type SessionSeenSetResponse struct {
 	Navigation NavigationMutation `json:"navigation"`
 }
 
-// ArchivedListParams names the project whose archived sessions to list: the
-// catalog its rail row came from ("projects", "archived_projects" or
-// "test_runs"; the same key can exist in two catalogs) and its key. Cursor is
-// the previous page's NextCursor; Limit defaults to 50.
+// ArchivedListParams names the project whose archived sessions to list: its
+// key, and the catalog its row came from ("projects", "archived_projects" or
+// "test_runs") as a hint. The same key can exist in more than one catalog, so
+// the hub reads the hinted catalog when it holds the key; a project that moved
+// between Projects and Archived projects is read from the one holding it now
+// (a test-runs hint has no such fallback); with no hint, the first of
+// projects, archived_projects and test_runs holding the key. Cursor is the
+// previous page's NextCursor, bound to the same hint and key; Limit defaults
+// to 50.
 type ArchivedListParams struct {
-	Catalog    string `json:"catalog"`
+	Catalog    string `json:"catalog,omitempty"`
 	ProjectKey string `json:"projectKey"`
 	Cursor     string `json:"cursor,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
@@ -691,11 +696,14 @@ type ArchivedListParams struct {
 // first. Sessions is a JSON array of hubapi.NavigationSessionSummary: appwire
 // cannot import hubapi, so the rows travel as raw JSON the way a navigation
 // read's data does. NextCursor is empty on the last page. Total counts every
-// archived session of the project.
+// archived session of the project. Catalog is the catalog the hub read; it is
+// absent when none of the catalogs the hint allows holds the key, and the page
+// is empty.
 type ArchivedListResponse struct {
 	Sessions   json.RawMessage `json:"sessions"`
 	NextCursor string          `json:"nextCursor,omitempty"`
 	Total      int             `json:"total"`
+	Catalog    string          `json:"catalog,omitempty"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command

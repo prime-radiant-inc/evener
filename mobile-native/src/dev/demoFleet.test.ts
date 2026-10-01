@@ -2,7 +2,7 @@
 // fixture can never drift from the wire (see demoFleet.ts's header comment
 // for what this fixture represents and where it comes from).
 import { describe, expect, it } from "vitest";
-import type { NavigationReadParams, NavigationSessionSummary } from "@evener/appwire-client";
+import type { ArchivedListParams, NavigationReadParams, NavigationSessionSummary } from "@evener/appwire-client";
 import {
 	decodeArchivedListSessions,
 	decodeNavigationResponse,
@@ -1023,26 +1023,31 @@ describe("demo fleet subagents", () => {
 
 // The real hub serves a project's archived rows only through
 // evener/archived/list (cmd/evener-hub/navigation_archived_list.go): paged by
-// an opaque cursor bound to its catalog and project, with the tier's total;
-// navigation's archived project_page and the project overview's archived
-// tier come back empty.
+// an opaque cursor bound to its catalog hint and project, with the tier's
+// total; navigation's archived project_page and the project overview's
+// archived tier come back empty.
 describe("demo fleet archived lists", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
-	it("pages a project's archived sessions by cursor to the end, with the tier's total", () => {
+	/** The session ids one archived list serves, paging by cursor with the
+	 * same params, each page checked to hold rows and the list's total. */
+	function pageArchived(list: Omit<ArchivedListParams, "cursor">, total: number): Set<string> {
 		const seen = new Set<string>();
 		let cursor: string | undefined;
 		for (let guard = 0; ; guard++) {
 			if (guard > 20) throw new Error("archived paging never reached the end");
-			const page = fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "evener", cursor });
-			expect(page.total).toBe(271);
+			const page = fleet.answerArchivedList({ ...list, cursor });
+			expect(page.total).toBe(total);
 			const rows = decodeArchivedListSessions(page.sessions);
 			expect(rows.length).toBeGreaterThan(0);
 			for (const row of rows) seen.add(row.session_id);
 			cursor = page.nextCursor;
-			if (!cursor) break;
+			if (!cursor) return seen;
 		}
-		expect(seen.size).toBe(271);
+	}
+
+	it("pages a project's archived sessions by cursor to the end, with the tier's total", () => {
+		expect(pageArchived({ catalog: "archived_projects", projectKey: "evener" }, 271).size).toBe(271);
 	});
 
 	it("takes a limit up to the section maximum, where none or 0 means the maximum", () => {
@@ -1074,8 +1079,73 @@ describe("demo fleet archived lists", () => {
 		});
 	});
 
+	// The catalog is a hint, as on the hub: the hinted catalog when it holds the
+	// project, the other of projects and archived projects when the project
+	// moved there, and with no hint the first catalog holding it. The answer
+	// says which catalog it read.
+	it("reads the hinted catalog when it holds the project, and says which", () => {
+		for (const catalog of ["projects", "archived_projects"])
+			expect(fleet.answerArchivedList({ catalog, projectKey: "evener", limit: 1 })).toMatchObject({
+				catalog,
+				total: 271,
+			});
+	});
+
+	it("reads the first catalog holding the project when given no hint", () => {
+		expect(fleet.answerArchivedList({ projectKey: "evener", limit: 1 })).toMatchObject({
+			catalog: "projects",
+			total: 271,
+		});
+		expect(fleet.answerArchivedList({ projectKey: "hub-test-env" })).toEqual({
+			sessions: [],
+			total: 0,
+			catalog: "test_runs",
+		});
+	});
+
+	it("follows a project to the other member of the pair, and never into or out of test runs", () => {
+		expect(fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "deslop" })).toEqual({
+			sessions: [],
+			total: 0,
+			catalog: "projects",
+		});
+		expect(fleet.answerArchivedList({ catalog: "projects", projectKey: "hub-test-env" })).toEqual({
+			sessions: [],
+			total: 0,
+		});
+	});
+
+	// A project whose every session is archived moves into Archived projects,
+	// while a row read earlier still names Projects.
+	it("follows a project that moved into Archived projects, whichever of the pair it is hinted", () => {
+		const demo = createDemoFleet({ now: STARTUP });
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		for (const catalog of [undefined, "", "projects", "archived_projects"])
+			expect(demo.answerArchivedList({ catalog, projectKey: "deslop" })).toMatchObject({
+				catalog: "archived_projects",
+				total: 1,
+			});
+	});
+
+	it("binds a cursor to the hint it was read with", () => {
+		expect(pageArchived({ projectKey: "evener" }, 271).size).toBe(271);
+		const unhinted = fleet.answerArchivedList({ projectKey: "evener" }).nextCursor;
+		expect(() => fleet.answerArchivedList({ catalog: "projects", projectKey: "evener", cursor: unhinted })).toThrow(
+			"cursor belongs to another archived list",
+		);
+		const hinted = fleet.answerArchivedList({ catalog: "projects", projectKey: "evener" }).nextCursor;
+		expect(() => fleet.answerArchivedList({ projectKey: "evener", cursor: hinted })).toThrow(
+			"cursor belongs to another archived list",
+		);
+	});
+
 	it("refuses an unknown catalog and a cursor from another list", () => {
 		expect(() => fleet.answerArchivedList({ catalog: "nope", projectKey: "evener" })).toThrow(
+			"Unknown demonstration catalog: nope",
+		);
+		// The catalog is checked before the limit, as on the hub.
+		expect(() => fleet.answerArchivedList({ catalog: "nope", projectKey: "evener", limit: -1 })).toThrow(
 			"Unknown demonstration catalog: nope",
 		);
 		const cursor = fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "evener" }).nextCursor;
