@@ -183,8 +183,11 @@ func TestSessionActivityUnavailableBranchInvalidatesWarmCounts(t *testing.T) {
 				t.Fatalf("warm source failure was not isolated: %+v error=%v", page, err)
 			}
 			summary, err := s.ActivitySummary(t.Context(), appwire.SessionActivityReadParams{Ref: params.Ref, Scope: params.Scope})
-			if err != nil || summary.Jobs.Known || summary.Watches.Known {
+			if summary.Jobs.Known || summary.Watches.Known {
 				t.Fatalf("source failure left trusted cached counts: %+v error=%v", summary, err)
+			}
+			if err != nil || len(summary.Issues) != 1 || summary.Issues[0].Code != "unavailable" || summary.Issues[0].Ref != page.Page.Issues[0].Ref {
+				t.Fatalf("partial summary lost source issue: %+v error=%v", summary, err)
 			}
 		})
 	}

@@ -53,9 +53,17 @@ subscription with the currently resolved session ID.
 
 Summary counts describe the requested scope independently of downloaded rows.
 `known: false` means the counts are not yet established; it does not mean zero.
-Summary reads use available controller state or warm indexes. An unknown badge
-does not cause a scan of descendant job journals. Establishing retained child
-ancestry may advance the root delegate journal in bounded steps.
+Summary reads use available controller state or established indexes. A source
+whose complete fold has already been established can catch up appended journal
+records within the shared read budget, including a first journal appearing after
+an established empty source. Current sources need no repeated probe; invalidated
+unchanged sources revalidate their file evidence without replaying records.
+Cold sources are never created or scanned merely for a badge. Source replacement
+or shrinkage retires establishment rather than rebuilding replacement history.
+Establishing retained child ancestry may advance the root delegate journal in
+bounded steps. Optional summary `refreshPending` identifies bounded recovery of
+established source evidence; its absence means no such demand. Cold unknown
+counts and retained registrations with unproved armed state do not set it.
 
 List arrays are always present. An empty array establishes emptiness only when
 the page is complete and has no issues. An incomplete page can contain no rows
@@ -65,6 +73,8 @@ multiple journals, an unavailable source does not hide healthy siblings. The
 current walk excludes that source and carries its issue; a fresh root read can
 include it after recovery. Counts remain unknown while a required source is
 unavailable. A read with only one source preserves its typed failure.
+Summary `issues` identify unavailable physical sources encountered in the current bounded pass using the same ref/code contract as collection issues; they are not a complete source census. Failed source attempts consume the shared work allowance, and issue admission respects the response byte budget. Unvisited established sources retain `refreshPending`; subsequent summary reads continue round-robin after the last attempted owner. A partial summary preserves counts whose requested owners remain authoritative; receiver-watch counts require all contributing physical sources. The shared summary observer retries unavailable issues with its existing bounded exponential backoff, without acquiring collection demand. Successful partial RPCs do not reset that backoff. These coarse multi-source issues include corrupt journals, matching collection semantics; while observed they receive bounded retries. A sole-source corrupt journal retains its typed nonautomatic failure. Release, disposal and disconnection cancel the shared recovery timers. Bounded folding uses `refreshPending` separately, and checks the final source revisions so accepted invalidations during a fold retain summary recovery demand.
+
 
 Watch state is `armed`, `ended` or `unknown`. A retained registration alone does
 not prove that its runtime still has an armed watch. Recorded delivery counts
@@ -148,7 +158,9 @@ owns summary and collection demand, request coalescing, cursor recovery,
 reconnects and stale-result rejection. Opening a collection observes it; closing
 it releases that demand. Paging follows visible demand. Unknown summary counts
 alone do not demand collection reads. Useful reconstruction progress refreshes
-an observed summary so its counts can become known.
+an observed summary so its counts can become known. A summary with
+`refreshPending` uses the same existing paced summary timer until established
+sources catch up; closing the last holder or going offline cancels that demand.
 
 A collection refresh preserves every displayed page while a fresh cursor walk
 rereads through the last displayed row's stable identity. Only a clean walk
@@ -164,11 +176,13 @@ row was removed, the existing opaque cursor contract requires walking to the end
 to establish its absence. That worst case can read the whole collection; each
 page remains bounded and observed demand controls the walk.
 
-Transient failures retain useful data and retry after 1, 2, 4, 8, 16 and then 30
+Transient failures retain useful collection rows and context and retry after 1, 2, 4, 8, 16 and then 30
 seconds, continuing at that cap while observed. Reconnect and explicit refresh
 can wake recovery. Proven missing resources, invalid requests and unsupported
 methods do not spin. Incomplete ancestry progresses at a paced interval instead
-of using failure backoff. Disposal cancels timers and ignores late results.
+of using failure backoff. A failed summary revokes its old count authority so
+stale known totals are not presented as current. Disposal cancels timers and
+ignores late results.
 
 Temporary source-access failures and an unfinished journal append carry
 `actionUnavailable` with `retryDisposition: "automatic"`. They use that same
