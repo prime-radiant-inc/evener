@@ -59,8 +59,8 @@ function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
       triggerLabel="Session actions"
       canRename
       canShutdown
-      canReadNotes
-      panesOpen={{ details: false, tasks: true, activity: false, notes: false }}
+      stopped
+      panesOpen={{ details: false, tasks: true, activity: false }}
       actions={actions}
       {...overrides}
     />,
@@ -83,15 +83,14 @@ afterEach(() => {
   resetNavigationStoreForTests();
 });
 
-test("panes group leads with open-state checkmarks and dispatches onOpenPane", async () => {
+test("panes group contains only Details and Activity", async () => {
   const user = userEvent.setup();
-  const actions = renderMenu();
+  renderMenu();
   await openMenu(user);
   expect(screen.getByRole("menuitem", { name: "Details" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
-  await user.click(screen.getByRole("menuitem", { name: "Tasks ✓" }));
-  expect(actions.onOpenPane).toHaveBeenCalledWith("tasks");
+  expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Notes/ })).toBeNull();
 });
 
 test("pane-only Verbosity follows Activity, precedes the first separator, and dispatches its callback", async () => {
@@ -121,9 +120,8 @@ test("rail-style callers that omit the pane-only callback do not get Verbosity",
 
 test("live labels replace the plain pane names", async () => {
   const user = userEvent.setup();
-  renderMenu({ taskLabel: "Tasks", activityLabel: "Activity · 2" });
+  renderMenu({ activityLabel: "Activity · 2" });
   await openMenu(user);
-  expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: "Activity · 2" })).toBeTruthy();
 });
 
@@ -206,18 +204,34 @@ test("full menu: organize group between separators, delete last", async () => {
   renderMenu({ session: navigationSession() });
   await openMenu(user);
   const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
-  expect(items).toEqual([
-    "Details",
-    "Tasks ✓",
-    "Activity",
-    "Notes",
-    "Rename",
-    "Pin this session…",
-    "Archive",
-    "Shut down",
-    "Delete…",
-  ]);
+  expect(items).toEqual(["Details", "Activity", "Rename", "Pin this session…", "Archive", "Shut down", "Delete…"]);
   expect(screen.getAllByRole("separator")).toHaveLength(2);
+});
+
+test("Delete is hidden until the session is stopped", async () => {
+  const user = userEvent.setup();
+  renderMenu({ session: navigationSession(), stopped: false });
+  await openMenu(user);
+  expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+});
+
+test("force-stop action is labeled Force shutdown", async () => {
+  const user = userEvent.setup();
+  renderMenu({
+    actions: {
+      onOpenPane: vi.fn(),
+      onRename: vi.fn().mockResolvedValue(undefined),
+      onShutdown: vi.fn().mockResolvedValue(undefined),
+      onForceStop: vi.fn().mockResolvedValue(undefined),
+      onPin: vi.fn().mockResolvedValue(undefined),
+      onUnpin: vi.fn().mockResolvedValue(undefined),
+      onToggleArchive: vi.fn().mockResolvedValue(undefined),
+      onDelete: vi.fn().mockResolvedValue(undefined),
+    },
+  });
+  await openMenu(user);
+  expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Force stop…" })).toBeNull();
 });
 
 test("nested kinds and remote hosts lose organization/delete items", async () => {

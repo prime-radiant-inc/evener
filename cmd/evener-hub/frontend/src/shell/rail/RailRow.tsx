@@ -32,7 +32,6 @@
 
 import {
   approvalWaiting,
-  canReadSharedNotes,
   humanizeState,
   watchCadenceLabel,
   watchDurationLabel,
@@ -49,8 +48,6 @@ import {
   selectSources,
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { useThreadsStore } from "../../stores/threads";
-import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Badge, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { HoverCard } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -419,10 +416,6 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   const sidebarTab = useActivitySidebarStore((state) => state.tab);
   const tasksPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
   const tasksOpen = (activitySidebarOpen && sidebarTab === "tasks") || (isMobile && tasksPaneOpen);
-  const notesOpen = useTopNotesExpanded(ref);
-  // Navigation summaries do not carry notes capability. Observe only an
-  // already-hydrated snapshot; opening the session owns any needed fetch.
-  const canReadNotes = useThreadsStore((s) => canReadSharedNotes(s.threads.get(ref)));
   return (
     <SessionMenu
       sessionRef={ref}
@@ -430,9 +423,9 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       triggerLabel={`Actions for ${session.title}`}
       canRename={session.rename === true}
       canShutdown={session.live && session.state !== "restartRequired"}
-      canReadNotes={canReadNotes}
+      stopped={session.state === "ended"}
       treeNode={session}
-      panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
+      panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
       actions={{
         onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
         onRename: (name) => actions.onRenameSession(session, name),

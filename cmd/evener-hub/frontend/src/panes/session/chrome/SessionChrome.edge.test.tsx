@@ -379,7 +379,7 @@ test.each(["resolve", "reject"])(
     const user = userEvent.setup();
     const fake = connectFakeClient();
     const ref = "local:chrome-delete";
-    fake.on("thread/read", () => readResponse(ref, { name: "Delete target" }));
+    fake.on("thread/read", () => readResponse(ref, { name: "Delete target", status: { type: "ended" } }));
     await threadsStore.getState().ensureThread(ref);
     setLocation(ref);
     let finish: (() => void) | undefined;
@@ -428,7 +428,7 @@ test.each(["resolve", "reject"])(
 test("delete failure toasts an error", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_del", { name: "Del Session" }));
+  fake.on("thread/read", () => readResponse("ref_del", { name: "Del Session", status: { type: "ended" } }));
   fake.on("evener/session/delete", (params) => {
     expect(params).toEqual({ ref: "ref_del" });
     throw new Error("delete failed");
@@ -459,7 +459,7 @@ test("delete failure toasts an error", async () => {
 test("delete with skipped sessions shows a warning toast", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_skip", { name: "Skip Session" }));
+  fake.on("thread/read", () => readResponse("ref_skip", { name: "Skip Session", status: { type: "ended" } }));
   fake.on("evener/session/delete", (params) => {
     expect(params).toEqual({ ref: "ref_skip" });
     return {
@@ -517,12 +517,12 @@ test.each(["success", "failure"])("force stop requires confirmation and waits fo
   await threadsStore.getState().ensureThread(ref);
   renderWithToast(<SessionChrome ref={ref} />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
   // land after the click resolves; wait for it rather than racing the write.
@@ -578,7 +578,7 @@ test.each(["subagent", "fork"])("a nested %s session still offers Force stop and
   await threadsStore.getState().ensureThread(ref);
   renderWithToast(<SessionChromeView ref={ref} />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   // The refused stop has settled once the confirm button is usable again.
   await waitFor(() =>

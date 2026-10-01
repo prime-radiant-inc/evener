@@ -42,7 +42,7 @@ export interface NavigationSessionModel {
 type PinSectionInfo = { id: string; name: string; member_count: number };
 
 export interface SessionMenuActions {
-  onOpenPane(pane: SessionPanelKind | "notes"): void;
+  onOpenPane(pane: SessionPanelKind): void;
   onRename(name: string): Promise<void>;
   onShutdown(): Promise<void>;
   onForceStop?(): Promise<void>;
@@ -73,12 +73,11 @@ export interface SessionMenuProps {
   triggerLabel: string; // sr-only trigger name: "Session actions" / `Actions for ${title}`
   canRename: boolean;
   canShutdown: boolean;
-  canReadNotes: boolean;
+  stopped: boolean;
   session?: NavigationSessionModel;
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
-  panesOpen: { details: boolean; tasks: boolean; activity: boolean; notes: boolean };
-  taskLabel?: string; // e.g. "Tasks"; defaults to "Tasks"
+  panesOpen: { details: boolean; tasks: boolean; activity: boolean };
   activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
   /** Pane-only action. Rail/sidebar callers omit it. */
   onOpenVerbosity?: () => void;
@@ -105,11 +104,10 @@ export function SessionMenu({
   triggerLabel,
   canRename,
   canShutdown,
-  canReadNotes,
+  stopped,
   session,
   treeNode,
   panesOpen,
-  taskLabel,
   activityLabel,
   onOpenVerbosity,
   turnVerbs,
@@ -152,20 +150,12 @@ export function SessionMenu({
   // the eligible-only items slot into their groups without orphaning a rule.
   const paneItems: MenuEntry[] = [
     { id: "details", label: checked("Details", panesOpen.details), onSelect: () => actions.onOpenPane("details") },
-    { id: "tasks", label: checked(taskLabel ?? "Tasks", panesOpen.tasks), onSelect: () => actions.onOpenPane("tasks") },
     {
       id: "activity",
       label: checked(activityLabel ?? "Activity", panesOpen.activity),
       onSelect: () => actions.onOpenPane("activity"),
     },
   ];
-  if (canReadNotes) {
-    paneItems.push({
-      id: "notes",
-      label: checked("Notes", panesOpen.notes),
-      onSelect: () => actions.onOpenPane("notes"),
-    });
-  }
   if (onOpenVerbosity) {
     paneItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
   }
@@ -201,9 +191,9 @@ export function SessionMenu({
     },
   ];
   if (actions.onForceStop) {
-    destructiveItems.push({ id: "force-stop", label: "Force stop…", onSelect: () => setForceStopOpen(true) });
+    destructiveItems.push({ id: "force-stop", label: "Force shutdown…", onSelect: () => setForceStopOpen(true) });
   }
-  if (deleteEligible) {
+  if (deleteEligible && stopped) {
     destructiveItems.push({ id: "delete", label: "Delete…", onSelect: () => setDeleteOpen(true) });
   }
   // The turn verbs' own group, leading the menu (the header comment says

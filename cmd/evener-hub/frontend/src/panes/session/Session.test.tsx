@@ -79,7 +79,7 @@ stubSessionSlots();
 // Composer, which mounts it) themselves.
 async function openForceStopDialog(user: ReturnType<typeof userEvent.setup>): Promise<void> {
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
 }
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -3043,7 +3043,7 @@ test("explicit Resume follows the returned identity through transcript and new s
   });
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(resumed).toBe(false);
@@ -3413,12 +3413,12 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
   // land after the click resolves; wait for it rather than racing the write.
@@ -3475,7 +3475,7 @@ test("confirmed force stop refreshes the session and exposes explicit Resume", a
   );
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   const resume = await screen.findByRole("button", { name: "Resume session" });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -3756,7 +3756,7 @@ test.each(["pending", "failed"])(
       const user = userEvent.setup();
       const resume = await screen.findByRole("button", { name: "Resume session" });
       await user.click(screen.getByRole("button", { name: /session actions/i }));
-      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
       await user.keyboard("{Escape}");
       await user.click(resume);
       expect(daemonStarted).toBe(true);
@@ -3926,7 +3926,7 @@ test.each(["pending", "failed"])(
       expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: /session actions/i }));
-      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
       await user.keyboard("{Escape}");
       await act(async () => {
         await threadsStore.getState().send(ref, "continue the saved conversation");
@@ -4025,7 +4025,7 @@ test.each(["model", "compact"])(
       await settled;
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       await user.click(screen.getByRole("button", { name: /session actions/i }));
-      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
       await user.keyboard("{Escape}");
       expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
@@ -4153,12 +4153,12 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   expect(editor.getAttribute("contenteditable")).toBe("true");
   const user = userEvent.setup();
   await user.click(menuTrigger);
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(menuTrigger);
-  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([

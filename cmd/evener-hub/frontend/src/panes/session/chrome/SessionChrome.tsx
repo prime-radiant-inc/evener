@@ -8,7 +8,7 @@
 // (mirrors Session.tsx's own model lookup).
 //
 // The menu is the shared SessionMenu (2026-08-05-unified-session-context-
-// menu-design): Details/Tasks/Activity and pane-only Verbosity lead it at every
+// menu-design): Details/Activity and pane-only Verbosity lead it at every
 // width (there are no inline triggers and no narrow-collapse - the status
 // row's container-query variants own compression inside .body instead),
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
@@ -31,7 +31,7 @@
 // carried has no surface now.
 
 import type { NavigationSessionLocation } from "@evener/appwire-client";
-import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
+import { SHUT_DOWN_STATUSES, sessionActionError } from "@evener/appwire-client";
 import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
 import { useRef, useState } from "react";
 import {
@@ -53,7 +53,6 @@ import { buildShutdownConvergence } from "../../../stores/navigation/shutdownCon
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { useSessionActivity } from "../../../stores/sessionActivity";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
-import { topNotesStore, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
@@ -127,7 +126,6 @@ export function SessionChrome({
   const activityOpen = !isMobile && sidebarOpenHere;
   const sidebarTab = useActivitySidebarStore((state) => state.tab);
   const tasksOpen = tasksPaneOpen || (activityOpen && sidebarTab === "tasks");
-  const notesOpen = useTopNotesExpanded(sessionRef);
   const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
   const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
@@ -239,10 +237,6 @@ export function SessionChrome({
       closeSessionActivityPanes(sessionRef);
       activitySidebarStore.getState().openWith();
     }
-  };
-  const openNotes = () => {
-    if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
-    topNotesStore.getState().toggleAndFocus(sessionRef);
   };
   const activityLabel =
     activitySummary?.delegates.known && activitySummary.jobs.known
@@ -379,12 +373,9 @@ export function SessionChrome({
             triggerLabel="Session actions"
             canRename={model.capabilities.rename}
             canShutdown={model.capabilities.shutdown}
-            canReadNotes={canReadSharedNotes(model)}
+            stopped={SHUT_DOWN_STATUSES.has(model.status.type)}
             session={menuSession}
-            panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
-            // No taskLabel: the menu entry stays a plain "Tasks". Counts live
-            // inline and in the panel; even a condensed aggregate would crowd
-            // the menu's leading pane group.
+            panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
             // Composer placement only: the header comment on the prop says
@@ -394,7 +385,6 @@ export function SessionChrome({
               onOpenPane: (pane) => {
                 if (pane === "details") openDetails();
                 else if (pane === "tasks") openTasks();
-                else if (pane === "notes") openNotes();
                 else openActivity();
               },
               onRename: async (name) => {

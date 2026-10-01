@@ -77,6 +77,7 @@ const TREE_SESSION = {
   live: true,
   children: [],
 };
+let stoppedTreeSession = false;
 const EMPTY_NAV_RESPONSE = {
   generation_id: "generation_test",
   revision: 1,
@@ -87,6 +88,7 @@ const EMPTY_NAV_RESPONSE = {
 };
 
 function navigationRead(params: NavigationReadParams): NavigationReadResponse {
+  const treeSession = stoppedTreeSession ? { ...TREE_SESSION, state: "ended", live: false } : TREE_SESSION;
   switch (params.resource) {
     case "manifest":
       return wireSnapshot(params, EMPTY_NAV_RESPONSE, '"test"');
@@ -94,7 +96,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
       return wireSnapshot(
         params,
         {
-          sessions: params.section === "live" ? [TREE_SESSION] : [],
+          sessions: params.section === "live" ? [treeSession] : [],
           remaining: 0,
           truncated: false,
         },
@@ -129,7 +131,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
         params,
         {
           key: "proj1",
-          current: { sessions: [TREE_SESSION], remaining: 0 },
+          current: { sessions: [treeSession], remaining: 0 },
           recent: { sessions: [], remaining: 0 },
           archived: { sessions: [], remaining: 0 },
           truncated: false,
@@ -156,7 +158,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
           ref: params.ref,
           top_level_ref: params.ref,
           top_level: true,
-          session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref },
+          session: { ...treeSession, ref: params.ref, session_id: params.ref },
         },
         '"test"',
       );
@@ -406,6 +408,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  stoppedTreeSession = false;
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
@@ -1534,6 +1537,7 @@ test("rail activation updates the URL and a later Settings activation returns Se
 // mutation, refetch) against the real AppShell + DockHost, because the re-open only
 // happens with the route effect and the dock host both live.
 test("deleting the session the address bar names lands on welcome instead of re-opening its pane", async () => {
+  stoppedTreeSession = true;
   const client = navClient();
   client.on("evener/session/delete", () => ({
     deleted: ["s1"],

@@ -1,5 +1,4 @@
 import type { EvenerWatchInfo, NavigationManifest } from "@evener/appwire-client";
-import { hydrateThread } from "@evener/appwire-client";
 import {
   keyID,
   type NormalizedResource,
@@ -19,8 +18,7 @@ import { installMobileViewport } from "../../panes/session/testing/mobileViewpor
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { topNotesStore } from "../../stores/topNotes";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import { blockBody, mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
@@ -139,7 +137,6 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
-  topNotesStore.getState().resetForTests();
   seedPinCatalogForPicker();
   resetActivitySidebarStoreForTests();
 });
@@ -149,48 +146,6 @@ afterEach(() => {
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
 });
-
-function notesModel(ref: string, sharedNotes: boolean) {
-  return hydrateThread(
-    {
-      thread: {
-        id: "thread_notes",
-        sessionId: "session_notes",
-        preview: "",
-        ephemeral: false,
-        modelProvider: "anthropic",
-        createdAt: 1000,
-        updatedAt: 1000,
-        status: { type: "ended" },
-        cwd: "/tmp/project",
-        cliVersion: "1.0.0",
-        source: "evener",
-        evener: {
-          ref,
-          capabilities: {
-            send: false,
-            steer: false,
-            interrupt: false,
-            compact: false,
-            clear: false,
-            forkFromTurn: false,
-            shutdown: false,
-            changeModel: false,
-            changeVisionModel: false,
-            queue: false,
-            goal: false,
-            sharedNotes,
-            rename: false,
-          },
-          queue: { revision: 0 },
-          humanNote: "saved rail note",
-        },
-      },
-    },
-    ref,
-    0,
-  );
-}
 
 function apiNode(overrides: Partial<RailSession> = {}): RailSession {
   return {
@@ -318,43 +273,11 @@ async function openMenu(name: RegExp | string) {
   return user;
 }
 
-test("rail Notes follows its hydrated capability from unknown to false to supported ended", async () => {
-  // Navigation's live flag and another session's capability are not evidence
-  // of this row's notes support. Keep the same mounted menu through hydration.
-  const other = notesModel("local:other", true);
-  threadsStore.setState({ threads: new Map([[other.ref, other]]) });
-  const session = renderRow(
-    { state: "ended", live: false },
-    actions({
-      onOpenSessionPane: (target, pane) => {
-        if (pane === "notes") topNotesStore.getState().toggle(target.ref);
-        else workspaceStore.getState().togglePane(sessionPanelPaneType(pane), { ref: target.ref });
-      },
-    }),
-  );
-  const user = await openMenu(/actions for/i);
-  expect.soft(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
-
-  act(() => {
-    threadsStore.setState({
-      threads: new Map([
-        [other.ref, other],
-        [session.ref, notesModel(session.ref, false)],
-      ]),
-    });
-  });
-  expect.soft(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
-
-  act(() => {
-    threadsStore.setState({
-      threads: new Map([
-        [other.ref, other],
-        [session.ref, notesModel(session.ref, true)],
-      ]),
-    });
-  });
-  await user.click(screen.getByRole("menuitem", { name: "Notes" }));
-  expect(topNotesStore.getState().isExpanded(session.ref)).toBe(true);
+test("rail menu omits Notes regardless of hydrated capability", async () => {
+  renderRow({ state: "ended", live: false });
+  await openMenu(/actions for/i);
+  expect(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
 });
 
 function normalizedRailResource(
@@ -1183,7 +1106,7 @@ describe("session row", () => {
   // duplicate the server's own crash-vs-live predicate).
   test("menu offers 'Delete…' for a top-level local session, confirming through onDeleteSession", async () => {
     const acts = actions();
-    const session = renderRow({ host_id: "local" }, acts);
+    const session = renderRow({ host_id: "local", state: "ended", live: false }, acts);
     const user = await openMenu(/actions for/i);
     await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
     const dialog = screen.getByRole("dialog", { name: "Delete session?" });
@@ -1227,31 +1150,27 @@ describe("session row", () => {
   // the wire withholds `rename` from every nested/synthetic node), and
   // Shut down.
   test("a subagent row's menu is panes + rename + shut down only", async () => {
-    threadsStore.setState({ threads: new Map([["local:a", notesModel("local:a", true)]]) });
     renderRow({ kind: "subagent", rename: false });
     await openMenu(/actions for/i);
     const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
-    expect(items).toEqual(["Details", "Tasks", "Activity", "Notes", "Rename", "Shut down"]);
+    expect(items).toEqual(["Details", "Activity", "Rename", "Shut down"]);
   });
 
   // The row's menu is THE shared SessionMenu now - the same item list, in the
   // same order, the session pane's chrome shows (SessionMenu.test.tsx pins
   // the component's own copy of this contract).
   test("session row menu is the unified menu: panes group first, shut down present", async () => {
-    threadsStore.setState({ threads: new Map([["local:a", notesModel("local:a", true)]]) });
-    renderRow({ kind: "session", host_id: "local" });
+    renderRow({ kind: "session", host_id: "local", state: "ended", live: false });
     await openMenu(/actions for/i);
     const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
     expect(items).toEqual([
       "Details",
-      "Tasks",
       "Activity",
-      "Notes",
       "Rename",
       "Pin this session…",
       "Archive",
       "Shut down",
-      "Force stop…",
+      "Force shutdown…",
       "Delete…",
     ]);
   });
@@ -1263,11 +1182,8 @@ describe("session row", () => {
       onOpenSessionPane: (target, pane) => {
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: target.ref });
-        if (pane === "notes") {
-          topNotesStore.getState().toggle(target.ref);
-        } else {
-          workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
-        }
+        if (pane === "notes") return;
+        workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
       },
     });
     renderRow({}, acts);
@@ -1320,42 +1236,36 @@ describe("session row", () => {
     expect(await screen.findByRole("menuitem", { name: "Activity" })).toBeTruthy();
   });
 
-  // The Tasks ✓ names what the row's own Tasks action opens, per viewport -
-  // the same rule the Activity check above follows. On desktop that is the
-  // activity sidebar preselected to its Tasks tab and scoped to this session;
-  // the sessionTasks pane is mobile-only (the desktop rail's Tasks action
-  // retargets to the sidebar), so a leftover pane is an orphan the desktop
-  // check never marks.
-  test("the Tasks check marks the sidebar's Tasks tab open for this session on desktop", async () => {
+  test("the Tasks menu item is absent while the sidebar shows its tab", async () => {
     workspaceStore.getState().openPane("session", { ref: "local:a" });
     activitySidebarStore.getState().openWith("tasks");
     renderRow();
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
   });
 
-  test("the Tasks check stays plain while the sidebar shows this session another tab", async () => {
+  test("the Tasks menu item is absent while the sidebar shows another tab", async () => {
     workspaceStore.getState().openPane("session", { ref: "local:a" });
     activitySidebarStore.getState().openWith("agents");
     renderRow();
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
   });
 
-  test("on desktop a sessionTasks pane does not mark the Tasks item", async () => {
+  test("the Tasks menu item is absent when a sessionTasks pane is open", async () => {
     workspaceStore.getState().openPane("sessionTasks", { ref: "local:a" });
     renderRow();
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
   });
 
-  test("the Tasks check marks a sessionTasks pane open for this session on mobile", async () => {
+  test("the Tasks menu item is absent on mobile", async () => {
     const restoreViewport = installMobileViewport();
     try {
       workspaceStore.getState().openPane("sessionTasks", { ref: "local:a" });
       renderRow();
       await openMenu(/actions for/i);
-      expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
+      expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
     } finally {
       restoreViewport();
     }
