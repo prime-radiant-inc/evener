@@ -1074,6 +1074,59 @@ describe("demo fleet archived lists", () => {
 		});
 	});
 
+	// The catalog is a hint, as on the hub: the hinted catalog when it holds the
+	// project, the other of projects and archived projects when the project
+	// moved there, and with no hint the first catalog holding it. The answer
+	// says which catalog it read.
+	it("reads the hinted catalog when it holds the project, and says which", () => {
+		for (const catalog of ["projects", "archived_projects"])
+			expect(fleet.answerArchivedList({ catalog, projectKey: "evener", limit: 1 })).toMatchObject({
+				catalog,
+				total: 271,
+			});
+	});
+
+	it("reads the first catalog holding the project when given no hint", () => {
+		expect(fleet.answerArchivedList({ projectKey: "evener", limit: 1 })).toMatchObject({
+			catalog: "projects",
+			total: 271,
+		});
+		expect(fleet.answerArchivedList({ projectKey: "hub-test-env" })).toEqual({
+			sessions: [],
+			total: 0,
+			catalog: "test_runs",
+		});
+	});
+
+	it("follows a project to the other member of the pair, and never into or out of test runs", () => {
+		expect(fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "deslop" })).toEqual({
+			sessions: [],
+			total: 0,
+			catalog: "projects",
+		});
+		expect(fleet.answerArchivedList({ catalog: "projects", projectKey: "hub-test-env" })).toEqual({
+			sessions: [],
+			total: 0,
+		});
+	});
+
+	it("binds a cursor to the hint it was read with", () => {
+		let cursor: string | undefined;
+		let rows = 0;
+		for (let guard = 0; ; guard++) {
+			if (guard > 20) throw new Error("archived paging never reached the end");
+			const page = fleet.answerArchivedList({ projectKey: "evener", cursor });
+			rows += decodeArchivedListSessions(page.sessions).length;
+			cursor = page.nextCursor;
+			if (!cursor) break;
+		}
+		expect(rows).toBe(271);
+		const first = fleet.answerArchivedList({ projectKey: "evener" }).nextCursor;
+		expect(() => fleet.answerArchivedList({ catalog: "projects", projectKey: "evener", cursor: first })).toThrow(
+			"cursor belongs to another archived list",
+		);
+	});
+
 	it("refuses an unknown catalog and a cursor from another list", () => {
 		expect(() => fleet.answerArchivedList({ catalog: "nope", projectKey: "evener" })).toThrow(
 			"Unknown demonstration catalog: nope",
