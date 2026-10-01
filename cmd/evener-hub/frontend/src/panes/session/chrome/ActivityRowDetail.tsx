@@ -16,6 +16,7 @@ import {
   activityDelegateDiagnostics,
   activityDelegateState,
   delegateTiming,
+  findEntityView,
   formatClockTime,
   jobCommandLabel,
   splitMandate,
@@ -25,7 +26,8 @@ import {
 } from "@evener/appwire-client";
 import { Fragment, type JSX, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
-import { threadsStore } from "../../../stores/threads";
+import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { Disclosure } from "../../../widgets/disclosure";
@@ -152,7 +154,7 @@ function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: numbe
   const floatingNow = !markerAtStart && !markerAtEnd ? `, now ${clockFromMillis(now)}` : "";
   const caption =
     watch.watch.deliveries <= instants.length
-      ? "Delivered to this session"
+      ? "Delivered"
       : `Last ${instants.length} of ${watch.watch.deliveries} deliveries`;
   return (
     <div className={CLASS.watchTimeline} data-testid="watch-timeline">
@@ -416,6 +418,14 @@ export function ActivityRowDetail({
 // on every tick with identical output.
 export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?: number }): JSX.Element {
   const { watch } = row;
+  const recipientName = useThreadsStore((state) => state.threads.get(watch.receiverRef)?.name);
+  const entities = useEntityViews();
+  const targetLabel = useMemo(() => {
+    if (!entities || !watch.watch.outputMatch?.trim()) return undefined;
+    const target = watch.watch.target?.trim() || watch.watch.source;
+    const entity = findEntityView(entities, "job", target, watch.sourceRef);
+    return entity?.kind === "job" ? entity.row.job.description?.trim() || undefined : undefined;
+  }, [entities, watch.sourceRef, watch.watch.target, watch.watch.source, watch.watch.outputMatch]);
   const contextNow = useTreeNow();
   const effectiveNow = now ?? contextNow;
   const note = watch.watch.note?.trim();
@@ -428,8 +438,9 @@ export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?:
         </p>
       ) : null}
       <p className={CLASS.watchFacts} data-testid="watch-facts">
-        {watchFacts(watch, effectiveNow)}
+        {watchFacts(watch, effectiveNow, targetLabel)}
       </p>
+      <p className={CLASS.watchFacts}>Notifies {recipientName?.trim() || watch.receiverRef}</p>
       {watchIsScheduled(watch) ? (
         <ActivityWatchTimeline watch={watch} now={effectiveNow} />
       ) : (

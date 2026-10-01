@@ -39,7 +39,8 @@ function delegate(id: string, ownerRef: string, childRef: string, parentDelegate
 }
 function watch(receiverRef: string, state: SessionWatch["state"] = "unknown"): SessionWatch {
   return {
-    ownerRef: "remote:producer",
+    sourceRef: "remote:producer",
+    ownerRef: receiverRef,
     receiverRef,
     state,
     watch: {

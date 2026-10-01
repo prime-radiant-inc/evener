@@ -231,13 +231,13 @@ export function watchMeta(watch: SessionWatch, now?: number): string {
 
 // A watch's one facts sentence, built only from real fields. The armed segment
 // reports the watch's real armed state: an inactive watch is never called armed.
-export function watchFacts(watch: SessionWatch, now: number): string {
+export function watchFacts(watch: SessionWatch, now: number, targetLabel?: string): string {
   const segments: string[] = [];
   // Each condition the watch actually carries gets its own segment, so a
   // multi-trigger watch reads as all of what it waits on rather than only the
   // first condition kind.
   if ((watch.watch.outputMatch ?? "").trim() !== "") {
-    const target = watch.watch.target?.trim() || watch.watch.source;
+    const target = targetLabel || watch.watch.target?.trim() || watch.watch.source;
     segments.push(`Waiting on ${target}, matching ${watch.watch.outputMatch ?? ""}`);
   }
   const clockCadence = clockCadenceLabels(watch).join(" · ");

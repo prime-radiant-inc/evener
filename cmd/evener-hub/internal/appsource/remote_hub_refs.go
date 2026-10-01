@@ -593,10 +593,10 @@ func (s *RemoteHubSource) translateOut(out any) error {
 		}
 		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
 	case *appwire.SessionWatchesResponse:
-		refs := make([]*string, 0, 2*len(response.Watches))
+		refs := make([]*string, 0, 3*len(response.Watches))
 		for i := range response.Watches {
 			row := &response.Watches[i]
-			refs = append(refs, &row.OwnerRef, &row.ReceiverRef)
+			refs = append(refs, &row.OwnerRef, &row.ReceiverRef, &row.SourceRef)
 		}
 		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
 	case *appwire.JobsListResponse:

@@ -131,11 +131,16 @@ Jobs reuse the typed `JobActivityJob` row, restricted to shell jobs. Their
 `ownerRef` is the logical session owner. Job output stays behind its existing
 bounded output API rather than being included in list pages.
 
-`SessionWatch` carries `ownerRef`, `receiverRef`, `state` (`armed`, `ended`, or
+`SessionWatch` carries logical receiver `ownerRef` and `receiverRef`, required
+physical `sourceRef`, `state` (`armed`, `ended`, or
 `unknown`), and `watch: EvenerWatchInfo`. Preserve stable watch IDs, cadence,
 delivery counts, and recorded end reasons. Use `unknown` when retained evidence
 does not establish whether a registration is still armed. Recent history is a
 bounded retained collection, not a promise of an unlimited durable audit log.
+The physical source is the validated owning manager for the source and concrete
+job target; source refs are qualified by remote routing just like receiver refs.
+Presentation may resolve a target only by the exact source ref and job ID in
+already loaded entities, retaining the raw target when metadata is absent.
 
 ## Pagination, cost, and consistency
 

@@ -2,10 +2,25 @@
 // component, positions derived only from the supplied instants and `now`.
 
 import type { EvenerWatchInfo } from "@evener/appwire-client";
-import { type ActivityWatchRow, formatClockTime, watchRowID } from "@evener/appwire-client";
-import { render, screen } from "@testing-library/react";
-import { describe, expect, test, vi } from "vitest";
+import {
+  type ActivityWatchRow,
+  buildEntityView,
+  formatClockTime,
+  hydrateThread,
+  watchRowID,
+} from "@evener/appwire-client";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { Profiler } from "react";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { activityJob, activityThread } from "../../../stores/sessionActivityTestUtils";
+import { threadsStore } from "../../../stores/threads";
+import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { ActivityWatchDetail, WATCH_NO_SCHEDULE_LINE } from "./ActivityRowDetail";
+
+afterEach(() => {
+  cleanup();
+  threadsStore.setState({ threads: new Map() });
+});
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
 const CREATED = "2026-08-05T12:48:00Z";
@@ -23,7 +38,13 @@ function row(overrides: Partial<EvenerWatchInfo> = {}): ActivityWatchRow {
     kind: "watch",
     id: watchRowID("ref_root", watch.id),
     level: 1,
-    watch: { ownerRef: "ref_root", receiverRef: "ref_root", state: watch.active ? "armed" : "ended", watch },
+    watch: {
+      sourceRef: "ref_root",
+      ownerRef: "ref_root",
+      receiverRef: "ref_root",
+      state: watch.active ? "armed" : "ended",
+      watch,
+    },
     defaultDetailOpen: true,
   };
 }
@@ -297,14 +318,14 @@ describe("ActivityWatchDetail timeline", () => {
     expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Last 3 of 214 deliveries");
   });
 
-  test("says delivered to this session when the count fits inside the ring", () => {
+  test("shows deliveries without claiming the inspected session received them when the count fits inside the ring", () => {
     render(
       <ActivityWatchDetail
         row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, deliveryTimes: INSTANTS })}
         now={NOW}
       />,
     );
-    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Delivered to this session");
+    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Delivered");
   });
 
   test("an output watch gets the no-schedule line and no timeline", () => {
@@ -424,3 +445,116 @@ describe("ActivityWatchDetail note", () => {
     expect(screen.getByTestId("watch-note").textContent).toBe("x".repeat(49));
   });
 });
+
+test("names the logical notification recipient even when inspected from another session", () => {
+  const value = row({ outputMatch: "ready", target: "job_equal" });
+  value.watch.receiverRef = "local:parent";
+  render(<ActivityWatchDetail row={value} now={NOW} />);
+  expect(screen.getByText("Notifies local:parent")).toBeTruthy();
+});
+
+test("labels an output target only from its exact physical source despite duplicate job IDs", () => {
+  const value = row({ outputMatch: "ready", target: "job_equal" });
+  value.watch.sourceRef = "local:child";
+  value.watch.receiverRef = "local:parent";
+  const entities = buildEntityView({
+    sessionRef: "local:parent",
+    stale: false,
+    ended: false,
+    turns: [],
+    tree: {
+      revision: 1,
+      root: {
+        kind: "session",
+        ref: "local:parent",
+        label: "Parent",
+        aggregate: "running",
+        counts: { active: 2, failed: 0, completed: 0, complete: true },
+        branch: {},
+        entries: [
+          {
+            kind: "shell",
+            job: activityJob({ jobId: "job_equal", ownerRef: "local:parent", description: "Parent build" }),
+          },
+          {
+            kind: "shell",
+            job: activityJob({ jobId: "job_equal", ownerRef: "local:child", description: "Child checks" }),
+          },
+        ],
+      },
+    },
+  });
+  render(
+    <EntityViewsProvider entities={entities} ownerRef="local:parent">
+      <ActivityWatchDetail row={value} now={NOW} />
+    </EntityViewsProvider>,
+  );
+  expect(screen.getByTestId("watch-facts").textContent).toContain("Waiting on Child checks, matching ready");
+  expect(screen.getByTestId("watch-facts").textContent).not.toContain("Parent build");
+});
+
+test("recipient names follow renames without subscribing to unrelated thread data", () => {
+  const parent = { ...hydrateThread(activityThread("local:parent"), "local:parent", 1000), name: "Review results" };
+  threadsStore.setState({ threads: new Map([[parent.ref, parent]]) });
+  const value = row();
+  value.watch.receiverRef = parent.ref;
+  value.watch.sourceRef = "local:child";
+  const committed = vi.fn();
+  render(
+    <Profiler id="watch" onRender={committed}>
+      <ActivityWatchDetail row={value} now={NOW} />
+    </Profiler>,
+  );
+  expect(screen.getByText("Notifies Review results")).toBeTruthy();
+  const mounted = committed.mock.calls.length;
+  act(() => threadsStore.setState({ threads: new Map([[parent.ref, { ...parent, humanNote: "changed" }]]) }));
+  expect(committed).toHaveBeenCalledTimes(mounted);
+  act(() => threadsStore.setState({ threads: new Map([[parent.ref, { ...parent, name: "Updated recipient" }]]) }));
+  expect(screen.getByText("Notifies Updated recipient")).toBeTruthy();
+  act(() => threadsStore.setState({ threads: new Map([[parent.ref, { ...parent, name: "  " }]]) }));
+  expect(screen.getByText("Notifies local:parent")).toBeTruthy();
+});
+
+test.each(["missing entity", "missing description", "wrong owner"])(
+  "keeps the stable output target with %s",
+  (scenario) => {
+    const value = row({ outputMatch: "ready", target: "job_equal" });
+    value.watch.sourceRef = "local:child";
+    const entities = buildEntityView({
+      sessionRef: "local:parent",
+      turns: [],
+      stale: false,
+      ended: false,
+      tree: {
+        revision: 1,
+        root: {
+          kind: "session",
+          ref: "local:parent",
+          label: "Parent",
+          aggregate: "running",
+          counts: { active: 1, failed: 0, completed: 0, complete: true },
+          branch: {},
+          entries:
+            scenario === "missing entity"
+              ? []
+              : [
+                  {
+                    kind: "shell",
+                    job: activityJob({
+                      jobId: "job_equal",
+                      ownerRef: scenario === "wrong owner" ? "local:parent" : "local:child",
+                      description: scenario === "missing description" ? "" : "Wrong owner's label",
+                    }),
+                  },
+                ],
+        },
+      },
+    });
+    render(
+      <EntityViewsProvider entities={entities} ownerRef="local:parent">
+        <ActivityWatchDetail row={value} now={NOW} />
+      </EntityViewsProvider>,
+    );
+    expect(screen.getByTestId("watch-facts").textContent).toContain("Waiting on job_equal, matching ready");
+  },
+);

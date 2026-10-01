@@ -20,7 +20,13 @@ Every request names an explicit public session `ref`. The default `session`
 scope selects resources logically owned by that session. `subtree` includes
 resources owned by its delegate descendants. Neither scope includes fork
 originals or unrelated sessions. A watch belongs in its receiver's collection
-even when another session's manager observes the source.
+even when another session's manager observes the source. Watch `ownerRef` and
+`receiverRef` identify that logical recipient; required `sourceRef` identifies
+the physical source session whose manager and journal own the watch and scope
+its resolved job target. Detail rows show “Notifies” with the known recipient
+name or its stable ref. Output conditions use a job description only from an
+already loaded entity with that exact source ref and job ID; missing metadata
+keeps the raw target. Naming never adds collection demand or network reads.
 
 The [typed contracts](../../appwire/session_activity.go) and
 [generated API catalog](../appwire-protocol.md) define the fields. The

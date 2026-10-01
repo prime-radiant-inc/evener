@@ -145,7 +145,9 @@ const (
 // SessionWatch belongs to its logical receiver even when a descendant manager
 // observes the source. Unknown state means retained evidence cannot establish liveness.
 type SessionWatch struct {
-	OwnerRef    string            `json:"ownerRef"`
+	OwnerRef string `json:"ownerRef"`
+	// SourceRef identifies the physical source session whose manager owns the watch and target job.
+	SourceRef   string            `json:"sourceRef"`
 	ReceiverRef string            `json:"receiverRef"`
 	State       SessionWatchState `json:"state"`
 	Watch       EvenerWatchInfo   `json:"watch"`
