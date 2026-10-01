@@ -604,12 +604,12 @@ describe("compact session status", () => {
   });
 
   test.each([
-    ["warning", "Warning"],
-    ["awaiting", "Your move"],
-  ] as const)("the context panel preserves the %s status as %s", (state, expected) => {
-    render(
-      <RailRow node={sessionRailNode(apiNode({ state, ask_pending: false }))} info={info()} actions={actions()} />,
-    );
+    ["warning", { state: "warning" }, "Warning"],
+    ["plain awaiting", { state: "awaiting", ask_pending: false }, "Your move"],
+    ["pending question", { state: "awaiting", ask_pending: true }, "Question waiting"],
+    ["pending approval", { state: "active", approval_pending: true }, "Approval waiting"],
+  ] as const)("the context panel preserves the %s status vocabulary", (_name, overrides, expected) => {
+    render(<RailRow node={sessionRailNode(apiNode(overrides))} info={info()} actions={actions()} />);
 
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
     expect(within(panel).getByText(expected)).toBeTruthy();
@@ -656,6 +656,30 @@ describe("compact session status", () => {
     const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
     expect(within(panel).getByText("Pinned")).toBeTruthy();
     expect(within(panel).getByText("Client")).toBeTruthy();
+  });
+
+  test("a top-level cross-project duplicate keeps its pinned context", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ pin_section_id: "sec_1" }), { crossProjectTier: true })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("Pinned")).toBeTruthy();
+    expect(within(panel).getByText("Client")).toBeTruthy();
+  });
+
+  test.each(["subagent", "fork"] as const)("the context panel hides a stale pin assignment on a nested %s", (kind) => {
+    render(
+      <RailRow node={sessionRailNode(apiNode({ kind, pin_section_id: "sec_1" }))} info={info()} actions={actions()} />,
+    );
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).queryByText("Pinned")).toBeNull();
+    expect(within(panel).queryByText("Client")).toBeNull();
   });
 
   test("the context panel marks an offline host", () => {

@@ -568,7 +568,7 @@ function SessionContextCard({
 }) {
   const hostOnline = useHostOnline(session.host_id);
   const pinSection = useNavigationStore((state) => {
-    if (session.pin_section_id === undefined) return undefined;
+    if (session.pin_section_id === undefined || !isTopLevelSession(session)) return undefined;
     return (
       selectPinSectionSummaries(state).find((section) => section.id === session.pin_section_id)?.name ??
       session.pin_section_id
