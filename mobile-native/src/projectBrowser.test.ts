@@ -132,9 +132,9 @@ describe("project browser", () => {
 	it("reads an expanded project's archived sessions from its section's archived list", async () => {
 		for (const catalog of ["projects", "archived_projects", "test_runs"] as const) {
 			const { controller, requests } = await loadedProject({ archived: [session("a0")] }, { archived: 3 }, { catalog });
-			expect(requests.filter((request) => request.method === ARCHIVED_LIST).map((request) => request.params)).toEqual(
-				[{ catalog, projectKey: "a" }],
-			);
+			expect(requests.filter((request) => request.method === ARCHIVED_LIST).map((request) => request.params)).toEqual([
+				{ catalog, projectKey: "a" },
+			]);
 			expect(controller.getSnapshot().groups[0]?.archived).toMatchObject({
 				loaded: true,
 				remaining: 3,

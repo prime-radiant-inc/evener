@@ -325,7 +325,8 @@ function hub(
 			return { projects: page, remaining: projects.length - offset - page.length };
 		}
 		if (params.resource === "project_page") {
-			const rows = params.tier === "archived" ? [] : (shape.projectPages?.[`${params.projectKey}:${params.tier}`] ?? []);
+			const rows =
+				params.tier === "archived" ? [] : (shape.projectPages?.[`${params.projectKey}:${params.tier}`] ?? []);
 			const page = rows.slice(offset, offset + (params.limit ?? 50));
 			return { sessions: page, remaining: rows.length - offset - page.length };
 		}
