@@ -70,11 +70,16 @@ type SessionActivityCounts struct {
 }
 
 type SessionActivitySummary struct {
-	Context   SessionActivityContext `json:"context"`
-	Scope     SessionActivityScope   `json:"scope"`
-	Delegates SessionActivityCounts  `json:"delegates"`
-	Jobs      SessionActivityCounts  `json:"jobs"`
-	Watches   SessionActivityCounts  `json:"watches"`
+	// Issues identify unavailable physical sources; healthy counts retain authority.
+	Issues []SessionActivityIssue `json:"issues,omitempty"`
+	// RefreshPending means established source evidence is catching up within
+	// the bounded read budget. Cold unknown counts do not request polling.
+	RefreshPending bool                   `json:"refreshPending,omitempty"`
+	Context        SessionActivityContext `json:"context"`
+	Scope          SessionActivityScope   `json:"scope"`
+	Delegates      SessionActivityCounts  `json:"delegates"`
+	Jobs           SessionActivityCounts  `json:"jobs"`
+	Watches        SessionActivityCounts  `json:"watches"`
 }
 
 // SessionActivityIssue makes unavailable branches and incomplete retained sources explicit.

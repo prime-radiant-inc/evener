@@ -30,9 +30,9 @@ func TestSessionActivityRemoteReferences(t *testing.T) {
 		check func(*testing.T)
 	}
 	tests := []translationCase{}
-	summary := appwire.SessionActivitySummary{Context: context}
+	summary := appwire.SessionActivitySummary{Context: context, Issues: page.Issues}
 	tests = append(tests, translationCase{"summary", &summary, func(t *testing.T) {
-		if !reflect.DeepEqual(summary.Context, wantContext) {
+		if !reflect.DeepEqual(summary.Context, wantContext) || summary.Issues[0].Ref != "remote:grandchild" {
 			t.Fatalf("context = %+v", summary.Context)
 		}
 	}})
