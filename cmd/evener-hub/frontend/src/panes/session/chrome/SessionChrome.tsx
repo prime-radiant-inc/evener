@@ -39,7 +39,6 @@ import { useRef, useState } from "react";
 import {
   activitySidebarOpenFor,
   activitySidebarStore,
-  closeSessionActivityPanes,
   useActivitySidebarOpenFor,
 } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
@@ -122,7 +121,7 @@ export function SessionChrome({
   // SESSION (the shared predicate hook). The mobile overlay uses the same
   // scope, so rail and session menus agree at every viewport.
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
-  const activityOpen = !isMobile && sidebarOpenHere;
+  const activityOpen = sidebarOpenHere;
   const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
   const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
@@ -216,12 +215,10 @@ export function SessionChrome({
     // re-scopes it here instead of closing it under the user. Opening it also
     // retires a leftover sessionActivity pane for this session.
     if (isMobile) {
-      closeSessionActivityPanes(sessionRef);
-      activitySidebarStore.getState().openWith();
+      activitySidebarStore.getState().openFor(sessionRef);
     } else if (activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
     else {
-      closeSessionActivityPanes(sessionRef);
-      activitySidebarStore.getState().openWith();
+      activitySidebarStore.getState().openFor(sessionRef);
     }
   };
   const activityLabel = activityActionLabel(activitySummary);
@@ -236,7 +233,7 @@ export function SessionChrome({
           try {
             await threadsStore.getState().forceStop(sessionRef);
           } catch (err) {
-            toasts.push("error", sessionActionError("Couldn't force stop session", err));
+            toasts.push("error", sessionActionError("Couldn't force shutdown session", err));
             throw err;
           }
           try {

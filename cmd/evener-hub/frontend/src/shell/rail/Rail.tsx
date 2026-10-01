@@ -68,7 +68,7 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu } from "../../widgets/menu";
 import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
-import { activitySidebarStore, closeSessionActivityPanes } from "../activitybar/activitySidebarStore";
+import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate } from "../routing";
@@ -1576,14 +1576,14 @@ function NavigationRail({
     () => ({
       onOpenSessionPane: (session, pane) => {
         const workspace = workspaceStore.getState();
-        workspace.openPane("session", { ref: session.ref });
         if (pane === "activity") {
           // Activity is the shared sidebar at every viewport. Focus the
           // session first so the sidebar derives the correct scope, then
           // retire any restored legacy pane before opening it.
-          closeSessionActivityPanes(session.ref);
-          activitySidebarStore.getState().openWith();
+          workspace.openPane("session", { ref: session.ref });
+          activitySidebarStore.getState().openFor(session.ref);
         } else {
+          workspace.openPane("session", { ref: session.ref });
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }
       },
@@ -1597,7 +1597,7 @@ function NavigationRail({
       onForceStopSession: async (session) => {
         await runAction(
           () => threadsStore.getState().forceStop(session.ref),
-          "Couldn't force stop session",
+          "Couldn't force shutdown session",
           undefined,
           true,
         );

@@ -472,6 +472,68 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
   }
 });
 
+test("mobile Activity focuses and scopes a background session", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const backgroundRef = "ref_background_activity";
+  const focusedRef = "ref_focused_activity";
+  fake.on("thread/read", ({ ref }) => readResponse(ref ?? backgroundRef));
+  await threadsStore.getState().ensureThread(backgroundRef);
+  await threadsStore.getState().ensureThread(focusedRef);
+  workspaceStore.setState({
+    panes: [
+      { id: "pane_background_activity", type: "session", params: { ref: backgroundRef }, slot: "main" },
+      { id: "pane_focused_activity", type: "session", params: { ref: focusedRef }, slot: "secondary" },
+    ],
+    focusedPaneId: "pane_focused_activity",
+  });
+
+  try {
+    render(
+      <>
+        <SessionChromeView ref={backgroundRef} />
+        <SessionChromeView ref={focusedRef} />
+      </>,
+    );
+    const actions = screen.getAllByRole("button", { name: "Session actions" });
+    const backgroundActions = actions[0];
+    if (!backgroundActions) throw new Error("background SessionChrome action is missing");
+    await user.click(backgroundActions);
+    await user.click(screen.getByRole("menuitem", { name: "Activity" }));
+
+    expect(workspaceStore.getState().focusedPaneId).toBe(
+      workspaceStore.getState().panes.find((pane) => (pane.params as { ref?: string }).ref === backgroundRef)?.id,
+    );
+    expect(activitySidebarStore.getState().ref).toBe(backgroundRef);
+    expect(activitySidebarStore.getState().open).toBe(true);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("mobile Activity menu marks the sidebar open for its session", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const ref = "ref_mobile_activity_check";
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  workspaceStore.setState({
+    panes: [{ id: "pane_mobile_activity_check", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "pane_mobile_activity_check",
+  });
+  activitySidebarStore.getState().openWith();
+
+  try {
+    render(<SessionChromeView ref={ref} />);
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+  } finally {
+    restoreViewport();
+  }
+});
+
 test("Tasks is absent from the desktop session menu", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

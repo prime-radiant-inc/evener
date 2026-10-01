@@ -137,6 +137,43 @@ test("opens the mobile panel when nothing is focused", async () => {
   expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
 });
 
+test("Activity opened from the mobile drawer supersedes the drawer", async () => {
+  const ref = "remote:drawer-activity";
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
+    ...activitySummary(requested),
+    scope: scope ?? "session",
+  }));
+  connectionStore.getState().connect(client);
+  const user = userEvent.setup();
+  workspaceStore.getState().openPane("doc", { ref });
+
+  render(
+    <MotionProvider>
+      <StackHost
+        railSlot={
+          <button
+            type="button"
+            onClick={() => {
+              workspaceStore.getState().openPane("doc", { ref });
+              activitySidebarStore.getState().openFor(ref, "jobs");
+            }}
+          >
+            Activity for drawer session
+          </button>
+        }
+      />
+    </MotionProvider>,
+  );
+
+  await screen.findByText(new RegExp(`doc pane: ${ref}`));
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+  await user.click(screen.getByRole("button", { name: "Activity for drawer session" }));
+
+  expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
+  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
+});
+
 test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
   const ref = "remote:activity";
   const client = activityClient();

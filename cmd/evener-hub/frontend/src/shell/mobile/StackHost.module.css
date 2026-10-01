@@ -17,7 +17,7 @@
 .activityOverlay {
   position: absolute;
   inset: 0;
-  z-index: var(--z-sticky-bar);
+  z-index: var(--z-dialog);
   display: flex;
   pointer-events: none;
 }

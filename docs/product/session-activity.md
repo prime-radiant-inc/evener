@@ -341,14 +341,19 @@ references use the transcript's own watch evidence. The
 observes subtree collections while its body is open. These view lifetimes do not
 cause an activity read for every session in the navigation rail.
 
-The narrow composer exposes Activity beside its receiving conversation. On the
-phone, that action opens the full-screen shared activity sidebar, preserving the
-last selected category for the focused session. Its optional active count sums
-the session's authoritative job and delegate active counts only when both are
-known; watches and completed work are not part of that number. The sidebar's
-Jobs, Agents, Watches and Tasks tabs use the same scoped reads as desktop.
-The legacy activity pane remains restorable for saved layouts, but new mobile
-Activity actions retire that pane and open the shared sidebar instead.
+Session chrome and the navigation rail expose Activity through their session
+action menus. On the phone, that action opens the full-screen shared activity
+sidebar, preserving the last selected category for the focused session. Its
+optional active count sums the session's authoritative job and delegate active
+counts only when both are known; watches and completed work are not part of that
+number. The sidebar's Jobs, Agents, Watches and Tasks tabs use the same scoped
+reads as desktop. The legacy activity pane remains restorable for saved layouts,
+but new Activity actions retire that pane and open the shared sidebar instead.
+Session action menus offer Delete only for a local top-level session whose
+lifecycle is stopped, including a confirmed crash identified by an errored
+navigation row with `failure.cause_kind: "crashed"`. Live sessions and ordinary
+non-crashed errors keep Delete hidden; Force shutdown remains the recovery action
+for eligible live sessions.
 Expanded watch details reveal the full user note as wrapped text, regardless of
 how much fits in the compact collapsed row.
 Failed entries remain visible outside the inactive fold, including parent rows

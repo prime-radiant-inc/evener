@@ -3527,7 +3527,7 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   ]);
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   if (outcome === "refused") {
-    expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();
+    expect(await screen.findByText("Couldn't force shutdown session: no direct daemon ownership claim")).toBeTruthy();
     expect(
       (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement)
         .disabled,

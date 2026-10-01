@@ -67,7 +67,10 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   return { thread: testThread(ref, overrides) };
 }
 
-function setLocation(ref: string): void {
+function setLocation(
+  ref: string,
+  sessionOverrides: Partial<NonNullable<NavigationSessionLocation["session"]>> = {},
+): void {
   const key = { kind: "location", ref } as const;
   const data: NavigationSessionLocation = {
     generation_id: "generation_test",
@@ -86,6 +89,7 @@ function setLocation(ref: string): void {
       kind: "session",
       live: true,
       children: [],
+      ...sessionOverrides,
     },
   };
   navigationStore.setState({
@@ -539,13 +543,52 @@ test.each(["success", "failure"])("force stop requires confirmation and waits fo
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
   } else {
-    expect(await screen.findByText("Couldn't force stop session: exit not confirmed")).toBeTruthy();
+    expect(await screen.findByText("Couldn't force shutdown session: exit not confirmed")).toBeTruthy();
     expect(
       (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false);
   }
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+});
+
+test("Delete stays hidden for a live session", async () => {
+  const user = userEvent.setup();
+  const ref = "local:live-delete";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref, { status: { type: "idle" } }));
+  setLocation(ref, { state: "idle", live: true });
+  await threadsStore.getState().ensureThread(ref);
+
+  renderWithToast(<SessionChrome ref={ref} />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+});
+
+test("Delete stays hidden for an ordinary non-crashed error", async () => {
+  const user = userEvent.setup();
+  const ref = "local:failed-delete";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref, { status: { type: "errored" } }));
+  setLocation(ref, { state: "errored", live: false, failure: { cause_kind: "provider" } });
+  await threadsStore.getState().ensureThread(ref);
+
+  renderWithToast(<SessionChrome ref={ref} />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+});
+
+test("Delete is offered for a confirmed-crashed session", async () => {
+  const user = userEvent.setup();
+  const ref = "local:crashed-delete";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref, { status: { type: "errored" } }));
+  setLocation(ref, { state: "errored", live: false, failure: { cause_kind: "crashed" } });
+  await threadsStore.getState().ensureThread(ref);
+
+  renderWithToast(<SessionChrome ref={ref} />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Delete…" })).toBeTruthy();
 });
 
 // The original inline footer button offered force stop to nested sessions
@@ -590,6 +633,6 @@ test.each(["subagent", "fork"])(
           .disabled,
       ).toBe(false),
     );
-    expect(screen.getAllByText("Couldn't force stop session: no direct daemon ownership claim")).toHaveLength(1);
+    expect(screen.getAllByText("Couldn't force shutdown session: no direct daemon ownership claim")).toHaveLength(1);
   },
 );

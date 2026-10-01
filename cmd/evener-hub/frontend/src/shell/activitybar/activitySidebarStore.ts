@@ -116,6 +116,7 @@ export interface ActivitySidebarState {
   ref: string | null;
   views: ReadonlyMap<string, ActivitySessionView>;
   openWith(tab?: ActivityTab, opener?: HTMLElement): void;
+  openFor(ref: string, tab?: ActivityTab, opener?: HTMLElement): void;
   close(): void;
   setTab(tab: ActivityTab): void;
   toggle(): void;
@@ -151,6 +152,15 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
     openWith: (tab, opener) => {
       captureActivitySidebarOpener(opener);
       update({ open: true, tab: tab ?? get().tab });
+    },
+    openFor: (ref, tab, opener) => {
+      const pane = workspaceStore
+        .getState()
+        .panes.find((candidate) => candidate.type === "session" && (candidate.params as { ref?: string }).ref === ref);
+      if (pane) workspaceStore.getState().focusPane(pane.id);
+      else get().retarget(ref);
+      closeSessionActivityPanes(ref);
+      get().openWith(tab, opener);
     },
     close: () => update({ open: false }),
     setTab: (tab) => update({ tab }),
