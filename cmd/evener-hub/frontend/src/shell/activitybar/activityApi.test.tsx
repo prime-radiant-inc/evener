@@ -2,7 +2,7 @@ import { WireError } from "@evener/appwire-client";
 import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
@@ -13,10 +13,15 @@ import {
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
 import { deriveScope } from "../statusbar/statusScope";
-import { workspaceStore } from "../workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { AgentsTab } from "./AgentsTab";
 import { JobsTab } from "./JobsTab";
 import { WatchesTab } from "./WatchesTab";
+
+beforeAll(async () => {
+  await import("../../panes/session");
+});
+beforeEach(() => resetWorkspaceStoreForTests());
 
 afterEach(() => {
   cleanup();
@@ -40,18 +45,18 @@ it("shows incomplete empty as progress then drills the exact stable delegate chi
     };
   });
   connectionStore.getState().connect(client);
-  const open = vi.spyOn(workspaceStore.getState(), "openPane").mockImplementation(() => "test-pane");
+  const root = workspaceStore.getState().openPane("session", { ref: "remote:owner" });
   render(<AgentsTab scope={scope()} />);
   expect(screen.getByText(/Loading subagents/)).toBeTruthy();
   expect(screen.queryByText(/No subagents/)).toBeNull();
   await waitFor(() => expect(finish).toBeTypeOf("function"));
   finish?.();
   fireEvent.click(await screen.findByRole("button", { name: /inspect/ }));
-  expect(open).toHaveBeenCalledWith(
-    "transcript",
-    { ref: "other:opaque/child", parentRef: "remote:owner" },
-    { slot: "secondary" },
-  );
+  const child = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
+  expect(child?.params).toEqual({ ref: "other:opaque/child", parentRef: "remote:owner" });
+  expect(child?.slot).toBe("secondary");
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(root);
   expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(0);
 });
 it("opens job output using the supplied job transcript ref and raw owner", async () => {

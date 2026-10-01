@@ -132,9 +132,9 @@ test("unknown counts remain unknown and pending ancestry is explicit", async () 
       <ActivitySidebar />
     </MotionProvider>,
   );
-  await waitFor(() => expect(screen.getByRole("button", { name: /Agents, counts pending/ })).toBeTruthy());
-  expect(screen.getByRole("radio", { name: "Agents, counts pending" }).textContent).toContain("…/…");
-  expect(screen.getByRole("button", { name: /Agents, counts pending/ }).textContent).toContain("…/…");
+  await waitFor(() => expect(screen.getByRole("button", { name: /Agents, counts unknown/ })).toBeTruthy());
+  expect(screen.getByRole("radio", { name: "Agents, counts unknown" }).textContent).toContain("—");
+  expect(screen.getByRole("button", { name: /Agents, counts unknown/ }).textContent).toContain("—");
   expect(screen.getAllByText("Finding session context…")).toHaveLength(2);
   expect(screen.queryByRole("button", { name: /Agents, 0 of/ })).toBeNull();
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(0);
