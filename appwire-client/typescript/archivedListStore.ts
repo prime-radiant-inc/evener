@@ -7,8 +7,10 @@
 // the connection that served it.
 //
 // Lists are keyed by catalog and project key, because one project key can
-// exist in two catalogs. A framework-free store over a request-only client
-// port; each app wraps one for its own view layer.
+// exist in two catalogs. A caller that knows only the project key (a
+// session's location) names no catalog, and the hub reads the catalog that
+// holds the project now; that is a list of its own. A framework-free store
+// over a request-only client port; each app wraps one for its own view layer.
 
 import type { AppwireClient } from "./client";
 import { errorText } from "./errors";
@@ -42,9 +44,9 @@ export interface ArchivedListStore extends FrameworkFreeStore<ArchivedListState>
    * many pages as the list already held (at least one), so a refresh does not
    * undo the user's paging. The rows are swapped in once, when the last page
    * has arrived. Opening a list and refreshing it are the same request. */
-  refresh(catalog: ArchivedListCatalog, projectKey: string): Promise<void>;
+  refresh(catalog: ArchivedListCatalog | undefined, projectKey: string): Promise<void>;
   /** Appends the next page; does nothing on the last page or before the first. */
-  loadMore(catalog: ArchivedListCatalog, projectKey: string): Promise<void>;
+  loadMore(catalog: ArchivedListCatalog | undefined, projectKey: string): Promise<void>;
   /** Refreshes every loaded list: an archive, unarchive, pin, unpin or delete
    * can move rows in or out of a project's archived tier, and only the lists
    * a user has opened are loaded, so refreshing them all is cheap. */
@@ -54,9 +56,9 @@ export interface ArchivedListStore extends FrameworkFreeStore<ArchivedListState>
 }
 
 // archivedListKey is an encoded pair, so a project key holding any character
-// still parses back (refreshLoaded).
-export function archivedListKey(catalog: ArchivedListCatalog, projectKey: string): string {
-  return JSON.stringify([catalog, projectKey]);
+// still parses back (refreshLoaded). No catalog encodes as null.
+export function archivedListKey(catalog: ArchivedListCatalog | undefined, projectKey: string): string {
+  return JSON.stringify([catalog ?? null, projectKey]);
 }
 
 const emptyList: ArchivedList = { rows: [], total: 0, loaded: false, loading: false, error: null };
@@ -87,8 +89,8 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
     return () => generations.get(key) === generation;
   }
 
-  async function requestPage(catalog: ArchivedListCatalog, projectKey: string, cursor: string | undefined) {
-    const params: ArchivedListParams = { catalog, projectKey, ...(cursor ? { cursor } : {}) };
+  async function requestPage(catalog: ArchivedListCatalog | undefined, projectKey: string, cursor: string | undefined) {
+    const params: ArchivedListParams = { ...(catalog ? { catalog } : {}), projectKey, ...(cursor ? { cursor } : {}) };
     const response = await client.request("evener/archived/list", params);
     return {
       rows: decodeArchivedListSessions(response.sessions),
@@ -97,7 +99,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
     };
   }
 
-  async function refresh(catalog: ArchivedListCatalog, projectKey: string): Promise<void> {
+  async function refresh(catalog: ArchivedListCatalog | undefined, projectKey: string): Promise<void> {
     const key = archivedListKey(catalog, projectKey);
     const wanted = store.getState().lists[key]?.rows.length ?? 0;
     const isNewest = startRequest(key);
@@ -116,7 +118,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
     }
   }
 
-  async function loadMore(catalog: ArchivedListCatalog, projectKey: string): Promise<void> {
+  async function loadMore(catalog: ArchivedListCatalog | undefined, projectKey: string): Promise<void> {
     const key = archivedListKey(catalog, projectKey);
     const cursor = store.getState().lists[key]?.nextCursor;
     if (!cursor) return;
@@ -140,8 +142,8 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
   async function refreshLoaded(): Promise<void> {
     await Promise.all(
       Object.keys(store.getState().lists).map((key) => {
-        const [catalog, projectKey] = JSON.parse(key) as [ArchivedListCatalog, string];
-        return refresh(catalog, projectKey);
+        const [catalog, projectKey] = JSON.parse(key) as [ArchivedListCatalog | null, string];
+        return refresh(catalog ?? undefined, projectKey);
       }),
     );
   }

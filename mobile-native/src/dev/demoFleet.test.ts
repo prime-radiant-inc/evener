@@ -911,8 +911,11 @@ describe("demo fleet archive", () => {
 		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
 		const location = read(demo, params({ resource: "location", ref: deslop.ref }));
 		expect(location).toMatchObject({ project_key: "deslop", tier: "archived" });
-		// Its only session archived, deslop moves to Archived projects.
-		const list = demo.answerArchivedList({ catalog: "archived_projects", projectKey: "deslop" });
+		// Its only session archived, deslop moves to Archived projects, which
+		// the list reads when asked, as the location screen asks, with no
+		// catalog.
+		const list = demo.answerArchivedList({ projectKey: "deslop" });
+		expect(list.catalog).toBe("archived_projects");
 		expect(decodeArchivedListSessions(list.sessions).map((row) => row.session_id)).toEqual([deslop.session_id]);
 	});
 
