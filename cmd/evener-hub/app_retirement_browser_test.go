@@ -218,6 +218,11 @@ func TestRetirementBrowserRestartDropsPublicationsForRetiredGeneration(t *testin
 	}
 
 	source.pushCurrentResync()
+	for delivery := range source.gen2.deliveries {
+		if delivery.Notification.Method == appwire.NotifyEvenerThreadResync {
+			t.Fatal("resync was published to the retired generation")
+		}
+	}
 }
 
 func TestRetirementBrowserRestartFailsWhenReplacementLeaseDoesNotRetire(t *testing.T) {
