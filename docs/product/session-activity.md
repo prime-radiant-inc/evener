@@ -10,6 +10,19 @@ the session, and tapping it again activates the session. Reading a session's
 activity is a separate operation, so browsing navigation does not load every
 session's work tree.
 
+Transcript delegate cards and status indicators use the same
+owner-qualified delegate entity projection as Activity. Retained transcripts do
+not require a live diagnostics roster to display authoritative delegate state.
+A receipt identifies the owned delegate and, when present, its child session; it
+does not establish current status. Missing or ambiguous entity identity remains
+unavailable. Snapshots of the same proven owner/delegate/child are ordered by nonzero run
+generation, then terminal settlement within that generation, then comparable
+projection revisions. A known generation outranks an unknown generation; two
+unknown generations retain revision ordering without inferred settlement. Each
+selected entity remains one whole snapshot, so resumed status is not combined
+with a previous generation's report. These labels reuse the
+transcript's existing activity binding without adding reads or subscriptions.
+
 ## APIs and ownership
 
 Daemon and hub AppWire expose four typed reads:
