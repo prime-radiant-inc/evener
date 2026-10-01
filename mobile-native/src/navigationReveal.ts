@@ -45,7 +45,7 @@ export async function locateSession(
 	// nested fork original) with top_level_ref = the top-level row that
 	// carries it, so reveal that row. (The web's rail does the same outside
 	// the archived tier, which it renders with fork originals inline.)
-	const revealRef = location.top_level ? ref : (location.top_level_ref ?? ref);
+	const revealRef = location.top_level ? ref : location.top_level_ref;
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
 			throw new Error("The hub returned an unknown project section.");

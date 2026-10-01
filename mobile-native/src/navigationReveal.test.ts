@@ -45,12 +45,12 @@ it.each([
 		revealRef: "child",
 	});
 });
-const locationClient = (fields: Record<string, unknown>, session: Record<string, unknown> = {}) =>
+const locationClient = (fields: Record<string, unknown>) =>
 	Object.assign(new FakeClient("ready"), {
 		request: async () => {
 			const snapshot = wireSnapshot({ representationVersion: 3, resource: "location", ref: "child" } as never, {
 				ref: "child",
-				session: { ref: "child", project: "Project", ...session },
+				session: { ref: "child", project: "Project" },
 				...fields,
 			});
 			return {
@@ -71,7 +71,7 @@ it.each([
 		"cluster-row",
 	],
 ])("reveals a subagent by %s, not by the subagent itself", async (_name, fields, revealRef) => {
-	expect(await locateSession(locationClient(fields, { kind: "subagent" }), "child")).toMatchObject({
+	expect(await locateSession(locationClient(fields), "child")).toMatchObject({
 		ref: "child",
 		revealRef,
 	});
@@ -83,7 +83,7 @@ it.each(["current", "recent", "archived"])(
 	"reveals a nested fork original through the top-level row that carries it (%s)",
 	async (tier) => {
 		const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier };
-		expect(await locateSession(locationClient(fields, { kind: "fork" }), "child")).toMatchObject({
+		expect(await locateSession(locationClient(fields), "child")).toMatchObject({
 			ref: "child",
 			revealRef: "root",
 		});
@@ -91,7 +91,7 @@ it.each(["current", "recent", "archived"])(
 );
 it("reveals a top-level fork original by its own row", async () => {
 	const fields = { top_level: true, top_level_ref: "child", project_key: "p", tier: "current" };
-	expect(await locateSession(locationClient(fields, { kind: "fork" }), "child")).toMatchObject({
+	expect(await locateSession(locationClient(fields), "child")).toMatchObject({
 		ref: "child",
 		revealRef: "child",
 	});
