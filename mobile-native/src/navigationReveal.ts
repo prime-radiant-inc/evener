@@ -42,8 +42,12 @@ export async function locateSession(
 	// A subagent has no row of its own: the hub answers its location with
 	// top_level_ref = the row that owns it (D5). Every other ref -- a root, a
 	// fork original or a cluster member -- has its own row, even when the hub
-	// marks it non-top-level, so reveal it directly.
-	const revealRef = location.session?.kind === "subagent" ? (location.top_level_ref ?? ref) : ref;
+	// marks it non-top-level, so reveal it directly. The archived list is the
+	// exception: it keeps a fork original inside its continuation's row, so a
+	// non-top-level archived session is revealed through top_level_ref, as the
+	// web's rail does.
+	const carried = location.session?.kind === "subagent" || (location.tier === "archived" && !location.top_level);
+	const revealRef = carried ? (location.top_level_ref ?? ref) : ref;
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
 			throw new Error("The hub returned an unknown project section.");
