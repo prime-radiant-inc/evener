@@ -2,7 +2,7 @@
 // them: a `delegate` call and its launch receipt, a `delegate_send`, a shell
 // call with an intent and a task_list call without one, each as the
 // announcing item and the result item history carries. It also reads
-// evener/jobs/list's answer for a coordinator whose subagents finished: one
+// domain delegates/list and the legacy tree answer for finished subagents: one
 // reported, one the user stopped, one failed.
 //
 // agent's TestSubagentCallWireFixtures and TestSubagentOutcomeWireFixtures
@@ -14,7 +14,7 @@ import subagentCalls from "../../../agent/testdata/subagentwire/calls.json?raw";
 import subagentOutcomes from "../../../agent/testdata/subagentwire/outcomes.json?raw";
 import type { ItemModel, ThreadModel } from "../model";
 import { hydrateThread } from "../reducer";
-import type { JobsListResponse, Thread, ThreadItem } from "../types.gen";
+import type { JobsListResponse, SessionDelegatesResponse, Thread, ThreadItem } from "../types.gen";
 import { wireThread } from "./notifications";
 
 /** The recorded call and result items, in the order history carries them. */
@@ -48,4 +48,14 @@ export function subagentWireStep(callId: string): ItemModel {
   const item = model.turns.flatMap((turn) => turn.items).find((candidate) => candidate.callId === callId);
   if (!item) throw new Error(`no ${callId} step in agent/testdata/subagentwire/calls.json`);
   return item;
+}
+
+/** The real domain delegates/list response from the same durable finishes. */
+export function subagentOutcomesDelegatesResponse(): SessionDelegatesResponse {
+  return (JSON.parse(subagentOutcomes) as { delegatesResponse: SessionDelegatesResponse }).delegatesResponse;
+}
+
+export function subagentResumedDelegatesResponse(): SessionDelegatesResponse {
+  return (JSON.parse(subagentOutcomes) as { resumedDelegatesResponse: SessionDelegatesResponse })
+    .resumedDelegatesResponse;
 }

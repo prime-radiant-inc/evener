@@ -1438,6 +1438,7 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
             diagnostics: {
               delegates: [
                 {
+                  runGeneration: 1,
                   delegateId: "dlg_hist",
                   ownerSessionId: "sess_parent_hist",
                   rootSessionId: "sess_parent_hist",

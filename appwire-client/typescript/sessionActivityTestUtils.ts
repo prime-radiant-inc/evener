@@ -40,6 +40,7 @@ export const jobFixture = (jobId = "shell-1", status = "running"): JobActivityJo
   outputBytes: 0,
 });
 export const delegateFixture = (delegateId = "delegate-1"): SessionDelegate => ({
+  runGeneration: 1,
   delegateId,
   ownerRef: activityRef,
   rootRef: activityRef,

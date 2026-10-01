@@ -2239,7 +2239,7 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 	}
 	for _, delegate := range ds.Delegates {
 		out.Delegates = append(out.Delegates, server.DelegateStatusInfo{
-			DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
+			DelegateID: delegate.DelegateID, RunGeneration: delegate.RunGeneration, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
 			ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
 			Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
 			Outcome: delegate.Outcome, Reason: delegate.Reason, Error: delegate.Error, Terminal: delegate.Terminal, Resumable: delegate.Resumable, NeedsAttention: delegate.NeedsAttention,

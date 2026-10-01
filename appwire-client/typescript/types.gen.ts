@@ -501,6 +501,10 @@ export interface EvenerAuthUpdatedParams {
 }
 
 export interface EvenerDelegateInfo {
+  /**
+   * RunGeneration identifies the current activation; zero means no run has started.
+   */
+  runGeneration: number;
   delegateId: string;
   ownerSessionId: string;
   rootSessionId: string;
@@ -3130,6 +3134,16 @@ export interface SessionActivitySummary {
 }
 
 export interface SessionDelegate {
+  /**
+   * RunGeneration identifies the current activation; zero means no run has started.
+   */
+  runGeneration: number;
+  /**
+   * ReportPreview is the settled current run's reported text, capped at 4096
+   * Unicode code points including an ellipsis when truncated.
+   */
+  reportPreview?: string;
+  reportPreviewTruncated?: boolean;
   delegateId: string;
   ownerRef: string;
   rootRef: string;

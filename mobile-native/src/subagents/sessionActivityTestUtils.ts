@@ -23,6 +23,8 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 // the adapter never passes them on and a test can't pass on data these reads
 // don't send.
 const DELEGATE_FIELDS = [
+	"reportPreview",
+	"reportPreviewTruncated",
 	"outcome",
 	"reason",
 	"error",
@@ -73,6 +75,7 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 				const state = d.terminal === true ? "idle" : "running";
 				delegates.push({
 					delegateId: d.delegateId,
+					runGeneration: d.runGeneration ?? 0,
 					ownerRef: node.ref,
 					rootRef: tree.root.ref,
 					childRef: d.childRef,

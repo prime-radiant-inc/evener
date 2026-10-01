@@ -29,7 +29,7 @@ func TestDelegateProjection_LateRootReceivesStableDelegateSnapshot(t *testing.T)
 	stable := delegateProjectionFixture()
 	stable.OwnerSessionID = "root"
 	params := requireDelegateProjection(t, p.Project(delegateProjectionEvent("root", stable)))
-	if params.Delegate.DelegateID != "dlg_projection" || params.Delegate.ProjectionRevision != 7 {
+	if params.Delegate.DelegateID != "dlg_projection" || params.Delegate.ProjectionRevision != 7 || params.Delegate.RunGeneration != stable.RunGeneration {
 		t.Fatalf("late stable snapshot = %+v", params.Delegate)
 	}
 }
@@ -150,7 +150,7 @@ func TestDelegateProjection_ShellUsesParentDelegateID(t *testing.T) {
 
 func delegateProjectionFixture() events.DelegateUpdatedData {
 	return events.DelegateUpdatedData{
-		DelegateID: "dlg_projection", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child",
+		RunGeneration: 2, DelegateID: "dlg_projection", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child",
 		TranscriptRef: "local:child", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle",
 		Resumable: true, NeedsAttention: true, ProjectionRevision: 7, Task: "inspect", Description: "inspect carefully", AgentType: "explorer",
 		RequestedModel: "openai/gpt-5", ResolvedProfileID: "openai", ResolvedModel: "gpt-5", Model: "gpt-5",

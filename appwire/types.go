@@ -1631,6 +1631,8 @@ type EvenerWatchInfo struct {
 // notifications and thread diagnostics. It contains no activation job fields
 // and no call-scoped wait result.
 type EvenerDelegateInfo struct {
+	// RunGeneration identifies the current activation; zero means no run has started.
+	RunGeneration       uint64               `json:"runGeneration"`
 	DelegateID          string               `json:"delegateId"`
 	OwnerSessionID      string               `json:"ownerSessionId"`
 	RootSessionID       string               `json:"rootSessionId"`

@@ -94,7 +94,13 @@ with a fetch: the package issues no request of its own and names neither an
 origin nor a credentials policy. The hub overview store,
 `createHubOverviewStore(client)`, is the same framework-free triple over a
 `request`-only client port; it holds the fetch-once settings-overview read
-both apps' hub settings render from. The hub's own update check and apply,
+both apps' hub settings render from. The archived list store,
+`createArchivedListStore(client)`, is the same triple plus store-bound
+actions (`refresh`, `loadMore`, `refreshLoaded`, `reset`) over a
+`request`-only port: each opened project's archived sessions from
+`evener/archived/list`, paged by cursor and refreshed in place; the host
+resets it when its connection is replaced or recovers. The hub's own update
+check and apply,
 `createHubUpdateController({ client, awaitRestart })`, is the same triple
 with the restart wait as a port: each app says how it notices the new hub.
 

@@ -80,6 +80,29 @@ Watch state is `armed`, `ended` or `unknown`. A retained registration alone does
 not prove that its runtime still has an armed watch. Recorded delivery counts
 and end reasons remain useful, and retained watch history has a bounded lifetime.
 
+## Delegate reports and run identity
+
+`evener/thread/delegates/list` carries `reportPreview` from the durable reported
+completion packet of the current settled run. It preserves a useful prefix of
+up to 4,096 Unicode code points, including the ellipsis when truncated;
+`reportPreviewTruncated` identifies that case. Missing, non-string or empty
+reports have no preview. Terminal errors retain their separate reason and error
+fields. Opening the child transcript remains the path to the full conversation.
+
+Both the delegate list and transcript roster carry the authoritative
+`runGeneration`. The phone joins a report only when owner, delegate identity and
+nonzero generation match. A resumed or settling run cannot borrow the previous
+run's report, even if their timestamps coincide. Initial live reads, retained
+reads and delegate notifications preserve the same counter. Candidate capture
+holds generation and immutable packet evidence together; decoding report text
+happens outside the controller's mutation lock.
+
+The [delegate projection](../../agent/session_activity_delegates.go),
+[recorded producer outcomes](../../agent/testdata/subagentwire/outcomes.json)
+and [phone outcome adapter](../../mobile-native/src/subagents/subagentModel.ts)
+define this boundary. The recordings include real done, failed, stopped and
+resumed runs; regenerate them with `make fuzz-goldens` when the producer changes.
+
 ## Pagination and recovery
 
 Rows are ordered by creation time and stable identity. Equal logical job or watch
