@@ -2,7 +2,8 @@
 // archived rows: they come from evener/archived/list through the connection's
 // archived list store (archivedLists.ts). The list has no revisions of its
 // own: it is read when a screen opens it unloaded, again when the hub
-// announces its project changed, after any accepted organize change
+// announces its project changed (once shown, if it was out of view), after
+// any accepted organize change
 // (navigationActions.ts, and the Conversation screen's own Archive and Undo),
 // and from the top once its connection recovers.
 import {
@@ -36,6 +37,9 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	private readonly store: ArchivedListStore;
 	private list: ArchivedList | undefined;
 	private snapshot = pageState(undefined);
+	private paused = false;
+	/** The hub announced a change while the list was paused. */
+	private owed = false;
 	constructor(
 		private readonly client: ConversationClientLike,
 		private readonly catalog: ArchivedListCatalog,
@@ -58,7 +62,11 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 		this.store.subscribe((state, previous) => {
 			if (state.lists[this.key] !== previous.lists[this.key]) listener();
 		});
+	/** An explicit read means the list is shown again, and stands in for any
+	 * read owed while it was paused. */
 	refresh() {
+		this.paused = false;
+		this.owed = false;
 		return this.store.refresh(this.catalog, this.projectKey);
 	}
 	// An archived list is read from the hub's current navigation, which an
@@ -74,13 +82,20 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	 * archived tier); the hub's navigation names no archived list itself. */
 	watch() {
 		return this.client.onNotification((event) => {
-			if (event.method === "evener/navigation/invalidated" && event.params.targets.some(this.names))
-				void this.refresh();
+			if (event.method !== "evener/navigation/invalidated" || !event.params.targets.some(this.names)) return;
+			if (this.paused) this.owed = true;
+			else void this.refresh();
 		});
 	}
 	private names = (target: NavigationInvalidationTarget) =>
 		target.kind === "all_loaded_projects" || (target.kind === "project" && target.projectKey === this.projectKey);
-	// The list holds no read to pause, so there is nothing to cancel or resume.
-	cancel() {}
-	resume() {}
+	/** Out of view, the list reads nothing on the hub's behalf; a change
+	 * announced meanwhile is read on resume. A read already out lands. */
+	cancel() {
+		this.paused = true;
+	}
+	resume() {
+		this.paused = false;
+		if (this.owed) void this.refresh();
+	}
 }

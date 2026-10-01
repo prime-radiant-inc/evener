@@ -26,6 +26,13 @@ function hub(pages: Record<string, { refs: string[]; total: number; nextCursor?:
 	return { client, seen };
 }
 
+function announce(client: FakeClient, targets: unknown[]) {
+	client.emitNotification({
+		method: "evener/navigation/invalidated",
+		params: { generationId: "g", sequence: 1, targets },
+	} as never);
+}
+
 it("reads the project's archived list from its catalog, and pages on with the cursor", async () => {
 	const { client, seen } = hub({
 		"": { refs: ["local:a"], total: 2, nextCursor: "c1" },
@@ -142,26 +149,49 @@ it("reads its list again when the hub announces its project changed", async () =
 	const pages = new ArchivedPages(client, "projects", "p");
 	await pages.refresh();
 	const stop = pages.watch();
-	const announce = (targets: unknown[]) =>
-		client.emitNotification({
-			method: "evener/navigation/invalidated",
-			params: { generationId: "g", sequence: 1, targets },
-		} as never);
 
-	announce([
+	announce(client, [
 		{ kind: "project", projectKey: "q" },
 		{ kind: "section", section: "live" },
 	]);
 	await Promise.resolve();
 	expect(seen).toHaveLength(1);
 
-	announce([{ kind: "project", projectKey: "p" }]);
+	announce(client, [{ kind: "project", projectKey: "p" }]);
 	await vi.waitFor(() => expect(seen).toHaveLength(2));
-	announce([{ kind: "all_loaded_projects" }]);
+	announce(client, [{ kind: "all_loaded_projects" }]);
 	await vi.waitFor(() => expect(seen).toHaveLength(3));
 
 	stop();
-	announce([{ kind: "project", projectKey: "p" }]);
+	announce(client, [{ kind: "project", projectKey: "p" }]);
 	await Promise.resolve();
 	expect(seen).toHaveLength(3);
+});
+
+// Out of view, a list reads nothing on the hub's behalf: a change announced
+// meanwhile waits until the list is shown again.
+it("holds a change announced while paused until it resumes", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(client, "projects", "p");
+	await pages.refresh();
+	const stop = pages.watch();
+
+	pages.cancel();
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	await Promise.resolve();
+	expect(seen).toHaveLength(1);
+	pages.resume();
+	await vi.waitFor(() => expect(seen).toHaveLength(2));
+	pages.resume();
+	await Promise.resolve();
+	expect(seen).toHaveLength(2);
+
+	// A read while paused stands in for the one owed.
+	pages.cancel();
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	await pages.refresh();
+	pages.resume();
+	await Promise.resolve();
+	expect(seen).toHaveLength(3);
+	stop();
 });
