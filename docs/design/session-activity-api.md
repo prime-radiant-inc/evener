@@ -105,6 +105,9 @@ claims. Counts describe the declared scope and retained data, never just the
 downloaded pages. Watch `active` means armed. Summaries use cheap domain state or
 an existing warm derived index; a cold summary does not recursively load journals
 just to fill a badge. It may return unknown counts.
+Optional `refreshPending` and `issues` distinguish bounded warm progress from
+source failures. Their count authority and recovery rules are defined in the
+[context and counts contract](../product/session-activity.md#context-counts-and-incomplete-evidence).
 
 Each list response carries `context`, `scope`, `page: SessionActivityPage`, and
 one typed array: `delegates`, `jobs`, or `watches`. Arrays are always present,
@@ -124,8 +127,12 @@ history exists. A missing child runtime does not erase its delegate. No nested
 `child` tree or activation-job identity is included. Optional usage and worktree
 data are included only when already available without transcript or filesystem
 walks. Bounded reason and error text preserve the explanation of an unsuccessful
-outcome without embedding result payloads. The existing delegate stop API remains
+outcome without embedding full result payloads. The existing delegate stop API remains
 the mutation authority.
+The [delegate report and run contract](../product/session-activity.md#delegate-reports-and-run-identity)
+defines required `runGeneration`, optional compact `name`, and the bounded settled
+`reportPreview` with its truncation flag. Reports belong to that settled generation;
+a resumed run cannot borrow an earlier run's report.
 
 Jobs reuse the typed `JobActivityJob` row, restricted to shell jobs. Their
 `ownerRef` is the logical session owner. Job output stays behind its existing
@@ -236,9 +243,10 @@ bridge. Watch registration, clearing, delivery, and ending must refresh the
 receiver's view. An event is a scoped invalidation, not a second lifecycle fold.
 Existing delegate/job events may also be consumed, with coalescing. Subscription
 gaps and reconnects revalidate only observed session resources.
-An observed summary with pending ancestry continues bounded reads with a paced
-yield between them. This is normal loading progress; transient-error backoff is
-reserved for failed reads. Unknown badge counts alone do not demand cold scans.
+An observed summary with pending ancestry or `refreshPending` continues bounded
+reads with a paced yield between them. Source `issues` use the existing
+transient-error backoff even when the RPC returns a successful partial response.
+Unknown badge counts alone do not demand cold scans.
 
 The shared TypeScript owner is `SessionActivityStore`, exported from
 `@evener/appwire-client`. It is framework-free. Its public surface is:
@@ -256,8 +264,9 @@ activity.dispose()
 ```
 
 `start()` observes the summary; opening a collection uses `observe` and releases
-that demand when it closes. `load` is a one-shot read; it does not retain demand.
-Only observed resources acquire data and refresh. Snapshot state separates
+that demand when it closes. `load`, `loadMore`, and a named `refresh` can perform
+one-shot reads without an observer. Only observation retains automatic refresh
+and retry demand. Snapshot state separates
 loading, retained data, completeness, transient failure, and authoritative
 unavailability. It exposes typed arrays and context rather than navigation rows.
 Clock/timer dependencies are injectable for deterministic tests.

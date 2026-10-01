@@ -435,10 +435,9 @@ const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
 // be called button.module.css) can't ride along on a real widget's entry.
 const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 
-// kata zq7g: shell/rail/RailRow.module.css tints a signal row's gloss text
-// with its own state family (working/needs-you/failed - see RailRow.tsx's
-// ACTIVITY_FAMILY_CLASS) so the rail's "waiting on you" signal is no longer
-// carried by a 6px dot alone. RailRow.module.css is a shell stylesheet, not a
+// shell/rail/RailRow.module.css renders the compact rail's needs-you and broken
+// status dots with their semantic families; running uses a neutral grey ring.
+// RailRow.module.css is a shell stylesheet, not a
 // widget (it lives under shell/rail/, not widgets/<name>/), so it can never
 // match WIDGET_STYLESHEET_RE no matter how SEMANTIC_USE_ALLOWLIST is
 // extended - this is a deliberate, exact-path exception, the same shape as
