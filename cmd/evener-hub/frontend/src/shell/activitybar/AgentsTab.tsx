@@ -5,12 +5,12 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 
 import { activityNodeID, type SessionDelegate } from "@evener/appwire-client";
 import { useLayoutEffect } from "react";
+import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { Button, Chevron } from "../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ActivityScope } from "../statusbar/statusScope";
-import { workspaceStore } from "../workspace";
 import { useActivityScrollAnchor, useActivityScrollProgress, useActivityViewCurrent } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import { AgentRow } from "./activityRows";
@@ -24,9 +24,7 @@ const CLASS = {
 
 const PAGE = 20;
 function drill(sub: SessionDelegate): void {
-  workspaceStore
-    .getState()
-    .openPane("transcript", { ref: sub.childRef, parentRef: sub.ownerRef }, { slot: "secondary" });
+  openTranscript(sub.childRef, sub.ownerRef);
 }
 
 export function AgentsTab({ scope }: { scope: ActivityScope }) {

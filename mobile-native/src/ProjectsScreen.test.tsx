@@ -9,13 +9,22 @@
 import type { ComponentProps } from "react";
 import { AccessibilityInfo } from "react-native";
 import { act } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import { ProjectsScreen, SessionLocationScreen } from "./ProjectsScreen";
-import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { completeSession, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { archivedListStoreFor } from "./archivedLists";
+import { NavigationPages } from "./navigationPages";
+import { ProjectScreen, ProjectsScreen, unconfirmedReason, SessionLocationScreen } from "./ProjectsScreen";
+import {
+	alertRequests,
+	flatListCalls,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+} from "./renderNative.testkit";
 
-const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
+const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 }));
@@ -29,7 +38,12 @@ vi.mock("@react-navigation/native", async () => {
 });
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("expo-sqlite/kv-store", () => ({
-	Storage: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
+	Storage: {
+		getItemSync: (key: string) => harness.kv.get(key) ?? null,
+		setItemSync: (key: string, value: string) => void harness.kv.set(key, value),
+		removeItemSync: (key: string) => void harness.kv.delete(key),
+		getAllKeysSync: () => [...harness.kv.keys()],
+	},
 }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
 
@@ -53,6 +67,12 @@ const locationProps = (revealRef = "local:a") =>
 		},
 		navigation: { navigate: () => {}, setParams: () => {} },
 	}) as unknown as ComponentProps<typeof SessionLocationScreen>;
+/** Project "p"'s screen, on the tier and catalog `params` name. */
+const projectProps = (params: Record<string, unknown>) =>
+	({
+		route: { params: { hubId: "hub-1", projectKey: "p", title: "Project", ...params } },
+		navigation: { navigate: () => {}, setParams: () => {} },
+	}) as unknown as ComponentProps<typeof ProjectScreen>;
 
 it("offers no pull to refresh: the projects list keeps itself current", async () => {
 	const hub = new FakeClient("ready");
@@ -178,4 +198,164 @@ it("scrolls to and selects the located row", async () => {
 	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
 	expect(pressable(tree, "Open Alpha")?.props.accessibilityState).toEqual({ selected: false });
 	tree.unmount();
+});
+
+// Navigation v3 serves a project's archived tier empty: its rows come from
+// evener/archived/list, paged by cursor, from the project's catalog.
+it("lists a project's archived sessions from the archived list, a page at a time", async () => {
+	const hub = new FakeClient("ready");
+	const archivedReads: unknown[] = [];
+	hub.on("evener/archived/list", (params) => {
+		archivedReads.push(params);
+		return params.cursor
+			? { sessions: [completeSession({ ref: "local:b", title: "Beta" })], total: 2 }
+			: { sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 2, nextCursor: "c1" };
+	});
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Alpha");
+	await act(async () => pressable(tree, "Load more · 1 remaining")?.props.onPress());
+	expect(renderedText(tree)).toContain("Beta");
+	expect(archivedReads).toEqual([
+		{ catalog: "archived_projects", projectKey: "p" },
+		{ catalog: "archived_projects", projectKey: "p", cursor: "c1" },
+	]);
+	expect(hub.calls.filter((call) => call.method === "evener/navigation/read")).toEqual([]);
+	tree.unmount();
+});
+
+// Rows an earlier view loaded stay on screen while the connection is away,
+// with no read the client would reject.
+it("reads no archived list while the connection is not ready", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/archived/list", () => ({ sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 1 }));
+	await archivedListStoreFor(hub).refresh("archived_projects", "p");
+	hub.emitStateChange("reconnecting");
+	harness.connection = screenConnection(hub, "reconnecting");
+	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Alpha");
+	expect(renderedText(tree)).not.toContain("cannot call");
+	expect(hub.calls.filter((call) => call.method === "evener/archived/list")).toHaveLength(1);
+	tree.unmount();
+});
+
+// A recovered connection drops every archived list (archivedLists.ts), and
+// the screen reads its list again once the connection is ready: the same
+// read of an unloaded list it makes on every focus, so a screen out of view
+// while the connection recovered reads it on its return too.
+it("reads the archived list again once a dropped connection recovers", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/archived/list", () => ({ sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 1 }));
+	const reads = () => hub.calls.filter((call) => call.method === "evener/archived/list").length;
+	const screen = () => <ProjectScreen {...projectProps({ tier: "archived", archived: true })} />;
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(screen());
+	await act(async () => {});
+	expect(reads()).toBe(1);
+
+	hub.emitStateChange("reconnecting");
+	harness.connection = screenConnection(hub, "reconnecting");
+	await act(async () => tree.update(screen()));
+	hub.emitReady();
+	harness.connection = screenConnection(hub, "ready");
+	await act(async () => tree.update(screen()));
+	await act(async () => {});
+	expect(reads()).toBe(2);
+	expect(renderedText(tree)).toContain("Alpha");
+	tree.unmount();
+});
+
+// An archived row's Unarchive runs through the same organize flow as any
+// row's: the hub accepts it, the change is confirmed, and the archived list
+// is read again, so the row leaves the tab.
+it("unarchives an archived row and reads the archived list again", async () => {
+	harness.kv.clear();
+	const hub = new FakeClient("ready");
+	// A local session id is 22 alphanumerics; the change is checked by its ref.
+	const alpha = { ref: "local:AlphaSession0000000001", session_id: "AlphaSession0000000001", title: "Alpha" };
+	let archived = true;
+	let archivedReads = 0;
+	hub.on("evener/archived/list", () => {
+		archivedReads++;
+		return archived ? { sessions: [completeSession(alpha)], total: 1 } : { sessions: [], total: 0 };
+	});
+	hub.on("evener/archive/set", () => {
+		archived = false;
+		return { ok: true, navigation: { generation_id: "generation_test", targets: [] } };
+	});
+	// The change is confirmed by reading the session's location, now in the
+	// project's current tier, and the manifest.
+	hub.on("evener/navigation/read", (params) => {
+		if (params.resource !== "location") return wireSnapshot(params as never, manifest());
+		const response = wireSnapshot(params as never, { session: alpha });
+		Object.assign((response.data as { metadata: Record<string, unknown> }).metadata, {
+			tier: "current",
+			project_key: "p",
+		});
+		return response;
+	});
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<ProjectScreen {...projectProps({ tier: "archived" })} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Alpha");
+	alertRequests.length = 0;
+	act(() => pressable(tree, "More actions for Alpha")?.props.onPress());
+	const unarchive = alertRequests.at(-1)?.buttons?.find((button) => button.text === "Unarchive");
+	await act(async () => unarchive?.onPress?.());
+	await act(async () => {});
+
+	expect(hub.calls.filter((call) => call.method === "evener/archive/set").map((call) => call.params)).toEqual([
+		{ kind: "session", id: "AlphaSession0000000001", archived: false },
+	]);
+	expect(archivedReads).toBeGreaterThan(1);
+	expect(renderedText(tree)).not.toContain("Alpha");
+	expect(renderedText(tree)).not.toContain("could not be confirmed");
+	tree.unmount();
+	harness.kv.clear();
+});
+
+// An organize change is confirmed against the page read after it. A
+// navigation page must come from the generation the change was observed in;
+// an archived list has no navigation version, so only its read is checked.
+describe("confirming an organize change against the page", () => {
+	const loaded = { loaded: true, rows: [], remaining: 0, loading: false, error: null as string | null, stale: false };
+	const source = (navigationVersioned: boolean, generationId: string | null, page = loaded) =>
+		({
+			navigationVersioned,
+			getSnapshot: () => page,
+			getResourceVersion: () => (generationId ? { generationId, revision: 1 } : null),
+		}) as unknown as Parameters<typeof unconfirmedReason>[0];
+
+	// The real navigation page declares its version, so a change observed in
+	// another generation is caught.
+	it("checks the generation a real navigation page was read in", async () => {
+		const hub = new FakeClient("ready");
+		hub.on("evener/navigation/read", (params) =>
+			wireSnapshot(params as never, { sessions: [], remaining: 0 }, '"one"', 1, "g1"),
+		);
+		const pages = new NavigationPages(
+			hub,
+			{ resource: "project_page", projectKey: "p", tier: "current" },
+			"sessions",
+			(row: { ref: string }) => row.ref,
+		);
+		await pages.refresh();
+		expect(unconfirmedReason(pages, { generationId: "g1" })).toBeNull();
+		expect(unconfirmedReason(pages, { generationId: "g2" })).toBe("The hub restarted during the check.");
+	});
+
+	it("checks a navigation page's generation", () => {
+		expect(unconfirmedReason(source(true, "g1"), { generationId: "g1" })).toBeNull();
+		expect(unconfirmedReason(source(true, "g2"), { generationId: "g1" })).toBe("The hub restarted during the check.");
+		expect(unconfirmedReason(source(true, null), { generationId: "g1" })).toBe("The hub restarted during the check.");
+	});
+
+	it("checks only the read for a source navigation doesn't version", () => {
+		expect(unconfirmedReason(source(false, null), { generationId: "g1" })).toBeNull();
+		expect(unconfirmedReason(source(false, null, { ...loaded, error: "offline" }), { generationId: "g1" })).toBe(
+			"The current navigation could not be confirmed.",
+		);
+	});
 });

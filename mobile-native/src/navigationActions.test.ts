@@ -1,3 +1,4 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type {
@@ -6,6 +7,7 @@ import type {
 	NavigationOperation,
 } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
+import { archivedListStoreFor } from "./archivedLists";
 
 it("does not call an empty-journal reconciliation complete after another model starts a write", async () => {
 	const journal = journalFixture();
@@ -697,4 +699,50 @@ describe("navigation organization actions", () => {
 			error: "Could not confirm current navigation for the previous change. Check it before trying again.",
 		});
 	});
+});
+
+// Archived lists have no invalidations: an accepted archive, unarchive, pin
+// or delete can move rows in or out of any project's archived tier, so the
+// connection's loaded archived lists read again, as the web's rail does.
+it("reads the connection's loaded archived lists again once a change is accepted", async () => {
+	const client = new FakeClient("ready");
+	let archivedReads = 0;
+	client.on("evener/archived/list", () => {
+		archivedReads++;
+		return { sessions: [], total: 0 };
+	});
+	client.on("evener/archive/set", () => ({ ok: true, navigation: { generation_id: "g", targets: [] } }));
+	await archivedListStoreFor(client).refresh("projects", "p");
+	expect(archivedReads).toBe(1);
+	const actions = new NavigationActions(
+		client,
+		async () => {},
+		() => true,
+		async () => {},
+	);
+
+	await actions.archive({ kind: "session", id: "s1" }, false);
+
+	expect(archivedReads).toBe(2);
+});
+
+it("leaves the archived lists alone when the hub refuses a change", async () => {
+	const client = new FakeClient("ready");
+	let archivedReads = 0;
+	client.on("evener/archived/list", () => {
+		archivedReads++;
+		return { sessions: [], total: 0 };
+	});
+	client.on("evener/archive/set", () => ({ ok: false, navigation: { generation_id: "g", targets: [] } }));
+	await archivedListStoreFor(client).refresh("projects", "p");
+	const actions = new NavigationActions(
+		client,
+		async () => {},
+		() => true,
+		async () => {},
+	);
+
+	await actions.archive({ kind: "session", id: "s1" }, false);
+
+	expect(archivedReads).toBe(1);
 });

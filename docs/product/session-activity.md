@@ -64,6 +64,9 @@ Establishing retained child ancestry may advance the root delegate journal in
 bounded steps. Optional summary `refreshPending` identifies bounded recovery of
 established source evidence; its absence means no such demand. Cold unknown
 counts and retained registrations with unproved armed state do not set it.
+Footer and sidebar badges show a dash for unknown counts and name that state
+explicitly for assistive technology. Unknown evidence does not imply that a read
+is pending; collection views show their own loading progress.
 
 List arrays are always present. An empty array establishes emptiness only when
 the page is complete and has no issues. An incomplete page can contain no rows
@@ -298,6 +301,11 @@ chosen transcript title. Its existing session binding supplies summary context;
 direct links and restored panes obtain the same context without requiring a Back
 target. The Back target alone is not ancestry evidence, and no parent transcript
 is read to obtain a name. Root sessions omit redundant ancestry.
+
+Activity delegate rows use the shared transcript opener, which retains the
+enclosing conversation and canonicalizes restored variants of the same child
+pane before focusing it. Nested drills keep the child’s parent context so an
+unchanged root URL does not steal focus.
 
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection

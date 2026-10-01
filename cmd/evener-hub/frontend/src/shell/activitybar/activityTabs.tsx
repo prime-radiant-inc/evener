@@ -30,9 +30,9 @@ export interface ActivityTabSpec {
 }
 
 const fraction = (active: number | null, total: number | null) =>
-  active === null || total === null ? "…/…" : `${active}/${total}`;
+  active === null || total === null ? "—" : `${active}/${total}`;
 const countLabel = (kind: string, active: number | null, total: number | null, state: string) =>
-  active === null || total === null ? `${kind}, counts pending` : `${kind}, ${active} of ${total} ${state}`;
+  active === null || total === null ? `${kind}, counts unknown` : `${kind}, ${active} of ${total} ${state}`;
 
 export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
   {
