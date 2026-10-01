@@ -68,11 +68,13 @@ func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navig
 }
 
 // archivedCursor is a hubcore.SessionOrderKey on the wire, bound to the list
-// it continues (catalog and project key), so a cursor from another list is
-// rejected instead of misapplied. A zero time.Time round-trips through JSON as
+// it continues (the request's catalog hint and project key), so a cursor from
+// another list is rejected instead of misapplied. It holds the hint rather than
+// the catalog read, so the next page still follows a project that moved
+// between Projects and Archived projects. A zero time.Time round-trips through JSON as
 // the zero time, so a row with no timestamps keeps its place in the order.
 type archivedCursor struct {
-	Catalog navigationResourceKind `json:"k"`
+	Hint    navigationResourceKind `json:"k"`
 	Project string                 `json:"p"`
 	Updated time.Time              `json:"u"`
 	Created time.Time              `json:"c"`
@@ -80,13 +82,13 @@ type archivedCursor struct {
 	ID      string                 `json:"i"`
 }
 
-func encodeArchivedCursor(catalog navigationResourceKind, projectKey string, key hubcore.SessionOrderKey) string {
+func encodeArchivedCursor(hint navigationResourceKind, projectKey string, key hubcore.SessionOrderKey) string {
 	// A struct of times and strings always encodes.
-	raw, _ := json.Marshal(archivedCursor{Catalog: catalog, Project: projectKey, Updated: key.Updated, Created: key.Created, Title: strings.TrimSpace(key.Title), ID: key.ID})
+	raw, _ := json.Marshal(archivedCursor{Hint: hint, Project: projectKey, Updated: key.Updated, Created: key.Created, Title: strings.TrimSpace(key.Title), ID: key.ID})
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
-func decodeArchivedCursor(cursor string, catalog navigationResourceKind, projectKey string) (hubcore.SessionOrderKey, error) {
+func decodeArchivedCursor(cursor string, hint navigationResourceKind, projectKey string) (hubcore.SessionOrderKey, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
 		return hubcore.SessionOrderKey{}, errors.New("invalid cursor")
@@ -95,29 +97,21 @@ func decodeArchivedCursor(cursor string, catalog navigationResourceKind, project
 	if err := json.Unmarshal(raw, &c); err != nil || c.ID == "" {
 		return hubcore.SessionOrderKey{}, errors.New("invalid cursor")
 	}
-	if c.Catalog != catalog || c.Project != projectKey {
+	if c.Hint != hint || c.Project != projectKey {
 		return hubcore.SessionOrderKey{}, errors.New("cursor belongs to another archived list")
 	}
 	return hubcore.SessionOrderKey{Updated: c.Updated, Created: c.Created, Title: c.Title, ID: c.ID}, nil
 }
 
-// archivedListCatalog finds the catalog holding key now. The same key can
-// exist in more than one catalog, so a hinted catalog that holds it wins. A
-// project moves between Projects and Archived projects as its sessions are
-// archived and unarchived (hubcore's Tree), so a hint to one member of that
-// pair falls back to the other. With no hint, the first catalog holding the
-// key. The zero kind means no catalog holds it.
+// archivedListCatalog finds the catalog holding key now, and the project it
+// holds. The same key can exist in more than one catalog, so a hinted catalog
+// that holds it wins. A project moves between Projects and Archived projects
+// as its sessions are archived and unarchived (hubcore's Tree), so a hint to
+// one member of that pair falls back to the other; a test-runs hint has no
+// fallback. With no hint, the first of projects, archived projects and test
+// runs holding the key. The zero kind means none of those holds it.
 func (p navigationProjection) archivedListCatalog(hint navigationResourceKind, key string) (navigationResourceKind, hubcore.TreeProject) {
-	candidates := []navigationResourceKind{hint}
-	switch hint {
-	case "":
-		candidates = []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
-	case navigationResourceProjects:
-		candidates = append(candidates, navigationResourceArchivedProjects)
-	case navigationResourceArchivedProjects:
-		candidates = append(candidates, navigationResourceProjects)
-	}
-	for _, catalog := range candidates {
+	for _, catalog := range archivedListCandidates(hint) {
 		for _, project := range p.catalogs[catalog] {
 			if project.Key == key {
 				return catalog, project
@@ -127,10 +121,25 @@ func (p navigationProjection) archivedListCatalog(hint navigationResourceKind, k
 	return "", hubcore.TreeProject{}
 }
 
+// archivedListCandidates is the order archivedListCatalog reads catalogs in.
+func archivedListCandidates(hint navigationResourceKind) []navigationResourceKind {
+	switch hint {
+	case "":
+		return []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns}
+	case navigationResourceProjects:
+		return []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects}
+	case navigationResourceArchivedProjects:
+		return []navigationResourceKind{navigationResourceArchivedProjects, navigationResourceProjects}
+	default:
+		return []navigationResourceKind{hint}
+	}
+}
+
 // ArchivedList returns the page of archived rows of request's project that
 // follows request.After in the rail's order, from the catalog holding the
-// project now (archivedListCatalog). A project no catalog holds answers an
-// empty page: it was deleted since the rail listed it.
+// project now (archivedListCatalog). A project none of the catalogs it may be
+// read from holds answers an empty page: it was deleted, or became or stopped
+// being a test run, since the rail listed it.
 func (p navigationProjection) ArchivedList(request navigationArchivedListRequest) (navigationArchivedPage, error) {
 	catalog, project := p.archivedListCatalog(request.Catalog, request.ProjectKey)
 	rows, _ := project.TierRows("archived")

@@ -680,9 +680,11 @@ type SessionSeenSetResponse struct {
 // key, and the catalog its row came from ("projects", "archived_projects" or
 // "test_runs") as a hint. The same key can exist in more than one catalog, so
 // the hub reads the hinted catalog when it holds the key; a project that moved
-// between Projects and Archived projects is read from the one holding it now;
-// with no hint, the first catalog holding the key. Cursor is the previous
-// page's NextCursor, bound to the same hint and key; Limit defaults to 50.
+// between Projects and Archived projects is read from the one holding it now
+// (a test-runs hint has no such fallback); with no hint, the first of
+// projects, archived_projects and test_runs holding the key. Cursor is the
+// previous page's NextCursor, bound to the same hint and key; Limit defaults
+// to 50.
 type ArchivedListParams struct {
 	Catalog    string `json:"catalog,omitempty"`
 	ProjectKey string `json:"projectKey"`
