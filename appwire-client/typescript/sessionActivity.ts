@@ -9,10 +9,10 @@ import type { SessionActivity } from "./types.gen";
 export const QUIET_AFTER_MS = 3 * 60_000;
 /** A working session reads May be stuck after ten. */
 export const STUCK_AFTER_MS = 10 * 60_000;
-/** The longest string this client keeps for a session's latest tool intent.
- * The daemon cuts each one to the wire's bound (appwire.MaxIntentRunes, 200
- * runes), so this only holds a runaway to something a row could never show: it
- * never rejects an intent a hub may legitimately send. */
+/** The longest string this client keeps for a session's latest tool intent:
+ * twice the 400 UTF-16 units the wire's bound (appwire.MaxIntentRunes, 200
+ * runes) can ever cost, so it holds a runaway without ever dropping an intent
+ * a hub may legitimately send. */
 export const MAX_INTENT_LENGTH = 800;
 
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;

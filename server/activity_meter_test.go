@@ -133,11 +133,7 @@ func TestActivityMeterReadsNothingBeforeItStarts(t *testing.T) {
 // toolCallStart is a root tool call carrying the intent the agent promotes to
 // the event's description (session_tools.go).
 func toolCallStart(description string) events.SessionEvent {
-	return events.SessionEvent{
-		Kind:      events.EventToolCallStart,
-		SessionID: "root",
-		Data:      events.ToolCallStartData{ToolName: "read_file", ArgumentsJSON: "{}", Description: description},
-	}
+	return threadEvent("root", events.ToolCallStartData{ToolName: "read_file", ArgumentsJSON: "{}", Description: description})
 }
 
 // A Working row says what the session last set out to do: the intent of the
@@ -181,7 +177,7 @@ func TestActivityMeterLeavesTheIntentToRootToolCalls(t *testing.T) {
 func TestActivityMeterDropsTheIntentWhenATurnStarts(t *testing.T) {
 	meter, _ := startedMeter()
 	meter.noteIntent(toolCallStart("Reading the board's row tests."))
-	meter.noteIntent(events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "root"})
+	meter.noteIntent(threadEvent("root", events.ExecutionStartedData{TurnID: "turn-1"}))
 	if got := meter.snapshot().LatestIntent; got != "" {
 		t.Fatalf("intent after a turn started = %q, want none", got)
 	}

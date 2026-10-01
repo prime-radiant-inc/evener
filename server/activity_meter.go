@@ -29,7 +29,9 @@ type activitySlot struct {
 // activityMeter counts one root session tree's transcript motion for the pulse
 // meter and the Quiet and May be stuck labels (spec 13.1, 16.4). The root and
 // every in-process descendant feed it, so a coordinator's meter shows its whole
-// tree (Jesse's ruling for S5).
+// tree (Jesse's ruling for S5). One fact on the sample is not tree-wide: the
+// row's intent is the root session's own words, because the row names the root
+// (noteIntent).
 //
 // RecordAppEvent and RecordDescendantAppEvent feed it the raw session event
 // each call projects, inside their projection commits, and the thread list
