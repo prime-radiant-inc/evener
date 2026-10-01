@@ -415,17 +415,14 @@ describe("ActivityWatchDetail timeline", () => {
 });
 
 describe("ActivityWatchDetail note", () => {
-  // The row header already prints the note as the row's own name, so the
-  // detail's lead paragraph exists only to show what the header's narrow name
-  // column truncated. 48 is the documented budget in the component.
-  test("renders no lead paragraph for a short note the row title can show in full", () => {
+  test("reveals a short note in expanded details regardless of header width", () => {
     render(
       <ActivityWatchDetail
         row={row({ note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
         now={NOW}
       />,
     );
-    expect(screen.queryByTestId("watch-note")).toBeNull();
+    expect(screen.getByTestId("watch-note").textContent).toBe("Poll the queue depth");
     expect(screen.getByTestId("watch-facts")).toBeTruthy();
   });
 
@@ -439,21 +436,21 @@ describe("ActivityWatchDetail note", () => {
     expect(screen.getAllByTestId("watch-note")).toHaveLength(1);
   });
 
-  test("holds the lead paragraph at the 48-character budget boundary", () => {
+  test("omits empty notes and reveals a newly supplied note", () => {
     const { rerender } = render(
       <ActivityWatchDetail
-        row={row({ note: "x".repeat(48), cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
+        row={row({ note: "   ", cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
         now={NOW}
       />,
     );
     expect(screen.queryByTestId("watch-note")).toBeNull();
     rerender(
       <ActivityWatchDetail
-        row={row({ note: "x".repeat(49), cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
+        row={row({ note: "  Notify me when ready  ", cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
         now={NOW}
       />,
     );
-    expect(screen.getByTestId("watch-note").textContent).toBe("x".repeat(49));
+    expect(screen.getByTestId("watch-note").textContent).toBe("Notify me when ready");
   });
 });
 

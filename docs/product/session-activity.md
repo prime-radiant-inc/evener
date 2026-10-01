@@ -267,6 +267,8 @@ optional active count sums
 the session's authoritative job and delegate active counts only when both are
 known; watches and completed work are not part of that number. The mobile sheet
 starts with compact job, delegate and watch details, each one disclosure away.
+Expanded watch details reveal the full user note as wrapped text, regardless of
+how much fits in the compact collapsed row.
 Failed entries remain visible outside the inactive fold, including parent rows
 needed to expose failed descendants; successful inactive work stays folded.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
