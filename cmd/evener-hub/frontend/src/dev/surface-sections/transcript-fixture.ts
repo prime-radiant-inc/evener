@@ -70,6 +70,7 @@ export function makeEditorialTranscriptModel() {
   model.delegates = cases.map(
     ({ id, intent: _intent, ...state }): EvenerDelegateInfo => ({
       ...state,
+      runGeneration: 1,
       delegateId: `dlg_editorial_${id}`,
       ownerSessionId: "editorial_parent",
       rootSessionId: "editorial_parent",

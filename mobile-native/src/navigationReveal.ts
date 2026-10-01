@@ -5,7 +5,7 @@ import {
 	type ResourceKey,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import type { NavigationPages } from "./navigationPages";
+import type { PageSource } from "./navigationPages";
 
 export interface SessionLocation {
 	ref: string;
@@ -78,7 +78,7 @@ export async function locateSession(
  * revisions or retaining abandoned work. True once it's found; false once the
  * caller has moved on. */
 export async function revealNavigationRow<T>(
-	pages: NavigationPages<T>,
+	pages: PageSource<T>,
 	ref: string,
 	key: (row: T) => string,
 	isCurrent: () => boolean,

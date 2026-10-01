@@ -57,6 +57,7 @@ const session = (ref: string, label: string, entries: unknown[], branch: Record<
 const delegate = (id: string, description: string, over: Record<string, unknown> = {}) => ({
 	kind: "delegate",
 	delegate: {
+		runGeneration: 1,
 		delegateId: id,
 		childSessionId: id,
 		childRef: `local:${id}`,
@@ -676,6 +677,7 @@ it("keeps authoritative counts while visible end-of-list demand loads the next s
 			scope: params.scope ?? "session",
 			delegates: [
 				{
+					runGeneration: 1,
 					delegateId: id,
 					ownerRef: "local:coord",
 					rootRef: "local:coord",

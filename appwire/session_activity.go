@@ -94,30 +94,39 @@ type SessionActivityPage struct {
 // SessionDelegate is a stable compact resource, independent of its activation
 // jobs and child runtime. ChildRef addresses retained child history when available.
 type SessionDelegate struct {
-	DelegateID         string               `json:"delegateId"`
-	OwnerRef           string               `json:"ownerRef"`
-	RootRef            string               `json:"rootRef"`
-	ChildRef           string               `json:"childRef"`
-	ParentDelegateID   string               `json:"parentDelegateId,omitempty"`
-	Description        string               `json:"description"`
-	Task               string               `json:"task"`
-	Type               string               `json:"type"`
-	Lifecycle          string               `json:"lifecycle"`
-	Phase              string               `json:"phase"`
-	Status             string               `json:"status"`
-	Outcome            string               `json:"outcome,omitempty"`
-	Reason             string               `json:"reason,omitempty"`
-	Error              string               `json:"error,omitempty"`
-	Terminal           bool                 `json:"terminal"`
-	Resumable          bool                 `json:"resumable"`
-	NotResumableReason string               `json:"notResumableReason,omitempty"`
-	Model              string               `json:"model,omitempty"`
-	ReasoningEffort    string               `json:"reasoningEffort,omitempty"`
-	RunStartedAt       string               `json:"runStartedAt,omitempty"`
-	RunEndedAt         string               `json:"runEndedAt,omitempty"`
-	LatestActivityAt   string               `json:"latestActivityAt,omitempty"`
-	Usage              *EvenerUsage         `json:"usage,omitempty"`
-	Worktree           *JobActivityWorktree `json:"worktree,omitempty"`
+	// Name is the immutable caller display label, capped at 200 Unicode code points.
+	// Unnamed descriptors omit it; delegate IDs and refs remain the addressing keys.
+	Name string `json:"name,omitempty"`
+	// RunGeneration identifies the current activation; zero means no run has started.
+	RunGeneration uint64 `json:"runGeneration"`
+	// ReportPreview is the settled current run's reported text, capped at 4096
+	// Unicode code points including an ellipsis when truncated.
+	ReportPreview          string               `json:"reportPreview,omitempty"`
+	ReportPreviewTruncated bool                 `json:"reportPreviewTruncated,omitempty"`
+	DelegateID             string               `json:"delegateId"`
+	OwnerRef               string               `json:"ownerRef"`
+	RootRef                string               `json:"rootRef"`
+	ChildRef               string               `json:"childRef"`
+	ParentDelegateID       string               `json:"parentDelegateId,omitempty"`
+	Description            string               `json:"description"`
+	Task                   string               `json:"task"`
+	Type                   string               `json:"type"`
+	Lifecycle              string               `json:"lifecycle"`
+	Phase                  string               `json:"phase"`
+	Status                 string               `json:"status"`
+	Outcome                string               `json:"outcome,omitempty"`
+	Reason                 string               `json:"reason,omitempty"`
+	Error                  string               `json:"error,omitempty"`
+	Terminal               bool                 `json:"terminal"`
+	Resumable              bool                 `json:"resumable"`
+	NotResumableReason     string               `json:"notResumableReason,omitempty"`
+	Model                  string               `json:"model,omitempty"`
+	ReasoningEffort        string               `json:"reasoningEffort,omitempty"`
+	RunStartedAt           string               `json:"runStartedAt,omitempty"`
+	RunEndedAt             string               `json:"runEndedAt,omitempty"`
+	LatestActivityAt       string               `json:"latestActivityAt,omitempty"`
+	Usage                  *EvenerUsage         `json:"usage,omitempty"`
+	Worktree               *JobActivityWorktree `json:"worktree,omitempty"`
 }
 
 type SessionWatchState string

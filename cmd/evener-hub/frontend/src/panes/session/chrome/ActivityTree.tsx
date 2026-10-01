@@ -105,12 +105,13 @@ function delegateStatusText(delegate: ActivityDelegate): string {
 
 function delegateName(delegate: ActivityDelegate): string {
   return (
-    delegate.mandate ??
-    delegate.task ??
-    delegate.description ??
-    delegate.child?.label ??
-    delegate.childSessionId ??
-    delegate.childRef
+    delegate.name?.trim() ||
+    (delegate.mandate ??
+      delegate.task ??
+      delegate.description ??
+      delegate.child?.label ??
+      delegate.childSessionId ??
+      delegate.childRef)
   );
 }
 

@@ -57,6 +57,14 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export type {
+  ArchivedList,
+  ArchivedListCatalog,
+  ArchivedListClient,
+  ArchivedListState,
+  ArchivedListStore,
+} from "./archivedListStore";
+export { archivedListKey, createArchivedListStore } from "./archivedListStore";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type {
@@ -421,6 +429,8 @@ export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasonin
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type {
+  CachedSessionHistory,
+  CachedSessionRecord,
   NotificationRoutingKey,
   OlderItemPageMerge,
   TurnHistoryFoldDetail,
@@ -431,6 +441,7 @@ export {
   applyNotification,
   applyReadModel,
   applyReadResponse,
+  cachedSessionRecord,
   collectAuthoritativeMutationIds,
   comparePositions,
   copyItemTextPresence,
@@ -449,12 +460,16 @@ export {
   markItemTextOmitted,
   mergeOlderItemPage,
   mergeOlderItemPageWithFolds,
+  mergeTailTurns,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
   prependOlderTurns,
+  readDisposition,
+  readWindowBounds,
   resolvePendingEscalation,
+  threadModelFromCache,
 } from "./reducer";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";

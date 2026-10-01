@@ -118,6 +118,10 @@ export interface ActivitySessionNode {
 }
 
 export interface ActivityDelegate {
+  name?: string;
+  runGeneration?: number;
+  reportPreview?: string;
+  reportPreviewTruncated?: boolean;
   delegateId: string;
   ownerRef?: string;
   rootRef?: string;
@@ -502,6 +506,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "rootSessionId",
     "transcriptRef",
     "parentDelegateId",
+    "name",
     "type",
     "lifecycle",
     "phase",
@@ -525,16 +530,24 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "runEndedAt",
     "latestActivityAt",
     "packetKind",
+    "reportPreview",
     "structuredResultReason",
     "exhaustionBudget",
   ];
   for (const field of stringFields) {
     if (!copyOptionalString(raw, target, field)) return { value: null, incomplete: true };
   }
-  for (const field of ["terminal", "resumable", "structuredResultValid", "exhaustionResumable", "parentWatchGranted"]) {
+  for (const field of [
+    "reportPreviewTruncated",
+    "terminal",
+    "resumable",
+    "structuredResultValid",
+    "exhaustionResumable",
+    "parentWatchGranted",
+  ]) {
     if (!copyOptionalBoolean(raw, target, field)) return { value: null, incomplete: true };
   }
-  for (const field of ["projectionRevision", "exhaustionLimit", "delegationAllowance"]) {
+  for (const field of ["runGeneration", "projectionRevision", "exhaustionLimit", "delegationAllowance"]) {
     if (!copyOptionalInteger(raw, target, field)) return { value: null, incomplete: true };
   }
   for (const field of ["runningForMs", "quietForMs", "durationMs"]) {

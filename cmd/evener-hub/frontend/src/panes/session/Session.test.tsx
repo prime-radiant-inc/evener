@@ -3650,11 +3650,13 @@ test.each(["idle", "active"])(
     const fake = connectFakeClient();
     const ref = "local:retained-unresponsive";
     let stopped = false;
-    let reads = 0;
+    let transcriptReads = 0;
     let finishRead: (() => void) | undefined;
-    fake.on("thread/read", () => {
-      reads++;
-      if (reads === 2)
+    fake.on("thread/read", (params) => {
+      // Activity can acquire the shared subscription while the transcript's
+      // cache lookup is pending. Its lean read is not a transcript hydration.
+      if (params.includeTurns) transcriptReads++;
+      if (params.includeTurns && transcriptReads === 2)
         return new Promise((resolve) => {
           finishRead = () => resolve(readResponse(ref, { status: { type: "notLoaded" } }));
         });
@@ -3672,10 +3674,11 @@ test.each(["idle", "active"])(
       </ClientProvider>,
     );
     await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe(status));
+    expect(transcriptReads).toBe(1);
     act(() => {
       void threadsStore.getState().refreshThread(ref);
     });
-    await waitFor(() => expect(reads).toBe(2));
+    await waitFor(() => expect(transcriptReads).toBe(2));
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe(status);
     const user = userEvent.setup();
     await openForceStopDialog(user);

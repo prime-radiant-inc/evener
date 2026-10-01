@@ -1,12 +1,20 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ActivityTree as ActivityTreeData } from "@evener/appwire-client";
+import {
+  type ActivityTree as ActivityTreeData,
+  buildActivityRows,
+  projectSessionActivity,
+  SessionActivityStore,
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { subagentOutcomesDelegatesResponse } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as sessionPlacementModule from "../../../shell/sessionPlacement";
+import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
 import { detailLineByText } from "./detailLine.testFixture";
@@ -1221,4 +1229,26 @@ describe("ActivityTree", () => {
     );
     expect(screen.getByText("Couldn't load more.")).toBeTruthy();
   });
+});
+
+test("recorded compact delegate names label activity rows without changing transcript targets", async () => {
+  const recorded = subagentOutcomesDelegatesResponse();
+  const state = new SessionActivityStore(new FakeClient(), recorded.context.ref).getSnapshot();
+  const projected = projectSessionActivity({
+    ...state,
+    context: recorded.context,
+    summary: activitySummary(recorded.context.ref),
+    delegates: { ...state.delegates, rows: recorded.delegates, complete: true, context: recorded.context },
+    jobs: { ...state.jobs, complete: true, context: recorded.context },
+  });
+  if (!projected.tree) throw new Error("missing domain activity");
+  const foldIDs = buildActivityRows(projected.tree, new Set())
+    .filter((row) => row.kind === "fold")
+    .map((row) => row.id);
+  render(<ActivityTree tree={projected.tree} expandedFoldIDs={foldIDs} onToggleFold={vi.fn()} />);
+  const row = screen.getByRole("treeitem", { name: "reported-delegate" });
+  await userEvent.setup().click(within(row).getByRole("button", { name: "Open transcript" }));
+  const delegate = recorded.delegates.find((delegate) => delegate.delegateId === "dlg_reported");
+  if (!delegate) throw new Error("missing recorded delegate");
+  expect(openTranscript).toHaveBeenCalledWith(delegate.childRef, delegate.ownerRef);
 });
