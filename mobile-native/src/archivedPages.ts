@@ -74,7 +74,8 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	 * archived tier); the hub's navigation names no archived list itself. */
 	watch() {
 		return this.client.onNotification((event) => {
-			if (event.method === "evener/navigation/invalidated" && event.params.targets.some(this.names)) void this.refresh();
+			if (event.method === "evener/navigation/invalidated" && event.params.targets.some(this.names))
+				void this.refresh();
 		});
 	}
 	private names = (target: NavigationInvalidationTarget) =>

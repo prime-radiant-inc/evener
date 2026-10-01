@@ -148,7 +148,10 @@ it("reads its list again when the hub announces its project changed", async () =
 			params: { generationId: "g", sequence: 1, targets },
 		} as never);
 
-	announce([{ kind: "project", projectKey: "q" }, { kind: "section", section: "live" }]);
+	announce([
+		{ kind: "project", projectKey: "q" },
+		{ kind: "section", section: "live" },
+	]);
 	await Promise.resolve();
 	expect(seen).toHaveLength(1);
 
