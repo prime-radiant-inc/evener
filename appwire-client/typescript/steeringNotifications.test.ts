@@ -1469,6 +1469,49 @@ test("a schema result that merely neighbors the envelope's keys stays whole", ()
   expect(n?.structuredResult).toEqual({ message: "Read the fixture.", data: { rows: 3 } });
 });
 
+// The exact collision #3548 closes: a result schema whose top-level fields are
+// exactly the default envelope's - a matching message and a string-array
+// artifacts - produces a frame byte-identical to a no-schema capture. The
+// packet's structured_result_source marker settles it: a schema source stays
+// whole, so the caller's own fields render as rows instead of unwrapping to
+// the envelope's data.
+test("a schema result that is the default envelope's exact shape stays whole", () => {
+  const whole = { message: "Rebased the branch cleanly.", data: { rebased: "main" }, artifacts: [] };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(whole),
+        structured_result: whole,
+        structured_result_valid: true,
+        structured_result_source: "schema",
+        metadata: { outcome: "completed", name: "task3-schema-envelope" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(whole);
+});
+
+// The marker is authoritative: a no-schema capture whose envelope data is not
+// the plain object the shape heuristic demands still unwraps to its data,
+// because the daemon named the source instead of leaving the parser to infer.
+test("a marked default-envelope capture unwraps a non-object data", () => {
+  const capture = { message: "Swept.", data: ["alpha", "beta"], artifacts: [] };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(capture),
+        structured_result: capture,
+        structured_result_valid: true,
+        structured_result_source: "default_envelope",
+        metadata: { outcome: "completed", name: "task3-sweep-envelope" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(["alpha", "beta"]);
+});
+
 // Repair zero-fills a missing output.message with "" before the daemon
 // captures the raw `output` (fillCommunicateEnvelope mutates args in place,
 // session_tools_communicate.go), while the packet's message rides the

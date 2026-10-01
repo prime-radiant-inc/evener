@@ -337,6 +337,11 @@ interface TerminalPacket {
   structuredResult?: unknown;
   structuredResultValid?: boolean;
   structuredResultReason?: string;
+  // Where the result came from (#3548): a result schema's own output, or a
+  // no-schema delegate's captured default envelope (whose data the card
+  // renders). Absent on frames recorded before the marker existed, where the
+  // default-envelope shape heuristic remains the fallback.
+  structuredResultSource?: string;
 }
 
 // parseTerminalPacket reads the daemon's TerminalPacket JSON. json.Marshal
@@ -362,6 +367,7 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
     structuredResultValid:
       typeof parsed.structured_result_valid === "boolean" ? parsed.structured_result_valid : undefined,
     structuredResultReason: text(parsed.structured_result_reason) || undefined,
+    structuredResultSource: text(parsed.structured_result_source) || undefined,
   };
 }
 
@@ -491,12 +497,18 @@ function delegatePacketNotification(
   // explicit null) passes through as-is for the card's value grammar.
   const reported = packet.kind === "reported";
   const captured = packet.structuredResult !== undefined ? packet.structuredResult : envelope?.data;
+  // #3548: a packet that names its capture source settles the unwrap outright.
+  // A schema source never unwraps, so a result schema whose output wears the
+  // default envelope's exact shape stays whole instead of being mistaken for a
+  // no-schema capture; a default-envelope source always unwraps to the data.
+  // Only a frame with no marker (recorded before the field existed) falls back
+  // to the shape heuristic.
+  const unwraps =
+    isPlainObject(captured) &&
+    (packet.structuredResultSource === "default_envelope" ||
+      (packet.structuredResultSource === undefined && isDefaultEnvelopeCopy(captured, envelope)));
   const structuredResult =
-    reported && packet.structuredResultValid !== false
-      ? isPlainObject(captured) && isDefaultEnvelopeCopy(captured, envelope)
-        ? captured.data
-        : captured
-      : undefined;
+    reported && packet.structuredResultValid !== false ? (unwraps ? captured.data : captured) : undefined;
   return {
     type: "delegate",
     // In the outcome's own words; an ending this client doesn't know still reported.
