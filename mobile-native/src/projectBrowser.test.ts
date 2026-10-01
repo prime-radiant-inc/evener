@@ -208,6 +208,31 @@ describe("project browser", () => {
 		controller.dispose();
 	});
 
+	// The archived list outlives the browser that read it, unwatched once that
+	// browser is gone, so the next one shows its rows and reads it again.
+	it("reads again an archived list an earlier browser left loaded", async () => {
+		const { client, requests } = boundary();
+		const read = async () => {
+			const controller = createProjectBrowserController(client);
+			const loading = controller.initialLoad();
+			const catalog = requests[requests.length - 1];
+			catalog?.resolve(response(catalog.params, { projects: [project("a")], remaining: 0 }));
+			await loading;
+			const from = requests.length;
+			const expanding = controller.expand("a");
+			const reads = requests.slice(from);
+			answerTiers(reads, { archived: [session("a0")] });
+			await expanding;
+			return { controller, reads };
+		};
+		const first = await read();
+		first.controller.dispose();
+		const second = await read();
+		expect(second.reads.map(label)).toEqual(["a:archived list", "a:current", "a:recent"]);
+		expect(second.controller.getSnapshot().groups[0]?.archived.rows.map((row) => row.ref)).toEqual(["a0"]);
+		second.controller.dispose();
+	});
+
 	it("collapse keeps a project's rows and stops it loading more", async () => {
 		const { controller, requests } = await loadedProject({ current: [session("a1")] }, { current: 5 });
 		controller.collapse("a");

@@ -147,8 +147,8 @@ it("drops a connection's loaded lists when it recovers", async () => {
 it("reads its list again when the hub announces its project changed", async () => {
 	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
 	const pages = new ArchivedPages(client, "projects", "p");
-	await pages.refresh();
 	const stop = pages.watch();
+	await pages.refresh();
 
 	announce(client, [
 		{ kind: "project", projectKey: "q" },
@@ -168,13 +168,31 @@ it("reads its list again when the hub announces its project changed", async () =
 	expect(seen).toHaveLength(3);
 });
 
+// A list another view loaded went unwatched once that view closed, so a view
+// that starts following the hub reads it again; one never loaded waits for
+// its view to read it.
+it("reads a loaded list again when it starts following the hub", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const unread = new ArchivedPages(client, "projects", "p");
+	const stopUnread = unread.watch();
+	await Promise.resolve();
+	expect(seen).toHaveLength(0);
+	stopUnread();
+
+	await unread.refresh();
+	const later = new ArchivedPages(client, "projects", "p");
+	const stop = later.watch();
+	await vi.waitFor(() => expect(seen).toHaveLength(2));
+	stop();
+});
+
 // Out of view, a list reads nothing on the hub's behalf: a change announced
 // meanwhile waits until the list is shown again.
 it("holds a change announced while paused until it resumes", async () => {
 	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
 	const pages = new ArchivedPages(client, "projects", "p");
-	await pages.refresh();
 	const stop = pages.watch();
+	await pages.refresh();
 
 	pages.cancel();
 	announce(client, [{ kind: "project", projectKey: "p" }]);
@@ -186,12 +204,22 @@ it("holds a change announced while paused until it resumes", async () => {
 	await Promise.resolve();
 	expect(seen).toHaveLength(2);
 
-	// A read while paused stands in for the one owed.
+	// A change to another project owes nothing.
+	pages.cancel();
+	announce(client, [{ kind: "project", projectKey: "q" }]);
+	pages.resume();
+	await Promise.resolve();
+	expect(seen).toHaveLength(2);
+
+	// A read while paused stands in for the one owed, and means the list is
+	// shown again.
 	pages.cancel();
 	announce(client, [{ kind: "project", projectKey: "p" }]);
 	await pages.refresh();
 	pages.resume();
 	await Promise.resolve();
 	expect(seen).toHaveLength(3);
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	await vi.waitFor(() => expect(seen).toHaveLength(4));
 	stop();
 });

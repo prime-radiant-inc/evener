@@ -119,7 +119,7 @@ export function createProjectBrowserController(
 	const groupFor = (project: NavigationProjectSummary): Group => {
 		const existing = groups.get(project.key);
 		if (existing) return existing;
-		const make = (tier: "current" | "recent") =>
+		const make = (tier: Exclude<ProjectSessionTier, "archived">) =>
 			new NavigationPages<NavigationSessionSummary>(
 				client,
 				{ resource: "project_page", projectKey: project.key, tier },

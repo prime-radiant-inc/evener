@@ -1,9 +1,9 @@
 // A project's archived sessions as a page source. Navigation v3 serves no
 // archived rows: they come from evener/archived/list through the connection's
 // archived list store (archivedLists.ts). The list has no revisions of its
-// own: it is read when a screen opens it unloaded, again when the hub
-// announces its project changed (once shown, if it was out of view), after
-// any accepted organize change
+// own: it is read when a screen opens it unloaded or starts following the
+// hub with it loaded, again when the hub announces its project changed (once
+// shown, if it was out of view), after any accepted organize change
 // (navigationActions.ts, and the Conversation screen's own Archive and Undo),
 // and from the top once its connection recovers.
 import {
@@ -79,8 +79,11 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	}
 	/** Reads the list again when the hub announces a change to this project's
 	 * pages (a session archived on another device, or one ageing into the
-	 * archived tier); the hub's navigation names no archived list itself. */
+	 * archived tier); the hub's navigation names no archived list itself. A
+	 * list already loaded is read again now: nothing followed the hub for it
+	 * since the view that loaded it closed. */
 	watch() {
+		if (this.getSnapshot().loaded) void this.refresh();
 		return this.client.onNotification((event) => {
 			if (event.method !== "evener/navigation/invalidated" || !event.params.targets.some(this.names)) return;
 			if (this.paused) this.owed = true;
