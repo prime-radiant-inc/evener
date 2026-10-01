@@ -779,6 +779,53 @@ it("reads the connection's loaded archived lists again once the hub accepts an a
 	tree.unmount();
 });
 
+// A refused archive moves nothing, so no archived list reads again.
+it("reads no archived list again when the hub refuses an archive", async () => {
+	const { tree, client, requests } = mount(thread, {
+		"evener/archive/set": new Error("refused"),
+		"evener/archived/list": { sessions: [], total: 0 },
+	});
+	await flush();
+	await archivedListStoreFor(client).refresh("projects", "p");
+	const archivedReads = () => requests.filter(({ method }) => method === "evener/archived/list");
+
+	act(() => menuAction("Archive").onPress());
+	await flush();
+
+	expect(renderedText(tree)).toContain("Couldn't archive this session.");
+	expect(archivedReads()).toHaveLength(1);
+	tree.unmount();
+});
+
+// An accepted Undo moves the session back out of the archived tier, so the
+// loaded archived lists read again; a refused one moves nothing.
+it.each([
+	["accepted", { ok: true, navigation: { generation_id: "g", targets: [] } }, 3],
+	["refused", new Error("refused"), 2],
+])("reads the loaded archived lists again for an %s Undo only if the hub accepts it", async (_name, undone, reads) => {
+	const { tree, client, requests } = mount(thread, {
+		"evener/archive/set": (params: unknown) => {
+			if ((params as { archived: boolean }).archived) return { ok: true, navigation: { generation_id: "g", targets: [] } };
+			if (undone instanceof Error) throw undone;
+			return undone;
+		},
+		"evener/archived/list": { sessions: [], total: 0 },
+	});
+	await flush();
+	await archivedListStoreFor(client).refresh("projects", "p");
+	const archivedReads = () => requests.filter(({ method }) => method === "evener/archived/list");
+
+	act(() => menuAction("Archive").onPress());
+	await flush();
+	expect(archivedReads()).toHaveLength(2);
+	const undo = tree.root.find((node) => node.props.accessibilityLabel === "Undo" && node.props.onPress);
+	act(() => undo.props.onPress());
+	await flush();
+
+	expect(archivedReads()).toHaveLength(reads);
+	tree.unmount();
+});
+
 it("says so when Undo can't restore the session (coordinator ruling: silence reads as success)", async () => {
 	const { tree } = mount(thread, {
 		"evener/archive/set": (params: unknown) => {
