@@ -487,7 +487,6 @@ describe("what the Board reads", () => {
 describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 	const pageState = (rows: NavigationSessionSummary[], loaded = true) => ({
 		loaded,
-		truncated: false,
 		rows,
 		remaining: 0,
 		loading: !loaded,

@@ -113,12 +113,12 @@ export function subtreeStopped(delegate: ActivityDelegate): boolean {
 	return subtreeStops(delegate) > 0;
 }
 
-/** The short description (spec 9's "mandate"; the wire's `mandate` is the
- * whole brief, ruling 3), else the brief's first line, else its session. */
+/** The short description (spec 9's "mandate"), else the first line of its
+ * task (the whole brief, ruling 3), else its session. */
 export function subagentTitle(delegate: ActivityDelegate): string {
 	return (
 		delegate.description?.trim() ||
-		firstLine(delegate.mandate ?? delegate.task ?? "", 80) ||
+		firstLine(delegate.task ?? "", 80) ||
 		delegate.child?.label.trim() ||
 		delegate.childRef
 	);
@@ -427,7 +427,9 @@ export function subagentLastLine(
 	if (model && coordinatorModel && !sameModel(model, coordinatorModel)) line.model = modelName(model);
 	const branch = row.delegate.worktree?.branch.trim();
 	if (branch) line.branch = branch;
-	const usage = row.delegate.usage;
+	// The hub fills usage from finished runs only, so a running row's count
+	// would be an earlier run's; it shows none.
+	const usage = row.state === "running" ? undefined : row.delegate.usage;
 	if (usage) {
 		const total =
 			usage.totalTokens ??

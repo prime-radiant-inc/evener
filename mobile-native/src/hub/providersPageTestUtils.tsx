@@ -1,6 +1,6 @@
 // The Providers page as the Hub's stack shows it, for the page's tests: the
 // page, and a provider's detail pushed over it once the page navigates to
-// one, both under the slot the detail reads (providersScreenSlot.tsx). A test
+// one, both under the slot the detail reads (hubScreenSlot.tsx). A test
 // mounts ProvidersStack where it would mount ProvidersPage; `back` is the
 // stack's Back from the detail, through the leave guard the detail sets.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -10,7 +10,7 @@ import { backGuard } from "./backGuardTestUtils";
 import type { HubRoutes } from "./hubSheetContext";
 import { ProviderDetailPage } from "./ProviderDetailPage";
 import { ProvidersPage } from "./ProvidersPage";
-import { ProvidersScreenSlotProvider } from "./providersScreenSlot";
+import { ProvidersScreenSlotProvider } from "./hubScreenSlot";
 
 type DetailParams = HubRoutes["ProviderDetail"];
 

@@ -340,7 +340,7 @@ it("waits for a fresh read of the coordinator after the connection comes back", 
 it("reads the tree under the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
 	// The sheet opened with the route's thread, but the coordinator has since
 	// restarted under a new one: the tree it reads comes back under that new
-	// thread, and ActivityList refuses it unless the tree is asked for it too.
+	// thread, and the sheet still takes it as the coordinator's.
 	client.on(
 		"thread/read",
 		() =>

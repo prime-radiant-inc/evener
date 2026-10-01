@@ -13,7 +13,7 @@ import { expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { ProjectsScreen, SessionLocationScreen } from "./ProjectsScreen";
-import { render, renderedText, screenConnection } from "./renderNative.testkit";
+import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 vi.mock("react-native", async () => ({
@@ -37,6 +37,22 @@ const props = {
 	route: { params: { hubId: "hub-1" } },
 	navigation: { navigate: () => {}, setParams: () => {} },
 } as unknown as ComponentProps<typeof ProjectsScreen>;
+/** A project page located for `revealRef`, as locating a session opens it. */
+const locationProps = (revealRef = "local:a") =>
+	({
+		route: {
+			params: {
+				hubId: "hub-1",
+				location: {
+					ref: revealRef,
+					revealRef,
+					title: "Project",
+					params: { resource: "project_page", projectKey: "p", tier: "current" },
+				},
+			},
+		},
+		navigation: { navigate: () => {}, setParams: () => {} },
+	}) as unknown as ComponentProps<typeof SessionLocationScreen>;
 
 it("offers no pull to refresh: the projects list keeps itself current", async () => {
 	const hub = new FakeClient("ready");
@@ -94,21 +110,7 @@ it("renders a live tally's chip in the shared list and none without one", async 
 		}),
 	);
 	harness.connection = screenConnection(hub, "ready");
-	const screenProps = {
-		route: {
-			params: {
-				hubId: "hub-1",
-				location: {
-					ref: "local:a",
-					revealRef: "local:a",
-					title: "Project",
-					params: { resource: "project_page", projectKey: "p", tier: "current" },
-				},
-			},
-		},
-		navigation: { navigate: () => {}, setParams: () => {} },
-	} as unknown as ComponentProps<typeof SessionLocationScreen>;
-	const tree = render(<SessionLocationScreen {...screenProps} />);
+	const tree = render(<SessionLocationScreen {...locationProps()} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Alpha");
 	expect(renderedText(tree)).toContain("2 running");
@@ -123,5 +125,57 @@ it("renders a live tally's chip in the shared list and none without one", async 
 		.map((node) => node.props.accessibilityLabel);
 	expect(labels).toContain("Open Alpha, 2 running");
 	expect(labels).toContain("Open Beta");
+	tree.unmount();
+});
+
+// A v3 page the hub cut short by its node or byte budget is only paged: the
+// rows it dropped count in `remaining` and arrive through Load more. The list
+// says nothing about a partial tree or missing related sessions (a v3 row
+// carries no children).
+it("pages a page the hub cut short through Load more, with no partial-tree notice", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/navigation/read", (params) =>
+		((params as { offset?: number }).offset ?? 0) > 0
+			? wireSnapshot(params as never, { sessions: [{ ref: "local:b", title: "Beta" }], remaining: 0 })
+			: wireSnapshot(params as never, {
+					sessions: [{ ref: "local:a", title: "Alpha" }],
+					remaining: 1,
+					truncated: true,
+				}),
+	);
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<SessionLocationScreen {...locationProps()} />);
+	await act(async () => {});
+	const shown = renderedText(tree);
+	expect(shown).toContain("Alpha");
+	expect(shown).not.toContain("partial session tree");
+	expect(shown).not.toContain("related session");
+	await act(async () => pressable(tree, "Load more · 1 remaining")?.props.onPress());
+	expect(renderedText(tree)).toContain("Beta");
+	tree.unmount();
+});
+
+// Locating a session reveals its row on the flat list: the list scrolls to
+// that row's place among the loaded rows and marks it selected.
+it("scrolls to and selects the located row", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/navigation/read", (params) =>
+		wireSnapshot(params as never, {
+			sessions: [
+				{ ref: "local:a", title: "Alpha" },
+				{ ref: "local:b", title: "Beta" },
+			],
+		}),
+	);
+	harness.connection = screenConnection(hub, "ready");
+	flatListCalls.length = 0;
+	const tree = render(<SessionLocationScreen {...locationProps("local:b")} />);
+	await act(async () => {});
+	expect(flatListCalls).toContainEqual({
+		method: "scrollToIndex",
+		args: { index: 1, animated: false, viewPosition: 0.3 },
+	});
+	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
+	expect(pressable(tree, "Open Alpha")?.props.accessibilityState).toEqual({ selected: false });
 	tree.unmount();
 });
