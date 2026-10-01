@@ -58,6 +58,18 @@ its group, preserving the mounted transcript and its native scroll position.
 Selecting a different tab still activates that panel. Transcript scroll and
 history recovery remain owned by the existing reader and virtual viewport.
 
+## Exited-session controls
+
+An exited session's empty follow-up card expands when focused. It stays expanded
+while focus moves through its controls or their pop-up menus and dialogs,
+including overlays rendered outside the card's DOM. Leaving the composer
+collapses an empty card; a draft keeps its controls visible.
+
+The model picker remains available when the session advertises `changeModel`.
+Selecting a model uses `thread/model/set`; the hub owns resuming a cold session
+and applying the choice. Closing the desktop picker restores focus to its
+trigger, including after a selection.
+
 ## Directory fields
 
 All directory selection uses the [shared directory-picker contract](design-system.md#directory-selection-one-shared-interaction). Read it before adding or changing a path field; older plans and parity checklists describe retired interactions.
