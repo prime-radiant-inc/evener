@@ -66,7 +66,9 @@ losing the conversation that made the evidence relevant.
   session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
   counts. A count click focuses the owning pane before opening the shared activity sidebar.
   The sidebar retains its scope breadcrumb and an accessible, visually hidden “Activity kind”
-  label. Phones omit the activity footer and keep repository location below the composer.
+  label. Phones omit the activity footer and the working-directory/repository row. The
+  composer ends at the pane's bottom edge with only required safe-area clearance, which
+  yields when the on-screen keyboard covers that area.
 
 The provenance corrections and nested navigation/focus repairs change behavior. Folding,
 disclosure persistence, keyboard rules, preferences and semantic hue roles are retained

@@ -298,9 +298,7 @@ test("desktop session panes own separate location and activity footers", async (
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 });
 
-test("mobile keeps one repo location under the composer and omits the desktop activity footer", async ({
-  onTestFinished,
-}) => {
+test("mobile omits repo location and the desktop activity footer", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(stubSessionSlots);
   vi.stubGlobal(
@@ -322,7 +320,9 @@ test("mobile keeps one repo location under the composer and omits the desktop ac
   );
 
   await screen.findByTestId("composer-input-card");
-  expect(await screen.findAllByTestId("composer-repo-location")).toHaveLength(1);
+  expect(screen.queryByTestId("composer-repo-location")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-path")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
   expect(screen.queryByTestId("pane-edge-footer")).toBeNull();
   expect(screen.queryByTestId("statusbar")).toBeNull();
 });

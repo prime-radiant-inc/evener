@@ -128,7 +128,6 @@ import {
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
-import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
@@ -1843,10 +1842,6 @@ export function Composer({ ref, focused }: ComposerProps) {
           Renders nothing visible (the panel's only control is hidden and its
           sheet is closed). */}
       {discoveryOnlyChrome && <MemoizedSessionChrome ref={ref} discoveryOnly />}
-      {/* Desktop moves this location into the pane's activity footer. Mobile
-          has no activity footer, so it remains directly under the composer
-          card and survives every card collapse. */}
-      {isMobile ? <RepoLocation cwd={model.cwd} local={ref.startsWith("local:")} /> : null}
     </div>
   );
 }
