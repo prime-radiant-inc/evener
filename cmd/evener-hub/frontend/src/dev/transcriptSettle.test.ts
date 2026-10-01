@@ -174,3 +174,12 @@ test("paged-open stillness must be consecutive, not merely accumulated", () => {
   expect(tracker.observe(pagedSample(rendered()))).toBe(false);
   expect(holdPaged(tracker, pagedSample(rendered()), SETTLE_QUIESCENT_FRAMES)).toBe(true);
 });
+
+test("paged-open readiness waits through absent scroll geometry and restarts stillness after remount", () => {
+  const tracker = createPagedOpenSettleTracker(TURNS);
+  expect(tracker.observe({ turns: TURNS, geometry: null })).toBe(false);
+  holdPaged(tracker, pagedSample(rendered()), SETTLE_QUIESCENT_FRAMES - 1);
+  expect(tracker.observe({ turns: TURNS, geometry: null })).toBe(false);
+  expect(tracker.observe(pagedSample(rendered()))).toBe(false);
+  expect(holdPaged(tracker, pagedSample(rendered()), FRAMES_TO_READY)).toBe(true);
+});
