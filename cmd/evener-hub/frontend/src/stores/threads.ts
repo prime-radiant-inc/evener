@@ -50,8 +50,8 @@ import {
   readWindowBounds,
   resolvePendingEscalation,
   SHUT_DOWN_STATUSES,
-  threadModelFromCache,
   type ThreadSubscriptionLease,
+  threadModelFromCache,
   WireError,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
