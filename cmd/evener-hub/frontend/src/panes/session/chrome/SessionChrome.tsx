@@ -9,10 +9,10 @@
 //
 // The menu is the shared SessionMenu (2026-08-05-unified-session-context-
 // menu-design): Details/Tasks/Activity and pane-only Verbosity lead it at every
-// width (there are no inline triggers and no narrow-collapse - the status
-// row's container-query variants own compression inside .body instead),
-// followed by Rename, the tree-gated Pin/Archive/Delete organization group,
-// and Shut down. The composer placement alone can also lead with the
+// width, followed by Rename, the tree-gated Pin/Archive/Delete organization
+// group, and Shut down. Narrow composer also exposes Activity directly; the
+// status row's container-query variants own compression inside .body.
+// The composer placement alone can also lead with the
 // narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The three
 // panels stay mounted triggerless so their imperative handles still open the
 // mobile Sheets; ActivityPanel's refreshWhenHidden is unconditional because
@@ -60,6 +60,7 @@ import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
+import { activityActionLabel } from "./activityFormat";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
@@ -244,10 +245,7 @@ export function SessionChrome({
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
     topNotesStore.getState().toggleAndFocus(sessionRef);
   };
-  const activityLabel =
-    activitySummary?.delegates.known && activitySummary.jobs.known
-      ? `Activity · ${activitySummary.delegates.active + activitySummary.jobs.active}`
-      : "Activity";
+  const activityLabel = activityActionLabel(activitySummary);
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:

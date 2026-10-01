@@ -20,6 +20,9 @@ import { hasWarningText } from "./warningText";
  */
 export const WarningCodeContextBudget = "context_budget";
 
+/** Plugin or skill settings that Evener preserves but does not enforce. */
+export const WarningCodePluginCompatibility = "plugin_compatibility";
+
 /**
  * A failed attempt to get a delegate's owed attention where it belongs:
  * restoring its cold runtime to deliver it, or escalating it to the root when
@@ -35,6 +38,7 @@ export const WarningCodeMCPReconnected = "mcp_reconnected";
 // The codes whose warnings show only at Full.
 const INFORMATIONAL_WARNING_CODES: ReadonlySet<unknown> = new Set([
   WarningCodeContextBudget,
+  WarningCodePluginCompatibility,
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
 ]);

@@ -191,7 +191,7 @@ describe("TasksTab", () => {
     // The body's rows render inline - the list unfolds here, never in a
     // pane: the open task visible, the done one in its collapsed group.
     await waitFor(() => expect(screen.getByText("Gate green")).toBeTruthy());
-    expect(screen.getByTestId("task-settled-group").textContent).toContain("Done · settled");
+    expect(screen.getByTestId("task-settled-group").textContent).toContain("1 completed task");
     expect(screen.queryByRole("button", { name: "Open tasks" })).toBeNull();
     expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionTasks")).toBe(false);
   });

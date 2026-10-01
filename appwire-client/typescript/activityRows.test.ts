@@ -300,21 +300,60 @@ test("live entries render in order; terminal entries fold behind one row", () =>
   expect(rows[1]).toMatchObject({ defaultDetailOpen: true });
 });
 
-test("fold row counts failures separately", () => {
+test("failed entries stay visible with their nested failures while successful work stays folded", () => {
+  const failed = shell("failed", true, "completed") as ActivityShellEntry;
+  failed.job.outcome = "failure";
+  const nested = session([failed, shell("done", true)], {
+    active: 0,
+    failed: 1,
+    completed: 1,
+    complete: true,
+  }) as ActivitySessionNode;
+  nested.ref = "ref_nested";
+  const parent = delegate("parent", { child: nested });
+  const activityTree = tree([shell("running", false), parent, shell("done-root", true)]);
+  const rows = buildActivityRows(activityTree, new Set());
+
+  expect(rows.map((row) => row.id)).toEqual([
+    jobID("running"),
+    delegateID("parent"),
+    jobID("failed"),
+    foldRowID("session:ref_nested"),
+    foldRowID("session:ref_root"),
+  ]);
+  expect(rows.find((row) => row.id === jobID("failed"))).toMatchObject({
+    level: 2,
+    parentID: delegateID("parent"),
+    live: false,
+  });
+  for (const row of rows.filter((row) => row.kind === "fold")) expect(row).toMatchObject({ inactiveCount: 1 });
+  expect(indexActivityEntities(activityTree).get(delegateID("parent"))).toEqual(
+    rows.find((row) => row.id === delegateID("parent")),
+  );
+  const expanded = buildActivityRows(
+    activityTree,
+    new Set([foldRowID("session:ref_root"), foldRowID("session:ref_nested")]),
+  );
+  expect(expanded.filter((row) => row.id === jobID("failed"))).toHaveLength(1);
+  expect(expanded.some((row) => row.id === jobID("done"))).toBe(true);
+  expect(expanded.some((row) => row.id === jobID("done-root"))).toBe(true);
+});
+
+test("fold row excludes visible failures from its inactive count", () => {
   const failed = shell("x", true, "failed") as ActivityShellEntry;
   failed.job.outcome = "failure";
   const rows = buildActivityRows(tree([failed, shell("y", true)]), new Set());
   const fold = rows.find((r) => r.kind === "fold");
-  expect(fold?.kind === "fold" && fold.failedCount).toBe(1);
+  expect(fold).toMatchObject({ inactiveCount: 1 });
+  expect(rows[0]).toMatchObject({ kind: "job", id: jobID("x"), live: false });
 });
 
 test("row failure state follows outcome when status is non-failure", () => {
   const failed = shell("outcome-failed", true, "completed") as ActivityShellEntry;
   failed.job.outcome = "failure";
   const rows = buildActivityRows(tree([failed]), new Set());
-  expect(rows.find((row) => row.kind === "fold")).toMatchObject({
-    failedCount: 1,
-  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ kind: "job", id: jobID("outcome-failed"), live: false });
 });
 
 test.each(["error", "failed", "exhausted"])(
@@ -332,7 +371,6 @@ test.each(["error", "failed", "exhausted"])(
     const rows = buildActivityRows(tree([job, stable, turns]), new Set());
     expect(rows.find((row) => row.kind === "fold")).toMatchObject({
       inactiveCount: 3,
-      failedCount: 0,
     });
     expect(activityDelegateState(stable.delegate)).toMatchObject({
       failed: false,
@@ -356,7 +394,6 @@ test("terminal rows read each entry kind's own failure vocabulary", () => {
   const rows = buildActivityRows(tree([job, stable]), new Set());
   expect(rows.find((row) => row.kind === "fold")).toMatchObject({
     inactiveCount: 2,
-    failedCount: 0,
   });
   expect(activityDelegateState(stable.delegate)).toMatchObject({
     failed: false,
@@ -367,10 +404,8 @@ test("a terminal delegate whose type the wire omitted rows and counts as a stabl
   const entry = delegate("dlg_typeless", { failed: true });
   delete (entry.delegate as { type?: string }).type;
   const rows = buildActivityRows(tree([entry]), new Set());
-  expect(rows.find((row) => row.kind === "fold")).toMatchObject({
-    inactiveCount: 1,
-    failedCount: 1,
-  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ kind: "delegate", id: delegateID("dlg_typeless"), live: false });
   expect(activityDelegateState(entry.delegate)).toMatchObject({
     active: false,
     failed: true,
@@ -378,10 +413,10 @@ test("a terminal delegate whose type the wire omitted rows and counts as a stabl
   });
 });
 
-test("fold row counts a terminal delegate outcome when lifecycle status is idle", () => {
+test("a failed terminal delegate remains visible when lifecycle status is idle", () => {
   const rows = buildActivityRows(tree([delegate("dlg_failed", { failed: true })]), new Set());
-  const fold = rows.find((row) => row.kind === "fold");
-  expect(fold?.kind === "fold" && fold.failedCount).toBe(1);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ kind: "delegate", id: delegateID("dlg_failed"), live: false });
 });
 
 test("turn-based activity derives completion from turns even when delegate fields disagree", () => {
@@ -405,15 +440,14 @@ test("turn-based activity derives completion from turns even when delegate field
   });
 });
 
-test("turn-based failure contributes to the inactive fold and row status", () => {
+test("turn-based failure keeps its row visible and reports failure status", () => {
   const entry = delegate("dlg_failed", {
     type: "agent",
     turns: [turn("turn_failed", true, "completed", "failure")],
   });
   const rows = buildActivityRows(tree([entry]), new Set());
-  expect(rows.find((row) => row.kind === "fold")).toMatchObject({
-    failedCount: 1,
-  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ kind: "delegate", id: delegateID("dlg_failed"), live: false });
   expect(activityDelegateState(entry.delegate)).toMatchObject({
     active: false,
     failed: true,
@@ -516,7 +550,6 @@ test("empty turn-container rows follow child activity rather than container meta
   expect(rows.map((row) => row.id)).toEqual(["session:ref_root:inactive-fold"]);
   expect(rows.find((row) => row.kind === "fold")).toMatchObject({
     inactiveCount: 2,
-    failedCount: 0,
   });
   expect(activityDelegateState(active.delegate)).toMatchObject({
     active: false,

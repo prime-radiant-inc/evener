@@ -10,8 +10,11 @@ export interface ScopeCrumb {
 }
 export interface ScopeCounts {
   activeSubagents: number | null;
+  delegatesTotal: number | null;
   runningJobs: number | null;
+  jobsTotal: number | null;
   armedWatches: number | null;
+  watchesTotal: number | null;
   tasksDone: number;
   tasksTotal: number;
 }
@@ -27,8 +30,11 @@ export function scopeCounts(session: ActivityScope["leaf"], activity: SessionAct
   const summary = activity?.summary;
   return {
     activeSubagents: summary?.delegates.known ? summary.delegates.active : null,
+    delegatesTotal: summary?.delegates.known ? summary.delegates.total : null,
     runningJobs: summary?.jobs.known ? summary.jobs.active : null,
+    jobsTotal: summary?.jobs.known ? summary.jobs.total : null,
     armedWatches: summary?.watches.known ? summary.watches.active : null,
+    watchesTotal: summary?.watches.known ? summary.watches.total : null,
     tasksDone: session.tasks?.done ?? 0,
     tasksTotal: session.tasks?.total ?? 0,
   };
