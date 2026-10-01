@@ -369,6 +369,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.appPendingStableTurnID = ""
 			s.appDeferredTerminalNotifications = nil
 		}
+		s.appActivity.noteIntent(event)
 		s.appActivity.observe(event.Kind)
 		projected := s.appProjector.Project(event)
 		threadID, ref := s.appRootIdentityLocked()
