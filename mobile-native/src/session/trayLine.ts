@@ -30,7 +30,7 @@ export interface TrayLine {
 
 export type TraySource = Pick<
 	ThreadModel,
-	"status" | "turns" | "runningTurnId" | "delegates" | "modelRetry" | "lastFrameAt"
+	"status" | "turns" | "activeTurnId" | "runningTurnId" | "delegates" | "modelRetry" | "lastFrameAt"
 > & {
 	/** The session's directory, which a running command's leading cd to it
 	 * only repeats. */
@@ -40,7 +40,6 @@ export type TraySource = Pick<
 interface Step {
 	text: string;
 	startedAt?: number;
-	/** The intent-less step itself waits on subagents. */
 	waitsOnSubagents: boolean;
 }
 
@@ -110,8 +109,13 @@ function latestToolIntent(session: TraySource): string | null {
 	return null;
 }
 
+function currentTurn(session: TraySource) {
+	if (session.runningTurnId !== undefined) return runningTurn(session);
+	return session.turns.find((turn) => turn.id === session.activeTurnId) ?? session.turns.at(-1);
+}
+
 function currentStep(session: TraySource): Step | null {
-	const turn = runningTurn(session);
+	const turn = currentTurn(session);
 	if (!turn) return null;
 	for (let index = turn.items.length - 1; index >= 0; index -= 1) {
 		const item = turn.items[index];

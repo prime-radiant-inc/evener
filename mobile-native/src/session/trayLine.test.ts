@@ -212,13 +212,44 @@ describe("the tray's line (spec 8.3)", () => {
 			status: "completed",
 		});
 		const turns = [turn([previous], "completed"), { id: "turn_2", status: "inProgress", items: [current] }];
-		const liveSession = {
-			...session({ turns }),
+		const liveSession = session({
+			turns,
 			activeTurnId: "turn_1",
 			runningTurnId: "turn_2",
-		};
+		});
 
 		expect(trayLine(liveSession, NOW)?.text).toBe("Checking the current turn");
+	});
+
+	it("reads current-step progress from the live running turn", () => {
+		const previous = item({ type: "agentMessage", status: "inProgress" });
+		const current = item({ id: "item-2", turnId: "turn_2", type: "reasoning", status: "inProgress" });
+		const turns = [turn([previous]), { id: "turn_2", status: "inProgress", items: [current] }];
+		const liveSession = session({
+			turns,
+			activeTurnId: "turn_1",
+			runningTurnId: "turn_2",
+		});
+
+		expect(trayLine(liveSession, NOW)?.text).toBe("Thinking…");
+	});
+
+	it("keeps snapshot-only command progress without leaking its tool intent", () => {
+		const described = item({ description: "Reading the snapshot", status: "completed" });
+		const running = item({
+			id: "item-2",
+			toolName: "shell",
+			argumentsJSON: JSON.stringify({ command: "make test" }),
+			status: "inProgress",
+			startedAt: ago(5_000),
+		});
+		const snapshotOnly = session({
+			turns: [turn([described, running])],
+			activeTurnId: "turn_1",
+			runningTurnId: undefined,
+		});
+
+		expect(trayLine(snapshotOnly, NOW)?.text).toBe("Running make test · 5s");
 	});
 
 	it("goes Quiet after twenty seconds without a frame", () => {
