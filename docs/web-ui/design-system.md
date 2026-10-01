@@ -592,8 +592,9 @@ SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exception
 
 One navigation exception (2026-10-01): the browser rail's grey running ring rotates while the
 authoritative navigation summary reports active work, including running jobs or descendants. It
-communicates state, not frame throughput or percent complete. Broken and needs-you remain static
-solid dots. Under `prefers-reduced-motion: reduce`, the ring remains visible but does not rotate.
+communicates state, not frame throughput or percent complete. Broken and needs-you remain static,
+shape-distinct indicators: a diamond and a solid dot. Under `prefers-reduced-motion: reduce`, the
+ring remains visible but does not rotate.
 
 One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
 shown for a live reasoning item while the Reasoning content flag is off, uses the catalog
