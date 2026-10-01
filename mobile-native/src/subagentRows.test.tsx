@@ -523,7 +523,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 				method: "evener/thread/activity/changed",
 				params: { ref: COORDINATOR.ref, threadId: "root", sessionId: "root", resources: ["delegates"] },
 			});
-			await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+			await vi.runOnlyPendingTimersAsync();
 		});
 		expect(renderedText(screen)).toContain("Second run report.");
 	});
