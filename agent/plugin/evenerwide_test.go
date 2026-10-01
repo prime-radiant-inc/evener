@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/envvars"
 )
@@ -191,6 +192,24 @@ func TestDiscoverEvenerWideCommands_MalformedFrontmatterSkipped(t *testing.T) {
 	got, warnings := DiscoverEvenerWideCommands(nil)
 	if len(got) != 0 || len(warnings) != 1 {
 		t.Errorf("got %d commands, %d warnings; want 0, 1", len(got), len(warnings))
+	}
+	if len(warnings) == 1 && warnings[0].Code != "" {
+		t.Errorf("malformed warning code = %q, want empty", warnings[0].Code)
+	}
+}
+
+func TestDiscoverEvenerWideCommands_UnenforcedFrontmatterIsCompatibilityAdvisory(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	dir := filepath.Join(xdg, "evener", "commands")
+	writeEvenerwideCommand(t, dir, "front", "---\nmodel: gpt-5.2\nallowed-tools:\n  - shell\n---\nbody")
+
+	_, warnings := DiscoverEvenerWideCommands(nil)
+	if len(warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1: %v", len(warnings), warnings)
+	}
+	if got := warnings[0].Code; got != events.WarningCodePluginCompatibility {
+		t.Errorf("warning code = %q, want %q", got, events.WarningCodePluginCompatibility)
 	}
 }
 
