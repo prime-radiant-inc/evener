@@ -1871,13 +1871,10 @@ export function Composer({ ref, focused }: ComposerProps) {
           Renders nothing visible (the panel's only control is hidden and its
           sheet is closed). */}
       {discoveryOnlyChrome && <MemoizedSessionChrome ref={ref} discoveryOnly />}
-      {/* The session's working dir and git branch, in one quiet line under the
-          card. Reference material, not a control: it stays put across every
-          composer state (including an ended session's collapsed card and the
-          ask-pending input swap), so "where is this agent working" never
-          disappears with the input row. Only a local session's cwd is looked up
-          for a branch: a source-backed session's cwd is another host's path. */}
-      <RepoLocation cwd={model.cwd} local={ref.startsWith("local:")} />
+      {/* Desktop moves this location into the pane's activity footer. Mobile
+          has no activity footer, so it remains directly under the composer
+          card and survives every card collapse. */}
+      {isMobile ? <RepoLocation cwd={model.cwd} local={ref.startsWith("local:")} /> : null}
     </div>
   );
 }
