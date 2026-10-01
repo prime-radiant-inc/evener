@@ -222,6 +222,7 @@ test.each([false, true])("closing cancels extent restoration and rejects late pa
     await vi.advanceTimersByTimeAsync(1000);
   });
   expect(pageReads(client)).toHaveLength(admitted ? 1 : 0);
+  expect(activityPanelStore.getState().entries.get(ref)?.loadedExtent).toEqual({});
   await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Activity/ })));
   expect(screen.getByRole("treeitem", { name: "First page" })).toBeTruthy();
   await act(async () => vi.advanceTimersByTimeAsync(1000));
