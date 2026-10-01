@@ -497,16 +497,17 @@ function delegatePacketNotification(
   // explicit null) passes through as-is for the card's value grammar.
   const reported = packet.kind === "reported";
   const captured = packet.structuredResult !== undefined ? packet.structuredResult : envelope?.data;
-  // #3548: a packet that names its capture source settles the unwrap outright.
-  // A schema source never unwraps, so a result schema whose output wears the
-  // default envelope's exact shape stays whole instead of being mistaken for a
-  // no-schema capture; a default-envelope source always unwraps to the data.
-  // Only a frame with no marker (recorded before the field existed) falls back
-  // to the shape heuristic.
+  // #3548: the packet names its capture source, so a result schema whose output
+  // wears the default envelope's exact shape is never mistaken for a no-schema
+  // capture. A "schema" source keeps the result whole. Any other source,
+  // "default_envelope" included, still requires the exact default shape
+  // (isDefaultEnvelopeCopy): the daemon stamps that value from the absence of a
+  // result schema, but a no-schema delegate can still inherit a widened
+  // (WithAllowedDecisions) or custom communicate output schema, so the marker
+  // alone cannot prove the capture is the canonical envelope. A frame with no
+  // marker (recorded before the field existed) takes the same shape path.
   const unwraps =
-    isPlainObject(captured) &&
-    (packet.structuredResultSource === "default_envelope" ||
-      (packet.structuredResultSource === undefined && isDefaultEnvelopeCopy(captured, envelope)));
+    packet.structuredResultSource !== "schema" && isPlainObject(captured) && isDefaultEnvelopeCopy(captured, envelope);
   const structuredResult =
     reported && packet.structuredResultValid !== false ? (unwraps ? captured.data : captured) : undefined;
   return {
