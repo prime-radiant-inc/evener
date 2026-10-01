@@ -1,7 +1,7 @@
 // A project's archived sessions as a page source over the connection's shared
 // archived list store: what the Project screen's Archived tab reads, since
 // navigation v3 serves no archived rows.
-import type { ArchivedListParams } from "@evener/appwire-client";
+import type { ArchivedListParams, NavigationInvalidationTarget } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession } from "@evener/appwire-client/testing/navigation";
 import { expect, it, vi } from "vitest";
@@ -26,11 +26,11 @@ function hub(pages: Record<string, { refs: string[]; total: number; nextCursor?:
 	return { client, seen };
 }
 
-function announce(client: FakeClient, targets: unknown[]) {
+function announce(client: FakeClient, targets: NavigationInvalidationTarget[]) {
 	client.emitNotification({
 		method: "evener/navigation/invalidated",
 		params: { generationId: "g", sequence: 1, targets },
-	} as never);
+	});
 }
 
 it("reads the project's archived list from its catalog, and pages on with the cursor", async () => {

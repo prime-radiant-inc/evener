@@ -58,7 +58,6 @@ it("reads a change the hub announced while a conversation covered the section", 
 	const tree = render(<PinnedSectionScreen {...props} />);
 	const show = async (focused: boolean) => {
 		harness.focused = focused;
-		harness.connection = screenConnection(hub, "ready");
 		await act(async () => tree.update(<PinnedSectionScreen {...props} />));
 	};
 	await act(async () => {});
@@ -76,7 +75,7 @@ it("reads a change the hub announced while a conversation covered the section", 
 				sequence: 1,
 				targets: [{ kind: "pin_section", sectionId: "s1", revision: 2 }],
 			},
-		} as never);
+		});
 	});
 	await show(true);
 	await act(async () => {});
