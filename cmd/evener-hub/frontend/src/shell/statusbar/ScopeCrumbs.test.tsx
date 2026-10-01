@@ -141,3 +141,20 @@ test("ancestor buttons retain exact transcript context beside the live owner", a
   expect(workspaceStore.getState().panes).toEqual(panes);
   expect(window.location.pathname).toBe("/s/local%3Aroot");
 });
+
+test("navigation-only metadata publication and rename refresh mounted exact-ref crumbs", () => {
+  installFocusedScope("remote:child");
+  render(
+    <ScopeCrumbs
+      path={[
+        { ref: "remote:parent", title: "Parent fallback" },
+        { ref: "remote:child", title: "Child fallback" },
+      ]}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Parent fallback" })).toBeTruthy();
+  act(() => installFocusedScope("remote:child", summaryOf({ ref: "remote:parent", title: "Published parent" })));
+  expect(screen.getByRole("button", { name: "Published parent" })).toBeTruthy();
+  act(() => installFocusedScope("remote:child", summaryOf({ ref: "remote:parent", title: "Renamed parent" })));
+  expect(screen.getByRole("button", { name: "Renamed parent" })).toBeTruthy();
+});

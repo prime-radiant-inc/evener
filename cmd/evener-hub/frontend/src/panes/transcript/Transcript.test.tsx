@@ -8,6 +8,8 @@ import { ClientProvider } from "../../shell/clientContext";
 import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import { activityContext, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
@@ -68,6 +70,7 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  fake.on("evener/thread/activity/read", ({ ref }) => activitySummary(ref));
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -100,7 +103,10 @@ afterEach(() => {
 test("shows a loading placeholder before the thread hydrates", async () => {
   const fake = connectFakeClient();
   const box: { resolve: ((r: ThreadReadResponse) => void) | null } = { resolve: null };
-  fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (box.resolve = resolve)));
+  const read = new Promise<ThreadReadResponse>((resolve) => {
+    box.resolve = resolve;
+  });
+  fake.on("thread/read", async (params) => ({ ...(await read), requestGeneration: params.requestGeneration }));
 
   render(
     <ClientProvider client={fake}>
@@ -109,8 +115,10 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   );
 
   expect(screen.getByText(/loading transcript/i)).toBeTruthy();
-  for (let i = 0; i < 20 && box.resolve === null; i += 1) await Promise.resolve();
-  box.resolve?.(readResponse("ref_a"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/read")).toBe(true));
+  const resolve = box.resolve;
+  if (!resolve) throw new Error("transcript read was not admitted");
+  await act(async () => resolve(readResponse("ref_a")));
   await waitFor(() => expect(screen.queryByText(/loading transcript/i)).toBeNull());
 });
 
@@ -125,6 +133,103 @@ test('shows "no turns yet" for a thread with an empty transcript', async () => {
   );
 
   await waitFor(() => expect(screen.getByText(/no turns yet/i)).toBeTruthy());
+});
+
+test.each([undefined, "remote:parent"])(
+  "a child transcript shows proven parent context while preserving its chosen title; Back target=%s",
+  async (parentRef) => {
+    const fake = connectFakeClient();
+    const ref = "remote:child";
+    const box: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    const historyRead = new Promise<ThreadReadResponse>((resolve) => {
+      box.resolve = resolve;
+    });
+    fake.on("thread/read", async (params) => ({
+      ...(params.includeTurns ? await historyRead : readResponse(ref)),
+      requestGeneration: params.requestGeneration,
+    }));
+    fake.on("thread/unsubscribe", () => ({}));
+    fake.on("evener/thread/activity/read", () => ({
+      ...activitySummary(ref),
+      context: {
+        ...activityContext(ref),
+        sessionId: "child",
+        rootRef: "remote:root",
+        parentRef: "remote:parent",
+        ancestors: [
+          { ref: "remote:root", sessionId: "root", title: "Proven root" },
+          { ref: "remote:parent", sessionId: "parent", title: "Proven parent" },
+        ],
+      },
+    }));
+    render(
+      <ClientProvider client={fake}>
+        <Transcript params={{ ref, parentRef }} paneId="p1" focused />
+      </ClientProvider>,
+    );
+    const scope = await screen.findByRole("navigation", { name: "Scope" });
+    expect(within(scope).getByRole("button", { name: "Proven root" })).toBeTruthy();
+    expect(within(scope).getByRole("button", { name: "Proven parent" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Jesse's chosen title" })).toBeNull();
+    await waitFor(() =>
+      expect(
+        fake.calls.some(
+          (call) => call.method === "thread/read" && (call.params as { includeTurns?: boolean }).includeTurns,
+        ),
+      ).toBe(true),
+    );
+    const resolve = box.resolve;
+    if (!resolve) throw new Error("history read was not admitted");
+    await act(async () => resolve(readResponse(ref, { name: "Jesse's chosen title" })));
+    expect(await screen.findByRole("heading", { name: "Jesse's chosen title" })).toBeTruthy();
+    const hydratedScope = screen.getByRole("navigation", { name: "Scope" });
+    expect(within(hydratedScope).getByText("Jesse's chosen title").getAttribute("aria-current")).toBe("page");
+    expect(
+      new Set(
+        fake.calls.filter((call) => call.method === "thread/read").map((call) => (call.params as { ref: string }).ref),
+      ),
+    ).toEqual(new Set([ref]));
+    expect(fake.calls.filter((call) => call.method.endsWith("/list"))).toHaveLength(0);
+  },
+);
+
+test("a child transcript does not invent ancestry from its Back target", async () => {
+  const fake = connectFakeClient();
+  const ref = "remote:child";
+  fake.on("thread/read", () => readResponse(ref, { name: "Chosen child" }));
+  fake.on("thread/unsubscribe", () => ({}));
+  fake.on("evener/thread/activity/read", () => ({
+    ...activitySummary(ref),
+    context: {
+      ...activityContext(ref),
+      ancestryKnown: false,
+      ancestors: [{ ref: "remote:unproven", sessionId: "unproven", title: "Unproven parent" }],
+    },
+  }));
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref, parentRef: "remote:return-target" }} paneId="p1" focused />
+    </ClientProvider>,
+  );
+  await screen.findByRole("heading", { name: "Chosen child" });
+  await waitFor(() => expect(sessionActivitySnapshot(fake, ref, "session")?.context?.ancestryKnown).toBe(false));
+  expect(screen.queryByRole("navigation", { name: "Scope" })).toBeNull();
+  expect(screen.queryByText("Unproven parent")).toBeNull();
+});
+
+test("a direct root transcript reads its context without displaying redundant ancestry", async () => {
+  const fake = connectFakeClient();
+  const ref = "remote:root";
+  fake.on("thread/read", () => readResponse(ref, { name: "Chosen root" }));
+  fake.on("thread/unsubscribe", () => ({}));
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref }} paneId="p1" focused />
+    </ClientProvider>,
+  );
+  await screen.findByRole("heading", { name: "Chosen root" });
+  await waitFor(() => expect(sessionActivitySnapshot(fake, ref, "session")?.context?.ancestryKnown).toBe(true));
+  expect(screen.queryByRole("navigation", { name: "Scope" })).toBeNull();
 });
 
 test("renders the thread's turns through the shared VirtualList/TurnBlock engine", async () => {
