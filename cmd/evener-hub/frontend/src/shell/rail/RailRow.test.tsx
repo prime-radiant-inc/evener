@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { EvenerWatchInfo, NavigationManifest } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import {
@@ -24,6 +21,7 @@ import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
+import { blockBody, mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -49,6 +47,16 @@ import type {
 } from "./railNodes";
 import { RailTickProvider } from "./railNow";
 import { RailRenderObserver } from "./railRenderObserver";
+
+const RAIL_CSS = readModuleCss(import.meta.url, "RailRow.module.css").replace(/\/\*[\s\S]*?\*\//g, " ");
+
+function nestedRuleBlock(css: string, selector: string): string {
+  const selectorStart = css.indexOf(selector);
+  if (selectorStart === -1) throw new Error(`RailRow.module.css is missing ${selector}`);
+  const openBrace = css.indexOf("{", selectorStart);
+  if (openBrace === -1) throw new Error(`RailRow.module.css has no block for ${selector}`);
+  return blockBody(css, openBrace);
+}
 
 // "Pin this session…" mounts the real PinSectionPicker, which reads
 // pin sections from the navigation store's bounded pin-catalog resource
@@ -724,34 +732,27 @@ describe("row alignment", () => {
   // .railRow reserves the leading padding and .signal's negative margin
   // cancels its 8px width plus the title line's gap.
   test("the row reserves the dot's outdent padding", () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).toMatch(/\.railRow\s*\{[^}]*padding-left:\s*14px;/);
+    expect(topRuleBlock(RAIL_CSS, ".railRow")).toMatch(/padding-left:\s*14px;/);
   });
 
   test("the signal dot outdents by exactly its own advance", () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).toMatch(/\.signal\s*\{[^}]*width:\s*8px;[^}]*margin-left:\s*-12px;/);
+    expect(topRuleBlock(RAIL_CSS, ".signal")).toMatch(/width:\s*8px;[^}]*margin-left:\s*-12px;/);
   });
 
   test("status colors are semantic, broken has distinct geometry, and the running ring respects reduced motion", () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).toMatch(/\.statusDot\[data-status="needs-you"\]\s*\{[^}]*var\(--attention\)/);
-    expect(css).toMatch(/\.statusDot\[data-status="failed"\]\s*\{[^}]*var\(--danger\)/);
-    expect(css).toMatch(/\.statusDot\[data-status="failed"\]\s*\{[^}]*border-radius:\s*1px;[^}]*rotate\(45deg\)/);
-    expect(css).toMatch(
-      /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{[\s\S]*?\.statusSpinner\s*\{[^}]*animation:/,
+    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="needs-you"]')).toContain("var(--attention)");
+    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toContain("var(--danger)");
+    expect(topRuleBlock(RAIL_CSS, '.statusDot[data-status="failed"]')).toMatch(
+      /border-radius:\s*1px;[^}]*rotate\(45deg\)/,
     );
-    const baseSpinner = /(?:^|\n)\.statusSpinner\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    const motionRules = mediaBlock(RAIL_CSS, "prefers-reduced-motion: no-preference");
+    expect(nestedRuleBlock(motionRules, ".statusSpinner")).toMatch(/animation:/);
+    const baseSpinner = topRuleBlock(RAIL_CSS, ".statusSpinner");
     expect(baseSpinner).not.toContain("animation:");
   });
 
   test("the title button reset preserves the rail label's explicit UI font size", () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    const buttonReset = /\.sessionTitle \.label\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    const buttonReset = topRuleBlock(RAIL_CSS, ".sessionTitle .label");
     expect(buttonReset).toContain("font-family: inherit");
     expect(buttonReset).not.toMatch(/(?:^|\s)font:\s*inherit/);
   });
@@ -760,34 +761,24 @@ describe("row alignment", () => {
 describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
   // shellguard's tap-target pass measures these in a real phone context; these
   // source assertions pin the rules themselves (jsdom evaluates no cascade).
-  const CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
-  const coarseBlock = CSS.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/)?.[1] ?? null;
+  const coarseBlock = mediaBlock(RAIL_CSS, "pointer: coarse");
 
   test("row action buttons meet the 44px floor in BOTH dimensions", () => {
-    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
-    const rule = coarseBlock!.match(/\.actions button\s*\{([^}]*)\}/);
-    expect(rule).not.toBeNull();
-    expect(rule![1]).toContain("min-width: var(--tap-min)");
-    expect(rule![1]).toContain("min-height: var(--tap-min)");
+    const rule = nestedRuleBlock(coarseBlock, ".actions button");
+    expect(rule).toContain("min-width: var(--tap-min)");
+    expect(rule).toContain("min-height: var(--tap-min)");
   });
 
   test("tap-enabled session titles meet the 44px floor in both dimensions", () => {
-    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
-    const rule = coarseBlock!.match(/\.sessionTitle button\.label\s*\{([^}]*)\}/);
-    expect(rule).not.toBeNull();
-    expect(rule![1]).toContain("min-width: var(--tap-min)");
-    expect(rule![1]).toContain("min-height: var(--tap-min)");
+    const rule = nestedRuleBlock(coarseBlock, ".sessionTitle button.label");
+    expect(rule).toContain("min-width: var(--tap-min)");
+    expect(rule).toContain("min-height: var(--tap-min)");
   });
 
   test("the widened menu trigger centres its glyph instead of hugging an edge", () => {
-    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
-    const rule = coarseBlock!.match(/\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/);
-    expect(rule).not.toBeNull();
-    expect(rule![1]).toContain("padding: 0");
-    expect(rule![1]).toContain("justify-content: center");
+    const rule = nestedRuleBlock(coarseBlock, '.actions button[aria-haspopup="menu"]');
+    expect(rule).toContain("padding: 0");
+    expect(rule).toContain("justify-content: center");
   });
 });
 
@@ -1987,17 +1978,6 @@ describe("roving-tabindex integration (Tree + RailRow)", () => {
 // disk and pin the structure that makes it true - same mechanism as
 // styles/display-gates.test.ts and widgets/tooltip's own touch gate.
 describe("shared right slot (RailRow.module.css)", () => {
-  const RAIL_CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8");
-  // Block comments stripped so a class or token named only in prose can
-  // never satisfy an assertion (same discipline as token-contract.test.ts).
-  const CSS = RAIL_CSS.replace(/\/\*[\s\S]*?\*\//g, " ");
-
-  function ruleFor(selector: string): string | null {
-    const escaped = selector.replace(/[.[\]"^$*+?()|{}\\]/g, "\\$&");
-    const match = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(CSS);
-    return match ? match[1]! : null;
-  }
-
   // 2026-08 sidebar UX rework, successor to the issue #196 fix it keeps the
   // guarantee of. The #196 rework made `.actions` a real in-flow flex item
   // beside the timestamp, so flexbox reserved it space and the trailing
@@ -2017,8 +1997,7 @@ describe("shared right slot (RailRow.module.css)", () => {
   // what layoutguard's rail-row-chevron-actions-overlap case proves against
   // a real browser.
   test("the actions share one grid cell with the right-slot occupant - never an overlay", () => {
-    const slotRule = ruleFor(".rightSlot");
-    expect(slotRule, ".rightSlot must have a rule").not.toBeNull();
+    const slotRule = topRuleBlock(RAIL_CSS, ".rightSlot");
     expect(slotRule).toMatch(/display:\s*grid/);
     // The slot is the in-flow flex item (flexbox reserves its width, so the
     // chevron in .textCol can never be pushed underneath anything in it).
@@ -2026,12 +2005,10 @@ describe("shared right slot (RailRow.module.css)", () => {
     // Both children occupy the same area, so the slot is only ever as wide
     // as the WIDER of occupant and menu - the menu borrows the timestamp's
     // space rather than reserving its own beside it.
-    const cellRule = ruleFor(".rightSlot > *");
-    expect(cellRule, ".rightSlot > * must have a rule").not.toBeNull();
+    const cellRule = topRuleBlock(RAIL_CSS, ".rightSlot > *");
     expect(cellRule).toMatch(/grid-area:\s*1\s*\/\s*1/);
 
-    const actionsRule = ruleFor(".actions");
-    expect(actionsRule, ".actions must have a rule").not.toBeNull();
+    const actionsRule = topRuleBlock(RAIL_CSS, ".actions");
     expect(actionsRule).not.toMatch(/position:\s*absolute/);
     expect(actionsRule).not.toMatch(/\bright:\s*0/);
     // Hidden means BOTH: opacity never disables hit-testing (issue #196), so
@@ -2045,15 +2022,16 @@ describe("shared right slot (RailRow.module.css)", () => {
     // The reveal flips BOTH halves of the shared cell. Menu side (top-level
     // rule): the same three conditions as ever - row hover, treeitem focus,
     // this row's own menu held open.
-    const rules = [...CSS.matchAll(/([^{}]*)\{([^}]*)\}/g)].map((m) => ({
-      selector: m[1]!.trim(),
-      body: m[2]!,
-    }));
-    const reveal = rules.find((r) => r.selector.includes(".railRow:hover .actions"));
-    expect(reveal, "row hover must reveal the actions").toBeTruthy();
-    expect(reveal!.body).toMatch(/opacity:\s*1/);
-    expect(reveal!.body).toMatch(/visibility:\s*visible/);
-    const revealTargets = reveal!.selector.split(",").map((s) => s.trim());
+    const revealStart = RAIL_CSS.indexOf('[role="treeitem"]:focus .actions');
+    expect(revealStart, "row hover must reveal the actions").toBeGreaterThanOrEqual(0);
+    const revealOpen = RAIL_CSS.indexOf("{", revealStart);
+    expect(revealOpen, "the action reveal selectors must own a rule").toBeGreaterThan(revealStart);
+    const revealBody = blockBody(RAIL_CSS, revealOpen);
+    expect(revealBody).toMatch(/opacity:\s*1/);
+    expect(revealBody).toMatch(/visibility:\s*visible/);
+    const revealTargets = RAIL_CSS.slice(revealStart, revealOpen)
+      .split(",")
+      .map((s) => s.trim());
     expect(revealTargets).toEqual(
       expect.arrayContaining([
         '[role="treeitem"]:focus .actions',
@@ -2069,15 +2047,14 @@ describe("shared right slot (RailRow.module.css)", () => {
     // must never make the timestamp vanish out from under the row. Rules
     // nested in @media mangle the flat matchAll above, so this half is
     // pinned against the media block's own text.
-    const flipMedia = /@media\s*\(hover:\s*hover\)\s*and\s*\(min-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
-    expect(flipMedia, "the occupant flip must be gated to hover-capable desktop pointers").not.toBeNull();
-    const flipBlock = flipMedia![1]!;
+    const flipMedia = mediaBlock(RAIL_CSS, "hover: hover) and (min-width: 900px");
+    const flipBlock = nestedRuleBlock(flipMedia, '[role="treeitem"]:focus .rightSlot > :not(.actions)');
     for (const selector of [
       '[role="treeitem"]:focus .rightSlot > :not(.actions)',
       '.rightSlot:has(button[aria-expanded="true"]) > :not(.actions)',
       ".railRow:hover .rightSlot > :not(.actions)",
     ]) {
-      expect(flipBlock).toContain(selector);
+      expect(flipMedia).toContain(selector);
     }
     expect(flipBlock).toMatch(/opacity:\s*0/);
     expect(flipBlock).toMatch(/visibility:\s*hidden/);
@@ -2089,8 +2066,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     // against .actions. Neither is needed (or wanted - see the describe
     // block's own comment) now that the chevron and the menu are
     // layout-disjoint by construction.
-    const chevronRule = ruleFor(".chevronButton");
-    expect(chevronRule, ".chevronButton must have a rule").not.toBeNull();
+    const chevronRule = topRuleBlock(RAIL_CSS, ".chevronButton");
     expect(chevronRule).not.toMatch(/position:\s*relative/);
     expect(chevronRule).not.toMatch(/z-index:/);
   });
@@ -2101,7 +2077,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     // slice covered text mid-glyph). An in-flow grid item covers its own
     // cell and nothing else, so none of that machinery belongs here - its
     // reappearance would be a sign the overlay design crept back in.
-    const actionsRule = ruleFor(".actions");
+    const actionsRule = topRuleBlock(RAIL_CSS, ".actions");
     expect(actionsRule).not.toMatch(/background:/);
     expect(actionsRule).not.toMatch(/linear-gradient/);
     expect(actionsRule).not.toMatch(/padding-left:/);
@@ -2120,9 +2096,8 @@ describe("shared right slot (RailRow.module.css)", () => {
     // appears inside @media (pointer: coarse), where the widened tap target
     // centres the glyph instead - that override is the tap-floor describe's
     // own assertion above, not this one's.
-    const justifyRule = /\n\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/.exec(CSS);
-    expect(justifyRule, "the row must right-justify the menu trigger's glyph").not.toBeNull();
-    expect(justifyRule![1]).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
+    const justifyRule = topRuleBlock(RAIL_CSS, '.actions button[aria-haspopup="menu"]');
+    expect(justifyRule).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
   });
 
   // The signal dot keeps a FIXED width and refuses to flex: its outdent
@@ -2131,8 +2106,7 @@ describe("shared right slot (RailRow.module.css)", () => {
   // so this is only checkable against the (comment-stripped) stylesheet
   // text.
   test("the .signal slot reserves a fixed width and never flexes", () => {
-    const rule = ruleFor(".signal");
-    expect(rule).not.toBeNull();
+    const rule = topRuleBlock(RAIL_CSS, ".signal");
     expect(rule).toMatch(/width:\s*(var\(--space-\d+\)|\d+px)/);
     expect(rule).toMatch(/flex:\s*none|flex-shrink:\s*0/);
   });
@@ -2142,11 +2116,10 @@ describe("shared right slot (RailRow.module.css)", () => {
     // with, so this block forces them visible AND turns the shared cell back
     // into an ordinary flex row - on touch the occupant and the menu sit
     // side by side; the visibility swap above is a desktop-hover mechanism.
-    const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/g;
-    const blocks = [...CSS.matchAll(media)].map((m) => m[1]!);
-    const actionsBlock = blocks.find((b) => b.includes(".actions"));
-    expect(actionsBlock, "the 899px block must still address .actions").toBeTruthy();
-    expect(actionsBlock).toMatch(/\.rightSlot\s*\{[^}]*display:\s*flex/);
+    const mobileRules = mediaBlock(RAIL_CSS, "max-width: 899px");
+    const rightSlotBlock = nestedRuleBlock(mobileRules, ".rightSlot");
+    const actionsBlock = nestedRuleBlock(mobileRules, ".actions");
+    expect(rightSlotBlock).toMatch(/display:\s*flex/);
     expect(actionsBlock).toMatch(/opacity:\s*1/);
     expect(actionsBlock).toMatch(/visibility:\s*visible/);
     expect(actionsBlock).not.toMatch(/position:/);
