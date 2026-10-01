@@ -13,6 +13,11 @@ export const LONG_PRESS_MS = 500;
  * long press - a drag is a scroll, not a hold. */
 const LONG_PRESS_SLOP_PX = 10;
 
+/** How long after a lifted press the browser's one click is still expected.
+ * Past it the swallow is dropped, so a gesture the browser ends without a
+ * click cannot leave a later keyboard- or AT-synthesized click swallowed. */
+const LONG_PRESS_CLICK_WINDOW_MS = 350;
+
 export interface HoverCardProps {
   label: ReactNode;
   children: ReactNode | ((association: HoverCardAssociation) => ReactNode);
@@ -30,14 +35,16 @@ const CLASS = {
 };
 
 /** Rich, non-interactive description composed on the shared floating-label
- * lifecycle: hover or focus on a hover device. On a hoverless device neither
- * can show it (nothing would dismiss it), so `longPressEnabled` turns the trigger
- * into a long press - a plain tap is left to activate the control the trigger
- * wraps, and the click a lifted long press still sends is swallowed. */
+ * lifecycle. Hover, or the focus a keyboard or assistive technology takes,
+ * shows it on any device. On a hoverless device the focus a tap takes shows
+ * nothing (nothing would dismiss it), so `longPressEnabled` turns the trigger
+ * into a long press: a plain tap activates the control the trigger wraps, and
+ * the one click a lifted long press still sends is swallowed. */
 export function HoverCard({ label, children, focusTarget, longPressEnabled }: HoverCardProps) {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
   const swallowClickRef = useRef(false);
+  const swallowBackstopRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const {
     visible,
     wrapperRef,
@@ -56,8 +63,39 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled }: Ho
     longPressStartRef.current = null;
   }, []);
 
-  // A press still pending when the card goes must not fire later.
-  useEffect(() => cancelLongPress, [cancelLongPress]);
+  const clearSwallowBackstop = useCallback(() => {
+    clearTimeout(swallowBackstopRef.current);
+    swallowBackstopRef.current = undefined;
+  }, []);
+
+  // A press still pending, or a swallow still armed, when the card goes must
+  // not fire later.
+  useEffect(
+    () => () => {
+      cancelLongPress();
+      clearSwallowBackstop();
+    },
+    [cancelLongPress, clearSwallowBackstop],
+  );
+
+  // The lifted press still sends one click; keep the swallow armed for it, but
+  // bound the arming so a gesture the browser ends without a click cannot leave
+  // a later click swallowed.
+  const endPress = useCallback(() => {
+    cancelLongPress();
+    if (!swallowClickRef.current) return;
+    clearSwallowBackstop();
+    swallowBackstopRef.current = setTimeout(() => {
+      swallowBackstopRef.current = undefined;
+      swallowClickRef.current = false;
+    }, LONG_PRESS_CLICK_WINDOW_MS);
+  }, [cancelLongPress, clearSwallowBackstop]);
+
+  const abortPress = useCallback(() => {
+    cancelLongPress();
+    clearSwallowBackstop();
+    swallowClickRef.current = false;
+  }, [cancelLongPress, clearSwallowBackstop]);
 
   useEffect(() => {
     if (!longPressEnabled || !visible || !isHoverless()) return;
@@ -82,10 +120,9 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled }: Ho
 
   return (
     // longPressEnabled delegates a hoverless *long press* to the semantic child; a
-    // tap falls through to that child's own control. Keyboard users use the
-    // child's focus or the explicit external focus target on a hover device.
+    // tap falls through to that child's own control. Keyboard and assistive-tech
+    // focus still reveals the card on any device.
     // biome-ignore lint/a11y/noStaticElementInteractions: interaction semantics belong to the child trigger
-    // biome-ignore lint/a11y/useKeyWithClickEvents: onClick only swallows the click a long press leaves behind, it never reveals the description
     <span
       ref={wrapperRef}
       className={CLASS.wrapper}
@@ -93,6 +130,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled }: Ho
       onPointerDown={(event) => {
         if (!longPressEnabled || !isHoverless() || event.button !== 0) return;
         swallowClickRef.current = false;
+        clearSwallowBackstop();
         longPressStartRef.current = { x: event.clientX, y: event.clientY };
         clearTimeout(longPressTimerRef.current);
         longPressTimerRef.current = setTimeout(() => {
@@ -106,14 +144,24 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled }: Ho
         if (longPressTimerRef.current === undefined || start === null) return;
         if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > LONG_PRESS_SLOP_PX) cancelLongPress();
       }}
-      onPointerUp={cancelLongPress}
-      onPointerCancel={cancelLongPress}
+      onPointerUp={endPress}
+      onPointerCancel={abortPress}
       onPointerLeave={cancelLongPress}
-      onClick={(event) => {
-        // The lifted long press still sends one click to the trigger's own
-        // control; swallow exactly that one, never a plain tap.
-        if (!longPressEnabled || !isHoverless() || !swallowClickRef.current) return;
+      onClickCapture={(event) => {
+        if (!longPressEnabled || !isHoverless()) return;
+        if (!swallowClickRef.current) {
+          // Any other tap is the trigger's own: let it activate, and take the
+          // card down with it so nothing lingers over the next screen.
+          if (visible) dismiss();
+          return;
+        }
+        // The lifted long press sends one click to the control the trigger
+        // wraps; swallow exactly that one, in the capture phase so a handler
+        // on the trigger itself cannot run first, and stop its default action
+        // too.
         swallowClickRef.current = false;
+        clearSwallowBackstop();
+        event.preventDefault();
         event.stopPropagation();
       }}
       onContextMenu={(event) => {
