@@ -4,6 +4,9 @@
   "notes": {
     "call_apply_patch": "A v4a patch updating one file and adding another.",
     "call_ask_user": "A question put to the user, run for real: the tool posts it and answers with its fixed acknowledgement. toolWireAnswers, the user's reply, follows in the next turn.",
+    "call_communicate": "A final report to the parent: end_turn ends the turn, and the step's words read it as done. The output envelope is required by the tool's schema.",
+    "call_compact_context": "An empty note with no instructions and no reload_skills: the tool clears the note without asking for a compaction, and the first sentence of its output is what the step's words read.",
+    "call_doctor_evener": "An earlier session's transcript rendered from the session's own state root: the command and selector are what the step's words name.",
     "call_edit_file": "One replacement in one file.",
     "call_find_sessions": "A search of the project's sessions for a phrase the earlier one said.",
     "call_find_sessions_catalog": "The project's recent sessions, with no query: the earlier session and the recording one (its id, update time and project fixed).",
@@ -17,6 +20,10 @@
     "call_list_dir_page": "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many of how many, and where the next page starts.",
     "call_mcp": "Hand-written (needs an MCP server): an MCP tool, named \u003cserver\u003e__\u003ctool\u003e the way agent/internal/mcp's manager namespaces it.",
     "call_mcp_hyphenated": "Hand-written (needs an MCP server): an MCP tool whose server name had a hyphen (linear-app), which the manager turns into an underscore.",
+    "call_model_list": "The first page of the model list, bounded to one choice so a continuation follows (its cursor fixed in the items).",
+    "call_model_list_next": "The next page, by the cursor the first page's result named: the step's words read the cursor as a further listing (its cursor fixed in the items).",
+    "call_notes_agent_set": "The agent's own note cleared with an empty note. The output is the tool's plain acknowledgement; the step's words read the empty note as a clear.",
+    "call_notes_read": "The session notes read with nothing recorded: the tool says there are none.",
     "call_read_file": "A whole-file read: the output numbers each line.",
     "call_read_file_range": "A read with an offset and a limit.",
     "call_read_transcript": "An earlier session's transcript read as markdown (the default): its JSON envelope.",
@@ -30,6 +37,9 @@
     "call_task_list_start": "The first task started.",
     "call_task_list_view": "A bare call: the list, changing nothing.",
     "call_unknown": "Hand-written: a tool no step summary covers (no such tool exists); only its name matters.",
+    "call_update_goal": "A goal marked complete when the session registered none: the tool recorded nothing and says so, which the step's words report as no goal set.",
+    "call_urls_add": "A labelled link added. The tool names the entry's minted id in its output (where urls_remove reads it) and carries the entry's added_at in its state; the id is fixed in the items and added_at here.",
+    "call_urls_remove": "The link the call before it added, removed by the id that call's result named (the minted id fixed in the items).",
     "call_use_skill": "A skill activation, the skill installed in the workspace. Its tool state (the session's random id, a digest of the rendered skill) changes every run, so it is left off.",
     "call_watch_clear": "The same timer, cleared.",
     "call_watch_inspect": "The one-shot timer, inspected (created at the fixture's start).",
@@ -507,6 +517,96 @@
       "toolName": "reindex_workspace",
       "callId": "call_unknown",
       "argumentsJson": "{\"scope\":\"agent\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_46",
+      "turnId": "turn_1",
+      "toolName": "notes_agent_set",
+      "callId": "call_notes_agent_set",
+      "argumentsJson": "{\"note\":\"\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_47",
+      "turnId": "turn_1",
+      "toolName": "notes_read",
+      "callId": "call_notes_read",
+      "argumentsJson": "{}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_48",
+      "turnId": "turn_1",
+      "toolName": "urls_add",
+      "callId": "call_urls_add",
+      "argumentsJson": "{\"label\":\"CI run\",\"url\":\"https://example.com/ci/42\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_49",
+      "turnId": "turn_1",
+      "toolName": "urls_remove",
+      "callId": "call_urls_remove",
+      "argumentsJson": "{\"id\":\"url_fixture_1\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_50",
+      "turnId": "turn_1",
+      "toolName": "update_goal",
+      "callId": "call_update_goal",
+      "argumentsJson": "{\"status\":\"complete\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_51",
+      "turnId": "turn_1",
+      "toolName": "compact_context",
+      "callId": "call_compact_context",
+      "argumentsJson": "{\"note_to_self\":\"\"}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_52",
+      "turnId": "turn_1",
+      "toolName": "model_list",
+      "callId": "call_model_list",
+      "argumentsJson": "{\"max_count\":1}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_53",
+      "turnId": "turn_1",
+      "toolName": "model_list",
+      "callId": "call_model_list_next",
+      "argumentsJson": "{\"cursor\":\"cursor_fixture_1\",\"max_count\":1}",
+      "status": "inProgress",
+      "startedAt": 1790625600000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_1_54",
+      "turnId": "turn_1",
+      "toolName": "doctor_evener",
+      "callId": "call_doctor_evener",
+      "argumentsJson": "{\"command\":\"transcript\",\"selector\":\"02wMz5Txv5aIxgf9yVdd0N\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },
@@ -1175,6 +1275,123 @@
       "output": "reindexed 42 files",
       "status": "completed",
       "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_46",
+      "turnId": "turn_1",
+      "toolName": "notes_agent_set",
+      "callId": "call_notes_agent_set",
+      "output": "Agent note recorded.",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": {
+        "agentNote": ""
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_47",
+      "turnId": "turn_1",
+      "toolName": "notes_read",
+      "callId": "call_notes_read",
+      "output": "No shared notes.",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": {
+        "agentNote": "",
+        "humanNote": "",
+        "urls": null
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_48",
+      "turnId": "turn_1",
+      "toolName": "urls_add",
+      "callId": "call_urls_add",
+      "output": "URL added: Link: CI run (https://example.com/ci/42) [id: url_fixture_1]",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": {
+        "id": "url_fixture_1",
+        "url": "https://example.com/ci/42",
+        "label": "CI run",
+        "added_by": "agent",
+        "added_at": 1000000000
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_49",
+      "turnId": "turn_1",
+      "toolName": "urls_remove",
+      "callId": "call_urls_remove",
+      "output": "URL removed.",
+      "status": "completed",
+      "completedAt": 1790625602000,
+      "raw": {
+        "id": "url_fixture_1"
+      }
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_50",
+      "turnId": "turn_1",
+      "toolName": "update_goal",
+      "callId": "call_update_goal",
+      "output": "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered.",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_51",
+      "turnId": "turn_1",
+      "toolName": "compact_context",
+      "callId": "call_compact_context",
+      "output": "Note cleared. No compaction requested.",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_52",
+      "turnId": "turn_1",
+      "toolName": "model_list",
+      "callId": "call_model_list",
+      "output": "{\n  \"choices\": [\n    \"openai/gpt-5.2\"\n  ],\n  \"next\": \"cursor_fixture_1\",\n  \"version\": \"c8a3922e1a56c9c8b0203ebf\",\n  \"complete\": false,\n  \"terminal\": false,\n  \"status\": {\n    \"openai\": {\n      \"kind\": \"success\",\n      \"detail\": \"enumeration succeeded\"\n    },\n    \"router\": {\n      \"kind\": \"failure\",\n      \"detail\": \"enumeration did not complete\"\n    }\n  },\n  \"provenance\": \"startup-frozen\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_53",
+      "turnId": "turn_1",
+      "toolName": "model_list",
+      "callId": "call_model_list_next",
+      "output": "{\n  \"choices\": [\n    \"openai/gpt-5.3\"\n  ],\n  \"version\": \"c8a3922e1a56c9c8b0203ebf\",\n  \"complete\": false,\n  \"terminal\": true,\n  \"status\": {\n    \"openai\": {\n      \"kind\": \"success\",\n      \"detail\": \"enumeration succeeded\"\n    },\n    \"router\": {\n      \"kind\": \"failure\",\n      \"detail\": \"enumeration did not complete\"\n    }\n  },\n  \"provenance\": \"startup-frozen\"\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "commandExecution",
+      "id": "item_tool_result_2_54",
+      "turnId": "turn_1",
+      "toolName": "doctor_evener",
+      "callId": "call_doctor_evener",
+      "output": "{\n  \"session_id\": \"02wMz5Txv5aIxgf9yVdd0N\",\n  \"result_tool\": \"communicate\",\n  \"turns_total\": 1,\n  \"turns_rendered\": 1,\n  \"elided\": 0,\n  \"turns\": [\n    {\n      \"index\": 1,\n      \"kind\": \"ASSISTANT\",\n      \"role\": \"assistant\",\n      \"text\": \"The settle race comes from the drain running after settle reads the tree.\"\n    }\n  ]\n}",
+      "status": "completed",
+      "completedAt": 1790625602000
+    },
+    {
+      "type": "agentMessage",
+      "id": "item_assistant_2_55",
+      "turnId": "turn_1",
+      "text": "The settle race is fixed.",
+      "callId": "call_communicate",
+      "status": "completed",
+      "startedAt": 1790625602000
     },
     {
       "type": "userMessage",
