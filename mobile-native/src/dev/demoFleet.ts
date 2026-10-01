@@ -15,6 +15,8 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { capability, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type {
+	ArchivedListParams,
+	ArchivedListResponse,
 	ArchiveParams,
 	ArchiveResponse,
 	AuthListResponse,
@@ -65,9 +67,6 @@ const H = 3600;
 const D = 86400;
 
 const ARCHIVED_TOTAL = 271; // data.js: archivedTotal (Board mockup: "ARCHIVED · 271")
-// How many archived rows a "project" overview embeds as a preview, versus a
-// project_page(tier=archived) read paging through the real, full list.
-const PROJECT_OVERVIEW_ARCHIVED_PREVIEW = 5;
 
 // The base62 alphabet the hub's own ids use
 // (appwire-client/typescript/entityIds.ts, identifier/uuid.go). A real hub
@@ -629,11 +628,8 @@ const SESSIONS: RawSession[] = [
 
 	// data.js pins archivedTotal at 271 (Board mockup: "ARCHIVED · 271")
 	// without individually naming 266 of them. These fill that count with
-	// plain, clearly-generic entries so the archived tier is a real, fully
-	// pageable list of 271 -- the hub's own archived tier is real paged rows,
-	// never five real ones plus a promise of 266 more that never arrive --
-	// instead of a page that stalls the moment a client asks for more than
-	// the 5 named above.
+	// plain, clearly-generic entries so evener's archived list pages through
+	// all 271 rows its total reports, as a hub's archived list does.
 	...Array.from({ length: ARCHIVED_TOTAL - 5 }, (_, i) => ({
 		id: `s-archived-filler-${i}`,
 		title: SWARM_NAMES[i % SWARM_NAMES.length] as string,
@@ -933,6 +929,10 @@ export interface DemoFleetOptions {
 
 interface FleetAnswers {
 	answerNavigationRead(params: NavigationReadParams): NavigationReadResponse;
+	/** evener/archived/list, as cmd/evener-hub/navigation_archived_list.go
+	 * serves it: a catalog project's archived rows, paged by a cursor bound to
+	 * that list, with the tier's total. */
+	answerArchivedList(params: ArchivedListParams): ArchivedListResponse;
 	answerSearch(params: SearchParams): SearchResponse;
 	answerAuthList(): AuthListResponse;
 	answerPluginList(): PluginListResponse;
@@ -1111,6 +1111,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 
 	return {
 		answerNavigationRead: (params) => answers.answerNavigationRead(params),
+		answerArchivedList: (params) => answers.answerArchivedList(params),
 		answerSearch: (params) => answers.answerSearch(params),
 		answerAuthList: () => answers.answerAuthList(),
 		answerPluginList: () => answers.answerPluginList(),
@@ -1169,6 +1170,30 @@ function findSubagent(
 		if (nested) return nested;
 	}
 	return undefined;
+}
+
+// An archived list's cursor names the list it continues and where, so a
+// cursor from another list is refused. The hub's cursor
+// (navigation_archived_list.go's encodeArchivedCursor/decodeArchivedCursor)
+// marks where by the last row's order key and the demo's by an offset; the
+// binding to its list and the refusals' words are the hub's.
+function encodeArchivedCursor(catalog: string, projectKey: string, offset: number): string {
+	return JSON.stringify({ catalog, projectKey, offset });
+}
+
+function decodeArchivedCursorOffset(cursor: string, catalog: string, projectKey: string): number {
+	let decoded: { catalog?: unknown; projectKey?: unknown; offset?: unknown };
+	try {
+		// A "null" cursor parses to null; it is as invalid as any other.
+		decoded = JSON.parse(cursor) ?? {};
+	} catch {
+		throw new Error("invalid cursor");
+	}
+	const { offset } = decoded;
+	if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0) throw new Error("invalid cursor");
+	if (decoded.catalog !== catalog || decoded.projectKey !== projectKey)
+		throw new Error("cursor belongs to another archived list");
+	return offset;
 }
 
 // Every answer the fleet gives, for one fixed list of sessions at one
@@ -1249,18 +1274,48 @@ function fleetAnswers(
 	}
 
 	// The tier a row is served under, in one place: the location branch reports
-	// this tier and a reveal then asks that exact project_page tier, so the two
-	// must come from one computation. An archived row's is "archived", a
-	// hub-test-env test-run row's is "current" (test runs are never split by
-	// age), every other row's current or recent by the same 24h boundary.
+	// this tier and a reveal then reads that tier's rows (an archived row's
+	// from the archived list), so the two must come from one computation. An
+	// archived row's is "archived", a hub-test-env test-run row's is "current"
+	// (test runs are never split by age), every other row's current or recent
+	// by the same 24h boundary.
 	function servedTier(raw: RawSession): "current" | "recent" | "archived" {
 		return raw.archived ? "archived" : raw.test || raw.ago < D ? "current" : "recent";
 	}
 
-	// Every tier is a real, fully pageable list -- including archived, now
-	// that SESSIONS carries all 271 (5 named plus the generated filler) --
-	// so callers page it with the same page() every other resource uses
-	// instead of a bespoke "5 rows, 266 remaining forever" shortcut.
+	// A catalog's projects. An unrecognized catalog is a hard error, never a
+	// silent fallback to the projects catalog.
+	function catalogProjects(catalog: unknown): NavigationProjectSummary[] {
+		if (catalog === "projects") return projects;
+		if (catalog === "archived_projects") return archivedProjects;
+		if (catalog === "test_runs") return testRunProjects;
+		throw new Error(`Unknown demonstration catalog: ${String(catalog)}`);
+	}
+
+	// Mirrors cmd/evener-hub/navigation_archived_list.go: a known catalog, a
+	// limit up to the section maximum (0 or absent means the maximum), a
+	// cursor bound to its own list, and an empty list for a project the
+	// catalog doesn't hold.
+	function answerArchivedList(params: ArchivedListParams): ArchivedListResponse {
+		const listed = catalogProjects(params.catalog);
+		const limit = params.limit ?? 0;
+		if (!Number.isInteger(limit) || limit < 0 || limit > NAVIGATION_SECTION_LIMIT)
+			throw new Error(`limit must be between 0 and ${NAVIGATION_SECTION_LIMIT}`);
+		const offset = params.cursor ? decodeArchivedCursorOffset(params.cursor, params.catalog, params.projectKey) : 0;
+		const rows = listed.some((project) => project.key === params.projectKey)
+			? tierRows(params.projectKey, "archived")
+			: [];
+		const sessions = rows.slice(offset, offset + (limit || NAVIGATION_SECTION_LIMIT));
+		const next = offset + sessions.length;
+		return {
+			sessions,
+			total: rows.length,
+			...(next < rows.length ? { nextCursor: encodeArchivedCursor(params.catalog, params.projectKey, next) } : {}),
+		};
+	}
+
+	// A project's rows in one tier, as hubcore's TreeProject.TierRows lists
+	// them: the rows servedTier puts in that tier.
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
 		if (tier === "archived") return archivedIn(projectKey).map(rowOf);
 		if (projectKey === "hub-test-env") return testRunRaw.filter((raw) => servedTier(raw) === tier).map(rowOf);
@@ -1341,34 +1396,20 @@ function fleetAnswers(
 			case "catalog": {
 				// Same as "section": an unrecognized catalog is a hard error, never
 				// a silent fallback to the projects catalog.
-				if (params.catalog !== "projects" && params.catalog !== "archived_projects" && params.catalog !== "test_runs")
-					throw new Error(`Unknown demonstration catalog: ${params.catalog}`);
-				const source =
-					params.catalog === "archived_projects"
-						? archivedProjects
-						: params.catalog === "test_runs"
-							? testRunProjects
-							: projects;
-				const { page: rows, remaining } = page(source, params, NAVIGATION_CATALOG_LIMIT);
+				const { page: rows, remaining } = page(catalogProjects(params.catalog), params, NAVIGATION_CATALOG_LIMIT);
 				return respond(revision, params, { projects: rows, remaining });
 			}
 			case "project": {
 				const projectKey = knownProjectKey(params);
 				const current = tierRows(projectKey, "current");
 				const recent = tierRows(projectKey, "recent");
-				// wireSnapshot's "project" branch hardcodes every tier's own remaining to
-				// 0 regardless of input (a real project_page read reports the true
-				// count instead), so only the preview size shown here is ours to
-				// choose: the archived tier is now a real 271-row list, and an
-				// overview embedding all of it would defeat "overview". Preview the
-				// same 5 rows this call showed before archived became fully
-				// pageable; "See all" is what project_page is for.
-				const archived = tierRows(projectKey, "archived").slice(0, PROJECT_OVERVIEW_ARCHIVED_PREVIEW);
+				// Archived rows are read through evener/archived/list; the hub's
+				// overview carries none (navigation_projection.go's Project).
 				return respond(revision, params, {
 					key: projectKey,
 					current: { sessions: current, remaining: 0 },
 					recent: { sessions: recent, remaining: 0 },
-					archived: { sessions: archived, remaining: 0 },
+					archived: { sessions: [], remaining: 0 },
 					truncated: false,
 				});
 			}
@@ -1379,7 +1420,13 @@ function fleetAnswers(
 				if (params.tier !== "current" && params.tier !== "recent" && params.tier !== "archived")
 					throw new Error(`Unknown demonstration tier: ${params.tier}`);
 				const tier = params.tier;
-				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, NAVIGATION_SECTION_LIMIT);
+				// The hub answers the archived tier empty: archived rows are read
+				// through evener/archived/list (answerArchivedList).
+				const { page: sessions, remaining } = page(
+					tier === "archived" ? [] : tierRows(projectKey, tier),
+					params,
+					NAVIGATION_SECTION_LIMIT,
+				);
 				return respond(revision, params, {
 					key: projectKey,
 					tier,
@@ -1395,8 +1442,8 @@ function fleetAnswers(
 				// The hub's location is a shallow summary (navigation_projection.go's
 				// projectShallow), not a row with its descendants: a location resource
 				// holds exactly one entity. servedTier is the one place this
-				// row's tier is decided, so the reveal that asks this exact tier's
-				// project_page cannot drift from what tierRows serves it under.
+				// row's tier is decided, so the reveal that reads this tier's rows
+				// cannot drift from what tierRows serves it under.
 				const tier = servedTier(raw);
 				const shallow = rowOf(raw);
 				const response = respond(revision, params, {
@@ -1516,5 +1563,12 @@ function fleetAnswers(
 		return { notices: [...signIns, ...hosts] };
 	}
 
-	return { answerNavigationRead, answerSearch, answerAuthList, answerPluginList, answerNoticesList };
+	return {
+		answerNavigationRead,
+		answerArchivedList,
+		answerSearch,
+		answerAuthList,
+		answerPluginList,
+		answerNoticesList,
+	};
 }

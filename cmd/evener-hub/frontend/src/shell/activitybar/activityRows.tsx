@@ -66,7 +66,7 @@ function AgentRowBody({ sub }: { sub: SessionDelegate }) {
         ⌘
       </span>
       <span className={CLASS.rowBody}>
-        <span className={CLASS.rowName}>{sub.description || sub.task || sub.delegateId}</span>
+        <span className={CLASS.rowName}>{sub.name?.trim() || sub.description || sub.task || sub.delegateId}</span>
         <span className={CLASS.rowMeta}>{agentStateText(sub)}</span>
       </span>
     </>

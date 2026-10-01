@@ -172,6 +172,14 @@ describe("one flat list", () => {
 		expect(rows[0]?.ref).toBe("local:Fix race in tree settle");
 	});
 
+	it("uses the durable name without changing a delegate's transcript target", () => {
+		const named = delegate("worker", { name: "  Navigation observer  ", description: "Inspect every navigation path" });
+		const row = rowOf(named);
+		expect(row.title).toBe("Navigation observer");
+		expect(row.ref).toBe("local:worker");
+		expect(subagentTitle({ ...named, name: " " })).toBe("Inspect every navigation path");
+	});
+
 	it("titles a row with the short description, else the brief's first line, else the session", () => {
 		expect(subagentTitle(delegate("x", { description: "  ", task: "Fix the settle race.\nThen report." }))).toBe(
 			"Fix the settle race.",

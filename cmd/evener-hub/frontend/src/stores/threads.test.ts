@@ -3,6 +3,7 @@ import { activitySummary } from "./sessionActivityTestUtils";
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
+  CachedSessionRecord,
   ConnectionState,
   InitializeResponse,
   MethodName,
@@ -55,6 +56,7 @@ import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDraf
 import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import { SessionCacheIndexedDB, type SessionCacheWriteOutcome } from "./sessionCacheIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction, neverSettlingRequest } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
@@ -76,6 +78,7 @@ import {
   resumeStopFence,
   retryBlockedMutation,
   setMutationStorageForTests,
+  setSessionCacheAdapterForTests,
   subscribeMutationPersistence,
   threadRoutingIndexesForTests,
   threadsStore,
@@ -368,6 +371,27 @@ async function deleteMutationDatabase(): Promise<void> {
   });
 }
 
+// The load seam's lookup runs before a cold read is armed, and this suite's
+// deferred-read fixtures flush microtasks only — a real IndexedDB lookup
+// settles on macrotasks, which would shift every fixture's read past its
+// flush window. This suite never tests the cache (threads.sessionCache
+// .test.ts does), so its beforeEach swaps in an adapter whose lookups miss
+// synchronously: the cold path keeps today's microtask arming timing exactly.
+class MissCacheAdapter extends SessionCacheIndexedDB {
+  override get(_ref: string, _now: number): Promise<undefined> {
+    return Promise.resolve(undefined);
+  }
+  // The write seam (Task 6) fires debounced writes through this same adapter
+  // whenever a publication passes its fire-time gates. The connection gate
+  // already refuses them here — the sync-miss get above never opens the
+  // adapter — but the shim says "no storage" outright rather than relying on
+  // that, so no fixture in this suite can ever write a record or leave one
+  // behind in the shared fake database.
+  override put(_record: CachedSessionRecord, _scheduledEpoch: number, _now: number): Promise<SessionCacheWriteOutcome> {
+    return Promise.resolve({ outcome: "failed" });
+  }
+}
+
 async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<void> {
   const probe = new MutationOutboxIndexedDB();
   for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
@@ -426,6 +450,7 @@ beforeEach(async () => {
     };
   });
   await deleteMutationDatabase();
+  setSessionCacheAdapterForTests(new MissCacheAdapter());
 });
 
 afterEach(() => {
