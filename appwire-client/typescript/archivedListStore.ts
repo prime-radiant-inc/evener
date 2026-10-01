@@ -2,9 +2,9 @@
 // time from evener/archived/list. Archived rows are not part of navigation:
 // the list has no revisions or invalidations, so the host refreshes a list
 // when it has reason to think the rows moved (the navigation archived count
-// changed, or an archive, unarchive, pin or delete ran), and resets the store
-// when its connection is replaced or recovers, so no list outlives the
-// connection that served it.
+// changed, or an archive, unarchive, pin, unpin or delete ran), and resets
+// the store when its connection is replaced or recovers, so no list outlives
+// the connection that served it.
 //
 // Lists are keyed by catalog and project key, because one project key can
 // exist in two catalogs. A framework-free store over a request-only client
@@ -14,11 +14,11 @@ import type { AppwireClient } from "./client";
 import { errorText } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { decodeArchivedListSessions } from "./state/navigation/codec";
-import type { ArchivedListParams, NavigationSessionSummary } from "./types.gen";
+import type { ArchivedListParams, NavigationCatalogs, NavigationSessionSummary } from "./types.gen";
 
 export type ArchivedListClient = Pick<AppwireClient, "request">;
 
-export type ArchivedListCatalog = "projects" | "archived_projects" | "test_runs";
+export type ArchivedListCatalog = keyof NavigationCatalogs;
 
 export interface ArchivedList {
   rows: NavigationSessionSummary[];
@@ -62,8 +62,11 @@ export function archivedListKey(catalog: ArchivedListCatalog, projectKey: string
 const emptyList: ArchivedList = { rows: [], total: 0, loaded: false, loading: false, error: null };
 
 export function createArchivedListStore(client: ArchivedListClient): ArchivedListStore {
-  // Requests counted per list, so a response from a request that a newer one
-  // has overtaken (a load-more answered after a refresh) is dropped.
+  // Every request takes a new generation from one counter, and generations
+  // holds each list's newest, so an answer from a request that has been
+  // overtaken (a load-more answered after a refresh) or that was still owed
+  // when the store reset is dropped.
+  let lastGeneration = 0;
   const generations = new Map<string, number>();
   const store = createFrameworkFreeStore<ArchivedListState>(() => ({ lists: {} }));
 
@@ -78,7 +81,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
   // flight for it is dropped, and returns a check for whether this one is
   // still the newest.
   function startRequest(key: string): () => boolean {
-    const generation = (generations.get(key) ?? 0) + 1;
+    const generation = ++lastGeneration;
     generations.set(key, generation);
     patch(key, () => ({ loading: true, error: null }));
     return () => generations.get(key) === generation;
@@ -144,9 +147,7 @@ export function createArchivedListStore(client: ArchivedListClient): ArchivedLis
   }
 
   function reset(): void {
-    // Each list's generation moves on rather than starting over, so an
-    // answer a request still owes can't match a later request's generation.
-    for (const [key, generation] of generations) generations.set(key, generation + 1);
+    generations.clear();
     store.setState({ lists: {} });
   }
 
