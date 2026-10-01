@@ -303,7 +303,8 @@ describe("a list read with no catalog", () => {
     const seen: ArchivedListParams[] = [];
     fake.on("evener/archived/list", (params) => {
       seen.push(params);
-      return params.catalog ? page(["local:a"], 1) : page(["local:b"], 2, "cursor-1");
+      if (params.catalog) return page(["local:a"], 1);
+      return params.cursor ? page(["local:c"], 2) : page(["local:b"], 2, "cursor-1");
     });
 
     await store.refresh(undefined, "proj");
@@ -314,7 +315,7 @@ describe("a list read with no catalog", () => {
       { catalog: "projects", projectKey: "proj" },
       { projectKey: "proj", cursor: "cursor-1" },
     ]);
-    expect(entry(undefined, "proj").rows.map((r) => r.ref)).toEqual(["local:b", "local:b"]);
+    expect(entry(undefined, "proj").rows.map((r) => r.ref)).toEqual(["local:b", "local:c"]);
     expect(entry("projects", "proj").rows.map((r) => r.ref)).toEqual(["local:a"]);
 
     seen.length = 0;

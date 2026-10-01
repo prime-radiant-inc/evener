@@ -192,6 +192,10 @@ it("reveals a located archived session from the project's archived list", async 
 	await act(async () => {});
 	expect(archivedReads).toEqual([{ projectKey: "p" }, { projectKey: "p", cursor: "c1" }]);
 	expect(hub.calls.filter((call) => call.method === "evener/navigation/read")).toEqual([]);
+	expect(flatListCalls).toContainEqual({
+		method: "scrollToIndex",
+		args: { index: 1, animated: false, viewPosition: 0.3 },
+	});
 	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
 	expect(renderedText(tree)).not.toContain("not in the returned list");
 	tree.unmount();
