@@ -183,7 +183,7 @@
 /* Markdown bubbles are the shared report treatment. The compact variant is
  * used by activity detail, where the surrounding strip already supplies the
  * larger reading surface's breathing room. */
-.bubble {
+.markdownBubble {
   margin-top: var(--space-2);
   padding: var(--space-3) var(--space-4);
   background: var(--surface-inset);
@@ -195,7 +195,7 @@
   overflow-wrap: anywhere;
 }
 
-.bubbleCompact {
+.markdownBubbleCompact {
   margin-top: var(--space-1);
   padding: var(--space-1) var(--space-2);
   --markdown-ink: var(--ink-mid);

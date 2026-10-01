@@ -32,8 +32,8 @@ export interface MarkdownProps {
 const CLASS = {
   root: requireClass(styles.root, "markdown.module.css", "root"),
   inlineCode: requireClass(styles.inlineCode, "markdown.module.css", "inlineCode"),
-  bubble: requireClass(styles.bubble, "markdown.module.css", "bubble"),
-  bubbleCompact: requireClass(styles.bubbleCompact, "markdown.module.css", "bubbleCompact"),
+  bubble: requireClass(styles.markdownBubble, "markdown.module.css", "markdownBubble"),
+  bubbleCompact: requireClass(styles.markdownBubbleCompact, "markdown.module.css", "markdownBubbleCompact"),
 };
 
 const CODEBLOCK_CLASS = {

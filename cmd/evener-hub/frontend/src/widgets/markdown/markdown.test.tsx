@@ -177,7 +177,7 @@ test("takes its body ink from --markdown-ink, defaulting to --ink-hi", () => {
 test("compact bubbles override the Markdown body ink with the quiet token", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  const rule = css.match(/\.bubbleCompact\s*\{[^}]*\}/)?.[0] ?? "";
+  const rule = css.match(/\.markdownBubbleCompact\s*\{[^}]*\}/)?.[0] ?? "";
   expect(rule).toContain("--markdown-ink: var(--ink-mid)");
 });
 
