@@ -9,7 +9,7 @@ import {
   createArchivedListStore,
 } from "./archivedListStore";
 import { deferred } from "./testing/deferred";
-import { FakeClient } from "./testing/fakeClient";
+import { callsTo, FakeClient } from "./testing/fakeClient";
 import { completeSession } from "./testing/navigation";
 import type { ArchivedListParams, ArchivedListResponse } from "./types.gen";
 
@@ -35,15 +35,13 @@ beforeEach(() => {
 
 describe("refresh", () => {
   test("fetches the first page for the catalog's project and stores rows, cursor and total", async () => {
-    const seen: ArchivedListParams[] = [];
-    fake.on("evener/archived/list", (params) => {
-      seen.push(params);
-      return page(["local:a", "local:b"], 3, "cursor-1");
-    });
+    fake.on("evener/archived/list", () => page(["local:a", "local:b"], 3, "cursor-1"));
 
     await store.refresh("projects", "proj");
 
-    expect(seen).toEqual([{ catalog: "projects", projectKey: "proj" }]);
+    expect(fake.calls).toEqual([
+      { method: "evener/archived/list", params: { catalog: "projects", projectKey: "proj" } },
+    ]);
     const list = entry("projects", "proj");
     expect(list.rows.map((r) => r.ref)).toEqual(["local:a", "local:b"]);
     expect(list.nextCursor).toBe("cursor-1");
@@ -236,16 +234,28 @@ describe("loadMore", () => {
   });
 
   test("does nothing when there is no next page", async () => {
-    let calls = 0;
-    fake.on("evener/archived/list", () => {
-      calls++;
-      return page(["local:a"], 1);
+    fake.on("evener/archived/list", () => page(["local:a"], 1));
+
+    await store.refresh("projects", "proj");
+    await store.loadMore("projects", "proj");
+
+    expect(callsTo(fake, "evener/archived/list")).toBe(1);
+  });
+
+  test("keeps the loaded rows and records the error when the next page fails", async () => {
+    fake.on("evener/archived/list", (params) => {
+      if (params.cursor) throw new Error("hub unavailable");
+      return page(["local:a"], 2, "cursor-1");
     });
 
     await store.refresh("projects", "proj");
     await store.loadMore("projects", "proj");
 
-    expect(calls).toBe(1);
+    const list = entry("projects", "proj");
+    expect(list.rows.map((r) => r.ref)).toEqual(["local:a"]);
+    expect(list.nextCursor).toBe("cursor-1");
+    expect(list.error).toContain("hub unavailable");
+    expect(list.loading).toBe(false);
   });
 
   test("a refresh started after a load-more wins", async () => {
