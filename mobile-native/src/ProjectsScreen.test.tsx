@@ -225,8 +225,8 @@ it("lists a project's archived sessions from the archived list, a page at a time
 	tree.unmount();
 });
 
-// Rows an earlier view loaded stay on screen while the connection is away, and
-// the list is read only once it is ready.
+// Rows an earlier view loaded stay on screen while the connection is away,
+// with no read the client would reject.
 it("reads no archived list while the connection is not ready", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/archived/list", () => ({ sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 1 }));

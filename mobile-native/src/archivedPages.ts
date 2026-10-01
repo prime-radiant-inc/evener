@@ -80,10 +80,12 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	/** Reads the list again when the hub announces a change to this project's
 	 * pages (a session archived on another device, or one ageing into the
 	 * archived tier); the hub's navigation names no archived list itself. A
-	 * list already loaded is read again now: nothing followed the hub for it
-	 * since the view that loaded it closed. */
+	 * list already loaded is read again now, on a ready connection: nothing
+	 * followed the hub for it since the view that loaded it closed. (A client
+	 * that isn't ready rejects every read, and once ready it has dropped every
+	 * list, which its view reads afresh.) */
 	watch() {
-		if (this.getSnapshot().loaded) void this.refresh();
+		if (this.getSnapshot().loaded && this.client.state === "ready") void this.refresh();
 		return this.client.onNotification((event) => {
 			if (event.method !== "evener/navigation/invalidated" || !event.params.targets.some(this.names)) return;
 			if (this.paused) this.owed = true;
