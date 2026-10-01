@@ -2315,6 +2315,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `name` | `string` | yes |  |
 | `runGeneration` | `uint64` |  |  |
 | `reportPreview` | `string` | yes |  |
 | `reportPreviewTruncated` | `bool` | yes |  |
