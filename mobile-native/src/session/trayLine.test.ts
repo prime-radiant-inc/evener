@@ -234,6 +234,19 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(liveSession, NOW)?.text).toBe("Thinking…");
 	});
 
+	it("ignores a completed turn still named by the live running turn id", () => {
+		const previous = item({ description: "Reading the previous turn", status: "completed" });
+		const current = item({ id: "item-2", turnId: "turn_2", type: "reasoning", status: "inProgress" });
+		const turns = [turn([previous], "completed"), { id: "turn_2", status: "inProgress", items: [current] }];
+		const betweenFrames = session({
+			turns,
+			activeTurnId: "turn_2",
+			runningTurnId: "turn_1",
+		});
+
+		expect(trayLine(betweenFrames, NOW)?.text).toBe("Thinking…");
+	});
+
 	it("falls back to snapshot progress until the live running turn arrives", () => {
 		const running = item({
 			toolName: "shell",

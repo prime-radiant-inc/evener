@@ -95,7 +95,7 @@ function retryText(retry: ModelRetryState): string {
 }
 
 function runningTurn(session: TraySource) {
-	return session.turns.find((turn) => turn.id === session.runningTurnId);
+	return session.turns.find((turn) => turn.id === session.runningTurnId && turn.status === "inProgress");
 }
 
 function latestToolIntent(session: TraySource): string | null {
