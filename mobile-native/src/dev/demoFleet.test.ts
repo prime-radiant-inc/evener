@@ -3,6 +3,7 @@
 // for what this fixture represents and where it comes from).
 import { describe, expect, it } from "vitest";
 import type { ArchivedListParams, NavigationReadParams, NavigationSessionSummary } from "@evener/appwire-client";
+import { decodeActivityRead, quietState } from "@evener/appwire-client";
 import {
 	decodeArchivedListSessions,
 	decodeNavigationResponse,
@@ -1161,5 +1162,79 @@ describe("demo fleet archived lists", () => {
 		expect(() => fleet.answerArchivedList({ catalog: "projects", projectKey: "evener", cursor: "junk" })).toThrow(
 			"invalid cursor",
 		);
+	});
+});
+
+// S5's pulse read (evener/activity/read): the Board's working-row meters, its
+// subagent tally, the Quiet and May-be-stuck labels and the latest tool intent.
+// This is a different method from evener/thread/activity/read above.
+describe("demo fleet pulse activity (evener/activity/read)", () => {
+	const fleet = createDemoFleet({ now: STARTUP, clock: () => STARTUP });
+	const read = (params: { refs?: string[] } = {}) => decodeActivityRead(fleet.answerPulseRead(params));
+	const refOf = (slug: string) => `local:${demoSessionId(slug)}`;
+	const byRef = (sessions: ReturnType<typeof read>) => new Map(sessions.map((session) => [session.ref, session]));
+
+	it("answers a decoder-valid entry for every live top-level session, and none for an ended or archived one", () => {
+		const sessions = read();
+		// A malformed entry is dropped by the decoder, so a full count proves
+		// every shape is one the wire accepts.
+		expect(sessions).toHaveLength(20);
+		const refs = new Set(sessions.map((session) => session.ref));
+		expect(refs.has(refOf("s-roster"))).toBe(false); // shut down
+		expect(refs.has(refOf("s-fuzz"))).toBe(false); // archived
+		for (const session of sessions) {
+			expect(session.minutes).toHaveLength(7);
+			expect(session.minutes.every((events) => Number.isSafeInteger(events) && events >= 0)).toBe(true);
+			expect(Number.isSafeInteger(session.runningSubagents) && session.runningSubagents >= 0).toBe(true);
+		}
+	});
+
+	it("honors refs: only named live sessions return, and an unknown ref is simply absent", () => {
+		const ref = refOf("s-pr2138");
+		expect(read({ refs: [ref] }).map((session) => session.ref)).toEqual([ref]);
+		expect(read({ refs: ["local:nope"] })).toEqual([]);
+	});
+
+	it("counts a session waiting on subagents and withholds its quiet time", () => {
+		const pr2138 = byRef(read()).get(refOf("s-pr2138"));
+		expect(pr2138).toMatchObject({ runningSubagents: 32 });
+		expect(pr2138).not.toHaveProperty("quietForMs");
+		// "Waiting on 31 subagents" is a wait, not a tool intent.
+		expect(pr2138).not.toHaveProperty("latestIntent");
+	});
+
+	it("carries a working session's latest tool intent, never its activity label", () => {
+		const bySession = byRef(read());
+		expect(bySession.get(refOf("s-resume"))?.latestIntent).toBe("Reading agent/session_resume.go");
+		expect(bySession.get(refOf("s-stumble"))?.latestIntent).toBe("Editing agent/tool_repair.go");
+		// "Thinking" and "Running <cmd>" name no tool call: the row falls back to
+		// its running job, or to "Working".
+		expect(bySession.get(refOf("s-gateway"))?.latestIntent).toBeUndefined();
+		expect(bySession.get(refOf("s-tasklist"))?.latestIntent).toBeUndefined();
+	});
+
+	it("shows the Board's Quiet and May-be-stuck states on silently working sessions", () => {
+		const bySession = byRef(read());
+		expect(quietState(bySession.get(refOf("s-landing"))!, 0)).toEqual({ state: "quiet", forMs: 4 * 60_000 });
+		expect(quietState(bySession.get(refOf("s-gateway"))!, 0)).toEqual({ state: "stuck", forMs: 12 * 60_000 });
+	});
+
+	it("grows a working session's quiet time with the injected clock", () => {
+		const later = createDemoFleet({ now: STARTUP, clock: () => STARTUP + 90_000 });
+		const landing = later.answerPulseRead({}).sessions.find((session) => session.ref === refOf("s-landing"));
+		expect(landing?.quietForMs).toBe(4 * 60_000 + 90_000);
+	});
+
+	it("withholds quiet time from every session that is not silently working", () => {
+		const bySession = byRef(read());
+		expect(bySession.get(refOf("s-diff"))?.quietForMs).toBeUndefined(); // idle
+		expect(bySession.get(refOf("s-wasm"))?.quietForMs).toBeUndefined(); // working, two subagents run
+		for (const session of bySession.values()) expect(session.quietForMs ?? 0).toBeGreaterThanOrEqual(0);
+	});
+
+	it("leaves a resting session's minutes empty and gives a working session a pulse", () => {
+		const bySession = byRef(read());
+		expect(bySession.get(refOf("s-diff"))?.minutes).toEqual([0, 0, 0, 0, 0, 0, 0]);
+		expect(bySession.get(refOf("s-gateway"))?.minutes.some((events) => events > 0)).toBe(true);
 	});
 });

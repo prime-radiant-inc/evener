@@ -15,6 +15,8 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { capability, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type {
+	ActivityReadParams,
+	ActivityReadResponse,
 	ArchivedListParams,
 	ArchivedListResponse,
 	ArchiveParams,
@@ -27,6 +29,7 @@ import type {
 	NavigationReadParams,
 	NavigationReadResponse,
 	NavigationSessionSummary,
+	SessionActivity,
 	SessionActivityReadParams,
 	SessionActivityListParams,
 	SessionActivitySummary,
@@ -183,6 +186,12 @@ interface RawSession {
 	archived?: boolean;
 	test?: boolean;
 	activity?: string; // data.js's `activity`; a "Running <cmd>" one becomes a running job
+	// The scripted quiet gap evener/activity/read reports while this session is
+	// working with no subagent running, in minutes at startup (the read adds the
+	// clock's elapsed time). The fixture's working sessions all changed seconds
+	// before startup, too short to reach the Board's Quiet (3m) and May-be-stuck
+	// (10m) labels, which the demo exists to show.
+	quietMinutes?: number;
 	subs?: { run: number; fail: number; done: number }; // generic subagent counts (data.js genericSubs)
 	children?: RawSubagent[]; // explicitly named subagents (data.js's `subagents` map)
 	model?: string; // data.js's session model, for a coordinator's subagent tree
@@ -511,7 +520,15 @@ const SESSIONS: RawSession[] = [
 		subs: { run: 4, fail: 0, done: 5 },
 		activity: "Editing agent/tool_repair.go",
 	},
-	{ id: "s-gateway", title: "Design Gateway Token Command MVP", state: "working", ago: 2, activity: "Thinking" },
+	{
+		id: "s-gateway",
+		title: "Design Gateway Token Command MVP",
+		state: "working",
+		ago: 2,
+		activity: "Thinking",
+		// Silent this long: the demo's May-be-stuck row.
+		quietMinutes: 12,
+	},
 	{
 		id: "s-wasm",
 		title: "Port Allocator to WASM Target",
@@ -528,6 +545,9 @@ const SESSIONS: RawSession[] = [
 		state: "working",
 		ago: 4,
 		activity: "Reading agent/session_resume.go",
+		// Quiet, but under the Board's Quiet threshold, so it still shows its
+		// tool intent.
+		quietMinutes: 1,
 	},
 	{
 		id: "s-readintent",
@@ -544,6 +564,8 @@ const SESSIONS: RawSession[] = [
 		state: "working",
 		ago: 9,
 		activity: "Writing site/index.md",
+		// The demo's Quiet row.
+		quietMinutes: 4,
 	},
 	{
 		id: "s-sdk",
@@ -731,6 +753,34 @@ function subagentTally(subs: readonly RawSubagent[]): { running: number; failed:
 function runningCommand(raw: RawSession): string | undefined {
 	if (!raw.activity?.startsWith("Running ")) return undefined;
 	return Array.from(raw.activity.slice("Running ".length)).slice(0, 512).join("");
+}
+
+// The session's own newest tool-call intent (S5's latestIntent), as the demo
+// fixture models it: an `activity` line that names what the session set out to
+// do. A running command ("Running <cmd>") becomes the row's running job, a wait
+// ("Waiting on N subagents") becomes the subagent tally, and "Thinking" names
+// no tool call at all, so each of those carries no intent and lets the why line
+// fall through to the job or the bare "Working" word.
+function latestIntentOf(raw: RawSession): string | undefined {
+	const activity = raw.activity;
+	if (
+		activity === undefined ||
+		activity === "Thinking" ||
+		activity.startsWith("Running ") ||
+		activity.startsWith("Waiting on ")
+	)
+		return undefined;
+	return activity;
+}
+
+// The pace of a working session over the seven minutes the meter draws, oldest
+// first. The fixture models no per-minute history, so the counts are the demo's
+// scripted shape scaled by how much work is in flight; a session at rest emits
+// nothing.
+function pulseMinutes(working: boolean, level: number): number[] {
+	if (!working) return [0, 0, 0, 0, 0, 0, 0];
+	const shape = [1, 2, 1, 3, 2, 4, 2];
+	return shape.map((events) => events * Math.max(1, level));
 }
 
 // The project a fleet session belongs to; the fixture leaves evener's unset.
@@ -943,6 +993,12 @@ interface FleetAnswers {
 
 export interface DemoFleet extends FleetAnswers {
 	answerActivityRead(params: SessionActivityReadParams): SessionActivitySummary;
+	/** evener/activity/read (S5): the pulse meter for every live top-level
+	 * session, its running-subagent tally, the Quiet and May-be-stuck quiet time
+	 * and its latest tool intent, as cmd/evener-hub/app_activity.go serves it.
+	 * Distinct from answerActivityRead above, which answers the shared client's
+	 * evener/thread/activity/read. */
+	answerPulseRead(params: ActivityReadParams): ActivityReadResponse;
 	answerDelegatesList(params: SessionActivityListParams): SessionDelegatesResponse;
 	answerSessionJobsList(params: SessionActivityListParams): SessionJobsResponse;
 	answerWatchesList(params: SessionActivityListParams): SessionWatchesResponse;
@@ -1124,6 +1180,35 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 			return commitRowState(target, state);
 		},
 		archive,
+		answerPulseRead: (params) => {
+			const wanted = params.refs?.length ? new Set(params.refs) : null;
+			// The read grows a session's quiet gap with the clock, so a tree that
+			// has gone silent reads Quiet and then May be stuck as the hub runs.
+			const elapsed = Math.max(0, clock() - startupMs);
+			return {
+				// Only a live top-level session is read: an ended or archived one is
+				// absent, and a ref the fleet doesn't hold is simply not named.
+				sessions: sessionsList
+					.filter((raw) => raw.state !== "shutdown" && !raw.archived)
+					.filter((raw) => !wanted || wanted.has(sessionRef(raw)))
+					.map((raw): SessionActivity => {
+						const runningSubagents = subagentTally(rawChildren(raw)).running;
+						const level = runningSubagents + (runningCommand(raw) ? 1 : 0);
+						const latestIntent = latestIntentOf(raw);
+						const quietBase = raw.quietMinutes !== undefined ? raw.quietMinutes * 60_000 : raw.ago * 1000;
+						return {
+							ref: sessionRef(raw),
+							minutes: pulseMinutes(raw.state === "working", level),
+							runningSubagents,
+							// An agent waiting on subagents is never quiet (Jesse's
+							// ruling for S5), and neither is a session that is not
+							// working: only a silently working session carries the gap.
+							...(raw.state === "working" && runningSubagents === 0 ? { quietForMs: quietBase + elapsed } : {}),
+							...(latestIntent === undefined ? {} : { latestIntent }),
+						};
+					}),
+			};
+		},
 		answerActivityRead: activity.summary,
 		answerDelegatesList: activity.delegates,
 		answerSessionJobsList: activity.jobs,
