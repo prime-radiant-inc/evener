@@ -146,16 +146,19 @@ async function main() {
       const deferredOpen = JSON.parse(await evaluate(send, `(async () => {
         let finished = false;
         let failure;
+        let failed = false;
         const pending = window.waitForPagedOpenSettled().then(
           result => { finished = true; return result; },
-          error => { finished = true; failure = error; }
+          error => { finished = true; failed = true; failure = error; }
         );
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         if (finished) throw failure ?? new Error("paged wait finished before hydration admission");
         if (document.querySelector('[data-testid="transcript-virtual-list"] > div'))
           throw new Error("deferred fixture mounted before its read was released");
         window.releaseTranscriptRead();
-        return JSON.stringify(await pending);
+        const result = await pending;
+        if (failed) throw failure;
+        return JSON.stringify(result);
       })()`));
       assertPagedOpenContract(failures, "the deferred cold-read session", deferredOpen);
 
