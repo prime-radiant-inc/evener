@@ -42,10 +42,11 @@ test-web: web-preflight build-dev
 ##   runner. retirementguard also needs the Go toolchain: its npm script runs
 ##   the isolated TestRetirementBrowser fixture, which starts the Hub and
 ##   drives the guard against it. The skill guard also needs the Go toolchain
-##   and the built frontend (built automatically when dist is missing).
+##   and the built frontend: this target builds it first (`build-web`), and the
+##   gate itself still builds one when the dist is missing.
 ## fails-when: Any guard error, Vite failure, cleanup failure, or missing
 ##   Chrome/Chromium is nonzero.
-test-web-browser: web-preflight build-dev
+test-web-browser: web-preflight build-web build-dev
 	@scripts/web/test-web-browser.sh
 
 # check:scripts is separate from check because they answer different questions
