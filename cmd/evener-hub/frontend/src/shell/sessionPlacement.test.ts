@@ -1,9 +1,10 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
+import { openNestedSessionWithOwner, openSessionByRef, openTopLevelSession } from "./sessionPlacement";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 beforeAll(async () => {
   await import("../panes/session");
+  await import("../panes/transcript");
 });
 
 beforeEach(() => {
@@ -90,4 +91,34 @@ describe("openNestedSessionWithOwner", () => {
     expect(workspaceStore.getState().focusedPaneId).toBe(childPane?.id);
     expect(unrelatedPane).toBeUndefined();
   });
+});
+
+test("session links request live routing instead of reusing read-only transcripts", () => {
+  window.history.replaceState({}, "", "/s/local%3Aroot");
+  openTopLevelSession("local:root");
+  const root = workspaceStore.getState().mainPane();
+  const child = workspaceStore
+    .getState()
+    .openPane("transcript", { ref: "local:child", parentRef: "local:root" }, { slot: "secondary" });
+  workspaceStore
+    .getState()
+    .openPane("transcript", { ref: "local:grandchild", parentRef: "local:child" }, { slot: "secondary" });
+  openSessionByRef("local:child");
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(child);
+  expect(window.location.pathname).toBe("/s/local%3Achild");
+  openSessionByRef("local:root");
+  expect(workspaceStore.getState().focusedPaneId).toBe(root?.id);
+  expect(workspaceStore.getState().panes).toHaveLength(3);
+});
+
+test("an unopened parent still requests normal routing without inventing placement", () => {
+  window.history.replaceState({}, "", "/s/local%3Aroot");
+  openTopLevelSession("local:root");
+  const child = workspaceStore
+    .getState()
+    .openPane("transcript", { ref: "local:child", parentRef: "local:unloaded" }, { slot: "secondary" });
+  openSessionByRef("local:unloaded");
+  expect(window.location.pathname).toBe("/s/local%3Aunloaded");
+  expect(workspaceStore.getState().focusedPaneId).toBe(child);
+  expect(workspaceStore.getState().panes).toHaveLength(2);
 });

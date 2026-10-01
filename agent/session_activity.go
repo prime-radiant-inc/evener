@@ -382,10 +382,16 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	// Issue admission reserves the optional array envelope. The shared page
+	// allowance leaves 2048 bytes for late count, pending-flag and epoch growth.
+	pageBudget := newSessionActivityPageBudget(result)
+	pageBudget.bytes += len(`,"issues":[]`)
+	if pageBudget.bytes > sessionActivityPageBytes-2048 {
+		return result, appwire.Unavailable("session activity summary context exceeds response budget")
+	}
 	controller := read.index.controller
 	if controller != nil {
 		controller.mu.Lock()
-
 	}
 	if !read.context.AncestryKnown {
 		if controller != nil {
@@ -412,11 +418,46 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	if controller != nil {
 		controller.mu.Unlock()
 	}
-	// Cold badge reads never open descendant job/watch journals.
+	// Receiver watches can be held by any physical descendant source.
+	sourceOwners := map[string]bool{read.rootID: true}
+	if controller != nil {
+		controller.mu.Lock()
+	}
+	for _, row := range read.state() {
+		if row != nil {
+			sourceOwners[row.Descriptor.ChildSessionID] = true
+		}
+	}
+	if controller != nil {
+		controller.mu.Unlock()
+	}
+	var err error
+	result.RefreshPending, result.Issues, err = read.refreshWarmSources(ctx, sourceOwners, &pageBudget)
+	if err != nil {
+		return result, err
+	}
+	// Counts and bounded recovery demand describe one observed revision.
+	// An invalidation after this capture belongs to the next summary response.
+	version := read.index.revision.Load()
+	unavailable := make(map[string]bool, len(result.Issues))
+	for _, issue := range result.Issues {
+		unavailable[issue.Ref] = true
+	}
+	for owner := range sourceOwners {
+		source := read.index.jobs[owner]
+		if source != nil && source.Established && (!source.Complete || source.Version != version) && !unavailable[encodeRef("", owner)] {
+			result.RefreshPending = true
+		}
+	}
+	result.Context.Epoch = read.index.epoch
+	if controller == nil && !read.index.delegateComplete {
+		result.Delegates = appwire.SessionActivityCounts{}
+	}
+	// Cold sources have no complete authority to catch up from.
 	result.Jobs.Known = true
 	for owner := range owners {
 		index := read.index.jobs[owner]
-		if index == nil || !index.Complete || index.Version != read.index.revision.Load() {
+		if index == nil || !index.Complete || index.Version != version {
 			result.Jobs = appwire.SessionActivityCounts{}
 			break
 		}
@@ -438,21 +479,9 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	// Receiver watches may be physically held by a descendant; their complete
 	// counts require the same shared-root watch index used by the collection.
 	result.Watches = appwire.SessionActivityCounts{Known: true}
-	sourceOwners := map[string]bool{read.rootID: true}
-	if controller != nil {
-		controller.mu.Lock()
-	}
-	for _, row := range read.state() {
-		if row != nil {
-			sourceOwners[row.Descriptor.ChildSessionID] = true
-		}
-	}
-	if controller != nil {
-		controller.mu.Unlock()
-	}
 	for owner := range sourceOwners {
 		source := read.index.jobs[owner]
-		if source == nil || !source.Complete || source.Version != read.index.revision.Load() {
+		if source == nil || !source.Complete || source.Version != version {
 			result.Watches = appwire.SessionActivityCounts{}
 			break
 		}

@@ -70,11 +70,16 @@ type SessionActivityCounts struct {
 }
 
 type SessionActivitySummary struct {
-	Context   SessionActivityContext `json:"context"`
-	Scope     SessionActivityScope   `json:"scope"`
-	Delegates SessionActivityCounts  `json:"delegates"`
-	Jobs      SessionActivityCounts  `json:"jobs"`
-	Watches   SessionActivityCounts  `json:"watches"`
+	// Issues identify unavailable physical sources; healthy counts retain authority.
+	Issues []SessionActivityIssue `json:"issues,omitempty"`
+	// RefreshPending means established source evidence is catching up within
+	// the bounded read budget. Cold unknown counts do not request polling.
+	RefreshPending bool                   `json:"refreshPending,omitempty"`
+	Context        SessionActivityContext `json:"context"`
+	Scope          SessionActivityScope   `json:"scope"`
+	Delegates      SessionActivityCounts  `json:"delegates"`
+	Jobs           SessionActivityCounts  `json:"jobs"`
+	Watches        SessionActivityCounts  `json:"watches"`
 }
 
 // SessionActivityIssue makes unavailable branches and incomplete retained sources explicit.
@@ -140,7 +145,9 @@ const (
 // SessionWatch belongs to its logical receiver even when a descendant manager
 // observes the source. Unknown state means retained evidence cannot establish liveness.
 type SessionWatch struct {
-	OwnerRef    string            `json:"ownerRef"`
+	OwnerRef string `json:"ownerRef"`
+	// SourceRef identifies the physical source session whose manager owns the watch and target job.
+	SourceRef   string            `json:"sourceRef"`
 	ReceiverRef string            `json:"receiverRef"`
 	State       SessionWatchState `json:"state"`
 	Watch       EvenerWatchInfo   `json:"watch"`

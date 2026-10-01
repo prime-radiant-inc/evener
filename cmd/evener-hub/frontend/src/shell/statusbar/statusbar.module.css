@@ -3,6 +3,7 @@
  * attention - the attention hues belong to states, not counts). */
 
 .bar {
+  container: statusbar / inline-size;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -46,4 +47,22 @@
   display: inline-flex;
   align-items: center;
   color: var(--ink-low);
+}
+
+.chipName {
+  white-space: nowrap;
+}
+
+.chipCount {
+  font-variant-numeric: tabular-nums;
+}
+
+@container statusbar (max-width: 600px) {
+  .chipName {
+    display: none;
+  }
+
+  .chips {
+    gap: var(--space-1);
+  }
 }

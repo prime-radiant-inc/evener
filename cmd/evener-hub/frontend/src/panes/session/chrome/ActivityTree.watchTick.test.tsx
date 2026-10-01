@@ -27,7 +27,13 @@ function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
     cadence: [{ kind: "every", seconds: 60 }],
     ...overrides,
   };
-  return { ownerRef: "ref_root", receiverRef: "ref_root", state: info.active ? "armed" : "ended", watch: info };
+  return {
+    ownerRef: "ref_root",
+    sourceRef: "ref_root",
+    receiverRef: "ref_root",
+    state: info.active ? "armed" : "ended",
+    watch: info,
+  };
 }
 
 const EMPTY_TREE: ActivityTreeData = {

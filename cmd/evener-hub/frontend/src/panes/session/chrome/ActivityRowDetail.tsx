@@ -16,6 +16,7 @@ import {
   activityDelegateDiagnostics,
   activityDelegateState,
   delegateTiming,
+  findEntityView,
   formatClockTime,
   jobCommandLabel,
   splitMandate,
@@ -25,12 +26,15 @@ import {
 } from "@evener/appwire-client";
 import { Fragment, type JSX, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
-import { threadsStore } from "../../../stores/threads";
+import { useNavigationStore } from "../../../stores/navigation/store";
+import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { Markdown } from "../../../widgets/markdown";
+import { navigationSummaryFor } from "../threadTitle";
 import { EntityRef } from "../transcript/EntityRef";
 import { formatQuietAge, jobStatusDisplay, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
@@ -58,15 +62,6 @@ const CLASS = {
 // not by a clock.
 export const WATCH_NO_SCHEDULE_LINE =
   "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
-
-// The row header already prints a watch's note as the row's own name, in a
-// sidebar name column that fits roughly 40 characters at its narrow width.
-// Repeating the note as the detail's lead paragraph would therefore print every
-// row's title twice within a few pixels. The lead paragraph exists only to show
-// what that column truncated, so it renders only for notes longer than this
-// budget - 48, a little above the ~40-character column so a note that just fits
-// the title never duplicates.
-export const WATCH_NOTE_LEAD_BUDGET = 48;
 
 // The now marker is taller than a delivery dot, and a dot at the rail's far end
 // would land underneath it and read as the marker. Dots therefore never pass
@@ -152,7 +147,7 @@ function ActivityWatchTimeline({ watch, now }: { watch: SessionWatch; now: numbe
   const floatingNow = !markerAtStart && !markerAtEnd ? `, now ${clockFromMillis(now)}` : "";
   const caption =
     watch.watch.deliveries <= instants.length
-      ? "Delivered to this session"
+      ? "Delivered"
       : `Last ${instants.length} of ${watch.watch.deliveries} deliveries`;
   return (
     <div className={CLASS.watchTimeline} data-testid="watch-timeline">
@@ -401,9 +396,8 @@ export function ActivityRowDetail({
   );
 }
 
-// ActivityWatchDetail is a watch row's expanded block: the note once more only
-// when the row title's name column could not show it in full, one facts
-// sentence, and - for a clock-driven watch with retained instants - the
+// ActivityWatchDetail reveals the full note independently of the compact
+// header width, one facts sentence, and - for a clock-driven watch - the
 // delivery timeline. A condition watch gets the explanatory line instead:
 // there is no period to draw, and the block must not pretend there is.
 //
@@ -416,19 +410,36 @@ export function ActivityRowDetail({
 // on every tick with identical output.
 export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?: number }): JSX.Element {
   const { watch } = row;
+  const recipientName = useThreadsStore((state) => state.threads.get(watch.receiverRef)?.name);
+  const entities = useEntityViews();
+  const navigationName = useNavigationStore((state) => navigationSummaryFor(watch.receiverRef, state)?.title);
+  const delegateName = useMemo(() => {
+    for (const entity of entities?.values() ?? []) {
+      if (entity.kind === "delegate" && entity.open.ref === watch.receiverRef) return entity.name?.trim();
+    }
+    return undefined;
+  }, [entities, watch.receiverRef]);
+  const targetLabel = useMemo(() => {
+    if (!entities || !watch.watch.outputMatch?.trim()) return undefined;
+    const target = watch.watch.target?.trim() || watch.watch.source;
+    const entity = findEntityView(entities, "job", target, watch.sourceRef);
+    return entity?.kind === "job" ? entity.row.job.description?.trim() || undefined : undefined;
+  }, [entities, watch.sourceRef, watch.watch.target, watch.watch.source, watch.watch.outputMatch]);
   const contextNow = useTreeNow();
   const effectiveNow = now ?? contextNow;
   const note = watch.watch.note?.trim();
-  const leadNote = note !== undefined && note.length > WATCH_NOTE_LEAD_BUDGET ? note : undefined;
   return (
     <div className={CLASS.detailStrip}>
-      {leadNote ? (
+      {note ? (
         <p className={CLASS.watchNote} data-testid="watch-note">
-          {leadNote}
+          {note}
         </p>
       ) : null}
       <p className={CLASS.watchFacts} data-testid="watch-facts">
-        {watchFacts(watch, effectiveNow)}
+        {watchFacts(watch, effectiveNow, targetLabel)}
+      </p>
+      <p className={CLASS.watchFacts}>
+        Notifies {recipientName?.trim() || navigationName?.trim() || delegateName || watch.receiverRef}
       </p>
       {watchIsScheduled(watch) ? (
         <ActivityWatchTimeline watch={watch} now={effectiveNow} />

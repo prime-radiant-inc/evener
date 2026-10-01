@@ -49,16 +49,27 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
   phase("port:start");
   const port = await findAvailablePort([9180]);
   phase("create:start");
-  // Exercise cold dependency discovery every run without altering the preview's cache.
+  // This HTTP routing test never executes modules. Do not admit background
+  // dependency writes that can outlive server.close(); browser tests retain
+  // the real preview optimizer.
   const server = await createServer({
     root: frontend,
     configFile,
     cacheDir: path.join(scratch, "vite-cache"),
+    plugins: [{
+      name: "editorial-http-routing-only",
+      configResolved(config) {
+        // React adds optimizer includes during resolution; clear them here.
+        config.optimizeDeps.noDiscovery = true;
+        config.optimizeDeps.include = [];
+      },
+    }],
     server: { port },
     logLevel: "silent",
   });
   phase("create:done");
   try {
+    assert.equal(server.environments.client.depsOptimizer, undefined);
     phase("listen:start");
     await server.listen();
     phase("listen:done");
@@ -98,10 +109,6 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
     phase("close:start");
     await server.close();
     phase("close:done");
-    // Closing cancels the dependency optimizer, but its bundler can still be
-    // writing into the private cache's deps_temp directory after close
-    // resolves (Vite's cancel does not await the in-flight write), so a
-    // removal can race it and fail with ENOTEMPTY. rm retries that.
     await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     phase("scratch:removed");
   }
