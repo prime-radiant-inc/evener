@@ -10,7 +10,6 @@ import {
 	type ModelRetryState,
 	pendingTextJoined,
 	type ThreadModel,
-	toolFamily,
 	toolStepProgress,
 } from "@evener/appwire-client";
 import { subagentState } from "../subagents/subagentModel";
@@ -31,7 +30,7 @@ export interface TrayLine {
 
 export type TraySource = Pick<
 	ThreadModel,
-	"status" | "turns" | "activeTurnId" | "delegates" | "modelRetry" | "lastFrameAt"
+	"status" | "turns" | "runningTurnId" | "delegates" | "modelRetry" | "lastFrameAt"
 > & {
 	/** The session's directory, which a running command's leading cd to it
 	 * only repeats. */
@@ -41,18 +40,17 @@ export type TraySource = Pick<
 interface Step {
 	text: string;
 	startedAt?: number;
-	/** The step itself waits on subagents (delegating, or watching jobs). */
+	/** The intent-less step itself waits on subagents. */
 	waitsOnSubagents: boolean;
 }
 
-// The steps that wait on subagents while they run: delegating, sending to a
-// subagent (delegate_send can wait for its reply, max_wait_ms), and watching
-// or reading jobs. delegate_send is an ordinary step in the transcript's runs,
-// but while it is open the tray still says what it waits on.
+// An intent-less delegating or job step falls back to what it waits on.
 const WAITING_TOOLS = new Set(["delegate", "delegate_send", "job_watch", "job_status", "job_list"]);
 
 export function trayLine(session: TraySource, now: number): TrayLine | null {
 	if (session.status.type !== "active") return null;
+	const intent = latestToolIntent(session);
+	if (intent) return { text: intent, attention: false };
 	const silence = now - session.lastFrameAt;
 	// A retry the hub reported explains the silence (modelRetry deliberately
 	// leaves lastFrameAt alone, model.ts), so it wins, as on the web
@@ -97,7 +95,19 @@ function retryText(retry: ModelRetryState): string {
 }
 
 function runningTurn(session: TraySource) {
-	return session.turns.find((turn) => turn.id === session.activeTurnId) ?? session.turns.at(-1);
+	return session.turns.find((turn) => turn.id === session.runningTurnId);
+}
+
+function latestToolIntent(session: TraySource): string | null {
+	const turn = runningTurn(session);
+	if (!turn) return null;
+	for (let index = turn.items.length - 1; index >= 0; index -= 1) {
+		const item = turn.items[index];
+		if (item?.type !== "commandExecution") continue;
+		const intent = item.description;
+		if (intent?.trim()) return intent;
+	}
+	return null;
 }
 
 function currentStep(session: TraySource): Step | null {
@@ -112,9 +122,6 @@ function currentStep(session: TraySource): Step | null {
 	return null;
 }
 
-// What toolStepProgress says for a shell call that names no command.
-const RUNNING_A_COMMAND = "Running a command";
-
 function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	if (item.type === "reasoning") {
 		const tokens = thinkingTokens(item);
@@ -125,15 +132,11 @@ function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	}
 	if (item.type === "agentMessage") return { text: "Writing…", waitsOnSubagents: false };
 	if (item.type !== "commandExecution") return null;
-	// What the step is doing in the words its summary will use, live
-	// ("Reading agent/tree.go", "Running go test ./..."), never its tool's
-	// name. A command says itself; any other step, and a shell call with no
-	// command to name, says its intent first.
-	const progress = toolStepProgress(item, { cwd });
-	const intent = item.description?.trim();
-	const namesCommand = toolFamily(item.toolName ?? "") === "shell" && progress !== RUNNING_A_COMMAND;
-	const text = namesCommand ? progress : intent || progress;
-	return { text, startedAt: timeOf(item.startedAt), waitsOnSubagents: WAITING_TOOLS.has(item.toolName ?? "") };
+	return {
+		text: toolStepProgress(item, { cwd }),
+		startedAt: timeOf(item.startedAt),
+		waitsOnSubagents: WAITING_TOOLS.has(item.toolName ?? ""),
+	};
 }
 
 // Characters over four, as the web's thinking estimate does (ThinkBlock.tsx):
