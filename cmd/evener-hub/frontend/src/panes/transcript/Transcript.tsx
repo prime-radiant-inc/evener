@@ -57,7 +57,7 @@ export default function Transcript({ params, paneId }: PaneProps<TranscriptParam
   // thread/read, no ensureThread). Refs never change for a mounted pane, so
   // this dispatch is stable for the component's lifetime.
   if (params.ref.startsWith("job:")) {
-    return <JobLog jobRef={params.ref} parentRef={params.parentRef} />;
+    return <JobLog jobRef={params.ref} parentRef={params.parentRef} paneId={paneId} />;
   }
   return <ThreadTranscript params={params} paneId={paneId} />;
 }

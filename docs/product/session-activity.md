@@ -69,6 +69,9 @@ Establishing retained child ancestry may advance the root delegate journal in
 bounded steps. Optional summary `refreshPending` identifies bounded recovery of
 established source evidence; its absence means no such demand. Cold unknown
 counts and retained registrations with unproved armed state do not set it.
+Footer and sidebar badges show a dash for unknown counts and name that state
+explicitly for assistive technology. Unknown evidence does not imply that a read
+is pending; collection views show their own loading progress.
 
 List arrays are always present. An empty array establishes emptiness only when
 the page is complete and has no issues. An incomplete page can contain no rows
@@ -89,8 +92,8 @@ and end reasons remain useful, and retained watch history has a bounded lifetime
 
 Delegate rows carry an optional compact `name` from the immutable caller-supplied
 name in the durable delegate descriptor. The domain read caps it at 200 Unicode
-code points, including an ellipsis when truncated. Browser and native activity rows prefer
-this label; genuinely unnamed records keep each view's existing prompt or ID
+code points, including an ellipsis when truncated. Browser and native activity
+rows prefer this label; genuinely unnamed records keep each view's existing prompt or ID
 fallback. Names are display data: owner refs and delegate IDs still identify and
 address delegates. Reading a name needs no child transcript or navigation lookup.
 
@@ -251,6 +254,13 @@ surface observes the summary. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation.
 
+The composer names its receiving conversation even when a child or output pane
+has focus. Job rows and output tabs use the job description when present, and
+output details retain the command and exit status. Each output pane publishes
+its already loaded title through the [pane chrome store](../../cmd/evener-hub/frontend/src/shell/chromeStore.ts);
+tab naming adds no metadata request. Closing Activity from within the sidebar
+returns keyboard focus to its opener or the matching footer control.
+
 The [visible transcript](../../cmd/evener-hub/frontend/src/panes/session/transcript/useEntityView.ts)
 observes session-scoped jobs and delegates for inline entity links and controls.
 It shares those reads with other holders of the same binding. If neither
@@ -260,6 +270,29 @@ references use the transcript's own watch evidence. The
 [recursive activity panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx)
 observes subtree collections while its body is open. These view lifetimes do not
 cause an activity read for every session in the navigation rail.
+
+The narrow composer exposes Activity beside its receiving conversation. Its
+optional active count sums
+the session's authoritative job and delegate active counts only when both are
+known; watches and completed work are not part of that number. The mobile sheet
+starts with compact job, delegate and watch details, each one disclosure away.
+Failed entries remain visible outside the inactive fold, including parent rows
+needed to expose failed descendants; successful inactive work stays folded.
+The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
+retains sheet visibility and disclosure choices by session ref for the lifetime
+of its retained workspace panes. Opening a child transcript releases the hidden
+subtree read demand; Back restores the Activity inspection context and acquires
+demand again through the shared binding. Explicitly closing the sheet keeps it
+closed across navigation. Closing the last retaining pane evicts this view state.
+
+Activity delegate rows use the shared transcript opener, which retains the
+enclosing conversation and canonicalizes restored variants of the same child
+pane before focusing it. Nested drills keep the child’s parent context so an
+unchanged root URL does not steal focus. Ancestor buttons reuse an already open
+read-only transcript with its exact pane identity and parent context; an existing
+live owner regains focus even when its URL is unchanged. The session rail and
+Open session actions request the live session route and composer, including when
+a read-only transcript of that session is already open.
 
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection
