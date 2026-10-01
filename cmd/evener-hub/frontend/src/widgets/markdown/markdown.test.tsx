@@ -174,6 +174,13 @@ test("takes its body ink from --markdown-ink, defaulting to --ink-hi", () => {
   expect(css).toContain("color: var(--markdown-ink, var(--ink-hi))");
 });
 
+test("compact bubbles override the Markdown body ink with the quiet token", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = css.match(/\.bubbleCompact\s*\{[^}]*\}/)?.[0] ?? "";
+  expect(rule).toContain("--markdown-ink: var(--ink-mid)");
+});
+
 // --- agent prose is the transcript's hero (kata 7pa0) -----------------------
 // jsdom computes no cascade, so - like the ink assertion above - these read
 // the stylesheet's own source rather than a rendered element's computed

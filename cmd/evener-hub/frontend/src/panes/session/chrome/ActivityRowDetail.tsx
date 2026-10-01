@@ -340,7 +340,7 @@ function JobOutputPreview({ ownerRef, jobId }: { ownerRef: string; jobId: string
 function DelegateReport({ row }: { row: ActivityDelegateRow }) {
   const { delegate } = row;
   const report = delegate.reportPreview;
-  if (!report?.trim()) return null;
+  if (typeof report !== "string" || !report.trim()) return null;
   return (
     <div className={CLASS.delegateReport} data-testid="delegate-report">
       <div className={CLASS.delegateReportLabel}>

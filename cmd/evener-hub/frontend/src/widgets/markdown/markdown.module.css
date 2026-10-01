@@ -198,6 +198,6 @@
 .bubbleCompact {
   margin-top: var(--space-1);
   padding: var(--space-1) var(--space-2);
-  color: var(--ink-mid);
+  --markdown-ink: var(--ink-mid);
   font-size: var(--font-size-caption);
 }

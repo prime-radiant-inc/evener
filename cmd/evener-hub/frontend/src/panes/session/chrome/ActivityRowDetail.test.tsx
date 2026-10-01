@@ -272,6 +272,11 @@ describe("ActivityRowDetail", () => {
     expect(screen.queryByTestId("delegate-report")).toBeNull();
   });
 
+  test("does not render an attributed message for a malformed report preview", () => {
+    expect(() => render(<ActivityRowDetail row={delegateRow({ reportPreview: 42 })} now={NOW} />)).not.toThrow();
+    expect(screen.queryByTestId("delegate-report")).toBeNull();
+  });
+
   // The delegate line names a real entity, so its id renders as the shared
   // entity card trigger rather than plain text. The line's words are otherwise
   // unchanged, the trigger takes no tab stop of its own (the strip lives inside
