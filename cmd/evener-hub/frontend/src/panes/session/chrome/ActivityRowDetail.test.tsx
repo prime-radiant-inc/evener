@@ -237,6 +237,13 @@ describe("ActivityRowDetail", () => {
     );
   });
 
+  test("preserves leading indentation in the delegate report Markdown", () => {
+    render(<ActivityRowDetail row={delegateRow({ reportPreview: "    indented report line" })} now={NOW} />);
+
+    const bubble = screen.getByTestId("delegate-report-bubble");
+    expect(bubble.querySelector("pre")?.textContent).toContain("indented report line");
+  });
+
   test("attributes the report with the standard delegate hover card and open control", () => {
     vi.useFakeTimers();
     try {

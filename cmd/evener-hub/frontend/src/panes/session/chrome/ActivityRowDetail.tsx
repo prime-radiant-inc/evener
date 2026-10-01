@@ -339,8 +339,8 @@ function JobOutputPreview({ ownerRef, jobId }: { ownerRef: string; jobId: string
 
 function DelegateReport({ row }: { row: ActivityDelegateRow }) {
   const { delegate } = row;
-  const report = delegate.reportPreview?.trim();
-  if (!report) return null;
+  const report = delegate.reportPreview;
+  if (!report?.trim()) return null;
   return (
     <div className={CLASS.delegateReport} data-testid="delegate-report">
       <div className={CLASS.delegateReportLabel}>
@@ -431,7 +431,7 @@ export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?:
   const recipientName = useThreadsStore((state) => state.threads.get(watch.receiverRef)?.name);
   const entities = useEntityViews();
   const navigationName = useNavigationStore((state) => navigationSummaryFor(watch.receiverRef, state)?.title);
-  const delegateName = useMemo(() => {
+  const notifiedDelegateName = useMemo(() => {
     for (const entity of entities?.values() ?? []) {
       if (entity.kind === "delegate" && entity.open.ref === watch.receiverRef) return entity.name?.trim();
     }
@@ -457,7 +457,7 @@ export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?:
         {watchFacts(watch, effectiveNow, targetLabel)}
       </p>
       <p className={CLASS.watchFacts}>
-        Notifies {recipientName?.trim() || navigationName?.trim() || delegateName || watch.receiverRef}
+        Notifies {recipientName?.trim() || navigationName?.trim() || notifiedDelegateName || watch.receiverRef}
       </p>
       {watchIsScheduled(watch) ? (
         <ActivityWatchTimeline watch={watch} now={effectiveNow} />
