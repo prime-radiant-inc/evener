@@ -56,6 +56,21 @@ function FilterTab({ label, selected, onPress }: { label: string; selected: bool
 	);
 }
 
+/** Why the page read after an organize change can't confirm it, or null when
+ * it does: the read must have landed cleanly, and a navigation page must come
+ * from the generation the change was observed in. An archived list has no
+ * navigation version, so only its read is checked. */
+export function pageConfirmationError(
+	pages: PageSource<unknown>,
+	observation: Pick<OrganizationObservation, "generationId"> | null,
+): string | null {
+	const page = pages.getSnapshot();
+	if (!page.loaded || page.loading || page.stale || page.error) return "The current navigation could not be confirmed.";
+	if (observation && pages.navigationVersioned && pages.getResourceVersion()?.generationId !== observation.generationId)
+		return "The hub restarted during the check.";
+	return null;
+}
+
 export function PageList<T>({
 	header,
 	pages,
@@ -123,10 +138,9 @@ export function PageList<T>({
 			if (confirmReceipt && checkpoint?.receipt) await pages.refreshAfter(checkpoint.receipt);
 			else await pages.refresh();
 			const page = pages.getSnapshot();
-			if (!isCurrent() || !page.loaded || page.loading || page.stale || page.error)
-				throw Error("The current navigation could not be confirmed.");
-			if (observation && pages.getResourceVersion()?.generationId !== observation.generationId)
-				throw Error("The hub restarted during the check.");
+			if (!isCurrent()) throw Error("The current navigation could not be confirmed.");
+			const unconfirmed = pageConfirmationError(pages, observation);
+			if (unconfirmed) throw Error(unconfirmed);
 			const same = previous !== null && JSON.stringify(previous) === JSON.stringify({ checkpoint, observation });
 			previous = checkpoint && observation ? { checkpoint, observation } : null;
 			setReview(checkpoint && observation ? { owner: binding, checkpoint, observation } : null);

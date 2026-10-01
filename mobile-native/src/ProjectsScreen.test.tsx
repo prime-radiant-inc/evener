@@ -9,10 +9,10 @@
 import type { ComponentProps } from "react";
 import { AccessibilityInfo } from "react-native";
 import { act } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession, wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import { ProjectScreen, ProjectsScreen, SessionLocationScreen } from "./ProjectsScreen";
+import { ProjectScreen, ProjectsScreen, pageConfirmationError, SessionLocationScreen } from "./ProjectsScreen";
 import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
@@ -207,4 +207,34 @@ it("lists a project's archived sessions from the archived list, a page at a time
 		{ catalog: "archived_projects", projectKey: "p", cursor: "c1" },
 	]);
 	tree.unmount();
+});
+
+// An organize change is confirmed against the page read after it. A
+// navigation page must come from the generation the change was observed in;
+// an archived list has no navigation version, so only its read is checked.
+describe("confirming an organize change against the page", () => {
+	const loaded = { loaded: true, rows: [], remaining: 0, loading: false, error: null as string | null, stale: false };
+	const source = (navigationVersioned: boolean, generationId: string | null, page = loaded) =>
+		({
+			navigationVersioned,
+			getSnapshot: () => page,
+			getResourceVersion: () => (generationId ? { generationId, revision: 1 } : null),
+		}) as unknown as Parameters<typeof pageConfirmationError>[0];
+
+	it("checks a navigation page's generation", () => {
+		expect(pageConfirmationError(source(true, "g1"), { generationId: "g1" })).toBeNull();
+		expect(pageConfirmationError(source(true, "g2"), { generationId: "g1" })).toBe(
+			"The hub restarted during the check.",
+		);
+		expect(pageConfirmationError(source(true, null), { generationId: "g1" })).toBe(
+			"The hub restarted during the check.",
+		);
+	});
+
+	it("checks only the read for a source navigation doesn't version", () => {
+		expect(pageConfirmationError(source(false, null), { generationId: "g1" })).toBeNull();
+		expect(pageConfirmationError(source(false, null, { ...loaded, error: "offline" }), { generationId: "g1" })).toBe(
+			"The current navigation could not be confirmed.",
+		);
+	});
 });
