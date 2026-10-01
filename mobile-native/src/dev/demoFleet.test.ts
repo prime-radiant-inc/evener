@@ -1246,4 +1246,16 @@ describe("demo fleet pulse activity (evener/activity/read)", () => {
 		// s-gateway has been quiet 12m: its whole window is flat.
 		expect(bySession.get(refOf("s-gateway"))?.minutes).toEqual([0, 0, 0, 0, 0, 0, 0]);
 	});
+
+	it("keeps a session whose quiet time is recomputed after a state change", () => {
+		// A row that changes state after startup gets a fractional, generally
+		// negative `ago` (commitRowState). The quiet time built from it must stay
+		// a whole, non-negative millisecond value, or the decoder drops the whole
+		// entry and the Board loses that session's meter and labels.
+		const later = createDemoFleet({ now: STARTUP, clock: () => STARTUP + 1001 });
+		later.setSessionState(refOf("s-diff"), "working");
+		const sessions = decodeActivityRead(later.answerPulseRead({ refs: [refOf("s-diff")] }));
+		expect(sessions.map((session) => session.ref)).toEqual([refOf("s-diff")]);
+		expect(sessions[0]?.quietForMs).toBe(0);
+	});
 });

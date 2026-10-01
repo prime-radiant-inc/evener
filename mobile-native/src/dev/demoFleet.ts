@@ -1207,7 +1207,13 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 						// An agent waiting on subagents is never quiet (Jesse's
 						// ruling for S5), and neither is a session that is not
 						// working: only a silently working session carries the gap.
-						const quietForMs = raw.state === "working" && runningSubagents === 0 ? quietBase + elapsed : undefined;
+						// A row whose state changed after startup has a fractional, generally
+						// negative `ago` (commitRowState), so the sum must be rounded to a
+						// whole, non-negative millisecond or the decoder drops the entry.
+						const quietForMs =
+							raw.state === "working" && runningSubagents === 0
+								? Math.max(0, Math.round(quietBase + elapsed))
+								: undefined;
 						return {
 							ref: sessionRef(raw),
 							minutes: pulseMinutes(raw.state === "working", level, quietForMs),
