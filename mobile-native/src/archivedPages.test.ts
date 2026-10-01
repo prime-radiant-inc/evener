@@ -17,15 +17,29 @@ function hub(pages: Record<string, { refs: string[]; total: number; nextCursor?:
 		seen.push(params);
 		const page = pages[params.cursor ?? ""];
 		if (!page) throw new Error("no such page");
-		return { sessions: page.refs.map(row), total: page.total, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+		return {
+			sessions: page.refs.map(row),
+			total: page.total,
+			...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+		};
 	});
 	return { client, seen };
 }
 
 it("reads the project's archived list from its catalog, and pages on with the cursor", async () => {
-	const { client, seen } = hub({ "": { refs: ["local:a"], total: 2, nextCursor: "c1" }, c1: { refs: ["local:b"], total: 2 } });
+	const { client, seen } = hub({
+		"": { refs: ["local:a"], total: 2, nextCursor: "c1" },
+		c1: { refs: ["local:b"], total: 2 },
+	});
 	const pages = new ArchivedPages(archivedListStoreFor(client), "archived_projects", "p");
-	expect(pages.getSnapshot()).toEqual({ loaded: false, rows: [], remaining: 0, loading: false, error: null, stale: false });
+	expect(pages.getSnapshot()).toEqual({
+		loaded: false,
+		rows: [],
+		remaining: 0,
+		loading: false,
+		error: null,
+		stale: false,
+	});
 
 	await pages.refresh();
 	expect(pages.getSnapshot()).toMatchObject({ loaded: true, remaining: 1, loading: false, error: null });

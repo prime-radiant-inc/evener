@@ -305,12 +305,8 @@ describe("confirming an organize change against the page", () => {
 
 	it("checks a navigation page's generation", () => {
 		expect(unconfirmedReason(source(true, "g1"), { generationId: "g1" })).toBeNull();
-		expect(unconfirmedReason(source(true, "g2"), { generationId: "g1" })).toBe(
-			"The hub restarted during the check.",
-		);
-		expect(unconfirmedReason(source(true, null), { generationId: "g1" })).toBe(
-			"The hub restarted during the check.",
-		);
+		expect(unconfirmedReason(source(true, "g2"), { generationId: "g1" })).toBe("The hub restarted during the check.");
+		expect(unconfirmedReason(source(true, null), { generationId: "g1" })).toBe("The hub restarted during the check.");
 	});
 
 	it("checks only the read for a source navigation doesn't version", () => {
