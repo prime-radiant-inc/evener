@@ -41,7 +41,7 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Card, Chevron, Chip, Markdown, ToolIcon, type ToolIconKind } from "../../../../widgets";
+import { Card, Chevron, Chip, Markdown, MarkdownBubble, ToolIcon, type ToolIconKind } from "../../../../widgets";
 import { AnsiTailBuffer, parseAnsiLines } from "../../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
 import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
@@ -74,7 +74,6 @@ const CLASS = {
   rawBody: requireClass(styles.rawBody, "notificationcard.module.css", "rawBody"),
   statusIcon: requireClass(styles.statusIcon, "notificationcard.module.css", "statusIcon"),
   statusIconError: requireClass(styles.statusIconError, "notificationcard.module.css", "statusIconError"),
-  messageBubble: requireClass(styles.messageBubble, "notificationcard.module.css", "messageBubble"),
   resultTable: requireClass(styles.resultTable, "notificationcard.module.css", "resultTable"),
   resultKey: requireClass(styles.resultKey, "notificationcard.module.css", "resultKey"),
   resultValue: requireClass(styles.resultValue, "notificationcard.module.css", "resultValue"),
@@ -630,15 +629,13 @@ export function NotificationCard({
               </pre>
             )}
             {notification.message ? (
-              // The message's seat by type, the statusIconSeat idiom: a
-              // delegate's report renders in the sans bubble, every other
-              // lane in the excerpt treatment - one Markdown call either way.
-              <div
-                className={notification.type === "delegate" ? CLASS.messageBubble : CLASS.excerpt}
-                data-testid={notification.type === "delegate" ? "notification-message" : "notification-field-excerpt"}
-              >
-                <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
-              </div>
+              notification.type === "delegate" ? (
+                <MarkdownBubble source={notification.message.slice(0, MESSAGE_MAX)} dataTestId="notification-message" />
+              ) : (
+                <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
+                  <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
+                </div>
+              )
             ) : (
               <Excerpt text={notification.excerpt} ansi={notification.jobType === "shell"} />
             )}

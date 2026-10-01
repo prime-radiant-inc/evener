@@ -41,6 +41,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
 import {
+  delegateName,
   formatQuietAge,
   formatUsagePair,
   jobStatusDisplay,
@@ -106,18 +107,6 @@ type DetailRow = ActivityJobRow | ActivityDelegateRow | ActivityWatchRow;
 
 function delegateStatusText(delegate: ActivityDelegate): string {
   return activityDelegateState(delegate).status;
-}
-
-function delegateName(delegate: ActivityDelegate): string {
-  return (
-    delegate.name?.trim() ||
-    (delegate.mandate ??
-      delegate.task ??
-      delegate.description ??
-      delegate.child?.label ??
-      delegate.childSessionId ??
-      delegate.childRef)
-  );
 }
 
 // rowStatusText is the one place a dense row's displayed status text is chosen:

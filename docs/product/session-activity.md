@@ -124,7 +124,10 @@ completion packet of the current settled run. It preserves a useful prefix of
 up to 4,096 Unicode code points, including the ellipsis when truncated;
 `reportPreviewTruncated` identifies that case. Missing, non-string or empty
 reports have no preview. Terminal errors retain their separate reason and error
-fields. Opening the child transcript remains the path to the full conversation.
+fields. The browser's expanded delegate activity detail presents a non-empty
+preview as a compact message from the delegate's name, with the name resolving
+through the standard delegate entity card and transcript-open control. Opening
+the child transcript remains the path to the full conversation.
 
 Both the delegate list and transcript roster carry the authoritative
 `runGeneration`. The phone joins a report only when owner, delegate identity and
