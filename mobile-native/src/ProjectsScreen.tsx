@@ -165,7 +165,9 @@ export function PageList<T>({
 	useEffect(() => () => actions?.dispose(), [actions]);
 	const actionState = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 
-	useEffect(() => pages.watch(), [pages]);
+	// Following the hub can read the list, and a client that isn't ready
+	// rejects every read.
+	useEffect(() => (ready ? pages.watch() : undefined), [pages, ready]);
 	const list = useRef<FlatList<T>>(null);
 	const rowKeyNow = useRef(rowKey);
 	rowKeyNow.current = rowKey;

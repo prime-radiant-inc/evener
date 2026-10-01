@@ -211,15 +211,27 @@ it("holds a change announced while paused until it resumes", async () => {
 	await Promise.resolve();
 	expect(seen).toHaveLength(2);
 
-	// A read while paused stands in for the one owed, and means the list is
-	// shown again.
+	// A read while paused stands in for the one owed.
 	pages.cancel();
 	announce(client, [{ kind: "project", projectKey: "p" }]);
 	await pages.refresh();
 	pages.resume();
 	await Promise.resolve();
 	expect(seen).toHaveLength(3);
+	stop();
+});
+
+// A read while paused means the list is shown again, so the next change is
+// read at once, without waiting for a resume.
+it("follows the hub again once read while paused", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(client, "projects", "p");
+	const stop = pages.watch();
+	await pages.refresh();
+	pages.cancel();
+	await pages.refresh();
+	expect(seen).toHaveLength(2);
 	announce(client, [{ kind: "project", projectKey: "p" }]);
-	await vi.waitFor(() => expect(seen).toHaveLength(4));
+	await vi.waitFor(() => expect(seen).toHaveLength(3));
 	stop();
 });

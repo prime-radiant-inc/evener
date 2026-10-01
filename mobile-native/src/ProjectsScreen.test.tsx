@@ -12,6 +12,7 @@ import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { archivedListStoreFor } from "./archivedLists";
 import { NavigationPages } from "./navigationPages";
 import { ProjectScreen, ProjectsScreen, unconfirmedReason, SessionLocationScreen } from "./ProjectsScreen";
 import {
@@ -221,6 +222,22 @@ it("lists a project's archived sessions from the archived list, a page at a time
 		{ catalog: "archived_projects", projectKey: "p", cursor: "c1" },
 	]);
 	expect(hub.calls.filter((call) => call.method === "evener/navigation/read")).toEqual([]);
+	tree.unmount();
+});
+
+// Rows an earlier view loaded stay on screen while the connection is away, and
+// the list is read only once it is ready.
+it("reads no archived list while the connection is not ready", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/archived/list", () => ({ sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 1 }));
+	await archivedListStoreFor(hub).refresh("archived_projects", "p");
+	hub.emitStateChange("reconnecting");
+	harness.connection = screenConnection(hub, "reconnecting");
+	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Alpha");
+	expect(renderedText(tree)).not.toContain("cannot call");
+	expect(hub.calls.filter((call) => call.method === "evener/archived/list")).toHaveLength(1);
 	tree.unmount();
 });
 
