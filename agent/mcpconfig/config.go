@@ -268,6 +268,7 @@ func Merge(layers ...[]ServerConfig) []ServerConfig {
 // Discover loads MCP configs from all sources:
 // global (~/.config/evener/mcp.json) -> project (.evener/mcp.json at git root)
 // -> CLI files -> CLI inline specs. Later sources shadow earlier by name.
+// Layer 1 (global) is omitted entirely when EVENER_NO_USER_SKILLS=1 (#3487).
 //
 // A global or project config file (layers 1-2) that fails to parse or expand
 // is not fatal: its layer is skipped and a warning naming the file and error
@@ -338,9 +339,10 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 }
 
 // DiscoverTrusted is Discover restricted to the layers the session's MODEL cannot
-// write: the global config (~/.config/evener/mcp.json), --mcp-config files, and
-// --mcp inline specs. The per-project layer (<git root>/.evener/mcp.json) is
-// deliberately EXCLUDED because it lives inside the model's own write surface.
+// write: the global config (~/.config/evener/mcp.json; omitted entirely when
+// EVENER_NO_USER_SKILLS=1, #3487), --mcp-config files, and --mcp inline specs.
+// The per-project layer (<git root>/.evener/mcp.json) is deliberately EXCLUDED
+// because it lives inside the model's own write surface.
 //
 // Use it wherever MCP config feeds a SECURITY decision rather than a connection.
 // The sandbox policy derivation (agent.SessionInfraRoots) is the case that
