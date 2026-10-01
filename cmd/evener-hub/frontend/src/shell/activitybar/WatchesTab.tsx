@@ -8,6 +8,7 @@ import { useNowTick } from "../../panes/session/liveness";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ActivityScope } from "../statusbar/statusScope";
+import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import { WatchRow } from "./activityRows";
 
@@ -21,6 +22,12 @@ export function WatchesTab({ scope }: { scope: ActivityScope }) {
   const now = useNowTick(30_000);
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "watches");
   const collection = snapshot?.watches;
+  const watchRows = buildWatchRows(collection?.rows ?? []);
+  useActivityScrollProgress(
+    watchRows.map((row) => row.id),
+    collection?.complete ?? false,
+    collection?.hasMore ?? false,
+  );
   if (collection?.permanent && collection.rows.length === 0)
     return <span className={CLASS.emptyNote}>Watches unavailable for this session.</span>;
   if (!collection || (collection.rows.length === 0 && !collection.complete))
@@ -30,7 +37,7 @@ export function WatchesTab({ scope }: { scope: ActivityScope }) {
     return <span className={CLASS.emptyNote}>No watches at this level.</span>;
   return (
     <div className={CLASS.stack}>
-      {buildWatchRows(watches).map((row) => (
+      {watchRows.map((row) => (
         <WatchRow key={row.id} row={row} now={now} />
       ))}
       <ActivityPageBoundary
