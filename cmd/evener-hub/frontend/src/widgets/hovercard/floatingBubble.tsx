@@ -50,9 +50,9 @@ export interface FloatingBubble {
   bubbleID: string;
   /** The trigger's aria-describedby value, undefined while nothing is shown. */
   describedBy: string | undefined;
-  /** Shows a tap-enabled bubble without the pointer-hover delay. */
+  /** Shows a bubble immediately, without the pointer-hover delay. */
   showImmediately: () => void;
-  /** Hides a tap-enabled bubble before its trigger performs another action. */
+  /** Hides a bubble before its trigger performs another action. */
   dismiss: () => void;
 }
 
@@ -146,7 +146,7 @@ export interface FloatingBubblePortalProps {
   className: string;
   style: CSSProperties;
   setRef: (element: HTMLElement | null) => void;
-  tapEnabled?: boolean;
+  longPressEnabled?: boolean;
   children: ReactNode;
 }
 
@@ -158,12 +158,16 @@ export function FloatingBubblePortal({
   className,
   style,
   setRef,
-  tapEnabled,
+  longPressEnabled,
   children,
 }: FloatingBubblePortalProps) {
   if (!show) return null;
   return createPortal(
-    createElement(as, { ref: setRef, role: "tooltip", id, className, style, "data-tap-enabled": tapEnabled }, children),
+    createElement(
+      as,
+      { ref: setRef, role: "tooltip", id, className, style, "data-long-press-enabled": longPressEnabled },
+      children,
+    ),
     document.body,
   );
 }

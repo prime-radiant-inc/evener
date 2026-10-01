@@ -45,8 +45,8 @@ test("the bubble fades and scales in on the shared overlay motion budget", () =>
   expect(mediaBlock(CSS, "prefers-reduced-motion: reduce")).toMatch(/animation:\s*none/);
 });
 
-test("hoverless devices hide ordinary cards but retain explicitly tap-enabled cards", () => {
+test("hoverless devices hide ordinary cards but retain explicitly long-press-enabled cards", () => {
   const hoverless = mediaBlock(CSS, "hover: none");
-  expect(hoverless).toMatch(/\.bubble:not\(\[data-tap-enabled="true"\]\)\s*\{/);
+  expect(hoverless).toMatch(/\.bubble:not\(\[data-long-press-enabled="true"\]\)\s*\{/);
   expect(hoverless).toMatch(/display:\s*none/);
 });
