@@ -10,6 +10,11 @@ import {
 
 export const SHOW_DELAY_MS = 300;
 
+/** How long after a pointer lifts its press still counts as the pointer's own,
+ * for the compatibility mousedown/focus/click a touch browser sends after
+ * pointerup. */
+export const POINTER_CLICK_WINDOW_MS = 350;
+
 /** Whether the pointer that would hover or focus a floating label has no hover
  * capability. Hover shows nothing there: a tap fires it itself, and nothing
  * then fires a mouseleave to dismiss what it showed. The focus a tap takes is
@@ -50,16 +55,26 @@ export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingL
   const wrapperRef = useRef<HTMLSpanElement>(null);
   const activeRef = useRef({ hovered: false, wrapperFocused: false, externalFocused: false });
 
-  // A focus that arrives while a pointer is pressed is the focus the press
-  // takes, not keyboard or assistive-tech focus; on a hoverless device it must
-  // not reveal a label the pointer cannot then dismiss.
+  // A focus that arrives while a pointer is pressed, or just after it lifts
+  // (touch browsers send the compatibility mousedown/focus/click only after
+  // pointerup), is the focus a press takes, not keyboard or assistive-tech
+  // focus; on a hoverless device it must not reveal a label the pointer cannot
+  // then dismiss.
   const pointerPressedRef = useRef(false);
+  const lastPointerUpAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const pointerTookFocus = useCallback(
+    () =>
+      isHoverless() &&
+      (pointerPressedRef.current || Date.now() - lastPointerUpAtRef.current <= POINTER_CLICK_WINDOW_MS),
+    [],
+  );
   useEffect(() => {
     const press = () => {
       pointerPressedRef.current = true;
     };
     const release = () => {
       pointerPressedRef.current = false;
+      lastPointerUpAtRef.current = Date.now();
     };
     document.addEventListener("pointerdown", press, true);
     document.addEventListener("pointerup", release, true);
@@ -148,7 +163,7 @@ export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingL
     const target = focusTarget?.();
     if (!target) return;
     const handleFocus = () => {
-      if (isHoverless() && pointerPressedRef.current) return;
+      if (pointerTookFocus()) return;
       activeRef.current.externalFocused = true;
       showImmediately();
     };
@@ -164,7 +179,7 @@ export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingL
       target.removeEventListener("focusin", handleFocus);
       target.removeEventListener("focusout", handleBlur);
     };
-  }, [focusTarget, hideWhenInactive, showImmediately]);
+  }, [focusTarget, hideWhenInactive, pointerTookFocus, showImmediately]);
 
   return {
     visible,
@@ -183,7 +198,7 @@ export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingL
       },
       // Bubbling focus events within a multi-control wrapper must not flicker the label.
       onFocus: (event) => {
-        if (isHoverless() && pointerPressedRef.current) return;
+        if (pointerTookFocus()) return;
         if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
         activeRef.current.wrapperFocused = true;
         show();

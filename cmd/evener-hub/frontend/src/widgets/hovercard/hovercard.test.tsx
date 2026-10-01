@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { HoverCard, LONG_PRESS_MS } from ".";
 import { installHoverlessMatchMedia } from "./hovercardTestUtils";
+import { POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
 
 afterEach(() => {
   cleanup();
@@ -239,11 +240,13 @@ test("the focus a hoverless tap takes opens no card, and the tap still activates
   const trigger = screen.getByRole("button", { name: "Fix flaky test" });
   const row = screen.getByTestId("row");
 
-  // A tap presses first, so its focus lands while the pointer is down.
+  // Real touch order: the compatibility mousedown and the focus it takes come
+  // after the pointer lifts, so the suppression must outlive the press.
   fireEvent.pointerDown(row, { button: 0 });
+  fireEvent.pointerUp(row, { button: 0 });
+  fireEvent.mouseDown(row, { button: 0 });
   fireEvent.focus(row);
   expect(screen.queryByRole("tooltip")).toBeNull();
-  fireEvent.pointerUp(row);
 
   await user.click(trigger);
   expect(screen.queryByRole("tooltip")).toBeNull();
@@ -324,7 +327,7 @@ test("a plain tap on an open card dismisses it and still activates the row", () 
   expect(activate).toHaveBeenCalledOnce();
 });
 
-test("hoverless keyboard focus opens the card, but the focus a tap takes does not", () => {
+test("hoverless keyboard focus still opens the card", () => {
   installHoverlessMatchMedia();
   render(
     <div role="treeitem" tabIndex={0} data-testid="row">
@@ -337,15 +340,8 @@ test("hoverless keyboard focus opens the card, but the focus a tap takes does no
       </HoverCard>
     </div>,
   );
-  const row = screen.getByTestId("row");
 
-  fireEvent.pointerDown(row, { button: 0 });
-  fireEvent.focus(row);
-  expect(screen.queryByRole("tooltip")).toBeNull();
-
-  fireEvent.pointerUp(row);
-  fireEvent.blur(row);
-  fireEvent.focus(row);
+  fireEvent.focus(screen.getByTestId("row"));
   expect(screen.getByRole("tooltip")).toBeTruthy();
 });
 
@@ -371,6 +367,36 @@ test("a cancelled long press does not leave the next click swallowed", () => {
   expect(screen.getByRole("tooltip")).toBeTruthy();
 
   fireEvent.pointerCancel(trigger);
+  fireEvent.click(trigger);
+
+  expect(activate).toHaveBeenCalledOnce();
+});
+
+test("a press that leaves the trigger before the click does not swallow a later one", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation is exercised through the external focus test
+    <div onClick={activate}>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button" tabIndex={-1}>
+          Fix flaky test
+        </button>
+      </HoverCard>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+
+  // The finger drifts off and lifts outside, so no click arrives for the
+  // swallow; the bound must drop it.
+  fireEvent.pointerLeave(trigger);
+  act(() => vi.advanceTimersByTime(POINTER_CLICK_WINDOW_MS + 1));
   fireEvent.click(trigger);
 
   expect(activate).toHaveBeenCalledOnce();

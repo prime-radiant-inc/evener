@@ -2,7 +2,7 @@ import { type ReactNode, useCallback, useEffect, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import { describeChild, FloatingBubblePortal, useFloatingBubble } from "./floatingBubble";
 import styles from "./hovercard.module.css";
-import { isHoverless } from "./useFloatingLabel";
+import { isHoverless, POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
 
 /** How long a finger must rest on a long-press-enabled trigger on a hoverless device
  * before its card opens. A shorter hold than this is a tap and activates the
@@ -12,11 +12,6 @@ export const LONG_PRESS_MS = 500;
 /** How far a finger may drift during a press before it stops counting as a
  * long press - a drag is a scroll, not a hold. */
 const LONG_PRESS_SLOP_PX = 10;
-
-/** How long after a lifted press the browser's one click is still expected.
- * Past it the swallow is dropped, so a gesture the browser ends without a
- * click cannot leave a later keyboard- or AT-synthesized click swallowed. */
-const LONG_PRESS_CLICK_WINDOW_MS = 350;
 
 export interface HoverCardProps {
   label: ReactNode;
@@ -88,7 +83,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled }: Ho
     swallowBackstopRef.current = setTimeout(() => {
       swallowBackstopRef.current = undefined;
       swallowClickRef.current = false;
-    }, LONG_PRESS_CLICK_WINDOW_MS);
+    }, POINTER_CLICK_WINDOW_MS);
   }, [cancelLongPress, clearSwallowBackstop]);
 
   const abortPress = useCallback(() => {
@@ -146,7 +141,9 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled }: Ho
       }}
       onPointerUp={endPress}
       onPointerCancel={abortPress}
-      onPointerLeave={cancelLongPress}
+      // Leaving the trigger can end the gesture without a pointerup here, so
+      // this bounds an armed swallow the same way a lift does.
+      onPointerLeave={endPress}
       onClickCapture={(event) => {
         if (!longPressEnabled || !isHoverless()) return;
         if (!swallowClickRef.current) {
