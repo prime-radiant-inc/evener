@@ -1,7 +1,7 @@
 // A project's archived sessions as a page source over the connection's shared
 // archived list store: what the Project screen's Archived tab reads, since
 // navigation v3 serves no archived rows.
-import type { ArchivedListParams } from "@evener/appwire-client";
+import type { ArchivedListParams, NavigationInvalidationTarget } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession } from "@evener/appwire-client/testing/navigation";
 import { expect, it, vi } from "vitest";
@@ -24,6 +24,13 @@ function hub(pages: Record<string, { refs: string[]; total: number; nextCursor?:
 		};
 	});
 	return { client, seen };
+}
+
+function announce(client: FakeClient, targets: NavigationInvalidationTarget[]) {
+	client.emitNotification({
+		method: "evener/navigation/invalidated",
+		params: { generationId: "g", sequence: 1, targets },
+	});
 }
 
 it("reads the project's archived list from its catalog, and pages on with the cursor", async () => {
@@ -150,28 +157,126 @@ it("drops a connection's loaded lists when it recovers", async () => {
 it("reads its list again when the hub announces its project changed", async () => {
 	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
 	const pages = new ArchivedPages(client, "projects", "p");
-	await pages.refresh();
 	const stop = pages.watch();
-	const announce = (targets: unknown[]) =>
-		client.emitNotification({
-			method: "evener/navigation/invalidated",
-			params: { generationId: "g", sequence: 1, targets },
-		} as never);
+	await pages.refresh();
 
-	announce([
+	announce(client, [
 		{ kind: "project", projectKey: "q" },
 		{ kind: "section", section: "live" },
 	]);
 	await Promise.resolve();
 	expect(seen).toHaveLength(1);
 
-	announce([{ kind: "project", projectKey: "p" }]);
+	announce(client, [{ kind: "project", projectKey: "p" }]);
 	await vi.waitFor(() => expect(seen).toHaveLength(2));
-	announce([{ kind: "all_loaded_projects" }]);
+	announce(client, [{ kind: "all_loaded_projects" }]);
 	await vi.waitFor(() => expect(seen).toHaveLength(3));
 
 	stop();
-	announce([{ kind: "project", projectKey: "p" }]);
+	announce(client, [{ kind: "project", projectKey: "p" }]);
 	await Promise.resolve();
 	expect(seen).toHaveLength(3);
+});
+
+// A list another view loaded went unwatched once that view closed, so a view
+// that starts following the hub reads it again; one never loaded waits for
+// its view to read it.
+it("reads a loaded list again when it starts following the hub", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const unread = new ArchivedPages(client, "projects", "p");
+	const stopUnread = unread.watch();
+	await Promise.resolve();
+	expect(seen).toHaveLength(0);
+	stopUnread();
+
+	await unread.refresh();
+	const later = new ArchivedPages(client, "projects", "p");
+	const stop = later.watch();
+	await vi.waitFor(() => expect(seen).toHaveLength(2));
+	stop();
+});
+
+// Out of view, a list reads nothing on the hub's behalf: a change announced
+// meanwhile waits until the list is shown again.
+it("holds a change announced while paused until it resumes", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(client, "projects", "p");
+	const stop = pages.watch();
+	await pages.refresh();
+
+	pages.cancel();
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	await Promise.resolve();
+	expect(seen).toHaveLength(1);
+	pages.resume();
+	await vi.waitFor(() => expect(seen).toHaveLength(2));
+	pages.resume();
+	await Promise.resolve();
+	expect(seen).toHaveLength(2);
+
+	// A change to another project owes nothing.
+	pages.cancel();
+	announce(client, [{ kind: "project", projectKey: "q" }]);
+	pages.resume();
+	await Promise.resolve();
+	expect(seen).toHaveLength(2);
+
+	// A read while paused stands in for the one owed.
+	pages.cancel();
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	await pages.refresh();
+	pages.resume();
+	await Promise.resolve();
+	expect(seen).toHaveLength(3);
+	stop();
+});
+
+// Paused, a list owes the read it would make on watch, as it owes any other.
+it("holds the read it owes on watch while paused", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	await new ArchivedPages(client, "projects", "p").refresh();
+	const pages = new ArchivedPages(client, "projects", "p");
+	pages.cancel();
+	const stop = pages.watch();
+	await Promise.resolve();
+	expect(seen).toHaveLength(1);
+	pages.resume();
+	await vi.waitFor(() => expect(seen).toHaveLength(2));
+	stop();
+});
+
+// A client that isn't ready rejects every read, and once ready it has dropped
+// every list, which its view reads afresh: nothing is read on the hub's behalf
+// until then.
+it("reads nothing on the hub's behalf while the connection is not ready", async () => {
+	const { client } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(client, "projects", "p");
+	const stop = pages.watch();
+	await pages.refresh();
+	const reads = () => client.calls.filter((call) => call.method === "evener/archived/list").length;
+	client.emitStateChange("reconnecting");
+
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	pages.cancel();
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	pages.resume();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(reads()).toBe(1);
+	expect(pages.getSnapshot()).toMatchObject({ loaded: true, error: null });
+	stop();
+});
+
+// A read while paused means the list is shown again, so the next change is
+// read at once, without waiting for a resume.
+it("follows the hub again once read while paused", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(client, "projects", "p");
+	const stop = pages.watch();
+	await pages.refresh();
+	pages.cancel();
+	await pages.refresh();
+	expect(seen).toHaveLength(2);
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	await vi.waitFor(() => expect(seen).toHaveLength(3));
+	stop();
 });
