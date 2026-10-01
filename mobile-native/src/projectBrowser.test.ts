@@ -171,6 +171,26 @@ describe("project browser", () => {
 		second.controller.dispose();
 	});
 
+	it("holds a paused browser's read of an archived list an earlier one left loaded", async () => {
+		const fake = boundary();
+		const first = await loadedProject({ archived: [session("a0")] }, {}, { fake });
+		first.controller.dispose();
+		const controller = createProjectBrowserController(fake.client);
+		const loading = controller.initialLoad();
+		const catalogRead = fake.requests[fake.requests.length - 1];
+		catalogRead?.resolve(response(catalogRead.params, { projects: [project("a")], remaining: 0 }));
+		await loading;
+		controller.pause();
+		const from = fake.requests.length;
+		const expanding = controller.expand("a");
+		answerTiers(fake.requests.slice(from), { current: [session("a1")] });
+		await expanding;
+		expect(fake.requests.slice(from).map(label)).toEqual(["a:current", "a:recent"]);
+		controller.resume();
+		expect(fake.requests.slice(from + 2).map(label)).toEqual(["a:archived list"]);
+		controller.dispose();
+	});
+
 	it("collapse keeps a project's rows and stops it loading more", async () => {
 		const { controller, requests } = await loadedProject({ current: [session("a1")] }, { current: 5 });
 		controller.collapse("a");

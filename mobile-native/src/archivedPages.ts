@@ -80,27 +80,33 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	/** Reads the list again when the hub announces a change to this project's
 	 * pages (a session archived on another device, or one ageing into the
 	 * archived tier); the hub's navigation names no archived list itself. A
-	 * list already loaded is read again now, on a ready connection: nothing
-	 * followed the hub for it since the view that loaded it closed. (A client
-	 * that isn't ready rejects every read, and once ready it has dropped every
-	 * list, which its view reads afresh.) */
+	 * list already loaded is read again now: nothing followed the hub for it
+	 * since the view that loaded it closed. */
 	watch() {
-		if (this.getSnapshot().loaded && this.client.state === "ready") void this.refresh();
+		if (this.getSnapshot().loaded) this.follow();
 		return this.client.onNotification((event) => {
-			if (event.method !== "evener/navigation/invalidated" || !event.params.targets.some(this.names)) return;
-			if (this.paused) this.owed = true;
-			else void this.refresh();
+			if (event.method === "evener/navigation/invalidated" && event.params.targets.some(this.names)) this.follow();
 		});
 	}
 	private names = (target: NavigationInvalidationTarget) =>
 		target.kind === "all_loaded_projects" || (target.kind === "project" && target.projectKey === this.projectKey);
-	/** Out of view, the list reads nothing on the hub's behalf; a change
-	 * announced meanwhile is read on resume. A read already out lands. */
+	/** A read on the hub's behalf: owed until resume while paused, and none
+	 * on a connection that isn't ready, which would reject it (once ready, it
+	 * has dropped every list, which its view reads afresh). */
+	private follow() {
+		if (this.paused) this.owed = true;
+		else if (this.client.state === "ready") {
+			this.owed = false;
+			void this.store.refresh(this.catalog, this.projectKey);
+		}
+	}
+	/** Out of view, the list reads nothing on the hub's behalf; what it owes
+	 * is read on resume. A read already out lands. */
 	cancel() {
 		this.paused = true;
 	}
 	resume() {
 		this.paused = false;
-		if (this.owed) void this.refresh();
+		if (this.owed) this.follow();
 	}
 }

@@ -137,8 +137,9 @@ export function createProjectBrowserController(
 		groups.set(project.key, group);
 		for (const page of tierPages(group)) {
 			unsubs.add(page.subscribe(publish));
-			unsubs.add(page.watch());
+			// Paused first, so a page holds any read it owes on watch.
 			if (paused) page.cancel();
+			unsubs.add(page.watch());
 		}
 		return group;
 	};

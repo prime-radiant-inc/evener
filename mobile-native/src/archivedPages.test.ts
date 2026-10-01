@@ -221,6 +221,41 @@ it("holds a change announced while paused until it resumes", async () => {
 	stop();
 });
 
+// Paused, a list owes the read it would make on watch, as it owes any other.
+it("holds the read it owes on watch while paused", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	await new ArchivedPages(client, "projects", "p").refresh();
+	const pages = new ArchivedPages(client, "projects", "p");
+	pages.cancel();
+	const stop = pages.watch();
+	await Promise.resolve();
+	expect(seen).toHaveLength(1);
+	pages.resume();
+	await vi.waitFor(() => expect(seen).toHaveLength(2));
+	stop();
+});
+
+// A client that isn't ready rejects every read, and once ready it has dropped
+// every list, which its view reads afresh: nothing is read on the hub's behalf
+// until then.
+it("reads nothing on the hub's behalf while the connection is not ready", async () => {
+	const { client } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(client, "projects", "p");
+	const stop = pages.watch();
+	await pages.refresh();
+	const reads = () => client.calls.filter((call) => call.method === "evener/archived/list").length;
+	client.emitStateChange("reconnecting");
+
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	pages.cancel();
+	announce(client, [{ kind: "project", projectKey: "p" }]);
+	pages.resume();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(reads()).toBe(1);
+	expect(pages.getSnapshot()).toMatchObject({ loaded: true, error: null });
+	stop();
+});
+
 // A read while paused means the list is shown again, so the next change is
 // read at once, without waiting for a resume.
 it("follows the hub again once read while paused", async () => {
