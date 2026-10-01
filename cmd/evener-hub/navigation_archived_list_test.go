@@ -687,3 +687,35 @@ func TestHubArchivedListSaysWhichCatalogItRead(t *testing.T) {
 		t.Fatalf("a response that read no catalog carries %s, err %v", raw, err)
 	}
 }
+
+// Archived rows are no part of a project's navigation, but an archived
+// session's location is, through its project, and the location carries the
+// session's title. So renaming an archived session invalidates its project,
+// and a client's archived list for that project follows that to the new title.
+func TestRenamingAnArchivedSessionInvalidatesItsProject(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	archive := func(title string) {
+		source.mu.Lock()
+		defer source.mu.Unlock()
+		source.inputs.Tree.Projects[0].Archived = []hubcore.TreeNode{{ID: aliasRootID, Title: title, Project: "p1", Kind: "session", State: "ended", UpdatedAt: now.Add(-30 * 24 * time.Hour)}}
+		source.revision++
+	}
+	archive("before")
+	service := newTestNavigationService(t, source)
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	archive("after")
+	mutation, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range mutation.Targets {
+		if target.Kind == appwire.NavigationTargetProject && target.ProjectKey == "p1" {
+			return
+		}
+	}
+	t.Fatalf("rename targets = %+v, want project p1", mutation.Targets)
+}
