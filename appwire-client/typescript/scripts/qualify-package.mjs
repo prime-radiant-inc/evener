@@ -296,6 +296,8 @@ assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.adv
 assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
 assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
 assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label: "external", kind: "external" }]), false);
+const archivedLists = client.createArchivedListStore({ request: async () => ({ sessions: [], total: 0 }) });
+archivedLists.refresh("projects", "p").then(() => { const { rows, loaded, error } = archivedLists.getState().lists[client.archivedListKey("projects", "p")]; assert.deepEqual({ rows, loaded, error }, { rows: [], loaded: true, error: null }); });
 const hubOverview = client.createHubOverviewStore({ request: async () => ({ hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }) });
 hubOverview.getState().fetch().then(() => assert.deepEqual(hubOverview.getState().data, { hub: { pastIndex: { path: "/index", count: 0, perPage: 0 } }, mcpDiscovered: { servers: [] }, agents: [] }));
 // The keybinding group parses through a host-supplied KeybindingParser (tinykeys' parseKeybinding in both apps); this consumer supplies a plain-press one of the port's shape.
