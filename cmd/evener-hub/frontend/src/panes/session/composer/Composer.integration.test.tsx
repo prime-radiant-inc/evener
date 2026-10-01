@@ -16,6 +16,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
+import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -178,12 +179,27 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
+  resetMobileViewportForTests();
 });
 
 afterEach(() => {
   cleanup();
+  resetMobileViewportForTests();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
+
+function installMobileViewport(): void {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: media === "(max-width: 899px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
+}
 
 function textarea(): HTMLDivElement | null {
   return screen.queryByRole("textbox", { name: /message/i }) as HTMLDivElement | null;
@@ -1234,6 +1250,7 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
 // in below the card and reaches the hub with the session's own cwd - the
 // component's own rendering rules are covered in RepoLocation.test.tsx.
 test("shows the session's cwd and git branch under the composer card", async () => {
+  installMobileViewport();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("local:ref_loc", { cwd: "/home/jesse/repo" }));
   fake.on("evener/git/head", ({ cwd }) => {
@@ -1265,6 +1282,7 @@ test("shows the session's cwd and git branch under the composer card", async () 
 // which is exactly the state the composer is in when you are reading a session
 // that has already finished.
 test("keeps the location line under a finished session with no composer card", async () => {
+  installMobileViewport();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("local:ref_ended", {
@@ -1301,6 +1319,7 @@ test("keeps the location line under a finished session with no composer card", a
 // asked to resolve a branch there: a local repository that merely shares the
 // path would render as that session's branch. The working dir still shows.
 test("does not resolve a branch for a source-backed (non-local) session", async () => {
+  installMobileViewport();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("remote:ref_remote", { cwd: "/srv/remote/repo", source: "remote" }));
   await threadsStore.getState().ensureThread("remote:ref_remote");

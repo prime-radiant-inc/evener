@@ -123,6 +123,23 @@ test("renders the footer when provided", () => {
   expect(screen.getByTestId("my-footer")).toBeTruthy();
 });
 
+test("renders a flush edge footer after the padded footer", () => {
+  render(
+    <PaneScaffold
+      title="Sessions"
+      footer={<span data-testid="my-footer" />}
+      edgeFooter={<span data-testid="my-edge-footer" />}
+    >
+      content
+    </PaneScaffold>,
+  );
+
+  const footer = screen.getByTestId("pane-footer");
+  const edgeFooter = screen.getByTestId("pane-edge-footer");
+  expect(footer.contains(edgeFooter)).toBe(false);
+  expect(footer.compareDocumentPosition(edgeFooter) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 test("renders title, cadence, actions and children in that document order", () => {
   const { container } = render(
     <PaneScaffold
