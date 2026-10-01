@@ -24,6 +24,7 @@ import type {
   OverlayItem,
   SandboxEscalationRequested,
   Thread,
+  ThreadCapabilities,
   ThreadItem,
   ThreadItemPosition,
   ThreadReadResponse,
@@ -1185,6 +1186,190 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
   return withDisplay({ ...fields, turns: [], ...runningTurn(resp.thread) }, history, overlayRecord(resp.overlay));
 }
 
+// ---------------------------------------------------------------------------
+// Cached session records (web session-history cache spec, "The persist unit").
+// A record is the recorded history plus the display fields a pane needs to
+// render before the socket answers; nothing live is persisted, and the load
+// path resets the transient invalidation fields so a reload starts a clean
+// read. The encoder is the write seam's only input; the constructor is the
+// load seam's. Both are pure so the mobile store can adopt them later.
+// ---------------------------------------------------------------------------
+
+interface CachedSessionItem extends ItemModel {
+  // JSON drops ITEM_TEXT_PRESENCE. Only omitted text needs an enumerable
+  // marker; legacy records without it keep their provided-text semantics.
+  textOmitted?: true;
+}
+
+interface CachedSessionTurn extends TurnModel {
+  items: CachedSessionItem[];
+}
+
+export interface CachedSessionHistory {
+  bootGeneration: string;
+  epoch: number;
+  incarnation?: string;
+  length: number;
+  appliedGeneration: number;
+  issuedGeneration: number;
+  turns: CachedSessionTurn[];
+}
+
+export interface CachedSessionRecord {
+  ref: string;
+  threadId: string;
+  name: string;
+  modelProvider: string;
+  model: string;
+  imageSessionId?: string;
+  olderCursor?: string;
+  savedAt: number;
+  history: CachedSessionHistory;
+}
+
+// The shell's admission state is new, not an existing one: capabilities are
+// the empty set (all thirteen required flags false), so every capability-
+// gated action refuses until the authoritative read lands.
+const EMPTY_CAPABILITIES: ThreadCapabilities = {
+  send: false,
+  steer: false,
+  interrupt: false,
+  compact: false,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: false,
+  changeModel: false,
+  changeVisionModel: false,
+  queue: false,
+  goal: false,
+  sharedNotes: false,
+  rename: false,
+};
+
+export function threadModelFromCache(record: CachedSessionRecord, now: number): ThreadModel {
+  const history: HistoryState = {
+    bootGeneration: record.history.bootGeneration,
+    epoch: record.history.epoch,
+    ...(record.history.incarnation === undefined ? {} : { incarnation: record.history.incarnation }),
+    length: record.history.length,
+    appliedGeneration: record.history.appliedGeneration,
+    issuedGeneration: record.history.issuedGeneration,
+    deferredPages: [],
+    turns: record.history.turns.map((turn) => ({
+      ...turn,
+      items: turn.items.map((cached) => {
+        // The persisted flag is not model content. Strip it, then restore the
+        // non-enumerable marker without mutating the record or losing an
+        // in-memory caller's existing presence marker on this clone.
+        const { textOmitted, ...item } = cached;
+        return textOmitted === true ? markItemTextOmitted(item) : copyItemTextPresence(cached, item);
+      }),
+    })),
+  };
+  const base: ThreadModel = {
+    ref: record.ref,
+    threadId: record.threadId,
+    name: record.name,
+    status: { type: "" },
+    modelProvider: record.modelProvider,
+    model: record.model,
+    visionModel: "",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [],
+    queue: null,
+    tasks: null,
+    jobsUpdatedAt: null,
+    jobsTreeRevision: null,
+    ...(record.olderCursor === undefined ? {} : { olderCursor: record.olderCursor }),
+    lastFrameAt: now,
+    capabilities: EMPTY_CAPABILITIES,
+    goal: null,
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
+    contextUsed: 0,
+    contextWindow: 0,
+    contextPressure: 0,
+    usage: null,
+    workMillis: 0,
+    reasoningEffortLevels: [],
+    supportsReasoning: false,
+    cwd: "",
+    ...(record.imageSessionId === undefined ? {} : { imageSessionId: record.imageSessionId }),
+    history,
+  };
+  return withDisplay(base, history, {});
+}
+
+export function cachedSessionRecord(model: ThreadModel, now: number): CachedSessionRecord | undefined {
+  const history = model.history;
+  if (history?.incarnation === undefined) return undefined; // only a completed v6 content-bearing read
+  return {
+    ref: model.ref,
+    threadId: model.threadId,
+    name: model.name,
+    modelProvider: model.modelProvider,
+    model: model.model,
+    ...(model.imageSessionId === undefined ? {} : { imageSessionId: model.imageSessionId }),
+    ...(model.olderCursor === undefined ? {} : { olderCursor: model.olderCursor }),
+    savedAt: now,
+    history: {
+      bootGeneration: history.bootGeneration,
+      epoch: history.epoch,
+      incarnation: history.incarnation,
+      length: history.length,
+      appliedGeneration: history.appliedGeneration,
+      issuedGeneration: history.issuedGeneration,
+      turns: history.turns.map((turn) => ({
+        ...turn,
+        items: turn.items.map<CachedSessionItem>((item) => ({
+          ...item,
+          ...(itemTextPresence(item) === "omitted" ? { textOmitted: true } : {}),
+        })),
+      })),
+    },
+  };
+}
+
+// stampThreadImageURLs (output_images.go) prefers the wire session id and
+// falls back to the thread id, trimming both (strings.TrimSpace); the
+// client-side rebuild matches it exactly — a whitespace-padded session id
+// must not win the fallback and escape to a /s/%20.../images route the hub
+// would 404 on while the trimmed thread id would have served.
+function wireImageSessionId(thread: Thread): string {
+  return thread.sessionId.trim() || thread.id.trim();
+}
+
+/** The first and last item positions of a read response's fresh window: the
+ * bounds the store's shell seam compares against the captured anchor and the
+ * model's current newest (spec, "The two serving paths, the live gap, and
+ * its rule"). Pure record data; no disposition logic lives here. */
+export function readWindowBounds(resp: ThreadReadResponse): {
+  start: ThreadItemPosition | undefined;
+  end: ThreadItemPosition | undefined;
+} {
+  // threadFields' own session-id derivation (the wire sessionId, falling back
+  // to the thread id, trimmed), shared here so the bounds read the same
+  // image session route the read itself would.
+  const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRouteForSession(wireImageSessionId(resp.thread)));
+  const range = fragmentRange(fresh.items);
+  return { start: range?.[0], end: range?.[1] };
+}
+
+/** Merges a fold tail (the pre-replacement model's turns positioned above the
+ * replacement window's end) onto a model whose history hydrateThread just
+ * built. The replay's result is the window plus exactly the folds that
+ * arrived (spec: "the rule therefore still replaces, then replays"). */
+export function mergeTailTurns<M extends ThreadModel>(model: M, tail: TurnModel[]): ThreadModel & ModelExtras<M> {
+  if (tail.length === 0 || model.history === undefined) return publicModel<M>(model);
+  const merged = mergeTurnHistory(model.history.turns, tail);
+  const history: HistoryState = { ...model.history, turns: merged.turns };
+  // model.overlay is set on every model withDisplay built (hydrateThread's v6
+  // branch included); the ?? {} is for the type, whose field is optional.
+  return publicModel<M>(withDisplay({ ...model, history }, history, model.overlay ?? {}));
+}
+
 // Every field a read sets except the transcript itself (turns, history,
 // overlay and the running turn).
 function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<ThreadModel, "turns"> {
@@ -1193,12 +1378,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
   // precedence); the route only matters for sha-bearing images that arrived
   // WITHOUT a stamp — replayed input images from a read path that didn't
   // re-stamp, or older-producer frames.
-  // stampThreadImageURLs (output_images.go) prefers the wire session id and
-  // falls back to the thread id, trimming both (strings.TrimSpace); the
-  // client-side rebuild matches it exactly — a whitespace-padded session id
-  // must not win the fallback and escape to a /s/%20.../images route the hub
-  // would 404 on while the trimmed thread id would have served.
-  const imageSessionId = thread.sessionId.trim() || thread.id.trim();
+  const imageSessionId = wireImageSessionId(thread);
   return {
     ref,
     threadId: thread.id,
@@ -2805,7 +2985,7 @@ function identityDisposition(held: HistoryState, identity: ReadIdentity): ReadDi
 // What a latest-window response does to held history. Request generations
 // decide whether it applies at all; then the generation token, the epoch and
 // the incarnation decide between replacing the whole history and merging.
-function readDisposition(held: HistoryState, resp: ReadDispositionSignal): ReadDisposition {
+export function readDisposition(held: HistoryState, resp: ReadDispositionSignal): ReadDisposition {
   const generation = resp.requestGeneration ?? 0;
   if (generation < held.issuedGeneration) return "discard";
   if (held.invalidatedAtGeneration !== undefined && generation <= held.invalidatedAtGeneration) return "discard";
