@@ -84,11 +84,15 @@ func TestArchivedListPagesEveryRowOnceAcrossTies(t *testing.T) {
 	}
 }
 
+// A key no catalog holds reads no catalog and answers an empty page, with a
+// hint or without one.
 func TestArchivedListUnknownProjectIsAnEmptyPage(t *testing.T) {
 	p := archivedProjection(t)
-	page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: navigationResourceProjects, ProjectKey: "missing"})
-	if err != nil || len(page.Sessions) != 0 || page.Sessions == nil || page.Total != 0 || page.NextCursor != "" {
-		t.Fatalf("page=%#v err=%v", page, err)
+	for _, hint := range []navigationResourceKind{"", navigationResourceProjects, navigationResourceArchivedProjects} {
+		page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: hint, ProjectKey: "missing"})
+		if err != nil || len(page.Sessions) != 0 || page.Sessions == nil || page.Total != 0 || page.NextCursor != "" || page.Catalog != "" {
+			t.Fatalf("hint %q: page=%#v err=%v", hint, page, err)
+		}
 	}
 }
 
@@ -145,14 +149,20 @@ func dispatchArchivedList(t *testing.T, server *appserver.Server, params appwire
 	return response, nil
 }
 
-func TestHubArchivedListServesTheArchivedTierAndRejectsBadRequests(t *testing.T) {
+// archivedListServer serves evener/archived/list over a test navigation source
+// whose first project has n archived rows, and returns that project's key.
+func archivedListServer(t *testing.T, n int) (*appserver.Server, string) {
+	t.Helper()
 	source := newTestNavigationSource(testNavigationNow())
 	old := testNavigationNow().Add(-30 * 24 * time.Hour)
-	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
-	service := newTestNavigationService(t, source)
+	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", n, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
-	registerArchivedListHandler(server, service)
-	key := source.inputs.Tree.Projects[0].Key
+	registerArchivedListHandler(server, newTestNavigationService(t, source))
+	return server, source.inputs.Tree.Projects[0].Key
+}
+
+func TestHubArchivedListServesTheArchivedTierAndRejectsBadRequests(t *testing.T) {
+	server, key := archivedListServer(t, 3)
 
 	first, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: key, Limit: 2})
 	if err != nil {
@@ -192,13 +202,8 @@ func TestHubArchivedListServesTheArchivedTierAndRejectsBadRequests(t *testing.T)
 
 // An absent limit pages at the maximum, not the whole tier.
 func TestHubArchivedListOmittedLimitServesOneMaximumPage(t *testing.T) {
-	source := newTestNavigationSource(testNavigationNow())
-	old := testNavigationNow().Add(-30 * 24 * time.Hour)
-	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", maxNavigationSectionRows+10, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
-	service := newTestNavigationService(t, source)
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
-	registerArchivedListHandler(server, service)
-	response, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: source.inputs.Tree.Projects[0].Key})
+	server, key := archivedListServer(t, maxNavigationSectionRows+10)
+	response, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,13 +219,7 @@ func TestHubArchivedListOmittedLimitServesOneMaximumPage(t *testing.T) {
 // A cursor names the list it continues: one minted for another project, or
 // for the same key in another catalog, is rejected rather than misapplied.
 func TestHubArchivedListRejectsACursorFromAnotherList(t *testing.T) {
-	source := newTestNavigationSource(testNavigationNow())
-	old := testNavigationNow().Add(-30 * 24 * time.Hour)
-	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
-	service := newTestNavigationService(t, source)
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
-	registerArchivedListHandler(server, service)
-	key := source.inputs.Tree.Projects[0].Key
+	server, key := archivedListServer(t, 3)
 	first, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: key, Limit: 1})
 	if err != nil || first.NextCursor == "" {
 		t.Fatalf("first page: cursor %q, err %v", first.NextCursor, err)
@@ -618,16 +617,6 @@ func TestArchivedListWithoutAHintReadsTheFirstCatalogHoldingTheKey(t *testing.T)
 	}
 }
 
-func TestArchivedListKeyHeldNowhereReadsNoCatalog(t *testing.T) {
-	p := archivedProjection(t)
-	for _, hint := range []navigationResourceKind{"", navigationResourceProjects, navigationResourceArchivedProjects} {
-		page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: hint, ProjectKey: "missing"})
-		if err != nil || page.Catalog != "" || page.Total != 0 || len(page.Sessions) != 0 || page.NextCursor != "" {
-			t.Fatalf("hint %q: page %#v, err %v", hint, page, err)
-		}
-	}
-}
-
 // A cursor is bound to the hint the client sent, not to the catalog the hub
 // read, so a list keeps paging when the two differ: with no hint, and with a
 // hint to the pair member that no longer holds the project.
@@ -686,13 +675,7 @@ func TestArchivedListCursorContinuesAcrossAMoveBetweenPages(t *testing.T) {
 // The response names the catalog it read, and a request may leave the
 // catalog out.
 func TestHubArchivedListSaysWhichCatalogItRead(t *testing.T) {
-	source := newTestNavigationSource(testNavigationNow())
-	old := testNavigationNow().Add(-30 * 24 * time.Hour)
-	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
-	service := newTestNavigationService(t, source)
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
-	registerArchivedListHandler(server, service)
-	key := source.inputs.Tree.Projects[0].Key
+	server, key := archivedListServer(t, 3)
 	for _, catalog := range []string{"", "projects", "archived_projects"} {
 		response, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: catalog, ProjectKey: key})
 		if err != nil || response.Catalog != "projects" || response.Total != 3 {
