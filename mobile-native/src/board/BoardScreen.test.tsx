@@ -2384,6 +2384,56 @@ it("shows each working row's activity read: its meter, the hub's subagent tally,
 	act(() => tree.unmount());
 });
 
+// The Board holds no transcript of its own, so a working row's words about the
+// work come from the hub's activity read, which carries the daemon's own latest
+// tool intent (the agent states one for every call). A session whose read names
+// none keeps the bare state word.
+it("words a working row from the session's latest tool intent, where it would read Working", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [
+			{ ref: "local:tidy", minutes: [1, 0, 0], runningSubagents: 0, latestIntent: "Reading the board's row tests." },
+			{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0 },
+		],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Reading the board's row tests.");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	act(() => tree.unmount());
+});
+
+// The session's own words lead the job it is running, because they say what
+// the job is for. A read that states none still leaves the job to say itself.
+it("shows the latest tool intent over the job a working row is running", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const rebuilding = session("local:rebuild", {
+		title: "Rebuild index",
+		state: "active",
+		running_job_count: 1,
+		running_job_command: "go test ./agent/...",
+		updated_at: minutesAgo(1),
+	});
+	const shape: Fleet = {
+		...busyFleet,
+		live: [[rebuilding]],
+		activity: [
+			{ ref: "local:rebuild", minutes: [1, 0, 0], runningSubagents: 0, latestIntent: "Reading the board's row tests." },
+		],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const row = rowTitled(tree, "Rebuild index");
+	expect(textsIn(row)).toContain("Reading the board's row tests.");
+	expect(textsIn(row)).not.toContain("Running go test ./agent/...");
+	act(() => tree.unmount());
+});
+
 it("shows no stuck label or reordering from a stale read while offline (Jesse's ruling)", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

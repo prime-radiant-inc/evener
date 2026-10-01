@@ -56,9 +56,13 @@ func hubActivityRead(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		}
 	}
 	for _, activity := range remoteSessionActivity(ctx, cfg, sources, refsByHost) {
-		if keep(activity.Ref) {
-			sessions = append(sessions, activity)
+		if !keep(activity.Ref) {
+			continue
 		}
+		// A host's answer is relayed, not trusted: its rows carry the row text
+		// this controller allows, whatever version of the code that host runs.
+		activity.LatestIntent = appwire.Excerpt(activity.LatestIntent, appwire.MaxIntentRunes)
+		sessions = append(sessions, activity)
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].Ref < sessions[j].Ref })
 	return appwire.ActivityReadResponse{Sessions: sessions}, nil
@@ -76,6 +80,7 @@ func localSessionActivity(entry hubcore.LiveEntry, now time.Time) (appwire.Sessi
 		Ref:              hubcore.LiveRowRef(entry),
 		Minutes:          entry.Activity.Minutes,
 		RunningSubagents: runningSubagents(entry),
+		LatestIntent:     appwire.Excerpt(entry.Activity.LatestIntent, appwire.MaxIntentRunes),
 	}
 	// Jesse's ruling: an agent waiting on subagents is never stuck. A subagent
 	// inside one long model call emits nothing for minutes, so the tree's quiet
