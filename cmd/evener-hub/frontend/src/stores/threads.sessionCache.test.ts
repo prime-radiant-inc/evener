@@ -1347,6 +1347,52 @@ describe("cached write seam", () => {
     }
   });
 
+  it("clear suppresses a restored pinned ref without an ensureThread claim until its final release", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const ref = "local:pinned_clear";
+      const { adapter } = cacheTestBed();
+      await adapter.get(ref, Date.now()); // open storage without a pane claim
+      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-pinned-clear" });
+      await storage.enqueueIntent({
+        targetRef: ref,
+        method: "turn/queue",
+        payload: { ref, expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+        attachments: [],
+        optimisticDisplay: { text: "queued" },
+      });
+      storage.close();
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ turns: [turnFixture("turn_pinned")] }));
+      fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+      await nextModelPublished(ref); // handleReady discovers the durable row, not ensureThread
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect((await cacheRecord(ref))?.history.turns.map((turn) => turn.id)).toEqual(["turn_pinned"]);
+
+      expect(await clearCachedSessions()).toEqual({ committed: true });
+      expect(await cacheRecord(ref)).toBeUndefined();
+      emitHistoryUpdated(ref, { fold: "turn_after_clear" });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await cacheRecord(ref)).toBeUndefined();
+      expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(true);
+      expect(threadsStore.getState().cacheLeases.get(ref)).toBe(0);
+
+      const drained = nextModelRemoved(ref);
+      emitAppliedQueuedNotification(ref, "mutation-pinned-clear");
+      await drained;
+      expect(await cacheRecord(ref)).toBeUndefined(); // final-release flush must also respect suppression
+      expect(threadsStore.getState().cacheSuppressed.has(ref)).toBe(false);
+      expect(threadsStore.getState().cacheLeases.has(ref)).toBe(false);
+      await threadsStore.getState().ensureThread(ref); // the first pane claim starts a new lifetime
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await cacheRecord(ref)).toBeDefined();
+      expect(threadsStore.getState().cacheLeases.get(ref)).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("flush: the pinned drain (dropUnpinnedModel) ends a suppressed ref's suppression and lease with the model", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {

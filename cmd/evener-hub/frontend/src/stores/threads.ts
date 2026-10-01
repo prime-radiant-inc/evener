@@ -3081,12 +3081,22 @@ function isDiscardedReadResult(pending: PendingThreadHydration, model: ThreadMod
   return pending.baseModel !== undefined && model === pending.baseModel;
 }
 
+function ensureCacheLease(ref: string): void {
+  threadsStore.setState((state) =>
+    state.cacheLeases.has(ref) ? state : { cacheLeases: new Map(state.cacheLeases).set(ref, tabCacheEpoch ?? 0) },
+  );
+}
+
 function beginThreadHydration(
   ref: string,
   client: AppwireClientLike,
   model: ThreadModel | undefined,
   epoch: number,
 ): PendingThreadHydration {
+  // Restored mutations hydrate pinned refs without an ensureThread claim.
+  // Capture their lifetime before any base publishes or read starts, so a
+  // clear during hydration suppresses them through their final release too.
+  ensureCacheLease(ref);
   const attempt = (trackedHydrationAttempts.get(ref) ?? 0) + 1;
   trackedHydrationAttempts.set(ref, attempt);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
@@ -4315,13 +4325,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
       // A pinned model keeps its lifetime after the last pane releases it.
-      threadsStore.setState((s) =>
-        s.cacheLeases.has(ref)
-          ? s
-          : {
-              cacheLeases: new Map(s.cacheLeases).set(ref, tabCacheEpoch ?? 0),
-            },
-      );
+      ensureCacheLease(ref);
     }
     const generation = ensureGenerations.get(ref) ?? 0;
     refCounts.set(ref, count + 1);
