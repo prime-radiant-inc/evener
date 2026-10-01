@@ -572,7 +572,12 @@ func (s *RemoteHubSource) translateOut(out any) error {
 			rewriteItemImageURLs(s.id, &response.Items[index])
 		}
 	case *appwire.SessionActivitySummary:
-		return s.translateSessionActivity(&response.Context, nil)
+		page := appwire.SessionActivityPage{Issues: response.Issues}
+		if err := s.translateSessionActivity(&response.Context, &page); err != nil {
+			return err
+		}
+		response.Issues = page.Issues
+		return nil
 	case *appwire.SessionDelegatesResponse:
 		refs := make([]*string, 0, 3*len(response.Delegates))
 		for i := range response.Delegates {

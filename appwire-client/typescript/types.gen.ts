@@ -3114,6 +3114,10 @@ export interface SessionActivityReadParams {
 
 export interface SessionActivitySummary {
   /**
+   * Issues identify unavailable physical sources; healthy counts retain authority.
+   */
+  issues?: SessionActivityIssue[];
+  /**
    * RefreshPending means established source evidence is catching up within
    * the bounded read budget. Cold unknown counts do not request polling.
    */

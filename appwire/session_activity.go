@@ -70,6 +70,8 @@ type SessionActivityCounts struct {
 }
 
 type SessionActivitySummary struct {
+	// Issues identify unavailable physical sources; healthy counts retain authority.
+	Issues []SessionActivityIssue `json:"issues,omitempty"`
 	// RefreshPending means established source evidence is catching up within
 	// the bounded read budget. Cold unknown counts do not request polling.
 	RefreshPending bool                   `json:"refreshPending,omitempty"`

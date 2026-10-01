@@ -352,20 +352,24 @@ export class SessionActivityStore {
         if (this.disposed || generation !== this.generation) continue;
         if (resource === "summary") {
           const summary = result as SessionActivitySummary;
-          read.failures = 0;
+          const unavailable = (summary.issues?.length ?? 0) > 0;
+          if (!unavailable) read.failures = 0;
           this.publish({
             context: summary.context,
             summary,
             summaryState: {
               ...this.state.summaryState,
-              pending: !summary.context.ancestryKnown || summary.refreshPending === true,
+              pending: unavailable || !summary.context.ancestryKnown || summary.refreshPending === true,
               error: null,
               unavailable: false,
               permanent: false,
             },
           });
           if (this.disposed || generation !== this.generation) continue;
-          if (!summary.context.ancestryKnown || summary.refreshPending) this.schedule(resource, 100);
+          if (unavailable) {
+            read.failures += 1;
+            this.retry(resource);
+          } else if (!summary.context.ancestryKnown || summary.refreshPending) this.schedule(resource, 100);
         } else {
           const page = result as ActivityPage;
           if (!root && (page.context.epoch !== read.epoch || page.context.sessionId !== read.sessionId)) {

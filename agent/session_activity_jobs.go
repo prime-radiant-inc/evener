@@ -294,7 +294,7 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 
 // Summary demand catches up only sources whose complete authority was already
 // established. Source replacement retires that eligibility with the index.
-func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners map[string]bool) (bool, error) {
+func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners map[string]bool) (bool, []appwire.SessionActivityIssue, error) {
 	var ordered []string
 	for owner := range owners {
 		source := read.index.jobs[owner]
@@ -304,7 +304,7 @@ func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners 
 		ordered = append(ordered, owner)
 	}
 	if len(ordered) == 0 {
-		return false, nil
+		return false, nil, nil
 	}
 	sort.Strings(ordered)
 	// Start after the previous admitted source so a growing journal cannot
@@ -314,6 +314,10 @@ func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners 
 		start++
 	}
 	ordered = append(ordered[start:], ordered[:start]...)
+	walk := &sessionActivityWalk{}
+	for owner := range owners {
+		walk.Owners = append(walk.Owners, owner)
+	}
 	pending := false
 	for _, owner := range ordered {
 		source := read.index.jobs[owner]
@@ -329,13 +333,25 @@ func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners 
 		if err != nil {
 			var wire appwire.WireError
 			if errors.As(err, &wire) && read.context.Epoch != read.index.epoch {
-				return false, nil
+				return false, nil, nil
 			}
-			return false, err
+			if read.excludeUnavailableSource(walk, owner, err) {
+				continue
+			}
+			return false, nil, err
 		}
 		pending = pending || !complete
 	}
-	return pending, nil
+	// Invalidation may arrive during a fold or after another source was skipped.
+	// Completion is authoritative only for the final observed revision.
+	version := read.index.revision.Load()
+	for owner := range owners {
+		source := read.index.jobs[owner]
+		if source != nil && source.Established && !walk.UnavailableSources[owner] && (!source.Complete || source.Version != version) {
+			pending = true
+		}
+	}
+	return pending, walk.Issues, nil
 }
 
 func (read *sessionActivityRead) acceptJobPage(path string, index *sessionActivityJobIndex, cursor jobstore.PageCursor, events []jobstore.Event, complete bool) error {

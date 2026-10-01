@@ -426,7 +426,7 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 		controller.mu.Unlock()
 	}
 	var err error
-	result.RefreshPending, err = read.refreshWarmSources(ctx, sourceOwners)
+	result.RefreshPending, result.Issues, err = read.refreshWarmSources(ctx, sourceOwners)
 	if err != nil {
 		return result, err
 	}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +22,7 @@ func summaryRefreshPending(t *testing.T, summary appwire.SessionActivitySummary)
 		t.Fatal(err)
 	}
 	var wire struct {
-		RefreshPending bool `json:"refreshPending"`
+		RefreshPending bool `json:"refreshPending"` //nolint:tagliatelle // AppWire uses this established camelCase field.
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		t.Fatal(err)
@@ -326,5 +327,115 @@ func TestSessionActivityWarmCountsUnavailableSourceRetriesWithoutLosingCursor(t 
 	summary, err := LoadSessionActivitySummary(t.Context(), stateDir, id, params)
 	if err != nil || !summary.Jobs.Known || summary.Jobs.Total != 1 || summaryRefreshPending(t, summary) {
 		t.Fatalf("recovered=%+v error=%v", summary, err)
+	}
+}
+
+// The callback runs at a fold boundary, without concurrent fixture mutation.
+type sessionActivityInvalidateDuringFold struct {
+	context.Context
+	source     *sessionActivityJobIndex
+	invalidate func()
+	fired      bool
+}
+
+func (ctx *sessionActivityInvalidateDuringFold) Err() error {
+	if !ctx.fired && ctx.source.PendingPosition == 1 {
+		ctx.fired = true
+		ctx.invalidate()
+	}
+	return ctx.Context.Err()
+}
+
+func TestSessionActivityWarmCountsInvalidationDuringFoldRetainsDemand(t *testing.T) {
+	stateDir := t.TempDir()
+	id := "warminvalidation"
+	savePastActivityMeta(t, stateDir, id, "Root")
+	path := writeJobLogFast(t, stateDir, id, 1)
+	params := appwire.SessionActivityReadParams{Ref: encodeRef("", id)}
+	if _, err := LoadSessionActivityJobs(t.Context(), stateDir, id, appwire.SessionActivityListParams{Ref: params.Ref}); err != nil {
+		t.Fatal(err)
+	}
+	index, err := acquireSessionActivityIndex(t.Context(), stateDir+"\x00"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index.release()
+	store, err := jobstore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	at := time.Unix(100, 0).UTC()
+	appendJob := func(id string) {
+		t.Helper()
+		if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: id, Type: jobstore.JobShell, OwnerSessionID: "warminvalidation", TS: at, StartedAt: &at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendJob("second")
+	appendJob("third")
+	index.revision.Add(1)
+	ctx := &sessionActivityInvalidateDuringFold{Context: t.Context(), source: index.jobs[id], invalidate: func() { appendJob("fourth"); index.revision.Add(1) }}
+	summary, err := LoadSessionActivitySummary(ctx, stateDir, id, params)
+	if err != nil || !ctx.fired || summary.Jobs.Known || !summaryRefreshPending(t, summary) {
+		t.Fatalf("raced summary=%+v fired=%v error=%v", summary, ctx.fired, err)
+	}
+	summary, err = LoadSessionActivitySummary(t.Context(), stateDir, id, params)
+	if err != nil || !summary.Jobs.Known || summary.Jobs.Total != 4 || summaryRefreshPending(t, summary) {
+		t.Fatalf("recovered summary=%+v error=%v", summary, err)
+	}
+}
+
+func TestSessionActivityWarmCountsUnavailableDescendantPreservesRootJobs(t *testing.T) {
+	for _, failure := range []string{"io", "corrupt"} {
+		t.Run(failure, func(t *testing.T) {
+			s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
+			child, store := newSessionActivityChildJournal(t, s, "dlg_unavailable", time.Unix(100, 0).UTC())
+			writeJobLogFast(t, s.stateDir, s.ID(), 1)
+			params := appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID())}
+			if _, err := s.ListActivityWatches(t.Context(), appwire.SessionActivityListParams{Ref: params.Ref}); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(jobsDir(s.stateDir, child), "jobs.jsonl")
+			intact, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failure == "io" {
+				if err := os.Rename(path, path+".held"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, append(intact, []byte("{invalid}\n")...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s.emitSessionActivityChanged(child, appwire.SessionActivityResourceJobs)
+			summary, err := s.ActivitySummary(t.Context(), params)
+			if err != nil || !summary.Jobs.Known || summary.Jobs.Total != 1 || summary.Watches.Known || len(summary.Issues) != 1 || summary.Issues[0].Ref != encodeRef("", child) {
+				t.Fatalf("partial summary=%+v error=%v", summary, err)
+			}
+			if failure == "io" {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(path+".held", path); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, intact, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// A newly appended receiver watch must be folded even though this child
+			// had no receiver watches before its journal became unavailable.
+			if err := store.Append(jobstore.Event{Kind: jobstore.EventWatchRegistered, WatchID: "new-root-watch", TS: time.Unix(101, 0).UTC(), Watch: &jobstore.WatchEvent{Generation: "g", OwnerSessionID: child, VisibleSessionID: child, Target: "timer", ConfigHash: "hash", Config: &jobstore.WatchConfigSnapshot{Target: "timer", ReceiverSessionID: s.ID()}}}); err != nil {
+				t.Fatal(err)
+			}
+			s.emitSessionActivityChanged(child, appwire.SessionActivityResourceWatches)
+			summary, err = s.ActivitySummary(t.Context(), params)
+			if err != nil || !summary.Jobs.Known || summary.Watches.Total != 1 || len(summary.Issues) != 0 {
+				t.Fatalf("recovered summary=%+v error=%v", summary, err)
+			}
+		})
 	}
 }

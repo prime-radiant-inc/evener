@@ -1461,3 +1461,83 @@ test.each([false, true])(
     ]);
   },
 );
+
+test("partial summary issues retain healthy counts and back off until source restoration", async () => {
+  const client = activityClient();
+  let unavailable = true;
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    issues: unavailable ? [{ ref: "local:child", code: "unavailable" }] : [],
+    watches: { known: !unavailable, total: 0, active: 0, failed: 0, completed: 0 },
+  }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  expect(store.getSnapshot().summary?.jobs.known).toBe(true);
+  expect(store.getSnapshot().summary?.watches.known).toBe(false);
+  expect(store.getSnapshot().summaryState.pending).toBe(true);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  unavailable = false;
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(store.getSnapshot().summary?.watches.known).toBe(true);
+  expect(store.getSnapshot().summaryState.pending).toBe(false);
+  unavailable = true;
+  await store.refresh("summary");
+  store.dispose();
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(4);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
+  expect(callsTo(client, "evener/thread/watches/list")).toBe(0);
+});
+
+for (const transition of ["dispose", "resync"] as const) {
+  test(`partial summary publication fences recovery after listener ${transition}`, async () => {
+    const client = activityClient();
+    const store = owner(client);
+    store.start();
+    await activityState(store, () => store.getSnapshot().summary !== null);
+    let reads = 0;
+    client.on("evener/thread/activity/read", () =>
+      ++reads === 1 ? { ...summaryFixture(), issues: [{ ref: "local:child", code: "unavailable" }] } : summaryFixture(),
+    );
+    let changed = false;
+    store.subscribe(() => {
+      if (!changed && store.getSnapshot().summary?.issues?.length) {
+        changed = true;
+        if (transition === "dispose") store.dispose();
+        else
+          client.emitNotification({
+            method: "evener/thread/resync",
+            params: { ref: activityRef, threadId: "session" },
+          });
+      }
+    });
+    await store.refresh("summary");
+    expect(changed).toBe(true);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(reads).toBe(transition === "dispose" ? 1 : 2);
+  });
+}
+
+test("partial summary unavailable recovery pauses offline without collection demand", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    issues: [{ ref: "local:child", code: "unavailable" }],
+  }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  client.emitStateChange("reconnecting");
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(1);
+  client.on("evener/thread/activity/read", () => summaryFixture());
+  client.emitReady();
+  await activityState(store, () => !store.getSnapshot().summaryState.pending);
+  expect(callsTo(client, "evener/thread/activity/read")).toBe(2);
+  expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
+  expect(callsTo(client, "evener/thread/watches/list")).toBe(0);
+});
