@@ -2299,6 +2299,13 @@ describe("resource-backed Rail", () => {
       expect(postMessage).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ kind: "deletion", refs: ["local:a", "local:b"] }),
       );
+      // A new pane can try to hydrate while navigation is still held. The
+      // shared action's response fence must stop it without a thread read.
+      await act(async () => {
+        await threadsStore.getState().ensureThread("local:b");
+      });
+      expect(threadsStore.getState().threads.has("local:b")).toBe(false);
+      expect(client.calls.filter((call) => call.method === "thread/read")).toEqual([]);
       await act(async () => {
         if (outcome === "reject") convergence.reject(new Error("navigation unavailable"));
         else convergence.resolve();
