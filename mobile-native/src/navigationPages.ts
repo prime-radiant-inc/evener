@@ -16,7 +16,7 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { singleFlight } from "./singleFlight";
 
-interface PageState<T> {
+export interface PageState<T> {
 	loaded: boolean;
 	rows: T[];
 	remaining: number;
@@ -33,8 +33,26 @@ interface PageState<T> {
 export function updating(page: Pick<PageState<unknown>, "loading" | "error" | "stale" | "remaining">) {
 	return page.stale && !page.error;
 }
+/** What a page list reads and drives: NavigationPages for navigation's own
+ * resources, and ArchivedPages (archivedPages.ts) for a project's archived
+ * sessions, which navigation doesn't serve. */
+export interface PageSource<T> {
+	/** Whether navigation versions this list. A confirm step checks a change
+	 * against the version it read; an unversioned source has none to check. */
+	readonly navigationVersioned: boolean;
+	getSnapshot(): PageState<T>;
+	getResourceVersion(): NormalizedResource["version"] | null;
+	subscribe(listener: () => void): () => void;
+	watch(owner?: () => void): () => void;
+	refresh(): Promise<unknown>;
+	refreshAfter(receipt: NavigationMutation): Promise<unknown>;
+	more(): Promise<unknown>;
+	cancel(): void;
+	resume(): void;
+}
 type NativeNavigationParams = Omit<NavigationReadParams, "representationVersion">;
-export class NavigationPages<T> {
+export class NavigationPages<T> implements PageSource<T> {
+	readonly navigationVersioned = true;
 	private state: PageState<T> = {
 		loaded: false,
 		rows: [],
