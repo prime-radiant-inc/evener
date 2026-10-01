@@ -269,7 +269,11 @@ closed across navigation. Closing the last retaining pane evicts this view state
 Activity delegate rows use the shared transcript opener, which retains the
 enclosing conversation and canonicalizes restored variants of the same child
 pane before focusing it. Nested drills keep the child’s parent context so an
-unchanged root URL does not steal focus.
+unchanged root URL does not steal focus. Ancestor buttons reuse an already open
+read-only transcript with its exact pane identity and parent context; an existing
+live owner regains focus even when its URL is unchanged. The session rail and
+Open session actions request the live session route and composer, including when
+a read-only transcript of that session is already open.
 
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection
