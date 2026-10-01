@@ -314,12 +314,13 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
           document.body.append(probe);
           const actualSafeArea = probe.getBoundingClientRect().height;
           probe.remove();
+          const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
           return {
             safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea,
             mobile: matchMedia('(max-width: 899px)').matches,
             paneBottom: pane?.getBoundingClientRect().bottom ?? null,
-            cards: cards.length, footerBottom: footer?.getBoundingClientRect().bottom ?? null,
-            lastBottom, gap: lastBottom === null || !footer ? null : footer.getBoundingClientRect().bottom - lastBottom,
+            cards: cards.length, footerBottom,
+            lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
             paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
             metadataCount: pane?.querySelectorAll('[data-testid="composer-repo-location"]').length ?? 0,
             metadataVisible: metadata?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) ?? false,
