@@ -39,6 +39,12 @@ shallow and compact; do not reconstruct activity ownership from navigation rows.
 Preserve explicit session/subtree scope and share subscription lifetimes across
 transcript and activity consumers. Changes to this boundary need real producer,
 routing and client-lifetime coverage, plus updates to the guide and subsystem map.
+Preserve the user-visible assertions when migrating an activity consumer to a
+new API. Use the recorded producers in `agent/testdata/subagentwire` to verify
+delegate outcomes through the shared adapter and phone renderer. Reports belong
+to a settled run generation; independently refreshed views must agree on that
+generation before combining their evidence. Paging tests must cover refresh and
+reconnect after loading multiple pages, including a visible row on a later page.
 
 ## Testing
 

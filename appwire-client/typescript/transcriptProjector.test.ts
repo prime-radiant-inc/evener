@@ -2,7 +2,12 @@ import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./transcriptDisplayConfig";
 import { entryDisplayKey, projectThread } from "./transcriptProjector";
-import { WarningCodeContextBudget, WarningCodeDelegateAttentionRestore, WarningCodeMCPReconnected } from "./warnings";
+import {
+  WarningCodeContextBudget,
+  WarningCodeDelegateAttentionRestore,
+  WarningCodeMCPReconnected,
+  WarningCodePluginCompatibility,
+} from "./warnings";
 
 const BASE_THREAD = {
   ref: "ref:test",
@@ -254,6 +259,27 @@ describe("transcript projector", () => {
   });
 
   describe("informational warnings", () => {
+    test.each(["warning", "systemMessage"])(
+      "plugin compatibility advisory through %s is hidden at every level but full",
+      (type) => {
+        const warning = { code: WarningCodePluginCompatibility };
+        const model = threadWith(
+          item("compatibility", type, {
+            eventKind: "warning",
+            text: "allowed-tools is preserved as metadata but does not grant or restrict tools",
+            warning,
+            raw: { warning },
+          }),
+        );
+        for (const level of ["chat", "intent", "tools", "activity"] as const) {
+          expect(entriesFor(model, preset(level))).toEqual([]);
+        }
+        expect(entriesFor(model, preset("full"))).toEqual([
+          expect.objectContaining({ kind: "critical", id: "compatibility" }),
+        ]);
+      },
+    );
+
     test.each(["warning", "systemMessage"])(
       "MCP recovery through %s hides without hiding a failed retry or sign-in",
       (type) => {

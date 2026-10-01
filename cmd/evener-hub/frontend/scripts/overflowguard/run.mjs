@@ -232,7 +232,10 @@ async function measureComposerSend(cdpEndpoint, url, width) {
     await waitForFonts(send);
 
     const measurements = [];
-    for (const state of COMPOSER_SEND_STATES) {
+    const states = width <= 390
+      ? ["dark", "light"].flatMap((theme) => ["s", "m", "l", "xl"].map((fontSize) => ({ theme, fontSize })))
+      : COMPOSER_SEND_STATES;
+    for (const state of states) {
       measurements.push(
         await evaluate(
           send,
@@ -246,6 +249,11 @@ async function measureComposerSend(cdpEndpoint, url, width) {
               ? [...button.querySelectorAll('span')].find((candidate) => candidate.textContent?.trim() === 'Send')
               : null;
             const box = button?.getBoundingClientRect();
+            const activity = document.querySelector('[data-testid="composer-activity"]');
+            const activityBox = activity?.getBoundingClientRect();
+            const recipient = activity?.parentElement?.querySelector('[title]');
+            const status = document.querySelector('[data-testid="status-row"]');
+            const model = document.querySelector('[data-testid="model-switch-value"]');
             return {
               theme: ${JSON.stringify(state.theme)},
               fontSize: ${JSON.stringify(state.fontSize)},
@@ -255,6 +263,13 @@ async function measureComposerSend(cdpEndpoint, url, width) {
               width: box?.width ?? null,
               height: box?.height ?? null,
               labelDisplay: label ? getComputedStyle(label).display : null,
+              activity: activityBox ? {
+                width: activityBox.width, height: activityBox.height,
+                left: activityBox.left, right: activityBox.right,
+                recipientWidth: recipient?.clientWidth ?? 0,
+                statusWidth: status?.clientWidth ?? 0, statusContent: status?.scrollWidth ?? 0,
+                modelWidth: model?.clientWidth ?? 0,
+              } : null,
             };
           })()`,
         ),
@@ -1153,6 +1168,13 @@ async function main() {
       const sendFailures = [];
       for (const measurement of sendMeasurements) {
         const label = `${measurement.theme}/${measurement.fontSize}`;
+        if (width <= 390) {
+          const activity = measurement.activity;
+          if (!activity || activity.width < 44 || activity.height < 44 || activity.left < 0 || activity.right > width ||
+            activity.recipientWidth <= 0 || activity.modelWidth <= 0 || activity.statusContent > activity.statusWidth + 1) {
+            sendFailures.push(`${label} Activity/recipient/status geometry=${JSON.stringify(activity)}`);
+          }
+        }
         if (
           measurement.matchingButtons !== 1 ||
           measurement.tag !== "button" ||

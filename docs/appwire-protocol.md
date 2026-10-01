@@ -2305,6 +2305,8 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `issues` | `[]appwire.SessionActivityIssue` | yes |  |
+| `refreshPending` | `bool` | yes |  |
 | `context` | `appwire.SessionActivityContext` |  |  |
 | `scope` | `appwire.SessionActivityScope` |  |  |
 | `delegates` | `appwire.SessionActivityCounts` |  |  |
@@ -2476,6 +2478,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ownerRef` | `string` |  |  |
+| `sourceRef` | `string` |  |  |
 | `receiverRef` | `string` |  |  |
 | `state` | `appwire.SessionWatchState` |  |  |
 | `watch` | `appwire.EvenerWatchInfo` |  |  |

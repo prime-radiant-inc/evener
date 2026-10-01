@@ -149,6 +149,15 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
 // A channel to sibling clients of the same storage: one browser tab telling
 // the others a record just landed. Structural, so a BroadcastChannel satisfies
 // it and a host with no siblings passes nothing.
+//
+// Deliberately NOT the frontend's `stores/versionedChannel.ts` helper (#3619):
+// that helper's envelope requires a sourceId, so adopting it would change this
+// source-less wakeup wire — and mid-deploy a new receiver would reject old
+// tabs' sends — while the policies that differ (validation, own-source
+// skipping, lifetime/epoch gates) are the bulk of the code. A transport-only
+// core is possible (an injected factory needs no DOM naming), but it would
+// share only the lifecycle sliver while this module keeps its own start/stop
+// gating and lifecycle listeners; #3619 records the trade-off.
 export interface MutationOutboxChannel {
   postMessage(message: unknown): void;
   close(): void;

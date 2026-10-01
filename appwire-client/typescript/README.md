@@ -171,7 +171,11 @@ transcript reference within its owning session and returns no result for
 ambiguous evidence. API actions use the raw IDs/refs held by the row.
 
 Watch presentation consumes `SessionWatch`, preserving receiver identity and
-explicit `armed`, `ended`, or `unknown` state. The nested `watch` contains the
+explicit `armed`, `ended`, or `unknown` state. Required `sourceRef` identifies
+the physical source manager and scopes a resolved job target; `ownerRef` and
+`receiverRef` retain logical recipient ownership. Readable target labels use
+only already loaded entities qualified by that exact source ref and job ID,
+with the raw target preserved when metadata is missing. The nested `watch` contains the
 domain `EvenerWatchInfo` cadence, delivery ring/count, note, source/target and end
 reason. Cadence functions take `EvenerWatchCadence`; `watchArmedLabel` takes
 `SessionWatchState`. `buildWatchRows` namespaces row IDs by receiver ref and watch

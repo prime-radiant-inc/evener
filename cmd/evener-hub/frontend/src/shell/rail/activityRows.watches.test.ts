@@ -29,7 +29,13 @@ function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
     active: true,
     ...overrides,
   };
-  return { ownerRef: "ref_root", receiverRef: "ref_root", state: info.active ? "armed" : "ended", watch: info };
+  return {
+    ownerRef: "ref_root",
+    sourceRef: "ref_root",
+    receiverRef: "ref_root",
+    state: info.active ? "armed" : "ended",
+    watch: info,
+  };
 }
 
 // armedLabel projects CREATED->NOW through the same helper the panel uses, so

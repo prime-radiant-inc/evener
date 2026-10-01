@@ -160,7 +160,7 @@ function triggerLabel(tasks: ThreadModel["tasks"]): string {
 // session's panel opens. Mirrors subagentModuleStore.ts's itemScopeKey (same
 // NUL-separator idiom); no "" fallback is needed here since TasksPanelProps'
 // sessionRef is never optional.
-function taskDisclosureId(sessionRef: string, taskId: number): string {
+export function taskDisclosureId(sessionRef: string, taskId: number): string {
   return `${sessionRef}\0${taskId}`;
 }
 
@@ -318,7 +318,7 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
     // No className here: Disclosure's own .summary/.body already lay out
     // the full row width - this <li> exists only to keep the <ul>'s
     // children real <li>s, the list semantics screen readers rely on.
-    <li data-testid="task-row">
+    <li data-testid="task-row" data-activity-anchor={taskDisclosureId(sessionRef, task.id)}>
       <Disclosure id={taskDisclosureId(sessionRef, task.id)} summary={summary}>
         <TaskExpandedBody task={task} sessionRef={sessionRef} />
       </Disclosure>
@@ -354,6 +354,8 @@ function LiveGroup({
 
 function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: string }) {
   const groups = groupTasks(rows);
+  const completed = groups.settled.filter((task) => task.status === "done").length;
+  const cancelled = groups.settled.length - completed;
   return (
     <>
       {groups.settled.length > 0 && (
@@ -361,7 +363,9 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
           id={`${sessionRef}\0settled-group`}
           summary={
             <span className={CLASS.settledSummary} data-testid="task-settled-group-summary">
-              Done · settled <span className={CLASS.groupCount}>{groups.settled.length}</span>
+              {completed > 0 ? `${completed} completed ${completed === 1 ? "task" : "tasks"}` : null}
+              {completed > 0 && cancelled > 0 ? " · " : null}
+              {cancelled > 0 ? `${cancelled} cancelled ${cancelled === 1 ? "task" : "tasks"}` : null}
             </span>
           }
           data-testid="task-settled-group"
@@ -373,8 +377,8 @@ function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: str
           </ul>
         </Disclosure>
       )}
-      <LiveGroup label="In progress" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
-      <LiveGroup label="Open" status="open" tasks={groups.open} sessionRef={sessionRef} />
+      <LiveGroup label="Current" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} />
+      <LiveGroup label="Remaining" status="open" tasks={groups.open} sessionRef={sessionRef} />
     </>
   );
 }

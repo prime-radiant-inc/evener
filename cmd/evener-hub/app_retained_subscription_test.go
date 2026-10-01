@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,13 +22,16 @@ import (
 
 // Roster-only retained reads materialize their response through ListThreads.
 // The barrier lets a second connection establish the live relay during that read.
+// Signals mark the first entry and completion; retries share the released barrier.
 type retainedHydrationSource struct {
 	relayBroadcastSource
-	live    atomic.Bool
-	reading chan struct{}
-	release chan struct{}
-	exited  chan struct{}
-	readErr error
+	live        atomic.Bool
+	reading     chan struct{}
+	release     chan struct{}
+	exited      chan struct{}
+	readErr     error
+	readingOnce sync.Once
+	exitedOnce  sync.Once
 }
 
 func (s *retainedHydrationSource) ReadThread(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -38,8 +42,8 @@ func (s *retainedHydrationSource) ReadThread(ctx context.Context, params appwire
 }
 
 func (s *retainedHydrationSource) ListThreads(ctx context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-	close(s.reading)
-	defer close(s.exited)
+	s.readingOnce.Do(func() { close(s.reading) })
+	defer s.exitedOnce.Do(func() { close(s.exited) })
 	select {
 	case <-s.release:
 	case <-ctx.Done():
@@ -54,7 +58,7 @@ func (s *retainedHydrationSource) ListThreads(ctx context.Context, _ appwire.Thr
 }
 
 func TestHubRPCRetainedHydrationLifecycle(t *testing.T) {
-	for _, boundary := range []string{"resume", "unsubscribe", "read-error", "close"} {
+	for _, boundary := range []string{"resume", "retry", "unsubscribe", "read-error", "close"} {
 		t.Run(boundary, func(t *testing.T) {
 			const id = "retained_session"
 			source := &retainedHydrationSource{
@@ -136,8 +140,20 @@ func TestHubRPCRetainedHydrationLifecycle(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("retained source read leaked")
 			}
-			if boundary == "resume" {
+			if boundary == "resume" || boundary == "retry" {
 				expectRelayDelta(t, reader.Notifications(), "during retained read")
+				if boundary == "retry" {
+					// A saved read can be repeated after the source becomes retained again.
+					// The same released barrier must admit another materialization.
+					source.live.Store(false)
+					repeated, err := reader.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + id, Subscribe: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if repeated.Thread.ID != id || repeated.Thread.Status.Type != appwire.ThreadStatusRestartRequired {
+						t.Fatalf("repeated saved hydration returned %+v", repeated.Thread)
+					}
+				}
 			} else {
 				// The sender remains subscribed; all withdrawn reader ownership is gone.
 				deadline := time.Now().Add(time.Second)

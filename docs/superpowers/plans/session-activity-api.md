@@ -194,7 +194,7 @@ usage and missing logical session IDs remain unknown rather than fabricated.
 - [x] Update evergreen ownership, scope, pagination, recovery, and retention semantics with verified source references. Keep deferred friction cases R08, T04, T05, and D01 deferred.
 - [x] Apply simplify-code to the completed diff and run the tests covering simplifications. Complete generated freshness, focused race checks, web/native/API checks, and browser guards appropriate to the final diff.
 - [x] Obtain independent task and whole-branch reviews. Resolve valid important findings at the root and retain red/green or conclusive refutation evidence.
-- [ ] Update PR #3493's title/body to describe the resulting behavior, push one complete round, and inspect all current-head CI checks, the actual combined RoboRev comment, and open per-commit reviews. Repeat only for actionable findings. Merge under Jesse's existing green-CI/Low-or-refuted authorization and complete the repository's post-merge qualification. Handle actionable Low findings in a small follow-up.
+- [x] Update PR #3493's title/body to describe the resulting behavior, push one complete round, and inspect all current-head CI checks, the actual combined RoboRev comment, and open per-commit reviews. Repeat only for actionable findings. Merge under Jesse's existing green-CI/Low-or-refuted authorization and complete the repository's post-merge qualification. Handle actionable Low findings in a small follow-up.
 
 ## Completion evidence
 

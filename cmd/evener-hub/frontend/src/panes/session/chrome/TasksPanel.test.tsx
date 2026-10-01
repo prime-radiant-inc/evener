@@ -276,7 +276,8 @@ test("an all-settled list shows only the collapsed settled disclosure line", asy
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
 
   const settled = await screen.findByTestId("task-settled-group");
-  expect(settled.textContent).toContain("Done · settled 2");
+  expect(settled.textContent).toContain("1 completed task");
+  expect(settled.textContent).toContain("1 cancelled task");
   expect(screen.queryByTestId("task-group-live")).toBeNull();
   expect(screen.queryByTestId("task-row")).toBeNull();
 });
@@ -1112,4 +1113,30 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
   expect(await screen.findAllByTestId("task-row")).toHaveLength(2);
   expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+});
+
+test("cancelled history never claims completion and preserves every current and remaining task", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({
+    data: [
+      { id: 1, type: "implement", description: "cancelled work", prompt: "", status: "cancelled" },
+      { id: 2, type: "implement", description: "current first", prompt: "", status: "in_progress" },
+      { id: 3, type: "implement", description: "remaining first", prompt: "", status: "open" },
+      { id: 4, type: "implement", description: "current second", prompt: "", status: "in_progress" },
+      { id: 5, type: "implement", description: "remaining second", prompt: "", status: "open" },
+    ],
+  }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
+  const summary = await screen.findByTestId("task-settled-group-summary");
+  expect(summary.textContent).toBe("1 cancelled task");
+  expect(screen.queryByText("cancelled work")).toBeNull();
+  expect(screen.getAllByTestId("task-row").map((row) => row.textContent)).toEqual([
+    expect.stringContaining("current first"),
+    expect.stringContaining("current second"),
+    expect.stringContaining("remaining first"),
+    expect.stringContaining("remaining second"),
+  ]);
+  await user.click(summary);
+  expect(screen.getByText("cancelled work").getAttribute("data-struck")).toBe("true");
 });
