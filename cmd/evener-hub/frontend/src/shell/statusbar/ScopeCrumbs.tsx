@@ -20,39 +20,52 @@ const CLASS = {
   crumbBtn: requireClass(styles.crumbBtn, "scopeCrumbs.module.css", "crumbBtn"),
 };
 
+function ScopeCrumbLabel({
+  crumb,
+  depth,
+  last,
+  hierarchy,
+}: {
+  crumb: ScopeCrumb;
+  depth: number;
+  last: boolean;
+  hierarchy: boolean;
+}) {
+  const name = useThreadsStore((state) => state.threads.get(crumb.ref)?.name);
+  const row = selectSessionSummary(crumb.ref, navigationStore.getState());
+  const title = name || (row?.ref === crumb.ref ? row.title : null) || crumb.title;
+  return (
+    <span
+      className={CLASS.crumbWrap}
+      style={hierarchy ? { paddingInlineStart: `calc(var(--space-2) * ${Math.min(depth, 3)})` } : undefined}
+    >
+      {depth > 0 && !hierarchy ? <span className={CLASS.crumbSep}>›</span> : null}
+      {last ? (
+        <span className={CLASS.crumbCurrent} aria-current="page" title={title}>
+          {title}
+        </span>
+      ) : (
+        <button type="button" className={CLASS.crumbBtn} title={title} onClick={() => openSessionByRef(crumb.ref)}>
+          {title}
+        </button>
+      )}
+    </span>
+  );
+}
+
 export function ScopeCrumbs({ path, hierarchy = false }: { path: ScopeCrumb[]; hierarchy?: boolean }) {
   useNavigationStore((state) => state.resources);
-  const threads = useThreadsStore((state) => state.threads);
   return (
     <nav className={`${CLASS.crumbs}${hierarchy ? ` ${CLASS.hierarchy}` : ""}`} aria-label="Scope">
-      {path.map((crumb, depth) => {
-        const row = selectSessionSummary(crumb.ref, navigationStore.getState());
-        const title = threads.get(crumb.ref)?.name || (row?.ref === crumb.ref ? row.title : null) || crumb.title;
-        const last = depth === path.length - 1;
-        return (
-          <span
-            key={crumb.ref}
-            className={CLASS.crumbWrap}
-            style={hierarchy ? { paddingInlineStart: `calc(var(--space-2) * ${Math.min(depth, 3)})` } : undefined}
-          >
-            {depth > 0 && !hierarchy ? <span className={CLASS.crumbSep}>›</span> : null}
-            {last ? (
-              <span className={CLASS.crumbCurrent} aria-current="page" title={title}>
-                {title}
-              </span>
-            ) : (
-              <button
-                type="button"
-                className={CLASS.crumbBtn}
-                title={title}
-                onClick={() => openSessionByRef(crumb.ref)}
-              >
-                {title}
-              </button>
-            )}
-          </span>
-        );
-      })}
+      {path.map((crumb, depth) => (
+        <ScopeCrumbLabel
+          key={crumb.ref}
+          crumb={crumb}
+          depth={depth}
+          last={depth === path.length - 1}
+          hierarchy={hierarchy}
+        />
+      ))}
     </nav>
   );
 }
