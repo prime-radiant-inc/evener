@@ -72,6 +72,13 @@ and end reasons remain useful, and retained watch history has a bounded lifetime
 
 ## Delegate reports and run identity
 
+Delegate rows carry an optional compact `name` from the immutable caller-supplied
+name in the durable delegate descriptor. The domain read caps it at 200 Unicode
+code points, including an ellipsis when truncated. Browser activity rows prefer
+this label; genuinely unnamed records keep each view's existing prompt or ID
+fallback. Names are display data: owner refs and delegate IDs still identify and
+address delegates. Reading a name needs no child transcript or navigation lookup.
+
 `evener/thread/delegates/list` carries `reportPreview` from the durable reported
 completion packet of the current settled run. It preserves a useful prefix of
 up to 4,096 Unicode code points, including the ellipsis when truncated;
