@@ -16,7 +16,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 export function boundary() {
 	const requests: Array<{
 		method: string;
-		params: NavigationReadParams;
+		params: NavigationReadParams & { cursor?: string };
 		resolve: (value: NavigationReadResponse) => void;
 		reject: (error: Error) => void;
 		answered: boolean;
