@@ -1,20 +1,21 @@
-# status-vocabulary-roundtrip: attainable status words and icons agree across sidebar and TUI
+# status-vocabulary-roundtrip: attainable status states map across sidebar and TUI
 
-**What this covers**: Track A §1 (unified status vocabulary & icons) and §2
-(ask-tiering). The live steps compare the attainable your-move and
-question-waiting states across the web rail, the TUI dashboard row, and the
-TUI session header. A deterministic gate pins the complete `hubapi.StateWord`
-vocabulary, including `errored`, without pretending this setup can manufacture
-every owning runtime state.
+**What this covers**: Track A §1 (status vocabulary & icons) and §2
+(ask-tiering). The live steps verify that attainable your-move and
+question-waiting states map to the web rail's `Needs you` category while the
+title HoverCard preserves the detailed state and the TUI keeps its dashboard
+and session-header wording. A deterministic gate pins the complete
+`hubapi.StateWord` vocabulary, including `errored`, without pretending this
+setup can manufacture every owning runtime state.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. This card
 used to query `[data-ref="local:<id>"]`, `.status-icon` and `data-ask`, all
 of which died with the vanilla frontend (`660376f78`). The rail row is now
-`[data-session-ref="local:<SID>"]` with the state word inside
-`[data-testid="rail-row-activity"]` — and **lowercased** by `humanizeState`
-(`shell/rail/RailRow.tsx:138-153`), deliberately diverging from
-`hubapi.StateWord`'s sentence case. Compare words case-insensitively.
+`[data-session-ref="local:<SID>"]`; its compact signal exposes the category
+through `rail-status-spinner` / `rail-status-dot` and an accessible label,
+while hovering `[data-testid="rail-row-title"]` exposes the detailed status
+in the context card.
 
 ## Pre-state
 
@@ -62,8 +63,10 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
      return {
        port: location.port,                       // page-identity check, always
        count: rows.length,
-       activity: rows.map((r) =>
-         r.querySelector('[data-testid="rail-row-activity"]')?.textContent ?? null),
+       indicators: rows.map((r) => {
+         const signal = r.querySelector('[data-testid="rail-status-spinner"], [data-testid="rail-status-dot"]');
+         return signal?.getAttribute("aria-label") ?? null;
+       }),
      };
    })()
    ```
@@ -73,9 +76,12 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
    pane and find the `EVENER / SESSION` header line, which carries the state
    badge.
 
-5. **Force a genuine `ask_user` question**, then repeat steps 2, 3 and 4, and
-   additionally check the TUI dashboard's per-row list (filtered by project,
-   *not* opened) for the ask marker.
+5. **Force a genuine `ask_user` question**, then repeat steps 2, 3 and 4.
+   Hover `[data-session-ref="local:<SID>"] [data-testid="rail-row-title"]`, read that
+   title's `aria-describedby`, then read the element with that ID; its header must say
+   `Question waiting`. Additionally
+   check the TUI dashboard's per-row list (filtered by project, *not* opened)
+   for the ask marker.
 
 6. **[browser-free] Deterministic vocabulary gate** for states this live
    setup cannot transition into on demand:
@@ -97,17 +103,14 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   Falsification: two rows for one session disagree on either field — that is
   the reader being unable to tell which listing is stale.
 - **Step 3 (rail)**: `count` is the number of tiers the session appears in
-  (2 for a live session in a project), and every entry in `activity`
-  contains the lowercase word `your move`. The gloss line also carries the
-  project and/or branch joined with ` · ` (`RailRow.tsx:231-251`), so match
-  a substring, never the whole string. Falsification: the two rendered rows
-  carry different state words, or a row's word contradicts step 2's wire
-  value.
+  (2 for a live session in a project), and every entry in `indicators` is
+  `Needs you`. Falsification: the two rendered rows carry different status
+  categories, or a row's category contradicts step 2's wire value.
 - **Step 4**: the `EVENER / SESSION` header's badge line reads `● YOUR MOVE`.
 - **Step 5 (ask-pending)**: step 2's wire rows all flip to
-  `ask_pending:true`; every rail row's activity text contains
-  `question waiting`; the TUI header badge reads `● QUESTION WAITING`; and
-  the TUI dashboard row for this session carries the `◆` marker
+  `ask_pending:true`; every rail row retains the `Needs you` indicator, the
+  hovered context card reads `Question waiting`, the TUI header badge reads
+  `● QUESTION WAITING`, and the TUI dashboard row for this session carries the `◆` marker
   (`cmd/evener-tui/hub_dashboard_view.go:325-328`). Falsification: any surface
   still reads "your move" while another says "question waiting".
 - **Step 6**: the deterministic mapping includes
@@ -118,12 +121,11 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   `fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk` pass
   (`cmd/evener-hub/internal/hubcore/tree_live_agreement_test.go:47,96`,
   registered at `scenarios_fuzz_test.go:32-33`).
-- **Falsification (whole card)**: if a rail row's word and the TUI
-  header-badge word ever disagree for the same underlying state (e.g. the
-  rail says "working" while the TUI still says "AWAITING"), or if two rows
-  for the *same* session ever disagree with each other, the shared
-  `hubapi.StateWord` delegation is broken or one surface/row bypassed it.
-  Case is **not** a disagreement — see Surface above.
+- **Falsification (whole card)**: if a rail row's category contradicts the
+  TUI's detailed word for the same underlying state (for example, the rail
+  says `Running` while the TUI says `AWAITING`), if the HoverCard loses the
+  ask-specific detail, or if two rows for the *same* session disagree with
+  each other, one surface or row bypassed the shared state.
 
 ## Cleanup
 
@@ -155,14 +157,10 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   A row's own Cadence dot carries attention now. `tree.needs_you` is still on
   the wire and still feeds the rail-host badge — do not read its presence as
   evidence of a rendered section.
-- **A quiet row has no activity line at all.** The gloss renders only for
-  SIGNAL_STATES — `working` / `needs-you` / `failed`
-  (`RailRow.tsx:166,487`) — plus depth-0 rows, which get a second line to
-  name their project (`:498`). An `idle` session nested under a project row
-  therefore has **no** `[data-testid="rail-row-activity"]` at all, and the
-  state word moves to the row label's `title` tooltip
-  (`rowTooltip`, `:447-463`). Step 3 works because `awaiting` maps to
-  `needs-you`; do not reuse its query for an idle session.
+- **A quiet row has no indicator.** `rail-status-spinner` / `rail-status-dot`
+  renders only for `working`, `needs-you`, and `failed`; an idle session has
+  neither. Hover `rail-row-title` and read its context card when a scenario
+  needs the quiet row's detailed status.
 - **The TUI session header lives in the scrollable transcript body, not the
   fixed chrome** (`hub_session_view.go`'s session-header lines, rendered
   inside the session main body) — bubbletea's altscreen means `tmux
@@ -170,11 +168,10 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   short window (the 50-row size other `tui-*` cards use) a chatty first turn
   can push the header off the top with no way to scroll back into tmux
   history. Use a tall window (`-y 300`+).
-- **The TUI's `StatusBadge` uppercases whatever word it's given**
-  (`tuiprim.StatusBadge`), and the web rail lowercases
-  (`humanizeState`). Both are deliberate surface-specific styling, not a
-  vocabulary mismatch — the shared vocabulary is `hubapi.StateWord`, which
-  the TUI reaches through `displayWord` (`hub_dashboard_view.go#displayWord`).
+- **The TUI and rail have different display depths.** The TUI's `StatusBadge`
+  uppercases the detailed `hubapi.StateWord` value. The compact web rail maps
+  that state to `Running`, `Needs you`, or `Broken`; its HoverCard restores
+  details such as `Question waiting` and `Restart required`.
 - **Historical result: forcing `errored` live could not be verified in the
   original pass.** A bad model name was rejected at spawn time before a
   session existed, and recoverable provider failures return the live session

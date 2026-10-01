@@ -14,35 +14,31 @@ No production code is changed by this directory.
 
 **Sidebar** (`cmd/evener-hub/frontend/src/shell/rail/`)
 
-- `RailRow.tsx` renders one row. A session row is title line + optional second
-  line. The second line (`rail-row-activity`, built by `activityGloss`) glosses
-  *why* the row wants attention: `"2 subagents working · 1 job running · branch"`.
-  It only renders for signal states (working / needs-you / failed) or when a
-  depth-0 row needs its project named.
-- `railNodes.ts` shapes the tree. A session's expanded children are built by
-  `splitChildren`: current subagent rows, active `JobRailNode`s, then an
-  `inactiveFold` ("Inactive subagents (N)") and a `completedJobsFold`
-  ("Completed jobs (N)") disclosure.
-- `activeWorkSummary(session)` rolls up `{ workingSubagents, runningJobs }`
-  through the whole subtree. This is the natural home for a watch count.
-- The visual language is deliberately neutral: the rail's only hues are the
-  Cadence dot + tinted gloss (alive / attention / danger). A quiet row is one
-  line.
+- `RailRow.tsx` renders every session as one line: an optional status signal,
+  title, and age/actions slot. The title HoverCard carries project, host,
+  branch, jobs, subagents, watches, pin section, tier, and age. Its Watches row
+  distinguishes the retained count from the armed count.
+- `railNodes.ts` shapes the primary navigation as flat session rows with compact
+  own-session counters. Delegate, job, and watch detail belongs to session
+  activity; archived fork conversations are the separate nested-session case.
+- The visual language is deliberately neutral: broken is red, needs-you is
+  yellow, running is a grey spinner, and a quiet row has no indicator.
 
 **Activity panel** (`cmd/evener-hub/frontend/src/panes/session/chrome/`)
 
 - `ActivityPanel.tsx` loads a retained `ActivityTree` (jobs + delegates) and
   renders `ActivityTree.tsx`, a flat row list built by `activityRows.ts`.
-- Row kinds today: `job` (glyph `$`), `delegate` (glyph `⌘`), `fold`
-  ("N inactive"). Dense rows carry name + right-aligned meta; a chevron reveals
-  `ActivityRowDetail` (full command/mandate, a mono meta line, output tail).
+- Row kinds today: `job` (glyph `$`), `delegate` (glyph `⌘`), `watch`, and
+  `fold` ("N inactive"). Dense rows carry name + right-aligned meta; a chevron
+  reveals `ActivityRowDetail` (full command/mandate/watch facts, a mono meta
+  line, output tail or watch timeline).
 - Panel header trigger reads `Activity · <active count>`.
 - Live rows tick once a second via `TreeTickProvider`.
 
 **Watch data today**
 
-- The frontend wire has no active-watch model. The only watch-adjacent fields are
-  `fromWatch` on a job and `parentWatchGranted` on a delegate.
+- Navigation summaries carry `watch_count` and `armed_watch_count`; session
+  activity carries `SessionWatch` rows with the detailed watch state and facts.
 - Backend truth lives in the jobstore folds and is exposed by
   `agent/doctor/watches.go` (`WatchView`): `watch_id`, `target`, `send_to`,
   `condition`, `active`, `end_reason`, receiver session/delegate, the joined

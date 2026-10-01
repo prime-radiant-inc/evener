@@ -1,10 +1,19 @@
-import { type FocusEventHandler, type MouseEventHandler, type RefObject, useEffect, useRef, useState } from "react";
+import {
+  type FocusEventHandler,
+  type MouseEventHandler,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 export const SHOW_DELAY_MS = 300;
 
 interface UseFloatingLabelArgs {
   measure: () => void;
   observe: RefObject<HTMLElement | null>;
+  focusTarget?: () => HTMLElement | null;
 }
 
 interface FloatingLabelTriggerProps {
@@ -18,13 +27,16 @@ interface UseFloatingLabelResult {
   visible: boolean;
   wrapperRef: RefObject<HTMLSpanElement | null>;
   triggerProps: FloatingLabelTriggerProps;
+  showImmediately: () => void;
+  dismiss: () => void;
 }
 
-export function useFloatingLabel({ measure, observe }: UseFloatingLabelArgs): UseFloatingLabelResult {
+export function useFloatingLabel({ measure, observe, focusTarget }: UseFloatingLabelArgs): UseFloatingLabelResult {
   const [visible, setVisible] = useState(false);
   const [pending, setPending] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const wrapperRef = useRef<HTMLSpanElement>(null);
+  const activeRef = useRef({ hovered: false, wrapperFocused: false, externalFocused: false });
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
@@ -69,7 +81,7 @@ export function useFloatingLabel({ measure, observe }: UseFloatingLabelArgs): Us
     };
   }, [pending, visible]);
 
-  function show() {
+  const show = useCallback(() => {
     clearTimeout(timerRef.current);
     setPending(true);
     timerRef.current = setTimeout(() => {
@@ -77,29 +89,73 @@ export function useFloatingLabel({ measure, observe }: UseFloatingLabelArgs): Us
       setPending(false);
       setVisible(true);
     }, SHOW_DELAY_MS);
-  }
+  }, []);
 
-  function hide() {
+  const showImmediately = useCallback(() => {
+    clearTimeout(timerRef.current);
+    timerRef.current = undefined;
+    setPending(false);
+    setVisible(true);
+  }, []);
+
+  const hide = useCallback(() => {
     clearTimeout(timerRef.current);
     timerRef.current = undefined;
     setPending(false);
     setVisible(false);
-  }
+  }, []);
+
+  const hideWhenInactive = useCallback(() => {
+    const active = activeRef.current;
+    if (active.hovered || active.wrapperFocused || active.externalFocused) return;
+    hide();
+  }, [hide]);
+
+  useEffect(() => {
+    const target = focusTarget?.();
+    if (!target) return;
+    const handleFocus = () => {
+      activeRef.current.externalFocused = true;
+      showImmediately();
+    };
+    const handleBlur = (event: FocusEvent) => {
+      if (target.contains(event.relatedTarget as Node | null)) return;
+      activeRef.current.externalFocused = false;
+      hideWhenInactive();
+    };
+    target.addEventListener("focusin", handleFocus);
+    target.addEventListener("focusout", handleBlur);
+    if (target.contains(document.activeElement)) handleFocus();
+    return () => {
+      target.removeEventListener("focusin", handleFocus);
+      target.removeEventListener("focusout", handleBlur);
+    };
+  }, [focusTarget, hideWhenInactive, showImmediately]);
 
   return {
     visible,
     wrapperRef,
+    showImmediately,
+    dismiss: hide,
     triggerProps: {
-      onMouseEnter: show,
-      onMouseLeave: hide,
+      onMouseEnter: () => {
+        activeRef.current.hovered = true;
+        show();
+      },
+      onMouseLeave: () => {
+        activeRef.current.hovered = false;
+        hideWhenInactive();
+      },
       // Bubbling focus events within a multi-control wrapper must not flicker the label.
       onFocus: (event) => {
         if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        activeRef.current.wrapperFocused = true;
         show();
       },
       onBlur: (event) => {
         if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-        hide();
+        activeRef.current.wrapperFocused = false;
+        hideWhenInactive();
       },
     },
   };
