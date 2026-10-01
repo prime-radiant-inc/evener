@@ -121,7 +121,6 @@ export function SessionChrome({
   // SESSION (the shared predicate hook). The mobile overlay uses the same
   // scope, so rail and session menus agree at every viewport.
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
-  const activityOpen = sidebarOpenHere;
   const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
   const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
@@ -214,9 +213,7 @@ export function SessionChrome({
     // the sidebar already shows THIS session; opening on another session
     // re-scopes it here instead of closing it under the user. Opening it also
     // retires a leftover sessionActivity pane for this session.
-    if (isMobile) {
-      activitySidebarStore.getState().openFor(sessionRef);
-    } else if (activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
+    if (!isMobile && activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
     else {
       activitySidebarStore.getState().openFor(sessionRef);
     }
@@ -354,7 +351,7 @@ export function SessionChrome({
             canShutdown={model.capabilities.shutdown}
             stopped={SHUT_DOWN_STATUSES.has(model.status.type) || isConfirmedCrashedSession(fallbackSession)}
             session={menuSession}
-            panesOpen={{ details: detailsOpen, activity: activityOpen }}
+            panesOpen={{ details: detailsOpen, activity: sidebarOpenHere }}
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
             // Composer placement only: the header comment on the prop says

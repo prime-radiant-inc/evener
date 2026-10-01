@@ -5,6 +5,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { focusedActivityScopeRef, useFocusedActivityScopeRef } from "../focusedSession";
+import { refParam } from "../routing";
 import type { ActivityTab } from "../statusbar/statusScope";
 import { currentSessionRef, workspaceStore } from "../workspace";
 
@@ -156,7 +157,7 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
     openFor: (ref, tab, opener) => {
       const pane = workspaceStore
         .getState()
-        .panes.find((candidate) => candidate.type === "session" && (candidate.params as { ref?: string }).ref === ref);
+        .panes.find((candidate) => candidate.type === "session" && refParam(candidate.params) === ref);
       if (pane) workspaceStore.getState().focusPane(pane.id);
       else get().retarget(ref);
       closeSessionActivityPanes(ref);

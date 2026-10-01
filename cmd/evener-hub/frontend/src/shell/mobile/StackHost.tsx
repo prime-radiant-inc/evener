@@ -40,6 +40,7 @@
 import { type ReactNode, Suspense, useEffect, useRef, useState } from "react";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
+import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { navigate, paneToURL, urlToPane } from "../routing";
@@ -174,6 +175,7 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   // publishes one, the top-bar Back invokes IT instead of the stack walk.
   const paneBack = useChromeStore((s) => s.paneBack);
   const focusedPane = panes.find((p) => p.id === focusedPaneId) ?? null;
+  const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);
   // True when no real pane is focused: either nothing at all, or the
   // welcome pane (the app's "nothing open" landing screen). The mobile
@@ -303,6 +305,10 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
     if (routeDeferred) return;
     if (nothingFocused) setPanelOpen(true);
   }, [nothingFocused, routeDeferred]);
+
+  useEffect(() => {
+    if (activityOpen) setPanelOpen(false);
+  }, [activityOpen]);
 
   function handleBack(): void {
     let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
