@@ -232,9 +232,10 @@ async function measureComposerSend(cdpEndpoint, url, width) {
     await waitForFonts(send);
 
     const measurements = [];
-    const states = width <= 390
-      ? ["dark", "light"].flatMap((theme) => ["s", "m", "l", "xl"].map((fontSize) => ({ theme, fontSize })))
-      : COMPOSER_SEND_STATES;
+    const states =
+      width <= 390
+        ? ["dark", "light"].flatMap((theme) => ["s", "m", "l", "xl"].map((fontSize) => ({ theme, fontSize })))
+        : COMPOSER_SEND_STATES;
     for (const state of states) {
       measurements.push(
         await evaluate(
@@ -250,10 +251,6 @@ async function measureComposerSend(cdpEndpoint, url, width) {
               : null;
             const box = button?.getBoundingClientRect();
             const activity = document.querySelector('[data-testid="composer-activity"]');
-            const activityBox = activity?.getBoundingClientRect();
-            const recipient = activity?.parentElement?.querySelector('[title]');
-            const status = document.querySelector('[data-testid="status-row"]');
-            const model = document.querySelector('[data-testid="model-switch-value"]');
             return {
               theme: ${JSON.stringify(state.theme)},
               fontSize: ${JSON.stringify(state.fontSize)},
@@ -263,13 +260,7 @@ async function measureComposerSend(cdpEndpoint, url, width) {
               width: box?.width ?? null,
               height: box?.height ?? null,
               labelDisplay: label ? getComputedStyle(label).display : null,
-              activity: activityBox ? {
-                width: activityBox.width, height: activityBox.height,
-                left: activityBox.left, right: activityBox.right,
-                recipientWidth: recipient?.clientWidth ?? 0,
-                statusWidth: status?.clientWidth ?? 0, statusContent: status?.scrollWidth ?? 0,
-                modelWidth: model?.clientWidth ?? 0,
-              } : null,
+              activityPresent: activity !== null,
             };
           })()`,
         ),
@@ -425,7 +416,7 @@ async function measureTrustedFocus(send) {
 }
 
 // Opening the actual Tasks activity sidebar constrains the main composer.
-// The guard measures the narrower chrome, checked menu state, and the same
+// The guard measures the narrower chrome, selected activity-tab state, and the same
 // production Verbosity editor's containment and fieldset geometry.
 async function verifyPanelCollapse(cdpEndpoint, url) {
   const page = await connectPage(cdpEndpoint);
@@ -440,7 +431,6 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
     });
     const out = await send("Runtime.evaluate", {
       expression: `(async () => {
-        const taskLabel = 'Tasks';
         const until = async (read, label) => {
           for (let i = 0; i < 180; i++) {
             const value = read();
@@ -449,15 +439,6 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
           }
           throw new Error('panel collapse fixture did not settle: ' + label + '; body=' + document.body.innerText.slice(0, 500));
         };
-        const actionsTrigger = () =>
-          [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Session actions'));
-        const actions = await until(actionsTrigger, 'session actions trigger');
-        actions.click();
-        const tasksItem = await until(
-          () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === taskLabel),
-          'tasks menu item',
-        );
-        tasksItem.click();
         const panel = await until(() => document.querySelector('[data-testid="activity-sidebar"]'), 'Tasks activity sidebar');
         const chrome = await until(
           () => document.querySelector('[data-testid="session-chrome-inline"]'),
@@ -473,12 +454,12 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
         if (!closeVerbosity) throw new Error('Verbosity close button missing after dock-collapse measurement');
         closeVerbosity.click();
         await until(() => !document.querySelector('[role="dialog"][aria-modal="true"]'), 'Verbosity dialog close');
-        const actionsAgain = actionsTrigger();
-        if (!actionsAgain) throw new Error('session actions trigger missing');
-        actionsAgain.click();
         const checked = await until(
-          () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === taskLabel + ' ✓'),
-          'checked tasks menu item',
+          () =>
+            [...document.querySelectorAll('[data-testid="activity-sidebar"] [role="radio"]')].find(
+              (item) => item.getAttribute('aria-checked') === 'true' && item.textContent?.includes('Tasks'),
+            ),
+          'selected Tasks activity tab',
         );
         const pane = document.getElementById('oh-pane');
         const horizontallyOverflowing = [...pane.querySelectorAll('*')].filter((element) => {
@@ -1169,10 +1150,8 @@ async function main() {
       for (const measurement of sendMeasurements) {
         const label = `${measurement.theme}/${measurement.fontSize}`;
         if (width <= 390) {
-          const activity = measurement.activity;
-          if (!activity || activity.width < 44 || activity.height < 44 || activity.left < 0 || activity.right > width ||
-            activity.recipientWidth <= 0 || activity.modelWidth <= 0 || activity.statusContent > activity.statusWidth + 1) {
-            sendFailures.push(`${label} Activity/recipient/status geometry=${JSON.stringify(activity)}`);
+          if (measurement.activityPresent) {
+            sendFailures.push(`${label} composer Activity/recipient row is still rendered`);
           }
         }
         if (
@@ -1237,19 +1216,19 @@ async function main() {
     if (shortMenu.viewportWidth !== 844 || shortMenu.viewportHeight !== 390) {
       shortMenuFailures.push(`realized viewport=${shortMenu.viewportWidth}x${shortMenu.viewportHeight}`);
     }
-    if (shortMenu.itemCount !== 10) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 10`);
+    if (shortMenu.itemCount !== 7) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 7`);
     if (shortMenu.top < 8 - GEOMETRY_TOLERANCE || shortMenu.bottom > 390 - 8 + GEOMETRY_TOLERANCE) {
       shortMenuFailures.push(`bounds=${shortMenu.top}-${shortMenu.bottom}, expected within 8-382`);
     }
     if (
-      shortMenu.scrollHeight <= shortMenu.clientHeight ||
+      shortMenu.scrollHeight > shortMenu.clientHeight ||
       (shortMenu.overflowY !== "auto" && shortMenu.overflowY !== "scroll")
     ) {
       shortMenuFailures.push(
-        `vertical scroll=${shortMenu.scrollHeight}/${shortMenu.clientHeight}, overflow-y=${shortMenu.overflowY}`,
+        `vertical overflow=${shortMenu.scrollHeight}/${shortMenu.clientHeight}, overflow-y=${shortMenu.overflowY}`,
       );
     }
-    if (!shortMenu.activeIsLast || !shortMenu.lastVisible || !shortMenu.lastHitTestable || shortMenu.scrollTop <= 0) {
+    if (!shortMenu.activeIsLast || !shortMenu.lastVisible || !shortMenu.lastHitTestable || shortMenu.scrollTop > 0) {
       shortMenuFailures.push(
         `End reachability=${JSON.stringify({
           activeIsLast: shortMenu.activeIsLast,
@@ -1263,7 +1242,7 @@ async function main() {
       failed++;
       console.log(`short mobile menu ... FAIL - ${shortMenuFailures.join("; ")}`);
     } else {
-      console.log("short mobile menu ... PASS - popup contained, scrollable, and last action keyboard/touch reachable");
+      console.log("short mobile menu ... PASS - popup contained and last action keyboard/touch reachable");
     }
 
     const chatFocus = await verifyChatFocus(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024`);
@@ -1321,13 +1300,13 @@ async function main() {
 
     const panelCollapse = await verifyPanelCollapse(
       cdpEndpoint,
-      `http://127.0.0.1:${vitePort}/overflowharness.html?w=900&panels=1`,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?w=900&panels=1&activity=tasks`,
     );
     const panelFieldsetFailures = assertFieldsets(panelCollapse.detail, "1024 narrow dock");
     if (
       panelCollapse.mainWidth >= 640 ||
       !panelCollapse.panelVisible ||
-      panelCollapse.checkedText !== "Tasks ✓" ||
+      !panelCollapse.checkedText?.startsWith("Tasks") ||
       panelCollapse.horizontalOverflowCount !== 0 ||
       !panelCollapse.detail?.triggerReachable ||
       !panelCollapse.detail?.triggerHitTestable ||
@@ -1340,7 +1319,7 @@ async function main() {
       console.log(`panel collapse ... FAIL - ${JSON.stringify(panelCollapse)}`);
     } else {
       console.log(
-        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, Tasks activity sidebar and checked adornment visible, ` +
+        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, Tasks activity sidebar and selected tab visible, ` +
           `reachable Verbosity Dialog, no horizontal overflow`,
       );
     }

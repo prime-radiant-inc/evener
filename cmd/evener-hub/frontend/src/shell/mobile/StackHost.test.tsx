@@ -5,7 +5,11 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { MotionProvider } from "../../motion";
 import "../../panes/transcript";
+import { connectionStore } from "../../stores/connection";
+import { activityClient, activityContext, activitySummary } from "../../stores/sessionActivityTestUtils";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { openTopLevelSession } from "../sessionPlacement";
@@ -101,12 +105,15 @@ async function warmPane(open: () => void, findLandmark: (timeout: number) => Pro
   await findLandmark(PANE_WARMUP_TRIPWIRE_MS);
   cleanup();
   resetWorkspaceStoreForTests();
+  resetActivitySidebarStoreForTests();
   setLastPopstateWasTrustedForTests(false);
   window.history.pushState({}, "", "/");
 }
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  resetActivitySidebarStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
   resetChromeStoreForTests();
   setLastPopstateWasTrustedForTests(false);
 });
@@ -128,6 +135,70 @@ test("opens the mobile panel when nothing is focused", async () => {
   await screen.findByText("No session open");
   // The panel's Sheet title "Sessions" is the dialog's accessible name
   expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+});
+
+test("Activity opened from the mobile drawer supersedes the drawer", async () => {
+  const ref = "remote:drawer-activity";
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
+    ...activitySummary(requested),
+    scope: scope ?? "session",
+  }));
+  connectionStore.getState().connect(client);
+  const user = userEvent.setup();
+  workspaceStore.getState().openPane("doc", { ref });
+
+  render(
+    <MotionProvider>
+      <StackHost
+        railSlot={
+          <button
+            type="button"
+            onClick={() => {
+              workspaceStore.getState().openPane("doc", { ref });
+              activitySidebarStore.getState().openFor(ref, "jobs");
+            }}
+          >
+            Activity for drawer session
+          </button>
+        }
+      />
+    </MotionProvider>,
+  );
+
+  await screen.findByText(new RegExp(`doc pane: ${ref}`));
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+  await user.click(screen.getByRole("button", { name: "Activity for drawer session" }));
+
+  expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
+  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
+});
+
+test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
+  const ref = "remote:activity";
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref: requested, scope }) => ({
+    ...activitySummary(requested),
+    scope: scope ?? "session",
+  }));
+  client.on("evener/thread/jobs/list", ({ ref: requested, scope }) => ({
+    context: activityContext(requested),
+    scope: scope ?? "session",
+    jobs: [],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  workspaceStore.getState().openPane("doc", { ref });
+  activitySidebarStore.getState().openWith("jobs");
+
+  render(
+    <MotionProvider>
+      <StackHost />
+    </MotionProvider>,
+  );
+
+  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
+  expect(screen.getByRole("radio", { name: /Jobs/ })).toBeTruthy();
 });
 
 test("does not flash the panel during routeDeferred", async () => {

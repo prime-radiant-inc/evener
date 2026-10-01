@@ -216,7 +216,7 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
   return (
     <>
       <Button variant="quiet" onClick={() => setOpen(true)}>
-        Force stop…
+        Force shutdown…
       </Button>
       <ForceStopDialog open={open} onClose={() => setOpen(false)} onConfirm={stop} />
       {error && <span role="alert">{error}</span>}

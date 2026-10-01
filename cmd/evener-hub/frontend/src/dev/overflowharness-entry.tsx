@@ -34,6 +34,7 @@ import type {
 import { hydrateThread, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { activitySidebarStore } from "../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";
@@ -558,6 +559,7 @@ if (settingsMode) {
   );
 } else if (params.get("panels") === "1") {
   workspaceStore.getState().openPane("session", { ref: REF });
+  if (params.get("activity") === "tasks") activitySidebarStore.getState().openWith("tasks");
   createRoot(rootEl).render(
     <ClientProvider client={fake}>
       <MotionProvider>

@@ -2,6 +2,7 @@ import { hydrateThread } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { lazy } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resetActivitySidebarStoreForTests } from "../../../shell/activitybar/activitySidebarStore";
 import { resetChromeStoreForTests } from "../../../shell/chromeStore";
 import { ClientProvider } from "../../../shell/clientContext";
 import { StackHost } from "../../../shell/mobile/StackHost";
@@ -20,11 +21,9 @@ import {
   activityThread,
   activityWatch,
 } from "../../../stores/sessionActivityTestUtils";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { SessionActivityAction } from "../composer/SessionActivityAction";
+import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ActivityPanel, ActivityPanelBody } from "./ActivityPanel";
-import { SessionChrome } from "./SessionChrome";
 
 const ref = "remote:owner";
 const model = (sessionRef = ref) => hydrateThread(activityThread(sessionRef), sessionRef, 0);
@@ -35,6 +34,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetChromeStoreForTests();
   resetActivityPanelStoreForTests();
+  resetActivitySidebarStoreForTests();
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
 });
@@ -43,6 +43,7 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ client: null, state: "idle" });
   resetActivityPanelStoreForTests();
+  resetActivitySidebarStoreForTests();
   resetWorkspaceStoreForTests();
   restoreViewport();
   window.history.pushState({}, "", "/");
@@ -180,34 +181,6 @@ test("mobile child transcript Back restores Activity and disclosures until expli
   } finally {
     restoreSessionPane();
   }
-});
-
-test("narrow Activity action opens the single chrome sheet and labels only known active counts", async () => {
-  const client = connectActivity();
-  let known = false;
-  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
-    delegates: { known, total: 8, active: 0, failed: 0, completed: 8 },
-  }));
-  await threadsStore.getState().ensureThread(ref);
-  render(
-    <ClientProvider client={client}>
-      <SessionActivityAction sessionRef={ref} />
-      <SessionChrome ref={ref} placement="composer" />
-    </ClientProvider>,
-  );
-  expect(await screen.findByRole("button", { name: "Activity" })).toBeTruthy();
-  known = true;
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["summary"] },
-    }),
-  );
-  fireEvent.click(await screen.findByRole("button", { name: "Activity · 2 active" }));
-  expect(await screen.findByRole("dialog", { name: "Activity" })).toBeTruthy();
-  expect(screen.queryByRole("menu")).toBeNull();
 });
 
 test("mobile child Back restores the loaded job extent and expanded older failure with fresh cursors", async () => {

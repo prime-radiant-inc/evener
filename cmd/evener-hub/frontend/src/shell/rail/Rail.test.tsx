@@ -40,7 +40,6 @@ import {
   setSessionCacheAdapterForTests,
   threadsStore,
 } from "../../stores/threads";
-import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -1766,41 +1765,15 @@ describe("resource-backed Rail", () => {
     expect(getToasts().some((toast) => /Couldn't update archive state/i.test(toast.text))).toBe(true);
   });
 
-  test("the rail's Notes action opens idempotently, matching its sibling panes", () => {
-    topNotesStore.getState().resetForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
-    try {
-      installState([
-        sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
-      ]);
-      threadsStore.setState({
-        threads: new Map([
-          [
-            "local:notable",
-            { ref: "local:notable", capabilities: { sharedNotes: true }, status: { type: "idle" } } as never,
-          ],
-        ]),
-      });
-      render(<Rail />);
+  test("the rail session menu omits Tasks and Notes", () => {
+    installState([
+      sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
+    ]);
+    render(<Rail />);
 
-      fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Notes" }));
-      expect(topNotesStore.getState().isExpanded("local:notable")).toBe(true);
-
-      // Re-selecting Notes (now labeled with the open checkmark) keeps it
-      // open: the rail NAVIGATES (idempotent, like its sibling pane openers) -
-      // toggling closed is the palette's deliberate job.
-      fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Notes ✓" }));
-      expect(topNotesStore.getState().isExpanded("local:notable")).toBe(true);
-      expect(topNotesStore.getState().hasPendingFocus("local:notable")).toBe(true);
-    } finally {
-      restoreSessionPane();
-    }
+    fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
+    expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
   });
 
   test("a rail row's Activity action opens the session and the activity sidebar, never the old pane", async () => {
@@ -1875,10 +1848,10 @@ describe("resource-backed Rail", () => {
     }
   });
 
-  test("a rail row's Activity action on mobile keeps the old pane (no sidebar exists there)", async () => {
-    // The sidebar is desktop chrome; on the phone the rail lives in the tree
-    // drawer and Activity keeps its pre-sidebar behavior: the sessionActivity
-    // pane. The desktop retarget must not leak into the mobile rail.
+  test("a rail row's Activity action on mobile opens the new activity sidebar", async () => {
+    // The mobile rail lives in the tree drawer, but Activity now opens the
+    // same Tasks, Jobs and Watches surface as desktop instead of the retired
+    // sessionActivity pane.
     const restoreViewport = installMobileViewport();
     resetActivitySidebarStoreForTests();
     const restoreSessionPane = registerPaneForTests({
@@ -1899,10 +1872,8 @@ describe("resource-backed Rail", () => {
 
       fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
-      await waitFor(() => {
-        expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(true);
-      });
-      expect(activitySidebarStore.getState().open).toBe(false);
+      await waitFor(() => expect(activitySidebarStore.getState().open).toBe(true));
+      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
     } finally {
       restoreViewport();
       restoreSessionPane();
@@ -1911,127 +1882,21 @@ describe("resource-backed Rail", () => {
     }
   });
 
-  test("a rail row's Tasks action opens the session and the sidebar's tasks tab, never the old pane", async () => {
-    // The chrome menu's twin: desktop Tasks everywhere is the activity
-    // sidebar, preselected to its Tasks tab. The rail NAVIGATES, idempotently:
-    // open the session pane, open the sidebar scoped to it, never toggle
-    // closed.
-    resetActivitySidebarStoreForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
-    try {
-      installState([
-        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
-      ]);
-      render(<Rail />);
-
-      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Tasks" }));
-      await waitFor(() => {
-        expect(activitySidebarStore.getState().open).toBe(true);
-      });
-      expect(activitySidebarStore.getState().tab).toBe("tasks");
-      expect(
-        workspaceStore
-          .getState()
-          .panes.some((p) => p.type === "session" && (p.params as { ref?: string }).ref === "local:active"),
-      ).toBe(true);
-      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(false);
-    } finally {
-      restoreSessionPane();
-      // The reset updates a store the row subscribes to; unwrapped it lands
-      // outside act and the teardown console guard reports it on this test.
-      act(() => resetActivitySidebarStoreForTests());
-    }
-  });
-
-  test("a rail row's Tasks action on mobile keeps the old pane (no sidebar exists there)", async () => {
-    // The sidebar is desktop chrome; on the phone the rail lives in the tree
-    // drawer and Tasks keeps its pre-sidebar behavior: the sessionTasks pane.
-    // The desktop retarget must not leak into the mobile rail.
+  test("the rail session menu omits Tasks and Notes on mobile", () => {
     const restoreViewport = installMobileViewport();
-    resetActivitySidebarStoreForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
-    const restoreTasksPane = registerPaneForTests({
-      id: "sessionTasks",
-      title: () => "tasks",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
-    try {
-      installState([
-        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
-      ]);
-      render(<Rail />);
-
-      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Tasks" }));
-      await waitFor(() => {
-        expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(true);
-      });
-      expect(activitySidebarStore.getState().open).toBe(false);
-    } finally {
-      restoreViewport();
-      restoreSessionPane();
-      restoreTasksPane();
-      act(() => resetActivitySidebarStoreForTests());
-    }
-  });
-
-  test("the rail's Notes action rechecks the notes capability, refusing a stale menu", () => {
-    topNotesStore.getState().resetForTests();
-    const restoreSessionPane = registerPaneForTests({
-      id: "session",
-      title: () => "session",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
     try {
       installState([
         sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
       ]);
-      threadsStore.setState({
-        threads: new Map([
-          [
-            "local:notable",
-            { ref: "local:notable", capabilities: { sharedNotes: true }, status: { type: "idle" } } as never,
-          ],
-        ]),
-      });
       render(<Rail />);
-
-      // The menu opens while the capability is live...
       fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
-      const notesItem = screen.getByRole("menuitem", { name: "Notes" });
-
-      // ...and is revoked before the click lands - one act, so the click
-      // runs against the stale menu the user still sees.
-      act(() => {
-        threadsStore.setState({
-          threads: new Map([
-            [
-              "local:notable",
-              { ref: "local:notable", capabilities: { sharedNotes: false }, status: { type: "idle" } } as never,
-            ],
-          ]),
-        });
-        fireEvent.click(notesItem);
-      });
-
-      // The capability is gone, so the click must leave no trace: no
-      // expanded state, no focus request, nothing the session pane would
-      // surface if the capability ever came back.
-      expect(topNotesStore.getState().isExpanded("local:notable")).toBe(false);
-      expect(topNotesStore.getState().hasPendingFocus("local:notable")).toBe(false);
+      expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
     } finally {
-      restoreSessionPane();
+      restoreViewport();
     }
   });
+
   test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
     window.history.replaceState({}, "", "/");
     // Session rows are leaves now: the tree's branch rows are projects (and
@@ -2274,7 +2139,7 @@ describe("resource-backed Rail", () => {
     );
     installState(
       kind === "session"
-        ? [sectionResource("live", [summary({ title: "Delete target" })])]
+        ? [sectionResource("live", [summary({ title: "Delete target", state: "ended", live: false })])]
         : [catalogResource([{ key: "p", name: "Delete target", session_count: 1, sources: ["local"] }])],
     );
     navigationStore.setState({ applyNavigationMutation });
@@ -2326,7 +2191,7 @@ describe("resource-backed Rail", () => {
 
   test("routes unpin and delete through rendered session dialogs and receipt convergence", async () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
-    const row = summary({ title: "Pinned delete" });
+    const row = summary({ title: "Pinned delete", state: "ended", live: false });
     installState([
       resource(
         { kind: "pin_catalog", offset: 0, limit: 100 },
@@ -2385,9 +2250,9 @@ describe("resource-backed Rail", () => {
     render(<Rail />, client);
     fireEvent.click(screen.getByText("Project"));
     fireEvent.click(screen.getByRole("button", { name: /actions for unresponsive/i }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
     expect(client.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(client.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
       { method: "evener/thread/forceStop", params: { ref: "local:a" } },

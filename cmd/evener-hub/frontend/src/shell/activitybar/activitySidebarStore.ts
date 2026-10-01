@@ -5,6 +5,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { focusedActivityScopeRef, useFocusedActivityScopeRef } from "../focusedSession";
+import { refParam } from "../routing";
 import type { ActivityTab } from "../statusbar/statusScope";
 import { currentSessionRef, workspaceStore } from "../workspace";
 
@@ -116,6 +117,7 @@ export interface ActivitySidebarState {
   ref: string | null;
   views: ReadonlyMap<string, ActivitySessionView>;
   openWith(tab?: ActivityTab, opener?: HTMLElement): void;
+  openFor(ref: string, tab?: ActivityTab, opener?: HTMLElement): void;
   close(): void;
   setTab(tab: ActivityTab): void;
   toggle(): void;
@@ -152,6 +154,15 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       captureActivitySidebarOpener(opener);
       update({ open: true, tab: tab ?? get().tab });
     },
+    openFor: (ref, tab, opener) => {
+      const pane = workspaceStore
+        .getState()
+        .panes.find((candidate) => candidate.type === "session" && refParam(candidate.params) === ref);
+      if (pane) workspaceStore.getState().focusPane(pane.id);
+      else get().retarget(ref);
+      closeSessionActivityPanes(ref);
+      get().openWith(tab, opener);
+    },
     close: () => update({ open: false }),
     setTab: (tab) => update({ tab }),
     toggle: () => {
@@ -175,8 +186,8 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       const state = get();
       const view = state.views.get(ref);
       if (!view || !state.open || state.ref !== ref) return;
-      // A committed desktop view records inherited child inspection intent.
-      // Global focus can also move on mobile, where this sidebar is absent.
+      // A committed view records inherited child inspection intent.
+      // Global focus can also move while the sidebar is not mounted.
       const savedViews = readViews();
       const saved = savedViews.get(ref);
       if (saved?.open === view.open && saved.tab === view.tab) {
@@ -247,11 +258,9 @@ export function activitySidebarOpenFor(ref: string): boolean {
   return activitySidebarStore.getState().open && focusedActivityScopeRef() === ref;
 }
 
-/** Closes any sessionActivity panes for a session. Desktop Activity retargeted
- * to the sidebar, so a pane that survives an upgrade or a restored layout has
- * no affordance that opens it and no ✓ that marks it: an orphan. Opening the
- * sidebar on a session supersedes its leftover panes (the mobile rail keeps
- * opening them, so this only runs on the desktop paths). */
+/** Closes any sessionActivity panes for a session. Activity now uses the
+ * sidebar at every viewport, so a pane that survives an upgrade or restored
+ * layout has no affordance that opens it. */
 export function closeSessionActivityPanes(ref: string): void {
   const workspace = workspaceStore.getState();
   for (const pane of workspace.panes) {

@@ -32,8 +32,8 @@
 
 import {
   approvalWaiting,
-  canReadSharedNotes,
   humanizeState,
+  SHUT_DOWN_STATUSES,
   watchCadenceLabel,
   watchDurationLabel,
   watchGloss,
@@ -49,17 +49,14 @@ import {
   selectSources,
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { useThreadsStore } from "../../stores/threads";
-import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Badge, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { HoverCard } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
-import { useActivitySidebarOpenFor, useActivitySidebarStore } from "../activitybar/activitySidebarStore";
+import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
-import { useIsMobile } from "../useIsMobile";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
@@ -76,7 +73,7 @@ import {
 } from "./railNodes";
 import { useRailNow } from "./railNow";
 import { useRailRenderObserver } from "./railRenderObserver";
-import { isTopLevelSession } from "./sessionKind";
+import { isConfirmedCrashedSession, isTopLevelSession } from "./sessionKind";
 
 export { isTopLevelSession } from "./sessionKind";
 
@@ -200,7 +197,7 @@ function Signal({ wireState }: { wireState: string }) {
 export { watchCadenceLabel, watchDurationLabel, watchGloss };
 
 export interface RailRowActions {
-  onOpenSessionPane(session: RailSession, pane: SessionPanelKind | "notes"): void;
+  onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
   onForceStopSession(session: RailSession): Promise<void>;
@@ -396,33 +393,14 @@ function saysNotStarted(session: RailSession, hasSignal: boolean): boolean {
 function SessionMenuRow({ session, actions }: { session: RailSession; actions: RailRowActions }) {
   const ref = session.ref;
   // Separate boolean selectors, NOT one object-literal selector: a
-  // fresh { details, tasks, activity, notes } object every call would fail the
+  // fresh { details, activity } object every call would fail the
   // store's reference-equality check and re-render the row on every
   // workspace change (SessionChrome selects the same four booleans the
   // same way).
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
-  // The Activity ✓ marks what this row's Activity action opens, per viewport:
-  // the desktop sidebar (the predicate is shared with the session chrome so
-  // the two menus can never disagree), or the sessionActivity pane the mobile
-  // rail still opens from the tree drawer. On desktop a leftover pane is an
-  // orphan the chrome never marks (opening the sidebar retires it), so the
-  // pane half is mobile-only. Unconditional hook calls throughout.
-  const isMobile = useIsMobile();
+  // The Activity ✓ marks the shared sidebar's scope. A leftover
+  // sessionActivity pane is not an opener and is intentionally not marked.
   const activitySidebarOpen = useActivitySidebarOpenFor(ref);
-  const activityPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
-  const activityOpen = activitySidebarOpen || (isMobile && activityPaneOpen);
-  // The Tasks ✓ follows the Activity check's per-viewport rule: the desktop
-  // Tasks action opens the sidebar's Tasks tab, so the mark is the sidebar
-  // open ON that tab, scoped to this session; the sessionTasks pane it
-  // replaced is a desktop orphan the check never marks, and stays the mobile
-  // half (the tree drawer has no sidebar).
-  const sidebarTab = useActivitySidebarStore((state) => state.tab);
-  const tasksPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
-  const tasksOpen = (activitySidebarOpen && sidebarTab === "tasks") || (isMobile && tasksPaneOpen);
-  const notesOpen = useTopNotesExpanded(ref);
-  // Navigation summaries do not carry notes capability. Observe only an
-  // already-hydrated snapshot; opening the session owns any needed fetch.
-  const canReadNotes = useThreadsStore((s) => canReadSharedNotes(s.threads.get(ref)));
   return (
     <SessionMenu
       sessionRef={ref}
@@ -430,9 +408,9 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       triggerLabel={`Actions for ${session.title}`}
       canRename={session.rename === true}
       canShutdown={session.live && session.state !== "restartRequired"}
-      canReadNotes={canReadNotes}
+      stopped={SHUT_DOWN_STATUSES.has(session.state) || isConfirmedCrashedSession(session)}
       treeNode={session}
-      panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
+      panesOpen={{ details: detailsOpen, activity: activitySidebarOpen }}
       actions={{
         onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
         onRename: (name) => actions.onRenameSession(session, name),
