@@ -1029,8 +1029,8 @@ describe("demo fleet subagents", () => {
 describe("demo fleet archived lists", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
-	/** Every row of one archived list, paging by cursor with the same params,
-	 * each page checked to hold rows and the list's total. */
+	/** The session ids one archived list serves, paging by cursor with the
+	 * same params, each page checked to hold rows and the list's total. */
 	function pageArchived(list: Omit<ArchivedListParams, "cursor">, total: number): Set<string> {
 		const seen = new Set<string>();
 		let cursor: string | undefined;
@@ -1115,8 +1115,8 @@ describe("demo fleet archived lists", () => {
 		});
 	});
 
-	// The hub change's own case: a project whose every session is archived
-	// moves into Archived projects, and a row read earlier still names Projects.
+	// A project whose every session is archived moves into Archived projects,
+	// while a row read earlier still names Projects.
 	it("follows a project that moved into Archived projects, whichever of the pair it is hinted", () => {
 		const demo = createDemoFleet({ now: STARTUP });
 		const deslop = findRow(liveRows(demo), "s-deslop");
@@ -1142,6 +1142,10 @@ describe("demo fleet archived lists", () => {
 
 	it("refuses an unknown catalog and a cursor from another list", () => {
 		expect(() => fleet.answerArchivedList({ catalog: "nope", projectKey: "evener" })).toThrow(
+			"Unknown demonstration catalog: nope",
+		);
+		// The catalog is checked before the limit, as on the hub.
+		expect(() => fleet.answerArchivedList({ catalog: "nope", projectKey: "evener", limit: -1 })).toThrow(
 			"Unknown demonstration catalog: nope",
 		);
 		const cursor = fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "evener" }).nextCursor;

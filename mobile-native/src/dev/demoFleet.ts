@@ -1303,6 +1303,9 @@ function fleetAnswers(
 			catalogProjects(catalog).some((project) => project.key === projectKey),
 		);
 	}
+
+	// The catalogs archivedListCatalog tries, in order (the hub's
+	// archivedListCandidates).
 	function archivedListCandidates(hint: string): string[] {
 		switch (hint) {
 			case "":
