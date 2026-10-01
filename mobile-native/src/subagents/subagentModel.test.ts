@@ -262,10 +262,12 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 	});
 
 	it("opens a finished report, and says Stopped or Finished when there's nothing to quote", () => {
-		expect(subagentWhy(rowOf(done("d", { message: "## Report\n**Tests pass** on both platforms." })), NOW)).toEqual({
+		expect(
+			subagentWhy(rowOf(done("d", { reportPreview: "## Report\n**Tests pass** on both platforms." })), NOW),
+		).toEqual({
 			text: "Tests pass on both platforms.",
 		});
-		expect(subagentWhy(rowOf(done("d", { message: { ok: true } })), NOW)).toEqual({ text: "Finished" });
+		expect(subagentWhy(rowOf(done("d", { reportPreview: undefined })), NOW)).toEqual({ text: "Finished" });
 		expect(subagentWhy(rowOf(done("s", { outcome: "stopped" })), NOW)).toEqual({ text: "Stopped" });
 	});
 
@@ -513,8 +515,18 @@ describe("shell jobs in the Activity list", () => {
 
 describe("qualified activity evidence", () => {
 	it("keeps colliding logical IDs under distinct owners and resolves outcomes by transcript owner", () => {
-		const left = done("same", { childRef: "local:child-a", ownerRef: "local:parent-a", message: "left" });
-		const right = done("same", { childRef: "local:child-b", ownerRef: "local:parent-b", message: "right" });
+		const left = done("same", {
+			childRef: "local:child-a",
+			ownerRef: "local:parent-a",
+			reportPreview: "left",
+			runGeneration: 1,
+		});
+		const right = done("same", {
+			childRef: "local:child-b",
+			ownerRef: "local:parent-b",
+			reportPreview: "right",
+			runGeneration: 1,
+		});
 		const t: ActivityTree = {
 			revision: 1,
 			root: session("local:coord", [
@@ -537,9 +549,9 @@ describe("qualified activity evidence", () => {
 			]),
 		};
 		expect(flattenActivity(t, "Coordinator")).toHaveLength(6);
-		expect(subagentOutcome(t, "same", NOW, "local:parent-a")).toBe("left");
-		expect(subagentOutcome(t, "same", NOW, "local:parent-b")).toBe("right");
-		expect(subagentOutcome(t, "same", NOW, "local:unrelated")).toBeUndefined();
+		expect(subagentOutcome(t, "same", NOW, "local:parent-a", 1)).toBe("left");
+		expect(subagentOutcome(t, "same", NOW, "local:parent-b", 1)).toBe("right");
+		expect(subagentOutcome(t, "same", NOW, "local:unrelated", 1)).toBeUndefined();
 	});
 	it("does not invent a total when only an input usage counter is present", () => {
 		expect(subagentLastLine(rowOf(done("one", { usage: { inputTokens: 1200 } })), null, (x) => x)?.tokens).toBe(

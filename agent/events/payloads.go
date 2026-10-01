@@ -714,6 +714,7 @@ type JobFinishedData struct {
 // result: clients control the resource by DelegateID and order state by
 // ProjectionRevision while merging LatestActivityAt independently.
 type DelegateUpdatedData struct {
+	RunGeneration       uint64                `json:"run_generation"`
 	DelegateID          string                `json:"delegate_id"`
 	OwnerSessionID      string                `json:"owner_session_id"`
 	RootSessionID       string                `json:"root_session_id"`

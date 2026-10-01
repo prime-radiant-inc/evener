@@ -138,6 +138,7 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
         diagnostics: {
           delegates: [
             {
+              runGeneration: 1,
               delegateId: "dlg_observed",
               ownerSessionId: "sess_ref_a",
               rootSessionId: "sess_ref_a",

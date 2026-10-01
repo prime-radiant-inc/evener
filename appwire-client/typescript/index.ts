@@ -57,6 +57,14 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export type {
+  ArchivedList,
+  ArchivedListCatalog,
+  ArchivedListClient,
+  ArchivedListState,
+  ArchivedListStore,
+} from "./archivedListStore";
+export { archivedListKey, createArchivedListStore } from "./archivedListStore";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type {

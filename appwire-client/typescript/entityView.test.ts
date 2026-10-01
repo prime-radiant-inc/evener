@@ -33,6 +33,7 @@ function job(jobId: string): ActivityJob {
 
 function delegate(delegateId: string, projectionRevision?: number): ActivityDelegate {
   return {
+    runGeneration: 1,
     delegateId,
     ownerSessionId: "s",
     rootSessionId: "s",
@@ -79,6 +80,7 @@ function liveDelegate(
   transcriptRef = `local:live-${delegateId}`,
 ): EvenerDelegateInfo {
   return {
+    runGeneration: 1,
     delegateId,
     ownerSessionId: "s",
     rootSessionId: "s",
