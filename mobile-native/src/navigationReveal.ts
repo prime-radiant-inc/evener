@@ -10,9 +10,9 @@ import type { PageSource } from "./navigationPages";
 export interface SessionLocation {
 	ref: string;
 	/** The page row to scroll to and highlight. The location's own ref for a
-	 * top-level session, the owning row (its nearest non-subagent ancestor) for
-	 * a subagent or any non-top-level session in the archived tier: the hub
-	 * answers their locations with top_level_ref = that row. */
+	 * top-level session, and for any other (a subagent, a nested fork original)
+	 * the top-level row that carries it: the hub answers their locations with
+	 * top_level_ref = that row. */
 	revealRef: string;
 	title: string;
 	params: Omit<NavigationReadParams, "representationVersion">;
@@ -39,15 +39,13 @@ export async function locateSession(
 	}
 	if (response.status !== "ok" || location?.ref !== ref || location.session?.ref !== ref)
 		throw new Error("This session could not be located. Try again.");
-	// A subagent has no row of its own: the hub answers its location with
-	// top_level_ref = the row that owns it (D5). Every other ref -- a root, a
-	// fork original or a cluster member -- has its own row, even when the hub
-	// marks it non-top-level, so reveal it directly. The archived list is the
-	// exception: it keeps a fork original inside its continuation's row, so a
-	// non-top-level archived session is revealed through top_level_ref, as the
-	// web's rail does.
-	const carried = location.session?.kind === "subagent" || (location.tier === "archived" && !location.top_level);
-	const revealRef = carried ? (location.top_level_ref ?? ref) : ref;
+	// Only a top-level session has a row of its own: navigation lists top-level
+	// rows alone, and the archived list keeps a fork original inside its
+	// continuation's row. The hub answers any other location (a subagent, a
+	// nested fork original) with top_level_ref = the top-level row that
+	// carries it, so reveal that row. (The web's rail does the same outside
+	// the archived tier, which it renders with fork originals inline.)
+	const revealRef = location.top_level ? ref : location.top_level_ref;
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
 			throw new Error("The hub returned an unknown project section.");

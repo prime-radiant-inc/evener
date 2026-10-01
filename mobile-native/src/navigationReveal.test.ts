@@ -45,12 +45,13 @@ it.each([
 		revealRef: "child",
 	});
 });
-const locationClient = (fields: Record<string, unknown>, session: Record<string, unknown> = {}) =>
+/** A hub answering one location, for a session of the given kind. */
+const locationClient = (fields: Record<string, unknown>, kind = "session") =>
 	Object.assign(new FakeClient("ready"), {
 		request: async () => {
 			const snapshot = wireSnapshot({ representationVersion: 3, resource: "location", ref: "child" } as never, {
 				ref: "child",
-				session: { ref: "child", project: "Project", ...session },
+				session: { ref: "child", project: "Project", kind },
 				...fields,
 			});
 			return {
@@ -71,28 +72,38 @@ it.each([
 		"cluster-row",
 	],
 ])("reveals a subagent by %s, not by the subagent itself", async (_name, fields, revealRef) => {
-	expect(await locateSession(locationClient(fields, { kind: "subagent" }), "child")).toMatchObject({
+	expect(await locateSession(locationClient(fields, "subagent"), "child")).toMatchObject({
 		ref: "child",
 		revealRef,
 	});
 });
-it("reveals a nested fork original's own row, not its parent (it has one)", async () => {
-	// The hub marks every child non-top-level, but a fork original keeps its own
-	// row in roots-only navigation, so /project must land on it, not the root.
-	const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier: "current" };
-	expect(await locateSession(locationClient(fields, { kind: "fork" }), "child")).toMatchObject({
+// Navigation v3 lists only top-level rows, and the archived list keeps a fork
+// original inside its continuation's row, so a nested fork original has no
+// row of its own in any tier: /project lands on the top-level row carrying it.
+it.each(["current", "recent", "archived"])(
+	"reveals a nested fork original through the top-level row that carries it (%s)",
+	async (tier) => {
+		const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier };
+		expect(await locateSession(locationClient(fields, "fork"), "child")).toMatchObject({
+			ref: "child",
+			revealRef: "root",
+		});
+	},
+);
+it("reveals a top-level fork original by its own row", async () => {
+	const fields = { top_level: true, top_level_ref: "child", project_key: "p", tier: "current" };
+	expect(await locateSession(locationClient(fields, "fork"), "child")).toMatchObject({
 		ref: "child",
 		revealRef: "child",
 	});
 });
-it("reveals an archived fork original through the row that carries it", async () => {
-	// The archived list keeps a fork original inside its continuation's row,
-	// with no row of its own, so /project lands on the continuation.
-	const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier: "archived" };
-	expect(await locateSession(locationClient(fields, { kind: "fork" }), "child")).toMatchObject({
-		ref: "child",
-		revealRef: "root",
-	});
+// The hub names the row carrying every location; one that names none is
+// refused like any other malformed location, so a reveal never lacks a row.
+it("refuses a location that names no top-level row", async () => {
+	const fields = { top_level: false, top_level_ref: undefined, project_key: "p", tier: "current" };
+	await expect(locateSession(locationClient(fields, "fork"), "child")).rejects.toThrow(
+		"This session could not be located. Try again.",
+	);
 });
 it.each(["local:orphan", "host:remote-subagent"])(
 	"shows the existing could-not-be-located message for a gone ref: %s",
