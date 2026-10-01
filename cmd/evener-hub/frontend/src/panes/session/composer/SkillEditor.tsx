@@ -49,6 +49,7 @@ export interface SkillEditorProps {
    */
   restoreEpoch?: number;
   "aria-label"?: string;
+  "aria-describedby"?: string;
   "aria-controls"?: string;
   "aria-activedescendant"?: string;
   skillDetails?(name: string): string;
@@ -359,6 +360,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         role: "textbox",
         "aria-multiline": "true",
         "aria-label": props["aria-label"] ?? "Message",
+        ...(props["aria-describedby"] ? { "aria-describedby": props["aria-describedby"] } : {}),
         ...(props["aria-controls"] ? { "aria-controls": props["aria-controls"] } : {}),
         ...(props["aria-activedescendant"] ? { "aria-activedescendant": props["aria-activedescendant"] } : {}),
         "data-placeholder": props.placeholder ?? "",

@@ -220,6 +220,7 @@ function hostGroupNode(overrides: Partial<HostRailNode> = {}): HostRailNode {
 function watchGloss(info: EvenerWatchInfo): string {
   return domainWatchGloss({
     ownerRef: "ref_owner",
+    sourceRef: "ref_owner",
     receiverRef: "ref_owner",
     state: info.active ? "armed" : "ended",
     watch: info,

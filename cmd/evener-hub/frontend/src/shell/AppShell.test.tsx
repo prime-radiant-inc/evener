@@ -21,7 +21,7 @@ import userEvent from "@testing-library/user-event";
 // always been the rail row) rather than collide with the bar.
 const rail = () => within(screen.getByTestId("rail"));
 
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
@@ -37,9 +37,11 @@ import {
   resetNavigationStoreForTests,
 } from "../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../stores/prefs";
+import { activityContext, activityDelegate, activitySummary } from "../stores/sessionActivityTestUtils";
 import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
 import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
 import { navigate } from "./routing";
@@ -4322,3 +4324,218 @@ test("a popstate into a host-scoped settings URL selects the host before the pan
   // scripts none, so the read fails) before the test ends.
   expect(await screen.findByText("Couldn't check beta's registration")).toBeTruthy();
 });
+
+test.each([false, true])(
+  "desktop Activity drill keeps grandchild focus with retained ref-only observer=%s",
+  async (retained) => {
+    const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 500 });
+    onTestFinished(() => {
+      if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
+      else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+    });
+    vi.stubGlobal("innerWidth", 1280);
+    window.history.pushState({}, "", "/s/local:owner");
+    installLocationForRoute("local:owner");
+    resetActivitySidebarStoreForTests();
+    const client = navClient();
+    const context = (ref: string) => ({
+      ...activityContext(ref),
+      rootRef: "local:owner",
+      ...(ref !== "local:owner" ? { parentRef: ref === "local:child" ? "local:owner" : "local:child" } : {}),
+      ancestors:
+        ref === "local:owner"
+          ? []
+          : [
+              { ref: "local:owner", sessionId: activityContext("local:owner").sessionId, title: "Root" },
+              ...(ref === "local:grandchild"
+                ? [{ ref: "local:child", sessionId: activityContext("local:child").sessionId, title: "Observer" }]
+                : []),
+            ],
+    });
+    client.on("thread/read", ({ ref }) => {
+      if (!ref) throw new Error("thread ref required");
+      return {
+        thread: {
+          ...threadStartResponse(ref).thread,
+          name: ref,
+          turns: [
+            {
+              id: "settled",
+              status: "completed",
+              itemsView: "full",
+              items: [
+                { id: "report", turnId: "settled", type: "agentMessage", text: `report-${ref}`, status: "completed" },
+              ],
+            },
+          ],
+        },
+      };
+    });
+    client.on("evener/thread/activity/read", ({ ref }) => ({ ...activitySummary(ref), context: context(ref) }));
+    client.on("evener/thread/delegates/list", ({ ref }) => ({
+      context: context(ref),
+      scope: "session",
+      delegates:
+        ref === "local:grandchild"
+          ? []
+          : [
+              activityDelegate({
+                ownerRef: ref,
+                rootRef: "local:owner",
+                childRef: ref === "local:owner" ? "local:child" : "local:grandchild",
+                name: ref === "local:owner" ? "observer" : "grandchild",
+                terminal: true,
+                lifecycle: "idle",
+                phase: "done",
+                status: "completed",
+              }),
+            ],
+      page: { complete: true, issues: [] },
+    }));
+    client.on("evener/thread/jobs/list", ({ ref }) => ({
+      context: context(ref),
+      scope: "session",
+      jobs: [],
+      page: { complete: true, issues: [] },
+    }));
+    client.on("evener/jobs/get", () => {
+      throw new Error("retained metadata unavailable");
+    });
+    client.on("evener/jobs/output", () => ({
+      data: { tail: "retained-history-output", totalBytes: 23, retainedStart: 0 },
+    }));
+    const user = userEvent.setup();
+    let historyPane: string | undefined;
+    try {
+      render(<AppShell client={client} />);
+      await screen.findByRole("heading", { name: "local:owner" });
+      await screen.findByText("report-local:owner");
+      await waitFor(() => expect(getDockviewApi()).not.toBeNull());
+      act(() => {
+        historyPane = workspaceStore
+          .getState()
+          .openPane("transcript", { ref: "job:history", parentRef: "local:owner" }, { slot: "secondary" });
+        workspaceStore.getState().focusPane(workspaceStore.getState().mainPane()?.id ?? "");
+      });
+      await screen.findByText("retained-history-output");
+      if (retained)
+        act(() => {
+          workspaceStore.getState().openPane("transcript", { ref: "local:child" }, { slot: "secondary" });
+          workspaceStore.getState().focusPane(workspaceStore.getState().mainPane()?.id ?? "");
+        });
+      act(() => activitySidebarStore.getState().openWith("agents"));
+      await screen.findByRole("button", { name: "Inactive subagents (1)" });
+      if (!screen.queryByRole("button", { name: /observer/ }))
+        await user.click(screen.getByRole("button", { name: "Inactive subagents (1)" }));
+      await user.click(await screen.findByRole("button", { name: /observer/ }));
+      await waitFor(() =>
+        expect(
+          (
+            workspaceStore.getState().panes.find((p) => p.id === workspaceStore.getState().focusedPaneId)?.params as {
+              ref?: string;
+            }
+          )?.ref,
+        ).toBe("local:child"),
+      );
+      act(() => activitySidebarStore.getState().openWith("agents"));
+      await screen.findByRole("button", { name: "Inactive subagents (1)" });
+      if (!screen.queryByRole("button", { name: /grandchild/ }))
+        await user.click(screen.getByRole("button", { name: "Inactive subagents (1)" }));
+      await user.click(await screen.findByRole("button", { name: /grandchild/ }));
+      await screen.findByRole("heading", { name: "local:grandchild" });
+      const grandchild = workspaceStore
+        .getState()
+        .panes.find((p) => p.type === "transcript" && (p.params as { ref?: string }).ref === "local:grandchild");
+      expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
+      expect(screen.getByText("report-local:owner")).toBeTruthy();
+      expect(workspaceStore.getState().panes.some((p) => p.id === historyPane)).toBe(true);
+      expect(
+        workspaceStore
+          .getState()
+          .panes.filter((p) => p.type === "transcript" && (p.params as { ref?: string }).ref === "local:child"),
+      ).toHaveLength(1);
+      const scope = screen
+        .getAllByRole("navigation", { name: "Scope" })
+        .find((nav) => within(nav).queryByText("local:grandchild"));
+      expect(scope).toBeTruthy();
+      if (!scope) throw new Error("grandchild scope missing");
+      await user.click(within(scope).getByRole("button", { name: "local:owner" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+      expect(screen.getByText("report-local:owner")).toBeTruthy();
+      act(() => activitySidebarStore.getState().openWith("agents"));
+      // Disclosure persistence belongs to the retention suite; this journey
+      // verifies navigation and focus with the core sidebar's local disclosure.
+      if (!screen.queryByRole("button", { name: /observer/ }))
+        await user.click(await screen.findByRole("button", { name: "Inactive subagents (1)" }));
+      expect(await screen.findByRole("button", { name: /observer/ })).toBeTruthy();
+    } finally {
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  },
+);
+
+test.each([false, true])(
+  "rail session activation opens live chrome with retained transcript and nested=%s",
+  async (nested) => {
+    const user = userEvent.setup();
+    const client = navClient();
+    client.on("thread/read", ({ ref }) => {
+      if (!ref) throw new Error("session ref required");
+      return { thread: threadStartResponse(ref).thread };
+    });
+    if (nested)
+      client.on("evener/navigation/read", (params) =>
+        params.resource === "location" && params.ref === "local:s1"
+          ? wireSnapshot(
+              params,
+              {
+                ref: "local:s1",
+                top_level_ref: "local:owner",
+                top_level: false,
+                session: { ...TREE_SESSION, kind: "subagent" },
+              },
+              '"nested"',
+            )
+          : navigationRead(params),
+      );
+    window.history.pushState({}, "", "/s/local%3Aowner");
+    render(<AppShell client={client} />);
+    await rail().findByText("Session one");
+    await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" }));
+    const owner = workspaceStore.getState().mainPane();
+    const transcript = await act(async () =>
+      workspaceStore
+        .getState()
+        .openPane("transcript", { ref: "local:s1", parentRef: "local:owner" }, { slot: "secondary" }),
+    );
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(transcript));
+    if (nested)
+      act(() =>
+        installLocation({
+          generation_id: "generation_test",
+          revision: 1,
+          ref: "local:s1",
+          top_level_ref: "local:owner",
+          top_level: false,
+          session: { ...TREE_SESSION, kind: "subagent", state: "idle" },
+        }),
+      );
+    await user.click(rail().getByText("Session one"));
+    expect(window.location.pathname).toBe("/s/local%3As1");
+    await waitFor(() => {
+      const state = workspaceStore.getState();
+      const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+      expect(focused?.type).toBe("session");
+      expect(focused?.params).toEqual({ ref: "local:s1" });
+    });
+    expect(workspaceStore.getState().mainPane()?.type).toBe("session");
+    if (nested) {
+      expect(workspaceStore.getState().mainPane()?.id).toBe(owner?.id);
+      expect(
+        workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId)?.slot,
+      ).toBe("secondary");
+      expect(await screen.findAllByRole("textbox", { name: "Message" })).toHaveLength(2);
+    } else expect(await screen.findByRole("textbox", { name: "Message" })).toBeTruthy();
+  },
+);

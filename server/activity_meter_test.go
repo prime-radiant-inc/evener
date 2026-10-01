@@ -2,10 +2,13 @@ package server
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // activityTestClock is a hand-advanced clock for the meter.
@@ -124,5 +127,83 @@ func TestActivityMeterQuietClockNeverMovesBackward(t *testing.T) {
 func TestActivityMeterReadsNothingBeforeItStarts(t *testing.T) {
 	if got := (&activityMeter{}).snapshot(); got != nil {
 		t.Fatalf("an unstarted meter reported %+v, want nil", got)
+	}
+}
+
+// toolCallStart is a root tool call carrying the intent the agent promotes to
+// the event's description (session_tools.go).
+func toolCallStart(description string) events.SessionEvent {
+	return threadEvent("root", events.ToolCallStartData{ToolName: "read_file", ArgumentsJSON: "{}", Description: description})
+}
+
+// A Working row says what the session last set out to do: the intent of the
+// newest tool call the root itself started.
+func TestActivityMeterNamesTheRootsNewestToolIntent(t *testing.T) {
+	meter, _ := startedMeter()
+	meter.noteIntent(toolCallStart("Reading the board's row tests."))
+	if got, want := meter.snapshot().LatestIntent, "Reading the board's row tests."; got != want {
+		t.Fatalf("latest intent = %q, want %q", got, want)
+	}
+	meter.noteIntent(toolCallStart("Editing the why line."))
+	if got, want := meter.snapshot().LatestIntent, "Editing the why line."; got != want {
+		t.Fatalf("after a second call the intent = %q, want %q", got, want)
+	}
+}
+
+// A call that states no intent is not news: the line keeps the last one it was
+// given rather than going blank mid-turn.
+func TestActivityMeterKeepsTheIntentWhenAToolCallStatesNone(t *testing.T) {
+	meter, _ := startedMeter()
+	meter.noteIntent(toolCallStart("Reading the board's row tests."))
+	meter.noteIntent(toolCallStart(""))
+	if got, want := meter.snapshot().LatestIntent, "Reading the board's row tests."; got != want {
+		t.Fatalf("latest intent = %q, want the earlier one %q", got, want)
+	}
+}
+
+// Motion alone never words a row: only noteIntent sets the intent, and the
+// descendant path observes without noting it, so a subagent's calls cannot put
+// their words on the root's row.
+func TestActivityMeterLeavesTheIntentToRootToolCalls(t *testing.T) {
+	meter, _ := startedMeter()
+	meter.observe(events.EventToolCallStart)
+	if got := meter.snapshot().LatestIntent; got != "" {
+		t.Fatalf("motion alone set the intent to %q, want none", got)
+	}
+}
+
+// A new turn is new work: the row shows this turn's intent, not the words of a
+// turn that finished an hour ago.
+func TestActivityMeterDropsTheIntentWhenATurnStarts(t *testing.T) {
+	meter, _ := startedMeter()
+	meter.noteIntent(toolCallStart("Reading the board's row tests."))
+	meter.noteIntent(threadEvent("root", events.ExecutionStartedData{TurnID: "turn-1"}))
+	if got := meter.snapshot().LatestIntent; got != "" {
+		t.Fatalf("intent after a turn started = %q, want none", got)
+	}
+}
+
+// The intent is a row's why line, so it travels as one bounded line: runs of
+// whitespace become single spaces, and text past the bound is cut.
+func TestActivityMeterBoundsTheIntentToOneLine(t *testing.T) {
+	meter, _ := startedMeter()
+	meter.noteIntent(toolCallStart("Reading\nthe   board's row tests."))
+	if got, want := meter.snapshot().LatestIntent, "Reading the board's row tests."; got != want {
+		t.Fatalf("latest intent = %q, want one line %q", got, want)
+	}
+	meter.noteIntent(toolCallStart(strings.Repeat("x", appwire.MaxIntentRunes+50)))
+	if got := meter.snapshot().LatestIntent; utf8.RuneCountInString(got) > appwire.MaxIntentRunes {
+		t.Fatalf("intent runs %d runes, want at most %d", utf8.RuneCountInString(got), appwire.MaxIntentRunes)
+	}
+}
+
+// A replaced identity is a different session: its meter starts clean, intent
+// included.
+func TestActivityMeterRestartDropsTheIntent(t *testing.T) {
+	meter, _ := startedMeter()
+	meter.noteIntent(toolCallStart("Reading the board's row tests."))
+	meter.restart()
+	if got := meter.snapshot().LatestIntent; got != "" {
+		t.Fatalf("intent after restart = %q, want none", got)
 	}
 }

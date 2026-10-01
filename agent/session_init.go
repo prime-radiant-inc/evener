@@ -1730,7 +1730,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	})
 	s.skills.Diagnostics = append(diagnostics, s.skills.Diagnostics...)
 	for _, diagnostic := range s.skills.Diagnostics {
-		s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{Message: fmt.Sprintf("skill %s [%s] %s: %s", diagnostic.Name, diagnostic.Category, diagnostic.Source, diagnostic.Message)})
+		s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
+			Code:    skillDiagnosticWarningCode(diagnostic.Category),
+			Message: fmt.Sprintf("skill %s [%s] %s: %s", diagnostic.Name, diagnostic.Category, diagnostic.Source, diagnostic.Message),
+		})
 	}
 	s.pluginCommands = make(map[string]plugin.Command)
 
@@ -2518,6 +2521,15 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 		pluginName, shown, event)
 }
 
+func skillDiagnosticWarningCode(category string) string {
+	switch category {
+	case "allowed_tools_not_enforced", "unsupported_control":
+		return events.WarningCodePluginCompatibility
+	default:
+		return ""
+	}
+}
+
 // commandUnenforcedFieldWarnings builds one diagnostic per plugin command that
 // declares a model or allowed-tools override in its frontmatter. Neither seam
 // exists yet (design §14): both fields are parsed and stored on plugin.Command,
@@ -2546,6 +2558,7 @@ func commandUnenforcedFieldWarnings(p plugin.Instance) []events.WarningData {
 		}
 		out = append(out, events.WarningData{
 			Source:     "plugin",
+			Code:       events.WarningCodePluginCompatibility,
 			Title:      "unenforced command override",
 			Message:    fmt.Sprintf("plugin %q command %q declares %s, which evener does not yet enforce per-turn; it runs with the session's default model and tools", p.Manifest.Name, cmd.Name, strings.Join(fields, " and ")),
 			PluginName: p.Manifest.Name,

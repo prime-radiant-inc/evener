@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -210,6 +211,34 @@ func TestSessionActivityTranslatedSummaryEnvelope(t *testing.T) {
 			}
 			if len(wireCalls(calls())) != 1 {
 				t.Fatal("summary dispatched more than once")
+			}
+		})
+	}
+}
+
+func TestSessionActivitySummaryIssuesQualifiedEnvelopeBound(t *testing.T) {
+	for _, count := range []int{1, 200} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			sourceID := strings.Repeat("remote-", 260)
+			summary := appwire.SessionActivitySummary{Context: appwire.SessionActivityContext{Ref: "local:root", RootRef: "local:root", SessionID: "root", AncestryKnown: true}}
+			for i := range count {
+				summary.Issues = append(summary.Issues, appwire.SessionActivityIssue{Ref: fmt.Sprintf("local:child-%d", i), Code: "unavailable"})
+			}
+			source, _ := newScriptedRemote(t, sourceID, func(method string, _ json.RawMessage) scriptedReply { return scriptedReply{result: summary} })
+			result, err := source.ThreadActivityRead(t.Context(), appwire.SessionActivityReadParams{Ref: sourceID + ":root"})
+			if count == 200 {
+				var wire appwire.WireError
+				if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+					t.Fatalf("oversized qualified summary error=%v", err)
+				}
+				return
+			}
+			if err != nil || len(result.Issues) != 1 || result.Issues[0].Ref != sourceID+":child-0" {
+				t.Fatalf("summary=%+v error=%v", result, err)
+			}
+			raw, err := json.Marshal(result)
+			if err != nil || len(raw) > 256<<10 {
+				t.Fatalf("qualified envelope bytes=%d error=%v", len(raw), err)
 			}
 		})
 	}

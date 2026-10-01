@@ -19,6 +19,8 @@ const CLASS = {
   bar: requireClass(styles.bar, "statusbar.module.css", "bar"),
   chips: requireClass(styles.chips, "statusbar.module.css", "chips"),
   chip: requireClass(styles.chip, "statusbar.module.css", "chip"),
+  chipName: requireClass(styles.chipName, "statusbar.module.css", "chipName"),
+  chipCount: requireClass(styles.chipCount, "statusbar.module.css", "chipCount"),
   chipGlyph: requireClass(styles.chipGlyph, "statusbar.module.css", "chipGlyph"),
 };
 
@@ -46,14 +48,17 @@ export function StatusBar() {
           <button
             key={tab.id}
             type="button"
+            data-activity-tab={tab.id}
             className={CLASS.chip}
+            title={tab.chipLabel(counts)}
             aria-label={`${tab.chipLabel(counts)} - open the activity sidebar`}
             onClick={() => activitySidebarStore.getState().openWith(tab.id)}
           >
             <span className={CLASS.chipGlyph} aria-hidden="true">
               {tab.glyph}
             </span>
-            {tab.chipCount(counts)}
+            <span className={CLASS.chipName}>{tab.label}</span>
+            <span className={CLASS.chipCount}>{tab.chipCount(counts)}</span>
           </button>
         ))}
       </div>
