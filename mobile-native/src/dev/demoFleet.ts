@@ -930,8 +930,8 @@ export interface DemoFleetOptions {
 interface FleetAnswers {
 	answerNavigationRead(params: NavigationReadParams): NavigationReadResponse;
 	/** evener/archived/list, as cmd/evener-hub/navigation_archived_list.go
-	 * serves it: a catalog project's archived rows, paged by a cursor bound to
-	 * that list, with the tier's total. */
+	 * serves it: a project's archived rows, read from the catalog holding it,
+	 * paged by a cursor bound to the hint and project, with the tier's total. */
 	answerArchivedList(params: ArchivedListParams): ArchivedListResponse;
 	answerSearch(params: SearchParams): SearchResponse;
 	answerAuthList(): AuthListResponse;
@@ -1174,10 +1174,10 @@ function findSubagent(
 
 // An archived list's cursor names the list it continues (its catalog hint,
 // "" for none, and project) and where, so a cursor from another list is
-// refused. The hub's cursor
-// (navigation_archived_list.go's encodeArchivedCursor/decodeArchivedCursor)
-// marks where by the last row's order key and the demo's by an offset; the
-// binding to its list and the refusals' words are the hub's.
+// refused. The hub's cursor (navigation_archived_list.go's
+// encodeArchivedCursor/decodeArchivedCursor) marks where by the last row's
+// order key and the demo's by an offset; the binding to its list and the
+// refusals' words are the hub's.
 function encodeArchivedCursor(hint: string, projectKey: string, offset: number): string {
 	return JSON.stringify({ catalog: hint, projectKey, offset });
 }
@@ -1299,15 +1299,21 @@ function fleetAnswers(
 	// moved there (never test runs), and with no hint the first catalog
 	// holding it. Undefined when none of those holds it.
 	function archivedListCatalog(hint: string, projectKey: string): string | undefined {
-		const candidates =
-			hint === ""
-				? ["projects", "archived_projects", "test_runs"]
-				: hint === "projects"
-					? ["projects", "archived_projects"]
-					: hint === "archived_projects"
-						? ["archived_projects", "projects"]
-						: [hint];
-		return candidates.find((catalog) => catalogProjects(catalog).some((project) => project.key === projectKey));
+		return archivedListCandidates(hint).find((catalog) =>
+			catalogProjects(catalog).some((project) => project.key === projectKey),
+		);
+	}
+	function archivedListCandidates(hint: string): string[] {
+		switch (hint) {
+			case "":
+				return ["projects", "archived_projects", "test_runs"];
+			case "projects":
+				return ["projects", "archived_projects"];
+			case "archived_projects":
+				return ["archived_projects", "projects"];
+			default:
+				return [hint];
+		}
 	}
 
 	// Mirrors cmd/evener-hub/navigation_archived_list.go: a known catalog
@@ -1317,10 +1323,10 @@ function fleetAnswers(
 	// read from holds.
 	function answerArchivedList(params: ArchivedListParams): ArchivedListResponse {
 		const hint = params.catalog ?? "";
+		const catalog = archivedListCatalog(hint, params.projectKey);
 		const limit = params.limit ?? 0;
 		if (!Number.isInteger(limit) || limit < 0 || limit > NAVIGATION_SECTION_LIMIT)
 			throw new Error(`limit must be between 0 and ${NAVIGATION_SECTION_LIMIT}`);
-		const catalog = archivedListCatalog(hint, params.projectKey);
 		const offset = params.cursor ? decodeArchivedCursorOffset(params.cursor, hint, params.projectKey) : 0;
 		const rows = catalog ? tierRows(params.projectKey, "archived") : [];
 		const sessions = rows.slice(offset, offset + (limit || NAVIGATION_SECTION_LIMIT));
