@@ -26,13 +26,13 @@ import {
 import { Fragment, type JSX, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
+import { Markdown, MarkdownBubble } from "../../../widgets";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { Markdown } from "../../../widgets/markdown";
 import { EntityRef } from "../transcript/EntityRef";
-import { formatQuietAge, jobStatusDisplay, quietAnchorMillis } from "./activityFormat";
+import { delegateName, formatQuietAge, jobStatusDisplay, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import { useTreeNow } from "./treeNow";
 
@@ -41,6 +41,8 @@ const CLASS = {
   detailCommand: requireClass(styles.detailCommand, "activitypanel.module.css", "detailCommand"),
   detailMeta: requireClass(styles.detailMeta, "activitypanel.module.css", "detailMeta"),
   detailOutput: requireClass(styles.detailOutput, "activitypanel.module.css", "detailOutput"),
+  delegateReport: requireClass(styles.delegateReport, "activitypanel.module.css", "delegateReport"),
+  delegateReportLabel: requireClass(styles.delegateReportLabel, "activitypanel.module.css", "delegateReportLabel"),
   watchNote: requireClass(styles.watchNote, "activitypanel.module.css", "watchNote"),
   watchFacts: requireClass(styles.watchFacts, "activitypanel.module.css", "watchFacts"),
   watchNoSchedule: requireClass(styles.watchNoSchedule, "activitypanel.module.css", "watchNoSchedule"),
@@ -340,6 +342,21 @@ function JobOutputPreview({ ownerRef, jobId }: { ownerRef: string; jobId: string
   );
 }
 
+function DelegateReport({ row }: { row: ActivityDelegateRow }) {
+  const { delegate } = row;
+  const report = delegate.reportPreview?.trim();
+  if (!report) return null;
+  return (
+    <div className={CLASS.delegateReport} data-testid="delegate-report">
+      <div className={CLASS.delegateReportLabel}>
+        Message from{" "}
+        <EntityRef id={delegate.delegateId} ownerRef={row.parentRef} kind="delegate" display={delegateName(delegate)} />
+      </div>
+      <MarkdownBubble source={report} density="compact" dataTestId="delegate-report-bubble" />
+    </div>
+  );
+}
+
 export function ActivityRowDetail({
   row,
   now,
@@ -396,6 +413,7 @@ export function ActivityRowDetail({
           {warning}
         </span>
       ))}
+      {row.kind === "delegate" && <DelegateReport row={row} />}
       {row.kind === "job" && row.job.hasOutput && <JobOutputPreview ownerRef={row.parentRef} jobId={row.job.jobId} />}
     </div>
   );

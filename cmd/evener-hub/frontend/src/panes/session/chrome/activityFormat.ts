@@ -1,7 +1,19 @@
 // Pure formatting helpers for the dense activity tree rows. Kept React-free so
 // each is trivially unit-testable (same contract as protocol/displayFormat).
 
-import { type ActivityUsage, formatTokenCount, isActivityFailure } from "@evener/appwire-client";
+import { type ActivityDelegate, type ActivityUsage, formatTokenCount, isActivityFailure } from "@evener/appwire-client";
+
+export function delegateName(delegate: ActivityDelegate): string {
+  return (
+    delegate.name?.trim() ||
+    (delegate.mandate ??
+      delegate.task ??
+      delegate.description ??
+      delegate.child?.label ??
+      delegate.childSessionId ??
+      delegate.childRef)
+  );
+}
 
 // formatUsagePair renders a delegate row's token cluster ("↑41.2K ↓6.1K"), or null
 // when the daemon sent no usage (old daemon, shell-only work) so the row hides

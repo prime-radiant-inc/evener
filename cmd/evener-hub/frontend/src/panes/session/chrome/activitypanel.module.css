@@ -214,6 +214,13 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.delegateReport {
+  margin-top: var(--space-2);
+}
+.delegateReportLabel {
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
 .indentGuide {
   border-left: 1px solid var(--edge);
   margin-left: calc(var(--space-3) + 6px);
