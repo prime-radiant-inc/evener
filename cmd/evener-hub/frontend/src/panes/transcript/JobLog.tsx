@@ -176,7 +176,7 @@ export function JobLog({ jobRef, parentRef, paneId }: { jobRef: string; parentRe
   // per job, so clearing it on every fetch would only flicker it away.
   const job = metadata?.requestedOwner === parentRef && metadata?.job.jobId === jobId ? metadata.job : null;
   const command = job ? jobCommandLabel(job) : undefined;
-  const title = job?.description.trim() || command?.split("\n")[0] || "Job output";
+  const title = job?.description.trim() || command?.split("\n")[0] || jobId;
 
   return (
     <PaneScaffold title={title} paneId={paneId} actions={actions}>
