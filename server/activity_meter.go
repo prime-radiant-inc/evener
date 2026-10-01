@@ -29,7 +29,9 @@ type activitySlot struct {
 // activityMeter counts one root session tree's transcript motion for the pulse
 // meter and the Quiet and May be stuck labels (spec 13.1, 16.4). The root and
 // every in-process descendant feed it, so a coordinator's meter shows its whole
-// tree (Jesse's ruling for S5).
+// tree (Jesse's ruling for S5). One fact on the sample is not tree-wide: the
+// row's intent is the root session's own words, because the row names the root
+// (noteIntent).
 //
 // RecordAppEvent and RecordDescendantAppEvent feed it the raw session event
 // each call projects, inside their projection commits, and the thread list
@@ -48,6 +50,9 @@ type activityMeter struct {
 	mu         sync.Mutex
 	slots      [activitySlotCount]activitySlot
 	lastMotion time.Time
+	// intent is the newest intent a tool call of the meter's own root session
+	// stated (noteIntent), empty until this turn states one.
+	intent string
 }
 
 func (m *activityMeter) clock() time.Time {
@@ -66,6 +71,7 @@ func (m *activityMeter) restart() {
 	defer m.mu.Unlock()
 	m.slots = [activitySlotCount]activitySlot{}
 	m.lastMotion = m.clock()
+	m.intent = ""
 }
 
 // observe records one session event. An item finishing (a user message, an
@@ -110,6 +116,39 @@ func (m *activityMeter) touch(at time.Time) {
 	}
 }
 
+// noteIntent records what the meter's own root session last set out to do: the
+// intent of the newest tool call it started, and nothing at all when a turn
+// begins, so a row names this turn's work rather than the words of a turn that
+// finished an hour ago. The agent promotes each tool call's intent to its
+// event's description (session_tools.go). A call that states none leaves the
+// line before it standing; blanking the row mid-turn would say less.
+//
+// Only RecordAppEvent calls this. The meter counts an in-process descendant's
+// motion too, because a row's meter shows its whole tree, but a row names the
+// root: a subagent's tool calls must not put their words on it.
+func (m *activityMeter) noteIntent(event events.SessionEvent) {
+	if event.Kind == events.EventExecutionStarted {
+		m.mu.Lock()
+		m.intent = ""
+		m.mu.Unlock()
+		return
+	}
+	if event.Kind != events.EventToolCallStart {
+		return
+	}
+	start, ok := event.Data.(events.ToolCallStartData)
+	if !ok {
+		return
+	}
+	intent := appwire.Excerpt(start.Description, appwire.MaxIntentRunes)
+	if intent == "" {
+		return
+	}
+	m.mu.Lock()
+	m.intent = intent
+	m.mu.Unlock()
+}
+
 // snapshot reads the meter for a thread list row: seven bars, oldest first, the
 // last ending in the current slot, and the time of the newest motion. It is nil
 // until an identity has started the meter.
@@ -129,5 +168,5 @@ func (m *activityMeter) snapshot() *appwire.ThreadActivity {
 			minutes[activityBars-1-age/activitySlotsPerBar] += slot.count
 		}
 	}
-	return &appwire.ThreadActivity{Minutes: minutes, LastActivityAt: m.lastMotion.UnixMilli()}
+	return &appwire.ThreadActivity{Minutes: minutes, LastActivityAt: m.lastMotion.UnixMilli(), LatestIntent: m.intent}
 }
