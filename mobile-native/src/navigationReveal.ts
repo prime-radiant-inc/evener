@@ -74,48 +74,24 @@ export async function locateSession(
 	};
 }
 
-function pathTo<T>(
-	roots: readonly T[],
-	target: string,
-	key: (row: T) => string,
-	children: ((row: T) => readonly T[]) | undefined,
-): string[] | null {
-	const seen = new Set<string>();
-	function visit(rows: readonly T[], ancestors: string[]): string[] | null {
-		for (const row of rows) {
-			const ref = key(row);
-			if (seen.has(ref)) continue;
-			seen.add(ref);
-			const path = [...ancestors, ref];
-			if (ref === target) return path;
-			const found = children && visit(children(row), path);
-			if (found) return found;
-		}
-		return null;
-	}
-	return visit(roots, []);
-}
-/** Follow the server's pages without crossing revisions or retaining abandoned work. */
+/** Follow the server's pages until the row appears, without crossing
+ * revisions or retaining abandoned work. True once it's found; false once the
+ * caller has moved on. */
 export async function revealNavigationRow<T>(
 	pages: NavigationPages<T>,
 	ref: string,
 	key: (row: T) => string,
-	children: ((row: T) => readonly T[]) | undefined,
 	isCurrent: () => boolean,
-) {
+): Promise<boolean> {
 	await pages.refresh();
 	while (isCurrent()) {
 		const state = pages.getSnapshot();
 		if (state.loading || !state.loaded) throw new Error("The list is refreshing. Try locating the session again.");
 		if (state.error || state.stale)
 			throw new Error(state.error || "The list changed while locating the session. Locate again.");
-		const path = pathTo(state.rows, ref, key, children);
-		if (path) return path;
-		if (!state.remaining)
-			throw new Error(
-				"The session is not in the returned list. It may have moved or the hub may have omitted part of its tree.",
-			);
+		if (state.rows.some((row) => key(row) === ref)) return true;
+		if (!state.remaining) throw new Error("The session is not in the returned list. It may have moved.");
 		await pages.more();
 	}
-	return null;
+	return false;
 }
