@@ -395,6 +395,29 @@ describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
 		expect(whyLine({ row: stale, state: "working" }, activity, 0)).toEqual({ text: "Working" });
 	});
 
+	it("says what the session last set out to do, over the job it is running", () => {
+		const intent = { ref: "s", minutes, runningSubagents: 0, latestIntent: "Reading the board's row tests." };
+		expect(whyLine({ row: working, state: "working" }, intent, 0)).toEqual({
+			text: "Reading the board's row tests.",
+		});
+		// The session's own words lead the job it is running: they say what the
+		// job is for. A read that states none leaves the job to say itself, and
+		// a session waiting on subagents, quiet or stuck says so first.
+		const running = row("s", { state: "active", running_job_count: 1, running_job_command: "go test ./agent/..." });
+		expect(whyLine({ row: running, state: "working" }, intent, 0)).toEqual({ text: "Reading the board's row tests." });
+		expect(whyLine({ row: running, state: "working" }, { ref: "s", minutes, runningSubagents: 0 }, 0)).toEqual({
+			text: "Running go test ./agent/...",
+		});
+		expect(whyLine({ row: working, state: "working" }, { ...intent, runningSubagents: 1 }, 0)).toEqual({
+			text: "Waiting on 1 subagent",
+		});
+		expect(whyLine({ row: working, state: "working" }, { ...intent, quietForMs: QUIET_AFTER_MS }, 0)).toEqual({
+			text: "Quiet 3m",
+		});
+		// No read, no intent: a row before the first poll keeps its own facts.
+		expect(whyLine({ row: working, state: "working" })).toEqual({ text: "Working" });
+	});
+
 	it("keeps the pre-S5 fallback (the row's own tally and jobs) when there is no activity read at all", () => {
 		const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
 		expect(whyLine({ row: stale, state: "working" })).toEqual({ text: "Waiting on 1 subagent" });
