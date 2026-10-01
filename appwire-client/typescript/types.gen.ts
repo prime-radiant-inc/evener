@@ -74,7 +74,7 @@ export interface ArchiveResponse {
 }
 
 export interface ArchivedListParams {
-  catalog: string;
+  catalog?: string;
   projectKey: string;
   cursor?: string;
   limit?: number;
@@ -84,6 +84,7 @@ export interface ArchivedListResponse {
   sessions: unknown;
   nextCursor?: string;
   total: number;
+  catalog?: string;
 }
 
 export interface AttentionChanged {
@@ -3125,6 +3126,11 @@ export interface SessionActivitySummary {
 }
 
 export interface SessionDelegate {
+  /**
+   * Name is the immutable caller display label, capped at 200 Unicode code points.
+   * Unnamed descriptors omit it; delegate IDs and refs remain the addressing keys.
+   */
+  name?: string;
   /**
    * RunGeneration identifies the current activation; zero means no run has started.
    */

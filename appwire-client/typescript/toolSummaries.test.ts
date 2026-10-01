@@ -3,7 +3,7 @@
 import { expect, test } from "vitest";
 import { housekeepingAction } from "./housekeepingSteps";
 import { type ToolWireCall, toolWireCwd, toolWireStep } from "./testing/toolWireFixtures";
-import { mcpToolParts, toolFamily, toolStepProgress, toolStepSummary, words } from "./toolSummaries";
+import { mcpToolParts, type ToolStep, toolFamily, toolStepProgress, toolStepSummary, words } from "./toolSummaries";
 
 // Every case reads a settled step the daemon actually sends
 // (agent/testdata/toolwire), merged as a client holds it. The core tools'
@@ -401,33 +401,25 @@ const housekeeping = (toolName: string, args: Record<string, unknown>, output?: 
   ...(output === undefined ? {} : { output }),
 });
 
-test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
+test.each<[string, ToolStep, string, string]>([
   [
     "a note set",
     housekeeping("notes_agent_set", { note: "Drain first." }, "Agent note recorded."),
     "Updated its note",
     "Updating its note",
   ],
-  [
-    "a note cleared",
-    housekeeping("notes_agent_set", { note: " " }, "Agent note recorded."),
-    "Cleared its note",
-    "Clearing its note",
-  ],
-  ["the notes read", housekeeping("notes_read", {}), "Read the session notes", "Reading the session notes"],
-  [
-    "a labelled link added",
-    housekeeping("urls_add", { url: "https://example.com/ci/42", label: "CI run" }, "URL added: CI run"),
-    "Added link CI run",
-    "Adding link CI run",
-  ],
+  // The cases a change to what a tool prints must break: each reads a real
+  // recording (agent/testdata/toolwire/calls.json) rather than hand-built text.
+  ["a note cleared", toolWireStep("call_notes_agent_set"), "Cleared its note", "Clearing its note"],
+  ["the notes read", toolWireStep("call_notes_read"), "Read the session notes", "Reading the session notes"],
+  ["a labelled link added", toolWireStep("call_urls_add"), "Added link CI run", "Adding link CI run"],
   [
     "a link added with no label",
     housekeeping("urls_add", { url: "https://example.com/ci/42" }),
     "Added link https://example.com/ci/42",
     "Adding link https://example.com/ci/42",
   ],
-  ["a link removed", housekeeping("urls_remove", { id: "url_3" }, "URL removed."), "Removed a link", "Removing a link"],
+  ["a link removed", toolWireStep("call_urls_remove"), "Removed a link", "Removing a link"],
   [
     "the goal completed",
     housekeeping("update_goal", { status: "complete" }, "Goal marked complete."),
@@ -442,11 +434,7 @@ test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
   ],
   [
     "a goal update with no goal set",
-    housekeeping(
-      "update_goal",
-      { status: "complete" },
-      "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered.",
-    ),
+    toolWireStep("call_update_goal"),
     "Marked the goal complete · no goal set",
     "Marking the goal complete",
   ],
@@ -462,7 +450,7 @@ test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
   ],
   [
     "a compaction note cleared",
-    housekeeping("compact_context", { note_to_self: "" }, "Note cleared. No compaction requested."),
+    toolWireStep("call_compact_context"),
     "Cleared its compaction note",
     "Clearing its compaction note",
   ],
@@ -505,13 +493,13 @@ test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
     "Asked for a context compaction",
     "Asking for a context compaction",
   ],
-  ["the models listed", housekeeping("model_list", {}), "Listed the available models", "Listing the available models"],
-  ["more models listed", housekeeping("model_list", { cursor: "c2" }), "Listed more models", "Listing more models"],
+  ["the models listed", toolWireStep("call_model_list"), "Listed the available models", "Listing the available models"],
+  ["more models listed", toolWireStep("call_model_list_next"), "Listed more models", "Listing more models"],
   [
     "evener's records checked",
-    housekeeping("doctor_evener", { command: "transcript", selector: "ses_abc" }),
-    "Checked evener's records ses_abc · transcript",
-    "Checking evener's records ses_abc",
+    toolWireStep("call_doctor_evener"),
+    "Checked evener's records 02wMz5Txv5aIxgf9yVdd0N · transcript",
+    "Checking evener's records 02wMz5Txv5aIxgf9yVdd0N",
   ],
   [
     "a report to the parent",
@@ -536,13 +524,10 @@ test("phrases a housekeeping call as its step line does", () => {
   expect(housekeepingAction("notes_agent_set", housekeeping("notes_agent_set", { note: "Drain first." }))).toBe(
     "updated its note",
   );
-  expect(housekeepingAction("notes_agent_set", housekeeping("notes_agent_set", { note: "" }))).toBe("cleared its note");
-  expect(
-    housekeepingAction(
-      "compact_context",
-      housekeeping("compact_context", { note_to_self: "" }, "Note cleared. No compaction requested."),
-    ),
-  ).toBe("cleared its compaction note");
+  expect(housekeepingAction("notes_agent_set", toolWireStep("call_notes_agent_set"))).toBe("cleared its note");
+  expect(housekeepingAction("compact_context", toolWireStep("call_compact_context"))).toBe(
+    "cleared its compaction note",
+  );
   expect(
     housekeepingAction(
       "compact_context",

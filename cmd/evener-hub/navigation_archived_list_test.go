@@ -35,15 +35,21 @@ func archivedProjection(t *testing.T, projects ...hubcore.TreeProject) navigatio
 	return projection
 }
 
-// pageAllArchived reads every page of a project's archived list at limit and
-// returns the session IDs in the order served, and the reported total.
+// pageAllArchived reads every page of a project's archived list at limit the
+// way a client does, sending each page's cursor back with the same catalog
+// hint, and returns the session IDs in the order served, and the reported
+// total.
 func pageAllArchived(t *testing.T, p navigationProjection, catalog navigationResourceKind, key string, limit int) ([]string, int) {
 	t.Helper()
 	var ids []string
-	request := navigationArchivedListRequest{Catalog: catalog, ProjectKey: key, Limit: limit}
+	params := appwire.ArchivedListParams{Catalog: string(catalog), ProjectKey: key, Limit: limit}
 	for pages := 0; ; pages++ {
 		if pages > 10_000 {
 			t.Fatal("paging did not terminate")
+		}
+		request, err := parseNavigationArchivedListParams(params)
+		if err != nil {
+			t.Fatalf("hint %q, page %d: %v", catalog, pages, err)
 		}
 		page, err := p.ArchivedList(request)
 		if err != nil {
@@ -55,11 +61,7 @@ func pageAllArchived(t *testing.T, p navigationProjection, catalog navigationRes
 		if page.NextCursor == "" {
 			return ids, page.Total
 		}
-		after, err := decodeArchivedCursor(page.NextCursor, catalog, key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request.After = &after
+		params.Cursor = page.NextCursor
 	}
 }
 
@@ -82,32 +84,15 @@ func TestArchivedListPagesEveryRowOnceAcrossTies(t *testing.T) {
 	}
 }
 
-func TestArchivedListReadsTheNamedCatalogsProject(t *testing.T) {
-	at := func(base int) func(int) time.Time {
-		return func(i int) time.Time { return time.Unix(int64(base+i), 0).UTC() }
-	}
-	named := func(prefix string) func(int) string {
-		return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
-	}
-	active := hubcore.TreeProject{Key: "shared", Name: "shared", Archived: archivedRows("active", 2, at(10), named("active"))}
-	whole := hubcore.TreeProject{Key: "shared", Name: "shared", IsArchived: true, Archived: archivedRows("whole", 5, at(20), named("whole"))}
-	runs := hubcore.TreeProject{Key: "shared", Name: "shared", IsTestRun: true, Archived: archivedRows("run", 3, at(30), named("run"))}
-	p := archivedProjection(t, active, whole, runs)
-	for _, tc := range []struct {
-		catalog navigationResourceKind
-		want    int
-	}{{navigationResourceProjects, 2}, {navigationResourceArchivedProjects, 5}, {navigationResourceTestRuns, 3}} {
-		if _, total := pageAllArchived(t, p, tc.catalog, "shared", 50); total != tc.want {
-			t.Fatalf("%s total=%d, want %d", tc.catalog, total, tc.want)
-		}
-	}
-}
-
+// A key no catalog holds reads no catalog and answers an empty page, with a
+// hint or without one.
 func TestArchivedListUnknownProjectIsAnEmptyPage(t *testing.T) {
 	p := archivedProjection(t)
-	page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: navigationResourceProjects, ProjectKey: "missing"})
-	if err != nil || len(page.Sessions) != 0 || page.Sessions == nil || page.Total != 0 || page.NextCursor != "" {
-		t.Fatalf("page=%#v err=%v", page, err)
+	for _, hint := range []navigationResourceKind{"", navigationResourceProjects, navigationResourceArchivedProjects} {
+		page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: hint, ProjectKey: "missing"})
+		if err != nil || len(page.Sessions) != 0 || page.Sessions == nil || page.Total != 0 || page.NextCursor != "" || page.Catalog != "" {
+			t.Fatalf("hint %q: page=%#v err=%v", hint, page, err)
+		}
 	}
 }
 
@@ -164,14 +149,20 @@ func dispatchArchivedList(t *testing.T, server *appserver.Server, params appwire
 	return response, nil
 }
 
-func TestHubArchivedListServesTheArchivedTierAndRejectsBadRequests(t *testing.T) {
+// archivedListServer serves evener/archived/list over a test navigation source
+// whose first project has n archived rows, and returns that project's key.
+func archivedListServer(t *testing.T, n int) (*appserver.Server, string) {
+	t.Helper()
 	source := newTestNavigationSource(testNavigationNow())
 	old := testNavigationNow().Add(-30 * 24 * time.Hour)
-	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
-	service := newTestNavigationService(t, source)
+	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", n, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
-	registerArchivedListHandler(server, service)
-	key := source.inputs.Tree.Projects[0].Key
+	registerArchivedListHandler(server, newTestNavigationService(t, source))
+	return server, source.inputs.Tree.Projects[0].Key
+}
+
+func TestHubArchivedListServesTheArchivedTierAndRejectsBadRequests(t *testing.T) {
+	server, key := archivedListServer(t, 3)
 
 	first, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: key, Limit: 2})
 	if err != nil {
@@ -211,13 +202,8 @@ func TestHubArchivedListServesTheArchivedTierAndRejectsBadRequests(t *testing.T)
 
 // An absent limit pages at the maximum, not the whole tier.
 func TestHubArchivedListOmittedLimitServesOneMaximumPage(t *testing.T) {
-	source := newTestNavigationSource(testNavigationNow())
-	old := testNavigationNow().Add(-30 * 24 * time.Hour)
-	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", maxNavigationSectionRows+10, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
-	service := newTestNavigationService(t, source)
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
-	registerArchivedListHandler(server, service)
-	response, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: source.inputs.Tree.Projects[0].Key})
+	server, key := archivedListServer(t, maxNavigationSectionRows+10)
+	response, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,13 +219,7 @@ func TestHubArchivedListOmittedLimitServesOneMaximumPage(t *testing.T) {
 // A cursor names the list it continues: one minted for another project, or
 // for the same key in another catalog, is rejected rather than misapplied.
 func TestHubArchivedListRejectsACursorFromAnotherList(t *testing.T) {
-	source := newTestNavigationSource(testNavigationNow())
-	old := testNavigationNow().Add(-30 * 24 * time.Hour)
-	source.inputs.Tree.Projects[0].Archived = archivedRows("archived", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("archived %d", i) })
-	service := newTestNavigationService(t, source)
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
-	registerArchivedListHandler(server, service)
-	key := source.inputs.Tree.Projects[0].Key
+	server, key := archivedListServer(t, 3)
 	first, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: "projects", ProjectKey: key, Limit: 1})
 	if err != nil || first.NextCursor == "" {
 		t.Fatalf("first page: cursor %q, err %v", first.NextCursor, err)
@@ -547,4 +527,163 @@ func TestArchivedForkNodeBudgetAccountsForOmittedOriginals(t *testing.T) {
 		t.Fatalf("node page: nodes=%d cursor=%q total=%d", nodes, page.NextCursor, page.Total)
 	}
 	assertArchivedForkAccounting(t, page.Sessions, 1+sourceForks)
+}
+
+// archivedCatalogFixture is one project key in each of the three catalogs,
+// each with its own archived rows: 5 archived, 2 active, 3 test runs.
+func archivedCatalogFixture() (whole, active, runs hubcore.TreeProject) {
+	at := func(base int) func(int) time.Time {
+		return func(i int) time.Time { return time.Unix(int64(base+i), 0).UTC() }
+	}
+	named := func(prefix string) func(int) string {
+		return func(i int) string { return fmt.Sprintf("%s %d", prefix, i) }
+	}
+	active = hubcore.TreeProject{Key: "moving", Name: "moving", Archived: archivedRows("active", 2, at(10), named("active"))}
+	whole = hubcore.TreeProject{Key: "moving", Name: "moving", IsArchived: true, Archived: archivedRows("whole", 5, at(20), named("whole"))}
+	runs = hubcore.TreeProject{Key: "moving", Name: "moving", IsTestRun: true, Archived: archivedRows("run", 3, at(30), named("run"))}
+	return whole, active, runs
+}
+
+// The catalog a client names is a hint. The same key can be in several
+// catalogs, and hubcore's Tree moves a project between Projects and Archived
+// projects as its sessions are archived and unarchived, so the hub reads the
+// catalog that holds the key now and says which one it read.
+func TestArchivedListReadsTheHintedCatalogWhenItHoldsTheKey(t *testing.T) {
+	whole, active, runs := archivedCatalogFixture()
+	p := archivedProjection(t, active, whole, runs)
+	for _, tc := range []struct {
+		catalog navigationResourceKind
+		total   int
+	}{{navigationResourceProjects, 2}, {navigationResourceArchivedProjects, 5}, {navigationResourceTestRuns, 3}} {
+		page, err := p.ArchivedList(navigationArchivedListRequest{Catalog: tc.catalog, ProjectKey: "moving"})
+		if err != nil || page.Catalog != tc.catalog || page.Total != tc.total {
+			t.Fatalf("hint %s: read %q total %d, err %v; want total %d", tc.catalog, page.Catalog, page.Total, err, tc.total)
+		}
+	}
+}
+
+func TestArchivedListFollowsAProjectToTheOtherMemberOfThePair(t *testing.T) {
+	whole, active, _ := archivedCatalogFixture()
+	for _, tc := range []struct {
+		held    hubcore.TreeProject
+		hint    navigationResourceKind
+		want    navigationResourceKind
+		wantLen int
+	}{
+		{whole, navigationResourceProjects, navigationResourceArchivedProjects, 5},
+		{active, navigationResourceArchivedProjects, navigationResourceProjects, 2},
+	} {
+		page, err := archivedProjection(t, tc.held).ArchivedList(navigationArchivedListRequest{Catalog: tc.hint, ProjectKey: "moving"})
+		if err != nil || page.Catalog != tc.want || page.Total != tc.wantLen {
+			t.Fatalf("hint %s: read %q total %d, err %v; want %s total %d", tc.hint, page.Catalog, page.Total, err, tc.want, tc.wantLen)
+		}
+	}
+}
+
+// A test run is no member of the pair: a hint to it reads no other catalog,
+// and a hint to the pair never reads test runs.
+func TestArchivedListTestRunsAreNoMemberOfThePair(t *testing.T) {
+	whole, active, runs := archivedCatalogFixture()
+	for _, tc := range []struct {
+		held hubcore.TreeProject
+		hint navigationResourceKind
+	}{
+		{active, navigationResourceTestRuns},
+		{whole, navigationResourceTestRuns},
+		{runs, navigationResourceProjects},
+		{runs, navigationResourceArchivedProjects},
+	} {
+		page, err := archivedProjection(t, tc.held).ArchivedList(navigationArchivedListRequest{Catalog: tc.hint, ProjectKey: "moving"})
+		if err != nil || page.Catalog != "" || page.Total != 0 {
+			t.Fatalf("hint %s: read %q total %d, err %v", tc.hint, page.Catalog, page.Total, err)
+		}
+	}
+}
+
+func TestArchivedListWithoutAHintReadsTheFirstCatalogHoldingTheKey(t *testing.T) {
+	whole, active, runs := archivedCatalogFixture()
+	for _, tc := range []struct {
+		projects []hubcore.TreeProject
+		want     navigationResourceKind
+	}{
+		{[]hubcore.TreeProject{active, whole, runs}, navigationResourceProjects},
+		{[]hubcore.TreeProject{whole, runs}, navigationResourceArchivedProjects},
+		{[]hubcore.TreeProject{runs}, navigationResourceTestRuns},
+	} {
+		page, err := archivedProjection(t, tc.projects...).ArchivedList(navigationArchivedListRequest{ProjectKey: "moving"})
+		if err != nil || page.Catalog != tc.want {
+			t.Fatalf("read %q, err %v; want %s", page.Catalog, err, tc.want)
+		}
+	}
+}
+
+// A cursor is bound to the hint the client sent, not to the catalog the hub
+// read, so a list keeps paging when the two differ: with no hint, and with a
+// hint to the pair member that no longer holds the project.
+func TestArchivedListCursorIsBoundToTheHint(t *testing.T) {
+	whole, _, _ := archivedCatalogFixture()
+	p := archivedProjection(t, whole)
+	want := make([]string, len(whole.Archived))
+	for i, row := range whole.Archived {
+		want[i] = row.ID
+	}
+	for _, hint := range []navigationResourceKind{"", navigationResourceProjects} {
+		if ids, _ := pageAllArchived(t, p, hint, "moving", 2); strings.Join(ids, ",") != strings.Join(want, ",") {
+			t.Fatalf("hint %q paged %v, want %v", hint, ids, want)
+		}
+	}
+
+	first, err := p.ArchivedList(navigationArchivedListRequest{Catalog: navigationResourceProjects, ProjectKey: "moving", Limit: 2})
+	if err != nil || first.NextCursor == "" {
+		t.Fatalf("first page: cursor %q, err %v", first.NextCursor, err)
+	}
+	for _, hint := range []string{"", "archived_projects", "test_runs"} {
+		_, err := parseNavigationArchivedListParams(appwire.ArchivedListParams{Catalog: hint, ProjectKey: "moving", Cursor: first.NextCursor})
+		if err == nil || err.Error() != "cursor belongs to another archived list" {
+			t.Fatalf("hint %q accepted a cursor minted under projects: %v", hint, err)
+		}
+	}
+}
+
+// A cursor continues its list by row order, so a project that moves between
+// pages keeps paging from where it was, even when its rows changed meanwhile.
+func TestArchivedListCursorContinuesAcrossAMoveBetweenPages(t *testing.T) {
+	rows := archivedRows("moving", 4, func(i int) time.Time { return time.Unix(int64(100+i), 0).UTC() }, func(i int) string { return fmt.Sprintf("moving %d", i) })
+	before := archivedProjection(t, hubcore.TreeProject{Key: "moving", Name: "moving", Archived: rows})
+	first, err := before.ArchivedList(navigationArchivedListRequest{Catalog: navigationResourceProjects, ProjectKey: "moving", Limit: 2})
+	if err != nil || first.NextCursor == "" {
+		t.Fatalf("first page: cursor %q, err %v", first.NextCursor, err)
+	}
+	// Moved, with two newer rows archived and the cursor's own row gone, so
+	// skipping the two rows already served would land elsewhere.
+	newer := archivedRows("newer", 2, func(i int) time.Time { return time.Unix(int64(200+i), 0).UTC() }, func(i int) string { return fmt.Sprintf("newer %d", i) })
+	moved := append(append(newer, rows[0]), rows[2:]...)
+	after := archivedProjection(t, hubcore.TreeProject{Key: "moving", Name: "moving", IsArchived: true, Archived: moved})
+	request, err := parseNavigationArchivedListParams(appwire.ArchivedListParams{Catalog: "projects", ProjectKey: "moving", Cursor: first.NextCursor, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := after.ArchivedList(request)
+	if err != nil || next.Catalog != navigationResourceArchivedProjects || len(next.Sessions) != 2 {
+		t.Fatalf("next page: read %q, %d rows, err %v", next.Catalog, len(next.Sessions), err)
+	}
+	if next.Sessions[0].SessionID != rows[2].ID || next.Sessions[1].SessionID != rows[3].ID {
+		t.Fatalf("next page rows %s, %s; want %s, %s", next.Sessions[0].SessionID, next.Sessions[1].SessionID, rows[2].ID, rows[3].ID)
+	}
+}
+
+// The response names the catalog it read, and a request may leave the
+// catalog out.
+func TestHubArchivedListSaysWhichCatalogItRead(t *testing.T) {
+	server, key := archivedListServer(t, 3)
+	for _, catalog := range []string{"", "projects", "archived_projects"} {
+		response, err := dispatchArchivedList(t, server, appwire.ArchivedListParams{Catalog: catalog, ProjectKey: key})
+		if err != nil || response.Catalog != "projects" || response.Total != 3 {
+			t.Fatalf("hint %q: read %q total %d, err %v", catalog, response.Catalog, response.Total, err)
+		}
+	}
+	raw, err := json.Marshal(appwire.ArchivedListResponse{Sessions: json.RawMessage("[]")})
+	if err != nil || strings.Contains(string(raw), "catalog") {
+		t.Fatalf("a response that read no catalog carries %s, err %v", raw, err)
+	}
 }
