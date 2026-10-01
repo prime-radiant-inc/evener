@@ -617,7 +617,7 @@ function SessionTitle({
       <HoverCard
         label={<SessionContextCard session={session} effectiveState={effectiveState} notStarted={notStarted} />}
         focusTarget={focusTarget}
-        tapEnabled
+        longPressEnabled
       >
         {({ describedBy }) => (
           <button

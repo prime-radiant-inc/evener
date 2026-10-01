@@ -5,10 +5,9 @@ conversation. The primary navigation rail reduces each navigation summary to a
 one-line status and title; its title HoverCard exposes the summary's project,
 host, branch, running-job, subagent, watch, pin-section, tier and age context. This remains a
 navigation-domain read. Hovering the title or focusing its tree row reveals that
-context; on a hoverless device, tapping the title reveals it without activating
-the session, and tapping it again activates the session. Reading a session's
-activity is a separate operation, so browsing navigation does not load every
-session's work tree.
+context; on a hoverless device, a long press on the title reveals it, and a tap
+activates the session. Reading a session's activity is a separate operation, so
+browsing navigation does not load every session's work tree.
 
 Transcript delegate cards and status indicators use the same
 owner-qualified delegate entity projection as Activity. Retained transcripts do
@@ -125,7 +124,10 @@ completion packet of the current settled run. It preserves a useful prefix of
 up to 4,096 Unicode code points, including the ellipsis when truncated;
 `reportPreviewTruncated` identifies that case. Missing, non-string or empty
 reports have no preview. Terminal errors retain their separate reason and error
-fields. Opening the child transcript remains the path to the full conversation.
+fields. The browser's expanded delegate activity detail presents a non-empty
+preview as a compact message from the delegate's name, with the name resolving
+through the standard delegate entity card and transcript-open control. Opening
+the child transcript remains the path to the full conversation.
 
 Both the delegate list and transcript roster carry the authoritative
 `runGeneration`. The phone joins a report only when owner, delegate identity and

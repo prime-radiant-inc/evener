@@ -2,11 +2,24 @@
 // each is trivially unit-testable (same contract as protocol/displayFormat).
 
 import {
+  type ActivityDelegate,
   type ActivityUsage,
   formatTokenCount,
   isActivityFailure,
   type SessionActivitySummary,
 } from "@evener/appwire-client";
+
+export function delegateName(delegate: ActivityDelegate): string {
+  return (
+    delegate.name?.trim() ||
+    (delegate.mandate ??
+      delegate.task ??
+      delegate.description ??
+      delegate.child?.label ??
+      delegate.childSessionId ??
+      delegate.childRef)
+  );
+}
 
 export function activityActionLabel(summary: SessionActivitySummary | null | undefined): string {
   return summary?.delegates.known && summary.jobs.known

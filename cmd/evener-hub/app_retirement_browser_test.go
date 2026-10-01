@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,20 +56,23 @@ var retirementBrowserFlag = flag.Bool("retirement-browser", false, "run isolated
 
 // ---- scripted relay source -------------------------------------------------
 
-// retirementBrowserRelaySource implements a two-generation relay source for
-// the browser test fixture. First generation: initial thread with two turns,
-// idle deliveries channel. Second generation (after retirement): same turns,
-// new instanceId, accepts turn/start and pushes turn notifications.
+// retirementBrowserRelaySource implements a three-generation relay source for
+// the browser test fixture. The first retirement replaces the initial thread;
+// the second holds generation three behind a controllable readiness gate.
 type retirementBrowserRelaySource struct {
 	relayLifecycleSource
 
 	mu sync.Mutex
 
 	// Populated on first AcquireRelaySession; closed by retire().
-	gen1Deliveries chan appsource.RelayDelivery
+	gen1 relayGeneration
 
 	// Becomes non-nil after retire() is called; handed out on second Acquire.
-	gen2Deliveries chan appsource.RelayDelivery
+	gen2 relayGeneration
+	// The third generation is held behind replacementReady so the browser can
+	// submit once after gen2 closes but before its replacement is available.
+	gen3                   relayGeneration
+	replacementFeedRetired bool
 
 	// retired is closed when the /fixture/retire endpoint is triggered.
 	retired chan struct{}
@@ -93,6 +97,29 @@ type retirementBrowserRelaySource struct {
 	retryAccepted    chan struct{}
 	retryOnce        sync.Once
 
+	// replacementStarting closes when the live replacement feed is retired.
+	// AcquireRelaySession and StartTurn then wait for replacementReady, which the
+	// fixture endpoint releases after the browser has proved its intent durable.
+	replacementStarting     chan struct{}
+	replacementRetired      chan struct{}
+	replacementAcquiring    chan struct{}
+	replacementReady        chan struct{}
+	replacementStartOnce    sync.Once
+	replacementRetireOnce   sync.Once
+	replacementAcquireOnce  sync.Once
+	replacementReadyOnce    sync.Once
+	publishRestartResync    func()
+	restartWaitTimeout      time.Duration
+	replacementReadyTimeout time.Duration
+	restartMu               sync.Mutex
+	// The gate latch, entries, and accepted IDs prove the browser submitted while
+	// acquisition was blocked, StartTurn was not entered early, and one identity
+	// was accepted after readiness.
+	replacementGateEntered bool
+	restartResyncPublished bool
+	restartErr             error
+	restartAttempts        []restartStartAttempt
+
 	// accepted records every turn this source has accepted, so a replacement
 	// re-read returns the full transcript rather than dropping accepted turns.
 	acceptedMu sync.Mutex
@@ -114,16 +141,118 @@ type acceptedTurn struct {
 	text string
 }
 
+type relayGeneration struct {
+	instanceID string
+	deliveries chan appsource.RelayDelivery
+	closeHook  func()
+}
+
+type restartStartAttempt struct {
+	clientMutationID string
+	readyOnEntry     bool
+	accepted         bool
+}
+
 func newRetirementBrowserRelaySource(threadID, ref string) *retirementBrowserRelaySource {
-	return &retirementBrowserRelaySource{
-		gen1Deliveries: make(chan appsource.RelayDelivery, 8),
-		gen2Deliveries: make(chan appsource.RelayDelivery, 8),
-		retired:        make(chan struct{}),
-		turnAccepted:   make(chan struct{}),
-		staleForwarded: make(chan struct{}),
-		retryAccepted:  make(chan struct{}),
-		threadID:       threadID,
-		ref:            ref,
+	source := &retirementBrowserRelaySource{
+		gen1:                    relayGeneration{instanceID: "instance_v1", deliveries: make(chan appsource.RelayDelivery, 8)},
+		gen2:                    relayGeneration{instanceID: "instance_v2", deliveries: make(chan appsource.RelayDelivery, 8)},
+		gen3:                    relayGeneration{instanceID: "instance_v3", deliveries: make(chan appsource.RelayDelivery, 8)},
+		retired:                 make(chan struct{}),
+		turnAccepted:            make(chan struct{}),
+		staleForwarded:          make(chan struct{}),
+		retryAccepted:           make(chan struct{}),
+		replacementStarting:     make(chan struct{}),
+		replacementRetired:      make(chan struct{}),
+		replacementAcquiring:    make(chan struct{}),
+		replacementReady:        make(chan struct{}),
+		publishRestartResync:    func() {},
+		restartWaitTimeout:      5 * time.Second,
+		replacementReadyTimeout: 30 * time.Second,
+		threadID:                threadID,
+		ref:                     ref,
+	}
+	source.gen2.closeHook = func() {
+		source.replacementRetireOnce.Do(func() { close(source.replacementRetired) })
+	}
+	return source
+}
+
+func TestRetirementBrowserRestartDoesNotPublishResyncOnRetiringFeed(t *testing.T) {
+	source := newRetirementBrowserRelaySource("sess_test", "local:sess_test")
+	// Let restartReplacement finish without a live Hub while recording the
+	// publication point and inspecting the generation-two feed directly.
+	source.replacementRetireOnce.Do(func() { close(source.replacementRetired) })
+	source.replacementAcquireOnce.Do(func() { close(source.replacementAcquiring) })
+	published := false
+	source.publishRestartResync = func() {
+		select {
+		case <-source.replacementRetired:
+			published = true
+		default:
+			t.Fatal("restart resync was published before the generation-two lease retired")
+		}
+	}
+
+	if err := source.restartReplacement(); err != nil {
+		t.Fatalf("restartReplacement: %v", err)
+	}
+	if !published {
+		t.Fatal("restart resync was not published after the generation-two lease retired")
+	}
+
+	for delivery := range source.gen2.deliveries {
+		if delivery.Notification.Method == appwire.NotifyEvenerThreadResync {
+			t.Fatal("restart resync was published on generation two before that relay retired")
+		}
+	}
+}
+
+func TestRetirementBrowserRestartDropsPublicationsForRetiredGeneration(t *testing.T) {
+	source := newRetirementBrowserRelaySource("sess_test", "local:sess_test")
+	source.replacementRetireOnce.Do(func() { close(source.replacementRetired) })
+	source.replacementAcquireOnce.Do(func() { close(source.replacementAcquiring) })
+
+	if err := source.restartReplacement(); err != nil {
+		t.Fatalf("restartReplacement: %v", err)
+	}
+
+	source.pushCurrentResync()
+	for delivery := range source.gen2.deliveries {
+		if delivery.Notification.Method == appwire.NotifyEvenerThreadResync {
+			t.Fatal("resync was published to the retired generation")
+		}
+	}
+}
+
+func TestRetirementBrowserRestartFailsWhenReplacementLeaseDoesNotRetire(t *testing.T) {
+	source := newRetirementBrowserRelaySource("sess_test", "local:sess_test")
+	source.restartWaitTimeout = time.Millisecond
+	published := false
+	source.publishRestartResync = func() { published = true }
+
+	err := source.restartReplacement()
+	if err == nil || !strings.Contains(err.Error(), "generation-two lease did not retire") {
+		t.Fatalf("restartReplacement error = %v, want lease-retirement timeout", err)
+	}
+	if published {
+		t.Fatal("restart resync was published without generation-two lease retirement")
+	}
+}
+
+func TestRetirementBrowserRestartFailsWhenReplacementDoesNotAcquire(t *testing.T) {
+	source := newRetirementBrowserRelaySource("sess_test", "local:sess_test")
+	source.restartWaitTimeout = time.Millisecond
+	source.replacementRetireOnce.Do(func() { close(source.replacementRetired) })
+	published := false
+	source.publishRestartResync = func() { published = true }
+
+	err := source.restartReplacement()
+	if err == nil || !strings.Contains(err.Error(), "replacement did not begin acquisition") {
+		t.Fatalf("restartReplacement error = %v, want acquisition timeout", err)
+	}
+	if !published {
+		t.Fatal("restart resync was not published after generation-two lease retirement")
 	}
 }
 
@@ -149,7 +278,7 @@ func (s *retirementBrowserRelaySource) retire() {
 				TranscriptKey: "turn_old_generation/0", Position: &appwire.ThreadItemPosition{Entry: 99, Item: 0},
 			}},
 		}
-		s.gen1Deliveries <- appsource.RelayDelivery{
+		s.gen1.deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
 				Method: appwire.NotifyHistoryUpdated,
 				Params: mustMarshalJSON(appwire.HistoryUpdatedParams{
@@ -168,7 +297,7 @@ func (s *retirementBrowserRelaySource) retire() {
 		// exactly that order — the hub forwards the resync to the client's
 		// subscription, then retires the dead generation's handle.
 		ack := func() {}
-		s.gen1Deliveries <- appsource.RelayDelivery{
+		s.gen1.deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
 				Method: appwire.NotifyEvenerThreadResync,
 				Params: mustMarshalJSON(map[string]any{"threadId": s.threadID, "ref": s.ref}),
@@ -176,8 +305,52 @@ func (s *retirementBrowserRelaySource) retire() {
 			Acknowledge: ack,
 			Proceed:     ack,
 		}
-		close(s.gen1Deliveries)
+		close(s.gen1.deliveries)
 	}
+}
+
+// restartReplacement publishes a resync and closes the currently serving
+// replacement. The client re-read tries to acquire the next generation and
+// blocks on replacementReady, leaving the source genuinely between generations.
+func (s *retirementBrowserRelaySource) restartReplacement() error {
+	s.replacementStartOnce.Do(func() {
+		close(s.replacementStarting)
+		s.mu.Lock()
+		s.replacementFeedRetired = true
+		close(s.gen2.deliveries)
+		s.mu.Unlock()
+		select {
+		case <-s.replacementRetired:
+			s.publishRestartResync()
+			s.restartMu.Lock()
+			s.restartResyncPublished = true
+			s.restartMu.Unlock()
+		case <-time.After(s.restartWaitTimeout):
+			s.restartMu.Lock()
+			s.restartErr = errors.New("generation-two lease did not retire before restart timeout")
+			s.restartMu.Unlock()
+			return
+		}
+		gateEntered := false
+		select {
+		case <-s.replacementAcquiring:
+			gateEntered = true
+		case <-time.After(s.restartWaitTimeout):
+		}
+		s.restartMu.Lock()
+		s.replacementGateEntered = gateEntered
+		if !gateEntered {
+			s.restartErr = errors.New("replacement did not begin acquisition before restart timeout")
+		}
+		s.restartMu.Unlock()
+	})
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	return s.restartErr
+}
+
+func (s *retirementBrowserRelaySource) releaseReplacement() {
+	s.replacementReadyOnce.Do(func() { close(s.replacementReady) })
 }
 
 func (s *retirementBrowserRelaySource) ID() string { return "local" }
@@ -196,13 +369,15 @@ func (s *retirementBrowserRelaySource) SubscribeThread(context.Context, appwire.
 // SAME clientMutationId. retryMutationIDs records every attempt so the test can
 // prove the id was replayed rather than regenerated.
 const (
-	retryDraftText    = "retirement harness retry draft"
-	retryDraftTurnID  = "turn_retirement_retry"
-	retainedDraftText = "retirement harness retained draft"
+	retryDraftText     = "retirement harness retry draft"
+	retryDraftTurnID   = "turn_retirement_retry"
+	restartDraftText   = "retirement harness restart-gated draft"
+	restartDraftTurnID = "turn_retirement_restart_gated"
+	retainedDraftText  = "retirement harness retained draft"
 )
 
-// StartTurn accepts a turn/start after retirement and pushes turn/started +
-// turn/completed notifications through gen2Deliveries. For retryDraftText the
+// StartTurn accepts a turn/start after retirement and pushes its read-model
+// update through the current replacement generation. For retryDraftText the
 // first attempt fails retryably with no reply so the client must replay the
 // same mutation id against the replacement.
 func (s *retirementBrowserRelaySource) StartTurn(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -220,6 +395,40 @@ func (s *retirementBrowserRelaySource) StartTurn(_ context.Context, params appwi
 	s.degradedMu.Lock()
 	s.turnStartText = append(s.turnStartText, text)
 	s.degradedMu.Unlock()
+	restartAttempt := -1
+	if text == restartDraftText {
+		readyOnEntry := false
+		select {
+		case <-s.replacementReady:
+			readyOnEntry = true
+		default:
+		}
+		s.restartMu.Lock()
+		restartAttempt = len(s.restartAttempts)
+		s.restartAttempts = append(s.restartAttempts, restartStartAttempt{
+			clientMutationID: params.ClientMutationID,
+			readyOnEntry:     readyOnEntry,
+		})
+		s.restartMu.Unlock()
+	}
+	select {
+	case <-s.replacementStarting:
+		select {
+		case <-s.replacementReady:
+		case <-time.After(15 * time.Second):
+			return appwire.TurnStartResponse{}, appwire.Unavailable("replacement stayed gated")
+		}
+	default:
+	}
+	if text == restartDraftText {
+		s.restartMu.Lock()
+		s.restartAttempts[restartAttempt].accepted = true
+		s.restartMu.Unlock()
+		newTurn := retirementTurn(restartDraftTurnID, text)
+		s.recordAccepted(restartDraftTurnID, text)
+		s.emitTurn(newTurn)
+		return appwire.TurnStartResponse{Turn: newTurn, Receipt: s.receipt(params, restartDraftTurnID)}, nil
+	}
 	if text == retryDraftText {
 		s.retryMu.Lock()
 		s.retryMutationIDs = append(s.retryMutationIDs, params.ClientMutationID)
@@ -229,7 +438,7 @@ func (s *retirementBrowserRelaySource) StartTurn(_ context.Context, params appwi
 			// The reply to this attempt is lost. A resync wakes the client's
 			// dispatcher so the replay happens deterministically rather than on
 			// a request timeout, exactly as a hub reconnect/resync would.
-			s.pushGen2Resync()
+			s.pushCurrentResync()
 			return appwire.TurnStartResponse{}, appwire.Unavailable("simulated lost start reply")
 		}
 		s.retryOnce.Do(func() { close(s.retryAccepted) })
@@ -270,19 +479,29 @@ func (s *retirementBrowserRelaySource) recordAccepted(id, text string) {
 }
 
 func (s *retirementBrowserRelaySource) receipt(params appwire.TurnStartParams, turnID string) appwire.MutationReceipt {
+	generation := s.currentReplacementGeneration()
 	return appwire.MutationReceipt{
 		ClientMutationID: params.ClientMutationID,
 		Disposition:      appwire.MutationDispositionApplied,
 		ThreadID:         s.threadID,
-		InstanceID:       "instance_v2",
+		InstanceID:       generation.instanceID,
 		TurnID:           turnID,
 		ProjectionState:  appwire.MutationProjectionState("reflected"),
 	}
 }
 
+func (s *retirementBrowserRelaySource) currentReplacementGeneration() relayGeneration {
+	select {
+	case <-s.replacementReady:
+		return s.gen3
+	default:
+		return s.gen2
+	}
+}
+
 // emitTurn pushes a history/updated notification (turn/started +
-// turn/completed's read-model replacement) through gen2Deliveries so the
-// relay broadcasts it to the browser client.
+// turn/completed's read-model replacement) through the current generation so
+// the relay broadcasts it to the browser client.
 func (s *retirementBrowserRelaySource) emitTurn(newTurn appwire.Turn) {
 	params := mustMarshalJSON(appwire.HistoryUpdatedParams{
 		ThreadID: s.threadID, Ref: s.ref,
@@ -290,33 +509,41 @@ func (s *retirementBrowserRelaySource) emitTurn(newTurn appwire.Turn) {
 		Turns: []appwire.Turn{newTurn},
 	})
 	ack := func() {}
-	deliver := func(method string) {
-		s.mu.Lock()
-		ch := s.gen2Deliveries
-		s.mu.Unlock()
-		select {
-		case ch <- appsource.RelayDelivery{Notification: appwire.Notification{Method: method, Params: params}, Acknowledge: ack, Proceed: ack}:
-		case <-time.After(5 * time.Second):
-		}
-	}
 	go func() {
-		deliver(appwire.NotifyHistoryUpdated)
+		s.publishToCurrentReplacement(appsource.RelayDelivery{
+			Notification: appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: params},
+			Acknowledge:  ack,
+			Proceed:      ack,
+		})
 	}()
 }
 
-func (s *retirementBrowserRelaySource) pushGen2Resync() {
+func (s *retirementBrowserRelaySource) pushCurrentResync() {
 	ack := func() {}
-	s.mu.Lock()
-	ch := s.gen2Deliveries
-	s.mu.Unlock()
-	select {
-	case ch <- appsource.RelayDelivery{
+	s.publishToCurrentReplacement(appsource.RelayDelivery{
 		Notification: appwire.Notification{
 			Method: appwire.NotifyEvenerThreadResync,
 			Params: mustMarshalJSON(map[string]any{"threadId": s.threadID, "ref": s.ref}),
 		},
-		Acknowledge: ack, Proceed: ack,
-	}:
+		Acknowledge: ack,
+		Proceed:     ack,
+	})
+}
+
+func (s *retirementBrowserRelaySource) publishToCurrentReplacement(delivery appsource.RelayDelivery) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	generation := &s.gen2
+	select {
+	case <-s.replacementReady:
+		generation = &s.gen3
+	default:
+	}
+	if generation == &s.gen2 && s.replacementFeedRetired {
+		return
+	}
+	select {
+	case generation.deliveries <- delivery:
 	case <-time.After(5 * time.Second):
 	}
 }
@@ -328,7 +555,7 @@ func (s *retirementBrowserRelaySource) degrade() {
 	s.degradedMu.Lock()
 	s.degraded = true
 	s.degradedMu.Unlock()
-	s.pushGen2Resync()
+	s.pushCurrentResync()
 }
 
 func (s *retirementBrowserRelaySource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
@@ -347,14 +574,21 @@ func (s *retirementBrowserRelaySource) AcquireRelaySession(ref appwire.Ref) (app
 	}()
 	s.mu.Unlock()
 
-	var instanceID string
-	var deliveries chan appsource.RelayDelivery
+	var generation relayGeneration
 	if !isRetired {
-		instanceID = "instance_v1"
-		deliveries = s.gen1Deliveries
+		generation = s.gen1
 	} else {
-		instanceID = "instance_v2"
-		deliveries = s.gen2Deliveries
+		select {
+		case <-s.replacementStarting:
+			s.replacementAcquireOnce.Do(func() { close(s.replacementAcquiring) })
+			select {
+			case <-s.replacementReady:
+			case <-time.After(s.replacementReadyTimeout):
+				return nil, errors.New("replacement stayed gated before acquisition timeout")
+			}
+		default:
+		}
+		generation = s.currentReplacementGeneration()
 	}
 
 	lease := &scriptedRelaySessionLease{
@@ -362,16 +596,73 @@ func (s *retirementBrowserRelaySource) AcquireRelaySession(ref appwire.Ref) (app
 			// Build the snapshot at read time: a re-read after an accepted turn
 			// must include it.
 			return appsource.RelayReadResult{
-				Response: appwire.ThreadReadResponse{Thread: s.buildThread(instanceID)},
+				Response: appwire.ThreadReadResponse{Thread: s.buildThread(generation.instanceID)},
 				// The atomic relay read requires a live continuation: without a
 				// Handoff the hub returns "atomic thread read returned no live
 				// continuation" and the client's hydration never publishes.
 				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
 			}, nil
 		},
-		deliveries: deliveries,
+		deliveries: generation.deliveries,
+		closeHook:  generation.closeHook,
 	}
 	return routeAwareTestLease(lease), nil
+}
+
+func TestRetirementBrowserAcquireFailsWhenReplacementStaysGated(t *testing.T) {
+	source := newRetirementBrowserRelaySource("sess_test", "local:sess_test")
+	source.replacementReadyTimeout = time.Millisecond
+	close(source.retired)
+	close(source.replacementStarting)
+	defer source.releaseReplacement()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := source.AcquireRelaySession(appwire.Ref{SourceID: "local", ThreadID: "sess_test"})
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "replacement stayed gated") {
+			t.Fatalf("AcquireRelaySession error = %v, want replacement gate timeout", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("AcquireRelaySession did not return after the replacement gate timeout")
+	}
+}
+
+func TestRetirementBrowserAcquireWaitsForExplicitReplacementRelease(t *testing.T) {
+	source := newRetirementBrowserRelaySource("sess_test", "local:sess_test")
+	source.restartWaitTimeout = time.Millisecond
+	close(source.retired)
+	close(source.replacementStarting)
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := source.AcquireRelaySession(appwire.Ref{SourceID: "local", ThreadID: "sess_test"})
+		result <- err
+	}()
+
+	select {
+	case <-source.replacementAcquiring:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("AcquireRelaySession did not enter the replacement gate")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("AcquireRelaySession returned before explicit release: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	source.releaseReplacement()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("AcquireRelaySession after release: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("AcquireRelaySession did not return after explicit release")
+	}
 }
 
 // buildThread constructs the fixture thread with two completed turns and the
@@ -485,22 +776,34 @@ func TestRetirementBrowser(t *testing.T) {
 		HubStateRoot: t.TempDir(),
 		Past:         hubcore.NewPastIndex(""),
 	}, sources, navigation, nil)
+	source.publishRestartResync = func() {
+		appServer.Broadcast(ref, appwire.NotifyEvenerThreadResync, map[string]any{"threadId": threadID, "ref": ref})
+	}
 
 	// Mux: /rpc → Hub WebSocket, /fixture/retire → retirement trigger.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rpc", appServer.ServeWebSocket)
-	mux.HandleFunc("/fixture/retire", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		// CORS: the browser harness connects from a different origin
-		// (the Vite dev server port). Test-only; no production path uses this.
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST")
+	handleFixturePOST := func(path string, action func() error) {
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			// CORS: the browser harness connects from a different origin
+			// (the Vite dev server port). Test-only; no production path uses this.
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "POST")
+			if err := action(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+	}
+	handleFixturePOST("/fixture/retire", func() error {
 		source.retire()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		return nil
 	})
 	// Handle CORS preflight for the retire endpoint.
 	mux.HandleFunc("/fixture/retire/options", func(w http.ResponseWriter, _ *http.Request) {
@@ -510,16 +813,17 @@ func TestRetirementBrowser(t *testing.T) {
 	})
 	// /fixture/degrade makes the replacement advertise unavailable
 	// queue/steer/settings for the retained-input, no-auto-resume assertion.
-	mux.HandleFunc("/fixture/degrade", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST")
+	handleFixturePOST("/fixture/degrade", func() error {
 		source.degrade()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		return nil
+	})
+	// /fixture/restart closes the serving replacement's feed and leaves the
+	// next generation gated. /fixture/release opens that gate only after the
+	// browser runner has observed the submitted prompt in durable outbox state.
+	handleFixturePOST("/fixture/restart", source.restartReplacement)
+	handleFixturePOST("/fixture/release", func() error {
+		source.releaseReplacement()
+		return nil
 	})
 
 	hub := httptest.NewServer(mux)
@@ -534,6 +838,8 @@ func TestRetirementBrowser(t *testing.T) {
 	hubWS := hub.URL + "/rpc"
 	retireURL := hub.URL + "/fixture/retire"
 	degradeURL := hub.URL + "/fixture/degrade"
+	restartURL := hub.URL + "/fixture/restart"
+	releaseURL := hub.URL + "/fixture/release"
 
 	// Artifact directory: written by the Node guard; survives a passing run
 	// because it is outside the scratch the browser gate deletes.
@@ -558,7 +864,11 @@ func TestRetirementBrowser(t *testing.T) {
 		"RETIREMENT_HUB_URL="+hubWS,
 		"RETIREMENT_RETIRE_URL="+retireURL,
 		"RETIREMENT_DEGRADE_URL="+degradeURL,
+		"RETIREMENT_RESTART_URL="+restartURL,
+		"RETIREMENT_RELEASE_URL="+releaseURL,
 		"RETIREMENT_REF="+ref,
+		"RETIREMENT_RESTART_DRAFT="+restartDraftText,
+		"RETIREMENT_RESTART_TURN_ID="+restartDraftTurnID,
 		"RETIREMENT_ARTIFACT_DIR="+artifactDir,
 		// The guard's Vite dev server proxies /rpc to this fixture Hub.
 		"EVENER_HUB_ADDR="+hub.URL,
@@ -617,6 +927,32 @@ func TestRetirementBrowser(t *testing.T) {
 		t.Fatal("the replayed turn/start was never accepted")
 	}
 
+	// The browser makes the send while replacement acquisition is gated, but the
+	// fixture must not receive StartTurn until readiness opens. The one entry and
+	// one acceptance must carry the durable identity observed while the gate was
+	// still closed.
+	source.restartMu.Lock()
+	replacementGateEntered := source.replacementGateEntered
+	restartResyncPublished := source.restartResyncPublished
+	restartAttempts := append([]restartStartAttempt(nil), source.restartAttempts...)
+	source.restartMu.Unlock()
+	if !replacementGateEntered {
+		t.Fatal("replacement acquisition did not reach its closed readiness gate before the browser submitted")
+	}
+	if !restartResyncPublished {
+		t.Fatal("restart did not publish its resync after generation-two lease retirement")
+	}
+	if len(restartAttempts) != 1 || restartAttempts[0].clientMutationID == "" || !restartAttempts[0].readyOnEntry || !restartAttempts[0].accepted {
+		t.Fatalf("restart-gated turn/start entries = %+v, want one accepted non-empty attempt that entered after readiness", restartAttempts)
+	}
+	restartQueued, ok := result["restartQueued"].(map[string]any)
+	if !ok {
+		t.Fatalf("retirementguard result has no restartQueued evidence: %s", resultBytes)
+	}
+	storedID, _ := restartQueued["clientMutationId"].(string)
+	if storedID == "" || storedID != restartAttempts[0].clientMutationID {
+		t.Fatalf("restart-gated durable clientMutationId=%q, accepted=%q", storedID, restartAttempts[0].clientMutationID)
+	}
 	// With queue/steer/settings unavailable, the retained unsent draft must
 	// never be auto-submitted: no turn/start may carry it.
 	source.degradedMu.Lock()

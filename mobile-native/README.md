@@ -110,8 +110,11 @@ lasts for the app lifetime and adds no disk persistence.
   navigation has paged catalogs, archived views, favorites and archive actions.
   Complete organization/pinning and management acceptance remain open.
 - Conversations render native Markdown and expandable tool/activity details,
-  images and a gallery. Image selection and durable draft attachments exist.
-  Rich-content, authenticated-image and accessibility qualification remain open.
+  images and a gallery. While a turn runs, the status line above the composer
+  shows its most recent nonblank tool-call intent; until one arrives, it keeps
+  the existing progress and status fallbacks. Image selection and durable draft
+  attachments exist. Rich-content, authenticated-image and accessibility
+  qualification remain open.
 - New session opens on the selected hub with recent project directories,
   harnesses, searchable models and compatible reasoning effort. Defaults defer
   to hub configuration. Opening text is preserved exactly; uncertain creation
@@ -162,6 +165,11 @@ Typed activity pages retain at most 128 continuation snapshots in the playground
 An evicted continuation reports a stale cursor, so the shared activity store
 refreshes only that collection and retains useful rows while it loads. Malformed
 cursors and requests for a different session, scope or resource remain invalid.
+
+With `EVENER_DEMO_FLEET`, the same hub answers the Board's pulse read
+(`evener/activity/read`, S5): one entry per live top-level session with its
+per-minute counts, running-subagent tally, quiet time and latest tool intent, so
+the demo Board draws real meters, subagent tallies and Quiet/May-be-stuck labels.
 
 ## Standalone simulator builds
 
