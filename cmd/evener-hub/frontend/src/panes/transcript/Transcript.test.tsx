@@ -103,7 +103,10 @@ afterEach(() => {
 test("shows a loading placeholder before the thread hydrates", async () => {
   const fake = connectFakeClient();
   const box: { resolve: ((r: ThreadReadResponse) => void) | null } = { resolve: null };
-  fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (box.resolve = resolve)));
+  const read = new Promise<ThreadReadResponse>((resolve) => {
+    box.resolve = resolve;
+  });
+  fake.on("thread/read", async (params) => ({ ...(await read), requestGeneration: params.requestGeneration }));
 
   render(
     <ClientProvider client={fake}>
@@ -112,8 +115,10 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   );
 
   expect(screen.getByText(/loading transcript/i)).toBeTruthy();
-  for (let i = 0; i < 20 && box.resolve === null; i += 1) await Promise.resolve();
-  box.resolve?.(readResponse("ref_a"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/read")).toBe(true));
+  const resolve = box.resolve;
+  if (!resolve) throw new Error("transcript read was not admitted");
+  await act(async () => resolve(readResponse("ref_a")));
   await waitFor(() => expect(screen.queryByText(/loading transcript/i)).toBeNull());
 });
 
@@ -135,7 +140,14 @@ test.each([undefined, "remote:parent"])(
   async (parentRef) => {
     const fake = connectFakeClient();
     const ref = "remote:child";
-    fake.on("thread/read", () => readResponse(ref, { name: "Jesse's chosen title" }));
+    const box: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    const historyRead = new Promise<ThreadReadResponse>((resolve) => {
+      box.resolve = resolve;
+    });
+    fake.on("thread/read", async (params) => ({
+      ...(params.includeTurns ? await historyRead : readResponse(ref)),
+      requestGeneration: params.requestGeneration,
+    }));
     fake.on("thread/unsubscribe", () => ({}));
     fake.on("evener/thread/activity/read", () => ({
       ...activitySummary(ref),
@@ -158,11 +170,25 @@ test.each([undefined, "remote:parent"])(
     const scope = await screen.findByRole("navigation", { name: "Scope" });
     expect(within(scope).getByRole("button", { name: "Proven root" })).toBeTruthy();
     expect(within(scope).getByRole("button", { name: "Proven parent" })).toBeTruthy();
-    expect(within(scope).getByText("Jesse's chosen title").getAttribute("aria-current")).toBe("page");
-    expect(screen.getByRole("heading", { name: "Jesse's chosen title" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Jesse's chosen title" })).toBeNull();
+    await waitFor(() =>
+      expect(
+        fake.calls.some(
+          (call) => call.method === "thread/read" && (call.params as { includeTurns?: boolean }).includeTurns,
+        ),
+      ).toBe(true),
+    );
+    const resolve = box.resolve;
+    if (!resolve) throw new Error("history read was not admitted");
+    await act(async () => resolve(readResponse(ref, { name: "Jesse's chosen title" })));
+    expect(await screen.findByRole("heading", { name: "Jesse's chosen title" })).toBeTruthy();
+    const hydratedScope = screen.getByRole("navigation", { name: "Scope" });
+    expect(within(hydratedScope).getByText("Jesse's chosen title").getAttribute("aria-current")).toBe("page");
     expect(
-      fake.calls.filter((call) => call.method === "thread/read").map((call) => (call.params as { ref: string }).ref),
-    ).toEqual([ref]);
+      new Set(
+        fake.calls.filter((call) => call.method === "thread/read").map((call) => (call.params as { ref: string }).ref),
+      ),
+    ).toEqual(new Set([ref]));
     expect(fake.calls.filter((call) => call.method.endsWith("/list"))).toHaveLength(0);
   },
 );
