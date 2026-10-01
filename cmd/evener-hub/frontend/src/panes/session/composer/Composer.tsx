@@ -299,10 +299,10 @@ export function Composer({ ref, focused }: ComposerProps) {
   const actionPending = busyAction !== null || submitting || mutationWriteStalled;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
-  // Whether a FINISHED session's collapsed follow-up field currently has focus,
-  // which is what expands it from its one-line resting state. Only read on that
-  // path (see the ended card's minLines below); harmless everywhere else.
+  // Keep the finished card engaged while focus moves through its controls and
+  // portaled menus. React focus events follow that subtree across portals.
   const [followUpFocused, setFollowUpFocused] = useState(false);
+  const followUpFocusSequenceRef = useRef(0);
 
   // Jesse's 2026-09-28 ruling on the #1339 phone-width verb wrap: below the
   // phone-width boundary the verb cluster leaves this row for the session
@@ -1576,20 +1576,34 @@ export function Composer({ ref, focused }: ComposerProps) {
     event.target.value = ""; // re-picking the identical file must re-fire change
   }
 
-  // Blur is the slash menu's own "clicked/tabbed away entirely" close, on
-  // top of whatever the ended-session follow-up card already does with a
-  // blur (collapsing back to one line). SlashCompletionMenu's own options
-  // preventDefault() on their mousedown specifically so a MOUSE click on an
-  // option never reaches this handler in the first place - see that
-  // component's own comment - so this only ever fires for a genuine
-  // "focus left the field" (Tab away, click elsewhere, blur()).
+  function handleFollowUpFocus(): void {
+    followUpFocusSequenceRef.current += 1;
+    setFollowUpFocused(true);
+  }
+
+  function handleFollowUpBlur(): void {
+    const sequence = ++followUpFocusSequenceRef.current;
+    // Native focus transfers run microtasks between blur and destination focus.
+    // Wait until the next frame so a control or portal can retain the card
+    // before an empty card collapses and unmounts the destination.
+    requestAnimationFrame(() => {
+      if (mountedRef.current && followUpFocusSequenceRef.current === sequence) setFollowUpFocused(false);
+    });
+  }
+
+  // Slash options prevent mousedown's default focus transfer, so only leaving
+  // the editor closes its completion menu. The card owns collapse separately.
   function handleEditorBlur(): void {
-    if (ended) setFollowUpFocused(false);
     setSlashToken(null);
   }
 
   return (
-    <div className={CLASS.composer} ref={composerRootRef}>
+    <div
+      className={CLASS.composer}
+      ref={composerRootRef}
+      onFocusCapture={ended ? handleFollowUpFocus : undefined}
+      onBlurCapture={ended ? handleFollowUpBlur : undefined}
+    >
       {mutationWriteStalled && (
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
           Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for
@@ -1704,7 +1718,6 @@ export function Composer({ ref, focused }: ComposerProps) {
                     aria-controls={slashActiveId ? slashListboxId : undefined}
                     aria-activedescendant={slashActiveId ?? undefined}
                     minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
-                    onFocus={ended ? () => setFollowUpFocused(true) : undefined}
                     onBlur={handleEditorBlur}
                     placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
                     aria-label="Message"
