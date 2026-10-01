@@ -39,6 +39,29 @@ const DELEGATE_FIELDS = [
 	"worktree",
 ] as const satisfies readonly (keyof ActivityDelegate & keyof SessionDelegate)[];
 
+// Fails to compile when SessionDelegate gains a field the adapter neither
+// sets itself nor copies through DELEGATE_FIELDS.
+type UncopiedDelegateField = Exclude<
+	keyof SessionDelegate,
+	| (typeof DELEGATE_FIELDS)[number]
+	| "delegateId"
+	| "runGeneration"
+	| "ownerRef"
+	| "rootRef"
+	| "childRef"
+	| "parentDelegateId"
+	| "description"
+	| "task"
+	| "type"
+	| "lifecycle"
+	| "phase"
+	| "status"
+	| "terminal"
+	| "resumable"
+>;
+const everyDelegateFieldCarried: [UncopiedDelegateField] extends [never] ? true : UncopiedDelegateField = true;
+void everyDelegateFieldCarried;
+
 function definedFields<T extends object, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {
 	const picked: Partial<Pick<T, K>> = {};
 	for (const key of keys) if (source[key] !== undefined) picked[key] = source[key];
@@ -72,8 +95,11 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 				jobs.push(job);
 			} else {
 				const d = entry.delegate;
-				// The hub reports a finished delegate as idle.
-				const state = d.terminal === true ? "idle" : "running";
+				// The hub reports a finished delegate as idle, and closes one that
+				// can't be resumed.
+				const terminal = d.terminal === true;
+				const state = terminal ? "idle" : "running";
+				const resumable = d.resumable ?? false;
 				delegates.push({
 					delegateId: d.delegateId,
 					runGeneration: d.runGeneration ?? 0,
@@ -85,10 +111,10 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 					task: d.task ?? d.description ?? "",
 					type: d.type ?? "delegate",
 					lifecycle: d.lifecycle ?? state,
-					phase: d.phase ?? state,
+					phase: d.phase ?? (terminal && !resumable ? "closed" : state),
 					status: d.status ?? state,
-					terminal: d.terminal ?? false,
-					resumable: d.resumable ?? false,
+					terminal,
+					resumable,
 					...definedFields(d, DELEGATE_FIELDS),
 				});
 				if (d.child && params.scope === "subtree") visit(d.child, d.delegateId);

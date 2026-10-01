@@ -1,29 +1,20 @@
-// The humanized wire state a session row's second line leads with (§2.3),
-// shared by the web rail (shell/rail/RailRow.tsx) and native's Board search
-// results (mobile-native/src/board/BoardScreen.tsx): the same wire state
-// vocabulary the web's cadenceStateFor (shell/rail/railNodes.ts) reads,
-// worded for a person rather than mapped to a Cadence family. Pure
-// functions, no imports.
+// The humanized wire state used by session summaries, including the web
+// rail's title HoverCard: the same wire state vocabulary its cadenceStateFor
+// reads, worded for a person rather than mapped to a broad Cadence family.
+// Pure functions, no imports.
 //
 // "awaiting" itself splits on askPending: hubapi.StateWord (hubapi/
 // attention.go, Track A §2 ask-tiering) already draws this same line for the
 // TUI and the older web surface - "Question waiting" when the agent is
 // genuinely blocked on an answer, "Your move" when a turn simply ended with
 // nothing further queued - because those are different urgencies wearing the
-// identical amber dot. This rail's own row never read askPending before,
-// so every "awaiting" row rendered as the same generic "waiting on you" -
-// a person scanning the list for the one session that's actually blocked on
-// them had to open every amber row to find out which. Lowercased to match
-// this line's existing casing ("working"/"failed"/"idle"), not the Go
-// vocabulary's sentence case verbatim.
+// identical amber dot. Return values are lowercase so each presentation
+// surface can apply its own casing.
 //
 // "warning" gets its own word for the same reason (kata 59mx): StateWord
 // already gives it a dedicated "Warning", distinct from either awaiting
-// band, so a warning row reading as generic "waiting on you" was this
-// gloss never having read that vocabulary for this state either - the same
-// gap ask_pending closed for "awaiting" above. Sharing Cadence's "needs-you"
-// dot family (cadenceStateFor) is still correct: that comment's own text
-// says only the dot family is shared by design, never the word.
+// band. Sharing Cadence's "needs-you" dot family is still correct: only the
+// dot family is shared by design, never the word.
 //
 // A pending approval (approvalWaiting below) leads over every state but a
 // failure: the escalation blocks its turn mid-tool, so the session keeps

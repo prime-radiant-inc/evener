@@ -1065,8 +1065,8 @@ export function ConversationScreen({
 			id: route.params.ref,
 			archived,
 		});
-		// The session moves in or out of its project's archived tier, and
-		// archived lists follow no invalidations.
+		// The session moves in or out of its project's archived tier, and an
+		// archived list no view is following hears no invalidation.
 		if (response.ok) refreshLoadedArchivedLists(client);
 		return response;
 	}

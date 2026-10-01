@@ -235,8 +235,8 @@ export class NavigationActions {
 			const response = await request();
 			if (response.ok !== true) throw Error("not accepted");
 			accepted = true;
-			// A page showing an archived list re-reads it too (refreshAfter); the
-			// superseded read's answer is dropped.
+			// A page showing an archived list waits for this read, and reads
+			// again only if it failed (ArchivedPages.refreshAfter).
 			refreshLoadedArchivedLists(this.client);
 			if (checkpoint && this.storage) {
 				savingRecovery = true;

@@ -144,6 +144,14 @@ const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) =
 // landing must behave identically - the pass the guard lacked.
 const PAGED = new URLSearchParams(window.location.search).get("paged") === "1";
 const READONLY = new URLSearchParams(window.location.search).get("readonly") === "1";
+// Hold hydration explicitly so the browser guard exercises pre-mount frames.
+const DEFER_READ = new URLSearchParams(window.location.search).get("deferRead") === "1";
+let releaseRead: (() => void) | undefined;
+const readAdmission = DEFER_READ
+  ? new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    })
+  : undefined;
 const OLDER_CURSOR = "cursor_page_1";
 const OLDER_PAGE_TURNS = 12;
 let olderPageCalls = 0;
@@ -205,18 +213,17 @@ const INCARNATION = "inc-1";
 // generation-less response is discarded as superseded (readDisposition) —
 // stranding the pane on the cursor-less shell. The suites' echoingReadHandler
 // exists for the same contract.
-fake.on(
-  "thread/read",
-  (params) =>
-    ({
-      thread: THREAD,
-      bootGeneration: BOOT_GENERATION,
-      epoch: EPOCH,
-      snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
-      requestGeneration: params.requestGeneration,
-      ...(PAGED ? { olderCursor: OLDER_CURSOR } : {}),
-    }) satisfies ThreadReadResponse,
-);
+fake.on("thread/read", async (params) => {
+  await readAdmission;
+  return {
+    thread: THREAD,
+    bootGeneration: BOOT_GENERATION,
+    epoch: EPOCH,
+    snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
+    requestGeneration: params.requestGeneration,
+    ...(PAGED ? { olderCursor: OLDER_CURSOR } : {}),
+  } satisfies ThreadReadResponse;
+});
 // SessionChrome/Composer idle-time reads; scripted so nothing rejects into an
 // unhandledrejection and pollutes the page-error probe.
 fake.on("evener/tasks/list", () => ({ data: [] }));
@@ -384,10 +391,11 @@ async function waitForPagedOpenSettled(): Promise<TranscriptScrollMetrics> {
   for (;;) {
     await nextFrame();
     throwOnPageErrors("paged open");
-    const m = metrics();
-    if (tracker.observe({ turns: m.turns, geometry: m })) return m;
+    const el = findScrollElement();
+    const sample = { turns: modelTurnCount, geometry: el === null ? null : geometryOf(el) };
+    if (tracker.observe(sample)) return metrics();
     if (performance.now() > deadline) {
-      throw new Error(`transcript harness: the paged open never settled; ${JSON.stringify(m)}`);
+      throw new Error(`transcript harness: the paged open never settled; ${JSON.stringify(sample)}`);
     }
   }
 }
@@ -619,6 +627,7 @@ async function shrinkPortAndSettle(): Promise<
 
 declare global {
   interface Window {
+    releaseTranscriptRead: () => void;
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
     waitForPagedOpenSettled: typeof waitForPagedOpenSettled;
     transcriptScrollMetrics: typeof metrics;
@@ -630,6 +639,9 @@ declare global {
   }
 }
 
+window.releaseTranscriptRead = () => {
+  releaseRead?.();
+};
 window.waitForTranscriptSettled = waitForTranscriptSettled;
 window.waitForPagedOpenSettled = waitForPagedOpenSettled;
 window.transcriptScrollMetrics = metrics;

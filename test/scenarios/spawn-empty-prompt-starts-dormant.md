@@ -160,14 +160,12 @@ and the session pane's empty state; anything else, grep `data-testid` in
   and poll rather than sampling once.
 - **`Not started` is suppressed on a signal row, by design.** It renders
   only when the row is otherwise quiet — `saysNotStarted` is
-  `session.dormant === true && !showsGloss`
-  (`RailRow.tsx:441-443`), and `showsGloss` is true for the signal
-  states (`RailRow.tsx:498`). A dormant session handed a prompt a second
+  `session.dormant === true && !hasSignal`, and `hasSignal` is true for
+  working, needs-you, and failed rows. A dormant session handed a prompt a second
   ago is genuinely `active`, and a row still calling it "Not started"
   would be flatly wrong. So assert this on an untouched dormant session,
   not one you have already messaged. The dropped age moves into the
-  row's `title` tooltip alongside the words `not started`
-  (`rowTooltip`, `RailRow.tsx:415-431`).
+  title HoverCard, whose status also reads `Not started`.
 - **The post-start URL percent-escapes the colon.** `paneToURL` builds
   `/s/${encodeURIComponent(ref)}` (`shell/routing.ts:93-96`), so
   `location.pathname` reads `/s/local%3A<SID>` after a spawn navigation

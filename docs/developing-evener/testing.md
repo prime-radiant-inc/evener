@@ -1064,7 +1064,10 @@ of frontend defect is structurally invisible to `vitest`. Five checks in
   jump-to-latest pill must appear on a scroll away from the bottom, and
   clicking it must land at the true bottom of the settled geometry and stay
   there, including after content grows below the reader and after the
-  scroll port itself shrinks (the pane header growing).
+  scroll port itself shrinks (the pane header growing). Paged-open readiness
+  waits through asynchronous cache/read admission until the actual scroll port
+  mounts and its geometry settles. An explicitly deferred read exercises those
+  pre-mount frames without a fixed delay or a wider readiness deadline.
 
 The first covers static geometry; the next three cover the Session pane, the
 AppShell, and the Spawn pane, each with its own responsive layout and failure
