@@ -7,7 +7,7 @@ import type {
 	NavigationOperation,
 } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
-import { archivedListStoreFor } from "./archivedPages";
+import { archivedListStoreFor } from "./archivedLists";
 
 it("does not call an empty-journal reconciliation complete after another model starts a write", async () => {
 	const journal = journalFixture();
@@ -724,4 +724,25 @@ it("reads the connection's loaded archived lists again once a change is accepted
 	await actions.archive({ kind: "session", id: "s1" }, false);
 
 	expect(archivedReads).toBe(2);
+});
+
+it("leaves the archived lists alone when the hub refuses a change", async () => {
+	const client = new FakeClient("ready");
+	let archivedReads = 0;
+	client.on("evener/archived/list", () => {
+		archivedReads++;
+		return { sessions: [], total: 0 };
+	});
+	client.on("evener/archive/set", () => ({ ok: false, navigation: { generation_id: "g", targets: [] } }));
+	await archivedListStoreFor(client).refresh("projects", "p");
+	const actions = new NavigationActions(
+		client,
+		async () => {},
+		() => true,
+		async () => {},
+	);
+
+	await actions.archive({ kind: "session", id: "s1" }, false);
+
+	expect(archivedReads).toBe(1);
 });

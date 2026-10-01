@@ -5,7 +5,8 @@ import type { ArchivedListParams } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession } from "@evener/appwire-client/testing/navigation";
 import { expect, it } from "vitest";
-import { ArchivedPages, archivedListStoreFor } from "./archivedPages";
+import { archivedListStoreFor } from "./archivedLists";
+import { ArchivedPages } from "./archivedPages";
 
 const row = (ref: string) => completeSession({ ref, title: ref, updated_at: "2026-09-01T00:00:00Z" });
 
@@ -54,11 +55,27 @@ it("keeps one snapshot until its own list changes, and tells only its own listen
 
 	await mine.refresh();
 	expect(heard).toBeGreaterThan(0);
-	expect(mine.getSnapshot()).not.toBe(before);
+	const loaded = mine.getSnapshot();
+	expect(loaded).not.toBe(before);
+	await other.refresh();
+	expect(mine.getSnapshot()).toBe(loaded);
 	stop();
 });
 
-it("says a failed read and keeps the loaded rows", async () => {
+// Only a cursor says another page exists; its count is the rows not loaded.
+it("counts what remains only while the list has a next page", async () => {
+	const { client } = hub({ "": { refs: ["local:a"], total: 5, nextCursor: "c1" } });
+	const paged = new ArchivedPages(archivedListStoreFor(client), "projects", "p");
+	await paged.refresh();
+	expect(paged.getSnapshot().remaining).toBe(4);
+
+	const { client: other } = hub({ "": { refs: ["local:a"], total: 5 } });
+	const last = new ArchivedPages(archivedListStoreFor(other), "projects", "p");
+	await last.refresh();
+	expect(last.getSnapshot().remaining).toBe(0);
+});
+
+it("reports a failed read and keeps the loaded rows", async () => {
 	const { client } = hub({ "": { refs: ["local:a"], total: 2, nextCursor: "c1" } });
 	const pages = new ArchivedPages(archivedListStoreFor(client), "projects", "p");
 	await pages.refresh();
@@ -80,4 +97,18 @@ it("shares one store per connection", () => {
 	const { client } = hub({});
 	expect(archivedListStoreFor(client)).toBe(archivedListStoreFor(client));
 	expect(archivedListStoreFor(hub({}).client)).not.toBe(archivedListStoreFor(client));
+});
+
+// A client reconnects in place, and a recovered connection may serve rows
+// that changed while it was away.
+it("drops a connection's loaded lists when it recovers", async () => {
+	const { client } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(archivedListStoreFor(client), "projects", "p");
+	await pages.refresh();
+	expect(pages.getSnapshot().loaded).toBe(true);
+
+	client.emitStateChange("reconnecting");
+	client.emitReady();
+
+	expect(pages.getSnapshot()).toMatchObject({ loaded: false, rows: [] });
 });

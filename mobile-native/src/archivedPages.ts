@@ -1,31 +1,17 @@
 // A project's archived sessions as a page source. Navigation v3 serves no
-// archived rows: they come from evener/archived/list through the shared
-// package's archived list store, one per connection. The list has no
-// revisions and no invalidations, so it re-reads when a screen refreshes it
-// and after any organize action lands (navigationActions.ts).
+// archived rows: they come from evener/archived/list through the connection's
+// archived list store (archivedLists.ts). The list has no revisions and no
+// invalidations: it is read when a screen opens it unloaded, again after any
+// accepted organize change (navigationActions.ts), and from the top once its
+// connection recovers.
 import {
 	type ArchivedList,
 	type ArchivedListCatalog,
 	type ArchivedListStore,
 	archivedListKey,
-	createArchivedListStore,
 	type NavigationSessionSummary,
 } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { PageSource, PageState } from "./navigationPages";
-
-const stores = new WeakMap<ConversationClientLike, ArchivedListStore>();
-
-/** The connection's archived list store. A new connection gets a new store,
- * so no list outlives the connection that served it. */
-export function archivedListStoreFor(client: ConversationClientLike): ArchivedListStore {
-	let store = stores.get(client);
-	if (!store) {
-		store = createArchivedListStore(client);
-		stores.set(client, store);
-	}
-	return store;
-}
 
 function pageState(list: ArchivedList | undefined): PageState<NavigationSessionSummary> {
 	if (!list) return { loaded: false, rows: [], remaining: 0, loading: false, error: null, stale: false };
@@ -68,10 +54,14 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 		this.store.subscribe((state, previous) => {
 			if (state.lists[this.key] !== previous.lists[this.key]) listener();
 		});
-	watch = () => () => {};
 	refresh = () => this.store.refresh(this.catalog, this.projectKey);
+	// An archived list is read from the hub's current navigation, which an
+	// accepted change has already rebuilt, so the receipt adds nothing.
 	refreshAfter = () => this.refresh();
 	more = () => this.store.loadMore(this.catalog, this.projectKey);
+	// The list follows no invalidations and holds no read to pause, so there
+	// is nothing to watch, cancel or resume.
+	watch = () => () => {};
 	cancel() {}
 	resume() {}
 }

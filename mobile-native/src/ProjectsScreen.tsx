@@ -17,7 +17,8 @@ import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
-import { ArchivedPages, archivedListStoreFor } from "./archivedPages";
+import { archivedListStoreFor } from "./archivedLists";
+import { ArchivedPages } from "./archivedPages";
 import { NavigationPages, type PageSource, updating } from "./navigationPages";
 import { revealNavigationRow } from "./navigationReveal";
 import {
@@ -56,16 +57,18 @@ function FilterTab({ label, selected, onPress }: { label: string; selected: bool
 	);
 }
 
+const UNCONFIRMED = "The current navigation could not be confirmed.";
+
 /** Why the page read after an organize change can't confirm it, or null when
  * it does: the read must have landed cleanly, and a navigation page must come
  * from the generation the change was observed in. An archived list has no
  * navigation version, so only its read is checked. */
-export function pageConfirmationError(
+export function unconfirmedReason(
 	pages: PageSource<unknown>,
 	observation: Pick<OrganizationObservation, "generationId"> | null,
 ): string | null {
 	const page = pages.getSnapshot();
-	if (!page.loaded || page.loading || page.stale || page.error) return "The current navigation could not be confirmed.";
+	if (!page.loaded || page.loading || page.stale || page.error) return UNCONFIRMED;
 	if (observation && pages.navigationVersioned && pages.getResourceVersion()?.generationId !== observation.generationId)
 		return "The hub restarted during the check.";
 	return null;
@@ -138,8 +141,8 @@ export function PageList<T>({
 			if (confirmReceipt && checkpoint?.receipt) await pages.refreshAfter(checkpoint.receipt);
 			else await pages.refresh();
 			const page = pages.getSnapshot();
-			if (!isCurrent()) throw Error("The current navigation could not be confirmed.");
-			const unconfirmed = pageConfirmationError(pages, observation);
+			if (!isCurrent()) throw Error(UNCONFIRMED);
+			const unconfirmed = unconfirmedReason(pages, observation);
 			if (unconfirmed) throw Error(unconfirmed);
 			const same = previous !== null && JSON.stringify(previous) === JSON.stringify({ checkpoint, observation });
 			previous = checkpoint && observation ? { checkpoint, observation } : null;
@@ -562,25 +565,17 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 	const tier = route.params.tier ?? "current";
 	const belongs = activeProfile?.id === route.params.hubId;
 	const catalog = route.params.archived ? "archived_projects" : "projects";
-	const pages = useMemo(
-		() =>
-			!client || !belongs
-				? null
-				: // Navigation serves no archived rows; the archived list does.
-					tier === "archived"
-					? new ArchivedPages(archivedListStoreFor(client), catalog, route.params.projectKey)
-					: new NavigationPages<NavigationSessionSummary>(
-							client,
-							{
-								resource: "project_page",
-								projectKey: route.params.projectKey,
-								tier,
-							},
-							"sessions",
-							sessionRef,
-						),
-		[client, belongs, catalog, route.params.projectKey, tier],
-	);
+	const pages = useMemo((): PageSource<NavigationSessionSummary> | null => {
+		if (!client || !belongs) return null;
+		// Navigation serves no archived rows; the archived list does.
+		if (tier === "archived") return new ArchivedPages(archivedListStoreFor(client), catalog, route.params.projectKey);
+		return new NavigationPages<NavigationSessionSummary>(
+			client,
+			{ resource: "project_page", projectKey: route.params.projectKey, tier },
+			"sessions",
+			sessionRef,
+		);
+	}, [client, belongs, catalog, route.params.projectKey, tier]);
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<View style={{ paddingHorizontal: 20, gap: 8 }}>

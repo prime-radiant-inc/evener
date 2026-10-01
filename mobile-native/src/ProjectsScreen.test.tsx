@@ -11,11 +11,19 @@ import { AccessibilityInfo } from "react-native";
 import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { completeSession, wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import { ProjectScreen, ProjectsScreen, pageConfirmationError, SessionLocationScreen } from "./ProjectsScreen";
-import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { completeSession, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { NavigationPages } from "./navigationPages";
+import { ProjectScreen, ProjectsScreen, unconfirmedReason, SessionLocationScreen } from "./ProjectsScreen";
+import {
+	alertRequests,
+	flatListCalls,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+} from "./renderNative.testkit";
 
-const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
+const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 }));
@@ -29,7 +37,12 @@ vi.mock("@react-navigation/native", async () => {
 });
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("expo-sqlite/kv-store", () => ({
-	Storage: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
+	Storage: {
+		getItemSync: (key: string) => harness.kv.get(key) ?? null,
+		setItemSync: (key: string, value: string) => void harness.kv.set(key, value),
+		removeItemSync: (key: string) => void harness.kv.delete(key),
+		getAllKeysSync: () => [...harness.kv.keys()],
+	},
 }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
 
@@ -185,7 +198,6 @@ it("scrolls to and selects the located row", async () => {
 it("lists a project's archived sessions from the archived list, a page at a time", async () => {
 	const hub = new FakeClient("ready");
 	const archivedReads: unknown[] = [];
-	hub.on("evener/navigation/read", (params) => wireSnapshot(params as never, { sessions: [], remaining: 0 }));
 	hub.on("evener/archived/list", (params) => {
 		archivedReads.push(params);
 		return params.cursor
@@ -206,6 +218,59 @@ it("lists a project's archived sessions from the archived list, a page at a time
 		{ catalog: "archived_projects", projectKey: "p" },
 		{ catalog: "archived_projects", projectKey: "p", cursor: "c1" },
 	]);
+	expect(hub.calls.filter((call) => call.method === "evener/navigation/read")).toEqual([]);
+	tree.unmount();
+});
+
+// An archived row's Unarchive runs through the same organize flow as any
+// row's: the hub accepts it, the change is confirmed, and the archived list
+// is read again, so the row leaves the tab.
+it("unarchives an archived row and reads the archived list again", async () => {
+	harness.kv.clear();
+	const hub = new FakeClient("ready");
+	// A local session id is 22 alphanumerics; the change is checked by its ref.
+	const alpha = { ref: "local:AlphaSession0000000001", session_id: "AlphaSession0000000001", title: "Alpha" };
+	let archived = true;
+	let archivedReads = 0;
+	hub.on("evener/archived/list", () => {
+		archivedReads++;
+		return archived ? { sessions: [completeSession(alpha)], total: 1 } : { sessions: [], total: 0 };
+	});
+	hub.on("evener/archive/set", () => {
+		archived = false;
+		return { ok: true, navigation: { generation_id: "generation_test", targets: [] } };
+	});
+	// The change is confirmed by reading the session's location, now in the
+	// project's current tier, and the manifest.
+	hub.on("evener/navigation/read", (params) => {
+		if (params.resource !== "location") return wireSnapshot(params as never, manifest());
+		const response = wireSnapshot(params as never, { session: alpha });
+		Object.assign((response.data as { metadata: Record<string, unknown> }).metadata, {
+			tier: "current",
+			project_key: "p",
+		});
+		return response;
+	});
+	harness.connection = screenConnection(hub, "ready");
+	const projectProps = {
+		route: { params: { hubId: "hub-1", projectKey: "p", title: "Project", tier: "archived" } },
+		navigation: { navigate: () => {}, setParams: () => {} },
+	} as unknown as ComponentProps<typeof ProjectScreen>;
+	const tree = render(<ProjectScreen {...projectProps} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Alpha");
+	alertRequests.length = 0;
+	act(() => pressable(tree, "More actions for Alpha")?.props.onPress());
+	const unarchive = alertRequests.at(-1)?.buttons?.find((button) => button.text === "Unarchive");
+	await act(async () => unarchive?.onPress?.());
+	await act(async () => {});
+
+	expect(hub.calls.filter((call) => call.method === "evener/archive/set").map((call) => call.params)).toEqual([
+		{ kind: "session", id: "AlphaSession0000000001", archived: false },
+	]);
+	expect(archivedReads).toBeGreaterThan(1);
+	expect(renderedText(tree)).not.toContain("Alpha");
+	expect(renderedText(tree)).not.toContain("could not be confirmed");
 	tree.unmount();
 });
 
@@ -219,21 +284,39 @@ describe("confirming an organize change against the page", () => {
 			navigationVersioned,
 			getSnapshot: () => page,
 			getResourceVersion: () => (generationId ? { generationId, revision: 1 } : null),
-		}) as unknown as Parameters<typeof pageConfirmationError>[0];
+		}) as unknown as Parameters<typeof unconfirmedReason>[0];
+
+	// The real navigation page declares its version, so a change observed in
+	// another generation is caught.
+	it("checks the generation a real navigation page was read in", async () => {
+		const hub = new FakeClient("ready");
+		hub.on("evener/navigation/read", (params) =>
+			wireSnapshot(params as never, { sessions: [], remaining: 0 }, '"one"', 1, "g1"),
+		);
+		const pages = new NavigationPages(
+			hub,
+			{ resource: "project_page", projectKey: "p", tier: "current" },
+			"sessions",
+			(row: { ref: string }) => row.ref,
+		);
+		await pages.refresh();
+		expect(unconfirmedReason(pages, { generationId: "g1" })).toBeNull();
+		expect(unconfirmedReason(pages, { generationId: "g2" })).toBe("The hub restarted during the check.");
+	});
 
 	it("checks a navigation page's generation", () => {
-		expect(pageConfirmationError(source(true, "g1"), { generationId: "g1" })).toBeNull();
-		expect(pageConfirmationError(source(true, "g2"), { generationId: "g1" })).toBe(
+		expect(unconfirmedReason(source(true, "g1"), { generationId: "g1" })).toBeNull();
+		expect(unconfirmedReason(source(true, "g2"), { generationId: "g1" })).toBe(
 			"The hub restarted during the check.",
 		);
-		expect(pageConfirmationError(source(true, null), { generationId: "g1" })).toBe(
+		expect(unconfirmedReason(source(true, null), { generationId: "g1" })).toBe(
 			"The hub restarted during the check.",
 		);
 	});
 
 	it("checks only the read for a source navigation doesn't version", () => {
-		expect(pageConfirmationError(source(false, null), { generationId: "g1" })).toBeNull();
-		expect(pageConfirmationError(source(false, null, { ...loaded, error: "offline" }), { generationId: "g1" })).toBe(
+		expect(unconfirmedReason(source(false, null), { generationId: "g1" })).toBeNull();
+		expect(unconfirmedReason(source(false, null, { ...loaded, error: "offline" }), { generationId: "g1" })).toBe(
 			"The current navigation could not be confirmed.",
 		);
 	});
