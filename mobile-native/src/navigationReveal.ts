@@ -11,8 +11,8 @@ export interface SessionLocation {
 	ref: string;
 	/** The page row to scroll to and highlight. The location's own ref for a
 	 * top-level session, the owning row (its nearest non-subagent ancestor) for
-	 * a subagent: the hub answers a subagent's location with ref = the subagent
-	 * and top_level_ref = that row. */
+	 * a subagent or any non-top-level session in the archived tier: the hub
+	 * answers their locations with top_level_ref = that row. */
 	revealRef: string;
 	title: string;
 	params: Omit<NavigationReadParams, "representationVersion">;

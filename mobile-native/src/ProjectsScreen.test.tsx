@@ -51,13 +51,13 @@ const props = {
 	navigation: { navigate: () => {}, setParams: () => {} },
 } as unknown as ComponentProps<typeof ProjectsScreen>;
 /** A project page located for `revealRef`, as locating a session opens it. */
-const locationProps = (revealRef = "local:a", tier = "current") =>
+const locationProps = (revealRef = "local:a", tier = "current", ref = revealRef) =>
 	({
 		route: {
 			params: {
 				hubId: "hub-1",
 				location: {
-					ref: revealRef,
+					ref,
 					revealRef,
 					title: "Project",
 					params: { resource: "project_page", projectKey: "p", tier },
@@ -197,6 +197,24 @@ it("reveals a located archived session from the project's archived list", async 
 		args: { index: 1, animated: false, viewPosition: 0.3 },
 	});
 	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
+	expect(renderedText(tree)).not.toContain("not in the returned list");
+	tree.unmount();
+});
+
+// An archived fork original sits inside its continuation's row, so locating
+// it reveals that row and says so.
+it("reveals a located archived fork original through the row that carries it", async () => {
+	const hub = new FakeClient("ready");
+	const original = completeSession({ ref: "local:orig", title: "Original", kind: "fork" });
+	hub.on("evener/archived/list", () => ({
+		sessions: [completeSession({ ref: "local:cont", title: "Cont", children: [original] })],
+		total: 1,
+	}));
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<SessionLocationScreen {...locationProps("local:cont", "archived", "local:orig")} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Showing the row that owns this session");
+	expect(pressable(tree, "Open Cont")?.props.accessibilityState).toEqual({ selected: true });
 	expect(renderedText(tree)).not.toContain("not in the returned list");
 	tree.unmount();
 });
