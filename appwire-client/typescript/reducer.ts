@@ -1195,6 +1195,16 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
 // load seam's. Both are pure so the mobile store can adopt them later.
 // ---------------------------------------------------------------------------
 
+interface CachedSessionItem extends ItemModel {
+  // JSON drops ITEM_TEXT_PRESENCE. Only omitted text needs an enumerable
+  // marker; legacy records without it keep their provided-text semantics.
+  textOmitted?: true;
+}
+
+interface CachedSessionTurn extends TurnModel {
+  items: CachedSessionItem[];
+}
+
 export interface CachedSessionHistory {
   bootGeneration: string;
   epoch: number;
@@ -1202,7 +1212,7 @@ export interface CachedSessionHistory {
   length: number;
   appliedGeneration: number;
   issuedGeneration: number;
-  turns: TurnModel[];
+  turns: CachedSessionTurn[];
 }
 
 export interface CachedSessionRecord {
@@ -1245,7 +1255,16 @@ export function threadModelFromCache(record: CachedSessionRecord, now: number): 
     appliedGeneration: record.history.appliedGeneration,
     issuedGeneration: record.history.issuedGeneration,
     deferredPages: [],
-    turns: record.history.turns,
+    turns: record.history.turns.map((turn) => ({
+      ...turn,
+      items: turn.items.map((cached) => {
+        // The persisted flag is not model content. Strip it, then restore the
+        // non-enumerable marker without mutating the record or losing an
+        // in-memory caller's existing presence marker on this clone.
+        const { textOmitted, ...item } = cached;
+        return textOmitted === true ? markItemTextOmitted(item) : copyItemTextPresence(cached, item);
+      }),
+    })),
   };
   const base: ThreadModel = {
     ref: record.ref,
@@ -1302,7 +1321,13 @@ export function cachedSessionRecord(model: ThreadModel, now: number): CachedSess
       length: history.length,
       appliedGeneration: history.appliedGeneration,
       issuedGeneration: history.issuedGeneration,
-      turns: history.turns,
+      turns: history.turns.map((turn) => ({
+        ...turn,
+        items: turn.items.map<CachedSessionItem>((item) => ({
+          ...item,
+          ...(itemTextPresence(item) === "omitted" ? { textOmitted: true } : {}),
+        })),
+      })),
     },
   };
 }

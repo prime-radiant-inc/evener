@@ -1,4 +1,11 @@
-import type { CachedSessionRecord } from "@evener/appwire-client";
+import {
+  type CachedSessionRecord,
+  cachedSessionRecord,
+  itemTextPresence,
+  markItemTextOmitted,
+  mergeTurnHistory,
+  threadModelFromCache,
+} from "@evener/appwire-client";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settleProjectionWorkForTests } from "./projectionWork";
@@ -189,6 +196,30 @@ describe("SessionCacheIndexedDB get", () => {
     adapter.close();
   });
 
+  it.each([false, null, "true", 1])("deletes an invalid per-item textOmitted marker: %j", async (textOmitted) => {
+    const { adapter, factory } = freshAdapter();
+    const malformed = record({
+      history: {
+        ...record().history,
+        turns: [
+          {
+            id: "t",
+            status: "completed",
+            items: [{ id: "i", turnId: "t", type: "reasoning", text: "", textOmitted }],
+          },
+        ],
+      },
+    } as Partial<CachedSessionRecord>);
+    try {
+      await seedRecord(adapter, factory, malformed);
+      expect(await adapter.get(malformed.ref, 2_000)).toBeUndefined();
+      expect(await countStoreRows(factory, "records")).toBe(0);
+      expect(await countStoreRows(factory, "meta")).toBe(1);
+    } finally {
+      adapter.close();
+    }
+  });
+
   it("sweeps untouched expired rows on reopen before count, preserving the epoch", async () => {
     const { adapter, factory, write } = freshAdapter();
     await write(record({ savedAt: Date.now() - 15 * 24 * 60 * 60 * 1000 }));
@@ -234,14 +265,66 @@ describe("SessionCacheIndexedDB get", () => {
     adapter.close();
   });
 
-  it("round-trips a record with identical history, and the epoch captured in the same transaction is 0 on a fresh database", async () => {
+  it("round-trips legacy item text without a presence field, with epoch 0 on a fresh database", async () => {
     const { adapter, write } = freshAdapter();
-    await write(record());
+    const legacy = record({
+      history: {
+        ...record().history,
+        turns: [{ id: "t", status: "completed", items: [{ id: "i", turnId: "t", type: "reasoning", text: "" }] }],
+      },
+    });
+    await write(legacy);
     const hit = await adapter.get("local:thr_1", 2_000);
-    expect(hit?.record.history).toEqual(record().history);
+    expect(hit?.record.history).toEqual(legacy.history);
     expect(hit?.record.olderCursor).toBeUndefined();
     expect(hit?.epoch).toBe(0); // Review Focus 3: fresh database, no epoch row
+    if (hit === undefined) throw new Error("the legacy record must decode");
+    const restored = threadModelFromCache(hit.record, 2_000).history?.turns[0]?.items[0];
+    if (restored === undefined) throw new Error("the shell must contain the legacy item");
+    expect(itemTextPresence(restored)).toBe("provided");
     adapter.close();
+  });
+
+  it("preserves omitted text through the encoder, put, reopened get and older-page merge", async () => {
+    const { adapter, factory } = freshAdapter();
+    const reader = new SessionCacheIndexedDB({ indexedDB: factory });
+    const omitted = markItemTextOmitted({ id: "omitted", turnId: "t", type: "reasoning", text: "" });
+    const provided = { id: "provided", turnId: "t", type: "reasoning", text: "" };
+    const model = threadModelFromCache(record(), 1_000);
+    model.history = {
+      ...record().history,
+      deferredPages: [],
+      turns: [{ id: "t", status: "completed", items: [omitted, provided] }],
+    };
+    expect(itemTextPresence(omitted)).toBe("omitted");
+    const encoded = cachedSessionRecord(model, 1_000);
+    if (encoded === undefined) throw new Error("the recorded history must encode");
+    try {
+      expect(await adapter.put(encoded, 0, 1_000)).toEqual({ outcome: "written" });
+      adapter.close();
+      const hit = await reader.get(model.ref, 2_000);
+      if (hit === undefined) throw new Error("the persisted record must decode");
+      const shell = threadModelFromCache(hit.record, 2_000);
+      const items = shell.history?.turns[0]?.items ?? [];
+      expect.soft(items.map(itemTextPresence)).toEqual(["omitted", "provided"]);
+      const merged = mergeTurnHistory(
+        [
+          {
+            id: "t",
+            status: "completed",
+            items: [
+              { id: "omitted", turnId: "t", type: "reasoning", text: "older page text" },
+              { id: "provided", turnId: "t", type: "reasoning", text: "superseded text" },
+            ],
+          },
+        ],
+        shell.history?.turns ?? [],
+      );
+      expect.soft(merged.turns[0]?.items.map((item) => item.text)).toEqual(["older page text", ""]);
+    } finally {
+      adapter.close();
+      reader.close();
+    }
   });
 
   it("returns nothing on a miss, and nothing but not a throw on a stalled or failed open", async () => {

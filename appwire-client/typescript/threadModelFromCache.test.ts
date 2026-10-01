@@ -3,14 +3,16 @@ import {
   type CachedSessionRecord,
   cachedSessionRecord,
   hydrateThread,
+  itemTextPresence,
   mergeTailTurns,
+  mergeTurnHistory,
   readWindowBounds,
   type ThreadModel,
   threadModelFromCache,
 } from "./index";
 
 // The wire fixture a v6 read answers with; minimal but content-bearing.
-function readResponseFixture(): Parameters<typeof hydrateThread>[0] {
+function readResponseFixture(itemType = "assistantMessage", text?: string): Parameters<typeof hydrateThread>[0] {
   return {
     ref: "local:thr_1",
     requestGeneration: 4,
@@ -61,11 +63,12 @@ function readResponseFixture(): Parameters<typeof hydrateThread>[0] {
           // below pins { entry: 1, item: 0, sub: 0 }).
           items: [
             {
-              type: "assistantMessage",
+              type: itemType,
               id: "item_1",
               turnId: "turn_1",
               status: "completed",
               position: { entry: 1, item: 0, sub: 0 },
+              ...(text === undefined ? {} : { text }),
             },
           ],
         },
@@ -171,18 +174,52 @@ describe("threadModelFromCache", () => {
 });
 
 describe("cachedSessionRecord", () => {
-  it("encodes a hydrated v6 model and round-trips the identity through threadModelFromCache", () => {
-    const hydrated = hydrateThread(readResponseFixture(), "local:thr_1", 7000);
+  it.each(["assistantMessage", "toolCall", "reasoning"])(
+    "round-trips %s identity and omitted text through JSON, allowing older page text",
+    (itemType) => {
+      const hydrated = hydrateThread(readResponseFixture(itemType), "local:thr_1", 7000);
+      const original = hydrated.history?.turns[0]?.items[0];
+      if (original === undefined) throw new Error("the read must contain an item");
+      expect(itemTextPresence(original)).toBe("omitted");
+      const encoded = cachedSessionRecord(hydrated, 7000);
+      expect(encoded).toBeDefined();
+      if (encoded === undefined) throw new Error("the encoder must accept a hydrated v6 read");
+      // Match SessionCacheIndexedDB.put's JSON boundary, not an in-memory pass-through.
+      const decoded = JSON.parse(JSON.stringify(encoded)) as CachedSessionRecord;
+      const back = threadModelFromCache(decoded, 8000);
+      expect(back.history?.incarnation).toBe("inc-9");
+      expect(back.history?.epoch).toBe(2);
+      expect(back.history?.length).toBe(900);
+      expect(back.history?.issuedGeneration).toBe(4);
+      expect(back.history?.turns).toEqual(hydrated.history?.turns);
+      expect(back.olderCursor).toBe("cursor-old");
+      const restored = back.history?.turns[0]?.items[0];
+      if (restored === undefined) throw new Error("the shell must contain the recorded item");
+      expect.soft(itemTextPresence(restored)).toBe("omitted");
+      expect(restored).not.toHaveProperty("textOmitted");
+      const olderPage = hydrateThread(readResponseFixture(itemType, "older page text"), "local:thr_1", 8000);
+      const merged = mergeTurnHistory(olderPage.history?.turns ?? [], back.history?.turns ?? []);
+      expect.soft(merged.turns[0]?.items[0]?.text).toBe("older page text");
+      expect(back.turns.flatMap((turn) => turn.items.map(itemTextPresence))).toEqual(["omitted"]);
+      expect(original).not.toHaveProperty("textOmitted");
+      expect(itemTextPresence(original)).toBe("omitted");
+      expect(decoded.history.turns[0]?.items[0]?.textOmitted).toBe(true);
+    },
+  );
+
+  it.each(["", "newer text"])("keeps explicitly provided text %j authoritative after JSON reload", (text) => {
+    const hydrated = hydrateThread(readResponseFixture("reasoning", text), "local:thr_1", 7000);
     const encoded = cachedSessionRecord(hydrated, 7000);
-    expect(encoded).toBeDefined();
     if (encoded === undefined) throw new Error("the encoder must accept a hydrated v6 read");
-    const back = threadModelFromCache(encoded, 8000);
-    expect(back.history?.incarnation).toBe("inc-9");
-    expect(back.history?.epoch).toBe(2);
-    expect(back.history?.length).toBe(900);
-    expect(back.history?.issuedGeneration).toBe(4);
-    expect(back.history?.turns).toEqual(hydrated.history?.turns);
-    expect(back.olderCursor).toBe("cursor-old");
+    const decoded = JSON.parse(JSON.stringify(encoded)) as CachedSessionRecord;
+    expect(decoded.history.turns[0]?.items[0]).not.toHaveProperty("textOmitted");
+    const back = threadModelFromCache(decoded, 8000);
+    const restored = back.history?.turns[0]?.items[0];
+    if (restored === undefined) throw new Error("the shell must contain the recorded item");
+    expect(itemTextPresence(restored)).toBe("provided");
+    const olderPage = hydrateThread(readResponseFixture("reasoning", "older page text"), "local:thr_1", 8000);
+    const merged = mergeTurnHistory(olderPage.history?.turns ?? [], back.history?.turns ?? []);
+    expect(merged.turns[0]?.items[0]?.text).toBe(text);
   });
 
   it("refuses a model with no recorded history identity (incarnation absent)", () => {

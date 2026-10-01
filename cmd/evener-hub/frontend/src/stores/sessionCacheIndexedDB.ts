@@ -127,7 +127,8 @@ function decodeRecord(row: unknown): CachedSessionRecord | undefined {
     for (const item of turn.items) {
       if (
         !isObject(item) ||
-        ![item.id, item.turnId, item.type, item.text].every((value) => typeof value === "string")
+        ![item.id, item.turnId, item.type, item.text].every((value) => typeof value === "string") ||
+        (item.textOmitted !== undefined && item.textOmitted !== true)
       ) {
         return undefined;
       }
