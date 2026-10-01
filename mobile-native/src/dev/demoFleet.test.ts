@@ -204,9 +204,8 @@ describe("demo fleet shallow navigation", () => {
 
 	it("keeps named and large descendant swarms out of navigation records", () => {
 		const live = liveRows(fleet);
-		const archived = sessionsOf(
-			read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" })),
-		);
+		const archived = fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "evener" })
+			.sessions as NavigationSessionSummary[];
 		for (const row of [...live, ...archived]) {
 			expect(row.children).toEqual([]);
 			expect(row).not.toHaveProperty("omitted_descendants");
@@ -381,19 +380,6 @@ describe("demo fleet catalogs and projects", () => {
 		expect(recent.map((row) => row.session_id)).not.toContain(demoSessionId("s-retry"));
 	});
 
-	it("reports the true archived remaining count on the archived tier page, not the zeroed project overview", () => {
-		// The default page (limit 50, the section maximum) returns a full page
-		// of the real 271-row tier, with a remaining that adds up against it --
-		// not the 5 named rows plus a "266 remaining" that never shrinks.
-		const page = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" }));
-		expect(sessionsOf(page)).toHaveLength(50);
-		expect(page.remaining).toBe(271 - 50);
-		// The project overview still just previews the 5 named rows -- "See
-		// all" is what a project_page(tier=archived) read is for.
-		const overview = read(fleet, params({ resource: "project", projectKey: "evener" }));
-		expect((overview.archived as { sessions: unknown[] }).sessions).toHaveLength(5);
-	});
-
 	it("rejects an unknown project", () => {
 		expect(() => fleet.answerNavigationRead(params({ resource: "project", projectKey: "nope" }))).toThrow();
 	});
@@ -549,28 +535,6 @@ describe("demo fleet paging", () => {
 		expect(third.remaining).toBe(0);
 	});
 
-	it("pages the evener archived tier all the way to the end without stalling", () => {
-		const seen = new Set<string>();
-		let offset = 0;
-		let remaining = Number.POSITIVE_INFINITY;
-		for (let guard = 0; remaining > 0; guard++) {
-			if (guard > 20) throw new Error("archived paging never reached the end");
-			// 50 is the real protocol's own maximum for a section-shaped page
-			// (NAVIGATION_SECTION_LIMIT); the hub rejects a request over it.
-			const page = read(
-				fleet,
-				params({ resource: "project_page", projectKey: "evener", tier: "archived", offset, limit: 50 }),
-			);
-			const rows = sessionsOf(page);
-			if (rows.length === 0)
-				throw new Error(`page at offset ${offset} returned no rows while ${page.remaining} still remain`);
-			for (const row of rows) seen.add(row.session_id);
-			remaining = page.remaining as number;
-			offset += rows.length;
-		}
-		expect(seen.size).toBe(271);
-	});
-
 	// cmd/evener-hub/app_navigation.go's navigationReadPage rejects an
 	// out-of-range page request outright rather than clamping it into range;
 	// the demo fleet's own page() must match, not silently coerce.
@@ -656,8 +620,8 @@ describe("demo fleet truncation", () => {
 
 	it("keeps large activity trees separate from navigation truncation", () => {
 		// Activity size does not truncate a flat navigation page.
-		const archived = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" }));
-		expect(archived.truncated).toBe(false);
+		const current = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "current" }));
+		expect(current.truncated).toBe(false);
 		const live = read(fleet, params({ resource: "section", section: "live" }));
 		expect(live.truncated).toBe(false);
 	});
@@ -939,14 +903,15 @@ describe("demo fleet archive", () => {
 		expect(findRow(liveRows(demo), "s-gateway").ask_pending).toBe(true);
 	});
 
-	it("keeps an archived session in its own project's Archived tier, where its location sends a reveal", () => {
+	it("keeps an archived session in its own project's archived list, the tier its location names", () => {
 		const demo = fleet();
 		const deslop = findRow(liveRows(demo), "s-deslop");
 		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
 		const location = read(demo, params({ resource: "location", ref: deslop.ref }));
 		expect(location).toMatchObject({ project_key: "deslop", tier: "archived" });
-		const tier = sessionsOf(read(demo, params({ resource: "project_page", projectKey: "deslop", tier: "archived" })));
-		expect(tier.map((row) => row.session_id)).toEqual([deslop.session_id]);
+		// Its only session archived, deslop moves to Archived projects.
+		const list = demo.answerArchivedList({ catalog: "archived_projects", projectKey: "deslop" });
+		expect((list.sessions as NavigationSessionSummary[]).map((row) => row.session_id)).toEqual([deslop.session_id]);
 	});
 
 	it("moves a project whose every session is archived into Archived projects, and back on unarchive", () => {
@@ -1051,5 +1016,57 @@ describe("demo fleet subagents", () => {
 		const jobs = fleet.answerSessionJobsList({ ref });
 		expect(jobs.jobs).toEqual([]);
 		expect(jobs.page).toEqual({ complete: true, issues: [] });
+	});
+});
+
+// The real hub serves a project's archived rows only through
+// evener/archived/list (cmd/evener-hub/navigation_archived_list.go): paged by
+// an opaque cursor bound to its catalog and project, with the tier's total;
+// navigation's archived project_page and the project overview's archived
+// tier come back empty.
+describe("demo fleet archived lists", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+
+	it("pages a project's archived sessions by cursor to the end, with the tier's total", () => {
+		const seen = new Set<string>();
+		let cursor: string | undefined;
+		for (let guard = 0; ; guard++) {
+			if (guard > 20) throw new Error("archived paging never reached the end");
+			const page = fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "evener", cursor });
+			expect(page.total).toBe(271);
+			expect((page.sessions as NavigationSessionSummary[]).length).toBeGreaterThan(0);
+			for (const row of page.sessions as NavigationSessionSummary[]) seen.add(row.session_id);
+			cursor = page.nextCursor;
+			if (!cursor) break;
+		}
+		expect(seen.size).toBe(271);
+		expect(fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "evener" }).sessions).toHaveLength(50);
+	});
+
+	it("serves navigation's archived project_page and overview tier empty, as the hub does", () => {
+		const page = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" }));
+		expect(sessionsOf(page)).toEqual([]);
+		expect(page.remaining).toBe(0);
+		const overview = read(fleet, params({ resource: "project", projectKey: "evener" }));
+		expect((overview.archived as { sessions: unknown[] }).sessions).toEqual([]);
+	});
+
+	it("answers a project its catalog doesn't hold with an empty list", () => {
+		expect(fleet.answerArchivedList({ catalog: "test_runs", projectKey: "evener" })).toEqual({
+			sessions: [],
+			total: 0,
+		});
+	});
+
+	it("refuses an unknown catalog, a limit out of range, and a cursor from another list", () => {
+		expect(() => fleet.answerArchivedList({ catalog: "nope", projectKey: "evener" })).toThrow();
+		expect(() => fleet.answerArchivedList({ catalog: "projects", projectKey: "evener", limit: 51 })).toThrow();
+		const cursor = fleet.answerArchivedList({ catalog: "archived_projects", projectKey: "evener" }).nextCursor;
+		expect(() => fleet.answerArchivedList({ catalog: "projects", projectKey: "evener", cursor })).toThrow(
+			"cursor belongs to another archived list",
+		);
+		expect(() => fleet.answerArchivedList({ catalog: "projects", projectKey: "evener", cursor: "junk" })).toThrow(
+			"invalid cursor",
+		);
 	});
 });

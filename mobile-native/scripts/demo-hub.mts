@@ -823,6 +823,9 @@ export async function createDemoHub(
 					case "evener/navigation/read":
 						result = requireFleet().answerNavigationRead(params);
 						break;
+					case "evener/archived/list":
+						result = requireFleet().answerArchivedList(params);
+						break;
 					case "evener/thread/activity/read":
 						result = requireFleet().answerActivityRead(params);
 						break;

@@ -359,6 +359,22 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 		});
 	});
 
+	// The Project screen's Archived tab reads a project's archived rows from
+	// evener/archived/list, as on a real hub; navigation's archived tier is empty.
+	it("serves a project's archived sessions through the archived list over a real socket", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const first = await client.request("evener/archived/list", { catalog: "archived_projects", projectKey: "evener" });
+			expect(first.total).toBe(271);
+			expect(first.sessions).toHaveLength(50);
+			const next = await client.request("evener/archived/list", {
+				catalog: "archived_projects",
+				projectKey: "evener",
+				cursor: first.nextCursor,
+			});
+			expect(next.sessions).toHaveLength(50);
+		});
+	});
+
 	it("serves the plan its link names, by the session's own folder", async () => {
 		await withFleetHub(async (hub, client) => {
 			const read = await client.request("thread/read", { ref: PR2138, includeTurns: false });
