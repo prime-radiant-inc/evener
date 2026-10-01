@@ -1,10 +1,20 @@
 // @vitest-environment node
 
-import { WireError } from "@evener/appwire-client";
+import { type SessionDeleteResponse, WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { archivedListKey, archivedListStore, resetArchivedListStoreForTests } from "../../stores/archivedList";
 import { connectionStore } from "../../stores/connection";
+import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
+import { holdNextWriteTransaction } from "../../stores/testing/stalledIndexedDB";
+import {
+  resetThreadsStoreForTests,
+  setCacheChannelFactoryForTests,
+  setSessionCacheAdapterForTests,
+  threadsStore,
+} from "../../stores/threads";
 import {
   assignSessionPin,
   deletePinSection,
@@ -20,9 +30,13 @@ import {
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetThreadsStoreForTests();
+  resetArchivedListStoreForTests();
 });
 
 afterEach(() => {
+  resetThreadsStoreForTests();
+  vi.restoreAllMocks();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
 });
 
@@ -277,6 +291,108 @@ describe("deleteSession", () => {
 
     await expect(deleteSession(client, "local:abc")).rejects.toThrow("invalid session ID: boom");
   });
+});
+
+describe("delete response fences", () => {
+  test.each(["session", "project"])(
+    "%s deletion blocks an in-flight hydrate while navigation is pending",
+    async (kind) => {
+      // Keep the real cache lookup's deadline still while its IndexedDB completion
+      // is held. The transport and browser event gates determine the ordering.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const adapter = new SessionCacheIndexedDB({ indexedDB: new IDBFactory() });
+      setSessionCacheAdapterForTests(adapter);
+      const lookup = holdNextWriteTransaction(["records", "meta"]);
+      const postMessage = vi.fn();
+      setCacheChannelFactoryForTests(
+        () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
+      );
+      const client = new FakeClient();
+      const response: SessionDeleteResponse = {
+        deleted: ["gone", "local:gone", "local:also-gone"],
+        skipped: [{ id: "kept", reason: "busy" }],
+        navigation: { generation_id: "g1", targets: [] },
+      };
+      const deletionResponse = deferred<SessionDeleteResponse>();
+      client.on("evener/session/delete", () => deletionResponse.promise);
+      client.on("evener/project/delete", () => deletionResponse.promise);
+      client.on("thread/read", () => ({
+        thread: {
+          id: "gone",
+          sessionId: "gone",
+          preview: "Stale session",
+          ephemeral: false,
+          modelProvider: "test",
+          createdAt: 1,
+          updatedAt: 1,
+          status: { type: "notLoaded" },
+          cwd: "/w/p",
+          cliVersion: "test",
+          source: "evener",
+          evener: {
+            ref: "local:gone",
+            queue: { revision: 0 },
+            capabilities: {
+              send: false,
+              steer: false,
+              interrupt: false,
+              compact: false,
+              clear: false,
+              forkFromTurn: false,
+              shutdown: false,
+              changeModel: false,
+              changeVisionModel: false,
+              queue: false,
+              goal: false,
+              sharedNotes: false,
+              rename: false,
+            },
+          },
+        },
+      }));
+      connectionStore.getState().connect(client);
+      const hydration = threadsStore.getState().ensureThread("local:gone");
+      const navigationStarted = deferred<void>();
+      const navigation = deferred<void>();
+      let navigationFinished = false;
+      const caller = (async () => {
+        const result = await (kind === "session" ? deleteSession(client, "local:gone") : deleteProject("p", "/w/p"));
+        navigationStarted.resolve();
+        await navigation.promise;
+        navigationFinished = true;
+        return result;
+      })();
+      try {
+        await lookup.reached;
+        expect(threadsStore.getState().deletedRefs.size).toBe(0);
+        expect(postMessage).not.toHaveBeenCalled();
+
+        deletionResponse.resolve(response);
+        await navigationStarted.promise;
+        lookup.release();
+        await hydration;
+
+        expect(navigationFinished).toBe(false);
+        expect(threadsStore.getState().threads.has("local:gone")).toBe(false);
+        expect(client.calls.filter((call) => call.method === "thread/read")).toEqual([]);
+        expect([...threadsStore.getState().deletedRefs]).toEqual(["local:gone", "local:also-gone"]);
+        expect(postMessage).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ kind: "deletion", refs: ["local:gone", "local:also-gone"] }),
+        );
+
+        navigation.resolve();
+        await expect(caller).resolves.toEqual(response);
+        expect(postMessage).toHaveBeenCalledTimes(1);
+      } finally {
+        deletionResponse.resolve(response);
+        lookup.release();
+        navigation.resolve();
+        await Promise.all([caller, hydration]);
+        adapter.close();
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 // A project decision is keyed by (source, project ID), so every project-level

@@ -77,7 +77,7 @@ import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
-import { makeSourceId } from "./transcriptDisplay/crossTabSync";
+import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "./versionedChannel";
 
 export type { InputAttachment } from "@evener/appwire-client";
 
@@ -135,6 +135,18 @@ export interface PromoteDisplayInput {
   skillNames?: readonly string[];
 }
 
+interface CacheLifetime {
+  /** The current model is an unverified cached shell: actions, paging and
+   * writes wait for its first authoritative publish. */
+  shell?: true;
+  /** The newest recorded item position, fixed before any live shell merge. */
+  anchor?: ThreadItemPosition;
+  /** Clear/deletion write suppression, re-checked at write-fire time. */
+  suppressed?: true;
+  /** The owned ref's captured epoch, including misses and deadline fallbacks. */
+  leaseEpoch?: number;
+}
+
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
@@ -181,24 +193,15 @@ export interface ThreadsStoreState {
   // markThreadDeletedIfFenced. An ordinary transient rejection is still
   // presumed transport and keeps its retry-forever contract.
   deletedRefs: Set<string>;
-  /** Refs whose current model is an unverified cached shell: capability-gated
-   * actions refuse, loadOlderTurns waits, and the write seam skips them until
-   * the first authoritative read's publish clears the flag (spec, "The load
-   * seam"). */
-  cacheShellRefs: Set<string>;
-  /** Refs whose writes are suppressed: armed by a clear (through the ref's
-   * final release) and by deletion propagation. Re-checked at write-fire
-   * time. */
-  cacheSuppressed: Set<string>;
-  /** Each owned ref's epoch-bound lifetime, including misses and deadline fallbacks. */
-  cacheLeases: Map<string, number>;
-  /** The gap rule's captured anchor: the newest item position in the record,
-   * fixed at shell-build from pure record data before any live merge. */
-  cacheAnchors: Map<string, ThreadItemPosition>;
+  /** Cache state follows the owned model through its final release, including
+   * mutation pins. A sibling deletion can create a suppression-only record
+   * before a claim captures its lease; that record must not block a cold read.
+   * Verification clears only shell/anchor, never the lease or suppression. */
+  cacheLifetimes: Map<string, CacheLifetime>;
   /** The epoch this tab's in-flight clear armed (spec, "The
    * clear-cached-sessions setting"): while set, the write seam refuses every
    * open lease whose captured epoch predates it. The clear's arm lives here,
-   * never in cacheSuppressed — the commit merges the ref set in, the abort
+   * never in the lifetime's suppression — the commit marks the old leases, the abort
    * just drops the marker — so no abort can touch another source's
    * suppression (a sibling deletion message, the aborted-write backstop)
    * that arrived while the clear was in flight. undefined when no clear is
@@ -786,26 +789,10 @@ function removeThreadModel(ref: string): void {
   // the same final release (spec, "The clear-cached-sessions setting"):
   // premature suppression decays with the final release of each open ref,
   // so the next open of the same ref starts with no lease and no
-  // suppression. The guard covers all four fields for the same reason: a
-  // release must not skip the removal because the shell metadata alone is
-  // already gone.
+  // suppression. Even a verified or suppression-only lifetime leaves here.
   threadsStore.setState((s) => {
-    if (
-      !s.cacheShellRefs.has(ref) &&
-      !s.cacheAnchors.has(ref) &&
-      !s.cacheSuppressed.has(ref) &&
-      !s.cacheLeases.has(ref)
-    )
-      return s;
-    const cacheShellRefs = new Set(s.cacheShellRefs);
-    cacheShellRefs.delete(ref);
-    const cacheAnchors = new Map(s.cacheAnchors);
-    cacheAnchors.delete(ref);
-    const cacheSuppressed = new Set(s.cacheSuppressed);
-    cacheSuppressed.delete(ref);
-    const cacheLeases = new Map(s.cacheLeases);
-    cacheLeases.delete(ref);
-    return { cacheShellRefs, cacheAnchors, cacheSuppressed, cacheLeases };
+    if (!s.cacheLifetimes.has(ref)) return s;
+    return { cacheLifetimes: releaseCacheLifetime(s.cacheLifetimes, ref) };
   });
   threadsStore.setState((s) => {
     if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
@@ -1069,16 +1056,12 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   threadsStore.setState((state) => {
     // This authoritative replacement retired the shell's pending read, so
     // publishThreadHydration will never clear its verification metadata.
-    const cacheShellRefs = new Set(state.cacheShellRefs);
-    cacheShellRefs.delete(targetRef);
-    const cacheAnchors = new Map(state.cacheAnchors);
-    cacheAnchors.delete(targetRef);
+    const cacheLifetimes = releaseCacheShell(state.cacheLifetimes, targetRef);
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(targetRef);
     else mutationAuthorityRefs.delete(targetRef);
     return {
-      cacheShellRefs,
-      cacheAnchors,
+      cacheLifetimes,
       mutationAuthorityRefs,
       hydrations: stateBefore.threads.has(targetRef)
         ? new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1)
@@ -1163,10 +1146,7 @@ function dropUnpinnedModel(ref: string): void {
       !state.threads.has(ref) &&
       !state.frameTimes.has(ref) &&
       !state.hydrations.has(ref) &&
-      !state.cacheSuppressed.has(ref) &&
-      !state.cacheLeases.has(ref) &&
-      !state.cacheShellRefs.has(ref) &&
-      !state.cacheAnchors.has(ref)
+      !state.cacheLifetimes.has(ref)
     )
       return state;
     const threads = new Map(state.threads);
@@ -1175,15 +1155,8 @@ function dropUnpinnedModel(ref: string): void {
     frameTimes.delete(ref);
     const hydrations = new Map(state.hydrations);
     hydrations.delete(ref);
-    const cacheSuppressed = new Set(state.cacheSuppressed);
-    cacheSuppressed.delete(ref);
-    const cacheLeases = new Map(state.cacheLeases);
-    cacheLeases.delete(ref);
-    const cacheShellRefs = new Set(state.cacheShellRefs);
-    cacheShellRefs.delete(ref);
-    const cacheAnchors = new Map(state.cacheAnchors);
-    cacheAnchors.delete(ref);
-    return { threads, frameTimes, hydrations, cacheSuppressed, cacheLeases, cacheShellRefs, cacheAnchors };
+    const cacheLifetimes = releaseCacheLifetime(state.cacheLifetimes, ref);
+    return { threads, frameTimes, hydrations, cacheLifetimes };
   });
 }
 
@@ -3097,8 +3070,32 @@ function isDiscardedReadResult(pending: PendingThreadHydration, model: ThreadMod
 
 function ensureCacheLease(ref: string): void {
   threadsStore.setState((state) =>
-    state.cacheLeases.has(ref) ? state : { cacheLeases: new Map(state.cacheLeases).set(ref, tabCacheEpoch ?? 0) },
+    state.cacheLifetimes.get(ref)?.leaseEpoch !== undefined
+      ? state
+      : {
+          cacheLifetimes: new Map(state.cacheLifetimes).set(ref, {
+            ...state.cacheLifetimes.get(ref),
+            leaseEpoch: tabCacheEpoch ?? 0,
+          }),
+        },
   );
+}
+
+// Final release removes every part of the lifetime, but only after the
+// release flush has checked the still-armed shell/suppression gates.
+function releaseCacheLifetime(lifetimes: Map<string, CacheLifetime>, ref: string): Map<string, CacheLifetime> {
+  const next = new Map(lifetimes);
+  next.delete(ref);
+  return next;
+}
+
+// An authoritative publish ends verification, not ownership. Keep even epoch
+// zero and suppression without a lease; neither may disappear with the shell.
+function releaseCacheShell(lifetimes: Map<string, CacheLifetime>, ref: string): Map<string, CacheLifetime> {
+  const lifetime = lifetimes.get(ref);
+  if (!lifetime?.shell && lifetime?.anchor === undefined) return lifetimes;
+  if (lifetime.leaseEpoch === undefined && !lifetime.suppressed) return releaseCacheLifetime(lifetimes, ref);
+  return new Map(lifetimes).set(ref, { leaseEpoch: lifetime.leaseEpoch, suppressed: lifetime.suppressed });
 }
 
 function beginThreadHydration(
@@ -3188,16 +3185,12 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   putThreadModel(ref, hydrated);
   // The first authoritative publish ends the cached-shell window: the flag
   // and the gap rule's anchor live only from the shell's arming until this
-  // read's publish (spec, "The load seam"); the lease (cacheLeases) outlives
+  // read's publish (spec, "The load seam"); the lease outlives
   // the window — until the ref's final release — for the clear's suppression
   // (Task 10).
   threadsStore.setState((s) => {
-    if (!s.cacheShellRefs.has(ref) && !s.cacheAnchors.has(ref)) return s;
-    const cacheShellRefs = new Set(s.cacheShellRefs);
-    cacheShellRefs.delete(ref);
-    const cacheAnchors = new Map(s.cacheAnchors);
-    cacheAnchors.delete(ref);
-    return { cacheShellRefs, cacheAnchors };
+    const cacheLifetimes = releaseCacheShell(s.cacheLifetimes, ref);
+    return cacheLifetimes === s.cacheLifetimes ? s : { cacheLifetimes };
   });
   invalidateGoalResponseFallback(ref);
   invalidateNotesResponseFallback(ref);
@@ -4327,10 +4320,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   hydrations: new Map(),
   watchedThreads: new Map(),
   deletedRefs: new Set(),
-  cacheShellRefs: new Set(),
-  cacheSuppressed: new Set(),
-  cacheLeases: new Map(),
-  cacheAnchors: new Map(),
+  cacheLifetimes: new Map(),
   clearInFlight: undefined,
 
   async ensureThread(ref) {
@@ -4386,7 +4376,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         // claim's epoch. Already-published deadline fallbacks keep their old
         // lease, and later observations suppress rather than rebind them.
         if (tabCacheEpoch === undefined && state.clearInFlight === undefined && !state.threads.has(ref)) {
-          threadsStore.setState((s) => ({ cacheLeases: new Map(s.cacheLeases).set(ref, captured) }));
+          threadsStore.setState((s) => ({
+            cacheLifetimes: new Map(s.cacheLifetimes).set(ref, {
+              ...s.cacheLifetimes.get(ref),
+              leaseEpoch: captured,
+            }),
+          }));
         }
         onCacheEpochObserved(captured);
         const epochMatch =
@@ -4395,8 +4390,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           const shell = threadModelFromCache(found.record, Date.now());
           const anchor = newestItemPosition(found.record.history.turns);
           threadsStore.setState((s) => ({
-            cacheShellRefs: new Set(s.cacheShellRefs).add(ref),
-            ...(anchor === undefined ? {} : { cacheAnchors: new Map(s.cacheAnchors).set(ref, anchor) }),
+            cacheLifetimes: new Map(s.cacheLifetimes).set(ref, {
+              ...s.cacheLifetimes.get(ref),
+              shell: true,
+              ...(anchor === undefined ? {} : { anchor }),
+            }),
           }));
           cachedBase = shell;
         }
@@ -4756,7 +4754,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // A shell's cursor belongs to whichever window the reconcile settles on;
     // paging below a shell the gap rule is about to replace races that
     // replacement (spec, "Scroll-back"). Scroll-back waits for the read.
-    if (threadsStore.getState().cacheShellRefs.has(ref)) return;
+    if (threadsStore.getState().cacheLifetimes.get(ref)?.shell) return;
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
@@ -5271,19 +5269,20 @@ function flushCacheWrite(ref: string): void {
 
 function cacheWriteGatesPass(ref: string, model: ThreadModel): boolean {
   const state = threadsStore.getState();
+  const lifetime = state.cacheLifetimes.get(ref);
   // The in-flight clear's arm (clearInFlight): every open lease captured
   // below the armed epoch predates the clear, so its writes wait for the
-  // outcome — the same set the commit merges into cacheSuppressed.
+  // outcome — the same lifetimes the commit suppresses.
   const inFlight = state.clearInFlight;
   if (inFlight !== undefined) {
-    const captured = state.cacheLeases.get(ref);
+    const captured = lifetime?.leaseEpoch;
     if (captured !== undefined && captured < inFlight) return false;
   }
   return (
     model.history?.incarnation !== undefined && // a completed v6 content-bearing read
-    !state.cacheShellRefs.has(ref) && // the shell skip: lineage state, not object identity
+    !lifetime?.shell && // the shell skip: lineage state, not object identity
     !state.deletedRefs.has(ref) && // the deletion fence, re-checked at fire time
-    !state.cacheSuppressed.has(ref) && // the clear suppression, re-checked at fire time
+    !lifetime?.suppressed && // the clear suppression, re-checked at fire time
     model.history.invalidatedAtGeneration === undefined && // the one liveness marker
     model.history.failed === undefined &&
     currentSessionCache().isOpen() // a still-opening connection skips; the next publication retries
@@ -5312,11 +5311,20 @@ function writeCacheRecord(ref: string, model: ThreadModel): void {
 function onCacheEpochObserved(observed: number): void {
   if (tabCacheEpoch !== undefined && observed <= tabCacheEpoch) return;
   tabCacheEpoch = observed;
-  threadsStore.setState((s) => {
-    const suppressed = new Set(s.cacheSuppressed);
-    for (const [ref, captured] of s.cacheLeases) if (captured < observed) suppressed.add(ref);
-    return { cacheSuppressed: suppressed };
-  });
+  threadsStore.setState((s) => ({ cacheLifetimes: suppressCacheLifetimesBefore(s.cacheLifetimes, observed) }));
+}
+
+function suppressCacheLifetimesBefore(
+  lifetimes: Map<string, CacheLifetime>,
+  epoch: number,
+): Map<string, CacheLifetime> {
+  const next = new Map(lifetimes);
+  for (const [ref, lifetime] of lifetimes) {
+    if (lifetime.leaseEpoch !== undefined && lifetime.leaseEpoch < epoch) {
+      next.set(ref, { ...lifetime, suppressed: true });
+    }
+  }
+  return next;
 }
 
 // Cross-tab propagation (spec, "The write seam" deletion bullet and the
@@ -5326,23 +5334,17 @@ function onCacheEpochObserved(observed: number): void {
 // fire-time gates hold correctness without it.
 const CACHE_CHANNEL_NAME = "evener.session-cache.v1";
 const cacheSourceId = makeSourceId();
-type CacheChannelMessage =
-  | { version: 1; sourceId: string; kind: "deletion"; refs: string[] }
-  | { version: 1; sourceId: string; kind: "clear"; epoch: number };
+type CacheChannelMessage = VersionedChannelMessage &
+  ({ kind: "deletion"; refs: string[] } | { kind: "clear"; epoch: number });
 
-function isCacheChannelMessage(value: unknown): value is CacheChannelMessage {
-  if (typeof value !== "object" || value === null) return false;
+function isCacheChannelMessage(value: VersionedChannelMessage): value is CacheChannelMessage {
   const candidate = value as Partial<CacheChannelMessage>;
   return (
-    candidate.version === 1 &&
-    candidate.sourceId !== undefined &&
-    candidate.sourceId !== "" &&
-    ((candidate.kind === "deletion" && Array.isArray(candidate.refs)) ||
-      (candidate.kind === "clear" && typeof candidate.epoch === "number"))
+    (candidate.kind === "deletion" && Array.isArray(candidate.refs)) ||
+    (candidate.kind === "clear" && typeof candidate.epoch === "number")
   );
 }
 
-let cacheChannel: BroadcastChannel | null = null;
 // In tests the default factory answers null: the jsdom window has no
 // BroadcastChannel, so the visible one is Node's own — which crosses worker
 // threads and keeps an open event loop alive, so a real channel would let one
@@ -5352,46 +5354,32 @@ let cacheChannel: BroadcastChannel | null = null;
 const defaultCacheChannelFactory = (name: string): BroadcastChannel | null =>
   typeof BroadcastChannel !== "undefined" && import.meta.env.MODE !== "test" ? new BroadcastChannel(name) : null;
 let createCacheChannel: (name: string) => BroadcastChannel | null = defaultCacheChannelFactory;
+const cacheChannel = createVersionedChannel<CacheChannelMessage>({
+  name: CACHE_CHANNEL_NAME,
+  getSourceId: () => cacheSourceId,
+  isMessage: isCacheChannelMessage,
+  onMessage: onCacheChannelMessage,
+  createChannel: (name) => createCacheChannel(name),
+});
 export function setCacheChannelFactoryForTests(factory: (name: string) => BroadcastChannel | null): void {
-  cacheChannel?.close();
-  cacheChannel = null;
+  cacheChannel.close();
   createCacheChannel = factory;
   // The installed factory's channel is attached at once: a peer's post must
   // reach this tab's handler even before this tab ever broadcasts, which is
   // the receiving half the channel exists for.
-  cacheChannelEnsure();
-}
-function cacheChannelEnsure(): BroadcastChannel | null {
-  if (cacheChannel === null) {
-    try {
-      cacheChannel = createCacheChannel(CACHE_CHANNEL_NAME);
-      cacheChannel?.addEventListener("message", onCacheChannelMessage);
-    } catch {
-      cacheChannel = null;
-    }
-  }
-  return cacheChannel;
-}
-function broadcastCacheMessage(message: CacheChannelMessage): void {
-  try {
-    cacheChannelEnsure()?.postMessage(message);
-  } catch {
-    // The channel is a latency optimization, never the guard.
-  }
+  cacheChannel.connect();
 }
 
-function onCacheChannelMessage(event: MessageEvent<unknown>): void {
-  const message = isCacheChannelMessage(event.data) ? event.data : undefined;
-  if (message === undefined || message.sourceId === cacheSourceId) return;
+function onCacheChannelMessage(message: CacheChannelMessage): void {
   if (message.kind === "deletion") {
     // Two things, not one, in one step (spec): arm the suppression and heal
     // the storage. The heal cannot be lost: IndexedDB serializes this delete
     // transaction after any in-flight write's, so it always runs after the
     // record it must remove.
     threadsStore.setState((s) => {
-      const suppressed = new Set(s.cacheSuppressed);
-      for (const ref of message.refs) suppressed.add(ref);
-      return { cacheSuppressed: suppressed };
+      const cacheLifetimes = new Map(s.cacheLifetimes);
+      for (const ref of message.refs) cacheLifetimes.set(ref, { ...cacheLifetimes.get(ref), suppressed: true });
+      return { cacheLifetimes };
     });
     void currentSessionCache().deleteRecords(message.refs);
   } else {
@@ -5404,7 +5392,7 @@ function onCacheChannelMessage(event: MessageEvent<unknown>): void {
 // anything itself, which is the common tab. A browser without
 // BroadcastChannel stays single-tab (the factory answers null); a failure to
 // attach stays single-tab too.
-cacheChannelEnsure();
+cacheChannel.connect();
 
 /** The deletion response's cache hook (spec, "The write seam"): keyed on the
  * response, not the caller — any deletion response that reports removed
@@ -5421,16 +5409,17 @@ export function markCacheSessionsDeleted(refs: string[]): void {
   });
   for (const ref of refs) cancelCacheWrite(ref);
   void currentSessionCache().deleteRecords(refs);
-  broadcastCacheMessage({ version: 1, sourceId: cacheSourceId, kind: "deletion", refs });
+  cacheChannel.connect();
+  cacheChannel.postMessage({ kind: "deletion", refs });
 }
 
 /** Clear cached session content (spec, "The clear-cached-sessions setting").
  * Synchronous in-memory step first — the only order that works, since
  * in-memory timer state cannot commit transactionally — then one
  * read-write transaction. The in-flight arm lives in clearInFlight, never
- * in cacheSuppressed: the write gate refuses open leases below the armed
- * epoch, the commit merges exactly those refs into cacheSuppressed, and the
- * abort drops the marker without touching cacheSuppressed at all — so an
+ * in the lifetimes: the write gate refuses open leases below the armed
+ * epoch, the commit suppresses exactly those lifetimes, and the
+ * abort drops the marker without touching their suppression at all — so an
  * abort is incapable of disarming another source's suppression (a sibling
  * deletion message, the aborted-write backstop) that arrived mid-flight.
  * The broadcast is commit-gated: a sibling never arms suppression for a
@@ -5444,7 +5433,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   for (const ref of [...cacheWriteSchedules.keys()]) cancelCacheWrite(ref);
   const result = await currentSessionCache().clear();
   if (!result.committed) {
-    // The abort drops only its own marker — cacheSuppressed is never touched,
+    // The abort drops only its own marker — lifetime suppression is never touched,
     // so another source's mid-flight arming stands. Durable observations
     // never need reverting: optimistic arming did not change their epoch.
     threadsStore.setState((s) => (s.clearInFlight === armed ? { clearInFlight: undefined } : s));
@@ -5455,13 +5444,11 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // same set the marker refused during the flight, re-derived at commit so a
   // lease captured mid-flight is covered too.
   threadsStore.setState((s) => {
-    const suppressed = new Set(s.cacheSuppressed);
-    for (const [ref, captured] of s.cacheLeases) if (captured < result.epoch) suppressed.add(ref);
-    return s.clearInFlight === armed
-      ? { cacheSuppressed: suppressed, clearInFlight: undefined }
-      : { cacheSuppressed: suppressed };
+    const cacheLifetimes = suppressCacheLifetimesBefore(s.cacheLifetimes, result.epoch);
+    return s.clearInFlight === armed ? { cacheLifetimes, clearInFlight: undefined } : { cacheLifetimes };
   });
-  broadcastCacheMessage({ version: 1, sourceId: cacheSourceId, kind: "clear", epoch: result.epoch });
+  cacheChannel.connect();
+  cacheChannel.postMessage({ kind: "clear", epoch: result.epoch });
   return { committed: true };
 }
 
@@ -5493,8 +5480,9 @@ function applyCacheGapRule(ref: string, base: ThreadModel, response: ThreadReadR
     return applyReadResponse(base, response, now);
   };
   const state = threadsStore.getState();
-  const anchor = state.cacheAnchors.get(ref);
-  if (anchor === undefined || !state.cacheShellRefs.has(ref) || response.changes !== undefined) return ordinary();
+  const lifetime = state.cacheLifetimes.get(ref);
+  const anchor = lifetime?.anchor;
+  if (anchor === undefined || !lifetime?.shell || response.changes !== undefined) return ordinary();
   const held = base.history;
   if (held === undefined || held.turns.length === 0) return ordinary();
   if (readDisposition(held, response) !== "merge") return ordinary();
@@ -5665,10 +5653,7 @@ export function resetThreadsStoreForTests(): void {
       hydrations: new Map(),
       watchedThreads: new Map(),
       deletedRefs: new Set(),
-      cacheShellRefs: new Set(),
-      cacheSuppressed: new Set(),
-      cacheLeases: new Map(),
-      cacheAnchors: new Map(),
+      cacheLifetimes: new Map(),
       clearInFlight: undefined,
     },
     true,
