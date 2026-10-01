@@ -759,70 +759,66 @@ it("archives the session, with an Undo that restores it", async () => {
 	tree.unmount();
 });
 
-// Archived lists follow no invalidations, and archiving a session moves it
-// into its project's archived tier, so the connection's loaded archived lists
-// read again.
-it("reads the connection's loaded archived lists again once the hub accepts an archive", async () => {
+const acceptedArchive = { ok: true, navigation: { generation_id: "g", targets: [] } };
+/** The screen over a connection with one archived list loaded, and a count
+ * of that list's reads. */
+async function mountWithLoadedArchivedList(archive: Answers[string]) {
 	const { tree, client, requests } = mount(thread, {
-		"evener/archive/set": { ok: true, navigation: { generation_id: "g", targets: [] } },
+		"evener/archive/set": archive,
 		"evener/archived/list": { sessions: [], total: 0 },
 	});
 	await flush();
 	await archivedListStoreFor(client).refresh("projects", "p");
-	const archivedReads = () => requests.filter(({ method }) => method === "evener/archived/list");
-	expect(archivedReads()).toHaveLength(1);
+	const archivedReads = () => requests.filter(({ method }) => method === "evener/archived/list").length;
+	return { tree, archivedReads };
+}
+
+// Archiving a session moves it into its project's archived tier, and an
+// archived list no view is following hears no invalidation, so the
+// connection's loaded archived lists read again.
+it("reads the connection's loaded archived lists again once the hub accepts an archive", async () => {
+	const { tree, archivedReads } = await mountWithLoadedArchivedList(acceptedArchive);
+	expect(archivedReads()).toBe(1);
 
 	act(() => menuAction("Archive").onPress());
 	await flush();
 
-	expect(archivedReads()).toHaveLength(2);
+	expect(archivedReads()).toBe(2);
 	tree.unmount();
 });
 
 // A refused archive moves nothing, so no archived list reads again.
 it("reads no archived list again when the hub refuses an archive", async () => {
-	const { tree, client, requests } = mount(thread, {
-		"evener/archive/set": new Error("refused"),
-		"evener/archived/list": { sessions: [], total: 0 },
-	});
-	await flush();
-	await archivedListStoreFor(client).refresh("projects", "p");
-	const archivedReads = () => requests.filter(({ method }) => method === "evener/archived/list");
+	const { tree, archivedReads } = await mountWithLoadedArchivedList(new Error("refused"));
 
 	act(() => menuAction("Archive").onPress());
 	await flush();
 
 	expect(renderedText(tree)).toContain("Couldn't archive this session.");
-	expect(archivedReads()).toHaveLength(1);
+	expect(archivedReads()).toBe(1);
 	tree.unmount();
 });
 
 // An accepted Undo moves the session back out of the archived tier, so the
 // loaded archived lists read again; a refused one moves nothing.
 it.each([
-	["accepted", { ok: true, navigation: { generation_id: "g", targets: [] } }, 3],
+	["accepted", acceptedArchive, 3],
 	["refused", new Error("refused"), 2],
 ])("reads the loaded archived lists again for an %s Undo only if the hub accepts it", async (_name, undone, reads) => {
-	const { tree, client, requests } = mount(thread, {
-		"evener/archive/set": (params: unknown) => {
-			if ((params as { archived: boolean }).archived) return { ok: true, navigation: { generation_id: "g", targets: [] } };
-			if (undone instanceof Error) throw undone;
-			return undone;
-		},
-		"evener/archived/list": { sessions: [], total: 0 },
+	const { tree, archivedReads } = await mountWithLoadedArchivedList((params: unknown) => {
+		if ((params as { archived: boolean }).archived) return acceptedArchive;
+		if (undone instanceof Error) throw undone;
+		return undone;
 	});
-	await flush();
-	await archivedListStoreFor(client).refresh("projects", "p");
-	const archivedReads = () => requests.filter(({ method }) => method === "evener/archived/list");
 
 	act(() => menuAction("Archive").onPress());
 	await flush();
-	expect(archivedReads()).toHaveLength(2);
+	expect(archivedReads()).toBe(2);
 	const undo = tree.root.find((node) => node.props.accessibilityLabel === "Undo" && node.props.onPress);
 	act(() => undo.props.onPress());
 	await flush();
 
-	expect(archivedReads()).toHaveLength(reads);
+	expect(archivedReads()).toBe(reads);
 	tree.unmount();
 });
 
