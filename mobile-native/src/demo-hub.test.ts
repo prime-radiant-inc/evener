@@ -2,6 +2,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { NavigationReadParams, WebSocketLike, SessionDelegatesResponse } from "@evener/appwire-client";
+import { decodeActivityRead } from "@evener/appwire-client";
 import { type MutationOptimisticRecord, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
@@ -39,6 +40,25 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 			await hub.close();
 		}
 	}
+
+	it("answers evener/activity/read with a decoder-valid pulse read for the fleet", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const sessions = decodeActivityRead(await client.request("evener/activity/read", {}));
+			expect(sessions).toHaveLength(20);
+			const pr2138 = sessions.find((session) => session.ref === PR2138);
+			expect(pr2138).toMatchObject({ runningSubagents: 32 });
+			expect(pr2138).not.toHaveProperty("quietForMs");
+			expect(sessions.find((session) => session.ref === fleetSessionRef("s-resume"))?.latestIntent).toBe(
+				"Reading agent/session_resume.go",
+			);
+			// An ended session is absent, and a named ref reads only a live session.
+			expect(sessions.some((session) => session.ref === fleetSessionRef("s-roster"))).toBe(false);
+			const one = decodeActivityRead(
+				await client.request("evener/activity/read", { refs: [fleetSessionRef("s-landing")] }),
+			);
+			expect(one.map((session) => session.ref)).toEqual([fleetSessionRef("s-landing")]);
+		});
+	});
 
 	it("serves typed direct and subtree activity with stable paged identities over a real socket", async () => {
 		await withFleetHub(async (_hub, client) => {
