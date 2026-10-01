@@ -76,22 +76,24 @@ it.each([
 		revealRef,
 	});
 });
-it("reveals a nested fork original's own row, not its parent (it has one)", async () => {
-	// The hub marks every child non-top-level, but a fork original keeps its own
-	// row in roots-only navigation, so /project must land on it, not the root.
-	const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier: "current" };
+// Navigation v3 lists only top-level rows, and the archived list keeps a fork
+// original inside its continuation's row, so a nested fork original has no
+// row of its own in any tier: /project lands on the top-level row carrying it.
+it.each(["current", "recent", "archived"])(
+	"reveals a nested fork original through the top-level row that carries it (%s)",
+	async (tier) => {
+		const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier };
+		expect(await locateSession(locationClient(fields, { kind: "fork" }), "child")).toMatchObject({
+			ref: "child",
+			revealRef: "root",
+		});
+	},
+);
+it("reveals a top-level fork original by its own row", async () => {
+	const fields = { top_level: true, top_level_ref: "child", project_key: "p", tier: "current" };
 	expect(await locateSession(locationClient(fields, { kind: "fork" }), "child")).toMatchObject({
 		ref: "child",
 		revealRef: "child",
-	});
-});
-it("reveals an archived fork original through the row that carries it", async () => {
-	// The archived list keeps a fork original inside its continuation's row,
-	// with no row of its own, so /project lands on the continuation.
-	const fields = { top_level: false, top_level_ref: "root", project_key: "p", tier: "archived" };
-	expect(await locateSession(locationClient(fields, { kind: "fork" }), "child")).toMatchObject({
-		ref: "child",
-		revealRef: "root",
 	});
 });
 it.each(["local:orphan", "host:remote-subagent"])(
