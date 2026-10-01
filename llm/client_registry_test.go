@@ -374,6 +374,27 @@ func TestClientModelsOverrideLister(t *testing.T) {
 	}
 }
 
+func TestClientModelsOverrideWithOnlyNonChatRowsIsUnusable(t *testing.T) {
+	c := llm.NewClient()
+	lister := &listingAdapter{models: []registry.Model{{ID: "text-embedding-3-small"}}}
+	lister.name = "fake"
+	c.Register(lister)
+
+	listing, err := c.Models(context.Background(), "fake")
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if !listing.Live {
+		t.Fatal("listing not marked live: the adapter answered")
+	}
+	if listing.Usable {
+		t.Fatal("listing with only non-chat rows marked usable")
+	}
+	if len(listing.Models) != 0 {
+		t.Fatalf("Models = %+v, want no chat models", listing.Models)
+	}
+}
+
 // TestClientModelsOverrideListingStaysOutOfTheRegistry pins that an override's
 // rows are the override's own. A bare client shares one process-wide registry
 // with every other bare client, so a listing that did not come from the

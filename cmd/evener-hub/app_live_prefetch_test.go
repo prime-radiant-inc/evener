@@ -234,6 +234,59 @@ func TestPrefetchLiveModelsSurvivesUnreachable(t *testing.T) {
 	}
 }
 
+func TestFetchInstanceLiveFallsBackAfterProviderFailure(t *testing.T) {
+	ctl, gw := newListingController(t)
+	gw.status.Store(http.StatusOK)
+	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "gw"); err != nil {
+		t.Fatalf("initial live fetch: %v", err)
+	}
+	gw.status.Store(http.StatusServiceUnavailable)
+	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "gw"); err == nil {
+		t.Fatal("provider failure reported success")
+	}
+	got := entry(t, ctl.List(), "gw")
+	if slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) ||
+		!slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "catalog-fallback" }) {
+		t.Fatalf("entry models after provider failure = %+v, want static fallback without stale live ids", got.Models)
+	}
+}
+
+func TestFetchInstanceLiveFallsBackAfterUnusableListing(t *testing.T) {
+	ctl, gw := newListingController(t)
+	gw.status.Store(http.StatusOK)
+	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "gw"); err != nil {
+		t.Fatalf("initial live fetch: %v", err)
+	}
+	gw.noTools.Store(true)
+
+	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "gw"); err != nil {
+		t.Fatalf("unusable live fetch: %v", err)
+	}
+	got := entry(t, ctl.List(), "gw")
+	if slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) ||
+		!slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "catalog-fallback" }) {
+		t.Fatalf("entry models after unusable listing = %+v, want static fallback without filtered live ids", got.Models)
+	}
+}
+
+func TestFetchInstanceLiveCancellationPreservesLastLiveSnapshot(t *testing.T) {
+	tomlPath := refreshGateway(t, `{"data":[{"id":"gpt-live"}]}`)
+	dir := filepath.Dir(tomlPath)
+	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir(), nil)
+	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "gw"); err != nil {
+		t.Fatalf("initial live fetch: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := fetchInstanceLive(ctx, ctl.reg, ctl.auth, "gw"); err == nil {
+		t.Fatal("cancelled fetch reported success")
+	}
+	got := entry(t, ctl.List(), "gw")
+	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
+		t.Fatalf("entry models after cancellation = %+v, want the last live snapshot preserved", got.Models)
+	}
+}
+
 // The hub lists providers once at startup and never again on a timer: a
 // provider is polled only when someone asks (Jesse, 2026-09-30).
 func TestLiveModelsPrefetchRunsOnceAtStartup(t *testing.T) {
