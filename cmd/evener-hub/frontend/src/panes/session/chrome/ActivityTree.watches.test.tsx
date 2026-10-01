@@ -165,7 +165,7 @@ describe("ActivityTree watch rows", () => {
   test("a watch with no note falls back to its id, exactly like the rail", () => {
     renderTree([watch({ id: "watch_bare", note: undefined })]);
     expect(screen.getByRole("treeitem", { name: "Watch: watch_bare" })).toBeTruthy();
-    expect(screen.getByTestId("watch-note").textContent).toBe("Poll the queue depth");
+    expect(screen.queryByTestId("watch-note")).toBeNull();
   });
 
   test("the row defaults open and its toggle button is a real aria-expanded disclosure", async () => {
@@ -175,7 +175,7 @@ describe("ActivityTree watch rows", () => {
     const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
     expect(row.getAttribute("aria-expanded")).toBe("true");
     // Expanded details reveal the note independently of compact row width.
-    expect(screen.queryByTestId("watch-note")).toBeNull();
+    expect(screen.getByTestId("watch-note").textContent).toBe("Poll the queue depth");
     expect(screen.getByTestId("watch-facts").textContent).toBe(
       `Fires every 10m · armed ${armedLabel()} ago · no deliveries yet`,
     );
