@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	"errors"
+	"io"
 	"os"
 	"sort"
 	"time"
@@ -124,12 +128,18 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 	return result, nil
 }
 
+// A Unicode code point needs at most twelve JSON bytes (an escaped surrogate
+// pair). One extra decoded code point proves truncation; the opening quote
+// needs one more byte. This also bounds whitespace and malformed input work.
+const activityMaxReportPreviewBytes = 1 + 12*(activityMaxDelegateProseRunes+1)
+
 type sessionActivityDelegateCandidate struct {
 	key             sessionActivityKey
 	included        bool
 	remainingBudget int
 	row             appwire.SessionDelegate
 	report          json.RawMessage
+	reportComplete  bool
 }
 
 // Capture bounded row facts and the immutable settled packet together. Report
@@ -220,7 +230,13 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 	// RunFinished replaces the immutable packet for the exact open generation
 	// and closes that run atomically. A resumed run still owns the old packet.
 	if packet := aggregate.LatestPacket; !aggregate.CurrentRunOpen && aggregate.LatestOutcome != nil && packet != nil && packet.Kind == delegatestore.PacketReported {
-		candidate.report = packet.Message
+		window := packet.Message[:min(len(packet.Message), activityMaxReportPreviewBytes)]
+		if content := bytes.TrimLeft(window, " \t\r\n"); len(content) > 0 {
+			start := len(window) - len(content)
+			end := min(len(packet.Message), start+activityMaxReportPreviewBytes)
+			candidate.report = bytes.Clone(packet.Message[start:end])
+			candidate.reportComplete = end == len(packet.Message)
+		}
 	}
 	if packet := aggregate.LatestPacket; packet != nil && len(packet.Metadata) <= activityMaxDelegatePayloadBytes {
 		var metadata delegateTerminalPacketMetadata
@@ -237,10 +253,23 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 
 func (candidate sessionActivityDelegateCandidate) project() appwire.SessionDelegate {
 	row := candidate.row
-	var report string
-	if json.Unmarshal(candidate.report, &report) == nil {
-		row.ReportPreview = truncateActivityText(report, activityMaxDelegateProseRunes)
-		row.ReportPreviewTruncated = row.ReportPreview != report
+	decoded, err := jsontext.AppendUnquote(nil, candidate.report)
+	partial := !candidate.reportComplete && errors.Is(err, io.ErrUnexpectedEOF)
+	report := string(decoded)
+	if err != nil && !partial {
+		// The bounded complete value may contain surrounding whitespace or
+		// replacement characters accepted by the durable JSON decoder.
+		if json.Unmarshal(candidate.report, &report) != nil {
+			return row
+		}
 	}
+	preview := truncateActivityText(report, activityMaxDelegateProseRunes)
+	if partial && preview == report {
+		// Only a prefix beyond the text cap proves a truncated preview. The
+		// durable packet validates the full JSON; the suffix is never read here.
+		return row
+	}
+	row.ReportPreview = preview
+	row.ReportPreviewTruncated = preview != report
 	return row
 }
