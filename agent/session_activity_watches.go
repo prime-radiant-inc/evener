@@ -173,7 +173,7 @@ func projectRetainedSessionWatch(owner, receiver string, record *jobstore.WatchR
 	if !record.Active {
 		state = appwire.SessionWatchStateEnded
 	}
-	return appwire.SessionWatch{OwnerRef: encodeRef("", receiver), ReceiverRef: encodeRef("", receiver), State: state, Watch: info}
+	return appwire.SessionWatch{SourceRef: encodeRef("", owner), OwnerRef: encodeRef("", receiver), ReceiverRef: encodeRef("", receiver), State: state, Watch: info}
 }
 func watchInfoFromStatus(status WatchStatusInfo) appwire.EvenerWatchInfo {
 	result := appwire.EvenerWatchInfo{ID: status.ID, Source: truncateActivityText(status.Source, activityMaxLabelRunes), Target: truncateActivityText(status.Target, activityMaxLabelRunes), SendTo: truncateActivityText(status.SendTo, activityMaxLabelRunes), Note: truncateActivityText(status.Note, activityMaxDelegateProseRunes), OutputMatch: truncateActivityText(status.OutputMatch, activityMaxDelegateProseRunes), Events: append([]string(nil), status.Events...), WildcardEvents: status.WildcardEvents, Deliveries: status.Deliveries, DeliveryTimes: append([]string(nil), status.DeliveryTimes...), CreatedAt: status.CreatedAt, Active: status.Active, EndReason: truncateActivityText(status.EndReason, activityMaxDelegateProseRunes)}

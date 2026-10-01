@@ -2478,6 +2478,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ownerRef` | `string` |  |  |
+| `sourceRef` | `string` |  |  |
 | `receiverRef` | `string` |  |  |
 | `state` | `appwire.SessionWatchState` |  |  |
 | `watch` | `appwire.EvenerWatchInfo` |  |  |

@@ -146,12 +146,14 @@ describe("protocol package root public exports", () => {
     const rows = buildWatchRows([
       {
         ownerRef: "r1",
+        sourceRef: "r1",
         receiverRef: "r1",
         state: "armed",
         watch: { id: "w1", source: "self", deliveries: 0, createdAt: "2026-09-12T19:00:00Z", active: true },
       },
       {
         ownerRef: "r1",
+        sourceRef: "r1",
         receiverRef: "r1",
         state: "ended",
         watch: {
