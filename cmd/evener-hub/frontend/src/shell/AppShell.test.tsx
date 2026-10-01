@@ -16,9 +16,8 @@ import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-// The activity status bar repeats the focused session's title as its crumb,
-// so session-title queries in this file scope to the rail (their target has
-// always been the rail row) rather than collide with the bar.
+// Session-title queries in this file target navigation, so keep them scoped to
+// the rail rather than matching the same session in workspace content.
 const rail = () => within(screen.getByTestId("rail"));
 
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
@@ -165,7 +164,7 @@ function navigationRead(params: NavigationReadParams): NavigationReadResponse {
         '"test"',
       );
     case "subagents":
-      // The StatusBar ensures the scope's subagents page on every mount;
+      // Session activity surfaces can demand the scope's subagents page;
       // answer with an empty one (tests that need rows install them into the
       // store directly).
       return wireSnapshot(
@@ -1102,11 +1101,10 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
   // synchronously (addPanel's own title option) but the pane's own content
   // is a lazy-loaded component behind Suspense, so this waits for the pane
   // body's own loading text FIRST (it exists only once Suspense resolves),
-  // THEN checks the ref appears three times (tab + pane body title + the
-  // status bar's scope crumb, no thread name known so all three fall back to
-  // the raw ref - see Session.tsx).
+  // THEN checks the ref appears in the tab and pane body title. The pane's
+  // status bar now leads with repository location, not another session title.
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
-  expect(screen.getAllByText("local:ref_abc123")).toHaveLength(3);
+  expect(screen.getAllByText("local:ref_abc123")).toHaveLength(2);
 });
 
 test("a deep-link lookup starts exactly once when navigation mode becomes v2", async () => {
@@ -2185,18 +2183,17 @@ test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", as
   expect(await screen.findByTestId("rail-search")).toBeTruthy();
 });
 
-test("the status bar sits in the workspace column right of the rail, never beneath it", async () => {
-  // The spec: "a 30px strip under the workspace". The bar reports on the
-  // session in the workspace; drawn shell-wide it would sit beneath the
-  // navigation rail too, which has nothing to do with that session.
+test("the session status bar belongs to its pane with no shell-wide duplicate", async () => {
   window.history.pushState({}, "", "/s/local:ref_normal");
   installLocationForRoute("local:ref_normal");
   render(<AppShell client={new FakeClient("ready")} />);
 
-  const bar = await screen.findByTestId("statusbar");
+  const bars = await screen.findAllByTestId("statusbar");
+  expect(bars).toHaveLength(1);
+  const bar = bars[0]!;
+  expect(bar.closest("[data-testid='pane-edge-footer']")).not.toBeNull();
   const column = bar.closest("[data-testid='workspace-column']");
   expect(column).not.toBeNull();
-  // The column owns the workspace host; the rail stands beside it, outside.
   expect(column?.querySelector("[data-testid='workspace-host']")).not.toBeNull();
   expect(column?.contains(await screen.findByTestId("rail-search"))).toBe(false);
 });

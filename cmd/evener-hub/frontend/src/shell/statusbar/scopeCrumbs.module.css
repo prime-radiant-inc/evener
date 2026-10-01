@@ -1,7 +1,3 @@
-/* The scope breadcrumb, shared by the status bar and the activity sidebar:
- * one component, one stylesheet, so the two surfaces can't drift on the same
- * concept. */
-
 .crumbs {
   display: flex;
   align-items: center;

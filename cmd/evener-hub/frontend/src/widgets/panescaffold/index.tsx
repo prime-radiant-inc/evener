@@ -13,6 +13,7 @@ export interface PaneScaffoldProps {
   cadence?: ReactNode;
   actions?: ReactNode;
   footer?: ReactNode;
+  edgeFooter?: ReactNode;
   children: ReactNode;
 }
 
@@ -26,14 +27,15 @@ const CLASS = {
   actions: requireClass(styles.actions, "panescaffold.module.css", "actions"),
   body: requireClass(styles.body, "panescaffold.module.css", "body"),
   footer: requireClass(styles.footer, "panescaffold.module.css", "footer"),
+  edgeFooter: requireClass(styles.edgeFooter, "panescaffold.module.css", "edgeFooter"),
 };
 
 /**
  * The standard pane chrome every pane type in the app uses: a header row
  * (truncating title + optional cadence slot + optional actions cluster), a
- * scrollable body, and an optional footer. Deliberately boring - this is
- * the most-copied layout primitive in the app, so every pane looks and
- * behaves the same way.
+ * scrollable body, an optional padded footer, and an optional flush edge
+ * footer. Deliberately boring - this is the most-copied layout primitive in
+ * the app, so every pane looks and behaves the same way.
  */
 export function PaneScaffold({
   title,
@@ -44,6 +46,7 @@ export function PaneScaffold({
   cadence,
   actions,
   footer,
+  edgeFooter,
   children,
 }: PaneScaffoldProps) {
   // The focused-title channel supplies StackHost's mobile top bar without
@@ -110,6 +113,11 @@ export function PaneScaffold({
       {footer !== undefined && (
         <div className={CLASS.footer} data-testid="pane-footer">
           {footer}
+        </div>
+      )}
+      {edgeFooter !== undefined && (
+        <div className={CLASS.edgeFooter} data-testid="pane-edge-footer">
+          {edgeFooter}
         </div>
       )}
     </div>

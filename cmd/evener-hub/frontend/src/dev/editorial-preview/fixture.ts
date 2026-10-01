@@ -151,7 +151,7 @@ export function createEditorialClient(): EditorialClient {
     read(ref);
     return { data: [] };
   });
-  // The session composer's location line resolves the branch and origin from
+  // The session location line resolves the branch and origin from
   // the session's cwd; a fixture hub must answer it like every other method the
   // mounted panes request. A fixture repo URL keeps the forge link renderable.
   client.on("evener/git/head", () => ({

@@ -13,8 +13,11 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode, useSyncExternalStore } from "react";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
+import * as StatusBarModule from "../../shell/statusbar/StatusBar";
+import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore } from "../../stores/connection";
@@ -70,6 +73,7 @@ function stubSessionSlots(): void {
   vi.spyOn(SessionChromeModule, "SessionChrome").mockImplementation(({ ref }: { ref: string }) => (
     <div data-testid="session-chrome">{ref}</div>
   ));
+  vi.spyOn(StatusBarModule, "StatusBar").mockImplementation(() => <></>);
 }
 stubSessionSlots();
 
@@ -215,6 +219,8 @@ beforeEach(() => {
   resetAskDockStoreForTests();
   resetNavigationStoreForTests();
   resetActivityPanelStoreForTests();
+  resetActivitySidebarStoreForTests();
+  resetMobileViewportForTests();
   mutationStorage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
@@ -228,6 +234,8 @@ afterEach(() => {
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
   resetActivityPanelStoreForTests();
+  resetActivitySidebarStoreForTests();
+  resetMobileViewportForTests();
   resetWorkspaceStoreForTests();
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
@@ -235,6 +243,88 @@ afterEach(() => {
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
+});
+
+test("desktop session panes own separate location and activity footers", async ({ onTestFinished }) => {
+  vi.mocked(StatusBarModule.StatusBar).mockRestore();
+  onTestFinished(stubSessionSlots);
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref }) => {
+    if (ref === undefined) throw new Error("thread/read requires a ref");
+    return readResponse(ref, { cwd: `/work/${ref}` });
+  });
+  fake.on("evener/git/head", ({ cwd }) => ({
+    head: cwd.endsWith("local:one") ? "branch-one" : "branch-two",
+    originUrl: "git@github.com:owner/repo.git",
+  }));
+  fake.on("evener/thread/activity/read", ({ ref }) => ({
+    ...activitySummary(ref),
+    jobs: {
+      known: true,
+      active: ref === "local:one" ? 1 : 2,
+      total: ref === "local:one" ? 3 : 4,
+      completed: 2,
+      failed: 0,
+    },
+  }));
+  workspaceStore.setState({
+    panes: [
+      { id: "pane-one", type: "session", params: { ref: "local:one" }, slot: "main" },
+      { id: "pane-two", type: "session", params: { ref: "local:two" }, slot: "secondary" },
+    ],
+    focusedPaneId: "pane-one",
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:one" }} paneId="pane-one" focused />
+      <Session params={{ ref: "local:two" }} paneId="pane-two" focused={false} />
+    </ClientProvider>,
+  );
+
+  const bars = await screen.findAllByTestId("statusbar");
+  expect(bars).toHaveLength(2);
+  const first = within(bars[0]!);
+  const second = within(bars[1]!);
+  expect(first.getByTestId("composer-repo-path").textContent).toBe("/work/local:one");
+  expect(second.getByTestId("composer-repo-path").textContent).toBe("/work/local:two");
+  expect(screen.getAllByTestId("composer-repo-location")).toHaveLength(2);
+  expect((await first.findByTestId("composer-repo-ref")).textContent).toBe("owner/repo#branch-one");
+  expect((await second.findByTestId("composer-repo-ref")).textContent).toBe("owner/repo#branch-two");
+  expect(await first.findByRole("button", { name: /Jobs, 1 of 3 running/ })).toBeTruthy();
+  await user.click(await second.findByRole("button", { name: /Jobs, 2 of 4 running/ }));
+  expect(workspaceStore.getState().focusedPaneId).toBe("pane-two");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
+});
+
+test("mobile keeps one repo location under the composer and omits the desktop activity footer", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: media === "(max-width: 899px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("local:mobile", { cwd: "/work/mobile" }));
+  fake.on("evener/git/head", () => ({ head: "mobile-branch", originUrl: "git@github.com:owner/repo.git" }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:mobile" }} paneId="mobile-pane" focused />
+    </ClientProvider>,
+  );
+
+  await screen.findByTestId("composer-input-card");
+  expect(await screen.findAllByTestId("composer-repo-location")).toHaveLength(1);
+  expect(screen.queryByTestId("pane-edge-footer")).toBeNull();
+  expect(screen.queryByTestId("statusbar")).toBeNull();
 });
 
 test("shows a loading placeholder before the thread hydrates", async () => {
@@ -249,11 +339,13 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   );
 
   expect(screen.getByText(/loading/i)).toBeTruthy();
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
   // request()'s handler invocation (which captures the resolver) is
   // deferred a microtask behind the synchronous render() above.
   await flushUntil(() => box.resolve !== null);
   box.resolve?.(readResponse("ref_a"));
   await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 });
 
 test("mounts TopNotesPanel at the top of the session content once hydrated", async () => {
@@ -293,6 +385,7 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
   await flushUntil(() => false, 5);
   expect(screen.getByText(/loading/i)).toBeTruthy();
   expect(screen.queryByText(/deleted/i)).toBeNull();
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 });
 
 // The daemon fences every request against a target it has actually deleted
@@ -333,6 +426,7 @@ test("a deleted ref shows an honest empty state instead of loading forever, and 
   // the title uses a humane label instead (kata: the eternal-spinner papercut).
   expect(screen.queryByText("local:ref_gone")).toBeNull();
   expect(screen.getByText("Session deleted")).toBeTruthy();
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: /close/i }));
@@ -354,6 +448,7 @@ test("a deletion fence after hydration replaces a cached transcript with the del
     </ClientProvider>,
   );
   await waitFor(() => expect(screen.getByText("Soon gone")).toBeTruthy());
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 
   fake.on("thread/read", () => {
     throw new WireError("target has been deleted: local:ref_gone", -32001, {
@@ -371,6 +466,7 @@ test("a deletion fence after hydration replaces a cached transcript with the del
 
   await waitFor(() => expect(screen.getByText(/this session was deleted/i)).toBeTruthy());
   expect(screen.queryByText("Soon gone")).toBeNull();
+  expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
   expect(threadsStore.getState().threads.has("ref_gone")).toBe(true);
 });
 
@@ -1345,6 +1441,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
     await flushUntil(() => threadsStore.getState().threads.has("ref_a"));
   });
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
+  const footerRenderCount = vi.mocked(StatusBarModule.StatusBar).mock.calls.length;
 
   // A live frame lands after the `now` the pane last rendered. Moving the clock
   // one millisecond stamps this one that way; it fires no timer.
@@ -1368,6 +1465,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   await flushPendingTurnsProjectionForTests();
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect').length).toBeGreaterThan(0);
+  expect(StatusBarModule.StatusBar).toHaveBeenCalledTimes(footerRenderCount);
 });
 
 // cadenceStateForStatus's own direct unit tests now live in

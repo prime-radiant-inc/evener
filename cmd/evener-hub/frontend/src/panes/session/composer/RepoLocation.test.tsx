@@ -333,6 +333,10 @@ test("the head and tail spans carry the middle-truncation grammar", () => {
   expect(css).toMatch(/\.tail \{[^}]*composes: clampedTail from "\.\.\/transcript\/toolcallitem\.module\.css";/);
 });
 
+test("the repository link keeps its focus ring inside clipped pane footers", () => {
+  expect(locationCss()).toMatch(/\.link:focus-visible \{[^}]*outline-offset: -2px;/);
+});
+
 // On the phone the footer's bottom padding is the home-indicator band
 // (PaneScaffold publishes it as --pane-footer-pad-bottom). The line spends up
 // to one of its own line-heights of that band beyond its breathing room

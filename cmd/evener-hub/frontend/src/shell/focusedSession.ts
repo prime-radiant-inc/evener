@@ -1,7 +1,8 @@
 // The focused-session readers: which session the user is looking at right
 // now, derived from the workspace store. Extracted from AppShell.tsx so the
-// activity surfaces (status bar, sidebar) can read the same truth without
-// importing the whole shell.
+// focus-driven activity surfaces (the sidebar and keyboard routes) can read
+// the same truth without importing the whole shell. Pane status bars receive
+// their owning ref directly instead.
 //
 // focusedSessionRef is AppShell's original strict reading: the focused pane
 // IS a session pane, else null (Mod+I's "no-op when the focused pane isn't a
