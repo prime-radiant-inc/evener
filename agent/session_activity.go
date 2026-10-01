@@ -382,10 +382,16 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	// Issue admission reserves the optional array envelope. The shared page
+	// allowance leaves 2048 bytes for late count, pending-flag and epoch growth.
+	pageBudget := newSessionActivityPageBudget(result)
+	pageBudget.bytes += len(`,"issues":[]`)
+	if pageBudget.bytes > sessionActivityPageBytes-2048 {
+		return result, appwire.Unavailable("session activity summary context exceeds response budget")
+	}
 	controller := read.index.controller
 	if controller != nil {
 		controller.mu.Lock()
-
 	}
 	if !read.context.AncestryKnown {
 		if controller != nil {
@@ -426,7 +432,7 @@ func (read *sessionActivityRead) summary(ctx context.Context) (appwire.SessionAc
 		controller.mu.Unlock()
 	}
 	var err error
-	result.RefreshPending, result.Issues, err = read.refreshWarmSources(ctx, sourceOwners)
+	result.RefreshPending, result.Issues, err = read.refreshWarmSources(ctx, sourceOwners, &pageBudget)
 	if err != nil {
 		return result, err
 	}

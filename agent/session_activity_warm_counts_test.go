@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 )
@@ -475,5 +477,120 @@ func TestSessionActivityWarmCountsInvalidationIncludesInitiallyCurrentOwner(t *t
 	summary, err = s.ActivitySummary(t.Context(), params)
 	if err != nil || !summary.Jobs.Known || summary.Jobs.Total != 1 || summary.RefreshPending {
 		t.Fatalf("recovered summary=%+v error=%v", summary, err)
+	}
+}
+
+func establishedUnavailableSummarySources(t *testing.T, count int, padding string) (*Session, []string) {
+	t.Helper()
+	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
+	owners := make([]string, 0, count)
+	for i := range count {
+		id := fmt.Sprintf("dlg_%04d_%s", i, padding)
+		descriptor := stableToolDescriptor(s, id, "")
+		s.delegateController.mu.Lock()
+		_, err := s.delegateController.appendLocked(delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: id, TS: time.Unix(100, 0).UTC(), Created: &delegatestore.DelegateCreated{Descriptor: descriptor}})
+		s.delegateController.mu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		owners = append(owners, descriptor.ChildSessionID)
+	}
+	writeJobLogFast(t, s.stateDir, s.ID(), 1)
+	params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID())}
+	if page, err := s.ListActivityWatches(t.Context(), params); err != nil || !page.Page.Complete {
+		t.Fatalf("establish sources: complete=%v error=%v", page.Page.Complete, err)
+	}
+	for _, owner := range owners {
+		if err := os.MkdirAll(filepath.Join(jobsDir(s.stateDir, owner), "jobs.jsonl"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.emitSessionActivityChanged(s.ID(), appwire.SessionActivityResourceJobs)
+	// A healthy requested-owner read remains authoritative while physical
+	// descendant sources await the summary's bounded recovery pass.
+	if page, err := s.ListActivityJobs(t.Context(), params); err != nil || !page.Page.Complete {
+		t.Fatalf("healthy owner: complete=%v error=%v", page.Page.Complete, err)
+	}
+	return s, owners
+}
+
+func TestSessionActivityWarmSummaryIssuesRespectResponseBudget(t *testing.T) {
+	t.Parallel()
+	s, owners := establishedUnavailableSummarySources(t, activityMaxWorkUnits, strings.Repeat("x", 110))
+	params := appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID())}
+	seen := make(map[string]bool)
+	for attempt := range 2 {
+		summary, err := s.ActivitySummary(t.Context(), params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(summary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) > sessionActivityPageBytes {
+			t.Fatalf("summary encoded %d bytes, budget %d", len(encoded), sessionActivityPageBytes)
+		}
+		if !summary.Jobs.Known || summary.Jobs.Total != 1 || summary.Watches.Known || !summary.RefreshPending || len(summary.Issues) == 0 || len(summary.Issues) >= len(owners) {
+			t.Fatalf("bounded summary lost healthy authority or pending work: jobs=%+v watches=%+v pending=%v issues=%d", summary.Jobs, summary.Watches, summary.RefreshPending, len(summary.Issues))
+		}
+		for _, issue := range summary.Issues {
+			if issue.Code != "unavailable" {
+				t.Fatal(issue)
+			}
+			seen[issue.Ref] = true
+		}
+		if attempt == 1 && len(seen) != len(owners) {
+			t.Fatalf("round-robin recovery visited %d of %d sources", len(seen), len(owners))
+		}
+	}
+}
+
+func TestSessionActivityWarmSummaryFailedAttemptsConsumeWorkBudget(t *testing.T) {
+	t.Parallel()
+	s, owners := establishedUnavailableSummarySources(t, 6, "")
+	seen := make(map[string]bool)
+	for range 2 {
+		read, err := s.activityRead(t.Context(), appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID())})
+		if err != nil {
+			t.Fatal(err)
+		}
+		read.budget = 3
+		summary, err := read.summary(t.Context())
+		read.index.release()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, issue := range summary.Issues {
+			seen[issue.Ref] = true
+		}
+		if len(summary.Issues) != 3 || !summary.RefreshPending || read.budget != 0 {
+			t.Fatalf("failed attempts bypassed work budget: issues=%d owners=%d pending=%v budget=%d", len(summary.Issues), len(owners), summary.RefreshPending, read.budget)
+		}
+	}
+	if len(seen) != len(owners) {
+		t.Fatalf("work-limited passes visited %d of %d", len(seen), len(owners))
+	}
+}
+
+func TestSessionActivityWarmSummaryRejectsUnrepresentableEnvelope(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	read, err := s.activityRead(t.Context(), appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.index.release()
+	// The context alone fits its boundary, but leaves no room for summary
+	// counters and metadata. The response must retain a typed failure.
+	read.context.Ref = strings.Repeat("x", sessionActivityPageBytes-2300)
+	encoded, err := json.Marshal(read.context)
+	if err != nil || len(encoded) > sessionActivityPageBytes-2048 {
+		t.Fatalf("context does not fit its own boundary: bytes=%d error=%v", len(encoded), err)
+	}
+	_, err = read.summary(t.Context())
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("unrepresentable summary envelope: %v", err)
 	}
 }

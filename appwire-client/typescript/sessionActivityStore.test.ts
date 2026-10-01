@@ -1467,6 +1467,7 @@ test("partial summary issues retain healthy counts and back off until source res
   let unavailable = true;
   client.on("evener/thread/activity/read", () => ({
     ...summaryFixture(),
+    refreshPending: unavailable,
     issues: unavailable ? [{ ref: "local:child", code: "unavailable" }] : [],
     watches: { known: !unavailable, total: 0, active: 0, failed: 0, completed: 0 },
   }));

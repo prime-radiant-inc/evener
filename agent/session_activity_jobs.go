@@ -294,7 +294,7 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 
 // Summary demand catches up only sources whose complete authority was already
 // established. Source replacement retires that eligibility with the index.
-func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners map[string]bool) (bool, []appwire.SessionActivityIssue, error) {
+func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners map[string]bool, pageBudget *sessionActivityPageBudget) (bool, []appwire.SessionActivityIssue, error) {
 	var ordered []string
 	for owner := range owners {
 		source := read.index.jobs[owner]
@@ -326,16 +326,32 @@ func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners 
 		}
 		if read.budget == 0 || read.bytes <= 128 {
 			pending = true
-			continue
+			break
+		}
+		// Reserve a possible failure before probing; admit its bytes only if
+		// this source is actually unavailable. The cursor stays at the last
+		// attempted owner so the next pass starts with the unvisited source.
+		candidate := *pageBudget
+		issue := appwire.SessionActivityIssue{Ref: encodeRef("", owner), Code: "unavailable"}
+		if !candidate.fits(issue, nil) {
+			if pageBudget.rows == 0 {
+				return false, nil, appwire.Unavailable("session activity summary context and issue exceed response budget")
+			}
+			pending = true
+			break
 		}
 		read.index.summaryOwner = owner
 		complete, err := read.advanceJobs(ctx, owner)
 		if err != nil {
+			// Source checks can fail before journal scanning spends allowance.
+			// Failed scans already consume the remaining request budget.
+			read.budget = max(0, read.budget-1)
 			var wire appwire.WireError
 			if errors.As(err, &wire) && read.context.Epoch != read.index.epoch {
 				return false, nil, nil
 			}
 			if read.excludeUnavailableSource(walk, owner, err) {
+				*pageBudget = candidate
 				continue
 			}
 			return false, nil, err
