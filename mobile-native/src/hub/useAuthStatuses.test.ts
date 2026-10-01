@@ -4,7 +4,7 @@ import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { renderHook } from "../renderNative.testkit";
-import { AUTH_RETRY_MS, useAuthStatuses } from "./useAuthStatuses";
+import { AUTH_RETRY_MAX_MS, AUTH_RETRY_MS, useAuthStatuses } from "./useAuthStatuses";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -57,6 +57,13 @@ async function afterDebounce() {
 async function flushInitial() {
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(0);
+	});
+}
+
+/** Advances fake timers under act, running whatever they fire. */
+async function advance(ms: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ms);
 	});
 }
 
@@ -137,9 +144,7 @@ it("retries a failed read on its own, with no notification", async () => {
 	await flushInitial();
 	expect(fake.methods).toHaveLength(1);
 	expect(result.current).toBeNull();
-	await act(async () => {
-		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS);
-	});
+	await advance(AUTH_RETRY_MS);
 	expect(fake.methods).toHaveLength(2);
 	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
 });
@@ -155,11 +160,61 @@ it("retries a failed refetch after a read has landed", async () => {
 	// The failed refetch keeps the last statuses and, with no further
 	// notification, the hook reads again on its own.
 	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
-	await act(async () => {
-		await vi.advanceTimersByTimeAsync(AUTH_RETRY_MS);
-	});
+	await advance(AUTH_RETRY_MS);
 	expect(fake.methods).toHaveLength(3);
 	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(false);
+});
+
+it("doubles the wait between retries, capped at AUTH_RETRY_MAX_MS", async () => {
+	vi.useFakeTimers();
+	const fake = hub([new Error("the hub is busy")]);
+	renderHook(() => useAuthStatuses(fake.client));
+	await flushInitial();
+	expect(fake.methods).toHaveLength(1);
+	await advance(AUTH_RETRY_MS - 1);
+	expect(fake.methods).toHaveLength(1);
+	await advance(1);
+	expect(fake.methods).toHaveLength(2);
+	await advance(AUTH_RETRY_MS * 2 - 1);
+	expect(fake.methods).toHaveLength(2);
+	await advance(1);
+	expect(fake.methods).toHaveLength(3);
+	await advance(AUTH_RETRY_MS * 4 - 1);
+	expect(fake.methods).toHaveLength(3);
+	await advance(1);
+	expect(fake.methods).toHaveLength(4);
+	await advance(AUTH_RETRY_MS * 8 - 1);
+	expect(fake.methods).toHaveLength(4);
+	await advance(1);
+	expect(fake.methods).toHaveLength(5);
+	// The next wait would double to 80s; the cap holds it at 60s.
+	await advance(AUTH_RETRY_MAX_MS - 1);
+	expect(fake.methods).toHaveLength(5);
+	await advance(1);
+	expect(fake.methods).toHaveLength(6);
+});
+
+it("stops retrying once a read lands", async () => {
+	vi.useFakeTimers();
+	const fake = hub([[expired]]);
+	renderHook(() => useAuthStatuses(fake.client));
+	await flushInitial();
+	await advance(AUTH_RETRY_MAX_MS * 2);
+	expect(fake.methods).toHaveLength(1);
+});
+
+it("keeps the last statuses through a flap that drops the client", async () => {
+	const fake = hub([[expired]]);
+	let current: ConversationClientLike | null = fake.client;
+	const { result, rerender } = renderHook(() => useAuthStatuses(current));
+	await act(settle);
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
+	// A passive reconnect takes the client away while the page stays mounted:
+	// the last read's statuses must survive.
+	current = null;
+	rerender();
+	await act(settle);
+	expect(result.current?.get("codex-jesse-fsck.com")?.needsLogin).toBe(true);
 });
 
 it("keeps the replaced client's reply off the new client's statuses", async () => {

@@ -8,9 +8,10 @@
 // read can fail while the socket stays ready with neither to follow, this hook
 // retries a failed read on its own, waiting twice as long each time up to a
 // minute, until one lands. Until a first read lands it answers null: nothing
-// is known, so no account sign-in is called "Signed in" (statusOf). A client
-// the screen replaces builds a fresh store, so a reply of the hub the previous
-// one named never lands on the new one.
+// is known, so no account sign-in is called "Signed in" (statusOf). A flap
+// that takes the client away keeps what the last read knew - the page stays
+// mounted across it - and a client the screen replaces builds a fresh store,
+// so a reply of the hub the previous one named never lands on the new one.
 import type { AuthStatusResponse } from "@evener/appwire-client";
 import { type AuthStatusesClient, createAuthStatusesStore } from "@evener/appwire-client/state/credentials";
 import { useEffect, useState } from "react";
@@ -24,14 +25,10 @@ export function useAuthStatuses(client: AuthStatusesClient | null): ReadonlyMap<
 	const [statuses, setStatuses] = useState<ReadonlyMap<string, AuthStatusResponse> | null>(null);
 	useEffect(() => {
 		if (!client) {
-			setStatuses(null);
 			return;
 		}
 		const store = createAuthStatusesStore(client);
 		store.start();
-		// A fresh store knows nothing, and the replaced client's statuses must
-		// not linger against this one.
-		setStatuses(null);
 		let retry: ReturnType<typeof setTimeout> | undefined;
 		let wait = AUTH_RETRY_MS;
 		// The statuses the last landed read published. Each read publishes a
@@ -41,7 +38,6 @@ export function useAuthStatuses(client: AuthStatusesClient | null): ReadonlyMap<
 		const stop = store.subscribe((state) => {
 			setStatuses(state.authStatuses);
 			if (state.authStatuses !== null && state.authStatuses !== landed) {
-				// A read landed, so the next failure starts over.
 				landed = state.authStatuses;
 				wait = AUTH_RETRY_MS;
 				clearTimeout(retry);
@@ -60,9 +56,8 @@ export function useAuthStatuses(client: AuthStatusesClient | null): ReadonlyMap<
 				void store.getState().fetchAuthStatuses();
 			}, delay);
 		});
-		// This first read populates the list. The store re-reads it on every
-		// later evener/auth/updated (debounced), and `wantsList` - a list read
-		// or a read that failed - is what makes a reconnect re-read it.
+		// This first read populates the list; the store re-reads it on every
+		// later evener/auth/updated (debounced).
 		void store.getState().fetchAuthStatuses();
 		return () => {
 			clearTimeout(retry);
