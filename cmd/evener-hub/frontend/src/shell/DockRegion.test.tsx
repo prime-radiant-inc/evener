@@ -137,8 +137,8 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
   // before the await is stale and its contains() check flakes.
   await screen.findByTestId("rail-search");
   const failure = screen.getByText("Couldn't load the workspace").closest("[data-testid='empty-state']");
-  // AppShell wraps DockRegion in a workspace column (host + status bar), so
-  // ascend through both to the content row the rail stands in.
+  // AppShell wraps DockRegion in a workspace column so the activity sidebar
+  // can stand beside the host; ascend through both to the rail's content row.
   const workspaceRow = failure?.closest("[data-testid='workspace-column']")?.parentElement;
   expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
 });

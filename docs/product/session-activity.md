@@ -5,10 +5,9 @@ conversation. The primary navigation rail reduces each navigation summary to a
 one-line status and title; its title HoverCard exposes the summary's project,
 host, branch, running-job, subagent, watch, pin-section, tier and age context. This remains a
 navigation-domain read. Hovering the title or focusing its tree row reveals that
-context; on a hoverless device, tapping the title reveals it without activating
-the session, and tapping it again activates the session. Reading a session's
-activity is a separate operation, so browsing navigation does not load every
-session's work tree.
+context; on a hoverless device, a long press on the title reveals it, and a tap
+activates the session. Reading a session's activity is a separate operation, so
+browsing navigation does not load every session's work tree.
 
 Transcript delegate cards and status indicators use the same
 owner-qualified delegate entity projection as Activity. Retained transcripts do
@@ -277,8 +276,10 @@ for these shared ownership contracts.
 
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 shares a store by actual client object, requested ref and scope. A committed view
-acquires its holder; an abandoned render starts no read. The focused status
-surface observes the summary. Agents, Jobs and Watches tabs observe their own
+acquires its holder; an abandoned render starts no read. Every visible desktop
+session pane has a status footer that observes that pane's summary by explicit
+ref, so side-by-side panes retain independent counts while duplicate consumers
+of one ref share the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation.
 
