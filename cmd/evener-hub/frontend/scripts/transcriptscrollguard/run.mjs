@@ -133,12 +133,36 @@ async function main() {
     let landed = null;
     try {
       await applyViewport(send, VIEWPORT);
-      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`, BOOT);
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?paged=1&deferRead=1`, BOOT);
       // Fonts FIRST, then settle: a late-arriving webfont changes row
       // geometry, so the settle loop must measure post-font geometry -
       // otherwise a font-driven shift could surface the pill before the
       // scroll-away phase and the pill assertions would pass for the wrong
       // reason.
+      await waitForFonts(send);
+      // An asynchronous cold-cache/read admission can outlive page boot and
+      // fonts. Invoke the actual paged wait while hydration is held, prove it
+      // remains pending through ordinary frames, then release the read.
+      const deferredOpen = JSON.parse(await evaluate(send, `(async () => {
+        let finished = false;
+        let failure;
+        let failed = false;
+        const pending = window.waitForPagedOpenSettled().then(
+          result => { finished = true; return result; },
+          error => { finished = true; failed = true; failure = error; }
+        );
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (finished) throw failure ?? new Error("paged wait finished before hydration admission");
+        if (document.querySelector('[data-testid="transcript-virtual-list"] > div'))
+          throw new Error("deferred fixture mounted before its read was released");
+        window.releaseTranscriptRead();
+        const result = await pending;
+        if (failed) throw failure;
+        return JSON.stringify(result);
+      })()`));
+      assertPagedOpenContract(failures, "the deferred cold-read session", deferredOpen);
+
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`, BOOT);
       await waitForFonts(send);
       initial = JSON.parse(
         await evaluate(send, "(async () => JSON.stringify(await window.waitForTranscriptSettled()))()"),
@@ -325,7 +349,7 @@ async function main() {
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
           `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
           `a session opened with older history stayed at the bottom without auto-loading a page; ` +
-          `the read-only transcript pane did the same`,
+          `the read-only transcript pane did the same; deferred hydration waited for the mounted paged viewport`,
       );
     } else {
       for (const failure of failures) console.error(`transcriptscrollguard FAIL: ${failure}`);
