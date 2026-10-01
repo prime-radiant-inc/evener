@@ -628,11 +628,8 @@ const SESSIONS: RawSession[] = [
 
 	// data.js pins archivedTotal at 271 (Board mockup: "ARCHIVED · 271")
 	// without individually naming 266 of them. These fill that count with
-	// plain, clearly-generic entries so the archived list is a real, fully
-	// pageable list of 271 -- the hub's own archived list is real paged rows,
-	// never five real ones plus a promise of 266 more that never arrive --
-	// instead of a page that stalls the moment a client asks for more than
-	// the 5 named above.
+	// plain, clearly-generic entries so evener's archived list pages through
+	// all 271 rows its total reports, as a hub's archived list does.
 	...Array.from({ length: ARCHIVED_TOTAL - 5 }, (_, i) => ({
 		id: `s-archived-filler-${i}`,
 		title: SWARM_NAMES[i % SWARM_NAMES.length] as string,
@@ -1176,8 +1173,10 @@ function findSubagent(
 }
 
 // An archived list's cursor names the list it continues and where, so a
-// cursor from another list is refused with the hub's own words
-// (navigation_archived_list.go's encodeArchivedCursor/decodeArchivedCursor).
+// cursor from another list is refused. The hub's cursor
+// (navigation_archived_list.go's encodeArchivedCursor/decodeArchivedCursor)
+// marks where by the last row's order key and the demo's by an offset; the
+// binding to its list and the refusals' words are the hub's.
 function encodeArchivedCursor(catalog: string, projectKey: string, offset: number): string {
 	return JSON.stringify({ catalog, projectKey, offset });
 }
@@ -1315,10 +1314,8 @@ function fleetAnswers(
 		};
 	}
 
-	// A tier's rows. Current and recent are paged through project_page with
-	// the same page() every other resource uses; the archived rows (all 271,
-	// 5 named plus the generated filler) are served only by the archived
-	// list, and navigation answers that tier empty, as the hub does.
+	// A project's rows in one tier, as hubcore's TreeProject.TierRows lists
+	// them: the rows servedTier puts in that tier.
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
 		if (tier === "archived") return archivedIn(projectKey).map(rowOf);
 		if (projectKey === "hub-test-env") return testRunRaw.filter((raw) => servedTier(raw) === tier).map(rowOf);
