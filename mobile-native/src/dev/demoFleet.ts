@@ -1563,5 +1563,12 @@ function fleetAnswers(
 		return { notices: [...signIns, ...hosts] };
 	}
 
-	return { answerNavigationRead, answerArchivedList, answerSearch, answerAuthList, answerPluginList, answerNoticesList };
+	return {
+		answerNavigationRead,
+		answerArchivedList,
+		answerSearch,
+		answerAuthList,
+		answerPluginList,
+		answerNoticesList,
+	};
 }
