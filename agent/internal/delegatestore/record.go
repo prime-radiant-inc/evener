@@ -67,6 +67,18 @@ const (
 	PacketTerminalError PacketKind = "terminal_error"
 )
 
+// StructuredResultSource names where a terminal packet's structured result
+// came from (#3548): a result schema's own output, or a no-schema delegate's
+// captured default output envelope, which a client unwraps to its data.
+// Without the marker a schema result that wears the default envelope's exact
+// shape is byte-identical to a no-schema capture.
+type StructuredResultSource string
+
+const (
+	StructuredResultSourceSchema          StructuredResultSource = "schema"
+	StructuredResultSourceDefaultEnvelope StructuredResultSource = "default_envelope"
+)
+
 type Descriptor struct {
 	ChildSessionID    string              `json:"child_session_id"`
 	TranscriptRef     string              `json:"transcript_ref"`
@@ -175,8 +187,13 @@ type TerminalPacket struct {
 	StructuredResult       json.RawMessage `json:"structured_result,omitempty"`
 	StructuredResultValid  *bool           `json:"structured_result_valid,omitempty"`
 	StructuredResultReason string          `json:"structured_result_reason,omitempty"`
-	Warnings               []string        `json:"warnings,omitempty"`
-	Metadata               json.RawMessage `json:"metadata,omitempty"`
+	// StructuredResultSource names where StructuredResult came from (#3548),
+	// so a client can tell a schema result from a no-schema capture without
+	// matching the envelope's shape. Empty on packets recorded before the
+	// field existed, where the client falls back to the shape heuristic.
+	StructuredResultSource StructuredResultSource `json:"structured_result_source,omitempty"`
+	Warnings               []string               `json:"warnings,omitempty"`
+	Metadata               json.RawMessage        `json:"metadata,omitempty"`
 }
 
 type PendingDelivery struct {

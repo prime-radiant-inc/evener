@@ -19,6 +19,7 @@
     "errors.ts",
     "plainObject.ts",
     "frameworkFreeStore.ts",
+    "archivedListStore.ts",
     "transport.ts",
     "types.gen.ts",
     "askAnswers.ts",
