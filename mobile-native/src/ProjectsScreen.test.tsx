@@ -309,7 +309,9 @@ it("unarchives an archived row and reads the archived list again", async () => {
 	expect(hub.calls.filter((call) => call.method === "evener/archive/set").map((call) => call.params)).toEqual([
 		{ kind: "session", id: "AlphaSession0000000001", archived: false },
 	]);
-	expect(archivedReads).toBeGreaterThan(1);
+	// One read after the change: the organize flow reads every loaded archived
+	// list again, and the page waits for that read rather than starting another.
+	expect(archivedReads).toBe(2);
 	expect(renderedText(tree)).not.toContain("Alpha");
 	expect(renderedText(tree)).not.toContain("could not be confirmed");
 	tree.unmount();

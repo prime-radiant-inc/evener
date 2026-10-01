@@ -1,7 +1,8 @@
 // A project's archived sessions as a page source over the connection's shared
 // archived list store: what the Project screen's Archived tab reads, since
 // navigation v3 serves no archived rows.
-import type { ArchivedListParams, NavigationInvalidationTarget } from "@evener/appwire-client";
+import type { ArchivedListParams, ArchivedListResponse, NavigationInvalidationTarget } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession } from "@evener/appwire-client/testing/navigation";
 import { expect, it, vi } from "vitest";
@@ -108,6 +109,41 @@ it("reports a failed read and keeps the loaded rows", async () => {
 	await pages.more();
 	expect(pages.getSnapshot().rows.map((r) => r.ref)).toEqual(["local:a"]);
 	expect(pages.getSnapshot().error).toContain("no such page");
+});
+
+// An accepted organize change has already read every loaded archived list
+// again (navigationActions.ts), so the page's own read after it starts none:
+// a loaded list holds that read's rows, or waits for it while it is out.
+it("starts no read after an accepted change, waiting for the one still out", async () => {
+	const client = new FakeClient("ready");
+	const later = deferred<ArchivedListResponse>();
+	let reads = 0;
+	client.on("evener/archived/list", () => (++reads === 1 ? { sessions: [row("local:a")], total: 1 } : later.promise));
+	const pages = new ArchivedPages(client, "projects", "p");
+	await pages.refresh();
+
+	await pages.refreshAfter();
+	expect(reads).toBe(1);
+
+	void archivedListStoreFor(client).refreshLoaded();
+	let settled = false;
+	const waiting = pages.refreshAfter().then(() => {
+		settled = true;
+	});
+	await Promise.resolve();
+	expect(settled).toBe(false);
+	later.resolve({ sessions: [row("local:b")], total: 1 });
+	await waiting;
+	expect(reads).toBe(2);
+	expect(pages.getSnapshot()).toMatchObject({ loaded: true, loading: false, rows: [{ ref: "local:b" }] });
+});
+
+it("reads a list no one loaded after an accepted change", async () => {
+	const { client, seen } = hub({ "": { refs: ["local:a"], total: 1 } });
+	const pages = new ArchivedPages(client, "projects", "p");
+	await pages.refreshAfter();
+	expect(seen).toHaveLength(1);
+	expect(pages.getSnapshot().loaded).toBe(true);
 });
 
 // Archived rows aren't part of navigation: there is no navigation version to
