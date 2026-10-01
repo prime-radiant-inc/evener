@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
@@ -673,3 +674,55 @@ func TestExpandEnvVars_MissingVarInConfig(t *testing.T) {
 // agenttest.FakeEnv is a minimal execenv.ExecutionEnvironment for testing MCP config discovery.
 // agenttest.FakeEnv now lives in agent/internal/agenttest as FakeEnv (shared with
 // the agent and internal/mcp test suites).
+
+// TestDiscoverMCPConfigs_HidesUserGlobalWhenNoUserSkills pins #3487: the
+// tool-fluency harness sets EVENER_NO_USER_SKILLS so an eval round depends
+// only on the revision under test, and the operator's global MCP servers are
+// one source that must not reach it. The project layer stays, so a probe can
+// still exercise MCP that its own fixture declares.
+func TestDiscoverMCPConfigs_HidesUserGlobalWhenNoUserSkills(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
+	globalDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", globalDir)
+	evenerDir := filepath.Join(globalDir, "evener")
+	if err := os.MkdirAll(evenerDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evenerDir, "mcp.json"), []byte(`{
+		"mcpServers": {
+			"global-tool": {"command": "gtool"}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	projDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projDir, ".evener"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, ".evener", "mcp.json"), []byte(`{
+		"mcpServers": {
+			"project-tool": {"command": "ptool"}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, warnings, err := Discover(&agenttest.FakeEnv{WorkDir: projDir, GitRoot: projDir}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("warnings = %v, want none", warnings)
+	}
+	byName := map[string]ServerConfig{}
+	for _, c := range configs {
+		byName[c.Name] = c
+	}
+	if _, ok := byName["global-tool"]; ok {
+		t.Errorf("operator global MCP server reached a hermetic round: %v", configs)
+	}
+	if _, ok := byName["project-tool"]; !ok {
+		t.Errorf("project MCP layer must remain; got %v", configs)
+	}
+}

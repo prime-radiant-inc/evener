@@ -41,11 +41,12 @@ import (
 
 var exitProcess = os.Exit
 
-// configureHermeticRunEnv hides the operator's personal skills from every
+// configureHermeticRunEnv hides the operator's user-global sources from every
 // run: it sets EVENER_NO_USER_SKILLS so neither an in-process live session
-// nor a spawned evener child advertises the operator's home skills or user
-// config skills. A round that measures skill use then depends only on the
-// revision under test, not on who runs it (#3227). This is only half of
+// nor a spawned evener child advertises the operator's home skills, user
+// config skills, global MCP config, or evener-wide commands. A round that
+// measures tool or skill use then depends only on the revision under test,
+// not on who runs it (#3227, #3487). This is still only half of
 // hermeticity: the operator's installed, enabled plugins (hooks, agents,
 // commands, and plugin-sourced skills) load in full whenever plugin
 // resolution reaches its default root, which EVENER_NO_USER_SKILLS does not
@@ -1049,8 +1050,9 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, er
 		}
 		args = append(args, "--ask-responder", askResponder)
 	}
-	// EVENER_NO_USER_SKILLS (configureHermeticRunEnv) hides only the operator's
-	// home and user-config skills. Their installed, enabled plugins would still
+	// EVENER_NO_USER_SKILLS (configureHermeticRunEnv) hides the operator's
+	// user-global sources — home/user-config skills, global MCP config, and
+	// evener-wide commands. Their installed, enabled plugins would still
 	// load in full — hooks, agents, commands, and plugin-sourced skills —
 	// because a bare `evener run` resolves plugins against its default root
 	// (internal/plugins.ResolveForLaunch with no explicit selection). An

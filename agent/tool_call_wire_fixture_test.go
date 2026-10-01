@@ -33,6 +33,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +44,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
@@ -222,6 +224,38 @@ func withoutState(res tool.ExecResult) tool.ExecResult {
 	return res
 }
 
+// A URL entry's id is minted per run and its added_at is the session clock;
+// neither can be pinned. urls_add's output and state carry the id, and
+// urls_remove's arguments and state repeat it, so the id is replaced once it
+// is minted (toolWireURLID reads it from urls_add's result); added_at is
+// fixed here.
+var (
+	toolWireURLID   = regexp.MustCompile(`\[id: ([0-9A-Za-z]{22})\]`)
+	toolWireAddedAt = regexp.MustCompile(`"added_at":\d+`)
+)
+
+// withFixedURLClock records a urls_add result with the entry's added_at fixed.
+func withFixedURLClock(res tool.ExecResult) tool.ExecResult {
+	res.ToolState = toolWireAddedAt.ReplaceAll(res.ToolState, []byte(`"added_at":1000000000`))
+	return res
+}
+
+// toolWireModelSnapshot gives the recording session a pageable model list: two
+// verified choices and one provider whose enumeration failed, so the snapshot
+// is not inline (model_list is registered) and its first page carries a
+// continuation cursor.
+func toolWireModelSnapshot(t *testing.T) modelavailability.Snapshot {
+	t.Helper()
+	return modelavailability.Capture(context.Background(),
+		[]string{"openai", "router"}, "openai",
+		func(_ context.Context, name string) ([]string, error) {
+			if name == "openai" {
+				return []string{"gpt-5.2", "gpt-5.3"}, nil
+			}
+			return nil, errors.New("router is unavailable")
+		}, time.Second)
+}
+
 // A job's id is random, and a foreground wait's elapsed seconds vary.
 var (
 	// identifier.NewJobID: job_, the owner session's id, _, a 12-character suffix.
@@ -388,6 +422,14 @@ func withFixedJobList(res tool.ExecResult) tool.ExecResult {
 func TestToolCallWireFixtures(t *testing.T) {
 	t.Parallel()
 	dir, s := toolWireWorkspace(t)
+	// The session's model list is pageable: two verified choices and a failed
+	// provider, so its pages carry a cursor to record.
+	snapshot := toolWireModelSnapshot(t)
+	s.modelSnapshot = &snapshot
+	// The ids the recording mints that a corpus cannot pin: the URL entry's id
+	// and the model list's cursor token. Each is replaced in the items once its
+	// call has run.
+	var recordedURLID, recordedModelCursor string
 	repo := newWorktreeRepo(t)
 	// A worktree git made itself under the managed root, with no evener
 	// record of it, for manage_worktree adopt.
@@ -665,6 +707,80 @@ func TestToolCallWireFixtures(t *testing.T) {
 			args:   map[string]any{"scope": "agent"},
 			output: "reindexed 42 files",
 		},
+		{
+			id: "call_notes_agent_set", tool: "notes_agent_set",
+			note: "The agent's own note cleared with an empty note. The output is the tool's plain acknowledgement; the step's words read the empty note as a clear.",
+			args: map[string]any{"note": ""},
+		},
+		{
+			id: "call_notes_read", tool: "notes_read",
+			note: "The session notes read with nothing recorded: the tool says there are none.",
+			args: map[string]any{},
+		},
+		{
+			id: "call_urls_add", tool: "urls_add",
+			note:      "A labelled link added. The tool names the entry's minted id in its output (where urls_remove reads it) and carries the entry's added_at in its state; the id is fixed in the items and added_at here.",
+			args:      map[string]any{"url": "https://example.com/ci/42", "label": "CI run"},
+			normalize: withFixedURLClock,
+		},
+		{
+			id: "call_urls_remove", tool: "urls_remove",
+			note: "The link the call before it added, removed by the id that call's result named (the minted id fixed in the items).",
+			argsFrom: func(earlier map[string]tool.ExecResult) map[string]any {
+				match := toolWireURLID.FindStringSubmatch(earlier["call_urls_add"].Output)
+				if len(match) < 2 {
+					t.Fatalf("urls_add's result names no entry id: %q", earlier["call_urls_add"].Output)
+				}
+				recordedURLID = match[1]
+				return map[string]any{"id": match[1]}
+			},
+		},
+		{
+			id: "call_update_goal", tool: "update_goal",
+			note: "A goal marked complete when the session registered none: the tool recorded nothing and says so, which the step's words report as no goal set.",
+			args: map[string]any{"status": "complete"},
+		},
+		{
+			id: "call_compact_context", tool: "compact_context",
+			note: "An empty note with no instructions and no reload_skills: the tool clears the note without asking for a compaction, and the first sentence of its output is what the step's words read.",
+			args: map[string]any{"note_to_self": ""},
+		},
+		{
+			id: "call_model_list", tool: "model_list",
+			note: "The first page of the model list, bounded to one choice so a continuation follows (its cursor fixed in the items).",
+			args: map[string]any{"max_count": 1},
+		},
+		{
+			id: "call_model_list_next", tool: "model_list",
+			note: "The next page, by the cursor the first page's result named: the step's words read the cursor as a further listing (its cursor fixed in the items).",
+			argsFrom: func(earlier map[string]tool.ExecResult) map[string]any {
+				var page struct {
+					Next string `json:"next"`
+				}
+				if err := json.Unmarshal([]byte(earlier["call_model_list"].Output), &page); err != nil {
+					t.Fatalf("model_list first page: %v", err)
+				}
+				if page.Next == "" {
+					t.Fatalf("model_list first page names no cursor: %q", earlier["call_model_list"].Output)
+				}
+				recordedModelCursor = page.Next
+				return map[string]any{"cursor": page.Next, "max_count": 1}
+			},
+		},
+		{
+			id: "call_doctor_evener", tool: "doctor_evener",
+			note: "An earlier session's transcript rendered from the session's own state root: the command and selector are what the step's words name.",
+			args: map[string]any{"command": "transcript", "selector": toolWireEarlierSession},
+		},
+		{
+			id: "call_communicate", tool: "communicate",
+			note: "A final report to the parent: end_turn ends the turn, and the step's words read it as done. The output envelope is required by the tool's schema.",
+			args: map[string]any{
+				"message":  "The settle race is fixed.",
+				"end_turn": true,
+				"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+			},
+		},
 	}
 
 	announce := llm.Message{Role: llm.RoleAssistant}
@@ -728,6 +844,15 @@ func TestToolCallWireFixtures(t *testing.T) {
 			// number from call to call.
 			text = toolWireIDsNumbered(strings.ReplaceAll(text, dir, toolWireCwd), toolWireJobID, "job")
 			text = toolWireIDsNumbered(text, toolWireWatchID, "watch")
+			// The URL entry's id and the model list's cursor differ every run;
+			// each is fixed here, in the arguments that name it as in the
+			// results that printed it.
+			if recordedURLID != "" {
+				text = strings.ReplaceAll(text, recordedURLID, "url_fixture_1")
+			}
+			if recordedModelCursor != "" {
+				text = strings.ReplaceAll(text, recordedModelCursor, "cursor_fixture_1")
+			}
 			return toolWireRepoRelocated(repo, text)
 		}),
 	}, "the AppWire package and mobile-native tests that read it")
