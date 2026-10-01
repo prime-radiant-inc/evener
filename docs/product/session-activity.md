@@ -248,7 +248,10 @@ does not rewrite storage or acquire a collection for a closed sidebar. These
 preferences never contain activity rows or continuation/retry state.
 
 The [Activity viewport](../../cmd/evener-hub/frontend/src/shell/activitybar/ActivityViewport.tsx)
-restores the retained row after its collection and disclosures render. For cold
+restores the retained row after its collection and disclosures render. A row
+that is already loaded can still need trailing page extent to reach its saved
+viewport offset; restoration remains pending until that position is reachable
+or the collection is authoritative complete. For cold
 pages it positions the existing page boundary in view; each new visibility
 observation supplies demand through `ActivityPageBoundary`. It starts no fetch
 or retry loop. A changed scope/category, close, or reader scroll cancels the

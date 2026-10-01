@@ -173,6 +173,44 @@ test("a real scroll survives reload and restores its semantic row through fresh 
   ]);
 });
 
+test("reload retains a clamped anchor until existing page demand supplies its trailing extent", async () => {
+  prepareRetainedAnchor();
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ cursor }) => ({
+    context: activityContext(),
+    scope: "session",
+    jobs: cursor ? jobs.slice(23) : jobs.slice(0, 23),
+    page: { complete: Boolean(cursor), issues: [], ...(!cursor ? { nextCursor: "remaining" } : {}) },
+  }));
+  connectionStore.getState().connect(client);
+  mount();
+  const row = await screen.findByRole("button", { name: /History 22/ });
+  expect(row.getBoundingClientRect().top).toBe(4);
+  expect(viewport().scrollTop).toBe(viewport().scrollHeight - VIEW_HEIGHT);
+  fireEvent.scroll(viewport());
+  await act(async () => Visibility.latest().emit(true));
+  await screen.findByRole("button", { name: /History 29/ });
+  expect(row.getBoundingClientRect().top).toBe(anchor.offset);
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(2);
+});
+
+test("an authoritative complete short collection settles at its available extent", async () => {
+  prepareRetainedAnchor();
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", () => ({
+    context: activityContext(),
+    scope: "session",
+    jobs: jobs.slice(0, 23),
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  mount();
+  const row = await screen.findByRole("button", { name: /History 22/ });
+  expect(row.getBoundingClientRect().top).toBe(4);
+  expect(viewport().scrollTop).toBe(viewport().scrollHeight - VIEW_HEIGHT);
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(1);
+});
+
 test.each([false, true])(
   "missing anchor clears only when the loaded collection is authoritative complete: %s",
   async (complete) => {

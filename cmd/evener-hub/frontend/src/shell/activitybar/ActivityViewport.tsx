@@ -76,8 +76,6 @@ export function ActivityViewport({
       let nextTop: number;
       if (row) {
         nextTop = body.scrollTop + row.getBoundingClientRect().top - body.getBoundingClientRect().top - anchor.offset;
-        pending.current = undefined;
-        mutations.current?.disconnect();
       } else if (ids.includes(anchor.id)) {
         // A retained fold can hydrate after its collection has arrived.
         // Wait for its DOM; never infer removal or open the fold ourselves.
@@ -95,6 +93,12 @@ export function ActivityViewport({
       if (body.scrollTop !== nextTop) {
         body.scrollTop = nextTop;
         programmaticTop.current = body.scrollTop;
+      }
+      // A short page can contain the row but clamp its requested offset.
+      // Keep its intent until trailing extent arrives through existing demand.
+      if (row && (Math.abs(body.scrollTop - nextTop) < 1 || complete)) {
+        pending.current = undefined;
+        mutations.current?.disconnect();
       }
     },
     [isCurrent, sessionRef, tab],
