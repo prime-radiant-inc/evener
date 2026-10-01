@@ -37,8 +37,7 @@ export function ActivityViewport({
   children: ReactNode;
 }) {
   const element = useRef<HTMLDivElement>(null);
-  const initialAnchor = useRef(activitySidebarStore.getState().views.get(sessionRef)?.categories[tab]?.anchor);
-  const pending = useRef(initialAnchor.current);
+  const pending = useRef(activitySidebarStore.getState().views.get(sessionRef)?.categories[tab]?.anchor);
   const programmaticTop = useRef<number | null>(null);
   const mutations = useRef<MutationObserver | null>(null);
   const progress = useRef<readonly [readonly string[], boolean, boolean] | null>(null);
