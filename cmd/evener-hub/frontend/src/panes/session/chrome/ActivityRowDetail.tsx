@@ -26,6 +26,7 @@ import {
 } from "@evener/appwire-client";
 import { Fragment, type JSX, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
+import { useNavigationStore } from "../../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
@@ -33,6 +34,7 @@ import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { Markdown } from "../../../widgets/markdown";
+import { navigationSummaryFor } from "../threadTitle";
 import { EntityRef } from "../transcript/EntityRef";
 import { formatQuietAge, jobStatusDisplay, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
@@ -420,6 +422,13 @@ export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?:
   const { watch } = row;
   const recipientName = useThreadsStore((state) => state.threads.get(watch.receiverRef)?.name);
   const entities = useEntityViews();
+  const navigationName = useNavigationStore((state) => navigationSummaryFor(watch.receiverRef, state)?.title);
+  const delegateName = useMemo(() => {
+    for (const entity of entities?.values() ?? []) {
+      if (entity.kind === "delegate" && entity.open.ref === watch.receiverRef) return entity.name?.trim();
+    }
+    return undefined;
+  }, [entities, watch.receiverRef]);
   const targetLabel = useMemo(() => {
     if (!entities || !watch.watch.outputMatch?.trim()) return undefined;
     const target = watch.watch.target?.trim() || watch.watch.source;
@@ -440,7 +449,9 @@ export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?:
       <p className={CLASS.watchFacts} data-testid="watch-facts">
         {watchFacts(watch, effectiveNow, targetLabel)}
       </p>
-      <p className={CLASS.watchFacts}>Notifies {recipientName?.trim() || watch.receiverRef}</p>
+      <p className={CLASS.watchFacts}>
+        Notifies {recipientName?.trim() || navigationName?.trim() || delegateName || watch.receiverRef}
+      </p>
       {watchIsScheduled(watch) ? (
         <ActivityWatchTimeline watch={watch} now={effectiveNow} />
       ) : (

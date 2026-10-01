@@ -1,25 +1,36 @@
+import "fake-indexeddb/auto";
 // DOM assertions for the watch detail's delivery timeline: real props, real
 // component, positions derived only from the supplied instants and `now`.
 
-import type { EvenerWatchInfo } from "@evener/appwire-client";
+import type { EvenerDelegateInfo, EvenerWatchInfo } from "@evener/appwire-client";
 import {
   type ActivityWatchRow,
   buildEntityView,
   formatClockTime,
   hydrateThread,
+  projectSessionActivity,
   watchRowID,
 } from "@evener/appwire-client";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { activityJob, activityThread } from "../../../stores/sessionActivityTestUtils";
-import { threadsStore } from "../../../stores/threads";
+import { connectionStore } from "../../../stores/connection";
+import { acquireSessionActivity } from "../../../stores/sessionActivity";
+import {
+  activityClient,
+  activityContext,
+  activityDelegate,
+  activityJob,
+  activityThread,
+} from "../../../stores/sessionActivityTestUtils";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { ActivityWatchDetail, WATCH_NO_SCHEDULE_LINE } from "./ActivityRowDetail";
 
 afterEach(() => {
   cleanup();
-  threadsStore.setState({ threads: new Map() });
+  resetThreadsStoreForTests();
+  connectionStore.setState({ client: null, state: "idle" });
 });
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
@@ -558,3 +569,83 @@ test.each(["missing entity", "missing description", "wrong owner"])(
     expect(screen.getByTestId("watch-facts").textContent).toContain("Waiting on job_equal, matching ready");
   },
 );
+
+test("keeps the loaded compact recipient identity after a read-only child transcript is released", async () => {
+  const rootRef = "remote:owner";
+  const childRef = "remote:child";
+  const client = activityClient();
+  client.on("thread/read", ({ ref }) => {
+    const response = activityThread(ref);
+    response.thread.name = ref === childRef ? "Chosen child title" : "Parent title";
+    return response;
+  });
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: activityContext(rootRef),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      activityDelegate({
+        name: "navigation-observer",
+        phase: "done",
+        status: "completed",
+        terminal: true,
+        lifecycle: "idle",
+        reportPreview: "old report",
+      }),
+    ],
+  }));
+  connectionStore.getState().connect(client);
+  const activity = acquireSessionActivity(client, rootRef, "subtree");
+  const stop = activity.store.observe("delegates");
+  try {
+    await waitFor(() => expect(activity.store.getSnapshot().delegates.rows).toHaveLength(1));
+    const tree = projectSessionActivity(activity.store.getSnapshot()).tree;
+    const stable: EvenerDelegateInfo = {
+      runGeneration: 2,
+      delegateId: "delegate-1",
+      ownerSessionId: "owner",
+      rootSessionId: "owner",
+      childSessionId: "child",
+      transcriptRef: childRef,
+      type: "delegate",
+      lifecycle: "running",
+      phase: "running",
+      status: "running",
+      resumable: true,
+      needsAttention: false,
+      projectionRevision: 2,
+    };
+    const entities = buildEntityView({
+      sessionRef: rootRef,
+      tree: tree ?? undefined,
+      delegates: [stable],
+      turns: [],
+      stale: false,
+      ended: false,
+    });
+    const value = row();
+    value.watch.receiverRef = childRef;
+    const beforeRender = client.calls.length;
+    render(
+      <EntityViewsProvider entities={entities} ownerRef={rootRef}>
+        <ActivityWatchDetail row={value} now={NOW} />
+      </EntityViewsProvider>,
+    );
+    expect(client.calls).toHaveLength(beforeRender);
+    await act(async () => {
+      await threadsStore.getState().ensureThread(childRef);
+    });
+    expect(screen.getByText("Notifies Chosen child title")).toBeTruthy();
+    act(() => threadsStore.getState().releaseThread(childRef));
+    expect(threadsStore.getState().threads.has(childRef)).toBe(false);
+    const calls = client.calls.length;
+    expect(screen.getByText("Notifies navigation-observer")).toBeTruthy();
+    expect(client.calls).toHaveLength(calls);
+    const delegate = [...entities.values()].find((entity) => entity.kind === "delegate");
+    expect(delegate?.kind === "delegate" ? delegate.stable?.runGeneration : undefined).toBe(2);
+    expect(delegate?.kind === "delegate" ? delegate.row : undefined).toBeUndefined();
+  } finally {
+    stop();
+    activity.release();
+  }
+});

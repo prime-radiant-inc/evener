@@ -24,7 +24,11 @@ even when another session's manager observes the source. Watch `ownerRef` and
 `receiverRef` identify that logical recipient; required `sourceRef` identifies
 the physical source session whose manager and journal own the watch and scope
 its resolved job target. Detail rows show “Notifies” with the known recipient
-name or its stable ref. Output conditions use a job description only from an
+name, an already loaded compact delegate name, or its stable ref. Status overlays
+retain compact names only for the same owned delegate; they do not transfer
+report or run state between generations. Releasing a child transcript does not
+remove a recipient identity still present in the parent’s loaded activity.
+Output conditions use a job description only from an
 already loaded entity with that exact source ref and job ID; missing metadata
 keeps the raw target. Naming never adds collection demand or network reads.
 
