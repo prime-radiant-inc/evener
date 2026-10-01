@@ -170,11 +170,10 @@ export function createTranscriptSettleTracker(expectedTurns: number): Transcript
 }
 
 /**
- * One frame's observation of the ?paged=1 open. Reuses the mount's sample, with
- * geometry guaranteed present: the harness reads it through metrics(), which
- * throws while the list is unmounted.
+ * One frame's observation of the ?paged=1 open. Like initial hydration,
+ * asynchronous cache/read admission can leave the scroll port unmounted.
  */
-export type PagedOpenSample = TranscriptSettleSample & { geometry: TranscriptGeometry };
+export type PagedOpenSample = TranscriptSettleSample;
 
 export interface PagedOpenSettleTracker {
   /** Records one frame. Returns true once the paged open is settled enough to read. */
@@ -203,6 +202,11 @@ export function createPagedOpenSettleTracker(expectedTurns: number): PagedOpenSe
 
   return {
     observe({ turns, geometry }) {
+      if (geometry === null) {
+        stillness.reset();
+        lastTurns = Number.NaN;
+        return false;
+      }
       const still = stillness.observe(geometry.scrollHeight, geometry.scrollTop);
       // The read has hydrated once the model carries at least the scripted
       // turns (a prepended older page pushes it past that) and the port has a

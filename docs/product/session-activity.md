@@ -97,7 +97,13 @@ nonzero generation match. A resumed or settling run cannot borrow the previous
 run's report, even if their timestamps coincide. Initial live reads, retained
 reads and delegate notifications preserve the same counter. Candidate capture
 holds generation and immutable packet evidence together; decoding report text
-happens outside the controller's mutation lock.
+happens outside the controller's mutation lock. Each captured report prefix is
+an owned copy bounded independently of the durable packet. A capture batch stops
+at 256 KiB of cumulative report-prefix bytes, allowing at most one bounded
+prefix overshoot (49,165 bytes). This bound covers report copies, rather than
+all candidate metadata or total work under the controller lock. Response-byte
+admission keeps excluded and unvisited delegates reachable through the opaque
+continuation cursor.
 
 The [delegate projection](../../agent/session_activity_delegates.go),
 [recorded producer outcomes](../../agent/testdata/subagentwire/outcomes.json)

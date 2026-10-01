@@ -81,6 +81,15 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		}
 	});
 
+	// The hub closes a finished delegate that can't be resumed, as the
+	// activity rows for the same delegate say.
+	it("reports a finished delegate in a thread's diagnostics as closed", () => {
+		const delegates = sessions.flatMap((thread) => thread.evener.diagnostics?.delegates ?? []);
+		expect(delegates.some((delegate) => delegate.terminal)).toBe(true);
+		for (const delegate of delegates)
+			expect(delegate.phase).toBe(delegate.terminal && !delegate.resumable ? "closed" : "running");
+	});
+
 	it("serves a thread for every subagent a session's delegates name, so opening one reads it", () => {
 		const byRef = new Map(sessions.map((thread) => [thread.evener.ref, thread]));
 		const delegates = sessions.flatMap((thread) =>
