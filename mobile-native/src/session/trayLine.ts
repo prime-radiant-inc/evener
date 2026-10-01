@@ -10,6 +10,7 @@ import {
 	type ModelRetryState,
 	pendingTextJoined,
 	type ThreadModel,
+	toolFamily,
 	toolStepProgress,
 } from "@evener/appwire-client";
 import { subagentState } from "../subagents/subagentModel";
@@ -110,8 +111,7 @@ function latestToolIntent(session: TraySource): string | null {
 }
 
 function currentTurn(session: TraySource) {
-	if (session.runningTurnId !== undefined) return runningTurn(session);
-	return session.turns.find((turn) => turn.id === session.activeTurnId) ?? session.turns.at(-1);
+	return runningTurn(session) ?? session.turns.find((turn) => turn.id === session.activeTurnId) ?? session.turns.at(-1);
 }
 
 function currentStep(session: TraySource): Step | null {
@@ -126,6 +126,8 @@ function currentStep(session: TraySource): Step | null {
 	return null;
 }
 
+const RUNNING_A_COMMAND = "Running a command";
+
 function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	if (item.type === "reasoning") {
 		const tokens = thinkingTokens(item);
@@ -136,8 +138,11 @@ function stepFor(item: ItemModel, cwd: string | undefined): Step | null {
 	}
 	if (item.type === "agentMessage") return { text: "Writing…", waitsOnSubagents: false };
 	if (item.type !== "commandExecution") return null;
+	const progress = toolStepProgress(item, { cwd });
+	const intent = item.description?.trim();
+	const namesCommand = toolFamily(item.toolName ?? "") === "shell" && progress !== RUNNING_A_COMMAND;
 	return {
-		text: toolStepProgress(item, { cwd }),
+		text: namesCommand ? progress : intent || progress,
 		startedAt: timeOf(item.startedAt),
 		waitsOnSubagents: WAITING_TOOLS.has(item.toolName ?? ""),
 	};

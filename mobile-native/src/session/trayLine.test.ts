@@ -234,6 +234,22 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(liveSession, NOW)?.text).toBe("Thinking…");
 	});
 
+	it("falls back to snapshot progress until the live running turn arrives", () => {
+		const running = item({
+			toolName: "shell",
+			argumentsJSON: JSON.stringify({ command: "make test" }),
+			status: "inProgress",
+			startedAt: ago(5_000),
+		});
+		const betweenFrames = session({
+			turns: [turn([running])],
+			activeTurnId: "turn_1",
+			runningTurnId: "turn_2",
+		});
+
+		expect(trayLine(betweenFrames, NOW)?.text).toBe("Running make test · 5s");
+	});
+
 	it("keeps snapshot-only command progress without leaking its tool intent", () => {
 		const described = item({ description: "Reading the snapshot", status: "completed" });
 		const running = item({
@@ -250,6 +266,23 @@ describe("the tray's line (spec 8.3)", () => {
 		});
 
 		expect(trayLine(snapshotOnly, NOW)?.text).toBe("Running make test · 5s");
+	});
+
+	it("keeps a snapshot-only command-less shell step's intent", () => {
+		const running = item({
+			toolName: "shell",
+			argumentsJSON: JSON.stringify({ description: "run the audit" }),
+			description: "Run the audit",
+			status: "inProgress",
+			startedAt: ago(5_000),
+		});
+		const snapshotOnly = session({
+			turns: [turn([running])],
+			activeTurnId: "turn_1",
+			runningTurnId: undefined,
+		});
+
+		expect(trayLine(snapshotOnly, NOW)?.text).toBe("Run the audit · 5s");
 	});
 
 	it("goes Quiet after twenty seconds without a frame", () => {
