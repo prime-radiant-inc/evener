@@ -74,7 +74,7 @@ export interface ArchiveResponse {
 }
 
 export interface ArchivedListParams {
-  catalog: string;
+  catalog?: string;
   projectKey: string;
   cursor?: string;
   limit?: number;
@@ -84,6 +84,7 @@ export interface ArchivedListResponse {
   sessions: unknown;
   nextCursor?: string;
   total: number;
+  catalog?: string;
 }
 
 export interface AttentionChanged {

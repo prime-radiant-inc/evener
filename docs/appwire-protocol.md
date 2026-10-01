@@ -144,7 +144,7 @@ no router (reserved).
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
-| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the catalog and key name the project, and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation. |
+| `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries; the list has no revisions or invalidation. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -345,7 +345,7 @@ An embedded type contributes its own fields inline.
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `catalog` | `string` |  |  |
+| `catalog` | `string` | yes |  |
 | `projectKey` | `string` |  |  |
 | `cursor` | `string` | yes |  |
 | `limit` | `int` | yes |  |
@@ -358,6 +358,7 @@ An embedded type contributes its own fields inline.
 | `sessions` | `jsontext.Value` |  |  |
 | `nextCursor` | `string` | yes |  |
 | `total` | `int` |  |  |
+| `catalog` | `string` | yes |  |
 
 
 ### `AttentionChangedPayload`
