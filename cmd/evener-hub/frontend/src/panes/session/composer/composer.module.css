@@ -22,6 +22,14 @@
   font-size: var(--font-size-caption);
 }
 
+.recipient {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Positions SlashCompletionMenu (an absolutely-positioned child) above the
  * form it wraps, without affecting this element's own layout - see that
  * component's own slashcompletionmenu.module.css header comment for the

@@ -50,7 +50,7 @@ function contentOf(tail: JobLogTail): JobLogContent {
   };
 }
 
-export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: string }) {
+export function JobLog({ jobRef, parentRef, paneId }: { jobRef: string; parentRef?: string; paneId?: string }) {
   const jobId = jobRef.slice("job:".length);
   const [state, setState] = useState<JobLogState>({ status: "loading" });
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -179,7 +179,7 @@ export function JobLog({ jobRef, parentRef }: { jobRef: string; parentRef?: stri
   const title = job?.description.trim() || command?.split("\n")[0] || "Job output";
 
   return (
-    <PaneScaffold title={title} actions={actions}>
+    <PaneScaffold title={title} paneId={paneId} actions={actions}>
       <div className={CLASS.body}>
         {job && (
           <span className={CLASS.joblogNote} data-testid="joblog-status">

@@ -15,6 +15,7 @@ import { navigationSummaryFor, resolveThreadName } from "../panes/session/thread
 import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import { EmptyState } from "../widgets/emptystate";
+import { useChromeStore } from "./chromeStore";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
@@ -228,6 +229,7 @@ export function DockHost() {
   const [api, setApi] = useState<DockviewApi | null>(null);
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
+  const paneTitles = useChromeStore((s) => s.paneTitles);
   const threads = useThreadsStore((s) => s.threads);
   const navigation = useNavigationStore();
   // Tracks, per paneId, the last params reference actually pushed into
@@ -385,10 +387,10 @@ export function DockHost() {
     for (const pane of panes) {
       const panel = api.getPanel(pane.id);
       if (!panel) continue; // not created yet on this pass - the structural effect (same commit) already gave it the right initial title
-      const title = paneFor(pane.type).title(pane.params, ctx);
+      const title = paneTitles.get(pane.id) ?? paneFor(pane.type).title(pane.params, ctx);
       if (panel.title !== title) panel.setTitle(title);
     }
-  }, [api, panes, threads, navigation]);
+  }, [api, panes, threads, navigation, paneTitles]);
 
   // Registers the api and runs the restore-or-fallback boot sequence
   // BEFORE exposing `api` to this component's own state (setApi, last) -

@@ -53,6 +53,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -152,6 +153,7 @@ export interface ComposerProps {
 const CLASS = {
   composer: requireClass(styles.composer, "composer.module.css", "composer"),
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
+  recipient: requireClass(styles.recipient, "composer.module.css", "recipient"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
@@ -215,6 +217,8 @@ const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
 export function Composer({ ref, focused }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
+  const recipientId = useId();
+  const recipientName = model?.name?.trim() || ref;
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows: while any exist the hub's explicit Resume still
   // performs reconciliation, so the resume-only carve-out does not apply and
@@ -1701,22 +1705,28 @@ export function Composer({ ref, focused }: ComposerProps) {
                 data-testid="composer-input-card"
                 hidden={askPending}
                 field={
-                  <SkillEditor
-                    ref={editorRef}
-                    value={{ text, skillNames }}
-                    restoreEpoch={restoreEpoch}
-                    skillDetails={skillChipDetails}
-                    onChange={handleTextChange}
-                    onKeyDown={handleKeyDown}
-                    onPaste={handlePaste}
-                    aria-controls={slashActiveId ? slashListboxId : undefined}
-                    aria-activedescendant={slashActiveId ?? undefined}
-                    minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
-                    onFocus={ended ? () => setFollowUpFocused(true) : undefined}
-                    onBlur={handleEditorBlur}
-                    placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
-                    aria-label="Message"
-                  />
+                  <>
+                    <div id={recipientId} className={CLASS.recipient} title={recipientName}>
+                      To: {recipientName}
+                    </div>
+                    <SkillEditor
+                      ref={editorRef}
+                      value={{ text, skillNames }}
+                      restoreEpoch={restoreEpoch}
+                      skillDetails={skillChipDetails}
+                      onChange={handleTextChange}
+                      onKeyDown={handleKeyDown}
+                      onPaste={handlePaste}
+                      aria-controls={slashActiveId ? slashListboxId : undefined}
+                      aria-activedescendant={slashActiveId ?? undefined}
+                      minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
+                      onFocus={ended ? () => setFollowUpFocused(true) : undefined}
+                      onBlur={handleEditorBlur}
+                      placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
+                      aria-label="Message"
+                      aria-describedby={recipientId}
+                    />
+                  </>
                 }
                 // An ended session's card is a bare invitation UNTIL it is
                 // engaged: at rest it is one line with no control row, because

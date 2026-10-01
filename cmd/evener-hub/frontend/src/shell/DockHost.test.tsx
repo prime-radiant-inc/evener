@@ -7,7 +7,9 @@ import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
+import { activityJob } from "../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneScaffold } from "../widgets/panescaffold";
 import { ClientProvider } from "./clientContext";
@@ -58,6 +60,7 @@ beforeAll(async () => {
   await import("../panes/welcome"); // registerPane("welcome") side effect
   await import("../panes/session"); // registerPane("session") side effect
   await import("../panes/sessionPanels"); // register the three session panel pane types
+  await import("../panes/transcript");
 
   // Then RENDER the two panes whose Suspense reveal a test would otherwise
   // wait out. Importing a module is only half a React.lazy's cost: lazy keeps
@@ -874,6 +877,50 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   // (which doesn't read the thread name at all, only its turns) is
   // untouched throughout the rename.
   expect(screen.getByTestId("empty-state")).toBeTruthy();
+});
+
+test("job tabs use their own hydrated titles without extra reads or cross-owner leakage", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("evener/jobs/get", ({ ref, jobId }) => ({
+    data: activityJob({ jobId, ownerRef: ref, description: ref === "owner:a" ? "Release build" : "Release monitor" }),
+  }));
+  fake.on("evener/jobs/output", () => ({
+    data: { tail: "ready", totalBytes: 5, retainedStart: 0, truncated: false },
+  }));
+  connectionStore.getState().connect(fake);
+  workspaceStore.getState().openPane("doc", { ref: "main" });
+  const build = workspaceStore.getState().openPane("transcript", { ref: "job:same", parentRef: "owner:a" });
+  try {
+    await act(async () => {
+      render(
+        <ClientProvider client={fake}>
+          <DockHost />
+        </ClientProvider>,
+      );
+    });
+    await screen.findByRole("heading", { name: "Release build" });
+    expect(await screen.findByRole("tab", { name: "Release build" })).toBeTruthy();
+    act(() => {
+      workspaceStore.getState().openPane("transcript", { ref: "job:same", parentRef: "owner:b" });
+    });
+    await screen.findByRole("heading", { name: "Release monitor" });
+    expect(await screen.findByRole("tab", { name: "Release monitor" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Release build" })).toBeTruthy();
+    act(() => {
+      threadsStore.setState({ threads: new Map([["unrelated", fixtureThread("unrelated", { name: "Other work" })]]) });
+    });
+    expect(screen.getByRole("tab", { name: "Release monitor" })).toBeTruthy();
+    act(() => {
+      workspaceStore.getState().closePane(build);
+    });
+    expect(screen.queryByRole("tab", { name: "Release build" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "Release monitor" })).toBeTruthy();
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/get")).toHaveLength(2);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
+  } finally {
+    cleanup();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
 });
 
 // Fix 1: proof PaneTab is actually wired into the live dockview host (not

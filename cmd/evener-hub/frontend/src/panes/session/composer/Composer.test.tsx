@@ -924,6 +924,24 @@ test("renders a textarea with an accessible name", async () => {
   expect(screen.getAllByRole("textbox")).toHaveLength(1);
 });
 
+test("the composer keeps its recipient visible when activity focuses another session", async () => {
+  await mountComposer("parent:ref", { name: "Release coordinator" });
+  act(() => {
+    workspaceStore.setState({
+      panes: [{ id: "child-pane", type: "transcript", params: { ref: "child:ref" }, slot: "secondary" }],
+      focusedPaneId: "child-pane",
+    });
+    replaceEditorText(textarea(), "Continue the release checks");
+  });
+  const recipientId = textarea().getAttribute("aria-describedby");
+  expect(recipientId).toBeTruthy();
+  const recipient = document.getElementById(recipientId ?? "");
+  expect(recipient?.textContent).toContain("Release coordinator");
+  expect(recipient?.closest("[hidden]")).toBeNull();
+  expect(screen.getByText("To: Release coordinator")).toBeTruthy();
+  expect(textarea().textContent).toBe("Continue the release checks");
+});
+
 // --- mount autofocus ---------------------------------------------------------
 //
 // Loading a session into the browser UI should land keyboard focus in that
