@@ -1469,6 +1469,73 @@ test("a schema result that merely neighbors the envelope's keys stays whole", ()
   expect(n?.structuredResult).toEqual({ message: "Read the fixture.", data: { rows: 3 } });
 });
 
+// The exact collision #3548 closes: a result schema whose top-level fields are
+// exactly the default envelope's - a matching message and a string-array
+// artifacts - produces a frame byte-identical to a no-schema capture. The
+// packet's structured_result_source marker settles it: a schema source stays
+// whole, so the caller's own fields render as rows instead of unwrapping to
+// the envelope's data.
+test("a schema result that is the default envelope's exact shape stays whole", () => {
+  const whole = { message: "Rebased the branch cleanly.", data: { rebased: "main" }, artifacts: [] };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(whole),
+        structured_result: whole,
+        structured_result_valid: true,
+        structured_result_source: "schema",
+        metadata: { outcome: "completed", name: "task3-schema-envelope" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(whole);
+});
+
+// The daemon stamps `default_envelope` from the absence of a result schema, but
+// a no-schema delegate can still inherit a widened communicate output schema
+// (WithAllowedDecisions adds a `decision` key), so the marker alone cannot
+// prove the capture is the canonical envelope. The unwrap keeps requiring the
+// exact default shape, so a widened capture stays whole instead of silently
+// dropping `decision` and `artifacts` (roborev Medium on #3548).
+test("a marked default-envelope capture widened with a decision stays whole", () => {
+  const widened = { decision: "keep_config", message: "Kept the config.", data: { kept: true }, artifacts: [] };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(widened),
+        structured_result: widened,
+        structured_result_valid: true,
+        structured_result_source: "default_envelope",
+        metadata: { outcome: "completed", name: "task3-decisions" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(widened);
+});
+
+// A no-schema delegate can also inherit a custom communicate output schema
+// with no `data` key. Unwrapping such a capture to `captured.data` would yield
+// undefined and hide the whole result; the exact-shape requirement keeps it
+// whole instead (roborev Medium on #3548).
+test("a marked default-envelope capture with no data key stays whole", () => {
+  const custom = { plan: "step one" };
+  const [n] = notificationsOf(
+    parseSteeringNotifications(
+      structuredPacketFrame({
+        kind: "reported",
+        message: JSON.stringify(custom),
+        structured_result: custom,
+        structured_result_valid: true,
+        structured_result_source: "default_envelope",
+        metadata: { outcome: "completed", name: "task3-plan" },
+      }),
+    ),
+  );
+  expect(n?.structuredResult).toEqual(custom);
+});
+
 // Repair zero-fills a missing output.message with "" before the daemon
 // captures the raw `output` (fillCommunicateEnvelope mutates args in place,
 // session_tools_communicate.go), while the packet's message rides the
