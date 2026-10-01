@@ -4,7 +4,7 @@
 // on top when the wire carries one. No pane affordance: the tab IS where
 // tasks live now.
 
-import { TasksPanelBody } from "../../panes/session/chrome/TasksPanel";
+import { TasksPanelBody, taskDisclosureId } from "../../panes/session/chrome/TasksPanel";
 import { useTasksPanelStore } from "../../stores/tasksPanel";
 import { useThreadModel } from "../../stores/useThreadModel";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -24,7 +24,7 @@ export function TasksTab({ scope }: { scope: ActivityScope }) {
   const tasks = scope.leaf.tasks;
   const entry = useTasksPanelStore((state) => state.entries.get(ref));
   useActivityScrollProgress(
-    entry?.rows?.map((task) => `${ref}\0${task.id}`) ?? [],
+    entry?.rows?.map((task) => taskDisclosureId(ref, task.id)) ?? [],
     !!entry && entry.rows !== null && !entry.loading && !entry.failure && !entry.daemonGone && !entry.unsupported,
   );
   if (!model) {

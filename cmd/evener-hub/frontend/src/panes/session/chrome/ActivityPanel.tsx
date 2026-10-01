@@ -58,12 +58,12 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
     () => ({
       delegates: {
         sessionId: snapshot?.delegates.context?.sessionId,
-        ids: snapshot?.delegates.rows.map((delegate) => activityNodeID({ kind: "delegate", ...delegate })) ?? [],
+        ids: snapshot?.delegates.rows.map((delegate) => activityNodeID({ ...delegate, kind: "delegate" })) ?? [],
         complete: snapshot?.delegates.complete ?? false,
       },
       jobs: {
         sessionId: snapshot?.jobs.context?.sessionId,
-        ids: snapshot?.jobs.rows.map((job) => activityNodeID({ kind: "shell", ...job })) ?? [],
+        ids: snapshot?.jobs.rows.map((job) => activityNodeID({ ...job, kind: "shell" })) ?? [],
         complete: snapshot?.jobs.complete ?? false,
       },
       watches: {
