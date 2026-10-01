@@ -9,8 +9,9 @@
 // implements against actions.ts + the tree store's refresh().
 //
 // The rail is a TRIAGE surface. Broken is red, needs-you is yellow, and running
-// work is a grey spinner; broken outranks needs-you, which outranks running.
-// Idle and ended rows have no indicator. The stable one-line rhythm keeps the
+// work is a grey spinner. Broken and blocked attention outrank work; plain
+// awaiting and warning yield to work already in flight. Idle and ended rows
+// have no indicator. The stable one-line rhythm keeps the
 // title list scannable while the HoverCard preserves project, host, branch,
 // jobs, subagents, watches, tier, and age without permanent visual noise.
 //
@@ -30,6 +31,7 @@
 // with no hover to reveal them).
 
 import {
+  approvalWaiting,
   canReadSharedNotes,
   humanizeState,
   watchCadenceLabel,
@@ -516,7 +518,13 @@ function effectiveSessionState(session: RailSession): string {
   const presented = displayState(session);
   const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
   if (presented === "errored" || (tally?.failed ?? 0) > 0) return "errored";
-  if (cadenceStateFor(presented) === "needs-you") return presented;
+  // Only blocked attention outranks work. Plain awaiting ("Your move") and a
+  // warning share the amber dot family, but running jobs remain what is happening.
+  const attentionOutranksWork =
+    session.state === "restartRequired" ||
+    (session.state === "awaiting" && session.ask_pending === true) ||
+    approvalWaiting(session.state, session.approval_pending === true);
+  if (attentionOutranksWork) return presented;
   if (session.state === "active" || (session.running_job_count ?? 0) > 0 || (tally?.running ?? 0) > 0) {
     return "active";
   }

@@ -523,7 +523,42 @@ describe("compact session status", () => {
     expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
   });
 
-  test("needs-you outranks running work", () => {
+  test.each([
+    ["awaiting", "job", { running_job_count: 1 }],
+    ["warning", "job", { running_job_count: 1 }],
+    ["awaiting", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
+    ["warning", "subagent", { subagents: { running: 1, failed: 0, done: 0 } }],
+  ] as const)("a non-blocking %s state yields to running %s work", (state, _workKind, work) => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state, ask_pending: false, ...work }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("Running")).toBeTruthy();
+  });
+
+  test("a pending question outranks running work", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true, running_job_count: 1 }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("Question waiting")).toBeTruthy();
+  });
+
+  test("a pending approval outranks running work", () => {
     render(
       <RailRow
         node={sessionRailNode(apiNode({ state: "active", approval_pending: true, running_job_count: 1 }))}
