@@ -5,6 +5,15 @@ conversation. The primary navigation rail lists sessions and their compact
 summaries. Reading a session's activity is a separate operation, so browsing
 navigation does not load every session's work tree.
 
+Transcript delegate cards, status indicators and running-delegate counts use the same
+owner-qualified delegate entity projection as Activity. Retained transcripts do
+not require a live diagnostics roster to display authoritative delegate state.
+A receipt identifies the owned delegate and, when present, its child session; it
+does not establish current status. Missing or ambiguous entity identity remains
+unavailable. Each selected entity supplies one run snapshot, so resumed status
+is not combined with a previous generation's report. These labels reuse the
+transcript's existing activity binding without adding reads or subscriptions.
+
 ## APIs and ownership
 
 Daemon and hub AppWire expose four typed reads:

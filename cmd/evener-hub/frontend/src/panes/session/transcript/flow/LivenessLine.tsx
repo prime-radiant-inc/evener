@@ -1,3 +1,4 @@
+import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 // LivenessLine is the honest, quiet liveness indicator for the transcript
 // pane: "Quiet ~30s" rolling to "May be stalled - no updates for 3m 5s", or -
 // when the wait has a known explanation - that explanation instead of either:
@@ -63,9 +64,12 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     if (sessionRef === undefined) return undefined;
     return (s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef))?.delegates;
   });
+  const entities = useEntityViews();
   const runningSubagents = useRunningSubagentCount(
     turnId === undefined ? undefined : turnScopeKey(sessionRef, turnId),
     delegates,
+    entities,
+    sessionRef,
   );
   const retryWait: RetryWait | undefined = retry && {
     attempt: retry.attempt,

@@ -2,9 +2,16 @@ import type { ThreadModel } from "@evener/appwire-client";
 import * as appwireClient from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import {
+  subagentOutcomesDelegatesResponse,
+  subagentWireStep,
+} from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { connectionStore } from "../../../stores/connection";
+import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
+import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { threadsStore } from "../../../stores/threads";
 import type { VirtualListHandle } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
@@ -15,7 +22,9 @@ import {
 } from "./flow/transcriptViewRegistry";
 import * as flowModule from "./flow/useTranscriptScroll";
 import { TranscriptBody, transcriptAnchorEntriesForRows, transcriptRowsForProjection } from "./TranscriptBody";
+import { turnScopeKey, useRunningSubagentCount } from "./tools/subagentModuleStore";
 import { threadFingerprintForItem } from "./types";
+import { useEntityView } from "./useEntityView";
 
 function preset(level: "chat" | "intent" | "tools" | "activity" | "full") {
   return makeTranscriptDisplayConfig({ kind: "preset", level });
@@ -521,12 +530,14 @@ describe("TranscriptBody", () => {
     };
     const delegateBefore = {
       ...ordinaryToolFixture,
-      delegates: [{ delegateId: "dlg_ordinary", status: "running", terminal: false }],
+      delegates: [{ delegateId: "dlg_ordinary", transcriptRef: "local:child", status: "running", terminal: false }],
       turns: [{ id: "delegate_turn", status: "completed", items: [delegateItem] }],
     } as unknown as ThreadModel;
     const delegateAfter = {
       ...delegateBefore,
-      delegates: [{ delegateId: "dlg_ordinary", status: "done", outcome: "done", terminal: true }],
+      delegates: [
+        { delegateId: "dlg_ordinary", transcriptRef: "local:child", status: "done", outcome: "done", terminal: true },
+      ],
     } as unknown as ThreadModel;
     rerender(
       <TranscriptBody
@@ -619,6 +630,7 @@ describe("TranscriptBody", () => {
     };
     const settledDelegate = {
       delegateId: "dlg_refresh",
+      transcriptRef: "local:child",
       status: "done",
       outcome: "done",
       terminal: true,
@@ -1185,4 +1197,107 @@ describe("prepared view", () => {
     expect(project).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("tool-row-intent").textContent).toBe("Inspect the tree");
   });
+});
+
+function DelegateCount({ model }: { model: ThreadModel }) {
+  const entities = useEntityView(model.ref, model);
+  const count = useRunningSubagentCount(
+    turnScopeKey(model.ref, model.turns[0]?.id ?? ""),
+    model.delegates,
+    entities,
+    model.ref,
+  );
+  return <output data-testid="current-delegate-count">{count}</output>;
+}
+
+test.each([
+  ["retained completion", "done"],
+  ["new run", "running"],
+  ["wrong owner", "unknown"],
+  ["wrong child", "unknown"],
+  ["ambiguous child", "unknown"],
+  ["missing delegate", "unknown"],
+] as const)("retained delegate receipt uses current activity authority: %s", async (scenario, expectedKind) => {
+  const response = subagentOutcomesDelegatesResponse();
+  const reported = response.delegates.find((row) => row.delegateId === "dlg_reported");
+  if (!reported) throw new Error("recorded reported delegate missing");
+  if (scenario === "new run")
+    Object.assign(reported, {
+      runGeneration: reported.runGeneration + 1,
+      status: "running",
+      lifecycle: "running",
+      terminal: false,
+    });
+  if (scenario === "wrong owner") reported.ownerRef = "local:other";
+  if (scenario === "ambiguous child") response.delegates.push({ ...reported, childRef: "local:other-child" });
+  if (scenario === "missing delegate") response.delegates = response.delegates.filter((row) => row !== reported);
+  const recorded = subagentWireStep("call_delegate_1");
+  if (scenario === "wrong child") reported.childRef = "local:wrong-child";
+  const receipt = {
+    ...recorded,
+    output: JSON.stringify({
+      ...JSON.parse(recorded.output ?? "{}"),
+      delegate_id: reported.delegateId,
+      transcript_ref: scenario === "wrong child" ? "local:child-dlg_reported" : reported.childRef,
+    }),
+  };
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", () => ({
+    ...response,
+    context: { ...response.context, availability: "retained" },
+    scope: "session",
+  }));
+  client.on("evener/thread/activity/read", () => ({
+    ...activitySummary(response.context.ref),
+    context: response.context,
+    scope: "session",
+  }));
+  client.on("evener/thread/jobs/list", () => ({
+    context: response.context,
+    scope: "session",
+    jobs: [],
+    page: { complete: true, issues: [] },
+  }));
+  const model: ThreadModel = {
+    ...fixture,
+    ref: response.context.ref,
+    delegates: undefined,
+    turns: [{ id: receipt.turnId, status: "completed", items: [receipt] }],
+  };
+  connectionStore.setState({ client, state: "ready" });
+  try {
+    render(
+      <TranscriptBody
+        model={model}
+        config={preset("tools")}
+        surface="preview"
+        sessionRef={response.context.ref}
+        disclosureScope="retained:delegate"
+      />,
+    );
+    await waitFor(() =>
+      expect(sessionActivitySnapshot(client, response.context.ref, "session")?.delegates.rows).toHaveLength(
+        response.delegates.length,
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("delegate-status-word").getAttribute("data-kind")).toBe(expectedKind),
+    );
+    const bodyId = screen.getByTestId("tool-call-body").id;
+    const toggle = screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`);
+    if (!toggle) throw new Error("delegate disclosure missing");
+    const countView = render(<DelegateCount model={model} />);
+    await waitFor(() =>
+      expect(screen.getByTestId("current-delegate-count").textContent).toBe(expectedKind === "running" ? "1" : "0"),
+    );
+    countView.unmount();
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("delegate-lifecycle").getAttribute("data-kind")).toBe(expectedKind);
+    expect(client.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).toEqual([
+      { ref: response.context.ref, includeTurns: false, subscribe: true, replaceSubscription: false },
+    ]);
+  } finally {
+    cleanup();
+    connectionStore.setState({ client: null, state: "idle" });
+  }
 });
