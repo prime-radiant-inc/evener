@@ -253,7 +253,7 @@ Default task list:
 {{ end }}{{ end }}
 {{ end }}
 
-Before you end a turn, check where your answer is. It reaches {{ if .IsSubagent }}your caller{{ else }}the person{{ end }} only as the `message` of a `{{ .ResultToolName }}` call. Text you write outside a tool call will force another turn so you can correct it.
+Before you end a turn, check where your answer is. It reaches {{ if .IsSubagent }}your caller{{ else }}the person{{ end }} only as the `message` of a `{{ .ResultToolName }}` call. If your answer is not there, another turn will run so you can correct it.
 {{ if .UserInstructionOverride }}
 
 {{ .UserInstructionOverride }}

@@ -18,7 +18,6 @@ import { singleFlight } from "./singleFlight";
 
 interface PageState<T> {
 	loaded: boolean;
-	truncated: boolean;
 	rows: T[];
 	remaining: number;
 	loading: boolean;
@@ -38,7 +37,6 @@ type NativeNavigationParams = Omit<NavigationReadParams, "representationVersion"
 export class NavigationPages<T> {
 	private state: PageState<T> = {
 		loaded: false,
-		truncated: false,
 		rows: [],
 		remaining: 0,
 		loading: false,
@@ -251,7 +249,6 @@ export class NavigationPages<T> {
 					loaded: true,
 					rows: [],
 					remaining: 0,
-					truncated: false,
 					loading: false,
 					stale: false,
 					error: null,
@@ -309,7 +306,6 @@ export class NavigationPages<T> {
 			this.rereads.settle();
 			this.publish({
 				loaded: true,
-				truncated: data.truncated === true || (!reset && this.state.truncated),
 				rows: [...unique.values()],
 				remaining: Number(data.remaining),
 				loading: false,

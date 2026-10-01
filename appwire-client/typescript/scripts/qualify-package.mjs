@@ -157,8 +157,6 @@ const catalogRead = commandCatalog.getState().refresh();
 assert.equal(commandCatalog.getState().loading, true);
 catalogRead.then(() => assert.deepEqual(commandCatalog.getState().commands.map((c) => c.name), ["plan"])).catch((error) => { console.error(error); process.exit(1); });
 assert.deepEqual(client.sessionPluginNames({ plugins: [{ name: "acme" }] }), new Set(["acme"]));
-const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
-assert.equal(activity.getSnapshot().tree, null);
 assert.equal(client.clip("hello", 3), "hel\u2026");
 assert.equal(client.clipJobID("job"), "job");
 assert.equal(client.tailSlice("hello", 2), "lo");

@@ -30,8 +30,6 @@ export {
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
-export type { ActivityBranch, ActivityClient, ActivityState } from "./activityList";
-export { ACTIVITY_REFRESH_MIN_INTERVAL_MS, ActivityList } from "./activityList";
 export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type {
   ActivityDelegateRow,
