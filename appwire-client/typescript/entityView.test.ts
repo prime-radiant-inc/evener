@@ -174,7 +174,7 @@ test("live-only delegate cards and navigates from delegates[]", () => {
 
 test("live update and retained row reconcile by qualified identity with one action target", () => {
   const retained = treeWithDelegate("same", 3);
-  const live = liveDelegate("same", 4, "local:tree-same");
+  const live = { ...liveDelegate("same", 4, "local:tree-same"), runGeneration: 2 };
   const view = buildEntityView({
     sessionRef: "local:s",
     tree: retained,
@@ -217,7 +217,9 @@ test.each([
   const entity = buildEntityView({
     sessionRef: "local:s",
     tree: treeWithDelegate("dlg_shared", treeRevision),
-    delegates: [liveDelegate("dlg_shared", liveRevision, "local:tree-dlg_shared")],
+    delegates: [
+      { ...liveDelegate("dlg_shared", liveRevision, "local:tree-dlg_shared"), terminal: true, status: "completed" },
+    ],
     turns: [],
     stale: false,
     ended: false,
@@ -388,7 +390,7 @@ test.each([3, 4])("keeps immutable delegate names through status overlay revisio
 });
 
 test.each(["owner", "delegate", "child"])("does not graft a compact name across a different %s", (identity) => {
-  const row = { ...delegate("same", 3), name: "Other identity" };
+  const row = { ...delegate("same", 100), runGeneration: 9, name: "Other identity" };
   const stable = liveDelegate(
     identity === "delegate" ? "different" : "same",
     4,
@@ -407,3 +409,48 @@ test.each(["owner", "delegate", "child"])("does not graft a compact name across 
   expect(entity.name).toBeUndefined();
   expect(entity.stable).toBe(stable);
 });
+
+test.each([
+  [2, true, 1, false, "tree"],
+  [2, true, 2, false, "tree"],
+  [2, false, 2, true, "live"],
+  [2, true, 3, false, "live"],
+  [2, true, 0, false, "tree"],
+  [0, true, 2, false, "live"],
+  [0, true, 0, false, "live"],
+] as const)(
+  "delegate generation %s/%s versus diagnostics %s/%s selects %s",
+  (rowGeneration, rowTerminal, stableGeneration, stableTerminal, expected) => {
+    const row = {
+      ...delegate("ordered"),
+      runGeneration: rowGeneration,
+      terminal: rowTerminal,
+      reportPreview: "current report",
+    };
+    const stable = {
+      ...liveDelegate("ordered", 100, row.childRef),
+      runGeneration: stableGeneration,
+      terminal: stableTerminal,
+    };
+    const entity = findEntityView(
+      buildEntityView({
+        sessionRef: "local:s",
+        tree: treeWithEntries([{ kind: "delegate", delegate: row }]),
+        delegates: [stable],
+        turns: [],
+        stale: false,
+        ended: false,
+      }),
+      "delegate",
+      row.delegateId,
+      "local:s",
+    );
+    if (entity?.kind !== "delegate") throw new Error("expected owned delegate");
+    expect(delegateSource(entity)).toBe(expected);
+    if (expected === "tree") expect(entity.row?.delegate).toBe(row);
+    else {
+      expect(entity.stable).toBe(stable);
+      expect(entity).not.toHaveProperty("row");
+    }
+  },
+);

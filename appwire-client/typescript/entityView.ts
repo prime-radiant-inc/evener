@@ -1,4 +1,4 @@
-import { type ActivityTree, activityNodeID } from "./activityData";
+import { type ActivityDelegate, type ActivityTree, activityNodeID } from "./activityData";
 import { type ActivityDelegateRow, type ActivityJobRow, indexActivityEntities, watchRowID } from "./activityRows";
 import type { ItemModel, TurnModel } from "./model";
 import type { EvenerDelegateInfo } from "./types.gen";
@@ -108,6 +108,21 @@ function liveDelegateEntity(
   };
 }
 
+function provenDelegateGeneration(generation: number | undefined): number {
+  return typeof generation === "number" && Number.isSafeInteger(generation) && generation > 0 ? generation : 0;
+}
+
+function preferActivityDelegate(row: ActivityDelegate, stable: EvenerDelegateInfo): boolean {
+  const rowGeneration = provenDelegateGeneration(row.runGeneration);
+  const stableGeneration = provenDelegateGeneration(stable.runGeneration);
+  if (rowGeneration !== stableGeneration) return rowGeneration > stableGeneration;
+  // A settled run cannot reopen without advancing its proven generation.
+  if (rowGeneration > 0 && (row.terminal === true) !== (stable.terminal === true)) return row.terminal === true;
+  // Unknown generations carry no settlement ordering; comparable revisions
+  // retain their existing authority without assigning time-based identity.
+  return row.projectionRevision !== undefined && row.projectionRevision > stable.projectionRevision;
+}
+
 export function buildEntityView(sources: EntityViewSources): Map<string, EntityView> {
   const entities = new Map<string, EntityView>();
   const activityEntities = sources.tree ? indexActivityEntities(sources.tree) : undefined;
@@ -124,22 +139,14 @@ export function buildEntityView(sources: EntityViewSources): Map<string, EntityV
   for (const stable of sources.delegates ?? []) {
     const id = activityNodeID({ kind: "delegate", delegateId: stable.delegateId, childRef: stable.transcriptRef });
     const existing = entities.get(id);
-    if (
-      existing?.kind === "delegate" &&
-      existing.row !== undefined &&
-      existing.row.delegate.projectionRevision !== undefined &&
-      existing.row.delegate.projectionRevision > stable.projectionRevision
-    ) {
-      continue;
-    }
-    // Status overlays retain an immutable name only for the same owned delegate.
-    const name =
+    const sameIdentity =
       existing?.kind === "delegate" &&
       existing.ownerRef === sources.sessionRef &&
       existing.logicalId === stable.delegateId &&
-      existing.open.ref === stable.transcriptRef
-        ? existing.name
-        : undefined;
+      existing.open.ref === stable.transcriptRef;
+    if (sameIdentity && existing.row !== undefined && preferActivityDelegate(existing.row.delegate, stable)) continue;
+    // Status overlays retain an immutable name only for the same owned delegate.
+    const name = sameIdentity ? existing.name : undefined;
     entities.set(id, liveDelegateEntity(stable, sources.sessionRef, sources.stale, sources.ended, name));
   }
 

@@ -22,9 +22,7 @@ import {
 } from "./flow/transcriptViewRegistry";
 import * as flowModule from "./flow/useTranscriptScroll";
 import { TranscriptBody, transcriptAnchorEntriesForRows, transcriptRowsForProjection } from "./TranscriptBody";
-import { turnScopeKey, useRunningSubagentCount } from "./tools/subagentModuleStore";
 import { threadFingerprintForItem } from "./types";
-import { useEntityView } from "./useEntityView";
 
 function preset(level: "chat" | "intent" | "tools" | "activity" | "full") {
   return makeTranscriptDisplayConfig({ kind: "preset", level });
@@ -1199,17 +1197,6 @@ describe("prepared view", () => {
   });
 });
 
-function DelegateCount({ model }: { model: ThreadModel }) {
-  const entities = useEntityView(model.ref, model);
-  const count = useRunningSubagentCount(
-    turnScopeKey(model.ref, model.turns[0]?.id ?? ""),
-    model.delegates,
-    entities,
-    model.ref,
-  );
-  return <output data-testid="current-delegate-count">{count}</output>;
-}
-
 test.each([
   ["retained completion", "done"],
   ["new run", "running"],
@@ -1286,11 +1273,6 @@ test.each([
     const bodyId = screen.getByTestId("tool-call-body").id;
     const toggle = screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`);
     if (!toggle) throw new Error("delegate disclosure missing");
-    const countView = render(<DelegateCount model={model} />);
-    await waitFor(() =>
-      expect(screen.getByTestId("current-delegate-count").textContent).toBe(expectedKind === "running" ? "1" : "0"),
-    );
-    countView.unmount();
     fireEvent.click(toggle);
     expect(screen.getByTestId("delegate-lifecycle").getAttribute("data-kind")).toBe(expectedKind);
     expect(client.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).toEqual([

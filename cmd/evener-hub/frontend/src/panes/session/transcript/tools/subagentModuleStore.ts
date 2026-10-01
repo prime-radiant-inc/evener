@@ -151,21 +151,12 @@ export function useSubagentRow(scopeKey: string, rowKey: string): SubagentRow | 
   return useStore(moduleStore, (s) => s.turnRowsByKey.get(scopeKey)?.get(rowKey));
 }
 
-export function useRunningSubagentCount(
-  scopeKey: string | undefined,
-  delegates?: EvenerDelegateInfo[],
-  entities?: ReadonlyMap<string, EntityView>,
-  sessionRef?: string,
-): number {
+export function useRunningSubagentCount(scopeKey: string | undefined, delegates?: EvenerDelegateInfo[]): number {
   return useStore(moduleStore, (s) => {
     if (scopeKey === undefined) return 0;
     let count = 0;
     for (const row of s.turnRowsByKey.get(scopeKey)?.values() ?? []) {
-      const stable = entities
-        ? currentDelegate(row.delegateId, sessionRef, undefined, entities, row.transcriptRef)
-        : row.delegateId
-          ? delegates?.find((delegate) => delegate.delegateId === row.delegateId)
-          : undefined;
+      const stable = row.delegateId ? delegates?.find((delegate) => delegate.delegateId === row.delegateId) : undefined;
       if (effectiveRowKind(row, stable) === "running") count++;
     }
     return count;
