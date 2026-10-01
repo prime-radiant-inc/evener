@@ -30,7 +30,13 @@ function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
     active: true,
     ...overrides,
   };
-  return { ownerRef: "ref_root", receiverRef: "ref_root", state: info.active ? "armed" : "ended", watch: info };
+  return {
+    ownerRef: "ref_root",
+    sourceRef: "ref_root",
+    receiverRef: "ref_root",
+    state: info.active ? "armed" : "ended",
+    watch: info,
+  };
 }
 
 function armedLabel(): string {
@@ -288,7 +294,7 @@ describe("ActivityTree watch rows", () => {
     ]);
     expect(screen.getByTestId("watch-timeline")).toBeTruthy();
     expect(screen.getAllByTestId("watch-timeline-dot")).toHaveLength(3);
-    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Delivered to this session");
+    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Delivered");
     expect(screen.queryByTestId("watch-no-schedule")).toBeNull();
   });
 
