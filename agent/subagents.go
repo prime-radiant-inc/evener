@@ -2371,9 +2371,12 @@ func captureDelegateStructuredResult(packet *delegatestore.TerminalPacket, input
 	packet.StructuredResult = append(json.RawMessage(nil), raw...)
 	valid := true
 	packet.StructuredResultValid = &valid
+	// Name the capture source so a client can stop shape-matching (#3548).
 	if len(inputs.descriptor.ResultSchema) == 0 {
+		packet.StructuredResultSource = delegatestore.StructuredResultSourceDefaultEnvelope
 		return
 	}
+	packet.StructuredResultSource = delegatestore.StructuredResultSourceSchema
 	var schemaValue any
 	var structuredValue any
 	if err := json.Unmarshal(inputs.descriptor.ResultSchema, &schemaValue); err != nil || json.Unmarshal(raw, &structuredValue) != nil || validateStructuredResult(structuredValue, schemaValue) != nil {

@@ -56,17 +56,34 @@ func personAskResponderCommand(cfg runConfig, probe probeFile, res probeResult) 
 // question/answer pairs to its result: AskUserCalls (already computed from
 // the run's transcript, res.CanonicalToolCounts) and every pair
 // personAskResponderCommand's --log wrote to asks.jsonl beside the work
-// dir. A task with no person: block is left untouched, and a missing or
-// unreadable log (the responder never ran) yields a zero count and no
-// asks rather than an error.
+// dir. A task with no person: block is left untouched. A missing log yields
+// a zero count and no asks; but when the run made ask_user calls and the log
+// holds no well-formed asks (missing, empty, or unreadable), that is a failed
+// responder, so an infra finding points at the probe's stderr, where the
+// responder's own error is printed, rather than letting the failure vanish. A
+// log that holds only malformed records is reported as malformed instead, so
+// the reader is not sent to a responder that did run.
 func applyAskExchanges(res *probeResult, probe probeFile) {
 	if probe.Person == nil {
 		return
 	}
 	res.AskUserCalls = res.CanonicalToolCounts["ask_user"]
 	logPath := filepath.Join(filepath.Dir(res.WorkDir), "asks.jsonl")
-	asks, malformed := readAskLog(logPath)
+	asks, malformed, err := readAskLog(logPath)
 	res.Asks = asks
+	if err != nil {
+		res.Findings = append(res.Findings, finding{
+			Category: "infra",
+			Title:    "ask log unreadable",
+			Detail:   fmt.Sprintf("read %s: %v; the responder's failure is printed in %s", logPath, err, res.StderrPath),
+		})
+	} else if res.AskUserCalls > 0 && len(asks) == 0 && malformed == 0 {
+		res.Findings = append(res.Findings, finding{
+			Category: "infra",
+			Title:    "responder logged no asks",
+			Detail:   fmt.Sprintf("the run made %d ask_user call(s) but %s holds no asks; the responder's failure is printed in %s", res.AskUserCalls, logPath, res.StderrPath),
+		})
+	}
 	if malformed > 0 {
 		res.Findings = append(res.Findings, finding{
 			Category: "infra",

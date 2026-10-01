@@ -19,9 +19,8 @@ export function ProviderDetailPage({ navigation, route }: NativeStackScreenProps
 
 	// Having shown its provider, the page goes back once the Providers page no
 	// longer publishes it. Nothing swaps the provider under a pushed detail: the
-	// list and Add are covered, an edit keeps the name, and a link reaches the
-	// Providers page only with its list in front (with a detail pushed, a link
-	// stacks a new Providers page instead; #3524).
+	// list and Add are covered, an edit keeps the name, and a link pops back to
+	// the list first, through this page's guard (#3524).
 	const shown = useRef(false);
 	useEffect(() => {
 		if (current) shown.current = true;
