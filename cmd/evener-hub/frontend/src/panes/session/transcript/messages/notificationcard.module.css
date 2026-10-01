@@ -165,26 +165,6 @@
   color: var(--ink-low);
 }
 
-/* The subagent's report (mockups 24-delegate-complete §B(b)): an inset
- * bubble, sans at body size in ink-hi, so the message reads as words a
- * delegate wrote rather than machine chrome (the main conversation's serif
- * stays the primary agent's voice). The Markdown widget inside composes this
- * font size and takes its family from the --markdown-font property set
- * here - the widget's own override hook. */
-.messageBubble {
-  margin-top: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  background: var(--surface-inset);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  font-size: var(--font-size-body);
-  color: var(--ink-hi);
-  /* The one declaration the Markdown root inside reads for its family; the
-   * bubble holds no other text, so no direct font-family is needed. */
-  --markdown-font: var(--font-sans);
-  overflow-wrap: anywhere;
-}
-
 /* The structured result as a headerless table (§A): labels are the schema's
  * own keys in words, one hairline per row, the first row's top edge left open
  * so the message and the table read as one report. Both cells wrap anywhere:
