@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
@@ -199,6 +200,12 @@ func TestMain(m *testing.M) {
 		// value would hand the tests the real cache.
 		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(testHome, ".cache"))
 	}
+	// A developer with EVENER_NO_USER_SKILLS exported would otherwise flip
+	// which user-global sources sessions discover: Discover skips the global
+	// MCP layer and DiscoverEvenerWideCommands skips the user-global commands
+	// dir (#3487), and sessions hide the operator's skills (#3227). Tests that
+	// pin one side of that behavior set the variable themselves.
+	_ = os.Unsetenv(envvars.EVENERNoUserSkills.Name)
 	sharedWorkspace, err := os.MkdirTemp("", "evener-agent-workspace-*")
 	if err == nil {
 		_ = os.Chmod(sharedWorkspace, 0o555)
