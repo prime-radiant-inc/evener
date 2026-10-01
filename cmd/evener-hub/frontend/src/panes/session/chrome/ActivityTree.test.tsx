@@ -1033,17 +1033,20 @@ describe("ActivityTree", () => {
     expect(openTranscript).not.toHaveBeenCalled();
   });
 
-  test("host-driven fold toggle reveals and re-hides terminal rows", async () => {
+  test("host-driven fold toggle preserves visible failures while revealing and hiding successful work", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     const user = setupUser();
     render(<Host />);
 
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
+    expect(screen.getAllByRole("treeitem", { name: "broken lint" })).toHaveLength(1);
     await user.click(screen.getByRole("treeitem", { name: FOLD_NAME }));
     expect(screen.getByRole("treeitem", { name: "finished build" })).toBeTruthy();
+    expect(screen.getAllByRole("treeitem", { name: "broken lint" })).toHaveLength(1);
     await user.click(screen.getByRole("treeitem", { name: FOLD_NAME }));
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
+    expect(screen.getAllByRole("treeitem", { name: "broken lint" })).toHaveLength(1);
   });
 
   // A tree whose only entry is one live stable delegate with a run start and
