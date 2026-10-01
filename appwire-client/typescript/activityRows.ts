@@ -20,7 +20,7 @@ import {
 } from "./activityData";
 import { formatClockTime } from "./displayFormat";
 import { stableDelegateDisplayStatus } from "./stableDelegate";
-import type { NavigationWatchSummary } from "./types.gen";
+import type { SessionWatch } from "./types.gen";
 import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchNextFireLabel, watchTitle } from "./watchText";
 
 export interface ActivityRowBase {
@@ -61,7 +61,7 @@ export interface ActivityFoldRow extends ActivityRowBase {
 // summary rather than the retained-activity tree, so it is its own row kind.
 export interface ActivityWatchRow extends ActivityRowBase {
   kind: "watch";
-  watch: NavigationWatchSummary;
+  watch: SessionWatch;
   // Top-level watches default open, exactly like a top-level job row: the
   // note and facts are the reason a person expanded the utility at all.
   defaultDetailOpen: boolean;
@@ -75,16 +75,16 @@ export function foldRowID(sessionNodeID: string): string {
 
 // Watch rows share the expansion-state map with tree rows, so their ids carry
 // a distinct namespace and can never collide with a tree node id.
-export function watchRowID(watchID: string): string {
-  return `watch:${watchID}`;
+export function watchRowID(receiverRef: string, watchID: string): string {
+  return `watch:${JSON.stringify([receiverRef, watchID])}`;
 }
 
 // One top-level row per watch, in wire order. An absent list (an old daemon)
 // is exactly an empty list.
-export function buildWatchRows(watches?: NavigationWatchSummary[]): ActivityWatchRow[] {
+export function buildWatchRows(watches?: readonly SessionWatch[]): ActivityWatchRow[] {
   return (watches ?? []).map((watch) => ({
     kind: "watch",
-    id: watchRowID(watch.id),
+    id: watchRowID(watch.receiverRef, watch.watch.id),
     level: 1,
     watch,
     defaultDetailOpen: true,
@@ -93,7 +93,7 @@ export function buildWatchRows(watches?: NavigationWatchSummary[]): ActivityWatc
 
 // The same name the rail's watch row shows: the note a person wrote down, with
 // the id as the fallback for a note the wire omitted or trimmed to nothing.
-export function watchName(watch: NavigationWatchSummary): string {
+export function watchName(watch: SessionWatch): string {
   return watchTitle(watch);
 }
 
@@ -102,8 +102,8 @@ export function watchName(watch: NavigationWatchSummary): string {
 // detail must read them from the cadence rows themselves.
 const CLOCK_CADENCE_KINDS: ReadonlySet<string> = new Set(["after", "every", "progress"]);
 
-function clockCadenceLabels(watch: NavigationWatchSummary): string[] {
-  return (watch.cadence ?? [])
+function clockCadenceLabels(watch: SessionWatch): string[] {
+  return (watch.watch.cadence ?? [])
     .filter((cadence) => CLOCK_CADENCE_KINDS.has(cadence.kind))
     .map(watchCadenceLabel)
     .filter((label) => label !== "");
@@ -122,8 +122,8 @@ const CONDITION_CADENCE_KINDS: ReadonlySet<string> = new Set(["output", "events"
 // the watch fires only when its job or event says so, which such a row
 // contradicts. Nothing derives an instant or a timeline from them, because only
 // the recognized clock kinds carry a period this build can place on a clock.
-function unattributedCadenceLabels(watch: NavigationWatchSummary): string[] {
-  return (watch.cadence ?? [])
+function unattributedCadenceLabels(watch: SessionWatch): string[] {
+  return (watch.watch.cadence ?? [])
     .filter((cadence) => !CLOCK_CADENCE_KINDS.has(cadence.kind) && !CONDITION_CADENCE_KINDS.has(cadence.kind))
     .map(watchCadenceLabel)
     .filter((label) => label !== "");
@@ -135,43 +135,43 @@ function unattributedCadenceLabels(watch: NavigationWatchSummary): string[] {
 // events list and no wildcard - has no schedule to draw, which is exactly the
 // statement the no-schedule line makes. The condition fields therefore cannot
 // stand in for "scheduled": only the clock cadence labels decide it.
-export function watchIsScheduled(watch: NavigationWatchSummary): boolean {
+export function watchIsScheduled(watch: SessionWatch): boolean {
   return clockCadenceLabels(watch).length > 0 || unattributedCadenceLabels(watch).length > 0;
 }
 
 // The supplied delivery instants as epoch millis, oldest first. Unparseable
 // entries drop out; the ring is bounded (32) upstream, so this stays cheap.
-export function watchDeliveryInstants(watch: NavigationWatchSummary): number[] {
-  return (watch.delivery_times ?? [])
+export function watchDeliveryInstants(watch: SessionWatch): number[] {
+  return (watch.watch.deliveryTimes ?? [])
     .map((iso) => Date.parse(iso))
     .filter((millis) => !Number.isNaN(millis))
     .sort((a, b) => a - b);
 }
 
-function armedState(watch: NavigationWatchSummary): string {
-  return watchArmedLabel(watch.active);
+function armedState(watch: SessionWatch): string {
+  return watchArmedLabel(watch.state);
 }
 
 // The age since the watch was created, through the rail's own duration
 // vocabulary. An unparseable or non-positive span renders nothing rather than
 // a fabricated duration.
-function armedAgeLabel(watch: NavigationWatchSummary, now: number): string | undefined {
-  const created = Date.parse(watch.created_at);
+function armedAgeLabel(watch: SessionWatch, now: number): string | undefined {
+  const created = Date.parse(watch.watch.createdAt);
   if (Number.isNaN(created)) return undefined;
   const label = watchDurationLabel(Math.max(0, (now - created) / 1000));
   return label === "" ? undefined : label;
 }
 
-function eventLabel(watch: NavigationWatchSummary): string {
-  if (watch.wildcard_events === true) return "session events";
-  const events = (watch.events ?? []).map((event) => event.trim()).filter((event) => event !== "");
+function eventLabel(watch: SessionWatch): string {
+  if (watch.watch.wildcardEvents === true) return "session events";
+  const events = (watch.watch.events ?? []).map((event) => event.trim()).filter((event) => event !== "");
   return events.length > 0 ? events.join(", ") : "session events";
 }
 
 // The newest supplied delivery instant as local HH:MM. watchDeliveryInstants
 // already parses, drops unparseable entries, and orders oldest first, so its
 // last element is the newest real instant; an empty list renders nothing.
-function lastDeliveryClock(watch: NavigationWatchSummary): string | undefined {
+function lastDeliveryClock(watch: SessionWatch): string | undefined {
   const last = watchDeliveryInstants(watch).at(-1);
   if (last === undefined) return undefined;
   return formatClockTime(new Date(last).toISOString());
@@ -189,8 +189,8 @@ function deliveryCountLabel(count: number): string {
 // events" and "Waiting on ..."), so reusing only the detail tells a throttled or
 // filtered watch apart from one that fires on every matching event without
 // printing the condition twice.
-function eventCadenceDetail(watch: NavigationWatchSummary): string {
-  const events = (watch.cadence ?? []).find((cadence) => cadence.kind === "events");
+function eventCadenceDetail(watch: SessionWatch): string {
+  const events = (watch.watch.cadence ?? []).find((cadence) => cadence.kind === "events");
   if (events === undefined) return "";
   const label = watchCadenceLabel(events);
   return label.startsWith("on events ") ? label.slice("on events ".length) : "";
@@ -200,45 +200,45 @@ function eventCadenceDetail(watch: NavigationWatchSummary): string {
 // for a clock watch when the daemon derived one, then the count it has earned
 // or its armed state. The next fire is worded "next ~4m" (never "about", never
 // an exact clock time) and omitted entirely for output/event watches.
-export function watchMeta(watch: NavigationWatchSummary, now?: number): string {
+export function watchMeta(watch: SessionWatch, now?: number): string {
   // Every configured trigger source is named, not just one condition kind: a
   // watch can carry an output match, an event trigger, and a clock cadence at
   // once, and naming only the first would hide the rest. Derive each condition
   // from its own wire field rather than collapsing a multi-trigger watch to a
   // single kind.
   const conditions: string[] = [];
-  if ((watch.output_match ?? "").trim() !== "") conditions.push("on output");
-  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
+  if ((watch.watch.outputMatch ?? "").trim() !== "") conditions.push("on output");
+  if (watch.watch.wildcardEvents === true || (watch.watch.events?.length ?? 0) > 0) {
     const detail = eventCadenceDetail(watch);
     conditions.push(detail === "" ? "on events" : `on events ${detail}`);
   }
   conditions.push(...clockCadenceLabels(watch), ...unattributedCadenceLabels(watch));
   if (now !== undefined) {
-    const nextFire = (watch.cadence ?? [])
+    const nextFire = (watch.watch.cadence ?? [])
       .map((cadence) => watchNextFireLabel(cadence, now))
       .find((label) => label !== "");
     if (nextFire !== undefined) conditions.push(nextFire);
   }
   const parts = [...conditions];
-  if (watch.deliveries > 0) parts.push(deliveryCountLabel(watch.deliveries));
+  if (watch.watch.deliveries > 0) parts.push(deliveryCountLabel(watch.watch.deliveries));
   // A spent watch keeps its count AND says it is not armed. The count alone
   // reads exactly like a watch that is still waiting, which is the one thing a
   // collapsed row must not do: a one-shot whose teardown is still pending
   // arrives as active:false with the delivery it already made.
-  if (watch.deliveries === 0 || !watch.active) parts.push(armedState(watch));
+  if (watch.watch.deliveries === 0 || watch.state !== "armed") parts.push(armedState(watch));
   return parts.filter((part) => part !== "").join(" · ");
 }
 
 // A watch's one facts sentence, built only from real fields. The armed segment
 // reports the watch's real armed state: an inactive watch is never called armed.
-export function watchFacts(watch: NavigationWatchSummary, now: number): string {
+export function watchFacts(watch: SessionWatch, now: number): string {
   const segments: string[] = [];
   // Each condition the watch actually carries gets its own segment, so a
   // multi-trigger watch reads as all of what it waits on rather than only the
   // first condition kind.
-  if ((watch.output_match ?? "").trim() !== "") {
-    const target = watch.target?.trim() || watch.source;
-    segments.push(`Waiting on ${target}, matching ${watch.output_match ?? ""}`);
+  if ((watch.watch.outputMatch ?? "").trim() !== "") {
+    const target = watch.watch.target?.trim() || watch.watch.source;
+    segments.push(`Waiting on ${target}, matching ${watch.watch.outputMatch ?? ""}`);
   }
   const clockCadence = clockCadenceLabels(watch).join(" · ");
   // The "last at" instant below stays keyed to the clock labels alone; this
@@ -249,12 +249,12 @@ export function watchFacts(watch: NavigationWatchSummary, now: number): string {
   if (cadenceText !== "") {
     segments.push(`Fires ${cadenceText}`);
   }
-  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
+  if (watch.watch.wildcardEvents === true || (watch.watch.events?.length ?? 0) > 0) {
     const waiting = `Waiting on ${eventLabel(watch)}`;
     const detail = eventCadenceDetail(watch);
     segments.push(detail === "" ? waiting : `${waiting} ${detail}`);
   }
-  if (!watch.active) {
+  if (watch.state !== "armed") {
     segments.push(armedState(watch));
   } else {
     const age = armedAgeLabel(watch, now);
@@ -262,8 +262,8 @@ export function watchFacts(watch: NavigationWatchSummary, now: number): string {
     // has to report the armed state itself rather than dropping the segment.
     segments.push(age === undefined ? armedState(watch) : `armed ${age} ago`);
   }
-  if (watch.deliveries > 0) {
-    segments.push(deliveryCountLabel(watch.deliveries));
+  if (watch.watch.deliveries > 0) {
+    segments.push(deliveryCountLabel(watch.watch.deliveries));
     // Only a watch with a clock cadence has a drawable timeline, so only it
     // reports the newest instant that timeline plots.
     if (clockCadence !== "") {
@@ -288,6 +288,14 @@ export interface ActivityDelegateState {
 // current status.
 export function jobIsFailed(job: ActivityJob): boolean {
   return job.terminal ? isFailedJobOutcome(job.outcome) : isActivityFailure(job.outcome, job.status);
+}
+
+// A shell job has three states, the three the Activity list sorts by (spec 9):
+// a failed job is "failed", any other ended job "done", and a live one
+// "running". Shared so the web's rows and the phone's list read one rule.
+export function shellJobState(job: ActivityJob): "running" | "failed" | "done" {
+  if (jobIsFailed(job)) return "failed";
+  return job.terminal ? "done" : "running";
 }
 
 // Stable delegates describe one reusable resource; other delegate types are
@@ -358,13 +366,13 @@ function entryIsFailed(entry: ActivityEntry): boolean {
 
 export function jobRowFields(
   job: ActivityJob,
-  parentRef: string,
+  _parentRef: string,
 ): Pick<ActivityJobRow, "job" | "live" | "transcriptRef" | "parentRef"> {
   return {
     job,
     live: jobIsActive(job),
     transcriptRef: job.transcriptRef,
-    parentRef,
+    parentRef: job.ownerRef,
   };
 }
 
@@ -376,7 +384,7 @@ export function delegateRowFields(
     delegate,
     live: activityDelegateState(delegate).active,
     transcriptRef: delegate.childRef,
-    parentRef,
+    parentRef: delegate.ownerRef ?? parentRef,
   };
 }
 
@@ -466,10 +474,10 @@ export function indexActivityEntities(tree: ActivityTree): Map<string, ActivityJ
   walkActivitySessions(tree, {
     onRow(row) {
       if (row.kind === "job") {
-        index.set(row.job.jobId, row);
+        index.set(row.id, row);
         return;
       }
-      index.set(row.delegate.delegateId, row);
+      index.set(row.id, row);
     },
     // Every entry, in the session's own order, each carrying the fold origin
     // the panel would give it: index membership stays independent of what is

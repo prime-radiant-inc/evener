@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnyNotification, NavigationReadParams } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationPages } from "./navigationPages";
@@ -20,7 +20,7 @@ function boundary({ locationGeneration = "g", catalogGeneration = "g", catalogRe
 						revision: 4,
 						etag: "gone",
 					};
-				const response = wireV2(
+				const response = wireSnapshot(
 					p,
 					{
 						ref: p.ref,
@@ -46,7 +46,7 @@ function boundary({ locationGeneration = "g", catalogGeneration = "g", catalogRe
 				return response;
 			}
 			const offset = p.offset ?? 0;
-			return wireV2(
+			return wireSnapshot(
 				p,
 				{
 					pin_sections: offset
@@ -103,7 +103,7 @@ describe("native pin navigation readback", () => {
 							targets: [{ kind: "pin_catalog", revision: 2 }],
 						},
 					});
-				return wireV2(
+				return wireSnapshot(
 					params,
 					{
 						pin_sections: [{ id: "focus", name: "Renamed", count: 1 }],

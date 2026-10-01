@@ -120,7 +120,7 @@ func TestClientNavigationReadRoundTrip(t *testing.T) {
 			Section:               "live",
 			Offset:                &zero,
 			Limit:                 &zero,
-			RepresentationVersion: 2,
+			RepresentationVersion: 3,
 			Base:                  &NavigationReadBase{GenerationID: "generation-a", Revision: 4, ETag: "etag-a"},
 		})
 		done <- struct {
@@ -142,11 +142,11 @@ func TestClientNavigationReadRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(written.Request.Params, &params); err != nil {
 		t.Fatalf("params decode: %v", err)
 	}
-	if params.Resource != "section" || params.Section != "live" || params.RepresentationVersion != 2 {
-		t.Fatalf("params = %+v, want section/live with representationVersion 2", params)
+	if params.Resource != "section" || params.Section != "live" || params.RepresentationVersion != 3 {
+		t.Fatalf("params = %+v, want section/live with representationVersion 3", params)
 	}
 	if params.Base == nil || params.Base.GenerationID != "generation-a" || params.Base.Revision != 4 || params.Base.ETag != "etag-a" {
-		t.Fatalf("params = %+v, want v2 base", params)
+		t.Fatalf("params = %+v, want v3 base", params)
 	}
 	if params.Offset == nil {
 		t.Fatal("decoded offset is nil; explicit zero was not preserved")

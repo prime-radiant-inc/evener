@@ -378,6 +378,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
+		pending = append(pending, s.activityChangeNotificationLocked(event)...)
 		for _, item := range projected {
 			// The root's running execution is published by SetProcessingTurn
 			// and its end by finishProcessing (or the input's SESSION_END),
@@ -655,6 +656,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		projected := projection.projector.Project(event)
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
+		pending = append(pending, s.activityChangeNotificationLocked(event)...)
 		for _, item := range projected {
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
@@ -1138,6 +1140,7 @@ func (s *Server) acceptsSessionEventLocked(sessionID string) bool {
 
 func (s *Server) registerAppWireHandlers() {
 	router := s.appServer.Router()
+	s.registerSessionActivityHandlers()
 	appserver.HandleTyped(router, appwire.MethodThreadList, s.handleAppThreadList)
 	appserver.HandleTyped(router, appwire.MethodThreadRead, s.handleAppThreadRead)
 	appserver.HandleTyped(router, appwire.MethodThreadUnsubscribe, s.handleAppThreadUnsubscribe)
@@ -1166,6 +1169,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodEvenerTasksList, s.handleAppTasksList)
 	appserver.HandleTyped(router, appwire.MethodEvenerJobsList, s.handleAppJobsList)
 	appserver.HandleTyped(router, appwire.MethodEvenerJobsOutput, s.handleAppJobsOutput)
+	appserver.HandleTyped(router, appwire.MethodEvenerJobsGet, s.handleAppJobsGet)
 	appserver.HandleTyped(router, appwire.MethodModelList, s.handleAppModelList)
 	appserver.HandleTyped(router, appwire.MethodThreadTurnsList, s.handleAppThreadTurnsList)
 }
@@ -2332,6 +2336,23 @@ func (s *Server) handleAppJobsOutput(_ context.Context, params appwire.JobsOutpu
 		return appwire.JobsOutputResponse{}, appwire.InvalidParams("job not found: " + params.JobID)
 	}
 	return appwire.JobsOutputResponse{Data: data}, nil
+}
+
+func (s *Server) handleAppJobsGet(_ context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	s.mu.RLock()
+	fn := s.jobGetFn
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.JobsGetResponse{}, appwire.Unavailable("job not available")
+	}
+	data, found, err := fn(params.JobID)
+	if err != nil {
+		return appwire.JobsGetResponse{}, err
+	}
+	if !found {
+		return appwire.JobsGetResponse{}, appwire.InvalidParams("job not found: " + params.JobID)
+	}
+	return appwire.JobsGetResponse{Data: data}, nil
 }
 
 func (s *Server) handleAppModelList(ctx context.Context, _ appwire.ModelListParams) (appwire.ModelListResponse, error) {

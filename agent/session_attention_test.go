@@ -68,10 +68,10 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	blockedAggregate := c.durable["dlg_target"]
 	blockedGeneration := blockedAggregate.Generation
 	blockedNeedsAttention := blockedAggregate.NeedsAttention
-	_, firstStillUnresolved := c.attentionWakeIDs["dlg_target"][firstID]
+	_, firstStillUnresolved := attentionWakeIDsOf(c, "dlg_target")[firstID]
 	c.mu.Unlock()
 	if blockedGeneration != 0 || !blockedNeedsAttention || !firstStillUnresolved {
-		t.Fatalf("acceptance published before resolution fsync: generation=%d needs=%t unresolved=%#v", blockedGeneration, blockedNeedsAttention, c.attentionWakeIDs["dlg_target"])
+		t.Fatalf("acceptance published before resolution fsync: generation=%d needs=%t unresolved=%#v", blockedGeneration, blockedNeedsAttention, attentionWakeIDsOf(c, "dlg_target"))
 	}
 	fs.release()
 	first := <-done
@@ -82,7 +82,7 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	if aggregate.Generation != 1 || aggregate.Trigger != delegatestore.TriggerAttention || !aggregate.CurrentRunOpen || !aggregate.NeedsAttention || aggregate.ProjectionRevision != beforeRevision+1 {
 		t.Fatalf("nonfinal acceptance aggregate = %#v, want generation 1 open with unchanged true attention", aggregate)
 	}
-	if got := c.attentionWakeIDs["dlg_target"]; !reflect.DeepEqual(got, map[string]struct{}{secondID: {}}) {
+	if got := attentionWakeIDsOf(c, "dlg_target"); !reflect.DeepEqual(got, map[string]struct{}{secondID: {}}) {
 		t.Fatalf("unresolved IDs after nonfinal consumption = %#v", got)
 	}
 	fold, err := readDelegateAttentionFold(path, sessionID)
@@ -95,11 +95,7 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	if _, err := c.FinishGeneration(first.started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "first handled"}); err != nil {
 		t.Fatalf("FinishGeneration first: %v", err)
 	}
-	// Report the finished runtime quiesced, as the child's finalize tail
-	// does, so the delegate is ready for its attention successor.
-	if err := c.ReportFinalizationQuiesced(first.started.lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced first: %v", err)
-	}
+	reportFinalizeTailDone(t, c, first.started.lease, runtime)
 	secondReservation, err := c.ReserveAttention(runtime, secondID)
 	if err != nil {
 		t.Fatalf("ReserveAttention second: %v", err)
@@ -112,8 +108,8 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 		t.Fatalf("commit final attention: %v", err)
 	}
 	aggregate = c.durable["dlg_target"]
-	if aggregate.Generation != 2 || aggregate.NeedsAttention || len(c.attentionWakeIDs["dlg_target"]) != 0 {
-		t.Fatalf("final acceptance aggregate=%#v unresolved=%#v", aggregate, c.attentionWakeIDs["dlg_target"])
+	if aggregate.Generation != 2 || aggregate.NeedsAttention || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
+		t.Fatalf("final acceptance aggregate=%#v unresolved=%#v", aggregate, attentionWakeIDsOf(c, "dlg_target"))
 	}
 	fold, err = readDelegateAttentionFold(path, sessionID)
 	if err != nil {
@@ -718,8 +714,8 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fold controller journal: %v", err)
 	}
-	if state["dlg_target"].NeedsAttention || len(c.attentionWakeIDs["dlg_target"]) != 0 {
-		t.Fatalf("consumed attention reopened: state=%#v wakeIDs=%#v", state["dlg_target"], c.attentionWakeIDs["dlg_target"])
+	if state["dlg_target"].NeedsAttention || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
+		t.Fatalf("consumed attention reopened: state=%#v wakeIDs=%#v", state["dlg_target"], attentionWakeIDsOf(c, "dlg_target"))
 	}
 }
 
@@ -2323,8 +2319,8 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 	if got := clock.BlockedCount(); got != retryTimersBefore {
 		t.Fatalf("cold fold failure created a second arm mirror timer: got %d, want baseline %d", got, retryTimersBefore)
 	}
-	if root.sessionWorkPending() || len(c.attentionWakeIDs["dlg_target"]) != 0 {
-		t.Fatalf("failed cold fold published unverified attention: work=%t unresolved=%#v", root.sessionWorkPending(), c.attentionWakeIDs["dlg_target"])
+	if root.sessionWorkPending() || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
+		t.Fatalf("failed cold fold published unverified attention: work=%t unresolved=%#v", root.sessionWorkPending(), attentionWakeIDsOf(c, "dlg_target"))
 	}
 	if err := c.armColdDelegateAttention("dlg_target", attentionID); err != nil {
 		t.Fatalf("caller retry cold attention: %v", err)
@@ -4010,7 +4006,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	trigger := aggregate.Trigger
 	open := aggregate.CurrentRunOpen
 	needsAttention := aggregate.NeedsAttention
-	unresolved := maps.Clone(root.delegateController.attentionWakeIDs[fixture.delegateID])
+	unresolved := maps.Clone(attentionWakeIDsOf(root.delegateController, fixture.delegateID))
 	root.delegateController.mu.Unlock()
 	if generation != 1 || trigger != delegatestore.TriggerAttention || !open || !needsAttention {
 		t.Fatalf("owed attention generation = generation:%d trigger:%q open:%t needs:%t, want 1/attention/open/true", generation, trigger, open, needsAttention)

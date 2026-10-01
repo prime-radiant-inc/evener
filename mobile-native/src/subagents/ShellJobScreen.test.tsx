@@ -1,3 +1,4 @@
+import { installActivityFixture } from "./sessionActivityTestUtils";
 // A shell job's detail (Jesse's ruling on shell jobs, PR 2): the job as its
 // coordinator's tree carries it (command, how it's doing, who started it),
 // and its output's tail from evener/jobs/output, read again whenever the job
@@ -94,10 +95,10 @@ beforeEach(() => {
 	tree = treeWith(shellJob("j-test"));
 	output = () => ({ data: TAIL });
 	client = new FakeClient("ready");
-	client.on("evener/jobs/list", async (params) => {
-		// A second page that can't be read leaves the tree partial.
-		if (params.continuation === "page-2") throw new Error("offline");
-		return { data: tree };
+	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "scripted" } }) as never);
+	installActivityFixture(client, (cursor) => {
+		if (cursor === "page-2") throw new Error("offline");
+		return tree;
 	});
 	client.on("evener/jobs/output", async (params) => output(params) as never);
 	harness.connection = screenConnection(client, "ready");
@@ -115,8 +116,15 @@ async function settle() {
 	});
 }
 
-async function mount() {
-	const params = { hubId: "hub-1", jobId: "j-test", title: "go test ./agent/...", coordinator: COORDINATOR };
+async function mount(over: { ownerRef?: string } = {}) {
+	const params = {
+		hubId: "hub-1",
+		jobId: "j-test",
+		ownerRef: "local:fix",
+		title: "go test ./agent/...",
+		coordinator: COORDINATOR,
+		...over,
+	};
 	const screen = render(
 		<ShellJobScreen route={{ key: "job", name: "ShellJob", params } as never} navigation={navigation as never} />,
 	);
@@ -134,8 +142,8 @@ async function treeChanges(next: { revision: number; root: unknown }) {
 	clock += 10 * ACTIVITY_REFRESH_MIN_INTERVAL_MS;
 	vi.useFakeTimers({ now: clock });
 	client.emitNotification({
-		method: "evener/jobs/treeUpdated",
-		params: { threadId: "coord", ref: "local:coord", revision: next.revision },
+		method: "evener/thread/activity/changed",
+		params: { threadId: "coord", sessionId: "coord", ref: "local:coord", resources: ["summary", "delegates", "jobs"] },
 	} as never);
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
@@ -158,6 +166,33 @@ it("shows the job's command, how it ended, its exit code and who started it, ove
 	// The output is the owning session's: its ref, not the coordinator's.
 	expect(outputCalls().map((call) => call.params)).toEqual([{ ref: "local:fix", jobId: "j-test" }]);
 	for (const word of ["Refresh", "Stop", "Retry"]) expect(shown).not.toContain(word);
+});
+
+// The coordinator's own job names the coordinator by its title, never its ref.
+it("names the coordinator by its title for a job it started itself", async () => {
+	tree = {
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			shellJob("j-test", { ownerRef: COORDINATOR.ref, ownerSessionId: COORDINATOR.threadId }),
+		]),
+	};
+	const shown = renderedText(await mount({ ownerRef: COORDINATOR.ref }));
+	expect(shown).toContain(`under ${COORDINATOR.title}`);
+	expect(shown).not.toContain("under local:");
+});
+
+// A job whose subagent's row is on a later page sits at the top of the tree,
+// so its detail can't name who started it and says so.
+it("says a job's subagent isn't listed while that subagent's row isn't loaded", async () => {
+	tree = {
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			shellJob("j-test", { ownerRef: "local:later", ownerSessionId: "later" }),
+		]),
+	};
+	const shown = renderedText(await mount({ ownerRef: "local:later" }));
+	expect(shown).toContain("under a subagent that isn't listed");
+	expect(shown).not.toContain(`under ${COORDINATOR.title}`);
 });
 
 it("names no exit code for a job that is running or exited cleanly", async () => {
@@ -302,10 +337,33 @@ it("says the job can't be listed right now while the tree is partial, not that i
 	};
 	const screen = await mount();
 	expect(renderedText(screen)).not.toContain("This job is no longer listed.");
-	expect(renderedText(screen)).toContain("This job can't be listed right now.");
+	expect(renderedText(screen)).toContain("This job couldn't be read right now.");
 });
 
 it("says when the kept output starts partway through", async () => {
 	output = () => ({ data: { ...TAIL, totalBytes: 9000, retainedStart: 8958, truncated: true, hasEarlier: true } });
 	expect(renderedText(await mount())).toContain("Showing the end of the output");
+});
+
+it("reads output for the selected owner when another session has the same raw job ID", async () => {
+	const selected = treeWith(shellJob("j-test"));
+	selected.root.entries.unshift(
+		delegate(
+			"other",
+			"Other owner",
+			session("local:other", "Other owner", [
+				shellJob("j-test", {
+					ownerSessionId: "other",
+					ownerRef: "local:other",
+					description: "Other owner command",
+					command: "echo other",
+				}),
+			]),
+		) as never,
+	);
+	tree = selected;
+	const screen = await mount();
+	expect(renderedText(screen)).toContain("go test ./agent/... -run TestSettle");
+	expect(renderedText(screen)).not.toContain("echo other");
+	expect(outputCalls().map((call) => call.params)).toEqual([{ ref: "local:fix", jobId: "j-test" }]);
 });

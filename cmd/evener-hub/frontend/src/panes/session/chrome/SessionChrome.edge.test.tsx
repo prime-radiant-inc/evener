@@ -14,7 +14,6 @@ import type { ComponentProps } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
-import { resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { SessionCacheIndexedDB } from "../../../stores/sessionCacheIndexedDB";
@@ -90,7 +89,7 @@ function setLocation(ref: string): void {
     },
   };
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -146,7 +145,6 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivitySummaryStoreForTests();
   resetNavigationStoreForTests();
   resetToastStoreForTests();
 });
@@ -273,7 +271,7 @@ test("v2 shutdown installs an invalidation waiter and converges after the RPC", 
   const awaitNavigationTargets = vi.fn(() => Promise.resolve());
   const applyNavigationMutation = vi.fn(() => Promise.resolve());
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     awaitNavigationInvalidation: awaitNavigationInvalidation as never,
     awaitNavigationTargets: awaitNavigationTargets as never,
     applyNavigationMutation: applyNavigationMutation as never,
@@ -325,7 +323,7 @@ test("v2 shutdown cancels the invalidation waiter on RPC failure", async () => {
   const awaitNavigationTargets = vi.fn(() => Promise.resolve());
   const applyNavigationMutation = vi.fn(() => Promise.resolve());
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     awaitNavigationInvalidation: awaitNavigationInvalidation as never,
     awaitNavigationTargets: awaitNavigationTargets as never,
     applyNavigationMutation: applyNavigationMutation as never,

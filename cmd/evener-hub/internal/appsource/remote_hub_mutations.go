@@ -445,3 +445,17 @@ func (s *RemoteHubSource) JobOutput(ctx context.Context, params appwire.JobsOutp
 	}
 	return out, nil
 }
+
+func (s *RemoteHubSource) JobGet(ctx context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	ref, err := s.toRemoteRef(params.Ref, "")
+	if err != nil {
+		return appwire.JobsGetResponse{}, err
+	}
+	remote := params
+	remote.Ref = ref.String()
+	var out appwire.JobsGetResponse
+	if err := s.call(ctx, appwire.MethodEvenerJobsGet, remote, &out); err != nil {
+		return appwire.JobsGetResponse{}, err
+	}
+	return out, nil
+}

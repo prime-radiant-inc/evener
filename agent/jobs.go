@@ -65,10 +65,12 @@ func (e *terminalRecordPersistError) Unwrap() error {
 type jobManager struct {
 	// retirementOwner is installed before publication and never rebound. Unlike
 	// stable-parent routing, process admission follows the Session's atomic pointer.
-	retirementOwner *Session
-	mu              sync.Mutex
-	watchNotifyMu   sync.Mutex
-	watchPersistMu  sync.Mutex
+	retirementOwner        *Session
+	mu                     sync.Mutex
+	watchActivityMu        sync.Mutex
+	watchActivityReceivers map[string]struct{}
+	watchNotifyMu          sync.Mutex
+	watchPersistMu         sync.Mutex
 	// watchPersistDone is non-nil while one watch-journal transition owns the
 	// process-local serialization token. Waiters observe it under watchPersistMu
 	// and wait only after releasing that mutex.
@@ -1319,9 +1321,10 @@ type jobOutputWindow struct {
 // offset beforeBytes (exclusive); beforeBytes <= 0 reads the tail. It backs
 // evener/jobs/output paging for both the live output store and terminal logs.
 func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64) (jobOutputWindow, error) {
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	jm.mu.Unlock()
+	run, rec, err := jm.recordForRead(jobID)
+	if err != nil {
+		return jobOutputWindow{}, err
+	}
 	if run != nil {
 		buf, start, end, total, err := run.output.Window(beforeBytes, int(maxBytes))
 		if err != nil {
@@ -1336,11 +1339,6 @@ func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64
 		}, nil
 	}
 
-	recs, err := jm.store.Load()
-	if err != nil {
-		return jobOutputWindow{}, err
-	}
-	rec := recs[jobID]
 	if rec == nil {
 		return jobOutputWindow{}, errJobNotFound(jobID)
 	}
@@ -1354,6 +1352,38 @@ func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64
 		return jobOutputWindow{}, err
 	}
 	return jobOutputWindow{content: content, start: start, end: end, total: total, earliest: earliest}, nil
+}
+
+// recordForRead resolves jobID's record with the live-first order both
+// readOutputWindow and Session.JobGet depend on: the running record when the
+// job is live, else the store's folded record. run is non-nil only when a live
+// job owns jobID (readOutputWindow reads the live output buffer through it);
+// rec is a SNAPSHOT of the live record when the job is running, else the
+// store's already-folded record, and nil when neither holds the job.
+//
+// The live record is cloned under jm.mu: the job path mutates it in place
+// there (finalizeJob, stampLastActivityLocked, noteJobActivity), and a caller
+// reads the returned record after the lock is released - the same reason every
+// other live-record reader in this file clones under the lock.
+func (jm *jobManager) recordForRead(jobID string) (run *runningJob, rec *jobstore.JobRecord, err error) {
+	if jm == nil {
+		return nil, nil, nil
+	}
+	jm.mu.Lock()
+	run = jm.running[jobID]
+	var snapshot *jobstore.JobRecord
+	if run != nil {
+		snapshot = cloneJobRecord(run.rec)
+	}
+	jm.mu.Unlock()
+	if run != nil {
+		return run, snapshot, nil
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, recs[jobID], nil
 }
 
 //nolint:unused // retained for tagged job-runtime output recovery fuzz owners.
@@ -1714,6 +1744,7 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 // EventJobNotificationPending or enqueue an owner notification — the model
 // already received the complete result inline (spec §6.4d).
 func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, reason string, exitCode *int) error {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	terminal := run.terminal
 	jm.mu.Unlock()
@@ -2028,6 +2059,7 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 }
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
+	defer jm.publishWatchActivity()
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()

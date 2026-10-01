@@ -199,3 +199,168 @@ func TestSessionJobOutputTailNilManager(t *testing.T) {
 		t.Errorf("nil session JobOutputTail: found=%v err=%v", found, err)
 	}
 }
+
+// Session.JobGet resolves a live session's own job record and projects it into
+// the activity-tree job shape, so the web UI can render the untruncated command
+// beside the job's output.
+func TestSessionJobGetReturnsUntruncatedCommand(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	now := time.Now()
+	if err := jm.store.Append(jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: now, JobID: "job_x",
+		Type: jobstore.JobShell, Status: jobstore.StatusRunning,
+		OwnerSessionID: "sess_1", VisibleToSession: "sess_1",
+		Command: "go test ./... -count=1", Description: "run tests",
+		StartedAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess := &Session{}
+	sess.jobManager = jm
+
+	job, found, err := sess.JobGet("job_x")
+	if err != nil || !found {
+		t.Fatalf("JobGet: found=%v err=%v", found, err)
+	}
+	if job.JobID != "job_x" || job.Command != "go test ./... -count=1" || job.Description != "run tests" {
+		t.Errorf("job = %+v", job)
+	}
+	if job.OwnerRef != "local:sess_1" {
+		t.Errorf("OwnerRef = %q, want local:sess_1", job.OwnerRef)
+	}
+}
+
+func TestSessionJobGetNotFound(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	sess := &Session{}
+	sess.jobManager = jm
+	job, found, err := sess.JobGet("job_missing")
+	if err != nil || found {
+		t.Fatalf("JobGet(missing): found=%v err=%v, want found=false err=nil", found, err)
+	}
+	if job.JobID != "" {
+		t.Errorf("job = %+v, want zero value", job)
+	}
+}
+
+func TestSessionJobGetNilManager(t *testing.T) {
+	t.Parallel()
+	var s *Session
+	if _, found, err := s.JobGet("job_1"); err != nil || found {
+		t.Errorf("nil session JobGet: found=%v err=%v", found, err)
+	}
+}
+
+// LoadSessionJobGet reads one persisted session's jobs.jsonl for the hub's
+// past-session fallback and projects the record's untruncated command.
+func TestLoadSessionJobGetReturnsUntruncatedCommand(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	if err := os.MkdirAll(jobsDir(dir, sessionID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := jobstore.OpenNoSync(filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := st.Append(jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: now, JobID: "job_x",
+		Type: jobstore.JobShell, Status: jobstore.StatusRunning,
+		OwnerSessionID: sessionID, VisibleToSession: sessionID,
+		Command: "make build -j8", Description: "build",
+		StartedAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	job, found, err := LoadSessionJobGet(dir, sessionID, "job_x")
+	if err != nil || !found {
+		t.Fatalf("LoadSessionJobGet: found=%v err=%v", found, err)
+	}
+	if job.JobID != "job_x" || job.Command != "make build -j8" {
+		t.Errorf("job = %+v", job)
+	}
+	if job.OwnerRef != "local:"+sessionID {
+		t.Errorf("OwnerRef = %q, want local:%s", job.OwnerRef, sessionID)
+	}
+}
+
+func TestLoadSessionJobGetNotFound(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	if err := os.MkdirAll(jobsDir(dir, sessionID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := jobstore.OpenNoSync(filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := st.Append(jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: now, JobID: "job_other",
+		Type: jobstore.JobShell, Status: jobstore.StatusRunning,
+		OwnerSessionID: sessionID, VisibleToSession: sessionID, StartedAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, found, err := LoadSessionJobGet(dir, sessionID, "job_missing")
+	if err != nil || found {
+		t.Fatalf("LoadSessionJobGet(missing): found=%v err=%v, want found=false err=nil", found, err)
+	}
+}
+
+// LoadSessionJobGet joins sessionID into a jobsDir path, so a traversal-shaped
+// ID must be refused before that join.
+func TestLoadSessionJobGetRejectsUnsafeSessionID(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, found, err := LoadSessionJobGet(dir, "../escaped", "job_x")
+	if !errors.Is(err, schema.ErrInvalidSessionID) {
+		t.Fatalf("LoadSessionJobGet(%q) error = %v, want schema.ErrInvalidSessionID", "../escaped", err)
+	}
+	if found {
+		t.Errorf("LoadSessionJobGet(%q) found = true, want false", "../escaped")
+	}
+}
+
+// recordForRead hands out a SNAPSHOT of the live record, never the running
+// record itself. Session.JobGet projects that record after the lock is
+// released, while the job path mutates the live one in place under the lock
+// (finalizeJob, stampLastActivityLocked, noteJobActivity), so handing out the
+// live pointer is a data race the -race lane can flag and can yield a torn
+// snapshot. Every other live-record reader in jobs.go clones under the lock
+// (liveJobRecords, cloneJobRecord).
+func TestRecordForReadSnapshotsTheLiveRecord(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	// Seed the running job directly rather than launch a real command: the
+	// behavior under test is recordForRead's cloning, and a command that exits
+	// could be finalized out of jm.running before the snapshot is taken.
+	rec := &jobstore.JobRecord{
+		JobID: "job_live", Type: jobstore.JobShell, Status: jobstore.StatusRunning,
+		OwnerSessionID: "sess_1", StartedAt: time.Now(),
+	}
+	jm.running[rec.JobID] = &runningJob{rec: rec}
+
+	_, got, err := jm.recordForRead(rec.JobID)
+	if err != nil || got == nil {
+		t.Fatalf("recordForRead: rec=%v err=%v", got, err)
+	}
+	if got == rec {
+		t.Fatal("recordForRead returned the live record by pointer; its caller reads it after the lock is released")
+	}
+	if got.JobID != rec.JobID {
+		t.Errorf("snapshot JobID = %q, want %q", got.JobID, rec.JobID)
+	}
+}

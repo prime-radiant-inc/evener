@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
@@ -53,9 +52,9 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 			newToken:        func() (string, error) { return "hub-token", nil },
 			loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 			loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-			startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+			startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, func(func()), func()) {
 			},
-			startLaunchPrefetch: func(context.Context, *WebServer, time.Duration, func(func())) {},
+			startLaunchPrefetch: func(context.Context, *WebServer, func(func())) {},
 			notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 				return ctx, func() {}
 			},

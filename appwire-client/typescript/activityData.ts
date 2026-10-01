@@ -102,7 +102,7 @@ export interface ActivityShellEntry {
 
 export interface ActivitySessionNode {
   kind: "session";
-  sessionId: string;
+  sessionId?: string;
   ref: string;
   label: string;
   aggregate: string;
@@ -119,9 +119,11 @@ export interface ActivitySessionNode {
 
 export interface ActivityDelegate {
   delegateId: string;
+  ownerRef?: string;
+  rootRef?: string;
   ownerSessionId?: string;
   rootSessionId?: string;
-  childSessionId: string;
+  childSessionId?: string;
   childRef: string;
   transcriptRef?: string;
   parentDelegateId?: string;
@@ -200,8 +202,8 @@ export interface ActivityWorktree {
 }
 
 export interface ActivityUsage {
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
   cacheReadTokens?: number;
   totalTokens?: number;
 }
@@ -235,9 +237,9 @@ type ParseResult<T> = {
 };
 
 type ActivityIdentity =
-  | { kind: "session"; sessionId: string }
-  | { kind: "delegate"; delegateId: string }
-  | { kind: "shell"; jobId: string };
+  | { kind: "session"; ref: string }
+  | { kind: "delegate"; delegateId: string; childRef: string }
+  | { kind: "shell"; jobId: string; ownerRef: string };
 
 export type ActivityNodeLike = ActivityIdentity | ActivitySessionNode | ActivityShellEntry | ActivityDelegateEntry;
 
@@ -367,7 +369,19 @@ function copyOptionalInteger(
   return true;
 }
 
-function parseJob(raw: unknown): ActivityJob | null {
+// jobCommandLabel is the one wording of what a job ran, for every surface that
+// shows it: the command, else the task, else the description. The command is
+// the record's own, untruncated; a blank or absent one falls through, so a job
+// that carries only a task still reads as something.
+export function jobCommandLabel(job: Pick<ActivityJob, "command" | "task" | "description">): string | undefined {
+  return job.command?.trim() || job.task?.trim() || job.description?.trim() || undefined;
+}
+
+// parseActivityJob validates one job payload against the ActivityJob wire
+// shape. The tree parser uses it per shell entry; the job log pane uses it for
+// the single-job read (evener/jobs/get), whose Data field crosses the wire
+// untyped like the tree's.
+export function parseActivityJob(raw: unknown): ActivityJob | null {
   if (!isPlainObject(raw)) return null;
   const jobId = readString(raw, "jobId");
   const ownerSessionId = readString(raw, "ownerSessionId");
@@ -454,7 +468,7 @@ function parseEntry(raw: unknown, depth: number): ParseResult<ActivityEntry> {
   if (!isPlainObject(raw)) return { value: null, incomplete: true };
   const kind = readString(raw, "kind");
   if (kind === "shell") {
-    const job = parseJob(raw.job);
+    const job = parseActivityJob(raw.job);
     return { value: job ? { kind: "shell", job } : null, incomplete: job === null };
   }
   if (kind === "delegate") {
@@ -527,7 +541,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     if (!copyOptionalInteger(raw, target, field, true)) return { value: null, incomplete: true };
   }
   if (Array.isArray(raw.turns)) {
-    const turns = raw.turns.map(parseJob);
+    const turns = raw.turns.map(parseActivityJob);
     if (turns.some((turn) => turn === null)) return { value: null, incomplete: true };
     delegate.turns = turns as ActivityJob[];
   } else if (typeof raw.turns !== "undefined" && raw.turns !== null) {
@@ -666,14 +680,14 @@ export function activityDelegateDiagnostics(delegate: ActivityDelegate): string[
 }
 
 export function activityNodeID(node: ActivityNodeLike): string {
-  if (node.kind === "session" && "sessionId" in node) return `session:${node.sessionId}`;
+  if (node.kind === "session") return `session:${node.ref}`;
   if (node.kind === "delegate") {
-    if ("delegate" in node) return `delegate:${node.delegate.delegateId}`;
-    return `delegate:${node.delegateId}`;
+    const delegate = "delegate" in node ? node.delegate : node;
+    return `delegate:${JSON.stringify([delegate.childRef, delegate.delegateId])}`;
   }
   if (node.kind === "shell") {
-    if ("job" in node) return `job:${node.job.jobId}`;
-    return `job:${node.jobId}`;
+    const job = "job" in node ? node.job : node;
+    return `job:${JSON.stringify([job.ownerRef, job.jobId])}`;
   }
   throw new Error("unsupported activity node identity");
 }

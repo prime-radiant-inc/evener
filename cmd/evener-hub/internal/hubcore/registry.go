@@ -79,7 +79,7 @@ type ProviderRegistry struct {
 	// while a failed newer fetch - which applies nothing - never blocks an
 	// older in-flight success. It is deliberately NOT generation:
 	// beginning a fetch changes nothing a reader can observe, and the
-	// prefetch begins one per instance on every pass, so counting starts
+	// startup prefetch begins one per instance, so counting starts
 	// as installs would defeat the model-list cache's TTL.
 	fetchClock uint64
 	// lastApplied holds the highest fetch order applied per instance.

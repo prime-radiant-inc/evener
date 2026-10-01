@@ -222,6 +222,11 @@ export const uiType = {
 	subheadline: { fontSize: 15, lineHeight: 20 },
 	/** Meta and captions: a row's second line, a group's footer. */
 	footnote: { fontSize: 13, lineHeight: 18 },
+	/** Spec 16.2's Page status line, the Hub's connection line and the Live
+	 * summary's counts: 14pt, as the prototype's Hub status line (hub.js:17),
+	 * on the 20pt line of its Live summary (styles.css:285, .live-sum). A
+	 * sheet's reconnecting line is Footnote. */
+	statusLine: { fontSize: 14, lineHeight: 20 },
 	/** One or two words, uppercase, +0.06em (12 × 0.06 = 0.72). */
 	sectionLabel: {
 		fontSize: 12,

@@ -176,7 +176,7 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 		t.Fatalf("nextIdleDelegateAttention offered %s during ancestor stop", delegateID)
 	}
 	c.mu.Lock()
-	_, parked := c.attentionWakeIDs["dlg_child"][attentionID]
+	_, parked := attentionWakeIDsOf(c, "dlg_child")[attentionID]
 	c.mu.Unlock()
 	if !parked {
 		t.Fatal("transient ancestor stop dropped the parked attention")
@@ -315,6 +315,30 @@ func newFencedGrandchildAttention(t *testing.T) fencedGrandchildAttention {
 	}
 }
 
+// closeParent closes the grandchild's parent delegate for good and publishes
+// the closure, fencing the grandchild's attention off from any wake.
+func (f fencedGrandchildAttention) closeParent(t *testing.T) {
+	t.Helper()
+	plans, err := f.root.delegateController.CloseResumability(rootDelegateActor(f.root.ID()), f.fixture.delegateID, "turn_budget_exhausted")
+	if err != nil {
+		t.Fatalf("close parent resumability: %v", err)
+	}
+	if err := f.root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("publish parent closure: %v", err)
+	}
+}
+
+// owedAndParked reports whether the grandchild still owes its attention and
+// whether the drive has parked it.
+func (f fencedGrandchildAttention) owedAndParked() (owed, parked bool) {
+	c := f.root.delegateController
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, owed = attentionWakeIDsOf(c, f.grandchildDelegateID)[f.attentionID]
+	parked = attentionParkedOf(c, f.grandchildDelegateID)
+	return owed, parked
+}
+
 // TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce drives
 // the hot path end to end: a resident root supervises an idle grandchild whose
 // pending attention sits under a parent delegate that closed permanently. The
@@ -330,13 +354,7 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 	var published []delegateUpdatePlan
 	root.delegateController.emitUpdate = func(plan delegateUpdatePlan) { published = append(published, plan) }
 	root.delegateController.mu.Unlock()
-	plans, err := root.delegateController.CloseResumability(rootDelegateActor(root.ID()), fixture.delegateID, "turn_budget_exhausted")
-	if err != nil {
-		t.Fatalf("close parent resumability: %v", err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatalf("publish parent closure: %v", err)
-	}
+	fenced.closeParent(t)
 	root.delegateController.mu.Lock()
 	childAggregate := root.delegateController.durable[grandchildDelegateID]
 	root.delegateController.mu.Unlock()

@@ -1323,7 +1323,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	}
 	tree.mu.Lock()
 	generation := tree.durable[d.DelegateID].Generation
-	_, pending := tree.attentionWakeIDs[d.DelegateID][attentionID]
+	_, pending := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
 	tree.mu.Unlock()
 	if !pending {
 		t.Fatal("original attention source was not populated")
@@ -1335,7 +1335,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 		t.Fatalf("populated attention entry not refused: added=%v emit=%v %v", added, emit, err)
 	}
 	tree.mu.Lock()
-	_, pending = tree.attentionWakeIDs[d.DelegateID][attentionID]
+	_, pending = attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
 	exact := tree.durable[d.DelegateID].Generation == generation
 	tree.mu.Unlock()
 	if !pending || !exact {
@@ -1388,7 +1388,7 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	tree.mu.Lock()
-	_, pending := tree.attentionWakeIDs[d.DelegateID][attentionID]
+	_, pending := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
 	tree.mu.Unlock()
 	if !pending {
 		t.Fatal("original attention source was not populated")

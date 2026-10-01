@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { boundary as kit } from "./providerSignIn.testkit";
+import { boundary as kit } from "./providerSignInTestUtils";
 
 const device = {
 	provider: "work",

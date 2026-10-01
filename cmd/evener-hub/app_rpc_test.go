@@ -8004,6 +8004,10 @@ func (s *relayLifecycleSource) JobOutput(context.Context, appwire.JobsOutputPara
 	return appwire.JobsOutputResponse{}, appwire.Unavailable("relay lifecycle source does not read job output")
 }
 
+func (s *relayLifecycleSource) JobGet(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	return appwire.JobsGetResponse{}, appwire.Unavailable("relay lifecycle source does not get jobs")
+}
+
 func (s *relayLifecycleSource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	out := make(chan appwire.Notification)
 	go func() {
@@ -12909,7 +12913,12 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerTasksList,
 		appwire.MethodEvenerJobsList,
 		appwire.MethodEvenerJobsOutput,
+		appwire.MethodEvenerJobsGet,
+		appwire.MethodEvenerThreadActivityRead,
+		appwire.MethodEvenerThreadDelegatesList,
+		appwire.MethodEvenerThreadJobsList,
 		appwire.MethodEvenerThreadTranscriptsList,
+		appwire.MethodEvenerThreadWatchesList,
 		appwire.MethodEvenerPathsComplete,
 		appwire.MethodEvenerDirsCreate,
 		appwire.MethodEvenerProjectsRecent,
@@ -13253,4 +13262,20 @@ func TestHubRPCUrlsRemoveGatedByCapability(t *testing.T) {
 	if wire.Code != appwire.CodeUnavailable {
 		t.Fatalf("wire=%+v", wire)
 	}
+}
+
+func (s *relayLifecycleSource) ThreadActivityRead(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+	return appwire.SessionActivitySummary{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *relayLifecycleSource) ThreadDelegatesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+	return appwire.SessionDelegatesResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *relayLifecycleSource) ThreadJobsList(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+	return appwire.SessionJobsResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *relayLifecycleSource) ThreadWatchesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+	return appwire.SessionWatchesResponse{}, appwire.Unavailable("test source does not read session activity")
 }

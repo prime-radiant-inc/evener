@@ -320,12 +320,17 @@ test("a subagent's recorded report renders its name and message, never the raw p
   const card = screen.getByTestId("notification-card");
   expect(card.textContent).toContain("Delegate completed");
   expect(card.textContent).toContain("Fix race in tree settle");
-  expect(screen.getByTestId("notification-field-excerpt").textContent).toContain(
+  // The report renders as the message bubble, and the packet's JSON never
+  // reaches the card.
+  expect(screen.getByTestId("notification-message").textContent).toContain(
     "Done: the settle pass now waits for the drain.",
   );
+  expect(card.textContent).not.toContain('"kind"');
 });
 
-test("a subagent's recorded failure renders as a failure with its message", () => {
+// A failure whose whole error is one line IS its head's ending, so the row
+// renders as a static line: the cause on the head, no report body to expand.
+test("a subagent's recorded one-line failure says its cause on the head and renders no report body", () => {
   render(
     <SteeringItem
       item={item({ text: notificationWireItem("delegate-failed-unnamed").text })}
@@ -335,7 +340,9 @@ test("a subagent's recorded failure renders as a failure with its message", () =
   );
   const card = screen.getByTestId("notification-card");
   expect(card.textContent).toContain("Delegate failed");
-  expect(screen.getByTestId("notification-field-excerpt").textContent).toContain("go test exited 1 three times");
+  expect(card.textContent).toContain("go test exited 1 three times");
+  expect(card.closest("details")).toBeNull();
+  expect(screen.queryByTestId("notification-message")).toBeNull();
 });
 
 test("a job-notification steer renders a notification card (not a steering divider)", () => {

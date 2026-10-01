@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { NavigationReadParams } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { LIVE_PAGE_LIMIT, LiveSessionsReader, liveCountsByHost, liveSessionsText } from "./liveCounts";
 
@@ -23,8 +23,8 @@ function liveHub(page: (read: number) => { sessions: ReturnType<typeof session>[
 		request: async (_method: string, params: NavigationReadParams) => {
 			const answer = page(reads.length);
 			reads.push(params);
-			return wireV2(
-				{ ...params, representationVersion: 2, offset: params.offset ?? 0, limit: params.limit ?? 50 },
+			return wireSnapshot(
+				{ ...params, representationVersion: 3, offset: params.offset ?? 0, limit: params.limit ?? 50 },
 				answer,
 				`etag-${reads.length}`,
 				1,

@@ -116,11 +116,16 @@ no router (reserved).
 | `evener/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `evener/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
 | `evener/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
+| `evener/jobs/get` | both | `JobsGetParams` | `JobsGetResponse` | Reads one job's metadata (the activity-tree job shape, including the untruncated command). Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
 | `evener/daemon/list` | hub | `DaemonListParams` | `DaemonListResponse` | Lists resident daemons with lifecycle and exact ownership identity, including archived, incompatible, and unresolved discovered processes. |
 | `evener/daemon/retire` | both | `DaemonRetireParams` | `DaemonRetireResponse` | Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle. |
 | `evener/daemon/status` | daemon | `DaemonStatusParams` | `DaemonStatusResponse` | Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility. |
 | `evener/daemon/idle-timeout/set` | daemon | `DaemonIdleTimeoutSetParams` | `DaemonIdleTimeoutSetResponse` | Retargets the automatic idle-retirement deadline (0 disables it) against exact ownership identity and answers with the current lifecycle; the Hub sets this from session archive decisions. |
 | `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
+| `evener/thread/activity/read` | both | `SessionActivityReadParams` | `SessionActivitySummary` | Reads cheap activity counts and context for an explicit session ref and ownership scope; unknown counts are explicit. |
+| `evener/thread/delegates/list` | both | `SessionActivityListParams` | `SessionDelegatesResponse` | Pages compact stable delegates logically owned by a session or its subtree; bounded by 200 rows and 256 KiB. |
+| `evener/thread/jobs/list` | both | `SessionActivityListParams` | `SessionJobsResponse` | Pages shell jobs logically owned by a session or its subtree; job output is read separately. |
+| `evener/thread/watches/list` | both | `SessionActivityListParams` | `SessionWatchesResponse` | Pages receiver-owned watches and bounded retained history for a session or its subtree. |
 | `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
 | `evener/dirs/create` | hub | `DirsCreateParams` | `DirsCreateResponse` | Creates a missing working directory and its parents for Spawn preflight. |
@@ -128,7 +133,7 @@ no router (reserved).
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `evener/git/head` | hub | `GitHeadParams` | `GitHeadResponse` | Reads a working directory's git HEAD, and its sanitized origin remote URL when requested. |
 | `evener/mobile/pairing` | hub | `MobilePairingParams` | `MobilePairingResponse` | Creates a validated mobile pairing URL for the authenticated web application. |
-| `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource as a normalized v2 snapshot or delta, optionally conditional on its exact base. |
+| `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base. |
 | `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
 | `evener/archive/set` | hub | `ArchiveParams` | `ArchiveResponse` | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt. |
 | `evener/project/delete` | hub | `ProjectDeleteParams` | `ProjectDeleteResponse` | Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt. |
@@ -236,7 +241,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
 | `evener/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
-| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change. Clients refresh auth state and the instance list. |
+| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change, including a launch model list refresh that changed what a picker showed. Clients refresh auth state, the instance list and their model list. |
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
@@ -244,6 +249,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/notices/changed` | `NoticesListResponse` | Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
+| `evener/thread/activity/changed` | `SessionActivityChangedParams` | Scoped activity invalidation; clients revalidate the named observed resources for the addressed session. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
 | `evener/notes/updated` | `NotesUpdatedParams` | The session's shared-notes whiteboards changed. |
@@ -1575,6 +1581,21 @@ _(no fields)_
 | `dirty` | `bool` |  |  |
 
 
+### `JobsGetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` | yes |  |
+| `jobId` | `string` |  |  |
+
+
+### `JobsGetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | `interface {}` |  |  |
+
+
 ### `JobsListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2197,6 +2218,55 @@ _(no fields)_
 | `match` | `bool` | yes |  |
 
 
+### `SessionActivityChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `sessionId` | `string` |  |  |
+| `resources` | `[]appwire.SessionActivityResource` |  |  |
+
+
+### `SessionActivityListParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `scope` | `appwire.SessionActivityScope` | yes |  |
+| `cursor` | `string` | yes |  |
+| `limit` | `int` | yes |  |
+
+
+### `SessionActivityReadParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `scope` | `appwire.SessionActivityScope` | yes |  |
+
+
+### `SessionActivitySummary`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `delegates` | `appwire.SessionActivityCounts` |  |  |
+| `jobs` | `appwire.SessionActivityCounts` |  |  |
+| `watches` | `appwire.SessionActivityCounts` |  |  |
+
+
+### `SessionDelegatesResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `delegates` | `[]appwire.SessionDelegate` |  |  |
+
+
 ### `SessionDeleteParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2250,6 +2320,16 @@ _(no fields)_
 | `data` | `[]uint8` |  |  |
 
 
+### `SessionJobsResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `jobs` | `[]appwire.JobActivityJob` |  |  |
+
+
 ### `SessionPinAssignParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2300,6 +2380,16 @@ _(no fields)_
 | `ok` | `bool` |  |  |
 | `changed` | `bool` |  |  |
 | `navigation` | `appwire.NavigationMutation` |  |  |
+
+
+### `SessionWatchesResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `context` | `appwire.SessionActivityContext` |  |  |
+| `scope` | `appwire.SessionActivityScope` |  |  |
+| `page` | `appwire.SessionActivityPage` |  |  |
+| `watches` | `[]appwire.SessionWatch` |  |  |
 
 
 ### `SettingsOverviewResponse`

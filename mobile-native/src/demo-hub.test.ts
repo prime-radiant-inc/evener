@@ -1,7 +1,7 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import type { NavigationReadParams, WebSocketLike } from "@evener/appwire-client";
+import type { NavigationReadParams, WebSocketLike, SessionDelegatesResponse } from "@evener/appwire-client";
 import { type MutationOptimisticRecord, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
@@ -13,11 +13,12 @@ import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } 
 import { DEMO_MODEL_LIST } from "./dev/demoSetup.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
-import { parseActivityTree, parseJobLogTail } from "@evener/appwire-client";
+import { SessionActivityStore, projectSessionActivity, parseJobLogTail } from "@evener/appwire-client";
 import { readDocFile } from "@evener/appwire-client/docContent";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
 import { nativeDocPort } from "./nativeDocPort";
-import { flattenActivity, flattenSubagents } from "./subagents/subagentModel";
+import { flattenActivity, isJobRow, isSubagentRow } from "./subagents/subagentModel";
+import { SubagentTree } from "./subagents/subagentTree";
 
 describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 	const PR2138 = `local:${demoSessionId("s-pr2138")}`;
@@ -38,54 +39,306 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 		}
 	}
 
-	it("lists Get PR 2138 Test Clean's 55 subagents over a real socket", async () => {
+	it("serves typed direct and subtree activity with stable paged identities over a real socket", async () => {
 		await withFleetHub(async (_hub, client) => {
-			const response = await client.request("evener/jobs/list", { ref: PR2138 });
-			const tree = parseActivityTree((response as { data: unknown }).data);
-			if (!tree) throw new Error("no tree");
-			expect(flattenSubagents(tree)).toHaveLength(55);
-			// Its Activity list's shell jobs include its own finished build.
-			const jobs = flattenActivity(tree).jobs;
-			expect(jobs.map((row) => [row.title, row.state, row.owner])).toContainEqual([
-				"go build ./...",
-				"done",
-				"Get PR 2138 Test Clean",
-			]);
+			const summary = await client.request("evener/thread/activity/read", { ref: PR2138, scope: "subtree" });
+			expect(summary).toMatchObject({
+				context: {
+					ref: PR2138,
+					sessionId: demoSessionId("s-pr2138"),
+					rootRef: PR2138,
+					ancestryKnown: true,
+					availability: "live",
+					ancestors: [],
+				},
+				scope: "subtree",
+				delegates: { known: true, total: 55 },
+			});
+			expect(summary.context.epoch).not.toBe("");
+			const direct = await client.request("evener/thread/delegates/list", { ref: PR2138, limit: 200 });
+			expect(direct.scope).toBe("session");
+			expect(direct.delegates).toHaveLength(54);
+			const rows: SessionDelegatesResponse["delegates"] = [];
+			let cursor: string | undefined;
+			do {
+				const page = await client.request("evener/thread/delegates/list", {
+					ref: PR2138,
+					scope: "subtree",
+					cursor,
+					limit: 7,
+				});
+				expect(page.context).toEqual(summary.context);
+				expect(page.page.issues).toEqual([]);
+				rows.push(...page.delegates);
+				cursor = page.page.nextCursor;
+				if (page.page.complete) expect(cursor).toBeUndefined();
+			} while (cursor);
+			expect(rows).toHaveLength(55);
+			expect(new Set(rows.map((row) => row.delegateId)).size).toBe(55);
+			const failedDelegate = rows.find((row) => row.outcome === "failed");
+			if (!failedDelegate) throw new Error("missing failed delegate fixture");
+			expect(failedDelegate).toMatchObject({ terminal: true, lifecycle: "idle", status: "idle", outcome: "failed" });
+			expect(failedDelegate.reason).not.toBe("");
+			const parent = rows.find((row) => row.delegateId === "g-settle");
+			if (!parent) throw new Error("missing parent fixture");
+			const selected = await client.request("evener/thread/delegates/list", { ref: parent.childRef });
+			expect(selected.context).toMatchObject({
+				ref: parent.childRef,
+				sessionId: demoSessionId("g-settle"),
+				rootRef: PR2138,
+				parentRef: PR2138,
+				ancestryKnown: true,
+				ancestors: [{ ref: PR2138, sessionId: demoSessionId("s-pr2138") }],
+			});
+			expect(selected.delegates).toHaveLength(1);
+			expect(selected.delegates[0]).toMatchObject({
+				delegateId: "g-settle-1",
+				ownerRef: parent.childRef,
+				rootRef: PR2138,
+				parentDelegateId: "g-settle",
+			});
+			const ownJobs = await client.request("evener/thread/jobs/list", { ref: PR2138 });
+			expect(ownJobs.jobs.map((job) => job.command)).toEqual(["go build ./..."]);
+			expect(ownJobs.jobs[0]).toMatchObject({
+				ownerRef: PR2138,
+				ownerSessionId: demoSessionId("s-pr2138"),
+				transcriptRef: PR2138,
+			});
+			const jobs = await client.request("evener/thread/jobs/list", { ref: PR2138, scope: "subtree", limit: 200 });
+			expect(jobs.jobs.length).toBeGreaterThan(ownJobs.jobs.length);
+			const failed = jobs.jobs.find((job) => job.status === "command_exited_nonzero");
+			if (!failed) throw new Error("missing failed shell fixture");
+			expect(failed.ownerRef).not.toBe(PR2138);
+			await expect(
+				client.request("evener/jobs/output", { ref: failed.ownerRef, jobId: failed.jobId }),
+			).resolves.toHaveProperty("data");
+			const watches = await client.request("evener/thread/watches/list", { ref: parent.childRef });
+			expect(watches).toMatchObject({
+				context: selected.context,
+				scope: "session",
+				watches: [],
+				page: { complete: true, issues: [] },
+			});
+		});
+	});
+
+	it("loads the typed demo through the shared observed store and projects all pages", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const store = new SessionActivityStore(client, PR2138, { scope: "subtree" });
+			store.start();
+			const releases = [store.observe("delegates"), store.observe("jobs"), store.observe("watches")];
+			try {
+				await Promise.all([
+					store.refresh("summary"),
+					store.load("delegates"),
+					store.load("jobs"),
+					store.load("watches"),
+				]);
+				expect(store.getSnapshot().summary?.delegates.total).toBe(55);
+				expect(store.getSnapshot().delegates.rows).toHaveLength(50);
+				expect(store.getSnapshot().delegates.hasMore).toBe(true);
+				await store.loadMore("delegates");
+				const snapshot = store.getSnapshot();
+				expect(snapshot.delegates.rows).toHaveLength(55);
+				expect(snapshot.delegates.complete).toBe(true);
+				for (const resource of [snapshot.summaryState, snapshot.delegates, snapshot.jobs, snapshot.watches])
+					expect(resource.error).toBeNull();
+				const presentation = projectSessionActivity(snapshot);
+				expect(presentation.complete).toBe(true);
+				expect(presentation.tree?.root.ref).toBe(PR2138);
+				expect(presentation.tree?.root.entries.filter((entry) => entry.kind === "delegate")).toHaveLength(54);
+			} finally {
+				for (const release of releases) release();
+				store.dispose();
+			}
+		});
+	});
+
+	it("recovers an evicted continuation through only the affected shared-store collection", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const requests = vi.spyOn(client, "request");
+			const store = new SessionActivityStore(client, PR2138, { scope: "subtree" });
+			store.start();
+			const releases = [store.observe("delegates"), store.observe("jobs"), store.observe("watches")];
+			try {
+				await Promise.all([
+					store.refresh("summary"),
+					store.load("delegates"),
+					store.load("jobs"),
+					store.load("watches"),
+				]);
+				expect(store.getSnapshot().delegates.rows).toHaveLength(50);
+				const initialMembership = store.getSnapshot().delegates.rows.map((row) => row.delegateId);
+				for (let i = 0; i < 129; i++)
+					await client.request("evener/thread/delegates/list", { ref: PR2138, scope: "subtree", limit: 1 });
+				requests.mockClear();
+				const memberships: string[][] = [];
+				const leave = store.subscribe(() =>
+					memberships.push(store.getSnapshot().delegates.rows.map((row) => row.delegateId)),
+				);
+				await store.loadMore("delegates");
+				leave();
+				expect(store.getSnapshot().delegates).toMatchObject({ error: null, permanent: false, hasMore: true });
+				expect(memberships.length).toBeGreaterThan(0);
+				for (const membership of memberships) expect(membership).toEqual(initialMembership);
+				expect(requests.mock.calls.map(([method]) => method)).toEqual([
+					"evener/thread/delegates/list",
+					"evener/thread/delegates/list",
+				]);
+				expect(requests.mock.calls[0]?.[1]).toHaveProperty("cursor");
+				expect(requests.mock.calls[1]?.[1]).not.toHaveProperty("cursor");
+				await store.loadMore("delegates");
+				const rows = store.getSnapshot().delegates.rows;
+				expect(rows).toHaveLength(55);
+				expect(new Set(rows.map((row) => row.delegateId)).size).toBe(55);
+				expect(store.getSnapshot().delegates.complete).toBe(true);
+				expect(requests.mock.calls.every(([method]) => method === "evener/thread/delegates/list")).toBe(true);
+			} finally {
+				for (const release of releases) release();
+				store.dispose();
+			}
+		});
+	});
+
+	it("keeps a coordinator's running job consistent with its compact navigation summary", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const ref = `local:${demoSessionId("s-tasklist")}`;
+			const summary = await client.request("evener/thread/activity/read", { ref });
+			const jobs = await client.request("evener/thread/jobs/list", { ref });
+			expect(summary.jobs).toMatchObject({ known: true, total: 1, active: 1 });
+			expect(jobs.jobs).toHaveLength(1);
+			expect(jobs.jobs[0]).toMatchObject({
+				ownerRef: ref,
+				transcriptRef: ref,
+				command: "go test ./cmd/evener-hub/...",
+				terminal: false,
+			});
+		});
+	});
+
+	it("binds cursors to the selected resource, scope and ref without changing page membership", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const first = await client.request("evener/thread/delegates/list", { ref: PR2138, scope: "subtree", limit: 1 });
+			const cursor = first.page.nextCursor;
+			if (!cursor) throw new Error("missing demo continuation");
+			const rest = await client.request("evener/thread/delegates/list", {
+				ref: PR2138,
+				scope: "subtree",
+				cursor,
+				limit: 200,
+			});
+			expect(rest.delegates).toHaveLength(54);
+			expect(rest.page.complete).toBe(true);
+			expect(new Set([...first.delegates, ...rest.delegates].map((row) => row.delegateId)).size).toBe(55);
+			const invalid = { code: -32602, data: { evenerErrorInfo: "invalidParams" } };
+			await expect(
+				client.request("evener/thread/jobs/list", { ref: PR2138, scope: "subtree", cursor }),
+			).rejects.toMatchObject(invalid);
+			await expect(client.request("evener/thread/delegates/list", { ref: PR2138, cursor })).rejects.toMatchObject(
+				invalid,
+			);
+			await expect(
+				client.request("evener/thread/delegates/list", {
+					ref: first.delegates[0]?.childRef ?? "",
+					scope: "subtree",
+					cursor,
+				}),
+			).rejects.toMatchObject(invalid);
+			await expect(
+				client.request("evener/thread/delegates/list", { ref: PR2138, cursor: "malformed" }),
+			).rejects.toMatchObject(invalid);
+			await expect(client.request("evener/thread/delegates/list", { ref: PR2138, limit: -1 })).rejects.toMatchObject(
+				invalid,
+			);
+			await expect(client.request("evener/thread/activity/read", { ref: "local:missing" })).rejects.toMatchObject({
+				code: -32602,
+				data: { evenerErrorInfo: "resourceNotFound" },
+			});
+		});
+	});
+
+	it("preserves remote selected identities and retained availability", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const ref = fleetSessionRef("s-wasm");
+			expect(ref).not.toBe(`local:${demoSessionId("s-wasm")}`);
+			const summary = await client.request("evener/thread/activity/read", { ref, scope: "subtree" });
+			const jobs = await client.request("evener/thread/jobs/list", { ref, scope: "subtree" });
+			expect(summary.context).toMatchObject({
+				ref,
+				rootRef: ref,
+				sessionId: demoSessionId("s-wasm"),
+				ancestryKnown: true,
+			});
+			expect(
+				jobs.jobs.some((job) => job.ownerRef === ref && job.transcriptRef === ref && job.command === "make test-wasm"),
+			).toBe(true);
+			const retained = fleetSessionRef("s-roster");
+			await expect(client.request("evener/thread/activity/read", { ref: retained })).resolves.toMatchObject({
+				context: { ref: retained, rootRef: retained, availability: "retained", ancestryKnown: true },
+				delegates: { known: true, total: 0 },
+			});
+		});
+	});
+
+	// The Activity list's own binding over the typed activity reads, every
+	// page loaded, as the list loads them while you scroll.
+	it("lists Get PR 2138 Test Clean's 55 subagents, and who ran each shell job, over a real socket", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const coordinator = "Get PR 2138 Test Clean";
+			const binding = new SubagentTree(PR2138, demoSessionId("s-pr2138"));
+			const release = binding.observeActivity();
+			try {
+				await binding.setClient(client);
+				for (let page = 0; page < 5 && binding.getSnapshot().hasMore; page++) await binding.loadMore();
+				const tree = binding.getSnapshot().tree;
+				if (!tree) throw new Error("no tree");
+				const activity = flattenActivity(tree, coordinator);
+				expect(activity.filter(isSubagentRow)).toHaveLength(55);
+				// Its own finished build names it by its title, and a subagent's
+				// failed test names that subagent: never a ref. With every page
+				// loaded, every job can name who ran it.
+				const jobs = activity.filter(isJobRow);
+				const owned = jobs.map((row) => [row.title, row.state, row.owner]);
+				expect(owned).toContainEqual(["go build ./...", "done", coordinator]);
+				expect(owned).toContainEqual(["go test", "failed", "Fix race in tree settle"]);
+				const titles = new Set([coordinator, ...activity.filter(isSubagentRow).map((row) => row.title)]);
+				expect(jobs.filter((row) => row.owner === undefined || !titles.has(row.owner))).toEqual([]);
+			} finally {
+				release();
+				await binding.setClient(null);
+			}
 		});
 	});
 
 	// A shell job's detail reads its output from the session that owns it.
 	it("serves a listed shell job's output tail to the session that owns it", async () => {
 		await withFleetHub(async (_hub, client) => {
-			const listed = await client.request("evener/jobs/list", { ref: PR2138 });
-			const tree = parseActivityTree((listed as { data: unknown }).data);
-			if (!tree) throw new Error("no tree");
-			const failed = flattenActivity(tree).jobs.find((row) => row.state === "failed");
+			const listed = await client.request("evener/thread/jobs/list", { ref: PR2138, scope: "subtree", limit: 200 });
+			const failed = listed.jobs.find((job) => job.status === "command_exited_nonzero");
 			if (!failed) throw new Error("no failed job");
-			const response = await client.request("evener/jobs/output", {
-				ref: failed.job.ownerRef,
-				jobId: failed.id,
-			});
+			const response = await client.request("evener/jobs/output", { ref: failed.ownerRef, jobId: failed.jobId });
 			const tail = parseJobLogTail((response as { data: unknown }).data);
 			expect(tail?.tail).toContain("FAIL");
 			expect(tail?.totalBytes).toBe(new TextEncoder().encode(tail?.tail ?? "").length);
 			// Only the owning session answers for the job, as on a real hub.
-			await expect(client.request("evener/jobs/output", { ref: PR2138, jobId: failed.id })).rejects.toThrow(
-				`job not found: ${failed.id}`,
+			await expect(client.request("evener/jobs/output", { ref: PR2138, jobId: failed.jobId })).rejects.toThrow(
+				`job not found: ${failed.jobId}`,
 			);
 		});
 	});
 
 	it("opens a subagent's own session through the real conversation service", async () => {
 		await withFleetHub(async (_hub, client) => {
-			const response = await client.request("evener/jobs/list", { ref: PR2138 });
-			const child = flattenSubagents(parseActivityTree((response as { data: unknown }).data) as never).find(
-				(row) => row.title === "Check drain ordering in tests",
-			);
+			const listed = await client.request("evener/thread/delegates/list", {
+				ref: PR2138,
+				scope: "subtree",
+				limit: 200,
+			});
+			const child = listed.delegates.find((row) => row.description === "Check drain ordering in tests");
 			if (!child) throw new Error("no nested subagent");
 			const service = createConversationService(client);
 			try {
-				const conversation = await service.open(child.ref);
+				const conversation = await service.open(child.childRef);
 				expect(conversation.items.length).toBeGreaterThan(0);
 			} finally {
 				service.close();
@@ -93,13 +346,11 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 		});
 	});
 
-	it("gives Get PR 2138 Test Clean's transcript the same subagent refs as its Subagents list", async () => {
+	it("gives Get PR 2138 Test Clean's transcript the same subagent refs as its Activity list", async () => {
 		await withFleetHub(async (_hub, client) => {
-			const listed = flattenSubagents(
-				parseActivityTree(
-					((await client.request("evener/jobs/list", { ref: PR2138 })) as { data: unknown }).data,
-				) as never,
-			).map((row) => row.ref);
+			const listed = (
+				await client.request("evener/thread/delegates/list", { ref: PR2138, scope: "subtree", limit: 200 })
+			).delegates.map((row) => row.childRef);
 			const read = await client.request("thread/read", { ref: PR2138, includeTurns: false });
 			const transcript = (read.thread.evener.diagnostics?.delegates ?? []).map((delegate) => delegate.transcriptRef);
 			expect(transcript.length).toBeGreaterThan(0);
@@ -429,7 +680,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			expect(handshake.features.transcriptDisplaySettings).toBe(false);
 			await expect(
 				client.request("evener/navigation/read", {
-					representationVersion: 2,
+					representationVersion: 3,
 					resource: "manifest",
 				}),
 			).rejects.toThrow();
@@ -450,11 +701,11 @@ describe("native demonstration hub's redesign fleet", () => {
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			const handshake = await client.connect();
-			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [2] });
+			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [3] });
 			expect(handshake.features.auth).toBe(true);
 			expect(handshake.features.transcriptDisplaySettings).toBe(true);
 			const manifest = await client.request("evener/navigation/read", {
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "manifest",
 			});
 			expect(manifest.status).toBe("ok");
@@ -558,7 +809,7 @@ describe("native demonstration hub's redesign fleet", () => {
 		try {
 			await client.connect();
 			const manifest = await client.request("evener/navigation/read", {
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "manifest",
 			});
 			const snapshot = manifest.data as {
@@ -594,7 +845,7 @@ describe("native demonstration hub's redesign fleet", () => {
 				]),
 			);
 			const needsYou = await client.request("evener/navigation/read", {
-				representationVersion: 2,
+				representationVersion: 3,
 				resource: "section",
 				section: "needs_you",
 			});
@@ -938,7 +1189,7 @@ describe("native demonstration hub's fleet sessions", () => {
 				// The hub has built its fleet; the rest runs on the real clock.
 				now.mockRestore();
 				const live = await client.request("evener/navigation/read", {
-					representationVersion: 2,
+					representationVersion: 3,
 					resource: "section",
 					section: "live",
 				});
@@ -1092,7 +1343,7 @@ describe("native demonstration hub's fleet sessions", () => {
 			const ref = fleetSessionRef("s-pr2138");
 			const rowState = async (resource: { resource: string; section?: string; sectionId?: string }) => {
 				const read = await client.request("evener/navigation/read", {
-					representationVersion: 2,
+					representationVersion: 3,
 					...resource,
 				} as NavigationReadParams);
 				const entities = (read.data as { entities: { value: { session_id?: string; state?: string } }[] }).entities;

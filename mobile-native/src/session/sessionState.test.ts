@@ -1,7 +1,9 @@
 import type { EvenerDelegateInfo, SandboxEscalationRequested, TurnModel } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
-import { contextChips, sessionStateLine, type StateSource, subagentTally } from "./sessionState";
+import { contextChips, sessionStateLine, type StateSource } from "./sessionState";
 
+const counts = (total = 0, failed = 0) => ({ known: true, total, active: total - failed, failed, completed: 0 });
+const noFiles = { count: 0, fresh: false };
 const NOW = Date.UTC(2026, 8, 26, 15, 0, 0);
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
 const escalation: SandboxEscalationRequested = {
@@ -80,21 +82,13 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 
 describe("the context chips (spec 8.1)", () => {
 	it("appear only with content", () => {
-		expect(contextChips({ delegates: [], tasks: null, goal: null, queue: null }, true)).toEqual([]);
+		expect(contextChips({ delegates: [], tasks: null, goal: null, queue: null }, true, noFiles, counts())).toEqual([]);
 	});
 
 	it("count subagents the way the Subagents list does, with failures in their own part", () => {
 		// A stopped or cancelled delegate finished, not failed; a delegate still
 		// retrying after exhaustion (not terminal) is running. The list says so
 		// (subagentState), and the chip must show the same numbers (issue #2684).
-		const tally = subagentTally([
-			delegate("running", 1),
-			delegate("idle", 2, "completed"),
-			delegate("idle", 3, "failed"),
-			delegate("idle", 4, "stopped"),
-			delegate("exhausted", 5),
-		]);
-		expect(tally).toEqual({ total: 5, running: 2, failed: 1, done: 2 });
 		const [chip] = contextChips(
 			{
 				delegates: [delegate("running", 1), delegate("idle", 2, "failed")],
@@ -103,6 +97,8 @@ describe("the context chips (spec 8.1)", () => {
 				queue: null,
 			},
 			true,
+			noFiles,
+			counts(2, 1),
 		);
 		expect(chip).toEqual({
 			kind: "subagents",
@@ -122,6 +118,8 @@ describe("the context chips (spec 8.1)", () => {
 				queue: { revision: 1, depth: 1 },
 			},
 			true,
+			noFiles,
+			counts(),
 		);
 		expect(chips.map((chip) => [chip.kind, chip.label, chip.attention])).toEqual([
 			["tasks", "Tasks 3/7", false],
@@ -137,7 +135,7 @@ describe("the context chips (spec 8.1)", () => {
 
 	it("follow Subagents with Files and its count, dotted when a document is new or changed", () => {
 		const session = { delegates: [delegate("running", 1)], tasks: { total: 7, done: 3 }, goal: null, queue: null };
-		const chips = contextChips(session, true, { count: 4, fresh: false });
+		const chips = contextChips(session, true, { count: 4, fresh: false }, counts(1));
 		expect(chips.map((chip) => chip.kind)).toEqual(["subagents", "files", "tasks"]);
 		expect(chips[1]).toEqual({
 			kind: "files",
@@ -146,12 +144,14 @@ describe("the context chips (spec 8.1)", () => {
 			dot: false,
 			accessibilityLabel: "Files, 4",
 		});
-		expect(contextChips(session, true, { count: 4, fresh: true })[1]).toMatchObject({
+		expect(contextChips(session, true, { count: 4, fresh: true }, counts(1))[1]).toMatchObject({
 			dot: true,
 			accessibilityLabel: "Files, 4, new or changed",
 		});
-		expect(contextChips(session, true, { count: 0, fresh: false }).map((chip) => chip.kind)).not.toContain("files");
-		expect(contextChips(session, true).map((chip) => chip.kind)).not.toContain("files");
+		expect(contextChips(session, true, { count: 0, fresh: false }, counts(1)).map((chip) => chip.kind)).not.toContain(
+			"files",
+		);
+		expect(contextChips(session, true, noFiles, counts(1)).map((chip) => chip.kind)).not.toContain("files");
 	});
 
 	it("hides Subagents and Tasks while disconnected, since tapping either can't act (Calm); Goal and Queue don't need a connection", () => {
@@ -165,5 +165,56 @@ describe("the context chips (spec 8.1)", () => {
 			false,
 		);
 		expect(chips.map((chip) => chip.kind)).toEqual(["goal", "queue"]);
+	});
+});
+
+// Spec 8.1: chips appear only with content. The summary's count is the only
+// count source; the transcript's roster is only evidence that subagents exist.
+describe("the Subagents chip", () => {
+	const unknown = { ...counts(), known: false };
+	const withSubagents = { delegates: [delegate("running", 1)], tasks: null, goal: null, queue: null };
+	const without = { delegates: [], tasks: null, goal: null, queue: null };
+	const subagentsChip = (session: Parameters<typeof contextChips>[0], summary: Parameters<typeof contextChips>[3]) =>
+		contextChips(session, true, noFiles, summary).find((chip) => chip.kind === "subagents");
+
+	it("counts from the whole-subtree summary, not the transcript's roster", () => {
+		expect(subagentsChip(withSubagents, counts(501, 20))).toMatchObject({
+			label: "Subagents 501",
+			failed: "20 failed",
+			accessibilityLabel: "Subagents, 501, 20 failed",
+		});
+		expect(subagentsChip(withSubagents, counts(3))).toEqual({
+			kind: "subagents",
+			label: "Subagents 3",
+			attention: false,
+			accessibilityLabel: "Subagents, 3",
+		});
+	});
+
+	it("hides once the summary knows there are none, whatever the roster holds", () => {
+		expect(subagentsChip(withSubagents, counts(0))).toBeUndefined();
+		expect(subagentsChip(without, counts(0))).toBeUndefined();
+	});
+
+	const notKnown = [
+		["no summary yet", null],
+		["a summary that can't count", unknown],
+		["a summary that can't count, whatever numbers it carries", { ...unknown, total: 5, failed: 1 }],
+	] as const;
+
+	it.each(notKnown)("hides with an empty roster and %s", (_name, summary) => {
+		expect(subagentsChip(without, summary)).toBeUndefined();
+		expect(subagentsChip({ ...without, delegates: undefined }, summary)).toBeUndefined();
+	});
+
+	// A shut-down session's summary can stay unknown for good, so the chip says
+	// "Subagents" with no count until the summary knows it.
+	it.each(notKnown)("shows without a count with a roster of subagents and %s", (_name, summary) => {
+		expect(subagentsChip(withSubagents, summary)).toEqual({
+			kind: "subagents",
+			label: "Subagents",
+			attention: false,
+			accessibilityLabel: "Subagents, count unknown",
+		});
 	});
 });

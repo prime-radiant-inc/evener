@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import { housekeepingAction } from "./housekeepingSteps";
 import { type ToolWireCall, toolWireCwd, toolWireStep } from "./testing/toolWireFixtures";
 import { mcpToolParts, toolFamily, toolStepProgress, toolStepSummary, words } from "./toolSummaries";
 
@@ -64,7 +65,7 @@ test.each<[ToolWireCall, string]>([
 test.each<[ToolWireCall, string]>([
   ["call_mcp", "Used github: create issue"],
   ["call_mcp_hyphenated", "Used linear app: list issues"],
-  ["call_unknown", "Used compact context"],
+  ["call_unknown", "Used reindex workspace"],
 ])("says %s, which no summary covers, as %s", (call, summary) => {
   expect(toolStepSummary(toolWireStep(call))).toBe(summary);
 });
@@ -329,7 +330,7 @@ test.each<[string, Record<string, unknown> | undefined, string]>([
   ["job_list", {}, "Listing jobs"],
   ["job_stop", { target: "job_x" }, "Stopping job_x"],
   ["github__create_issue", {}, "Using github: create issue"],
-  ["compact_context", {}, "Using compact context"],
+  ["reindex_workspace", {}, "Using reindex workspace"],
 ])("says a running %s as %s", (toolName, args, progress) => {
   expect(toolStepProgress({ toolName, argumentsJSON: args ? JSON.stringify(args) : undefined })).toBe(progress);
 });
@@ -388,4 +389,182 @@ test("says the count list_dir states, one entry or many", () => {
   ).toBe("Listed a · 2 entries");
   // An output without the count counts its lines.
   expect(listed("b.go\nc.go\n")).toBe("Listed a · 2 entries");
+});
+
+// The session's housekeeping tools, each in words of its own: what the call
+// did, told from its arguments and, where its arguments can't say, from what
+// the tool printed (agent/session_tools_notes.go, session_tools_goal.go,
+// session_tools_compact.go). A running call says the same in the present.
+const housekeeping = (toolName: string, args: Record<string, unknown>, output?: string) => ({
+  toolName,
+  argumentsJSON: JSON.stringify(args),
+  ...(output === undefined ? {} : { output }),
+});
+
+test.each<[string, ReturnType<typeof housekeeping>, string, string]>([
+  [
+    "a note set",
+    housekeeping("notes_agent_set", { note: "Drain first." }, "Agent note recorded."),
+    "Updated its note",
+    "Updating its note",
+  ],
+  [
+    "a note cleared",
+    housekeeping("notes_agent_set", { note: " " }, "Agent note recorded."),
+    "Cleared its note",
+    "Clearing its note",
+  ],
+  ["the notes read", housekeeping("notes_read", {}), "Read the session notes", "Reading the session notes"],
+  [
+    "a labelled link added",
+    housekeeping("urls_add", { url: "https://example.com/ci/42", label: "CI run" }, "URL added: CI run"),
+    "Added link CI run",
+    "Adding link CI run",
+  ],
+  [
+    "a link added with no label",
+    housekeeping("urls_add", { url: "https://example.com/ci/42" }),
+    "Added link https://example.com/ci/42",
+    "Adding link https://example.com/ci/42",
+  ],
+  ["a link removed", housekeeping("urls_remove", { id: "url_3" }, "URL removed."), "Removed a link", "Removing a link"],
+  [
+    "the goal completed",
+    housekeeping("update_goal", { status: "complete" }, "Goal marked complete."),
+    "Marked the goal complete",
+    "Marking the goal complete",
+  ],
+  [
+    "the goal blocked",
+    housekeeping("update_goal", { status: "blocked", note: "Needs a credential." }, "Goal marked blocked."),
+    "Marked the goal blocked",
+    "Marking the goal blocked",
+  ],
+  [
+    "a goal update with no goal set",
+    housekeeping(
+      "update_goal",
+      { status: "complete" },
+      "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered.",
+    ),
+    "Marked the goal complete · no goal set",
+    "Marking the goal complete",
+  ],
+  [
+    "a compaction asked for",
+    housekeeping(
+      "compact_context",
+      { note_to_self: "Next: run the race detector." },
+      "Note recorded. A compaction will run at the seam, honoring your instructions; your note will be handed back to you right after.",
+    ),
+    "Asked for a context compaction",
+    "Asking for a context compaction",
+  ],
+  [
+    "a compaction note cleared",
+    housekeeping("compact_context", { note_to_self: "" }, "Note cleared. No compaction requested."),
+    "Cleared its compaction note",
+    "Clearing its compaction note",
+  ],
+  [
+    // The tool reads a null reload_skills as no selection, like an absent one.
+    "a compaction note cleared with a null reload_skills",
+    housekeeping(
+      "compact_context",
+      { note_to_self: "", reload_skills: null },
+      "Note cleared. No compaction requested.",
+    ),
+    "Cleared its compaction note",
+    "Clearing its compaction note",
+  ],
+  [
+    // The registry's repetition note after a repeated identical call doesn't
+    // hide what the call did.
+    "a repeated compaction note clear",
+    housekeeping(
+      "compact_context",
+      { note_to_self: "" },
+      "Note cleared. No compaction requested.\n\nYou have now made this same call and received the identical result 2 times in a row.",
+    ),
+    "Cleared its compaction note",
+    "Clearing its compaction note",
+  ],
+  [
+    "an empty note that reloads skills, which still compacts",
+    housekeeping("compact_context", { note_to_self: "", reload_skills: ["go-testing"] }),
+    "Asked for a context compaction",
+    "Asking for a context compaction",
+  ],
+  [
+    "an empty note that still asks for a compaction",
+    housekeeping(
+      "compact_context",
+      { note_to_self: "", compaction_instructions: "Keep the drain analysis." },
+      "Note cleared. A compaction will run at the seam, honoring your instructions; your note will be handed back to you right after.",
+    ),
+    "Asked for a context compaction",
+    "Asking for a context compaction",
+  ],
+  ["the models listed", housekeeping("model_list", {}), "Listed the available models", "Listing the available models"],
+  ["more models listed", housekeeping("model_list", { cursor: "c2" }), "Listed more models", "Listing more models"],
+  [
+    "evener's records checked",
+    housekeeping("doctor_evener", { command: "transcript", selector: "ses_abc" }),
+    "Checked evener's records ses_abc · transcript",
+    "Checking evener's records ses_abc",
+  ],
+  [
+    "a report to the parent",
+    housekeeping("communicate", { message: "Found it." }),
+    "Reported to its parent",
+    "Reporting to its parent",
+  ],
+  [
+    "a final report to the parent",
+    housekeeping("communicate", { message: "Fixed.", end_turn: true }),
+    "Reported to its parent · done",
+    "Reporting to its parent",
+  ],
+])("words %s", (_, step, summary, progress) => {
+  expect(toolStepSummary(step)).toBe(summary);
+  expect(toolStepProgress(step)).toBe(progress);
+});
+
+// A run's line says what each call did, in the phrase its step line starts
+// from: a call that only clears a note says so.
+test("phrases a housekeeping call as its step line does", () => {
+  expect(housekeepingAction("notes_agent_set", housekeeping("notes_agent_set", { note: "Drain first." }))).toBe(
+    "updated its note",
+  );
+  expect(housekeepingAction("notes_agent_set", housekeeping("notes_agent_set", { note: "" }))).toBe("cleared its note");
+  expect(
+    housekeepingAction(
+      "compact_context",
+      housekeeping("compact_context", { note_to_self: "" }, "Note cleared. No compaction requested."),
+    ),
+  ).toBe("cleared its compaction note");
+  expect(
+    housekeepingAction(
+      "compact_context",
+      housekeeping("compact_context", { note_to_self: "", compaction_instructions: "Keep it." }),
+    ),
+  ).toBe("asked for a context compaction");
+  expect(housekeepingAction("urls_add", housekeeping("urls_add", { url: "https://x" }))).toBe("added a link");
+  expect(housekeepingAction("shell", housekeeping("shell", {}))).toBeUndefined();
+  // A step whose arguments and output are gone (a summary-only row) can't
+  // tell a clear from a set, so it says what the tool usually does.
+  expect(housekeepingAction("notes_agent_set", {})).toBe("updated its note");
+  expect(housekeepingAction("compact_context", {})).toBe("asked for a context compaction");
+});
+
+// A call whose arguments the hub didn't send can't say it only clears a
+// note, so it says what the tool usually does, running and done alike.
+test("says notes_agent_set's usual lines when its arguments are missing", () => {
+  expect(toolStepProgress({ toolName: "notes_agent_set" })).toBe("Updating its note");
+  expect(toolStepSummary({ toolName: "notes_agent_set" })).toBe("Updated its note");
+});
+
+test("says compact_context's usual lines when its arguments are missing", () => {
+  expect(toolStepProgress({ toolName: "compact_context" })).toBe("Asking for a context compaction");
+  expect(toolStepSummary({ toolName: "compact_context" })).toBe("Asked for a context compaction");
 });

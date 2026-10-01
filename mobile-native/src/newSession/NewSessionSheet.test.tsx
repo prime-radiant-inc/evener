@@ -25,6 +25,8 @@ const harness = vi.hoisted(() => ({
 	profiles: [{ id: "hub-1", name: "magic-kingdom" }] as { id: string; name: string }[],
 	// A thread/start the test answers itself, as a slow hub would.
 	heldStart: null as null | ((response: unknown) => void),
+	// Who is listening to the hub's notifications.
+	listeners: [] as ((notification: { method: string; params?: unknown }) => void)[],
 }));
 const client = {
 	request: async (method: string, params: unknown) => {
@@ -33,7 +35,12 @@ const client = {
 			return new Promise((resolve) => (harness.heldStart = resolve));
 		return { data: [] };
 	},
-	onNotification: () => () => {},
+	onNotification: (listener: (notification: { method: string; params?: unknown }) => void) => {
+		harness.listeners.push(listener);
+		return () => {
+			harness.listeners = harness.listeners.filter((l) => l !== listener);
+		};
+	},
 };
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ profiles: harness.profiles }) }));
 vi.mock("../retainedScreen", () => ({
@@ -108,6 +115,7 @@ beforeEach(() => {
 	harness.context = null;
 	harness.heldStart = null;
 	harness.profiles = [{ id: "hub-1", name: "magic-kingdom" }];
+	harness.listeners = [];
 });
 
 it("names the hub's own machine after the hub (ruling 3)", async () => {
@@ -118,16 +126,34 @@ it("names the hub's own machine after the hub (ruling 3)", async () => {
 });
 
 it("opens on the newest remembered start and reads that host's models", async () => {
-	(harness.memory as LaunchMemory).recordStart(
-		{ host: "paradise-park", cwd: "/Users/jesse/git/evener", model: null, effort: "", overrides: {} },
-		1,
-	);
+	(harness.memory as LaunchMemory).recordStart({
+		host: "paradise-park",
+		cwd: "/Users/jesse/git/evener",
+		model: null,
+		effort: "",
+		overrides: {},
+	});
 	const sheet = await mount();
 	expect(sheet.context().store.getState()).toMatchObject({ source: "paradise-park", cwd: "/Users/jesse/git/evener" });
 	expect(harness.requests).toContainEqual({
 		method: "evener/host/request",
 		params: { host: "paradise-park", method: "model/list", params: { cwd: "/Users/jesse/git/evener" } },
 	});
+	sheet.tree.unmount();
+});
+
+// The hub announces a refreshed model list on evener/auth/updated (#3539):
+// the form reads its list again, in place.
+it("reads the form's model list again when the hub announces a refreshed one", async () => {
+	const sheet = await mount();
+	const reads = () => harness.requests.filter((request) => request.method === "model/list").length;
+	const before = reads();
+	expect(before).toBeGreaterThan(0);
+	await act(async () => {
+		for (const listener of harness.listeners) listener({ method: "evener/auth/updated", params: {} });
+	});
+	await settle();
+	expect(reads()).toBe(before + 1);
 	sheet.tree.unmount();
 });
 

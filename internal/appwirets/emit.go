@@ -300,6 +300,13 @@ func writeFieldDoc(b *strings.Builder, doc string) {
 // this function's.
 func typeExpr(t reflect.Type) string {
 	switch {
+
+	case t == reflect.TypeFor[appwire.SessionActivityScope]():
+		return "SessionActivityScope"
+	case t == reflect.TypeFor[appwire.SessionActivityResource]():
+		return "SessionActivityResource"
+	case t == reflect.TypeFor[appwire.SessionWatchState]():
+		return "SessionWatchState"
 	case t == threadItemEventKindType:
 		return "ThreadItemEventKind"
 	case t == navigationTargetKindType:
@@ -618,6 +625,10 @@ func EmitCatalog() string {
 		notificationNames[i] = n.name
 	}
 	writeNameCatalog(&b, "NOTIFICATION_NAMES", "NotificationName", notificationNames)
+
+	writeNameCatalog(&b, "SESSION_ACTIVITY_SCOPES", "SessionActivityScope", []string{string(appwire.SessionActivityScopeSession), string(appwire.SessionActivityScopeSubtree)})
+	writeNameCatalog(&b, "SESSION_ACTIVITY_RESOURCES", "SessionActivityResource", []string{string(appwire.SessionActivityResourceSummary), string(appwire.SessionActivityResourceDelegates), string(appwire.SessionActivityResourceJobs), string(appwire.SessionActivityResourceWatches)})
+	writeNameCatalog(&b, "SESSION_WATCH_STATES", "SessionWatchState", []string{string(appwire.SessionWatchStateArmed), string(appwire.SessionWatchStateEnded), string(appwire.SessionWatchStateUnknown)})
 
 	writeNameCatalog(&b, "STEERING_KINDS", "SteeringKind", events.AllSteeringKinds)
 	writeNameCatalog(&b, "THREAD_ITEM_EVENT_KINDS", "ThreadItemEventKind", appwire.AllThreadItemEventKinds)

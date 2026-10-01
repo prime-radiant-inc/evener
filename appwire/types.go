@@ -67,12 +67,17 @@ const (
 	MethodEvenerTasksList                = "evener/tasks/list"
 	MethodEvenerJobsList                 = "evener/jobs/list"
 	MethodEvenerJobsOutput               = "evener/jobs/output"
+	MethodEvenerJobsGet                  = "evener/jobs/get"
 	MethodEvenerDaemonList               = "evener/daemon/list"
 	MethodEvenerDaemonRetire             = "evener/daemon/retire"
 	MethodEvenerDaemonStatus             = "evener/daemon/status"
 	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
 	MethodEvenerThreadNameSet            = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
+	MethodEvenerThreadActivityRead       = "evener/thread/activity/read"
+	MethodEvenerThreadDelegatesList      = "evener/thread/delegates/list"
+	MethodEvenerThreadJobsList           = "evener/thread/jobs/list"
+	MethodEvenerThreadWatchesList        = "evener/thread/watches/list"
 	MethodEvenerSubagentPreview          = "evener/subagentPreview"
 	MethodEvenerPathsComplete            = "evener/paths/complete"
 	MethodEvenerDirsCreate               = "evener/dirs/create"
@@ -278,6 +283,7 @@ const (
 	NotifyEvenerContextPressure       = "evener/thread/contextPressure/updated"
 	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
 	NotifyEvenerThreadResync          = "evener/thread/resync"
+	NotifyEvenerThreadActivityChanged = "evener/thread/activity/changed"
 	NotifyEvenerTaskUpdated           = "evener/task/updated"
 	NotifyEvenerGoalUpdated           = "evener/goal/updated"
 	NotifyEvenerNotesUpdated          = "evener/notes/updated"
@@ -411,11 +417,11 @@ func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
 			return errors.New("invalid navigation base")
 		}
 	}
-	if decoded.RepresentationVersion != 2 {
-		return errors.New("representationVersion must be 2")
+	if decoded.RepresentationVersion != 3 {
+		return errors.New("representationVersion must be 3")
 	}
 	if _, present := fields["etag"]; present {
-		return errors.New("etag is not a v2 field")
+		return errors.New("etag is not a navigation field")
 	}
 	*params = NavigationReadParams(decoded)
 	return nil
@@ -2867,6 +2873,21 @@ type JobsOutputParams struct {
 }
 
 type JobsOutputResponse struct {
+	Data any `json:"data"`
+}
+
+// JobsGetParams reads ONE job's metadata (the activity-tree job shape),
+// including its untruncated command. Ref names the owning session; JobID names
+// the job.
+type JobsGetParams struct {
+	Ref   string `json:"ref,omitempty"`
+	JobID string `json:"jobId"`
+}
+
+// JobsGetResponse carries an appwire.JobActivityJob in Data: the same job node
+// the activity tree renders, so a client can show the job's full command beside
+// its output.
+type JobsGetResponse struct {
 	Data any `json:"data"`
 }
 

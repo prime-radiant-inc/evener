@@ -620,13 +620,13 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 // loop already gathered (task, worktree, scratch path — see
 // delegateTerminalPacketMetadata) via the supplied packet; the synthetic
 // stopped packet (delegateStoppedTerminalPacket) is used only when the run loop
-// produced none at all (kata tpb0). The fold layer (applyRunFinished) still has
-// final say: it replaces this with its own bare packet when the owner is
-// outside the stopped subtree and the packet isn't a terminal-error kind.
+// produced none at all (kata tpb0). A run that reported before the stop landed
+// keeps its report and evidence, restamped as stopped (delegateStoppedRunPacket),
+// so the fold's own bare stop literal no longer stands in for it (#3114).
 func stoppedGenerationFinishEvent(lease delegateLease, packet *delegatestore.TerminalPacket, endedAt time.Time) (delegatestore.Event, string) {
 	stopped := delegateStoppedTerminalPacket()
 	if packet != nil {
-		stopped = cloneDelegateTerminalPacket(*packet)
+		stopped = delegateStoppedRunPacket(*packet)
 	}
 	deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
 	return delegateRunFinishedEvent(

@@ -92,7 +92,7 @@ function marketplaceClient(options: {
 }) {
 	const methods: string[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (method: string) => {
 			methods.push(method);
 			if (method === "evener/marketplace/list") return options.list?.() ?? { marketplaces: [marketplace] };
@@ -106,7 +106,7 @@ function marketplaceClient(options: {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const notify = (method: string) => {
 		for (const listener of [...listeners]) listener({ method, params: {} } as AnyNotification);
 	};
@@ -2545,14 +2545,14 @@ it("clears the fence for a re-added marketplace whose registration carries the s
  * whichever surface a test mounts. */
 function pluginsClient(plugins: PluginEntry[]) {
 	const methods: string[] = [];
-	const client = {
+	const client = Object.assign(new FakeClient("ready"), {
 		request: async (method: string) => {
 			methods.push(method);
 			if (method === "evener/marketplace/list") return { marketplaces: [] };
 			return { plugins };
 		},
 		onNotification: () => () => {},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	return { client, methods };
 }
 
@@ -3102,6 +3102,28 @@ it("heads a plugin's detail with the shared sheet header: its name, and Done on 
 		detail.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
 	});
 	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+});
+
+// The page clears a link's focus once it acts, so the same plugin named again
+// by a later link opens again after its detail was closed.
+it("opens a plugin again when a later link names it again", async () => {
+	const hub = pageHub([entry("demo-plugin"), entry("cracked", { broken: true })]);
+	const target = { plugin: "cracked", marketplace: "core" };
+	const { tree, props } = await mountPage(hub, { focus: target });
+	const detail = tree.root.findByType("Modal" as never);
+	await act(async () => {
+		detail.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
+	});
+	expect(tree.root.findAllByType("Modal" as never)).toHaveLength(0);
+	const withFocus = (focus: typeof target | undefined) => (
+		<PluginsStack {...props} route={{ ...props.route, params: { ...props.route.params, focus } }} />
+	);
+	await act(async () => tree.update(withFocus(undefined)));
+	await act(async () => tree.update(withFocus({ ...target })));
+	await act(async () => {});
+	expect(
+		tree.root.findByType("Modal" as never).findAllByProps({ accessibilityLabel: "Remove plugin" }).length,
+	).toBeGreaterThan(0);
 });
 
 it("opens the plugin a notice named once, then clears the focus", async () => {

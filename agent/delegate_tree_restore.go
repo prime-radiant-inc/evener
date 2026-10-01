@@ -315,9 +315,11 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		// machinery resolves it. The controller mutex is held across this
 		// check and the completion append below, so a wake cannot slip into
 		// that window twice and leak past the completed stop.
-		for attentionID := range c.attentionWakeIDs[id] {
-			if !slices.Contains(attention, attentionID) {
-				attention = append(attention, attentionID)
+		if state := c.attention[id]; state != nil {
+			for attentionID := range state.wakeIDs {
+				if !slices.Contains(attention, attentionID) {
+					attention = append(attention, attentionID)
+				}
 			}
 		}
 		sort.Strings(attention)

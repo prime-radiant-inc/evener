@@ -40,11 +40,11 @@ import { Group, GroupedPage, GroupFooter, Row, RowValue, SwitchRow } from "../sh
 import { guardLeave } from "../sheet/confirmDiscard";
 import { ModalFrame } from "../sheet/ModalSheet";
 import { SearchField } from "../sheet/SearchField";
-import { Sheet } from "../sheet/Sheet";
 import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
 import { CredentialPasteSheet } from "./CredentialPasteSheet";
+import { usePublishProviderDetail } from "./hubScreenSlot";
 import { useAuthStatuses } from "./useAuthStatuses";
 import {
 	appliedButFailed,
@@ -53,6 +53,7 @@ import {
 	FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
 	MODELS_NOT_CHECKED,
 	PROVIDERS_NOT_LOADED,
+	providerGoneWhileEditing,
 	UNCONFIRMED_CHANGE,
 	UNCONFIRMED_CREDENTIAL,
 } from "../providers/providerCopy";
@@ -136,6 +137,7 @@ function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRout
 		<>
 			<Providers
 				key={`${activeProfile.id}:${revision}`}
+				hubId={activeProfile.id}
 				store={store}
 				auth={auth}
 				hubName={activeProfile.name}
@@ -144,6 +146,7 @@ function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRout
 				focus={focus}
 				signInFocus={signInFocus ?? false}
 				onFocused={() => navigation.setParams({ focus: undefined, signIn: undefined })}
+				onOpenDetail={(name) => navigation.navigate("ProviderDetail", { hubId: activeProfile.id, name })}
 				onSignIn={(name) => {
 					const flow = new ProviderSignIn(store, name);
 					// The raw client cannot be handed to the flow while the
@@ -175,6 +178,7 @@ function ProvidersPageBody({ route, navigation }: NativeStackScreenProps<HubRout
 }
 
 function Providers({
+	hubId,
 	store,
 	auth,
 	hubName,
@@ -183,8 +187,10 @@ function Providers({
 	focus,
 	signInFocus,
 	onFocused,
+	onOpenDetail,
 	onSignIn,
 }: {
+	hubId: string;
 	store: CredentialInstancesStore;
 	auth: ReadonlyMap<string, AuthStatusResponse> | null;
 	hubName: string;
@@ -197,6 +203,9 @@ function Providers({
 	signInFocus: boolean;
 	/** The page has acted on `focus`, so the route can drop it. */
 	onFocused(): void;
+	/** Pushes a provider's detail (ProviderDetailPage), which shows the detail
+	 * this page publishes for it. */
+	onOpenDetail(name: string): void;
 	onSignIn(name: string): void;
 }) {
 	// The store triple is what binds React to the credential core: every field
@@ -267,7 +276,12 @@ function Providers({
 			setKey("");
 		}
 		if (!instance) {
-			setConfiguration((value) => (value === "edit" ? null : value));
+			// An edit open on a provider that left the hub had nothing left to be
+			// saved to: say so rather than drop the draft silently.
+			if (configuration === "edit") {
+				if (selected !== null) setActionWarning(providerGoneWhileEditing(selected));
+				setConfiguration(null);
+			}
 			setSelected(null);
 			setEditingCredential(null);
 			setCredentialTarget(null);
@@ -286,7 +300,7 @@ function Providers({
 			setCredentialTarget(null);
 			setKey("");
 		}
-	}, [instance, editingCredential, credentialTarget]);
+	}, [instance, editingCredential, credentialTarget, configuration, selected]);
 	function editCredential(kind: "apiKey" | "credentialJson", target: InstanceEntry) {
 		setActionError(null);
 		setEditingCredential(kind);
@@ -337,9 +351,9 @@ function Providers({
 		}
 	}
 	// A pasted key or credential JSON: leaving it waits out its save, and asks
-	// before the text goes (spec 6), whether by its Cancel, Done or a swipe.
-	const leaveKey = (leave: () => void) =>
-		guardLeave({ busy: !!editingCredential && surface.busy, dirty: !!(editingCredential && key.trim()) }, leave);
+	// before the text goes (spec 6), whether by its Cancel, Back or the edge swipe.
+	const keyGuard = { busy: !!editingCredential && surface.busy, dirty: !!(editingCredential && key.trim()) };
+	const leaveKey = (leave: () => void) => guardLeave(keyGuard, leave);
 	function close() {
 		detailVisitId.current += 1;
 		setSelected(null);
@@ -350,6 +364,16 @@ function Providers({
 		setActionError(null);
 		latestModelCheckId.current += 1;
 		setModelsCheckFailed(null);
+	}
+	/** Selects a provider and pushes its detail, as a new visit. */
+	function openDetail(name: string) {
+		detailVisitId.current += 1;
+		setActionError(null);
+		// A warning speaks for the list or the provider it came from, not the
+		// one opening now.
+		setActionWarning(null);
+		setSelected(name);
+		onOpenDetail(name);
 	}
 	async function act(
 		action: () => Promise<unknown>,
@@ -475,14 +499,244 @@ function Providers({
 		focusHandled.current = true;
 		const target = core.instances.find((item) => item.name === focus);
 		if (target && signInFocus && target.authModes?.includes("oauth")) onSignIn(target.name);
-		else if (target) {
-			detailVisitId.current += 1;
-			setSelected(target.name);
-		}
+		else if (target) openDetail(target.name);
 		onFocused();
 	}, [focus, signInFocus, core.listingEstablished, core.instances, stale, surface.busy, onSignIn, onFocused]);
 
 	const writeHeld = surface.busy || core.writesRefused || stale || !ready;
+	// The provider editor, in a modal over whichever screen holds it: a new
+	// provider's over this list, and an edit's inside the pushed detail. A
+	// screen the stack has covered is out of the window, and a React Native
+	// modal presents only from one in it, so an edit's modal here would never
+	// show while the detail is pushed. The native modal covers the page's
+	// status line, so the editor carries its own - and the draft stays in
+	// reach of neither a dismissal nor a missed recovery.
+	const editorFrame = (kind: "create" | "edit") => {
+		// A new provider's editor closes, and an edit returns to the provider's detail.
+		const dismiss = kind === "create" ? close : () => setConfiguration(null);
+		// A save clears the editor and shows the saved provider: a new
+		// provider's detail pushes; an edit's is already in front.
+		const showSaved = (name: string) => {
+			setConfiguration(null);
+			if (kind === "create") openDetail(name);
+			else setSelected(name);
+		};
+		return (
+			<ModalFrame
+				visible={configuration === kind}
+				onRequestClose={() => {
+					// A swipe down asks before an edit goes (spec 6), and waits out a
+					// save in flight, as the editor's Cancel does.
+					editorLeave.current?.(dismiss);
+				}}
+			>
+				{configuration === kind ? (
+					<ProviderEditor
+						key={kind === "create" ? "create" : instance?.name}
+						instance={kind === "edit" ? instance : undefined}
+						providers={core.availableProviders}
+						onCreate={surface.create}
+						onEdit={surface.edit}
+						disabled={writeHeld}
+						canUseConnection={canUseConnection}
+						onSaved={showSaved}
+						onEndpointConflict={(name) => {
+							// The hub refused the endpoint the save asserted: the name
+							// moved since this editor was seeded, and nothing was
+							// written. Clear the editor like a completed save, re-read
+							// the provider list so a retry asserts the destination now
+							// on screen, and warn in this client's own words.
+							showSaved(name);
+							setActionWarning(ENDPOINT_CHANGED_WARNING);
+							surface.refresh();
+						}}
+						onCancel={dismiss}
+						leaveGuard={editorLeave}
+						accessory={<SheetStatus />}
+					/>
+				) : null}
+			</ModalFrame>
+		);
+	};
+	// The selected provider's detail, which ProviderDetailPage shows pushed over
+	// this page (spec 12; device audit N3). It is built here, beside the writes
+	// and the credential editor it drives, and published on every render.
+	const detail = instance ? (
+		<GroupedPage>
+			<SheetStatus />
+			<ProviderFacts
+				// Keyed by name, so a model search typed on one provider never
+				// filters another's (issue #3279).
+				key={instance.name}
+				instance={instance}
+				auth={auth}
+				togglesHeld={writeHeld}
+				onToggleModel={(model, disabled) => {
+					void act(() => surface.setModelDisabled(instance.name, model, disabled));
+				}}
+				checking={core.refreshingInstances.has(instance.name)}
+				checkFailed={modelsCheckFailed === instance.name}
+				checkHeld={!ready}
+				onCheckModels={whenReady(canUseConnection, () => void checkModels(instance.name))}
+			/>
+			<Group>
+				{instance.authModes?.includes("oauth") && (
+					<Row
+						label={instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
+						tone="accent"
+						disabled={surface.busy || stale}
+						onPress={() => {
+							const name = instance.name;
+							close();
+							onSignIn(name);
+						}}
+					/>
+				)}
+				{instance.authModes?.includes("apiKey") && (
+					<Row
+						label={credentialTitle("apiKey", instance)}
+						tone="accent"
+						disabled={surface.busy || stale || !ready}
+						onPress={whenReady(canUseConnection, () => editCredential("apiKey", instance))}
+					/>
+				)}
+				{instance.authModes?.includes("credentialJson") && (
+					<Row
+						label={credentialTitle("credentialJson", instance)}
+						tone="accent"
+						disabled={surface.busy || stale || !ready}
+						onPress={whenReady(canUseConnection, () => editCredential("credentialJson", instance))}
+					/>
+				)}
+				<Row
+					label={
+						surface.credentialTest?.provider === instance.name && surface.credentialTest.pending
+							? "Testing…"
+							: "Test connection"
+					}
+					accessibilityLabel="Test connection"
+					tone="accent"
+					disabled={surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready}
+					onPress={whenReady(canUseConnection, () => {
+						probeCredentials(instance.name);
+					})}
+				/>
+			</Group>
+			{surface.credentialTest?.provider === instance.name && surface.credentialTest.result ? (
+				surface.credentialTest.result.status === "success" ? (
+					<GroupFooter>Works</GroupFooter>
+				) : (
+					<GroupFooter tone="danger">{surface.credentialTest.result.message}</GroupFooter>
+				)
+			) : null}
+			{/* An open paste sheet says its own save's error. */}
+			{actionError && !editingCredential ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
+			{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
+			{surface.busy && <Spinner label="Updating provider" />}
+			<Group label="Manage">
+				<Row
+					label="Edit"
+					tone="accent"
+					disabled={writeHeld}
+					onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
+				/>
+				{!instance.isDefault && (
+					<Row
+						label="Make default"
+						tone="accent"
+						disabled={writeHeld}
+						onPress={() => {
+							void act(() => surface.setDefault(instance.name));
+						}}
+					/>
+				)}
+				{instance.hasStoredFile && instance.activeSource !== "store" && (
+					<Row
+						label={json ? "Clear stored credential JSON" : "Clear stored key"}
+						tone="danger"
+						disabled={surface.busy || stale || !ready}
+						onPress={() => {
+							// A destination the hub cannot fingerprint has
+							// no endpoint to assert: refuse with a reason
+							// rather than grey the control out silently.
+							if (fingerprintUnavailable(instance)) {
+								setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
+								return;
+							}
+							confirm(
+								json ? "Clear stored credential JSON?" : "Clear stored key?",
+								json ? "Clear JSON" : "Clear key",
+								() => surface.clearStoredKey(instance.name, instance.endpointFingerprint),
+								{ endpointAsserted: true },
+							);
+						}}
+					/>
+				)}
+				{["store", "oauth"].includes(instance.activeSource) && (
+					<Row
+						label="Clear credentials"
+						tone="danger"
+						disabled={surface.busy || stale || !ready}
+						onPress={() => {
+							if (fingerprintUnavailable(instance)) {
+								setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
+								return;
+							}
+							confirm(
+								"Clear credentials?",
+								"Clear credentials",
+								() => surface.logout(instance.name, instance.endpointFingerprint),
+								{ endpointAsserted: true },
+							);
+						}}
+					/>
+				)}
+				{!fromEnvironment(instance) && (
+					<Row
+						label="Remove"
+						tone="danger"
+						disabled={writeHeld}
+						onPress={() => {
+							if (fingerprintUnavailable(instance)) {
+								setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
+								return;
+							}
+							confirm("Remove provider?", "Remove", () => surface.remove(instance.name, instance.endpointFingerprint), {
+								endpointAsserted: true,
+							});
+						}}
+					/>
+				)}
+			</Group>
+			{editorFrame("edit")}
+			{editingCredential ? (
+				<CredentialPasteSheet
+					title={credentialTitle(editingCredential, instance)}
+					kind={editingCredential}
+					value={key}
+					onChangeText={setKey}
+					busy={surface.busy}
+					canSave={!stale && !!key.trim() && ready}
+					error={actionError}
+					onSave={saveCredential}
+					onCancel={() =>
+						leaveKey(() => {
+							setEditingCredential(null);
+							setKey("");
+						})
+					}
+				/>
+			) : null}
+		</GroupedPage>
+	) : null;
+	usePublishProviderDetail({
+		hubId,
+		name: instance?.name ?? null,
+		detail,
+		guarded: keyGuard.busy || keyGuard.dirty,
+		leave: leaveKey,
+		onGone: close,
+	});
 	return (
 		<>
 			<GroupedPage>
@@ -504,19 +758,15 @@ function Providers({
 											label={item.name}
 											sub={sub}
 											value={
-												status?.tone === "attention" ? (
-													<RowValue tag={{ text: status.word, tone: "amber" }} />
+												status?.tone === "attention" || status?.tone === "danger" ? (
+													<RowValue tag={{ text: status.word, tone: status.tone === "danger" ? "red" : "amber" }} />
 												) : (
 													status?.word
 												)
 											}
 											accessibilityLabel={[item.name, sub, status?.word].filter(Boolean).join(", ")}
 											chevron
-											onPress={() => {
-												detailVisitId.current += 1;
-												setActionError(null);
-												setSelected(item.name);
-											}}
+											onPress={() => openDetail(item.name)}
 										/>
 									);
 								})}
@@ -534,6 +784,8 @@ function Providers({
 								disabled={writeHeld}
 								onPress={whenReady(canUseConnection, () => {
 									close();
+									// A warning about another provider doesn't sit above a new form.
+									setActionWarning(null);
 									setConfiguration("create");
 								})}
 							/>
@@ -541,227 +793,7 @@ function Providers({
 					</>
 				) : null}
 			</GroupedPage>
-			<ModalFrame
-				visible={!!instance || configuration === "create"}
-				onRequestClose={() => {
-					// A swipe down asks before an edit or a pasted key goes (spec 6),
-					// and waits out a save in flight, as each Cancel does.
-					// An open editor always answers for itself, never the key guard.
-					if (configuration) editorLeave.current?.(close);
-					else leaveKey(close);
-				}}
-			>
-				{/* The native modal covers the page's status line, so each sheet in it
-				    carries its own - and the draft stays in reach of neither a
-				    dismissal nor a missed recovery. */}
-				{configuration ? (
-					<ProviderEditor
-						key={configuration === "create" ? "create" : instance?.name}
-						instance={configuration === "edit" ? instance : undefined}
-						providers={core.availableProviders}
-						onCreate={surface.create}
-						onEdit={surface.edit}
-						disabled={surface.busy || core.writesRefused || stale || !ready}
-						canUseConnection={canUseConnection}
-						onSaved={(name) => {
-							setConfiguration(null);
-							setSelected(name);
-						}}
-						onEndpointConflict={(name) => {
-							// The hub refused the endpoint the save asserted: the name
-							// moved since this editor was seeded, and nothing was
-							// written. Clear the editor like a completed save, re-read
-							// the provider list so a retry asserts the destination now
-							// on screen, and warn in this client's own words.
-							setConfiguration(null);
-							setSelected(name);
-							setActionWarning(ENDPOINT_CHANGED_WARNING);
-							surface.refresh();
-						}}
-						onCancel={() => {
-							if (configuration === "create") close();
-							else setConfiguration(null);
-						}}
-						leaveGuard={editorLeave}
-						accessory={<SheetStatus />}
-					/>
-				) : (
-					<Sheet title={instance?.name ?? ""} done={{ onPress: () => leaveKey(close) }} accessory={<SheetStatus />}>
-						<GroupedPage>
-							{instance ? (
-								<>
-									<ProviderFacts
-										// A notice or focus can swap the detail to another provider while
-										// the sheet stays mounted; keying by name remounts the facts so a
-										// search typed on one provider never filters another (issue #3279).
-										key={instance.name}
-										instance={instance}
-										auth={auth}
-										togglesHeld={writeHeld}
-										onToggleModel={(model, disabled) => {
-											void act(() => surface.setModelDisabled(instance.name, model, disabled));
-										}}
-										checking={core.refreshingInstances.has(instance.name)}
-										checkFailed={modelsCheckFailed === instance.name}
-										checkHeld={!ready}
-										onCheckModels={whenReady(canUseConnection, () => void checkModels(instance.name))}
-									/>
-									<Group>
-										{instance.authModes?.includes("oauth") && (
-											<Row
-												label={instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
-												tone="accent"
-												disabled={surface.busy || stale}
-												onPress={() => {
-													const name = instance.name;
-													close();
-													onSignIn(name);
-												}}
-											/>
-										)}
-										{instance.authModes?.includes("apiKey") && (
-											<Row
-												label={credentialTitle("apiKey", instance)}
-												tone="accent"
-												disabled={surface.busy || stale || !ready}
-												onPress={whenReady(canUseConnection, () => editCredential("apiKey", instance))}
-											/>
-										)}
-										{instance.authModes?.includes("credentialJson") && (
-											<Row
-												label={credentialTitle("credentialJson", instance)}
-												tone="accent"
-												disabled={surface.busy || stale || !ready}
-												onPress={whenReady(canUseConnection, () => editCredential("credentialJson", instance))}
-											/>
-										)}
-										<Row
-											label={
-												surface.credentialTest?.provider === instance.name && surface.credentialTest.pending
-													? "Testing…"
-													: "Test connection"
-											}
-											accessibilityLabel="Test connection"
-											tone="accent"
-											disabled={surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready}
-											onPress={whenReady(canUseConnection, () => {
-												probeCredentials(instance.name);
-											})}
-										/>
-									</Group>
-									{surface.credentialTest?.provider === instance.name && surface.credentialTest.result ? (
-										surface.credentialTest.result.status === "success" ? (
-											<GroupFooter>Works</GroupFooter>
-										) : (
-											<GroupFooter tone="danger">{surface.credentialTest.result.message}</GroupFooter>
-										)
-									) : null}
-									{/* An open paste sheet says its own save's error. */}
-									{actionError && !editingCredential ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
-									{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
-									{surface.busy && <Spinner label="Updating provider" />}
-									<Group label="Manage">
-										<Row
-											label="Edit"
-											tone="accent"
-											disabled={surface.busy || core.writesRefused || stale || !ready}
-											onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
-										/>
-										{!instance.isDefault && (
-											<Row
-												label="Make default"
-												tone="accent"
-												disabled={surface.busy || core.writesRefused || stale || !ready}
-												onPress={() => {
-													void act(() => surface.setDefault(instance.name));
-												}}
-											/>
-										)}
-										{instance.hasStoredFile && instance.activeSource !== "store" && (
-											<Row
-												label={json ? "Clear stored credential JSON" : "Clear stored key"}
-												tone="danger"
-												disabled={surface.busy || stale || !ready}
-												onPress={() => {
-													// A destination the hub cannot fingerprint has
-													// no endpoint to assert: refuse with a reason
-													// rather than grey the control out silently.
-													if (fingerprintUnavailable(instance)) {
-														setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
-														return;
-													}
-													confirm(
-														json ? "Clear stored credential JSON?" : "Clear stored key?",
-														json ? "Clear JSON" : "Clear key",
-														() => surface.clearStoredKey(instance.name, instance.endpointFingerprint),
-														{ endpointAsserted: true },
-													);
-												}}
-											/>
-										)}
-										{["store", "oauth"].includes(instance.activeSource) && (
-											<Row
-												label="Clear credentials"
-												tone="danger"
-												disabled={surface.busy || stale || !ready}
-												onPress={() => {
-													if (fingerprintUnavailable(instance)) {
-														setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
-														return;
-													}
-													confirm(
-														"Clear credentials?",
-														"Clear credentials",
-														() => surface.logout(instance.name, instance.endpointFingerprint),
-														{ endpointAsserted: true },
-													);
-												}}
-											/>
-										)}
-										{!fromEnvironment(instance) && (
-											<Row
-												label="Remove"
-												tone="danger"
-												disabled={surface.busy || core.writesRefused || stale || !ready}
-												onPress={() => {
-													if (fingerprintUnavailable(instance)) {
-														setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
-														return;
-													}
-													confirm(
-														"Remove provider?",
-														"Remove",
-														() => surface.remove(instance.name, instance.endpointFingerprint),
-														{ endpointAsserted: true },
-													);
-												}}
-											/>
-										)}
-									</Group>
-									{editingCredential ? (
-										<CredentialPasteSheet
-											title={credentialTitle(editingCredential, instance)}
-											kind={editingCredential}
-											value={key}
-											onChangeText={setKey}
-											busy={surface.busy}
-											canSave={!stale && !!key.trim() && ready}
-											error={actionError}
-											onSave={saveCredential}
-											onCancel={() =>
-												leaveKey(() => {
-													setEditingCredential(null);
-													setKey("");
-												})
-											}
-										/>
-									) : null}
-								</>
-							) : null}
-						</GroupedPage>
-					</Sheet>
-				)}
-			</ModalFrame>
+			{editorFrame("create")}
 		</>
 	);
 }
@@ -835,6 +867,7 @@ function ProviderFacts({
 					),
 				)}
 			</Group>
+			{status?.detail ? <GroupFooter tone="danger">{status.detail}</GroupFooter> : null}
 			{instance.warnings?.map((message) => (
 				<GroupFooter key={message} tone="attention">
 					{message}

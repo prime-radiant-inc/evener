@@ -1,6 +1,6 @@
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { authCalls, boundary } from "./providerSignIn.testkit";
+import { authCalls, boundary } from "./providerSignInTestUtils";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { pressable, render, renderedText, textOf } from "./renderNative.testkit";
 import { palettes } from "./design/tokens";

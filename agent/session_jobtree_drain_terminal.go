@@ -113,10 +113,14 @@ func (s *Session) subtreeHasLiveTerminalDrainWork() (bool, error) {
 		}
 	}
 	for _, sub := range s.liveDirectSubagents() {
-		sub.mu.Lock()
-		active := sub.running || sub.finalizing || sub.driving
-		child := sub.sess
-		sub.mu.Unlock()
+		// subagentActive, not a bare running||finalizing||driving read: a
+		// finished generation clears the child's own finalizing flag before its
+		// tail announces the result (subagents.go), so only the controller's
+		// stillFinalizing fallback reports the owed completion live. Reading
+		// the bare flags here abandoned that completion as residue and let a
+		// one-shot drain exit before the delegate's result was announced
+		// (issue #3531).
+		active, child := s.subagentActive(sub)
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id)) {
 			continue
 		}

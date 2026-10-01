@@ -351,6 +351,32 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
+		{"JobsGet", MethodEvenerJobsGet, `{"ref":"local:th","jobId":"j1"}`, JobsGetResponse{Data: JobActivityJob{
+			JobID:          "job_a",
+			OwnerSessionID: "th",
+			OwnerRef:       "local:th",
+			Type:           "shell",
+			Status:         "running",
+			HasOutput:      true,
+			Description:    "go test ./...",
+			Command:        "go test ./... -count=1 -run TestAll",
+			StartedAt:      "2026-08-03T00:00:00Z",
+			OutputBytes:    128,
+		}}, func(ctx context.Context, c *Client) error {
+			out, err := c.JobsGet(ctx, JobsGetParams{Ref: "local:th", JobID: "j1"})
+			if err != nil {
+				return err
+			}
+			// Data is `any` in the catalog, so the single job payload decodes as a
+			// map keyed by JobActivityJob's camelCase json tags. The full command
+			// must cross the wire untruncated.
+			job, ok := out.Data.(map[string]any)
+			if !ok || job["jobId"] != "job_a" || job["ownerRef"] != "local:th" || job["type"] != "shell" ||
+				job["status"] != "running" || job["command"] != "go test ./... -count=1 -run TestAll" {
+				return fmt.Errorf("JobsGet data = %#v", out.Data)
+			}
+			return nil
+		}},
 		{"ProjectsRecent", MethodEvenerProjectsRecent, `{"limit":15}`, ProjectsRecentResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ProjectsRecent(ctx, ProjectsRecentParams{Limit: 15})
 			if err != nil {

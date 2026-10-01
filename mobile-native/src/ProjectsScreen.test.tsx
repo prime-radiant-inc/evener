@@ -11,7 +11,7 @@ import { AccessibilityInfo } from "react-native";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { ProjectsScreen, SessionLocationScreen } from "./ProjectsScreen";
 import { render, renderedText, screenConnection } from "./renderNative.testkit";
 
@@ -41,7 +41,7 @@ const props = {
 it("offers no pull to refresh: the projects list keeps itself current", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/navigation/read", (params) =>
-		wireV2(params as never, { projects: [{ key: "p1", name: "Alpha", session_count: 2 }] }),
+		wireSnapshot(params as never, { projects: [{ key: "p1", name: "Alpha", session_count: 2 }] }),
 	);
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<ProjectsScreen {...props} />);
@@ -65,7 +65,7 @@ it("announces that more of the list is loading, since iOS ignores accessibilityL
 	hub.on("evener/navigation/read", (params) => {
 		// The next page never lands, so the footer stays in its loading state.
 		if (((params as { offset?: number }).offset ?? 0) > 0) return new Promise(() => {});
-		return wireV2(params as never, { projects: [{ key: "p1", name: "Alpha", session_count: 2 }], remaining: 1 });
+		return wireSnapshot(params as never, { projects: [{ key: "p1", name: "Alpha", session_count: 2 }], remaining: 1 });
 	});
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<ProjectsScreen {...props} />);
@@ -86,7 +86,7 @@ it("announces that more of the list is loading, since iOS ignores accessibilityL
 it("renders a live tally's chip in the shared list and none without one", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/navigation/read", (params) =>
-		wireV2(params as never, {
+		wireSnapshot(params as never, {
 			sessions: [
 				{ ref: "local:a", title: "Alpha", live: true, subagents: { running: 2, failed: 0, done: 0 } },
 				{ ref: "local:b", title: "Beta" },

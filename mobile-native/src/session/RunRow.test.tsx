@@ -164,9 +164,12 @@ describe("a step line's Menlo target", () => {
 	});
 
 	it("sets nothing in Menlo when the words name no target", () => {
-		const tree = drawn({ summary: "Used compact context", words: { verb: "Used compact context" } }, "compact_context");
+		const tree = drawn(
+			{ summary: "Used reindex workspace", words: { verb: "Used reindex workspace" } },
+			"reindex_workspace",
+		);
 		expect(menlo(tree.root)).toEqual([]);
-		expect(texts(tree.root).map(textOf)).toContain("Used compact context");
+		expect(texts(tree.root).map(textOf)).toContain("Used reindex workspace");
 	});
 });
 
@@ -392,6 +395,8 @@ describe("a step's evidence", () => {
 			endedAtMs: 2001,
 			tasks: [{ id: 1, status: "in_progress", description: "Fix the drain" }],
 			watchEvidence: "Check the deploy finished.",
+			sendReply: "Yes, drain ordering is safe.",
+			sendWaitIgnored: "delegate is already running",
 		};
 		const full: Run = { kind: "run", id: "run:full", turnId: "t1", steps: [{ ...step("f", "job_watch", {}), detail }] };
 		render(<RunRow run={full} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-full" />);

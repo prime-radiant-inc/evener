@@ -1,3 +1,5 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { activityFixture } from "./subagents/sessionActivityTestUtils";
 // The Session's one Send and the tray's Stop, on the real ConversationScreen:
 // what a person presses, and which requests reach the hub through the durable
 // runtime. Only native edges are mocked, as in
@@ -220,6 +222,12 @@ async function settle() {
 	for (let round = 0; round < 10; round += 1) await flush();
 }
 
+async function advanceFakeTimers(ms: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ms);
+	});
+}
+
 const CAPABILITIES = {
 	send: true,
 	steer: true,
@@ -358,9 +366,7 @@ function hubClient(
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
-	const client = {
-		state: "ready",
-		onStateChange: () => () => {},
+	const client = Object.assign(new FakeClient("ready") as Pick<FakeClient, "state" | "onReady" | "onStateChange">, {
 		onNotification: (listener: (notification: AnyNotification) => void) => {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
@@ -423,13 +429,27 @@ function hubClient(
 						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
-			if (method === "evener/jobs/list" && coordinatorHub.tree) return { data: coordinatorHub.tree };
+			if (method.startsWith("evener/thread/") && coordinatorHub.tree) {
+				const f = activityFixture(coordinatorHub.tree, {
+					ref: String(params.ref),
+					scope: params.scope as "session" | "subtree",
+				});
+				if (method === "evener/thread/activity/read") return f.summary;
+				const page = {
+					complete: !f.continuation,
+					issues: f.issues,
+					...(f.continuation ? { nextCursor: f.continuation } : {}),
+				};
+				if (method === "evener/thread/delegates/list")
+					return { context: f.context, scope: f.scope, delegates: f.delegates, page };
+				if (method === "evener/thread/jobs/list") return { context: f.context, scope: f.scope, jobs: f.jobs, page };
+			}
 			if (method === "evener/delegate/stop") return coordinatorHub.stop(params);
 			if (method === "evener/session/seen/set")
 				return { ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } };
 			return answerFleetRead(fleet, method, params) ?? {};
 		},
-	};
+	});
 	return {
 		client,
 		mutations: () => requests.filter((request) => request.method.startsWith("turn/")).map((request) => request.method),
@@ -1218,11 +1238,11 @@ it("waits for the bottom bar to lay out before restoring a reading position", as
 // land, move and land again.
 describe("opening a session", () => {
 	const opacity = (tree: ReactTestRenderer) => transcriptList(tree).props.style?.opacity;
-	const layOutViewport = (tree: ReactTestRenderer) => {
+	const layOutViewport = (tree: ReactTestRenderer, contentHeight = 20_000) => {
 		act(() =>
 			transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }),
 		);
-		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+		act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
 	};
 	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
 		harness.kv.set(
@@ -1327,15 +1347,11 @@ describe("opening a session", () => {
 		vi.useFakeTimers();
 		try {
 			layOutViewport(tree);
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(999);
-			});
+			await advanceFakeTimers(999);
 			// The anchor's row never measures: without a cap the list would
 			// stay hidden.
 			expect(opacity(tree)).toBe(0);
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(1);
-			});
+			await advanceFakeTimers(1);
 			expect(opacity(tree)).toBe(1);
 		} finally {
 			vi.useRealTimers();
@@ -1350,21 +1366,16 @@ describe("opening a session", () => {
 		vi.useFakeTimers();
 		try {
 			layOutViewport(tree);
-			const advance = async (ms: number) => {
-				await act(async () => {
-					await vi.advanceTimersByTimeAsync(ms);
-				});
-			};
-			await advance(600);
+			await advanceFakeTimers(600);
 			expect(opacity(tree)).toBe(0);
 			const moved = { ...route, params: { ...route.params, ref: next } };
 			navigationState.state = { index: 0, routes: [moved] };
 			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
-			await advance(0);
+			await advanceFakeTimers(0);
 			// The first session's cap has 400ms left; the second's starts afresh.
-			await advance(999);
+			await advanceFakeTimers(999);
 			expect(opacity(tree)).toBe(0);
-			await advance(1);
+			await advanceFakeTimers(1);
 			expect(opacity(tree)).toBe(1);
 		} finally {
 			vi.useRealTimers();
@@ -1388,31 +1399,26 @@ describe("opening a session", () => {
 			});
 			return { ...mounted, deliver };
 		};
-		const advance = async (ms: number) => {
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(ms);
-			});
-		};
 
 		it("opens at the live end and forgets the spot", async () => {
 			const { tree, deliver } = await mountWaitingOnOlderPage("ref-open-unloaded");
 			vi.useFakeTimers();
 			try {
 				layOutViewport(tree);
-				await advance(999);
+				await advanceFakeTimers(999);
 				expect(opacity(tree)).toBe(0);
 				flatListCalls.length = 0;
-				await advance(1);
+				await advanceFakeTimers(1);
 				// It heads for the end, still out of sight until the end's last row measures.
 				expect(flatListCalls.map((call) => call.method)).toContain("scrollToEnd");
 				expect(opacity(tree)).toBe(0);
 				layOutRow(tree, 3, 19_000);
-				await advance(0);
+				await advanceFakeTimers(0);
 				expect(opacity(tree)).toBe(1);
 				// The older page landing later doesn't pull the list back to the spot.
 				flatListCalls.length = 0;
 				deliver();
-				await advance(0);
+				await advanceFakeTimers(0);
 				expect(flatListCalls.filter((call) => call.method !== "scrollToEnd")).toEqual([]);
 			} finally {
 				vi.useRealTimers();
@@ -1424,11 +1430,90 @@ describe("opening a session", () => {
 			vi.useFakeTimers();
 			try {
 				layOutViewport(tree);
-				await advance(1000);
+				await advanceFakeTimers(1000);
 				expect(opacity(tree)).toBe(0);
-				await advance(999);
+				await advanceFakeTimers(999);
 				expect(opacity(tree)).toBe(0);
-				await advance(1);
+				await advanceFakeTimers(1);
+				expect(opacity(tree)).toBe(1);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
+	// The list's content grows in stages as it renders the rows below a saved
+	// position, so the first restore can fall short of it (clamped). Showing
+	// the list there would show it land short and then move.
+	describe("when the list can't reach the saved position yet", () => {
+		const offsets = () =>
+			flatListCalls
+				.filter((call) => call.method === "scrollToOffset")
+				.map((call) => (call.args as { offset: number }).offset);
+
+		it("shows it only once the restore reaches the row", async () => {
+			savePosition("ref-open-clamped", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped"));
+			flatListCalls.length = 0;
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			// It moves as far as the list reaches, out of sight.
+			expect(offsets().at(-1)).toBeLessThan(9_523);
+			expect(opacity(tree)).toBe(0);
+			act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+			layOutRow(tree, 3, 19_000);
+			await settle();
+			expect(offsets().at(-1)).toBe(9_523);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("shows it short of the row once the last row has measured", async () => {
+			savePosition("ref-open-near-end", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-near-end"));
+			flatListCalls.length = 0;
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 2_800);
+			layOutRow(tree, 3, 2_900);
+			await settle();
+			// The content is whole, so as far as the list reaches is where it rests.
+			expect(offsets().at(-1)).toBeLessThan(2_800);
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("keeps it hidden when the restore runs again short of the row, until the last row measures", async () => {
+			savePosition("ref-open-clamped-again", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped-again"));
+			layOutViewport(tree, 3_000);
+			layOutRow(tree, 1, 9_523);
+			await settle();
+			expect(opacity(tree)).toBe(0);
+			// A row between measures: the restore runs again, already as far as
+			// the list reaches, so it neither moves the list nor shows it, since
+			// the rows below are still estimates.
+			flatListCalls.length = 0;
+			layOutRow(tree, 2, 9_700);
+			await settle();
+			expect(flatListCalls).toEqual([]);
+			expect(opacity(tree)).toBe(0);
+			layOutRow(tree, 3, 9_900);
+			await settle();
+			expect(opacity(tree)).toBe(1);
+		});
+
+		it("shows it after a second when the last row never measures", async () => {
+			savePosition("ref-open-clamped-cap", "a-turn_1", "turn_2");
+			const { tree } = await mount(twoTurns("ref-open-clamped-cap"));
+			vi.useFakeTimers();
+			try {
+				layOutViewport(tree, 3_000);
+				layOutRow(tree, 1, 9_523);
+				await advanceFakeTimers(0);
+				// The restore fell short and the rows below never measure.
+				expect(offsets().at(-1)).toBeLessThan(9_523);
+				await advanceFakeTimers(999);
+				expect(opacity(tree)).toBe(0);
+				await advanceFakeTimers(1);
 				expect(opacity(tree)).toBe(1);
 			} finally {
 				vi.useRealTimers();
@@ -4033,7 +4118,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	}
 
 	const jobReads = (hub: ReturnType<typeof hubClient>) =>
-		hub.requests.filter((request) => request.method === "evener/jobs/list").length;
+		hub.requests.filter((request) => request.method === "evener/thread/delegates/list").length;
 
 	beforeEach(() => {
 		vi.mocked(navigation.navigate).mockClear();
@@ -4141,7 +4226,39 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
 		expect(renderedText(tree)).toContain("Stop requested");
-		expect(stopRequests("hub-1").direct({ id: "d-fix" } as never)).toBe(true);
+		const [stoppedRow] = flattenSubagents(subagentTree() as never);
+		if (!stoppedRow) throw new Error("no row");
+		expect(stopRequests("hub-1").direct(stoppedRow)).toBe(true);
+	});
+
+	it("keeps another root's colliding stop evidence separate from the actual direct stop target", async () => {
+		const [current] = flattenSubagents(subagentTree() as never);
+		if (!current) throw new Error("no row");
+		const other = {
+			...current,
+			ref: "remote:other-child",
+			delegate: {
+				...current.delegate,
+				childRef: "remote:other-child",
+				rootRef: "remote:other-root",
+			},
+		};
+		stopRequests("hub-1").request("remote:other-root", other, 1000, { direct: true });
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
+		expect(stopRequests("hub-1").view(other)).toBe("requested");
+		expect(stopRequests("hub-1").direct(current)).toBe(true);
 	});
 
 	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
@@ -4319,8 +4436,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const before = jobReads(hub);
 		act(() =>
 			hub.notify({
-				method: "thread/status/changed",
-				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+				method: "evener/thread/activity/changed",
+				params: {
+					threadId: COORDINATOR.threadId,
+					sessionId: "fix",
+					ref: COORDINATOR.ref,
+					resources: ["summary", "delegates", "jobs"],
+				},
 			} as AnyNotification),
 		);
 		await settle();
@@ -4445,7 +4567,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 		const { tree } = await mount(served);
 		await settle();
-		expect(renderedText(tree)).toContain("Fixed the race: settle now waits for the drain.");
+		expect(renderedText(tree)).toContain("Finished");
+		expect(renderedText(tree)).not.toContain("Fixed the race: settle now waits for the drain.");
 	});
 
 	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {
@@ -4572,8 +4695,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		);
 		act(() =>
 			hub.notify({
-				method: "thread/status/changed",
-				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+				method: "evener/thread/activity/changed",
+				params: {
+					threadId: COORDINATOR.threadId,
+					sessionId: "fix",
+					ref: COORDINATOR.ref,
+					resources: ["summary", "delegates", "jobs"],
+				},
 			} as AnyNotification),
 		);
 		await settle();

@@ -28,8 +28,10 @@ import { HubsPage } from "./HubsPage";
 import { MarketplacePage } from "./MarketplacePage";
 import { OwnHostPage } from "./OwnHostPage";
 import { PluginsPage } from "./PluginsPage";
-import { PluginsScreenSlotProvider } from "./pluginsScreenSlot";
+import { PluginsScreenSlotProvider } from "./hubScreenSlot";
+import { ProviderDetailPage } from "./ProviderDetailPage";
 import { ProvidersPage } from "./ProvidersPage";
+import { ProvidersScreenSlotProvider } from "./hubScreenSlot";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
 import { useHubUpdates } from "./hubUpdates";
 
@@ -72,54 +74,65 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	return (
 		<HubSheetProvider value={value}>
 			<PluginsScreenSlotProvider>
-				<HubStack.Navigator screenOptions={sheetStackOptions}>
-					<HubStack.Screen
-						name="HubHome"
-						component={HubHome}
-						initialParams={{ hubId }}
-						options={{
-							title: activeProfile.name,
-							headerRight: () => <HeaderButton label="Done" strong onPress={close} />,
-						}}
-					/>
-					<HubStack.Screen name="Display" component={DisplayPage} options={{ title: "Display" }} />
-					<HubStack.Screen name="DetailLevel" component={DetailLevelPage} options={{ title: "Default detail level" }} />
-					<HubStack.Screen name="Alerts" component={AlertsPage} options={{ title: "In-app alerts" }} />
-					<HubStack.Screen name="Hosts" component={HostsPage} options={{ title: "Hosts" }} />
-					<HubStack.Screen
-						name="HostDetail"
-						component={HostDetailPage}
-						options={({ route }) => ({ title: route.params.name })}
-					/>
-					<HubStack.Screen name="OwnHost" component={OwnHostPage} options={{ title: activeProfile.name }} />
-					{/* The page sets its own title and its Cancel and Save. */}
-					<HubStack.Screen name="HostEdit" component={HostEditPage} />
-					<HubStack.Screen name="Providers" component={ProvidersPage} options={{ title: "Providers" }} />
-					<HubStack.Screen name="Plugins" component={PluginsPage} options={{ title: "Plugins" }} />
-					<HubStack.Screen
-						name="Marketplace"
-						component={MarketplacePage}
-						options={({ route }) => ({ title: route.params.name })}
-					/>
-					<HubStack.Screen name="Hubs" component={HubsPage} options={{ title: "Hubs" }} />
-					<HubStack.Screen
-						name="AddHub"
-						component={AddHubPage}
-						options={({ route }) => ({ title: ADD_HUB_TITLES[route.params.how] })}
-					/>
-					<HubStack.Screen name="HubDetails" component={HubDetailsPage} />
-					<HubStack.Screen
-						name="KeybindingPreferences"
-						component={KeybindingPreferencesScreen}
-						options={{ title: "Keyboard shortcuts" }}
-					/>
-					<HubStack.Screen
-						name="LaunchSettings"
-						component={LaunchSettingsScreen}
-						options={{ title: "Launch defaults" }}
-					/>
-					<HubStack.Screen name="HubSettings" component={HubSettingsScreen} options={{ title: "Hub settings" }} />
-				</HubStack.Navigator>
+				<ProvidersScreenSlotProvider>
+					<HubStack.Navigator screenOptions={sheetStackOptions}>
+						<HubStack.Screen
+							name="HubHome"
+							component={HubHome}
+							initialParams={{ hubId }}
+							options={{
+								title: activeProfile.name,
+								headerRight: () => <HeaderButton label="Done" strong onPress={close} />,
+							}}
+						/>
+						<HubStack.Screen name="Display" component={DisplayPage} options={{ title: "Display" }} />
+						<HubStack.Screen
+							name="DetailLevel"
+							component={DetailLevelPage}
+							options={{ title: "Default detail level" }}
+						/>
+						<HubStack.Screen name="Alerts" component={AlertsPage} options={{ title: "In-app alerts" }} />
+						<HubStack.Screen name="Hosts" component={HostsPage} options={{ title: "Hosts" }} />
+						<HubStack.Screen
+							name="HostDetail"
+							component={HostDetailPage}
+							options={({ route }) => ({ title: route.params.name })}
+						/>
+						<HubStack.Screen name="OwnHost" component={OwnHostPage} options={{ title: activeProfile.name }} />
+						{/* The page sets its own title and its Cancel and Save. */}
+						<HubStack.Screen name="HostEdit" component={HostEditPage} />
+						<HubStack.Screen name="Providers" component={ProvidersPage} options={{ title: "Providers" }} />
+						<HubStack.Screen
+							name="ProviderDetail"
+							component={ProviderDetailPage}
+							options={({ route }) => ({ title: route.params.name })}
+						/>
+						<HubStack.Screen name="Plugins" component={PluginsPage} options={{ title: "Plugins" }} />
+						<HubStack.Screen
+							name="Marketplace"
+							component={MarketplacePage}
+							options={({ route }) => ({ title: route.params.name })}
+						/>
+						<HubStack.Screen name="Hubs" component={HubsPage} options={{ title: "Hubs" }} />
+						<HubStack.Screen
+							name="AddHub"
+							component={AddHubPage}
+							options={({ route }) => ({ title: ADD_HUB_TITLES[route.params.how] })}
+						/>
+						<HubStack.Screen name="HubDetails" component={HubDetailsPage} />
+						<HubStack.Screen
+							name="KeybindingPreferences"
+							component={KeybindingPreferencesScreen}
+							options={{ title: "Keyboard shortcuts" }}
+						/>
+						<HubStack.Screen
+							name="LaunchSettings"
+							component={LaunchSettingsScreen}
+							options={{ title: "Launch defaults" }}
+						/>
+						<HubStack.Screen name="HubSettings" component={HubSettingsScreen} options={{ title: "Hub settings" }} />
+					</HubStack.Navigator>
+				</ProvidersScreenSlotProvider>
 			</PluginsScreenSlotProvider>
 		</HubSheetProvider>
 	);

@@ -121,7 +121,14 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		const { model, rows } = open("s-pr2138");
 		expect(model.name).toBe("Get PR 2138 Test Clean");
 		expect(sessionStateLine(model, NOW).text).toMatch(/^Working · \d+[smh]/);
-		expect(contextChips(model, true).map(({ label, failed }) => ({ label, failed }))).toEqual([
+		expect(
+			contextChips(
+				model,
+				true,
+				undefined,
+				createDemoFleet({ now: NOW }).answerActivityRead({ ref: model.ref, scope: "subtree" }).delegates,
+			).map(({ label, failed }) => ({ label, failed })),
+		).toEqual([
 			{ label: "Subagents 55", failed: "2 failed" },
 			{ label: "Tasks 3/7", failed: undefined },
 			{ label: "Goal", failed: undefined },
@@ -338,26 +345,15 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	});
 
 	it("times a running subagent the same in its row, its transcript entry and its own screen", () => {
-		// The Subagents list reads evener/jobs/list, the transcript the thread's
-		// delegates, and the subagent's screen its own thread's turn: one fact,
-		// its run's start, so the three can't disagree.
+		// The Activity list reads evener/thread/delegates/list, the transcript
+		// the thread's delegates, and the subagent's screen its own thread's
+		// turn: one fact, its run's start, so the three can't disagree.
 		const fleet = createDemoFleet({ now: NOW });
-		const tree = fleet.answerJobsList({ ref: fleetSessionRef("s-pr2138") }).data as {
-			root: { entries: unknown[] };
-		};
-		const started = new Map<string, string>();
-		const visit = (entries: unknown[]) => {
-			for (const entry of entries as {
-				kind: string;
-				delegate?: { childRef: string; runStartedAt: string; child?: { entries: unknown[] } };
-			}[]) {
-				if (entry.kind === "delegate" && entry.delegate) {
-					started.set(entry.delegate.childRef, entry.delegate.runStartedAt);
-					if (entry.delegate.child) visit(entry.delegate.child.entries);
-				}
-			}
-		};
-		visit(tree.root.entries);
+		const started = new Map(
+			fleet
+				.answerDelegatesList({ ref: fleetSessionRef("s-pr2138"), scope: "subtree", limit: 200 })
+				.delegates.map((row) => [row.childRef, row.runStartedAt]),
+		);
 		const running = sessions.filter((thread) => thread.evener.parentRef && thread.status.type === "active");
 		expect(running.length).toBeGreaterThan(0);
 		const transcript = new Map(

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -158,14 +159,14 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 		return s.loadLaunchModels(loadCtx, workingDir, gen)
 	}
 	// The launch list shares the live list's TTL: both track the same provider
-	// inventory, refreshed by the same prefetch cadence.
+	// inventory, and a picker open past it refreshes the list.
 	if entry.gen == gen && time.Since(entry.filledAt) < liveModelsTTL {
 		return cloneModelListResponse(entry.resp), nil
 	}
 	// Stale: serve it now and refresh behind the request, so a picker open pays
 	// the live listing once per key rather than on every open.
 	if s.beginLaunchModelsRefresh(workingDir) {
-		s.startLaunchRefresh(workingDir, gen)
+		s.startLaunchRefresh(workingDir, gen, entry.resp)
 	}
 	return cloneModelListResponse(entry.resp), nil
 }
@@ -176,14 +177,14 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 // shutdown gate is closed, and releases the refresh slot it was given: a live
 // AppWire socket can still serve a model/list during shutdown, and an Add
 // racing the WaitGroup's Wait from zero is WaitGroup misuse.
-func (s *WebServer) startLaunchRefresh(workingDir string, gen uint64) bool {
+func (s *WebServer) startLaunchRefresh(workingDir string, gen uint64, served appwire.ModelListResponse) bool {
 	s.launchRefreshMu.Lock()
 	defer s.launchRefreshMu.Unlock()
 	if s.launchRefreshesClosed {
 		s.endLaunchModelsRefresh(workingDir)
 		return false
 	}
-	s.launchRefreshes.Go(func() { s.refreshLaunchModels(workingDir, gen) })
+	s.launchRefreshes.Go(func() { s.refreshLaunchModels(workingDir, gen, served) })
 	return true
 }
 
@@ -199,8 +200,8 @@ func (s *WebServer) waitLaunchRefreshes() {
 }
 
 // beginLaunchModelsRefresh claims the refresh slot for one working dir,
-// returning false when a refresh of it is already running. The periodic warm
-// uses it too, so a prefetch tick cannot race a request-triggered refresh.
+// returning false when a refresh of it is already running, so a burst of
+// picker opens past the TTL runs one refresh, not one per open.
 func (s *WebServer) beginLaunchModelsRefresh(workingDir string) bool {
 	s.launchModels.mu.Lock()
 	defer s.launchModels.mu.Unlock()
@@ -300,17 +301,27 @@ func launchModelsFetchContext(parent context.Context) (context.Context, context.
 // stale entry from. Its parent is the hub's lifetime context, not the request's,
 // so the request returning does not cancel it and shutdown does. A failed
 // refresh leaves the stale entry in place for the next request to retry.
-func (s *WebServer) refreshLaunchModels(workingDir string, gen uint64) {
+//
+// A refresh that lands a different list than served, the stale list the
+// triggering request was answered with, is announced (launchModelsChanged): a
+// picker still showing served updates in place.
+func (s *WebServer) refreshLaunchModels(workingDir string, gen uint64, served appwire.ModelListResponse) {
 	defer s.endLaunchModelsRefresh(workingDir)
 	ctx, cancel := launchModelsFetchContext(s.lifetime)
 	defer cancel()
-	_, _ = s.loadLaunchModels(ctx, workingDir, gen)
+	fresh, err := s.loadLaunchModels(ctx, workingDir, gen)
+	if err != nil || reflect.DeepEqual(served, fresh) {
+		return
+	}
+	if s.launchModelsChanged != nil {
+		s.launchModelsChanged()
+	}
 }
 
 // warmLaunchModels loads the unscoped launch model list into the cache, so the
 // first picker open after hub start is served instantly instead of blocking on
 // the live provider listing. Best-effort: a failure leaves the cache cold and
-// the next picker open (or prefetch tick) retries. It warms through the
+// the next picker open retries. It warms through the
 // configured loader, so an embedder's own WebConfig.LaunchModels is warmed
 // rather than bypassed; the built-in loader fills the same cache it serves from.
 func (s *WebServer) warmLaunchModels(ctx context.Context) {
@@ -321,11 +332,11 @@ func (s *WebServer) warmLaunchModels(ctx context.Context) {
 }
 
 // startLaunchModelsPrefetch warms the unscoped launch model list once at
-// startup and refreshes it on interval. It runs through the caller's background
-// runner so hub shutdown cancels it; a failed pass is silent and the next tick
-// retries.
-func startLaunchModelsPrefetch(ctx context.Context, web *WebServer, interval time.Duration, startBackground func(func())) {
-	startPeriodicPrefetch(ctx, interval, startBackground, func() {
+// startup, never on a timer: after that the picker refreshes the list when it
+// is opened. It runs through the caller's background runner so hub shutdown
+// cancels it; a failed warm is silent and the next picker open retries.
+func startLaunchModelsPrefetch(ctx context.Context, web *WebServer, startBackground func(func())) {
+	startBackground(func() {
 		warmCtx, cancel := launchModelsFetchContext(ctx)
 		defer cancel()
 		web.warmLaunchModels(warmCtx)
@@ -565,6 +576,10 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 	}
 	s.liveModels.mu.Unlock()
 
+	// Each listing sends its instance's credential, so what the provider
+	// answers is recorded as a probe of it (#3539). The client reads every
+	// credential when it is built, so every probe begins before it.
+	probes := s.beginListingProbes()
 	client, err := liveModelLoadClient("")
 	if err != nil || client == nil {
 		return nil
@@ -606,6 +621,9 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		listCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), instanceLiveListTimeout)
 		listing, listErr := client.Models(listCtx, inst.Name)
 		cancel()
+		// An instance the hub's registry does not hold has no probe here,
+		// and its zero start settles to nothing.
+		s.auth.settleCredentialProbe(probes[inst.Name], listing, listErr)
 		if listErr != nil {
 			continue
 		}
@@ -625,6 +643,23 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 	s.liveModels.gen = gen
 	s.liveModels.mu.Unlock()
 	return out
+}
+
+// beginListingProbes begins a credential probe for every instance the hub's
+// registry holds, by name, for the picker's live pass to settle.
+func (s *WebServer) beginListingProbes() map[string]credentialProbeStart {
+	probes := map[string]credentialProbeStart{}
+	if s.auth == nil || s.cfg.Registry == nil {
+		return probes
+	}
+	reg := s.cfg.Registry.Get()
+	if reg == nil {
+		return probes
+	}
+	for _, inst := range reg.Instances() {
+		probes[inst.Name] = s.auth.beginCredentialProbe(inst.Name)
+	}
+	return probes
 }
 
 // liveModelsGeneration reports the holder generation the model cache is

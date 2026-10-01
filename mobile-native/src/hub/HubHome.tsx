@@ -2,7 +2,7 @@
 // page. MORE pushes today's administration screens inside the sheet until
 // their grouped pages land (#2539), and ABOUT names this app's version and
 // offers the hub's update (ruling 22).
-import type { AuthStatusResponse, HostRow, InstanceEntry } from "@evener/appwire-client";
+import type { HostRow } from "@evener/appwire-client";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { nativeApplicationVersion, nativeBuildVersion } from "expo-application";
@@ -12,16 +12,15 @@ import { useConnection } from "../ConnectionProvider";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { whenReady } from "../connectionDisplay";
 import { useCredentialStore } from "../credentialStore";
+import { scaledType, uiType } from "../design/tokens";
 import { useDisplayChoices } from "../display/displayContext";
 import { APPEARANCE_LABELS } from "../display/displayPreferences";
 import { versionDriftTag } from "../hosts/hostStatus";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
-import { statusOf } from "../providers/providerStatus";
 import { Group, GroupedPage, GroupFooter, Row, RowValue } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { appVersionText, hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
-import { useAuthStatuses } from "./useAuthStatuses";
 import { useInstalledPluginCount } from "./useInstalledPluginCount";
 
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
@@ -63,12 +62,9 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 	);
 	const fleet = fleetSummary(useOptionalSnapshot(hosts)?.rows ?? null, check?.currentVersion);
 	const listing = useSyncExternalStore(credentials.subscribe, credentials.getState);
-	const providers = providersSummary(
-		listing.listingEstablished ? listing.instances : null,
-		// Gated as the Providers page gates it, so a re-key window never reads
-		// the previous hub's statuses.
-		useAuthStatuses(canUseConnection() ? client : null),
-	);
+	// The number of providers and nothing more: which need a sign-in or have
+	// an error is the Providers page's to say, per row (Jesse, 2026-09-30).
+	const providerCount = listing.listingEstablished ? listing.instances.length : null;
 	// Gated on canUseConnection, so a re-key window never reads the previous
 	// hub's list.
 	const installedPlugins = useInstalledPluginCount(canUseConnection() ? client : null);
@@ -78,9 +74,8 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				allowFontScaling={allowFontScaling}
 				style={{
 					color: palette.inkMid,
-					// The prototype's status line (hub.js:17): 14pt, 20pt in, 2 above
-					// and 6 below. Spec 16.2 names no type role for it.
-					fontSize: 14 * scale,
+					...scaledType(uiType.statusLine, scale),
+					// 20pt in, 2 above and 6 below, as the prototype's (hub.js:17).
 					paddingHorizontal: 20,
 					paddingTop: 2,
 					paddingBottom: 6,
@@ -102,12 +97,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				<Row
 					icon="key"
 					label="Providers"
-					value={providers ? <RowValue text={String(providers.count)} tag={providers.tag} /> : undefined}
-					accessibilityLabel={
-						providers
-							? ["Providers", String(providers.count), providers.tag?.text].filter(Boolean).join(", ")
-							: "Providers"
-					}
+					value={providerCount ?? undefined}
 					chevron
 					onPress={() => navigation.navigate("Providers", { hubId })}
 				/>
@@ -206,19 +196,4 @@ function fleetSummary(rows: readonly HostRow[] | null, hubVersion: string | unde
 				? { text: `${drifting} on another version`, tone: "gray" as const }
 				: null;
 	return { count: rows.length + 1, tag };
-}
-
-/** The Providers row's value: every instance, tagged amber with how many
- * need a sign-in (only "Sign-in expired" does, ruling 6). */
-function providersSummary(
-	instances: readonly InstanceEntry[] | null,
-	auth: ReadonlyMap<string, AuthStatusResponse> | null,
-) {
-	if (!instances) return null;
-	// No tag until the statuses are read: only they say a sign-in expired.
-	const toSignIn = instances.filter((instance) => statusOf(instance, auth)?.tone === "attention").length;
-	return {
-		count: instances.length,
-		tag: toSignIn > 0 ? { text: `${toSignIn} to sign in`, tone: "amber" as const } : null,
-	};
 }

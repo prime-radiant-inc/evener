@@ -1,5 +1,5 @@
 import type { ActivityJob, ActivityTree, EvenerDelegateInfo, TurnModel } from "@evener/appwire-client";
-import { buildEntityView, type EntityView } from "@evener/appwire-client";
+import { buildEntityView, type EntityView, findEntityView } from "@evener/appwire-client";
 
 /** The job id a tool summary names and the entity map below indexes. */
 export const SUMMARY_ENTITY_JOB = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
@@ -48,7 +48,7 @@ export function delegateView(
   state: { stale?: boolean; ended?: boolean } = {},
   overrides: Partial<EvenerDelegateInfo> = {},
 ): EntityView {
-  const view = buildEntityView({
+  const entities = buildEntityView({
     sessionRef: "local:s",
     delegates: [
       {
@@ -75,7 +75,8 @@ export function delegateView(
     turns: [],
     stale: state.stale ?? false,
     ended: state.ended ?? false,
-  }).get(id);
+  });
+  const view = findEntityView(entities, "delegate", id, "local:s");
   if (!view) throw new Error("expected delegate fixture to resolve");
   return view;
 }

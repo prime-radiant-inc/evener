@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { NavigationManifest, NavigationWatchSummary } from "@evener/appwire-client";
+import type { EvenerWatchInfo, NavigationManifest } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import {
   keyID,
@@ -31,24 +31,21 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
   activityGloss,
   cadenceStateFor,
+  watchGloss as domainWatchGloss,
   RailRow,
   type RailRowActions,
   watchCadenceLabel,
   watchDurationLabel,
-  watchGloss,
 } from "./RailRow";
 import railStyles from "./RailRow.module.css";
 import type {
-  CompletedJobsFoldRailNode,
   HostRailNode,
-  JobRailNode,
   LoadingRailNode,
   OverflowRailNode,
   ProjectRailNode,
   RailProject,
   RailSession,
   SessionRailNode,
-  WatchRailNode,
 } from "./railNodes";
 import { RailTickProvider } from "./railNow";
 import { RailRenderObserver } from "./railRenderObserver";
@@ -81,7 +78,7 @@ function seedPinCatalogForPicker(): void {
     error: null,
     generationID: generation,
   };
-  navigationStore.setState({ mode: "v2", resources: new Map([[keyID(resource.key), resource]]) });
+  navigationStore.setState({ mode: "v3", resources: new Map([[keyID(resource.key), resource]]) });
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
 }
 
@@ -257,34 +254,24 @@ function hostGroupNode(overrides: Partial<HostRailNode> = {}): HostRailNode {
   };
 }
 
-function jobRailNode(overrides: Partial<JobRailNode["job"]> = {}): JobRailNode {
-  return {
-    id: "job:parent:job-1",
-    kind: "job",
-    job: { job_id: "job-1", job_type: "shell", status: "running", row_id: "job:parent:job-1", ...overrides },
-    active: true,
-    children: [],
-  };
+function watchGloss(info: EvenerWatchInfo): string {
+  return domainWatchGloss({
+    ownerRef: "ref_owner",
+    receiverRef: "ref_owner",
+    state: info.active ? "armed" : "ended",
+    watch: info,
+  });
 }
 
-function completedJobsFoldRailNode(count: number): CompletedJobsFoldRailNode {
-  return { id: "completed-jobs:parent", kind: "completedJobsFold", count, expanded: false, children: [] };
-}
-
-function watchSummary(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
+function watchSummary(overrides: Partial<EvenerWatchInfo> = {}): EvenerWatchInfo {
   return {
     id: "watch-1",
     source: "self",
     deliveries: 0,
-    created_at: "2026-09-12T19:00:00Z",
+    createdAt: "2026-09-12T19:00:00Z",
     active: true,
     ...overrides,
   };
-}
-
-function watchRailNode(overrides: Partial<NavigationWatchSummary> = {}): WatchRailNode {
-  const watch = watchSummary(overrides);
-  return { id: `watch:parent:${watch.id}`, kind: "watch", watch, children: [] };
 }
 
 function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
@@ -403,7 +390,7 @@ function normalizedRailResource(
         },
       ],
     }),
-    version: { generationId: generation, revision: 1, etag: "v2" },
+    version: { generationId: generation, revision: 1, etag: "v3" },
     presence: "present",
   };
 }
@@ -536,7 +523,7 @@ describe("activityGloss", () => {
   test("an approval leads the gloss beside running jobs", () => {
     const session = apiNode({ state: "active", approval_pending: true });
     Object.assign(session, {
-      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+      running_job_count: 1,
     });
     expect(activityGloss(session)).toBe("approval waiting · 1 job running");
   });
@@ -546,7 +533,7 @@ describe("activityGloss", () => {
   test("a question leads the gloss beside running jobs", () => {
     const withJob = (props: Parameters<typeof apiNode>[0]) => {
       const session = apiNode(props);
-      Object.assign(session, { running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }] });
+      Object.assign(session, { running_job_count: 1 });
       return session;
     };
     expect(activityGloss(withJob({ state: "awaiting", ask_pending: true }))).toBe("question waiting · 1 job running");
@@ -581,7 +568,7 @@ describe("activityGloss", () => {
   test("keeps a branch suffix after the running job count", () => {
     const session = apiNode({ state: "idle", branch: "fix/thing" });
     Object.assign(session, {
-      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+      running_job_count: 1,
     });
     expect(activityGloss(session)).toBe("1 job running · fix/thing");
   });
@@ -681,79 +668,10 @@ describe("overflow row", () => {
     expect(screen.getByText("+12 older")).toBeTruthy();
   });
 
-  // A capped watch list reuses this row shape with its own wording, so the
-  // rail keeps ONE overflow grammar ("+N ...") rather than inventing a second.
-  test("names a capped watch list in the same grammar", () => {
-    render(
-      <RailRow
-        node={{ id: "watches:parent:overflow", kind: "overflow", count: 4, pages: [], suffix: "more watches" }}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByText("+4 more watches")).toBeTruthy();
-  });
-
   // Nothing to open and nothing to act on: the rows it counts were never sent
   // to the client, so a chevron or a menu would both be lies.
   test("offers nothing to click", () => {
     render(<RailRow node={overflowRailNode(3)} info={info({ hasChildren: false })} actions={actions()} />);
-    expect(screen.queryByRole("button")).toBeNull();
-  });
-});
-
-// A live watch inside its receiver session's fold-out: the drawn clock, the
-// note, and the cadence + state line. Quieter than a job row on purpose -
-// pending work is inventory, not attention, and it must not spend one of the
-// rail's four attention hues.
-describe("watch row", () => {
-  test("leads with a drawn clock and a visually-hidden 'Watch:' before the note", () => {
-    render(
-      <RailRow
-        node={watchRailNode({ note: "Check the deploy log", cadence: [{ kind: "every", seconds: 600 }] })}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("rail-row-watch-glyph").getAttribute("aria-hidden")).toBe("true");
-    expect(screen.getByText("Watch:")).toBeTruthy();
-    expect(screen.getByText("Check the deploy log")).toBeTruthy();
-    expect(screen.getByTestId("rail-row-watch-status").textContent).toBe("every 10m · armed");
-  });
-
-  // No typed glyph: the app's fonts stop at U+2215, so a "◷" would fall back
-  // to a system font, and name-from-content would announce the character.
-  test("never renders a text glyph for the watch mark", () => {
-    render(<RailRow node={watchRailNode({ note: "Check" })} info={info()} actions={actions()} />);
-    expect(screen.queryByText("◷")).toBeNull();
-    expect(screen.getByTestId("rail-row-watch-glyph").tagName.toLowerCase()).toBe("svg");
-  });
-
-  test("the note is the title, with its full text as a tooltip since it ellipsizes", () => {
-    const note = "Ping me if the queue depth crosses 500, and keep pinging until I answer.";
-    render(<RailRow node={watchRailNode({ note })} info={info()} actions={actions()} />);
-    expect(screen.getByText(note).getAttribute("title")).toBe(note);
-  });
-
-  test("falls back to the watch id when the wire sent no note, so the row is never blank", () => {
-    render(<RailRow node={watchRailNode({ id: "watch-9", note: "" })} info={info()} actions={actions()} />);
-    expect(screen.getByText("watch-9")).toBeTruthy();
-  });
-
-  test("a fired-but-still-registered watch reads as not armed", () => {
-    render(
-      <RailRow
-        node={watchRailNode({ note: "One shot", active: false, cadence: [{ kind: "after", seconds: 600 }] })}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("rail-row-watch-status").textContent).toBe("after 10m · not armed");
-  });
-
-  test("carries no signal dot and nothing to act on", () => {
-    render(<RailRow node={watchRailNode({ note: "Check" })} info={info()} actions={actions()} />);
-    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
   });
 });
@@ -806,7 +724,12 @@ describe("subagent tally on the summary line", () => {
 // ellipsis sacrifice - and ellipsis can therefore never eat it.
 describe("watch count on the summary line", () => {
   test("shows on an otherwise-quiet watch-bearing row", () => {
-    const session = apiNode({ state: "idle", updated_at: minutesAgo(2), watches: [watchSummary()] });
+    const session = apiNode({
+      state: "idle",
+      updated_at: minutesAgo(2),
+      watch_count: 1,
+      armed_watch_count: 1,
+    });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
     // The watch-only line is just the count: the state word "idle" beside it
@@ -815,15 +738,17 @@ describe("watch count on the summary line", () => {
     expect(screen.queryByTestId("cadence-dot")).toBeNull();
   });
 
-  test("counts its own watches, never a subagent's", () => {
-    const child = apiNode({ row_id: "child", ref: "child", state: "idle", watches: [watchSummary({ id: "c1" })] });
-    const parent = apiNode({
+  test("counts the row's own watches", () => {
+    // The count reads the row summary's compact receiver total, never a rollup of
+    // anything under it - railNodes' activeWatchCount pins that rule on the
+    // wire shape.
+    const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(1),
-      watches: [watchSummary({ id: "p1" })],
-      children: [child],
+      watch_count: 1,
+      armed_watch_count: 1,
     });
-    render(<RailRow node={sessionRailNode(parent)} info={info({ depth: 1 })} actions={actions()} />);
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
   });
 
@@ -831,7 +756,8 @@ describe("watch count on the summary line", () => {
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(2),
-      watches: [watchSummary({ id: "armed" }), watchSummary({ id: "fired", active: false })],
+      watch_count: 2,
+      armed_watch_count: 1,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     // A retained-but-inactive row is still listed by the fold-out, so the
@@ -844,41 +770,43 @@ describe("watch count on the summary line", () => {
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(2),
-      watches: [watchSummary({ id: "w1" }), watchSummary({ id: "w2" }), watchSummary({ id: "w3" })],
+      watch_count: 3,
+      armed_watch_count: 3,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("3 watches");
   });
 
-  test("surfaces omitted watches so the row never silently undercounts", () => {
+  test("reports the compact total independently of armed count", () => {
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(2),
-      watches: [watchSummary()],
-      omitted_watches: 2,
+      watch_count: 3,
+      armed_watch_count: 1,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch · 1 armed total · +2 more");
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("3 watches · 1 armed");
   });
 
-  test("reports the armed total across omitted rows, not just the retained rows", () => {
-    // A session with more armed watches than the hub's per-session cap keeps 32
-    // of them and reports the rest as omitted_armed_watches. The summary must
-    // state the true armed total, labelled as covering the omitted rows, rather
-    // than the retained 32.
+  test("reports all armed watches from compact receiver totals", () => {
+    // Compact receiver totals remain authoritative beyond a collection page.
     const session = apiNode({
       state: "idle",
       updated_at: minutesAgo(2),
-      watches: Array.from({ length: 32 }, (_, i) => watchSummary({ id: `armed-${i}` })),
-      omitted_watches: 8,
-      omitted_armed_watches: 8,
+      watch_count: 40,
+      armed_watch_count: 40,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("32 watches · 40 armed total · +8 more");
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("40 watches");
   });
 
   test("precedes the branch on the visible line", () => {
-    const session = apiNode({ state: "active", branch: "feature/x", watches: [watchSummary()] });
+    const session = apiNode({
+      state: "active",
+      branch: "feature/x",
+      watch_count: 1,
+      armed_watch_count: 1,
+    });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     const count = screen.getByTestId("rail-row-watches");
     const activity = screen.getByTestId("rail-row-activity");
@@ -888,7 +816,11 @@ describe("watch count on the summary line", () => {
   });
 
   test("keeps neutral ink on a signal row instead of inheriting the gloss's tint", () => {
-    const session = apiNode({ state: "errored", watches: [watchSummary()] });
+    const session = apiNode({
+      state: "errored",
+      watch_count: 1,
+      armed_watch_count: 1,
+    });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     const count = screen.getByTestId("rail-row-watches");
     expect(count.className.split(" ")).toContain(railStyles.watchCount);
@@ -969,99 +901,6 @@ describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
   });
 });
 
-describe("job rows", () => {
-  test("renders an active job label and green status", () => {
-    render(<RailRow node={jobRailNode({ command: "go test ./..." })} info={info()} actions={actions()} />);
-    expect(screen.getByText("go test ./...")).toBeTruthy();
-    expect(screen.getByTestId("rail-row-job-status").className.split(" ")).toContain(railStyles.activityAlive);
-  });
-
-  test("the tooltip shows the command and the tool call's intent", () => {
-    render(
-      <RailRow
-        node={jobRailNode({
-          command: "go test ./...",
-          intent: "Running the package tests to find the failure",
-        })}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTitle("go test ./... · Running the package tests to find the failure · running")).toBeTruthy();
-  });
-
-  test("the tooltip prefers the full command when the label was truncated", () => {
-    const long = "echo a".repeat(200);
-    render(
-      <RailRow
-        node={jobRailNode({
-          command: "echo a…",
-          full_command: long,
-        })}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTitle(`${long} · running`)).toBeTruthy();
-  });
-
-  // A command that exited nonzero or died on a signal must keep the failure
-  // signal it carried as `failed` before the status split (RoboRev round 2).
-  // The classification is the shared activity danger set (isActivityFailure),
-  // so the rail and the activity tree can never disagree about which job
-  // statuses read as failures.
-  test.each(["command_exited_nonzero", "command_killed", "failed", "exhausted"] as const)(
-    "a %s job row renders the failure signal",
-    (status) => {
-      render(<RailRow node={{ ...jobRailNode({ status }), active: false }} info={info()} actions={actions()} />);
-      expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
-    },
-  );
-
-  test("a cleanly finished job row stays quiet (no signal dot)", () => {
-    render(
-      <RailRow node={{ ...jobRailNode({ status: "completed" }), active: false }} info={info()} actions={actions()} />,
-    );
-    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
-  });
-
-  test("a command-outcome job row states the card's display words, not raw snake_case", () => {
-    const node = {
-      ...jobRailNode({ status: "command_exited_nonzero", command: "go test ./...", intent: "Find the failure" }),
-      active: false,
-    };
-    render(<RailRow node={node} info={info()} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("Command failed");
-    // The hover tooltip carries the same display words.
-    expect(screen.getByTitle("go test ./... · Find the failure · Command failed")).toBeTruthy();
-  });
-
-  test("pre-existing statuses keep their raw words in the status line", () => {
-    const node = { ...jobRailNode({ status: "completed", command: "make check" }), active: false };
-    render(<RailRow node={node} info={info()} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("completed");
-  });
-
-  test("a legacy failed job row joins the display words by its reason", () => {
-    const node = {
-      ...jobRailNode({ status: "failed", reason: "exit_nonzero", command: "go test ./..." }),
-      active: false,
-    };
-    render(<RailRow node={node} info={info()} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("Command failed");
-  });
-
-  test("renders a separate completed-jobs disclosure", () => {
-    const toggle = vi.fn();
-    render(
-      <RailRow node={completedJobsFoldRailNode(3)} info={info({ hasChildren: true, toggle })} actions={actions()} />,
-    );
-    expect(screen.getByText("Completed jobs (3)")).toBeTruthy();
-    fireEvent.click(screen.getByText("Completed jobs (3)"));
-    expect(toggle).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe("session row", () => {
   test("renders the session's title and a Cadence reflecting its state", () => {
     const session = apiNode({ title: "Fix flaky test", state: "active" });
@@ -1095,9 +934,12 @@ describe("session row", () => {
     expect(label.nextElementSibling).toBeNull();
   });
 
-  test("shows a chevron for a branch session (subagent) that calls info.toggle", async () => {
+  // Session rows are leaves in the flat rail - nothing nests under them
+  // anymore - so the chevron contract lives on the rows that still branch:
+  // projects and host groups.
+  test("shows a chevron for a branch row that calls info.toggle", async () => {
     const rowInfo = info({ hasChildren: true, expanded: false });
-    render(<RailRow node={sessionRailNode(apiNode())} info={rowInfo} actions={actions()} />);
+    render(<RailRow node={projectRailNode(apiProject())} info={rowInfo} actions={actions()} />);
     // The chevron is deliberately aria-hidden (decorative mouse shortcut -
     // see widgets/tree's own doc comment and RailRow.tsx's Chevron), so
     // it's found by test id rather than an accessible role query.
@@ -1106,29 +948,20 @@ describe("session row", () => {
   });
 
   // The title line's anatomy is signal-dot (outdented) then label then
-  // trailing chevron, in that order, whether or not the row has children -
-  // the chevron is simply absent on a leaf. This is what keeps one title
+  // trailing chevron, in that order, on every row that branches at all -
+  // a session row never does, so its title line is dot then label. This is
+  // what keeps one title
   // x-position across a mixed tree: the dot hangs in the row's leading
   // padding (see .signal in RailRow.module.css), so it participates in the DOM
   // order without shifting the label.
-  test.each([true, false])(
-    "the title line is signal-dot, label, then trailing chevron (hasChildren %s)",
-    (hasChildren) => {
-      render(
-        <RailRow
-          node={sessionRailNode(apiNode({ state: "active" }))}
-          info={info({ hasChildren })}
-          actions={actions()}
-        />,
-      );
-      const signal = screen.getByTestId("rail-row-signal");
-      const label = screen.getByText("Fix flaky test");
-      const titleLine = signal.parentElement;
-      expect(titleLine).toBeTruthy();
-      const expected = hasChildren ? [signal, label, screen.getByTestId("rail-chevron")] : [signal, label];
-      expect([...(titleLine?.children ?? [])]).toEqual(expected);
-    },
-  );
+  test("the title line is signal-dot then label on a (leaf) session row", () => {
+    render(<RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={info()} actions={actions()} />);
+    const signal = screen.getByTestId("rail-row-signal");
+    const label = screen.getByText("Fix flaky test");
+    const titleLine = signal.parentElement;
+    expect(titleLine).toBeTruthy();
+    expect([...(titleLine?.children ?? [])]).toEqual([signal, label]);
+  });
 
   test("a quiet row holds no signal slot; its title line leads with the label", () => {
     render(<RailRow node={sessionRailNode(apiNode({ state: "idle" }))} info={info()} actions={actions()} />);
@@ -1197,21 +1030,6 @@ describe("session row", () => {
     expect(screen.queryByTestId("favorite-star")).toBeNull();
   });
 
-  // vbh8/§2.2: a derived amber count of needs-you descendants - distinct
-  // from the row's own Cadence dot (which already goes amber when the
-  // SESSION ITSELF needs you - see cadenceStateFor above). A leaf session
-  // with no needs-you descendants shows no badge at all, even if it needs
-  // you itself - the dot alone covers that case, so a redundant "0"/"1"
-  // badge would double up on the same signal.
-  test("shows a derived needs-you-descendant count Badge when a child needs you", () => {
-    const session = apiNode({
-      state: "active",
-      children: [{ ...apiNode({ row_id: "child", ref: "local:child", state: "awaiting" }) }],
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
-    expect(screen.getByText("1")).toBeTruthy();
-  });
-
   test("shows no Badge for a leaf session that itself needs you (the Cadence dot already covers it)", () => {
     render(<RailRow node={sessionRailNode(apiNode({ state: "awaiting" }))} info={info()} actions={actions()} />);
     expect(screen.queryByText("1")).toBeNull();
@@ -1231,7 +1049,7 @@ describe("session row", () => {
   test("shows an active job on a quiet session as green working activity", () => {
     const session = apiNode({ state: "idle" });
     Object.assign(session, {
-      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+      running_job_count: 1,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
@@ -1334,7 +1152,7 @@ describe("session row", () => {
 
   test("an approval row keeps the needs-you dot while its jobs run", () => {
     const session = apiNode({ state: "active", approval_pending: true });
-    Object.assign(session, { running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }] });
+    Object.assign(session, { running_job_count: 1 });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("approval waiting · 1 job running");
@@ -1342,7 +1160,7 @@ describe("session row", () => {
 
   test("a question row keeps the needs-you dot while its jobs run", () => {
     const session = apiNode({ state: "awaiting", ask_pending: true });
-    Object.assign(session, { running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }] });
+    Object.assign(session, { running_job_count: 1 });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("question waiting · 1 job running");
@@ -1660,17 +1478,6 @@ describe("session row", () => {
     expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test");
   });
 
-  test("a needs-you count takes the right slot instead of the timestamp", () => {
-    const session = apiNode({
-      state: "active",
-      updated_at: minutesAgo(2),
-      children: [apiNode({ row_id: "child", ref: "local:child", state: "awaiting" })],
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
-    expect(screen.queryByTestId("rail-row-time")).toBeNull();
-    expect(screen.getByText("1")).toBeTruthy(); // the Badge from Task 7
-  });
-
   test("shows no timestamp when the session carries no age", () => {
     render(<RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={info()} actions={actions()} />);
     expect(screen.queryByTestId("rail-row-time")).toBeNull();
@@ -1935,6 +1742,47 @@ describe("session row", () => {
     });
     // The row re-rendered on the focus change: the item is plain again.
     expect(await screen.findByRole("menuitem", { name: "Activity" })).toBeTruthy();
+  });
+
+  // The Tasks ✓ names what the row's own Tasks action opens, per viewport -
+  // the same rule the Activity check above follows. On desktop that is the
+  // activity sidebar preselected to its Tasks tab and scoped to this session;
+  // the sessionTasks pane is mobile-only (the desktop rail's Tasks action
+  // retargets to the sidebar), so a leftover pane is an orphan the desktop
+  // check never marks.
+  test("the Tasks check marks the sidebar's Tasks tab open for this session on desktop", async () => {
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    activitySidebarStore.getState().openWith("tasks");
+    renderRow();
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
+  });
+
+  test("the Tasks check stays plain while the sidebar shows this session another tab", async () => {
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    activitySidebarStore.getState().openWith("agents");
+    renderRow();
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
+  });
+
+  test("on desktop a sessionTasks pane does not mark the Tasks item", async () => {
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:a" });
+    renderRow();
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
+  });
+
+  test("the Tasks check marks a sessionTasks pane open for this session on mobile", async () => {
+    const restoreViewport = installMobileViewport();
+    try {
+      workspaceStore.getState().openPane("sessionTasks", { ref: "local:a" });
+      renderRow();
+      await openMenu(/actions for/i);
+      expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
+    } finally {
+      restoreViewport();
+    }
   });
 
   test("shut down confirms through onShutdownSession", async () => {
@@ -2286,7 +2134,7 @@ describe("project row", () => {
     expect(secondActions.onToggleFavoriteProject).toHaveBeenCalledWith(node.project);
   });
 
-  test("non-project rows retain default memo behavior for descendant-only node replacement", () => {
+  test("non-project rows retain default memo behavior for a replaced node", () => {
     const observer = vi.fn();
     const rowInfo = info();
     const rowActions = actions();
@@ -2302,7 +2150,7 @@ describe("project row", () => {
     rerender(
       <RailRenderObserver value={observer}>
         <RailRow
-          node={{ ...firstNode, children: [sessionRailNode(apiNode({ row_id: "child", ref: "child" }))] }}
+          node={{ ...firstNode, session: { ...session, title: "Replacement" } }}
           info={rowInfo}
           actions={rowActions}
         />
@@ -2912,16 +2760,11 @@ test("an incompatible daemon has an attention signal and restart instruction", (
 
 test.each([
   ["own activity", { state: "active" }, { state: "idle" }, "working"],
-  [
-    "job activity",
-    { state: "idle", running_jobs: [{ job_id: "job-a", job_type: "shell", status: "running" }] },
-    { state: "idle" },
-    "1 job running",
-  ],
+  ["job activity", { state: "idle", running_job_count: 1 }, { state: "idle" }, "1 job running"],
 ] as const)("normalized navigation preserves %s in the rendered sidebar", (_name, parentState, childState, gloss) => {
   const resource = normalizedRailResource(
     { kind: "project_page", projectKey: "project", tier: "current", offset: 0, limit: 50 },
-    { ...parentState, running_jobs: "running_jobs" in parentState ? [...parentState.running_jobs] : [] },
+    { ...parentState, running_job_count: "running_job_count" in parentState ? parentState.running_job_count : 0 },
     childState,
   );
   const parent = [...selectRailModel(resource).sessions.values()].find((session) => session.ref === "parent");
@@ -2943,7 +2786,7 @@ test("restart explanation survives job activity", () => {
     state: "restartRequired",
     live: true,
     branch: "",
-    running_jobs: [{ job_id: "job-a", job_type: "shell", status: "running" }],
+    running_job_count: 1,
   });
   expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
   const gloss = screen.getByTestId("rail-row-activity").textContent;

@@ -33,6 +33,22 @@
   word-break: break-word;
 }
 
+/* The job's command, pinned above the output. The same mono treatment the
+ * activity strip's own detail command gets, so the pane and the strip word a
+ * job identically; flex:none keeps it out of the log's own scroll. */
+.joblogCommand {
+  flex: 0 0 auto;
+  display: block;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-hi);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--edge);
+}
+
 .joblogNote {
   padding: var(--space-1) var(--space-3);
   color: var(--ink-low);

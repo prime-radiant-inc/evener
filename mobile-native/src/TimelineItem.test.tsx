@@ -755,6 +755,28 @@ describe("a system event", () => {
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress());
 		expect(renderedText(tree)).toContain("Remember the open task.");
 	});
+
+	// An informational warning is one quiet line, but an item that also carries
+	// a hint shows it as a quiet second line under the message, and VoiceOver
+	// speaks both (the web keeps the hint as hover title and VisuallyHidden text).
+	it("reads an informational warning's hint as a quiet second line, spoken in the row", () => {
+		const warning = notice({
+			family: "informational",
+			tone: "system",
+			text: "Output clamped to fit the context window",
+			hint: "Free some context.",
+		});
+		const tree = render(<TimelineItem item={warning} hubId="hub" sessionRef="event-hint" />);
+		expect(renderedText(tree)).toContain("Output clamped to fit the context window");
+		expect(renderedText(tree)).toContain("Free some context.");
+		expect(texts(tree.root).find((node) => textOf(node) === "Free some context.")?.props.style).toMatchObject({
+			fontSize: 13,
+			lineHeight: 18,
+			color: INK_LOW,
+		});
+		const button = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		expect(button?.props.accessibilityLabel).toBe("Output clamped to fit the context window\nFree some context.");
+	});
 });
 
 const palette = paletteFor("light");

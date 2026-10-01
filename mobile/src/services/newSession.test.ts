@@ -6,9 +6,6 @@
 
 import { describe, expect, it } from "vitest";
 import type {
-	AnyNotification,
-	MethodName,
-	MethodTypes,
 	ModelDescriptor,
 	ModelListResponse,
 	ProjectsRecentResponse,
@@ -18,32 +15,10 @@ import type {
 } from "@evener/appwire-client";
 import { createNewSessionService } from "./newSession";
 
-// --- minimal fake client ----------------------------------------------------
-
-type RequestHandler = (params: unknown) => unknown | Promise<unknown>;
-
-class FakeAppwireClient {
-	readonly calls: { method: string; params: unknown }[] = [];
-	private readonly handlers = new Map<string, RequestHandler>();
-
-	on<M extends MethodName>(
-		method: M,
-		handler: (params: MethodTypes[M]["params"]) => MethodTypes[M]["result"] | Promise<MethodTypes[M]["result"]>,
-	): void {
-		this.handlers.set(method, handler as unknown as RequestHandler);
-	}
-
-	request<M extends MethodName>(method: M, params: MethodTypes[M]["params"]): Promise<MethodTypes[M]["result"]> {
-		this.calls.push({ method, params });
-		const handler = this.handlers.get(method);
-		if (!handler) {
-			return Promise.reject(new Error(`FakeAppwireClient: no handler for "${method}"`));
-		}
-		return Promise.resolve().then(() => handler(params) as MethodTypes[M]["result"]);
-	}
-
-	onNotification(_cb: (n: AnyNotification) => void): () => void {
-		return () => {};
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+class FakeAppwireClient extends FakeClient {
+	constructor() {
+		super("ready");
 	}
 }
 

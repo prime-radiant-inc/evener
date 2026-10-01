@@ -191,15 +191,20 @@ type mainDeps struct {
 	newSSHManager func(*hostreg.Registry, sshconn.Options) *sshconn.Manager
 	// startLivePrefetch warms the holder's live model cache: main wires it to
 	// the background runner and the broadcast, tests to a synchronous seam.
-	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func())
+	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, func(func()), func())
 	// startLaunchPrefetch warms the picker's cached launch model list so the
 	// first open after startup is instant: main wires it to the background
 	// runner, tests to a synchronous seam.
-	startLaunchPrefetch func(context.Context, *WebServer, time.Duration, func(func()))
+	startLaunchPrefetch func(context.Context, *WebServer, func(func()))
 	notifyContext       func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	listen              func(context.Context, string, string) (net.Listener, error)
 	serve               func(context.Context, hubHTTPServer) error
 	afterWeb            func(*WebServer)
+	// rosterProbeTimeout bounds the roster's status probe of each live
+	// daemon; zero keeps hubcore.StatusProber's 500ms default. A test that
+	// reads a real daemon through the roster sets a generous one, so a loaded
+	// runner cannot time the probe out.
+	rosterProbeTimeout time.Duration
 	// stdin/stdout carry the process streams the `attach` subcommand bridges to
 	// the hub's loopback AppWire edge. The normal hub command ignores them.
 	stdin  io.Reader
@@ -345,7 +350,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 
 	// Roster + past index
-	prober := &hubcore.StatusProber{Timeout: 500 * time.Millisecond}
+	prober := &hubcore.StatusProber{Timeout: deps.rosterProbeTimeout}
 	roster := hubcore.NewRoster(runDir, prober)
 
 	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
@@ -767,7 +772,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// subagent appearing/disappearing in the past index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
 	// which never route through PastIndex at all, so they invalidate directly.
 	wirePastNavigation(past, bump, web.navigation)
-	roster.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	// A session whose turn the provider refused makes the hub check that
+	// instance's credential at once (#3539); the watch starts probing once the
+	// background runner exists, below.
+	sessionCredentials := &sessionCredentialWatch{auth: web.auth}
+	observeSessionCredentials := sessionCredentials.observer(roster)
+	roster.SetOnChange(func() {
+		bump()
+		web.navigation.Invalidate(navigationChangeHint{})
+		observeSessionCredentials()
+	})
 	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
@@ -811,6 +825,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startBackground := func(fn func()) {
 		background.Go(fn)
 	}
+	sessionCredentials.start(ctx, startBackground)
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
@@ -878,25 +893,26 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// RemoteThreadCache is configured.
 	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, web) })
 	// Live-model prefetch: fetch every instance's /models listing into the
-	// held registry once at startup and every livePrefetchInterval after,
-	// so the Providers sheet reads cached inventory instead of fetching on
-	// open. Best-effort per instance; a provider that is down keeps its
-	// catalog rows until the next tick. A pass that changes what any
+	// held registry once at startup, so the Providers sheet reads cached
+	// inventory instead of fetching on open. Once only: the hub never polls
+	// providers on a timer. Best-effort per instance; a provider that is down
+	// keeps its catalog rows until a refresh. A pass that changes what any
 	// client shows announces it over the reused instance channel, so every
 	// browser refetches its list; a no-op pass stays silent.
 	// Through deps so hermetic runMain tests stay offline: the default
 	// warms the live cache from real provider endpoints.
-	deps.startLivePrefetch(ctx, hubReg, livePrefetchInterval, startBackground, func() {
+	deps.startLivePrefetch(ctx, hubReg, web.auth, startBackground, func() {
 		// A server-initiated pass has no originating client, so the broadcast
 		// names none: every client, including the one that may have just asked
 		// for the prefetch, reads it as an unowned list change and refetches.
 		notifyInstanceUpdated(web.appRPC, "")
 	})
 	// Launch-model warm: run the picker's `evener launch-check --models` once
-	// at startup and every livePrefetchInterval after, so opening a model
-	// picker is served from cache instead of waiting on the live listing.
+	// at startup, so the first model picker open is served from cache instead
+	// of waiting on the live listing. After that the picker refreshes the list
+	// when it is opened.
 	// Through deps so hermetic runMain tests stay offline.
-	deps.startLaunchPrefetch(ctx, web, livePrefetchInterval, startBackground)
+	deps.startLaunchPrefetch(ctx, web, startBackground)
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{

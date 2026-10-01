@@ -1038,7 +1038,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
@@ -1050,7 +1050,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 // server directly, for a caller that never builds through newWebServer
 // (most tests, and any embedder calling this constructor's exported
 // wrappers directly).
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices) {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices, *hubAuthController) {
 	// One fallback registry when cfg carries no live one, built once here so
 	// every host surface below — attach, management, and the admin proxy —
 	// validates against the same instance: a host added at runtime must be
@@ -1236,6 +1236,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerArchivedListHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
 	registerActivityReadHandler(server, cfg, sources)
+	registerSessionActivityHandlers(server, cfg, sources)
 	// The notices read the same answers evener/auth/list and evener/plugin/list
 	// give, through the controllers those methods use (S11).
 	notices := &hubNotices{
@@ -1312,7 +1313,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// push) instead of a nil store one of them dereferences.
 	credsStore, credsErr := authController.credentialStore()
 	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, credsStore, credsErr)
-	return server, hostAdmin, hostManage, notices
+	return server, hostAdmin, hostManage, notices, authController
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
@@ -2005,6 +2006,18 @@ func registerThreadHandlers(
 // registerAuthHandlers registers the evener/auth/* RPC handlers, routed to the
 // auth controller. Successful mutations broadcast evener/auth/updated.
 func registerAuthHandlers(server *appserver.Server, authController *hubAuthController) {
+	// A credential rejection appearing or clearing changes the instance's
+	// status (its Error) with no write behind it, so it is announced the way a
+	// write is: clients re-read statuses on evener/auth/updated. It is set here,
+	// before the server serves, and never again: probes read it unlocked.
+	authController.credentialRejectionChanged = func(name string) {
+		status, err := authController.Status(appwire.AuthStatusParams{Provider: name})
+		if err != nil {
+			notifyInstanceUpdated(server, "")
+			return
+		}
+		notifyAuthUpdated(server, status.Provider, status.ActiveSource, "")
+	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 		return authController.Status(params)
 	})
@@ -2335,6 +2348,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		return hubJobsOutput(ctx, cfg, sources, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsGet, func(ctx context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+		return hubJobsGet(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadTranscriptsList, func(ctx context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 		return hubThreadTranscriptList(ctx, cfg, sources, params)

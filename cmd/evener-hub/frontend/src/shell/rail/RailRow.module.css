@@ -376,18 +376,8 @@
   color: var(--danger);
 }
 
-/* The drawn clock a watch row leads with (RailRow's WatchGlyph): a fixed-size
- * inline mark, neutral by design. 13px keeps it inside the title line's
- * leading box without shifting the note off the title x of its sibling rows. */
-.watchGlyph {
-  flex: none;
-  width: 13px;
-  height: 13px;
-  color: var(--ink-mid);
-}
-
 /* The drawn host glyph a host group row leads with (RailRow's HostGlyph):
- * the same fixed-size inline mark grammar as the watch row's clock - a host
+ * a fixed-size inline mark, neutral by design - a host
  * is infrastructure, not triage, so the glyph takes the signal dot's slot
  * without shifting the label off its sibling rows' title x. */
 .hostGlyph {

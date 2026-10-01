@@ -61,7 +61,7 @@ const navigationReadResponse = (generationId = "generation_test"): NavigationRea
 
 function scriptNavigationManifest(client: FakeClient, generationId: string | (() => string) = "generation_test"): void {
   client.on("evener/navigation/read", (params: NavigationReadParams) => {
-    expect(params).toEqual({ resource: "manifest", representationVersion: 2 });
+    expect(params).toEqual({ resource: "manifest", representationVersion: 3 });
     return navigationReadResponse(typeof generationId === "function" ? generationId() : generationId);
   });
 }
@@ -243,9 +243,9 @@ describe("initNotifications lifecycle", () => {
     initNotifications();
     await flushMicrotasks();
 
-    expect(navigationStore.getState().mode).toBe("v2");
+    expect(navigationStore.getState().mode).toBe("v3");
     expect(client.calls).toEqual([
-      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 3 } },
     ]);
   });
 
@@ -297,7 +297,7 @@ describe("initNotifications lifecycle", () => {
 
     expect(client.calls).toContainEqual({
       method: "evener/navigation/read",
-      params: { resource: "manifest", representationVersion: 2 },
+      params: { resource: "manifest", representationVersion: 3 },
     });
     expect(navigationStore.getState().manifest?.data).not.toBeNull();
   });
@@ -437,7 +437,7 @@ describe("edge-fire", () => {
     setFocused(false);
     setLeaderForTests(true);
     navigationStore.setState({
-      mode: "v2",
+      mode: "v3",
       attention: attentionFromNodes([node("local:baseline", "awaiting")]),
     });
     expect(fires()).toEqual({ os: 0, sound: 0 });
@@ -550,7 +550,7 @@ describe("reconnect re-baselines silently", () => {
     await flushMicrotasks();
     expect(client.calls).toHaveLength(2); // one reset reload, not reset plus another read
     expect(client.calls.slice(1)).toEqual([
-      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 3 } },
     ]);
     expect(navigationStore.getState().clientGenerationID).toBe("generation_next");
     expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);

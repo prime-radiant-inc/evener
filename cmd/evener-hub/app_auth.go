@@ -64,6 +64,13 @@ type hubAuthController struct {
 	// duplicate caller before the shared probe completes.
 	credentialTestJoined func()
 
+	// rejections is the credentials a provider rejected on the hub's own
+	// probes (#3539), which evener/auth/status and evener/auth/list report as
+	// Error. credentialRejectionChanged, when set, is told the instance whose
+	// rejection appeared or cleared, so clients can re-read its status.
+	rejections                 credentialRejections
+	credentialRejectionChanged func(name string)
+
 	// credMu serializes the instances controller's providers.toml mutations
 	// against every credential write. A mutation asks which credentials
 	// already sit under a name, or which endpoint it resolves to, and then
@@ -488,7 +495,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	// instance mutation holds credMu exclusively while it rewrites
 	// providers.toml and reloads. Only the answer under the lock describes
 	// the instance, and the endpoint, this record lands under.
-	applied, err := c.credentialWrite(func() error {
+	applied, err := c.credentialWrite(provider, func() error {
 		if err := c.requiresCodex(provider); err != nil {
 			return err
 		}
@@ -529,7 +536,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
 	codex := false
 	removed := false
-	applied, err := c.credentialWriteExclusive(func() error {
+	applied, err := c.credentialWriteExclusive(name, func() error {
 		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
@@ -598,8 +605,8 @@ var credentialWriteBetween = func() {}
 // failure is not lost either: reloadRegistryLocked leaves it on the registry,
 // which is where the pane reads it (Diagnostics) and where instance writes are
 // refused until the file loads (WritesRefused, spec §10).
-func (c *hubAuthController) credentialWrite(write func() error) (applied bool, err error) {
-	return c.credentialWriteConditional(func() (bool, error) { return true, write() })
+func (c *hubAuthController) credentialWrite(name string, write func() error) (applied bool, err error) {
+	return c.credentialWriteConditional(name, func() (bool, error) { return true, write() })
 }
 
 // credentialWriteConditional is credentialWrite for a write that may decide not
@@ -610,7 +617,7 @@ func (c *hubAuthController) credentialWrite(write func() error) (applied bool, e
 // nothing, so re-deriving the instance set from it would be a reload that
 // describes no change. The lock discipline is credentialWrite's exactly: the
 // decision (and, when it says yes, the write) is one critical section.
-func (c *hubAuthController) credentialWriteConditional(write func() (applied bool, err error)) (applied bool, err error) {
+func (c *hubAuthController) credentialWriteConditional(name string, write func() (applied bool, err error)) (applied bool, err error) {
 	c.credMu.Lock()
 	defer c.credMu.Unlock()
 	applied, err = write()
@@ -620,6 +627,8 @@ func (c *hubAuthController) credentialWriteConditional(write func() (applied boo
 	if !applied {
 		return false, nil
 	}
+	// A new credential is not the one a provider rejected.
+	c.forgetCredentialRejection(name)
 	credentialWriteBetween()
 	_ = c.reloadRegistryLocked()
 	// The credential landed. The applied answer is returned per call, captured
@@ -635,12 +644,13 @@ func (c *hubAuthController) credentialWriteConditional(write func() (applied boo
 // re-derived from the removal before the section ends, exactly as the shared
 // writers do, and its reload failure is not returned either, for the reason
 // credentialWrite states.
-func (c *hubAuthController) credentialWriteExclusive(write func() error) (applied bool, err error) {
+func (c *hubAuthController) credentialWriteExclusive(name string, write func() error) (applied bool, err error) {
 	c.credMu.Lock()
 	defer c.credMu.Unlock()
 	if err := write(); err != nil {
 		return false, err
 	}
+	c.forgetCredentialRejection(name)
 	credentialWriteBetween()
 	_ = c.reloadRegistryLocked() // not returned; see credentialWrite
 	return true, nil
@@ -783,7 +793,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	// change the answer: it holds credMu exclusively while it re-keys
 	// providers.toml and reloads, so only a check inside that lock describes
 	// the instance this write actually lands on.
-	applied, err := c.credentialWrite(func() error {
+	applied, err := c.credentialWrite(name, func() error {
 		// A key stored under a Codex instance is one nothing reads: the transport
 		// authenticates with its OAuth record (spec §5.1), so storing it and
 		// reporting success would describe a credential the launch cannot use.
@@ -888,7 +898,7 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 	// One key for the whole write, so the fence is checked against the key the
 	// caller's row was served with.
 	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
-	applied, err := c.credentialWriteConditional(func() (bool, error) {
+	applied, err := c.credentialWriteConditional(name, func() (bool, error) {
 		// The registry that resolved inst travels with it: the revision fence
 		// and the classification both have to describe the same generation of
 		// providers.toml as the instance they judge, and asking the controller
@@ -995,7 +1005,7 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 	// clear was confirmed for the row the client listed, and a name another
 	// client has re-pointed since must not have its replacement instance's key
 	// removed.
-	applied, err := c.credentialWrite(func() error {
+	applied, err := c.credentialWrite(name, func() error {
 		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
@@ -1162,7 +1172,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	// Re-checked under the lock for the same reason LoginComplete re-checks
 	// it: the poll's own exchange is the long step an instance mutation can
 	// land in.
-	applied, err := c.credentialWrite(func() error {
+	applied, err := c.credentialWrite(provider, func() error {
 		if err := c.requiresCodex(provider); err != nil {
 			return err
 		}
@@ -1522,7 +1532,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	// behind it. One key for the whole write, so the assertion below is checked
 	// against the key the caller's row was served with.
 	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
-	applied, err := c.credentialWrite(func() error {
+	applied, err := c.credentialWrite(name, func() error {
 		// Asked again inside the lock, because it is the answer at the moment
 		// of the write that matters: a rename holds credMu exclusively while
 		// it re-keys providers.toml and reloads, so the check above can
@@ -1578,9 +1588,35 @@ func (c *hubAuthController) instanceStatus(inst registry.Instance, resolved ...r
 // for a caller that holds credMu (Status, List, the listing's own rows) and must
 // not resolve - and possibly repair - the key file under it.
 func (c *hubAuthController) instanceStatusKeyed(key []byte, inst registry.Instance, resolved ...registry.Resolved) appwire.AuthStatusResponse {
+	status := c.credentialStatusKeyed(key, inst, resolved...)
+	if status.Error == "" {
+		status.Error = c.credentialRejectionError(inst.Name, status.ConfigRevision)
+	}
+	return status
+}
+
+// credentialStatusKeyed is instanceStatusKeyed before a recorded credential
+// rejection is folded in.
+func (c *hubAuthController) credentialStatusKeyed(key []byte, inst registry.Instance, resolved ...registry.Resolved) appwire.AuthStatusResponse {
 	if inst.Auth == registry.AuthOAuthOpenAICodex {
-		resp, _ := c.openAIInstanceStatusKeyed(key, inst.Name, resolved...)
-		return resp
+		resp, err := c.openAIInstanceStatusKeyed(key, inst.Name, resolved...)
+		if err == nil {
+			return resp
+		}
+		// The stored OAuth record could not be read (neither absent nor
+		// corrupt). Report the row with the failure in Error rather than
+		// dropping it - one source of the redesign spec's "Error" provider
+		// status (section 12), beside a rejected credential. Write paths read
+		// through openAIInstanceStatus directly, so they still get the error.
+		_, hasFile := c.storedKey(inst.Name)
+		return appwire.AuthStatusResponse{
+			Provider:      inst.Name,
+			Supported:     true,
+			ActiveSource:  "none",
+			AuthModes:     authModesFor(inst.Auth),
+			HasStoredFile: hasFile,
+			Error:         "the stored credential could not be read",
+		}
 	}
 	_, hasFile := c.storedKey(inst.Name)
 	// The registry names an environment credential "env:<VAR>", and that

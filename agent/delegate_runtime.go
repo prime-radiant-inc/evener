@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -687,7 +689,10 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// rather than relying on each caller to remember (#940).
 	// drivePendingStableDelegateAttention reaches this primitive directly with no
 	// caller-side gate.
-	blocked := sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id)
+	// startBlockedLocked is the shared drive-guard predicate delegate_send reads
+	// through takeSendDriveGuard, so the two busy lists cannot drift. The
+	// attention-only extras are layered on top.
+	blocked := sub.startBlockedLocked() || sub.closed || sub.fatalRunGated || s.childCommittedSendStart(sub.sess.id)
 	if !blocked {
 		sub.driving = true
 	}
@@ -700,9 +705,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		if launched {
 			return
 		}
-		sub.mu.Lock()
-		sub.driving = false
-		sub.mu.Unlock()
+		releaseSendDriveGuard(sub)
 	}()
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
@@ -1074,14 +1077,33 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 	return errors.Join(err, s.executeDelegateMutationPlans(plans))
 }
 
+// errDelegateAttentionSourceMissing marks an escalation that failed because
+// the delegate's own transcript, the source of the attention it hands over,
+// does not exist.
+var errDelegateAttentionSourceMissing = errors.New("delegate attention source transcript missing")
+
+// parkedEscalationStandsDown reports whether a parked delegate's failed
+// escalation should wait with it (new attention or a restart) instead of
+// re-arming the retry: only when its transcript is gone, which no retry can
+// bring back. The delegate already said it is undeliverable. Any other
+// failure (appending the hand-over to the root, resolving the source) may
+// clear, so it keeps the retry.
+func parkedEscalationStandsDown(err error) bool {
+	return errors.Is(err, errDelegateAttentionSourceMissing)
+}
+
 // escalateUnreachableDelegateAttention transfers permanently fenced wakes to
 // the root, preserving identity/content and idempotent crash replay.
 func (s *Session) escalateUnreachableDelegateAttention() bool {
 	progressed, failed := false, false
 	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
-		if err := s.escalateOneUnreachableDelegateAttention(plan, readDelegateAttentionFold); err != nil {
+		readFold := readDelegateAttentionFold
+		if plan.parked {
+			readFold = readExistingDelegateAttentionFold
+		}
+		if err := s.escalateOneUnreachableDelegateAttention(plan, readFold); err != nil {
 			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
-			failed = true
+			failed = failed || !plan.parked || !parkedEscalationStandsDown(err)
 			continue
 		}
 		s.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, plan.delegateID)
@@ -1089,6 +1111,8 @@ func (s *Session) escalateUnreachableDelegateAttention() bool {
 	}
 	if failed {
 		s.scheduleStableDelegateAttentionRetry()
+	} else if progressed {
+		s.resetStableDelegateAttentionRetryDelay()
 	}
 	return progressed
 }
@@ -1101,6 +1125,9 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		return err
 	}
 	fold, err := readFold(sourcePath, sourceSessionID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w", errDelegateAttentionSourceMissing, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -1220,9 +1247,9 @@ func (s *Session) delegateAttentionGiveUpAfter() int {
 // owed attention to the root, the way attention a closed ancestor fences off
 // is escalated: the root receives each message under its original identity
 // and the source is resolved, so nothing is dropped. When the hand-over
-// fails too, the delegate is parked, out of the drive until new attention
-// arrives or the daemon restarts, and the session says so once at every
-// level and in the daemon log.
+// fails too, the delegate is parked, out of the drive's cold restores until
+// new attention arrives or the daemon restarts, and the session says so once
+// at every level and in the daemon log.
 func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	plan, ok := s.delegateController.giveUpAttentionPlan(delegateID)
 	if !ok {
@@ -1315,20 +1342,36 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	return (delegateRuntime{owner: s}).create(ctx, args)
 }
 
-// childStartBlocked reports whether the resident child session childID is
-// busy in a way that stops it taking a new generation. A child with no
-// resident runtime isn't blocked: the send restores it.
-func (s *Session) childStartBlocked(childID string) bool {
-	if childID == "" {
-		return false
-	}
-	sub := s.subagentForChild(childID)
-	if sub == nil {
-		return false
+// takeSendDriveGuard takes sub's drive guard for a send's start: it sets
+// driving unless the child can't take a new generation now (a run, a drive
+// or a finalizer in flight, or worktree disposal holding it), and reports
+// whether it did. The sibling guard in driveStableDelegateAttention routes
+// through startBlockedLocked too, and also refuses a closed or fatally gated
+// child and a committed-send claim, which a send has already settled by this
+// point.
+// `running` goes false at the top of a run's finalize block, before
+// FinishGeneration moves the aggregate back to idle and before finalizing is
+// cleared, so the finalizer and dispose flags are read under the same sub.mu
+// hold as running and driving.
+func (s *Session) takeSendDriveGuard(sub *subagent) bool {
+	if observer := s.cfg.testOnly.delegateSendChildResolved; observer != nil {
+		observer(sub)
 	}
 	sub.mu.Lock()
 	defer sub.mu.Unlock()
-	return sub.startBlockedLocked()
+	if sub.startBlockedLocked() {
+		return false
+	}
+	sub.driving = true
+	return true
+}
+
+// releaseSendDriveGuard gives back a drive guard taken by takeSendDriveGuard or
+// by driveStableDelegateAttention, on a start that didn't hand over to a run.
+func releaseSendDriveGuard(sub *subagent) {
+	sub.mu.Lock()
+	sub.driving = false
+	sub.mu.Unlock()
 }
 
 // delegateFinalizationWaitCeiling bounds how long a send waits for a finished
@@ -1521,14 +1564,26 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
 		observer(committedChildID)
 	}
-	// A resident child still busy (a drive in flight, a finalizer the
-	// controller has heard is quiesced but that hasn't let go) can't take this
-	// generation. Refuse before the commit, so nothing is written: with the
-	// send-start claim held no new drive can begin, so this sees the child as
-	// the commit would. The post-commit check below stays as the backstop.
-	if s.childStartBlocked(committedChildID) {
-		_ = s.delegateController.AbortStart(reservation)
-		return failed(errDelegateTargetBusy)
+	// A resident child takes this generation only if it is free, so its
+	// drive guard is taken before the commit: a busy child refuses the send
+	// with nothing written. A cold child is restored from the committed start,
+	// which owns the restore, so its guard is taken after the commit below.
+	// guarded holds the guard until the run takes it over; every other exit
+	// releases it here, before the claim's rollback re-drives the child.
+	var guarded *subagent
+	defer func() {
+		if guarded != nil {
+			releaseSendDriveGuard(guarded)
+		}
+	}()
+	if committedChildID != "" {
+		if resident := s.subagents.get(committedChildID); resident != nil && resident.sess != nil {
+			if !s.takeSendDriveGuard(resident) {
+				_ = s.delegateController.AbortStart(reservation)
+				return failed(errDelegateTargetBusy)
+			}
+			guarded = resident
+		}
 	}
 	var waiter *delegateInlineWaiter
 	if maxWaitMS > 0 {
@@ -1581,7 +1636,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			})
 		}
 	}
-	// Take the drive claim for the committed-start window, exactly as
+	// Hold the drive guard for the committed-start window, exactly as
 	// driveStableDelegateAttention does (#932/#940). CommitStart has already
 	// consumed the reservation, but sub.running stays false through the restored
 	// side effects and the start-input mutation plans (BeginStartInput,
@@ -1594,44 +1649,26 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// with no owner check) lets the unleased turn steal the run's follow-up.
 	// sub.driving is the flag every other guard already reads as "a turn is in
 	// flight on this idle child"; it is handed to the run under the same sub.mu
-	// hold that sets running and released by the deferred rollback on every
-	// failure exit below.
+	// hold that sets running.
 	//
-	// The id-keyed childCommittedSendStart claim, taken in send immediately after
-	// ReserveStart and before CommitStart, already covers the pre-resolve stretch
-	// (the commit itself, restoreIdleForSend, and the
-	// admitReconstructed/AttachRuntime leg). This per-child flag only has to cover
-	// what follows: from the point restoreIdleForSend has produced the child
-	// through the hand-off to the run.
-	sub.mu.Lock()
-	// The sibling drive guard in driveStableDelegateAttention also refuses a
-	// child whose finalizer is still running or whose worktree disposal holds
-	// the dispose gate. `running` goes false at the top of the run's finalize
-	// block, before FinishGeneration moves the aggregate back to idle and
-	// before finalizing is cleared, so a send landing in that window would
-	// otherwise pass this guard, set driving, and start a run concurrently with
-	// the in-flight finalizer (or the disposer that owns disposeGated). Read
-	// both under the same sub.mu hold as running/driving.
-	blocked := sub.startBlockedLocked()
-	if !blocked {
-		sub.driving = true
-	}
-	sub.mu.Unlock()
-	if blocked {
-		cause := errDelegateTargetBusy
-		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
-			finishRestore(sub, nil)
-		})
-	}
-	launched := false
-	defer func() {
-		if launched {
-			return
+	// A child the send didn't guard before the commit (restored cold, or a
+	// resident replaced since) takes its guard here; the id-keyed
+	// childCommittedSendStart claim covers it until then. Such a child is only
+	// found busy if another path installed it first, and that start is
+	// recorded as failed.
+	if sub != guarded {
+		if guarded != nil {
+			releaseSendDriveGuard(guarded)
+			guarded = nil
 		}
-		sub.mu.Lock()
-		sub.driving = false
-		sub.mu.Unlock()
-	}()
+		if !s.takeSendDriveGuard(sub) {
+			cause := errDelegateTargetBusy
+			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
+				finishRestore(sub, nil)
+			})
+		}
+		guarded = sub
+	}
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
 	if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
@@ -1685,6 +1722,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// reads idle between the committed start and the run that owns it.
 	sub.driving = false
 	sub.mu.Unlock()
+	guarded = nil
 	// running is now true under the same hold, so every drivability read refuses
 	// on the run itself; the id-keyed claim has done its job and is released. The
 	// deferred release sees committedClaimHeld false and does nothing.
@@ -1692,7 +1730,6 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.releaseChildCommittedSendStart(committedChildID)
 		committedClaimHeld = false
 	}
-	launched = true
 	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	result := sendMessageResult{
@@ -1829,6 +1866,13 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	}
 	result := stableDelegateFailedSendResult(started, plans, errors.Join(cause, executeErr))
 	if waiter == nil || result.Action == "recovery_required" {
+		return stableDelegateSendOutcome{result: result}
+	}
+	if runtime.owner.delegateController.dropStoppedDelegateWaiter(started.lease) {
+		// The failed start already settled this generation durably, and a
+		// covering stop owns its delivery, so no inline delivery will answer
+		// the wait: answer with the stopped outcome instead of sitting out
+		// max_wait (#3502).
 		return stableDelegateSendOutcome{result: result}
 	}
 	waitCtx := ctx
@@ -3240,6 +3284,10 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 	rootID := s.delegateController.rootSessionID
 	for _, row := range plan.rows {
 		ownerID := row.descriptor.OwnerSessionID
+		s.delegateController.mu.Lock()
+		logicalOwner := sessionActivityDelegateOwner(s.delegateController.durable, s.delegateController.durable[row.id])
+		s.delegateController.mu.Unlock()
+		s.emitSessionActivityChanged(logicalOwner, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(now, rootID, row))
 		if runtime := s.delegateController.runtimeForDelegateOwner(row); runtime != nil {
 			runtime.emitWithProvenance(events.EventDelegateUpdated, data, row.descriptor.Provenance)

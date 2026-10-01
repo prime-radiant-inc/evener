@@ -1,9 +1,7 @@
-// The stop requests you sent a coordinator (spec 9's "Ask coordinator to stop
-// it"), per hub on this device. The row says "Stop requested from the
-// coordinator" while the subagent still works, then "Stopped at your request"
-// once it (or something it started) stopped, so the request visibly completes
-// (round 4). A request whose subagent finished on its own is forgotten.
-import { isPlainObject } from "@evener/appwire-client";
+// Stop request display evidence is scoped to each delegate's authoritative
+// child ref and raw ID. A request remains visible until its work settles;
+// it never determines lifecycle state or the coordinator mutation target.
+import { activityNodeID, isPlainObject } from "@evener/appwire-client";
 import { readJson, removeKeys, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { type SubagentRow, subtreeStops } from "./subagentModel";
@@ -12,6 +10,8 @@ const storageKey = (hubId: string) => `evener.native.subagent-stops.${hubId}`;
 const LIMIT = 200;
 
 interface StopRecord {
+	delegateId: string;
+	childRef: string;
 	coordinatorRef: string;
 	requestedAt: number;
 	stopped?: true;
@@ -38,10 +38,15 @@ export class StopRequests {
 			for (const [id, record] of Object.entries(value))
 				if (
 					isPlainObject(record) &&
+					typeof record.delegateId === "string" &&
+					typeof record.childRef === "string" &&
+					id === activityNodeID({ kind: "delegate", delegateId: record.delegateId, childRef: record.childRef }) &&
 					typeof record.coordinatorRef === "string" &&
 					typeof record.requestedAt === "number"
 				)
 					this.records[id] = {
+						delegateId: record.delegateId,
+						childRef: record.childRef,
 						coordinatorRef: record.coordinatorRef,
 						requestedAt: record.requestedAt,
 						...(record.stopped === true ? { stopped: true as const } : {}),
@@ -54,9 +59,11 @@ export class StopRequests {
 	 * (S6). */
 	request(coordinatorRef: string, row: SubagentRow, now: number, { direct = false } = {}): void {
 		const stopsBefore = subtreeStops(row.delegate);
-		this.records[row.id] = {
+		this.records[activityNodeID({ kind: "delegate", delegate: row.delegate })] = {
 			coordinatorRef,
 			requestedAt: now,
+			delegateId: row.id,
+			childRef: row.delegate.childRef,
 			...(direct ? { direct: true as const } : {}),
 			...(stopsBefore > 0 ? { stopsBefore } : {}),
 		};
@@ -66,7 +73,7 @@ export class StopRequests {
 	/** Pending while what you asked to stop still works; stopped once it
 	 * stopped after you asked. */
 	view(row: SubagentRow): StopRequestView {
-		const record = this.records[row.id];
+		const record = this.records[activityNodeID({ kind: "delegate", delegate: row.delegate })];
 		if (!record) return null;
 		if (record.stopped) return "stopped";
 		return stillWorking(record, row) ? "requested" : null;
@@ -75,7 +82,7 @@ export class StopRequests {
 	/** Whether your request was a direct stop (S6) rather than a request of
 	 * the coordinator. */
 	direct(row: SubagentRow): boolean {
-		return this.records[row.id]?.direct === true;
+		return this.records[activityNodeID({ kind: "delegate", delegate: row.delegate })]?.direct === true;
 	}
 
 	/** Settles requests against a fresh read of one coordinator's tree, and
@@ -85,7 +92,8 @@ export class StopRequests {
 		const stopped: SubagentRow[] = [];
 		let changed = false;
 		for (const row of rows) {
-			const record = this.records[row.id];
+			const key = activityNodeID({ kind: "delegate", delegate: row.delegate });
+			const record = this.records[key];
 			if (!record || record.coordinatorRef !== coordinatorRef || record.stopped || stillWorking(record, row)) continue;
 			// A direct stop ended the subagent's own run, so only its own
 			// outcome says it stopped; a request of the coordinator may have
@@ -93,7 +101,7 @@ export class StopRequests {
 			if (record.direct ? row.stopped : subtreeStops(row.delegate) > (record.stopsBefore ?? 0)) {
 				record.stopped = true;
 				stopped.push(row);
-			} else delete this.records[row.id];
+			} else delete this.records[key];
 			changed = true;
 		}
 		if (changed) this.save();

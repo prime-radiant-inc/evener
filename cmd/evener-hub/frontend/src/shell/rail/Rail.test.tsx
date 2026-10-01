@@ -109,8 +109,8 @@ function deferred<T>() {
 }
 function installState(resources: ResourceState[] = [], m = manifest()) {
   navigationStore.setState({
-    mode: "v2",
-    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
+    mode: "v3",
+    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [3] },
     clientGenerationID: "g1",
     manifest: resource({ kind: "manifest" }, m) as ResourceState<NavigationManifest>,
     resources: new Map(resources.map((entry) => [keyID(entry.key), entry])),
@@ -391,7 +391,7 @@ describe("resource-backed Rail", () => {
           }),
         ]),
       ]);
-      const rowBody = vi.spyOn(railNodeExports, "activeWorkSummary");
+      const rowBody = vi.spyOn(railNodeExports, "displayState");
       render(<Rail />);
       const atRest = rowBody.mock.calls.length;
       // The spy was live for the initial render (the row really did render
@@ -776,7 +776,7 @@ describe("resource-backed Rail", () => {
     expect(screen.queryByText(/command line/i)).toBeNull();
     expect(screen.getByText("No sessions yet")).toBeTruthy();
   });
-  test.each(["v2"] as const)("shows a visible skeleton for a pending %s manifest until it settles", (mode) => {
+  test.each(["v3"] as const)("shows a visible skeleton for a pending %s manifest until it settles", (mode) => {
     const empty = emptyManifest();
     const pendingManifest = {
       ...resource({ kind: "manifest" }, empty),
@@ -802,7 +802,7 @@ describe("resource-backed Rail", () => {
       loading: true,
     } as ResourceState;
     installState([pendingSection], empty);
-    navigationStore.setState({ mode: "v2" });
+    navigationStore.setState({ mode: "v3" });
 
     render(<Rail />);
 
@@ -817,7 +817,7 @@ describe("resource-backed Rail", () => {
     const empty = emptyManifest();
     const staleEmpty = { ...sectionResource("live", []), stale: true };
     installState([staleEmpty], empty);
-    navigationStore.setState({ mode: "v2" });
+    navigationStore.setState({ mode: "v3" });
 
     render(<Rail />);
 
@@ -896,7 +896,7 @@ describe("resource-backed Rail", () => {
         return loaded;
       });
       installState([catalogPage as ResourceState]);
-      navigationStore.setState({ mode: "v2", loadProject });
+      navigationStore.setState({ mode: "v3", loadProject });
 
       render(<Rail />);
       await act(async () => undefined);
@@ -925,7 +925,7 @@ describe("resource-backed Rail", () => {
     };
     const loadProject = vi.fn().mockResolvedValue(undefined);
     installState([catalog, gone]);
-    navigationStore.setState({ mode: "v2", loadProject });
+    navigationStore.setState({ mode: "v3", loadProject });
 
     render(<Rail />);
     await act(async () => undefined);
@@ -1328,7 +1328,7 @@ describe("resource-backed Rail", () => {
     const lookupLocation = vi.fn().mockResolvedValue(gone);
     const consumed = vi.fn();
     installState([gone as ResourceState]);
-    navigationStore.setState({ mode: "v2", lookupLocation });
+    navigationStore.setState({ mode: "v3", lookupLocation });
 
     const view = render(<Rail revealTarget="local:gone-reveal" onRevealConsumed={consumed} />);
     await act(async () => undefined);
@@ -1910,6 +1910,79 @@ describe("resource-backed Rail", () => {
     }
   });
 
+  test("a rail row's Tasks action opens the session and the sidebar's tasks tab, never the old pane", async () => {
+    // The chrome menu's twin: desktop Tasks everywhere is the activity
+    // sidebar, preselected to its Tasks tab. The rail NAVIGATES, idempotently:
+    // open the session pane, open the sidebar scoped to it, never toggle
+    // closed.
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Tasks" }));
+      await waitFor(() => {
+        expect(activitySidebarStore.getState().open).toBe(true);
+      });
+      expect(activitySidebarStore.getState().tab).toBe("tasks");
+      expect(
+        workspaceStore
+          .getState()
+          .panes.some((p) => p.type === "session" && (p.params as { ref?: string }).ref === "local:active"),
+      ).toBe(true);
+      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(false);
+    } finally {
+      restoreSessionPane();
+      // The reset updates a store the row subscribes to; unwrapped it lands
+      // outside act and the teardown console guard reports it on this test.
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
+  test("a rail row's Tasks action on mobile keeps the old pane (no sidebar exists there)", async () => {
+    // The sidebar is desktop chrome; on the phone the rail lives in the tree
+    // drawer and Tasks keeps its pre-sidebar behavior: the sessionTasks pane.
+    // The desktop retarget must not leak into the mobile rail.
+    const restoreViewport = installMobileViewport();
+    resetActivitySidebarStoreForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    const restoreTasksPane = registerPaneForTests({
+      id: "sessionTasks",
+      title: () => "tasks",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Tasks" }));
+      await waitFor(() => {
+        expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(true);
+      });
+      expect(activitySidebarStore.getState().open).toBe(false);
+    } finally {
+      restoreViewport();
+      restoreSessionPane();
+      restoreTasksPane();
+      act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
   test("the rail's Notes action rechecks the notes capability, refusing a stale menu", () => {
     topNotesStore.getState().resetForTests();
     const restoreSessionPane = registerPaneForTests({
@@ -1960,60 +2033,66 @@ describe("resource-backed Rail", () => {
   });
   test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
     window.history.replaceState({}, "", "/");
-    const child = summary({ ref: "local:child", session_id: "child", title: "Keyboard child" });
-    const parent = summary({
-      ref: "local:parent",
-      session_id: "parent",
-      title: "Keyboard parent",
-      children: [child],
-    });
-    installState([sectionResource("live", [parent])]);
+    // Session rows are leaves now: the tree's branch rows are projects (and
+    // host groups), so the keyboard contract - expand, descend, activate,
+    // return, collapse - plays out on a project and its flat session rows.
+    installState([
+      catalogResource([{ key: "p", name: "Project", session_count: 2 }]),
+      projectResource("p", [
+        summary({ ref: "local:parent", session_id: "parent", title: "Keyboard parent" }),
+        summary({ ref: "local:child", session_id: "child", title: "Keyboard child" }),
+      ]),
+    ]);
     render(<Rail />);
 
-    const parentRow = screen.getByRole("treeitem", { name: /keyboard parent/i });
-    act(() => parentRow.focus());
-    expect(document.activeElement).toBe(parentRow);
-    expect(parentRow.getAttribute("aria-expanded")).toBe("false");
+    const projectRow = screen.getByRole("treeitem", { name: /^project/i });
+    act(() => projectRow.focus());
+    expect(document.activeElement).toBe(projectRow);
+    expect(projectRow.getAttribute("aria-expanded")).toBe("false");
 
+    fireEvent.keyDown(projectRow, { key: "ArrowRight" });
+    expect(projectRow.getAttribute("aria-expanded")).toBe("true");
+    const parentRow = screen.getByRole("treeitem", { name: /keyboard parent/i });
+    fireEvent.keyDown(projectRow, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(parentRow);
+    // A session row is a leaf: ArrowRight on it opens nothing and the row
+    // carries no expanded state at all.
     fireEvent.keyDown(parentRow, { key: "ArrowRight" });
-    expect(parentRow.getAttribute("aria-expanded")).toBe("true");
+    expect(parentRow.getAttribute("aria-expanded")).toBeNull();
     const childRow = screen.getByRole("treeitem", { name: /keyboard child/i });
-    fireEvent.keyDown(parentRow, { key: "ArrowRight" });
+    fireEvent.keyDown(parentRow, { key: "ArrowDown" });
     expect(document.activeElement).toBe(childRow);
 
     fireEvent.keyDown(childRow, { key: "Enter" });
     expect(window.location.pathname).toBe("/s/local%3Achild");
     fireEvent.keyDown(childRow, { key: "ArrowLeft" });
-    expect(document.activeElement).toBe(parentRow);
-    fireEvent.keyDown(parentRow, { key: "ArrowLeft" });
-    expect(parentRow.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(projectRow);
+    fireEvent.keyDown(projectRow, { key: "ArrowLeft" });
+    expect(projectRow.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
   });
-  test("a watch row is passive: keyboard activation persists no expansion override", () => {
+  test("a loading row is passive: keyboard activation persists no expansion override", () => {
     window.history.replaceState({}, "", "/");
-    // A session starts collapsed, so expand it first to render its watch row.
-    const watched = summary({
-      title: "Watched",
-      watches: [{ id: "w1", source: "self", deliveries: 0, created_at: "2026-09-12T19:00:00Z", active: true }],
-    });
-    installState([sectionResource("live", [watched])]);
+    // An unloaded project starts collapsed, so expand it first to render its
+    // loading placeholder.
+    installState([catalogResource([{ key: "p", name: "Project", session_count: 2 }])]);
     render(<Rail />);
 
-    const sessionRow = screen.getByRole("treeitem", { name: /watched/i });
-    act(() => sessionRow.focus());
-    fireEvent.keyDown(sessionRow, { key: "ArrowRight" });
-    expect(sessionRow.getAttribute("aria-expanded")).toBe("true");
+    const projectRow = screen.getByRole("treeitem", { name: /^project/i });
+    act(() => projectRow.focus());
+    fireEvent.keyDown(projectRow, { key: "ArrowRight" });
+    expect(projectRow.getAttribute("aria-expanded")).toBe("true");
 
-    const watchRow = screen.getByRole("treeitem", { name: /watch:/i });
-    act(() => watchRow.focus());
-    // A watch row is a leaf with nothing to disclose, so neither the
+    const loadingRow = screen.getByRole("treeitem", { name: /loading/i });
+    act(() => loadingRow.focus());
+    // A loading row is a leaf with nothing to disclose, so neither the
     // activation key nor the expand chord may persist an override for it.
-    fireEvent.keyDown(watchRow, { key: "ArrowRight" });
-    fireEvent.keyDown(watchRow, { key: "Enter" });
+    fireEvent.keyDown(loadingRow, { key: "ArrowRight" });
+    fireEvent.keyDown(loadingRow, { key: "Enter" });
 
     const persisted: Record<string, unknown> = JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? "{}");
-    const watchOverrides = Object.keys(persisted).filter((id) => id.startsWith("watch:"));
-    expect(watchOverrides).toEqual([]);
+    const loadingOverrides = Object.keys(persisted).filter((id) => id.includes(":loading"));
+    expect(loadingOverrides).toEqual([]);
   });
   test("routes rename through the rendered session menu and dialog", async () => {
     installState([sectionResource("live", [summary({ title: "Rename me", rename: true })])]);
@@ -2943,7 +3022,7 @@ describe("host grouping (organize by)", () => {
     }
   });
 
-  test("a reveal reaches a subagent nested under a collapsed carrier session (host-first)", async () => {
+  test("a reveal of a subagent ref lands on its top-level carrier's row (host-first)", async () => {
     const restoreScroll = stubScrollIntoView();
     prefsStore.setState({ sidebarGrouping: "host-project" });
     const parent = summary({
@@ -2951,16 +3030,6 @@ describe("host grouping (organize by)", () => {
       session_id: "parent",
       title: "Parent run",
       host_id: "devbox",
-      children: [
-        summary({
-          ref: "devbox:child",
-          session_id: "child",
-          title: "Nested target",
-          host_id: "devbox",
-          kind: "subagent",
-          state: "active",
-        }),
-      ],
     });
     installState(
       [
@@ -2968,6 +3037,29 @@ describe("host grouping (organize by)", () => {
           { key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"], default_expanded: true },
         ]),
         projectResource("p", [parent]),
+        // The location lookup's answer for a nested ref: the rail renders no
+        // row for it, so the reveal lands on the carrier top_level_ref names -
+        // the one row the subagent's work is summarized on.
+        resource(
+          { kind: "location", ref: "devbox:child" },
+          {
+            generation_id: "g1",
+            revision: 1,
+            ref: "devbox:child",
+            top_level_ref: "devbox:parent",
+            top_level: false,
+            tier: "current",
+            project_key: "p",
+            session: summary({
+              ref: "devbox:child",
+              session_id: "child",
+              title: "Nested target",
+              host_id: "devbox",
+              kind: "subagent",
+              state: "active",
+            }),
+          },
+        ),
       ],
       remoteManifest(),
     );
@@ -2975,9 +3067,10 @@ describe("host grouping (organize by)", () => {
     try {
       render(<Rail revealTarget="devbox:child" onRevealConsumed={consumed} />);
       await act(async () => undefined);
-      // The chain must open the carrier session's own row, or the nested
-      // target never renders and the reveal never consumes.
-      expect(within(sectionRoot("Hosts")).getByText("Nested target")).toBeTruthy();
+      expect(within(sectionRoot("Hosts")).getByText("Parent run")).toBeTruthy();
+      // No nested row renders for the subagent: the flat rail has no row for
+      // the target itself, only its carrier.
+      expect(within(sectionRoot("Hosts")).queryByText("Nested target")).toBeNull();
       expect(consumed).toHaveBeenCalledTimes(1);
     } finally {
       restoreScroll();
@@ -3348,6 +3441,81 @@ describe("archived rows come from evener/archived/list", () => {
     restoreScroll();
   });
 
+  test("an archived continuation discloses only fork originals and preserves their action refs", () => {
+    const original = summary({ ref: "local:orig", session_id: "orig", title: "Original", kind: "fork", live: false });
+    const delegate = summary({
+      ref: "local:delegate",
+      session_id: "delegate",
+      title: "Delegate",
+      kind: "subagent",
+      live: false,
+    });
+    installState([archivedCatalog(1), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+    installList([{ ...archivedRow(0), children: [original, delegate] }], 1);
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "section:archived": true, "archivedgroup:p": true }));
+    render(<Rail />);
+    const continuation = screen.getByRole("treeitem", { name: /Old run 0/i });
+    expect(continuation.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Original")).toBeNull();
+    fireEvent.click(within(continuation).getByTestId("rail-chevron"));
+    expect(continuation.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Original")).toBeTruthy();
+    expect(screen.queryByText("Delegate")).toBeNull();
+    fireEvent.click(screen.getByText("Original"));
+    expect(window.location.pathname).toBe("/s/local%3Aorig");
+    fireEvent.click(within(continuation).getByTestId("rail-chevron"));
+    expect(screen.queryByText("Original")).toBeNull();
+    window.history.replaceState({}, "", "/");
+  });
+
+  test("a whole archived project's original reveals through the continuation disclosure", async () => {
+    const restoreScroll = stubScrollIntoView();
+    const original = summary({ ref: "local:orig", session_id: "orig", title: "Original", kind: "fork", live: false });
+    const continuation = { ...archivedRow(0), children: [original] };
+    installState([
+      resource(
+        { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          projects: [{ key: "p", name: "Proj", session_count: 1, more_archived: 1 }],
+          remaining: 0,
+        },
+      ),
+      projectResource("p", []),
+      resource(
+        { kind: "location", ref: "local:orig" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:orig",
+          top_level_ref: "local:old-0",
+          top_level: false,
+          tier: "archived",
+          project_key: "p",
+          session: original,
+        },
+      ),
+    ]);
+    archivedListStore.setState({
+      lists: {
+        [archivedListKey("archived_projects", "p")]: {
+          rows: [continuation],
+          total: 1,
+          loaded: true,
+          loading: false,
+          error: null,
+        },
+      },
+    });
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:orig" onRevealConsumed={consumed} />);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:orig"]')).not.toBeNull());
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    restoreScroll();
+  });
+
   test("a reveal of a fork original under an archived row pages until its continuation loads", async () => {
     const restoreScroll = stubScrollIntoView();
     const client = new FakeClient("ready");
@@ -3376,10 +3544,15 @@ describe("archived rows come from evener/archived/list", () => {
       ),
     ]);
     installList([archivedRow(0)], 2, "cursor-1");
-    render(<Rail revealTarget="local:orig" />, client);
-    await waitFor(() => expect(cursors).toEqual(["cursor-1"]));
+    const consumed = vi.fn();
+    render(<Rail revealTarget="local:orig" onRevealConsumed={consumed} />, client);
+    await waitFor(() => expect(document.querySelector('[data-session-ref="local:orig"]')).not.toBeNull());
     await act(async () => undefined);
     expect(cursors).toEqual(["cursor-1"]);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("Original"));
+    expect(window.location.pathname).toBe("/s/local%3Aorig");
+    window.history.replaceState({}, "", "/");
     restoreScroll();
   });
 

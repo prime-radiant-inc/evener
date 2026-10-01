@@ -10,6 +10,7 @@
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
+	housekeepingAction,
 	mcpToolParts,
 	parseAskUserQuestions,
 	skillName,
@@ -305,8 +306,9 @@ export function stepWords(step: Pick<RunStep, "label" | "detail">): string {
 interface Group {
 	key: string;
 	family: ToolFamily;
-	/** What an MCP part or a tool part names: the server, or the tool, in words. */
-	name: string;
+	/** What a tool part says it did: a housekeeping tool's action, any other
+	 * "used" and its name in words. Empty for every other family. */
+	phrase: string;
 	count: number;
 	failed: number;
 	/** The programs a shell part's commands ran, or the skills a skill part
@@ -326,15 +328,22 @@ function programOf(command: string | undefined): string | undefined {
 	return second && /^[a-z][\w-]*$/i.test(second) ? `${first} ${second}` : first;
 }
 
-// A step's part: one per family, except that each tool no summary covers gets
-// its own ("used compact context once"). MCP tools share one part.
-function partOf(label: string): { key: string; family: ToolFamily; name: string } {
+// A step's part: one per family, except that each plain tool gets its own: a
+// housekeeping tool says what it did ("updated its note once", the package's
+// housekeepingAction, as its step line does), and any other its name ("used
+// reindex workspace once"). MCP tools share one part.
+function partOf(step: RunStep): { key: string; family: ToolFamily; phrase: string } {
+	const { label } = step;
 	const family = toolFamily(label);
 	if (family === "tool") {
+		// A housekeeping call's phrase follows what the call did, so a call that
+		// cleared a note is a part apart from calls that set one.
+		const action = housekeepingAction(label, { argumentsJSON: step.detail.arguments, output: step.detail.output });
+		if (action !== undefined) return { key: `tool:${action}`, family, phrase: action };
 		const name = words(label) || "a tool";
-		return { key: `tool:${name}`, family, name };
+		return { key: `tool:${name}`, family, phrase: `used ${name}` };
 	}
-	return { key: family, family, name: "" };
+	return { key: family, family, phrase: "" };
 }
 
 // What a step contributes to its part's words: the program a shell command
@@ -387,7 +396,7 @@ function partText(group: Group): string {
 			// One server reads by name; several read as how many MCP tools ran.
 			return oneName ? `used ${oneName} ${times}` : `used ${n} MCP tools`;
 		case "tool":
-			return `used ${group.name} ${times}`;
+			return `${group.phrase} ${times}`;
 	}
 }
 
@@ -410,7 +419,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 	const groups = new Map<string, Group>();
 	let failed = 0;
 	for (const step of steps) {
-		const part = partOf(step.label);
+		const part = partOf(step);
 		let group = groups.get(part.key);
 		if (!group) {
 			group = { ...part, count: 0, failed: 0, names: new Set(), unnamed: 0, changedTasks: false, questions: 0 };

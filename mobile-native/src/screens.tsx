@@ -54,6 +54,7 @@ import {
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
+import { openProviders } from "./board/BoardNotices";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
@@ -190,6 +191,7 @@ import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
 import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
+import { useHeldSubagentTree } from "./subagents/useHeldSubagentTree";
 import { transcriptTreeTarget, useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
@@ -286,7 +288,7 @@ export type Routes = {
 	/** A subagent's own session, over its coordinator's (ruling 30). */
 	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
 	/** A shell job's detail, over its coordinator's Activity list. */
-	ShellJob: { hubId: string; jobId: string; title: string; coordinator: Coordinator };
+	ShellJob: { hubId: string; jobId: string; ownerRef: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
 	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
 };
@@ -325,6 +327,7 @@ export function useFocusAfterModal(
 /** The sheet or screen each context chip and ⋯ menu item opens. */
 const SESSION_DESTINATIONS = {
 	subagents: "subagents",
+	activity: "subagents",
 	tasks: "tasks",
 	notes: "notes",
 	goal: "session",
@@ -441,7 +444,6 @@ export function ConversationScreen({
 	const readerAnchor = useRef<ReaderAnchor | null>(null);
 	const appliedReaderRestore = useRef<AppliedRestore | null>(null);
 	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
-	const readerHeader = useRef(false);
 	// The latest settled turn while the list sat at its end (ruling 31). Every
 	// anchor carries it, so opening the session later can tell a newer reply
 	// finished since.
@@ -978,8 +980,19 @@ export function ConversationScreen({
 		({ path, updatedAt }) =>
 			documentFreshness(memory.lastRead({ sessionRef: route.params.ref, path }), updatedAt) !== "read",
 	);
+	const badgeActivity = useHeldSubagentTree(
+		route.params.hubId,
+		conversation ? { ref: route.params.ref, threadId: conversation.threadId } : null,
+		chipsConnected ? client : null,
+		{ collections: false },
+	);
 	const chips = conversation
-		? contextChips(conversation, chipsConnected, { count: documents.length, fresh: freshDocuments })
+		? contextChips(
+				conversation,
+				chipsConnected,
+				{ count: documents.length, fresh: freshDocuments },
+				badgeActivity?.snapshot.summary?.delegates ?? null,
+			)
 		: [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
@@ -1122,7 +1135,7 @@ export function ConversationScreen({
 			case "files":
 				openFiles();
 				return;
-			case "subagents":
+			case "activity":
 			case "tasks":
 			case "notes":
 			case "info":
@@ -1359,7 +1372,6 @@ export function ConversationScreen({
 		readerRestoreAttempts.current.reset();
 		if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 		restoreFrame.current = null;
-		readerHeader.current = false;
 		captureSuppressed.current = false;
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(route.params.hubId, route.params.ref);
@@ -1566,7 +1578,6 @@ export function ConversationScreen({
 	function scrollToFindMatch(index: number) {
 		findLeftTheEnd.current = false;
 		follow.dispatch({ type: "unfollow" });
-		readerHeader.current = false;
 		// The reading position follows the jump, so nothing pulls the list back.
 		captureSuppressed.current = false;
 		findJumping.current = true;
@@ -1590,7 +1601,6 @@ export function ConversationScreen({
 			!anchor ||
 			timelineRows.length === 0 ||
 			!focused ||
-			readerHeader.current ||
 			follow.state.current.following ||
 			follow.state.current.touch !== "none" ||
 			// Where the list can reach depends on the bar: restore once it has
@@ -1646,24 +1656,33 @@ export function ConversationScreen({
 				readerContentHeight.current,
 				listContentMinHeight(readerViewportHeight.current, listUnderBar),
 			);
-			// Already there: the opening has landed.
+			// Already there: the opening has landed, if the list reaches the row.
 			if (!exactRestoreDue(appliedReaderRestore.current, measurement, scrollOffset)) {
-				landOpening();
+				landRestore(appliedReaderRestore.current?.clamped ?? false);
 				return;
 			}
+			const clamped = scrollOffset !== desired;
 			appliedReaderRestore.current = {
 				key: currentKey,
 				height: measurement.height,
 				offset: scrollOffset,
-				clamped: scrollOffset !== desired,
+				clamped,
 			};
 			captureSuppressed.current = true;
 			timeline.current?.scrollToOffset({
 				offset: scrollOffset,
 				animated: false,
 			});
-			landOpening();
+			landRestore(clamped);
 		}
+	}
+	// A restore the list can't reach yet (clamped) lands the opening only once
+	// the last row has measured: before that the rows below the reading position
+	// are estimates, the content grows as they render, and the list would show
+	// short of the row and then move. After it, as far as the list reaches is
+	// where it rests. The opening's cap still shows it if that never happens.
+	function landRestore(clamped: boolean) {
+		if (!clamped || lastRowMeasured()) landOpening();
 	}
 	// The latest restore, with this render's rows, for the layout timer below.
 	const restoreReadingPositionNow = useRef(restoreReadingPosition);
@@ -2155,6 +2174,18 @@ export function ConversationScreen({
 	useEffect(() => {
 		if (controls && hasConversation && sessionOpen) void controls.loadModels();
 	}, [controls, hasConversation, sessionOpen]);
+	// The hub announces a refreshed model list on evener/auth/updated (it
+	// serves a stale list at once and refreshes it behind the request), so a
+	// loaded catalog is read again in place (#3539).
+	useEffect(
+		() =>
+			controls
+				? client?.onNotification((notification) => {
+						if (notification.method === "evener/auth/updated") void controls.refreshModels();
+					})
+				: undefined,
+		[client, controls],
+	);
 	// The screen keeps what the current controls know of the catalog, so the
 	// controls made after a pushed screen closes start from it: a catalog they
 	// read, or none after a failed read cleared it.
@@ -2200,7 +2231,6 @@ export function ConversationScreen({
 	}
 	function jumpToLive() {
 		cancelReader();
-		readerHeader.current = false;
 		readerAnchor.current = null;
 		follow.dispatch({ type: "follow" });
 		captureSuppressed.current = false;
@@ -2395,7 +2425,7 @@ export function ConversationScreen({
 			if (errorAction === "resume") void controls?.resume();
 			else if (errorAction === "signIn")
 				// The error doesn't name the provider, so the Hub opens at Providers.
-				navigation.navigate("Hub", { screen: "Providers", params: { hubId: route.params.hubId }, initial: false });
+				openProviders(navigation, route.params.hubId);
 			else void retryFailedTurn();
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
@@ -2899,7 +2929,6 @@ export function ConversationScreen({
 								landOpening();
 								follow.dispatch({ type: "dragBegin" });
 								pageOlderNear(event?.nativeEvent.contentOffset.y);
-								readerHeader.current = false;
 								captureSuppressed.current = false;
 								if (restoreFrame.current !== null) cancelAnimationFrame(restoreFrame.current);
 								restoreFrame.current = null;

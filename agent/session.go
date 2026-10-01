@@ -58,6 +58,9 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 		}
 	}
 	s.emitWithProvenance(kind, data, p)
+	if kind == events.EventJobStarted || kind == events.EventJobFinished {
+		s.emitSessionActivityChanged(s.ID(), appwire.SessionActivityResourceJobs)
+	}
 }
 
 // noteJobTreeShapeChange moves the activity clock for a change that adds or
@@ -648,6 +651,21 @@ type Session struct {
 	// — survive a restart (ask-attention-tiering spec §2); it is not itself
 	// part of persisted SessionMeta.
 	askPending []askQuestion
+
+	// askPendingCallArgs holds each pending ask_user call's own arguments
+	// (already normalized, spec §5.1's shape), one entry per call, in call
+	// order — appended alongside askPending by registerAskTool's Exec and
+	// cleared alongside it (clearAskPending). It exists for an external
+	// ask-responder (evener run --ask-responder, PendingAskArguments) that
+	// needs the full question detail (option details included) a live call
+	// carried: Session.Events() is best-effort (session_events.go: "a full
+	// buffer drops"), so a caller for whom missing a call would leave state
+	// permanently wrong — a real pending question it never answers — must
+	// read durable session state instead of the event stream. Guarded by
+	// mu, like askPending above. Not persisted or restored: a resumed
+	// session's pending questions are read back from askPending/the
+	// transcript, and this feature does not (yet) support --resume.
+	askPendingCallArgs [][]byte
 
 	// steeringCarrierClaimClientMutationID is the client mutation id of the
 	// steer a claimed steering-carrier turn (acceptSteeringCarrierInput) is

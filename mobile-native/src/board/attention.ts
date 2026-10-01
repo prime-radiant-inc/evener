@@ -307,7 +307,7 @@ export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSince
 }
 
 function commandOrWorking(row: NavigationSessionSummary): string {
-	const command = row.running_jobs?.find((job) => job.command)?.command;
+	const command = row.running_job_command;
 	return command ? `Running ${command}` : "Working";
 }
 

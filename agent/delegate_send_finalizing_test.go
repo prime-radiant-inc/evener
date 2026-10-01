@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,15 +226,8 @@ func TestDelegateSendThatOutwaitsTheReleaseIsARefusal(t *testing.T) {
 // the send's own look at the child.
 func TestDelegateSendToABusyChildTheControllerCantSeeIsARefusal(t *testing.T) {
 	t.Parallel()
-	held := holdDelegateFinalizing(t)
+	held := holdDelegateReleasedByTheController(t)
 	defer held.release()
-	if held.child == nil {
-		t.Fatal("the held delegate's child was never published")
-	}
-	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation}
-	if err := held.s.delegateController.ReportFinalizationQuiesced(lease, held.child.sess); err != nil {
-		t.Fatalf("report quiescence: %v", err)
-	}
 	// The controller no longer holds the delegate, so a refusal can only
 	// come from the send's own look at the child.
 	assertStartAdmitted(t, held.s.delegateController, held.delegateID, "once the controller has released the finalization")
@@ -287,6 +281,38 @@ func finishGenerationOn(t *testing.T, c *delegateTreeController, runtime *Sessio
 	return started.lease
 }
 
+// reportFinalizeTailDone reports lease's finished runtime quiesced, as the
+// child's finalize tail does when it is done, releasing the delegate for its
+// next start.
+func reportFinalizeTailDone(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session) {
+	t.Helper()
+	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
+		t.Fatalf("ReportFinalizationQuiesced: %v", err)
+	}
+}
+
+// holdDelegateReleasedByTheController holds a delegate finalizing, with its
+// child published, and reports the tail done to the controller: the
+// controller admits a start while the child's own finalize tail is still
+// held. The caller defers release.
+func holdDelegateReleasedByTheController(t *testing.T) finalizingDelegate {
+	t.Helper()
+	held := holdDelegateFinalizing(t)
+	ready := false
+	defer func() {
+		if !ready {
+			held.release()
+		}
+	}()
+	if held.child == nil {
+		t.Fatal("the held delegate's child was never published")
+	}
+	lease := delegateLease{delegateID: held.delegateID, generation: delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID).Generation}
+	reportFinalizeTailDone(t, held.s.delegateController, lease, held.child.sess)
+	ready = true
+	return held
+}
+
 func assertStartRefused(t *testing.T, c *delegateTreeController, delegateID, why string) {
 	t.Helper()
 	if _, err := c.ReserveStart(rootDelegateActor(c.rootSessionID), delegateID); !errors.Is(err, errDelegateTargetBusy) {
@@ -310,9 +336,7 @@ func assertStartAdmitted(t *testing.T, c *delegateTreeController, delegateID, wh
 func TestDelegateControllerRefusesAStartUntilTheFinishedRuntimeQuiesces(t *testing.T) {
 	c, lease, runtime := finishedDelegateStillFinalizing(t)
 	assertStartRefused(t, c, "dlg_target", "while the finished runtime finalizes")
-	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, runtime)
 	assertStartAdmitted(t, c, "dlg_target", "once the finished runtime has quiesced")
 }
 
@@ -320,9 +344,7 @@ func TestDelegateControllerRefusesAStartUntilTheFinishedRuntimeQuiesces(t *testi
 // is still finalizing on the same runtime.
 func TestDelegateControllerIgnoresAnEarlierGenerationsQuiescence(t *testing.T) {
 	c, first, runtime := finishedDelegateStillFinalizing(t)
-	if err := c.ReportFinalizationQuiesced(first, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced first: %v", err)
-	}
+	reportFinalizeTailDone(t, c, first, runtime)
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
 	if err != nil {
 		t.Fatalf("ReserveStart second: %v", err)
@@ -340,13 +362,9 @@ func TestDelegateControllerIgnoresAnEarlierGenerationsQuiescence(t *testing.T) {
 	if _, err := c.FinishGeneration(second.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
 		t.Fatalf("FinishGeneration second: %v", err)
 	}
-	if err := c.ReportFinalizationQuiesced(first, runtime); err != nil {
-		t.Fatalf("late ReportFinalizationQuiesced first: %v", err)
-	}
+	reportFinalizeTailDone(t, c, first, runtime)
 	assertStartRefused(t, c, "dlg_target", "after only the earlier generation's report")
-	if err := c.ReportFinalizationQuiesced(second.lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced second: %v", err)
-	}
+	reportFinalizeTailDone(t, c, second.lease, runtime)
 	assertStartAdmitted(t, c, "dlg_target", "once the later generation has quiesced")
 }
 
@@ -380,9 +398,7 @@ func TestDelegateControllerAUnlaunchedGenerationLeavesTheDelegateStartable(t *te
 		t.Fatal("the unlaunched generation's plans carry no idle snapshot to announce")
 	}
 	assertStartRefused(t, c, "dlg_target", "before the unlaunched generation is released")
-	if err := c.ReportFinalizationQuiesced(started.lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, started.lease, runtime)
 	if got := delegateAggregateSnapshot(t, c, "dlg_target"); got.LatestOutcome == nil || got.LatestOutcome.Reason != "launch_failed" {
 		t.Fatalf("latest outcome = %+v, want launch_failed", got.LatestOutcome)
 	}
@@ -419,9 +435,7 @@ func TestDelegateControllerRefusesAnAttentionWakeWhileFinalizing(t *testing.T) {
 	if eligible() {
 		t.Fatal("an attention wake was eligible while the finished generation finalized")
 	}
-	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, runtime)
 	if !eligible() {
 		t.Fatal("an attention wake was still refused after the release")
 	}
@@ -528,14 +542,10 @@ func TestDelegateSendWaitsOutAFinalizationThatFollowsTheOneItWaitedFor(t *testin
 			case 1:
 				// Release the first generation, and let another run and
 				// finish before the send reserves again.
-				if err := c.ReportFinalizationQuiesced(first, runtime); err != nil {
-					t.Errorf("release first: %v", err)
-				}
+				reportFinalizeTailDone(t, c, first, runtime)
 				second = finishGenerationOn(t, c, runtime)
 			case 2:
-				if err := c.ReportFinalizationQuiesced(second, runtime); err != nil {
-					t.Errorf("release second: %v", err)
-				}
+				reportFinalizeTailDone(t, c, second, runtime)
 			}
 		}
 	})
@@ -561,9 +571,7 @@ func TestDelegateSendTakesAReleaseReadyAlongsideItsCancellation(t *testing.T) {
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.delegateSendAwaitingFinalization = func() {
 			cancel()
-			if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-				t.Errorf("release: %v", err)
-			}
+			reportFinalizeTailDone(t, c, lease, runtime)
 		}
 	})
 	reservation, err := s.reserveStartAfterFinalization(ctx, rootDelegateActor(c.rootSessionID), "dlg_target")
@@ -602,11 +610,7 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 		name    string
 		release func(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session)
 	}{
-		{"the finished runtime reports quiescence", func(t *testing.T, c *delegateTreeController, lease delegateLease, runtime *Session) {
-			if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-				t.Fatalf("ReportFinalizationQuiesced: %v", err)
-			}
-		}},
+		{"the finished runtime reports quiescence", reportFinalizeTailDone},
 		{"another runtime becomes resident", func(_ *testing.T, c *delegateTreeController, _ delegateLease, _ *Session) {
 			c.mu.Lock()
 			c.setResidentRuntimeLocked(c.live["dlg_target"], &Session{})
@@ -630,7 +634,7 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 			}
 			c.mu.Lock()
 			c.rootRuntime = root
-			c.attentionWakeIDs["dlg_target"] = map[string]struct{}{"attention-owed": {}}
+			c.attentionStateLocked("dlg_target").wakeIDs = map[string]struct{}{"attention-owed": {}}
 			c.mu.Unlock()
 			tc.release(t, c, lease, runtime)
 			select {
@@ -641,5 +645,157 @@ func TestDelegateControllerWakesTheAttentionDriveWhenAFinalizationIsReleased(t *
 				t.Fatal("the release left attention owed to the delegate with no wake for the root's drive")
 			}
 		})
+	}
+}
+
+// A send whose child turns busy after the send resolved it is refused as
+// target_busy with nothing written: the send takes the child's drive guard
+// before it commits its start, so no start is committed that the child then
+// can't take. The hook stands in for a real racer that doesn't check the
+// send's claim, such as startOrSteerSubagentRun setting running or
+// trySetDisposeGate gating the child for disposal.
+func TestDelegateSendToAChildThatTurnsBusyCommitsNothing(t *testing.T) {
+	t.Parallel()
+	held := holdDelegateReleasedByTheController(t)
+	defer held.release()
+	updateSessionTestConfig(held.s, func(cfg *testConfig) {
+		cfg.delegateSendChildResolved = func(sub *subagent) {
+			sub.mu.Lock()
+			sub.driving = true
+			sub.mu.Unlock()
+		}
+	})
+	defer func() {
+		held.child.mu.Lock()
+		held.child.driving = false
+		held.child.mu.Unlock()
+	}()
+	before := delegateAggregateSnapshot(t, held.s.delegateController, held.delegateID)
+	res := executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+	if !res.IsError || !strings.Contains(res.Output, "target_busy") {
+		t.Fatalf("a send to a child that turned busy = %q (error %v), want a target_busy refusal", res.Output, res.IsError)
+	}
+	assertDelegateUnchanged(t, held.s.delegateController, held.delegateID, before, "the refused send")
+}
+
+// A resident child's drive guard is held from before the send commits its
+// start until the run takes it over. A disposal that races the commit
+// (trySetDisposeGate, which refuses only a running or driving child) is
+// refused, so it can't gate a child that has just been handed a generation.
+func TestDelegateSendHoldsAResidentChildsGuardThroughItsCommit(t *testing.T) {
+	t.Parallel()
+	held := holdDelegateReleasedByTheController(t)
+	defer held.release()
+	c := held.s.delegateController
+	var guardTaken, probed, disposalWon atomic.Bool
+	updateSessionTestConfig(held.s, func(cfg *testConfig) {
+		cfg.delegateSendChildResolved = func(*subagent) { guardTaken.Store(true) }
+	})
+	// The controller reads its clock inside CommitStart, which is where the
+	// probe races the commit.
+	c.mu.Lock()
+	now := c.now
+	c.now = func() time.Time {
+		if guardTaken.Load() && probed.CompareAndSwap(false, true) {
+			if held.child.trySetDisposeGate() {
+				disposalWon.Store(true)
+				held.child.clearDisposeGate()
+			}
+		}
+		return now()
+	}
+	c.mu.Unlock()
+	res := executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+	if !probed.Load() {
+		t.Fatal("the probe never ran during the send's commit")
+	}
+	if disposalWon.Load() {
+		t.Fatal("a disposal gated the child while the send committed its start: the send wasn't holding its drive guard")
+	}
+	if !sendTaken(res) {
+		t.Fatalf("send = %q (error %v), want it taken", res.Output, res.IsError)
+	}
+}
+
+// If a different subagent replaces the resident child between the send's
+// guard and its commit, the send gives the resident's guard back before it
+// guards the replacement: the resident is never left marked driving, which
+// would keep every later drive off it.
+func TestDelegateSendReleasesAResidentReplacedAfterItsCommit(t *testing.T) {
+	t.Parallel()
+	held := holdDelegateReleasedByTheController(t)
+	defer held.release()
+	resident := held.child
+	// The replacement is busy, so the send refuses it after the commit and
+	// nothing runs on either.
+	replacement := &subagent{id: resident.id, sess: resident.sess, driving: true}
+	manager := held.s.subagents
+	var swapped atomic.Bool
+	updateSessionTestConfig(held.s, func(cfg *testConfig) {
+		cfg.delegateSendChildResolved = func(sub *subagent) {
+			if sub == resident && swapped.CompareAndSwap(false, true) {
+				manager.track(replacement)
+			}
+		}
+	})
+	// Cleanups run last-registered first: the resident goes back before the
+	// session closes.
+	t.Cleanup(func() {
+		manager.track(resident)
+	})
+	executeDelegateTool(context.Background(), held.s, "call_send", "delegate_send", map[string]any{"to": held.delegateID, "message": "Is drain ordering fine?"})
+	if !swapped.Load() {
+		t.Fatal("the resident was never replaced")
+	}
+	resident.mu.Lock()
+	driving := resident.driving
+	resident.mu.Unlock()
+	if driving {
+		t.Fatal("the replaced resident was left marked driving")
+	}
+}
+
+// A delegate_send that asks to wait, whose committed start a covering stop
+// ends before the send hands the start to a run, is answered with the stopped
+// outcome at once. Closing the start settles the generation, so the send must
+// not sit out its whole max_wait waiting for an inline delivery the covering
+// stop will never hand it (#3502).
+func TestDelegateSendStartAStopEndedIsReportedStopped(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// A covering stop lands in the send's committed-start window, between the
+	// commit and the start-input hand-off, so the send's own BeginStartInput
+	// finds the generation already Stopping.
+	var stopMu sync.Mutex
+	var stopErr error
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateSendStartCommitted = func(*subagent) {
+			_, _, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), fixture.delegateID)
+			stopMu.Lock()
+			stopErr = err
+			stopMu.Unlock()
+		}
+	})
+	start := time.Now()
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "send into a stop", 5_000)
+	elapsed := time.Since(start)
+
+	stopMu.Lock()
+	err := stopErr
+	stopMu.Unlock()
+	if err != nil {
+		t.Fatalf("stop the delegate in the send's committed-start window: %v", err)
+	}
+	if got := string(outcome.result.Status); got != "stopped" {
+		t.Fatalf("send whose start a stop ended reported status %q, want stopped: %+v", got, outcome.result)
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("send whose start a stop ended waited %s, want it answered as soon as the start closed", elapsed)
 	}
 }

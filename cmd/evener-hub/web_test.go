@@ -501,6 +501,10 @@ func (s *scriptedAppSource) JobOutput(context.Context, appwire.JobsOutputParams)
 	return appwire.JobsOutputResponse{}, appwire.Unavailable("scripted source does not read job output")
 }
 
+func (s *scriptedAppSource) JobGet(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+	return appwire.JobsGetResponse{}, appwire.Unavailable("scripted source does not get jobs")
+}
+
 func (s *scriptedAppSource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	out := make(chan appwire.Notification, len(s.notifications))
 	for _, notification := range s.notifications {
@@ -1116,4 +1120,20 @@ func TestWeb_WorkspaceData_NoObserversWhenUnwatched(t *testing.T) {
 	if len(wd.ObserverRouteIDs) != 0 {
 		t.Fatalf("un-watched worker must have no observers; got %v", wd.ObserverRouteIDs)
 	}
+}
+
+func (s *scriptedAppSource) ThreadActivityRead(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
+	return appwire.SessionActivitySummary{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *scriptedAppSource) ThreadDelegatesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error) {
+	return appwire.SessionDelegatesResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *scriptedAppSource) ThreadJobsList(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error) {
+	return appwire.SessionJobsResponse{}, appwire.Unavailable("test source does not read session activity")
+}
+
+func (s *scriptedAppSource) ThreadWatchesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error) {
+	return appwire.SessionWatchesResponse{}, appwire.Unavailable("test source does not read session activity")
 }

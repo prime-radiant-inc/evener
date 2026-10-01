@@ -301,16 +301,10 @@ function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: stri
   );
 }
 function isPassiveRailNode(node: RailNode): boolean {
-  return (
-    node.kind === "loading" ||
-    node.kind === "job" ||
-    // A watch row is a leaf with no disclosure of its own: the wire row
-    // (active, cadence, note) is the whole truth, exactly like a job row. An
-    // Enter must not persist an expansion override for a row that cannot
-    // expand.
-    node.kind === "watch" ||
-    (node.kind === "overflow" && node.passive === true)
-  );
+  // The loading placeholder is the rail's one passive row: an Enter or expand
+  // chord on it must not persist an expansion override for a row that cannot
+  // expand.
+  return node.kind === "loading";
 }
 
 /** The catalogs' "+N more projects" row, appended to whatever the section's
@@ -400,7 +394,6 @@ interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes
   section: RailPinSection;
   onRename: () => void;
   onDelete: () => void;
-  isExpanded: ReturnType<typeof overrideLookup>;
   projectRetryCallback: (key: string) => () => void;
 }
 function PinnedRailSection({
@@ -409,7 +402,6 @@ function PinnedRailSection({
   onToggleOpen,
   onRename,
   onDelete,
-  isExpanded,
   onToggle,
   onActivate,
   actions,
@@ -443,7 +435,7 @@ function PinnedRailSection({
       {open && (
         <RailTree
           nodes={[
-            ...sessionNodes(section.sessions ?? [], isExpanded),
+            ...sessionNodes(section.sessions ?? []),
             ...pinSectionOverflowNode(
               `pinsection:${section.id}`,
               section.id,
@@ -519,14 +511,20 @@ function summarySession(
   const context = `${scope}\0${tier ?? ""}\0${pinSectionID ?? ""}\0${projectKey ?? ""}`;
   const cached = sessionModelCache.get(summary as object)?.get(context);
   if (cached) return cached;
-  const children = summary.children.map((child) => summarySession(child, scope, tier, pinSectionID, projectKey));
   const result = {
     ...summary,
     row_id: `navigation:${scope}:${summary.ref}`,
     tier,
     pin_section_id: pinSectionID,
     project_key: projectKey,
-    children,
+    // Archived lists retain separate fork-original conversations. Delegate
+    // activity belongs to the scoped activity owner, not navigation rows.
+    children:
+      tier === "archived"
+        ? summary.children
+            .filter((child) => child.kind === "fork")
+            .map((child) => summarySession(child, scope, tier, pinSectionID, projectKey))
+        : [],
   };
   let entries = sessionModelCache.get(summary as object);
   if (!entries) {
@@ -1160,7 +1158,7 @@ function NavigationRail({
   }, [revealTarget, onRevealConsumed]);
 
   useEffect(() => {
-    if (navigationMode !== "v2") return;
+    if (navigationMode !== "v3") return;
     if (!manifest)
       void navigationStore
         .getState()
@@ -1244,7 +1242,7 @@ function NavigationRail({
     }
   }, [loadProjectRoot, resources]);
   useEffect(() => {
-    if (navigationMode !== "v2") return;
+    if (navigationMode !== "v3") return;
     const generation = navigationStore.getState().clientGenerationID;
     if (generation !== rootGeneration.current) {
       rootLoadsInFlight.current.clear();
@@ -1330,7 +1328,7 @@ function NavigationRail({
       project_key?: string;
       tier?: string;
       pin_section_id?: string;
-      session?: unknown;
+      session?: NavigationSessionSummary;
       top_level?: boolean;
       top_level_ref?: string;
     }>(currentState, locationKey);
@@ -1357,6 +1355,34 @@ function NavigationRail({
     if (!location.session) {
       consumeReveal();
       return;
+    }
+    // Delegate refs reveal their carrier in the flat navigation rail. An
+    // archived fork original has its own inline row; the loaded fold chain
+    // above reveals that row after its continuation arrives.
+    const carrierRef =
+      location.top_level === false && location.top_level_ref && location.top_level_ref !== revealTarget
+        ? location.top_level_ref
+        : null;
+    const archivedForkOriginal = location.tier === "archived" && location.session.kind === "fork";
+    if (carrierRef !== null && !archivedForkOriginal) {
+      const carrierRow = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
+        (element) => element.dataset.sessionRef === carrierRef,
+      );
+      if (carrierRow && revealCompletedTarget.current !== revealTarget) {
+        carrierRow.scrollIntoView({ block: "center", behavior: "smooth" });
+        consumeReveal();
+        return;
+      }
+      const carrierChain = [
+        ...revealExpansionIds(resources.projects, resources.live, carrierRef, groupingMode),
+        ...revealExpansionIds(resources.testRuns, [], carrierRef, "flat"),
+        ...revealExpansionIds(resources.archivedProjects, [], carrierRef, "flat", { rowsUnderProjectNode: true }),
+      ];
+      const nextCarrierFold = carrierChain.find((id) => expandedOverrides.get(id) !== true);
+      if (nextCarrierFold) {
+        setExpanded(nextCarrierFold, true);
+        return;
+      }
     }
     if (location.project_key) {
       const projectState = resourceState(currentState, { kind: "project", projectKey: location.project_key });
@@ -1577,6 +1603,14 @@ function NavigationRail({
             closeSessionActivityPanes(session.ref);
             activitySidebarStore.getState().openWith();
           }
+        } else if (pane === "tasks") {
+          // Desktop Tasks everywhere is the zoom system's sidebar, preselected
+          // to its Tasks tab and scoped by the just-focused session. On mobile
+          // there is no sidebar (the rail lives in the tree drawer), so the
+          // sessionTasks pane keeps its pre-sidebar behavior. Both idempotent
+          // opens: the rail navigates, it never toggles closed.
+          if (isMobile) workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+          else activitySidebarStore.getState().openWith("tasks");
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }
@@ -1944,8 +1978,8 @@ function NavigationRail({
     // under host subheaders exactly while they span more than one host
     // (liveNodesGroupedByHost keeps a single-host list flat, byte for byte).
     ...(groupingMode !== "flat"
-      ? liveNodesGroupedByHost(sessionNodes(resources.live, isExpanded), displaySources, isExpanded)
-      : sessionNodes(resources.live, isExpanded)),
+      ? liveNodesGroupedByHost(sessionNodes(resources.live), displaySources, isExpanded)
+      : sessionNodes(resources.live)),
     ...sectionOverflowNode(
       "section:live",
       "live",
@@ -1956,7 +1990,7 @@ function NavigationRail({
   ];
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
-    navigationMode === "unknown" || (navigationMode === "v2" && (!manifest || manifest.loading || resourceLoading));
+    navigationMode === "unknown" || (navigationMode === "v3" && (!manifest || manifest.loading || resourceLoading));
   const manifestError = manifest?.error ? errorText(manifest.error) : null;
   const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
   const loadError =
@@ -2057,7 +2091,6 @@ function NavigationRail({
                   onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
                   onRename={() => openSectionRename(section)}
                   onDelete={() => void requestSectionDelete(section)}
-                  isExpanded={isExpanded}
                   onToggle={handleToggle}
                   onActivate={handleActivate}
                   actions={rowActions}

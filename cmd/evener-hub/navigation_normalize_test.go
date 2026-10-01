@@ -10,7 +10,7 @@ import (
 )
 
 func TestNormalizeNavigationSectionCreatesCompleteContainers(t *testing.T) {
-	object := hubapi.NavigationSectionResource{GenerationID: "g", Revision: 1, Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{{Ref: "local:parent", HostID: "local", SessionID: "parent", Title: "parent", Project: "p", State: "active", Kind: "session", Live: true, RunningJobs: hubapi.NavigationArray[hubapi.NavigationJobSummary]{{JobID: "j1", JobType: "shell", Status: "running"}}, Children: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}}}
+	object := hubapi.NavigationSectionResource{GenerationID: "g", Revision: 1, Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{{Ref: "local:parent", HostID: "local", SessionID: "parent", Title: "parent", Project: "p", State: "active", Kind: "session", Live: true, RunningJobCount: 1, Children: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}}}
 	key := navigationResourceKey{Kind: navigationResourceLive}
 	got, err := normalizeNavigationResource(key, object)
 	if err != nil {
@@ -40,8 +40,8 @@ func TestNormalizeNavigationSectionCreatesCompleteContainers(t *testing.T) {
 	t.Fatal("missing shallow session entity")
 }
 
-func TestNormalizeNavigationResourcePreservesSessionNodeLimit(t *testing.T) {
-	sessions := navigationSessionForest(maxNavigationNodes)
+func TestNormalizeNavigationResourcePreservesFlatSessionPageLimit(t *testing.T) {
+	sessions := navigationSessionForest(maxNavigationSectionRows)
 	for _, test := range []struct {
 		name           string
 		key            navigationResourceKey
@@ -57,8 +57,8 @@ func TestNormalizeNavigationResourcePreservesSessionNodeLimit(t *testing.T) {
 				Revision:     1,
 				Sessions:     sessions,
 			},
-			wantEntities:   maxNavigationNodes,
-			wantContainers: maxNavigationNodes + 1,
+			wantEntities:   maxNavigationSectionRows,
+			wantContainers: maxNavigationSectionRows + 1,
 		},
 		{
 			name: "project",
@@ -69,8 +69,8 @@ func TestNormalizeNavigationResourcePreservesSessionNodeLimit(t *testing.T) {
 				Key:          "project",
 				Current:      hubapi.NavigationTier{Sessions: sessions},
 			},
-			wantEntities:   maxNavigationNodes + 1,
-			wantContainers: maxNavigationNodes + 3,
+			wantEntities:   maxNavigationSectionRows + 1,
+			wantContainers: maxNavigationSectionRows + 3,
 		},
 		{
 			name: "project page",
@@ -82,8 +82,8 @@ func TestNormalizeNavigationResourcePreservesSessionNodeLimit(t *testing.T) {
 				Tier:         "current",
 				Sessions:     sessions,
 			},
-			wantEntities:   maxNavigationNodes,
-			wantContainers: maxNavigationNodes + 1,
+			wantEntities:   maxNavigationSectionRows,
+			wantContainers: maxNavigationSectionRows + 1,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -97,7 +97,7 @@ func TestNormalizeNavigationResourcePreservesSessionNodeLimit(t *testing.T) {
 		})
 	}
 
-	overLimit := navigationSessionForest(maxNavigationNodes + 1)
+	overLimit := navigationSessionForest(maxNavigationSectionRows + 1)
 	for _, test := range []struct {
 		name   string
 		key    navigationResourceKey
@@ -121,7 +121,7 @@ func TestNormalizeNavigationResourcePreservesSessionNodeLimit(t *testing.T) {
 	} {
 		t.Run(test.name+" over limit", func(t *testing.T) {
 			if _, err := normalizeNavigationResource(test.key, test.object); err == nil {
-				t.Fatalf("normalize accepted %d session nodes, limit is %d", maxNavigationNodes+1, maxNavigationNodes)
+				t.Fatalf("normalize accepted %d session nodes, limit is %d", maxNavigationSectionRows+1, maxNavigationSectionRows)
 			}
 		})
 	}
@@ -142,16 +142,11 @@ func navigationSessionForest(count int) hubapi.NavigationArray[hubapi.Navigation
 		}
 	}
 
-	forest := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], 0, (count+maxNavigationChildren)/(maxNavigationChildren+1))
-	for next := 0; next < count; {
-		root := summary(next)
-		next++
-		for len(root.Children) < maxNavigationChildren && next < count {
-			root.Children = append(root.Children, summary(next))
-			next++
-		}
-		forest = append(forest, root)
+	forest := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], count)
+	for i := range forest {
+		forest[i] = summary(i)
 	}
+
 	return forest
 }
 
@@ -162,31 +157,31 @@ func TestNavigationViewScopeParityVectors(t *testing.T) {
 	}{
 		{
 			key:  navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "项目/a|b", Tier: "recent", Offset: 2, Limit: 7},
-			want: "nav2/project_page///6aG555uuL2F8Yg/cmVjZW50/2/7",
+			want: "nav3/project_page///6aG555uuL2F8Yg/cmVjZW50/2/7",
 		},
 		{
 			key:  navigationResourceKey{Kind: navigationResourceLocation, ID: "源/α:β|?"},
-			want: "nav2/location/5rqQL86xOs6yfD8////0/0",
+			want: "nav3/location/5rqQL86xOs6yfD8////0/0",
 		},
 		{
 			key:  navigationResourceKey{Kind: navigationResourcePinSection, SectionID: "pins/研发|?", Offset: 3, Limit: 11},
-			want: "nav2/pin_section//cGlucy_noJTlj5F8Pw///3/11",
+			want: "nav3/pin_section//cGlucy_noJTlj5F8Pw///3/11",
 		},
 		{
 			key:  navigationResourceKey{Kind: navigationResourceLive, Offset: 4, Limit: 0},
-			want: "nav2/live/////4/50",
+			want: "nav3/live/////4/50",
 		},
 		{
 			key:  navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "project", Tier: "current", Offset: 5, Limit: maxNavigationSectionRows + 1},
-			want: "nav2/project_page///cHJvamVjdA/Y3VycmVudA/5/50",
+			want: "nav3/project_page///cHJvamVjdA/Y3VycmVudA/5/50",
 		},
 		{
 			key:  navigationResourceKey{Kind: navigationResourcePinCatalog, Offset: 6, Limit: 0},
-			want: "nav2/pin_catalog/////6/100",
+			want: "nav3/pin_catalog/////6/100",
 		},
 		{
 			key:  navigationResourceKey{Kind: navigationResourceProjects, Offset: 7, Limit: maxNavigationCatalogRows + 1},
-			want: "nav2/projects/////7/100",
+			want: "nav3/projects/////7/100",
 		},
 	}
 	for _, test := range tests {

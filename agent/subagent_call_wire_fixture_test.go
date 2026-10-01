@@ -11,10 +11,12 @@ package agent
 // This test is the corpus for those rows. It announces the calls and returns
 // their results the way a session records them (one ASSISTANT entry, one
 // TOOL_RESULTS entry) and projects both turns through apptranscript the way
-// history reaches the wire. The delegate and delegate_send calls run for real,
-// on a session whose child blocks in its first model call until the test
-// ends; the send waits for the child to reach that call, so it always steers
-// a running delegate. The shell and task_list
+// history reaches the wire. The delegate and both delegate_send calls run for
+// real, on a session whose child blocks in its first model call until the
+// recording lets it answer. The first send waits for the child to reach that
+// call, so it always steers a running delegate. The second waits for the
+// delegate's reply: it is sent once the delegate has gone idle, and returns
+// the reply the child's next generation gives it. The shell and task_list
 // outputs are hand-written text, since those rows read only their calls'
 // intents and states. The phone's transcript row tests read the file this
 // test pins.
@@ -25,6 +27,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +35,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -57,21 +61,35 @@ const (
 	subagentWireStateDir     = "/home/jesse/.local/state/evener"
 )
 
+// The waiting send's question, and the reply the delegate gives it.
+const (
+	subagentWireQuestion = "Is drain ordering safe now?"
+	subagentWireReply    = "Yes: tree settle now waits for the drain, and a test pins the order."
+)
+
 // subagentWireSession is a session that can delegate, whose children block
-// in their first model call until the test ends: a delegate it starts stays
-// running for as long as the recording takes. The channel it returns closes
-// when a child reaches that call.
-func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}) {
+// in their first model call until the returned answer func is called (or the
+// test ends): a delegate it starts stays running until the recording lets it
+// answer. The channel it returns closes when a child reaches that call. A
+// child answers through its result tool, and answers the waiting send's
+// question with subagentWireReply.
+func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}, func()) {
 	t.Helper()
 	stateDir := realTempDirForTest(t)
 	reached := make(chan struct{})
-	var reachedOnce sync.Once
+	var reachedOnce, releaseOnce sync.Once
 	release := make(chan struct{})
+	answer := func() { releaseOnce.Do(func() { close(release) }) }
 	client := llm.NewClient()
-	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
 		reachedOnce.Do(func() { close(reached) })
 		<-release
-		return llm.Response{Message: llm.Assistant("done")}
+		// The request carries the whole history, so only the generation the
+		// question started sees it.
+		if requestContainsText(req, subagentWireQuestion) {
+			return finalResponse(subagentWireReply)
+		}
+		return finalResponse("Fixed the race between tree settle and the drain.")
 	}})
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	workspace := realTempDirForTest(t)
@@ -89,8 +107,8 @@ func subagentWireSession(t *testing.T) (*Session, string, <-chan struct{}) {
 	// Cleanups run last-registered first: the child's model call returns
 	// before the session closes.
 	t.Cleanup(s.Close)
-	t.Cleanup(func() { close(release) })
-	return s, stateDir, reached
+	t.Cleanup(answer)
+	return s, stateDir, reached, answer
 }
 
 // arguments is the call's arguments as the model sends them.
@@ -103,10 +121,11 @@ func (c subagentWireCall) arguments(t *testing.T) json.RawMessage {
 	return args
 }
 
-// run executes one call on the session, failing the test on an error result.
+// run executes one call on the session the way its tool round does, failing
+// the test on an error result.
 func (c subagentWireCall) run(t *testing.T, s *Session) subagentWireCall {
 	t.Helper()
-	res := s.reg.ExecuteCall(context.Background(), s.currentEnv(), llm.ToolCallData{ID: c.id, Name: c.tool, Arguments: c.arguments(t)})
+	res := executeDelegateTool(context.Background(), s, c.id, c.tool, c.args)
 	if res.IsError {
 		t.Fatalf("%s: the %s call failed: %s", c.id, c.tool, res.Output)
 	}
@@ -116,7 +135,7 @@ func (c subagentWireCall) run(t *testing.T, s *Session) subagentWireCall {
 
 func TestSubagentCallWireFixtures(t *testing.T) {
 	t.Parallel()
-	s, stateDir, childRunning := subagentWireSession(t)
+	s, stateDir, childRunning, answer := subagentWireSession(t)
 	delegate := subagentWireCall{
 		id:   "call_delegate_1",
 		tool: "delegate",
@@ -139,13 +158,23 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the delegate's child never reached its first model call")
 	}
+	steer := subagentWireCall{
+		id:   "call_send_1",
+		tool: "delegate_send",
+		args: map[string]any{"to": receipt.DelegateID, "message": "Also check drain ordering.", "intent": "Tell it to check drain ordering"},
+	}.run(t, s)
+	// Let the child answer, and send the question once the delegate is idle.
+	answer()
+	awaitDelegateIdle(t, s, receipt.DelegateID)
+	waiting := subagentWireCall{
+		id:   "call_send_2",
+		tool: "delegate_send",
+		args: map[string]any{"to": receipt.DelegateID, "message": subagentWireQuestion, "max_wait_ms": 60000, "intent": "Ask whether drain ordering is safe"},
+	}.run(t, s)
 	calls := []subagentWireCall{
 		delegate,
-		subagentWireCall{
-			id:   "call_send_1",
-			tool: "delegate_send",
-			args: map[string]any{"to": receipt.DelegateID, "message": "Also check drain ordering.", "intent": "Tell it to check drain ordering"},
-		}.run(t, s),
+		steer,
+		waiting,
 		{
 			id:     "call_shell_1",
 			tool:   "shell",
@@ -185,7 +214,66 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 		Note  string               `json:"note"`
 		Items []appwire.ThreadItem `json:"items"`
 	}{
-		Note:  "One ASSISTANT entry announcing delegate, delegate_send, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate and delegate_send calls ran for real, the delegate still running when the send steered it (its id, its child session's id and the state directory fixed); the shell and task_list outputs are hand-written text.",
-		Items: toolWireRelocated(t, items, relocate.Replace),
+		Note:  "One ASSISTANT entry announcing delegate, two delegate_sends, shell (with an intent) and task_list (without one), and the TOOL_RESULTS entry answering them, projected through apptranscript. The delegate and delegate_send calls ran for real (the delegate's id, its child session's id and the state directory fixed): the first send steered the running delegate, and the second, sent once it was idle, waited for and returned its reply (its run times fixed too). The shell and task_list outputs are hand-written text.",
+		Items: toolWireRelocated(t, items, func(encoded string) string { return subagentWireRunTimesFixed(t, relocate.Replace(encoded)) }),
 	}, "the mobile-native tests that read it")
+}
+
+// awaitDelegateIdle waits until delegateID's generation has finished and the
+// delegate reads idle. It reads the controller's own state: the session's
+// event stream is best effort and could drop the idle event.
+func awaitDelegateIdle(t *testing.T, s *Session, delegateID string) {
+	t.Helper()
+	// TRIPWIRE: a hang guard only; the scripted child answers at once and its
+	// generation goes idle within milliseconds.
+	waitForCondition(t, 30*time.Second, "the delegate going idle after its child answered", func() bool {
+		aggregate := delegateAggregateSnapshot(t, s.delegateController, delegateID)
+		return aggregate.Phase == delegatestore.PhaseIdle && !aggregate.CurrentRunOpen
+	})
+}
+
+// subagentWireRunTimes are the run times a delegate_send result carries,
+// which are the clock's, in the order a run's times must fall, each with the
+// time after the fixture's start the fixture records it at.
+var subagentWireRunTimes = []struct {
+	field string
+	after time.Duration
+}{
+	{"run_started_at", time.Second},
+	{"latest_activity_at", 1500 * time.Millisecond},
+	{"run_ended_at", 2 * time.Second},
+}
+
+// subagentWireRunTimesFixed records each run time as a fixed time after the
+// fixture's start, by field, so two equal times can't swap places. It first
+// checks the recorded times are real and in order (started, then latest
+// activity, then ended), and that none appears escaped inside a string the
+// replacement can't reach.
+func subagentWireRunTimesFixed(t *testing.T, encoded string) string {
+	t.Helper()
+	var previous time.Time
+	for i, run := range subagentWireRunTimes {
+		if strings.Contains(encoded, `\"`+run.field+`\"`) {
+			t.Fatalf("a %s appears escaped inside a string, where the fixture can't fix it", run.field)
+		}
+		pattern := regexp.MustCompile(`"` + run.field + `":"([^"]*)"`)
+		matches := pattern.FindAllStringSubmatch(encoded, -1)
+		if len(matches) == 0 {
+			t.Fatalf("the waiting send's result carries no %s", run.field)
+		}
+		var recorded time.Time
+		for _, match := range matches {
+			at, err := time.Parse(time.RFC3339Nano, match[1])
+			if err != nil {
+				t.Fatalf("%s %q isn't a time: %v", run.field, match[1], err)
+			}
+			recorded = at
+		}
+		if i > 0 && recorded.Before(previous) {
+			t.Fatalf("%s %v is before %s %v", run.field, recorded, subagentWireRunTimes[i-1].field, previous)
+		}
+		previous = recorded
+		encoded = pattern.ReplaceAllLiteralString(encoded, `"`+run.field+`":"`+wireFixtureStart.Add(run.after).Format(time.RFC3339Nano)+`"`)
+	}
+	return encoded
 }

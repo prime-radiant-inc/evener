@@ -538,6 +538,30 @@ func (c *Client) ThreadTranscriptList(ctx context.Context, params ThreadTranscri
 	return out, err
 }
 
+func (c *Client) ThreadActivityRead(ctx context.Context, params SessionActivityReadParams) (SessionActivitySummary, error) {
+	var out SessionActivitySummary
+	err := c.request(ctx, MethodEvenerThreadActivityRead, params, &out)
+	return out, err
+}
+
+func (c *Client) ThreadDelegatesList(ctx context.Context, params SessionActivityListParams) (SessionDelegatesResponse, error) {
+	var out SessionDelegatesResponse
+	err := c.request(ctx, MethodEvenerThreadDelegatesList, params, &out)
+	return out, err
+}
+
+func (c *Client) ThreadJobsList(ctx context.Context, params SessionActivityListParams) (SessionJobsResponse, error) {
+	var out SessionJobsResponse
+	err := c.request(ctx, MethodEvenerThreadJobsList, params, &out)
+	return out, err
+}
+
+func (c *Client) ThreadWatchesList(ctx context.Context, params SessionActivityListParams) (SessionWatchesResponse, error) {
+	var out SessionWatchesResponse
+	err := c.request(ctx, MethodEvenerThreadWatchesList, params, &out)
+	return out, err
+}
+
 func (c *Client) ThreadStart(ctx context.Context, params ThreadStartParams) (ThreadStartResponse, error) {
 	var out ThreadStartResponse
 	err := c.request(ctx, MethodThreadStart, params, &out)
@@ -715,6 +739,12 @@ func (c *Client) JobsList(ctx context.Context, params JobsListParams) (JobsListR
 func (c *Client) JobOutput(ctx context.Context, params JobsOutputParams) (JobsOutputResponse, error) {
 	var out JobsOutputResponse
 	err := c.request(ctx, MethodEvenerJobsOutput, params, &out)
+	return out, err
+}
+
+func (c *Client) JobsGet(ctx context.Context, params JobsGetParams) (JobsGetResponse, error) {
+	var out JobsGetResponse
+	err := c.request(ctx, MethodEvenerJobsGet, params, &out)
 	return out, err
 }
 

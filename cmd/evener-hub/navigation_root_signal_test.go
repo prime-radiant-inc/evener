@@ -73,7 +73,7 @@ func (h *rootSignalHub) save(id, name string, updatedAt time.Time, parent string
 // read serves the manifest, which rebuilds navigation when it is stale.
 func (h *rootSignalHub) read() {
 	h.t.Helper()
-	if _, err := h.web.navigation.readV2(h.t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+	if _, err := h.web.navigation.readV3(h.t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		h.t.Fatal(err)
 	}
 }
@@ -82,7 +82,7 @@ func (h *rootSignalHub) builds() uint64 { return h.web.navigation.Stats().CoreBu
 
 func (h *rootSignalHub) locationStatus(id string) string {
 	h.t.Helper()
-	response, err := h.web.navigation.readV2(h.t.Context(), navigationResourceKey{Kind: navigationResourceLocation, ID: "local:" + id}, nil)
+	response, err := h.web.navigation.readV3(h.t.Context(), navigationResourceKey{Kind: navigationResourceLocation, ID: "local:" + id}, nil)
 	if err != nil {
 		h.t.Fatal(err)
 	}

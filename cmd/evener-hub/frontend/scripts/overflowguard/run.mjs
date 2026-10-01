@@ -409,20 +409,14 @@ async function measureTrustedFocus(send) {
   return { baseline, states: [first, middle, last] };
 }
 
-// Unified session menu (2026-08-05-unified-session-context-menu): the chrome
-// no longer has inline Details/Tasks/Activity triggers or a narrow-collapse -
-// the shared SessionMenu ("Session actions") lists the panes at EVERY width
-// with a check adornment for open ones. This fixture therefore drives the
-// menu directly: open Tasks, wait for the dock split to squeeze the main
-// composer's inline session chrome below 640px, then re-open the menu and
-// confirm its label gains the checkmark. The menu entry is a plain "Tasks"
-// (counts live inline and in the panel, never in the menu), whatever
-// aggregate the harness seeds.
+// Opening the actual Tasks activity sidebar constrains the main composer.
+// The guard measures the narrower chrome, checked menu state, and the same
+// production Verbosity editor's containment and fieldset geometry.
 async function verifyPanelCollapse(cdpEndpoint, url) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
-    await applyViewport(send, { width: 1024, height: 900 });
+    await applyViewport(send, { width: 900, height: 900 });
     await navigateTo(page, url, BOOT);
     await waitForFonts(page.send);
     const runtimeState = await send("Runtime.evaluate", {
@@ -449,7 +443,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
           'tasks menu item',
         );
         tasksItem.click();
-        const panel = await until(() => document.querySelector('[data-pane-scaffold="session-panel:tasks:overflowharness"]'), 'tasks pane');
+        const panel = await until(() => document.querySelector('[data-testid="activity-sidebar"]'), 'Tasks activity sidebar');
         const chrome = await until(
           () => document.querySelector('[data-testid="session-chrome-inline"]'),
           'inline session chrome',
@@ -1305,7 +1299,7 @@ async function main() {
 
     const panelCollapse = await verifyPanelCollapse(
       cdpEndpoint,
-      `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024&panels=1`,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?w=900&panels=1`,
     );
     const panelFieldsetFailures = assertFieldsets(panelCollapse.detail, "1024 narrow dock");
     if (
@@ -1324,7 +1318,7 @@ async function main() {
       console.log(`panel collapse ... FAIL - ${JSON.stringify(panelCollapse)}`);
     } else {
       console.log(
-        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, checked Tasks adornment visible, ` +
+        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, Tasks activity sidebar and checked adornment visible, ` +
           `reachable Verbosity Dialog, no horizontal overflow`,
       );
     }

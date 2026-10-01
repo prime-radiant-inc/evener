@@ -24,7 +24,7 @@
       conn: "live",
       connSince: now,
       hosts: D.hosts, providers: D.providers, models: D.models, plugins: D.plugins, marketplaces: D.marketplaces,
-      recipes: D.recipes, projects: D.projects, categories: D.categories, defaultPlugins: D.defaultPlugins,
+      lastUsed: D.lastUsed, projects: D.projects, categories: D.categories, defaultPlugins: D.defaultPlugins,
       sessions: D.sessions.map((s) => Object.assign(s, {
         updatedAt: now - s.ago * 1000,
         startedAt: now - (s.started || s.ago + 600) * 1000,

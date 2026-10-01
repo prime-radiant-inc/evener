@@ -944,6 +944,22 @@ func (c *delegateTreeController) claimDelegateWaiterLocked(delegateID string, ge
 	return waiter
 }
 
+// dropStoppedDelegateWaiter removes the generation's inline waiter when its
+// delegate carries a pending subtree stop, reporting whether it did. That is
+// the durable half of the coverage newHeadDeliveryPlanLocked refuses an inline
+// delivery plan on, so the waiter is never handed a packet and can only be
+// answered by the wait's ceiling. Dropping it lets the send answer with the
+// stopped outcome as soon as the stop has closed its start (#3502).
+func (c *delegateTreeController) dropStoppedDelegateWaiter(lease delegateLease) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[lease.delegateID]
+	if aggregate == nil || aggregate.PendingStopSeq == 0 {
+		return false
+	}
+	return c.claimDelegateWaiterLocked(lease.delegateID, lease.generation) != nil
+}
+
 func resolveDelegateInlineClaim(waiter *delegateInlineWaiter, resolution delegateInlineResolution) {
 	if waiter == nil {
 		return

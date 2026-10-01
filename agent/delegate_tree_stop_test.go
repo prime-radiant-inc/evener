@@ -273,11 +273,7 @@ func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
 	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
-	// Report the finished runtime quiesced, as the child's finalize tail
-	// does, so the delegate is ready for its successor.
-	if err := c.ReportFinalizationQuiesced(lease, steeringClaim.runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, steeringClaim.runtime)
 	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
 		t.Fatalf("Reconcile with claims in flight: %v", err)
 	}
@@ -670,9 +666,7 @@ func TestDelegateControllerStopReconcilesRecoveryRequiredSettlementFailure(t *te
 	c.mu.Lock()
 	runtime := c.live[lease.delegateID].binding.runtime
 	c.mu.Unlock()
-	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, runtime)
 	c.mu.Lock()
 	claimRetained := c.hasSettlementClaimLocked(lease)
 	c.mu.Unlock()
@@ -721,9 +715,7 @@ func TestDelegateControllerRecoveryStabilizationWaitsForAdmittedSteer(t *testing
 	if err := c.RequireFinalizationRecovery(finalizationClaim); err != nil {
 		t.Fatalf("RequireFinalizationRecovery: %v", err)
 	}
-	if err := c.ReportFinalizationQuiesced(lease, runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, runtime)
 	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID); err != nil {
 		t.Fatalf("StopSubtree: %v", err)
 	}
@@ -1325,11 +1317,7 @@ func TestDelegateControllerStopFencedSteerKeepsItsCausalProvenance(t *testing.T)
 	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
-	// Report the finished runtime quiesced, as the child's finalize tail
-	// does, so the delegate is ready for its successor.
-	if err := c.ReportFinalizationQuiesced(lease, steeringClaim.runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, steeringClaim.runtime)
 	if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); err != nil {
 		t.Fatalf("CompleteSteerPersistence for fsynced pre-stop steer: %v", err)
 	}
@@ -1415,11 +1403,7 @@ func TestDelegateControllerStopFencedSteerKeepsProvenanceWhenItLandsBeforeFinish
 	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
 		t.Fatalf("FinishGeneration: %v", err)
 	}
-	// Report the finished runtime quiesced, as the child's finalize tail
-	// does, so the delegate is ready for its successor.
-	if err := c.ReportFinalizationQuiesced(lease, steeringClaim.runtime); err != nil {
-		t.Fatalf("ReportFinalizationQuiesced: %v", err)
-	}
+	reportFinalizeTailDone(t, c, lease, steeringClaim.runtime)
 	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}

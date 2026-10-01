@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parseActivityTree } from "@evener/appwire-client";
 import {
-	flattenActivity,
+	flattenJobs,
 	flattenSubagents,
 	shellJobMeta,
 	subagentWhy,
-	tallySubagents,
+	tallyActivity,
 	subagentLastLine,
 } from "../subagents/subagentModel";
 import {
@@ -81,7 +81,7 @@ describe("the demo fleet's subagents", () => {
 		expect(tree).not.toBeNull();
 		const rows = flattenSubagents(tree as NonNullable<typeof tree>);
 		expect(rows).toHaveLength(55);
-		expect(tallySubagents(rows)).toEqual({ total: 55, failed: 2, running: 32, done: 21 });
+		expect(tallyActivity(rows)).toEqual({ total: 55, failed: 2, running: 32, done: 21 });
 		const settle = rows.find((row) => row.id === "g-settle");
 		expect(subagentWhy(settle as NonNullable<typeof settle>, NOW)).toEqual({
 			word: "Failed",
@@ -112,7 +112,7 @@ describe("the demo fleet's subagents", () => {
 	// coordinator's own finished ones.
 	it("serves a shell job for each running command, each failed one, and the coordinator's own", () => {
 		const tree = parseActivityTree(demoActivityTree(coordinator, NOW).data);
-		const { jobs } = flattenActivity(tree as NonNullable<typeof tree>);
+		const jobs = flattenJobs(tree as NonNullable<typeof tree>, coordinator.title);
 		const shown = jobs.map((row) => [row.title, row.state, row.owner, shellJobMeta(row, NOW)]);
 		expect(shown).toContainEqual(["go build ./...", "done", "Get PR 2138 Test Clean", "40s"]);
 		expect(shown).toContainEqual(["go test", "failed", "Fix race in tree settle", "Command failed · 1m"]);
