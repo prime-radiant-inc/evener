@@ -29,13 +29,26 @@ test("empty workspace bootstrap and passive restore never overwrite retained int
 });
 
 test("a focus change while the desktop sidebar is unmounted does not persist inherited open intent", () => {
-  const state = activitySidebarStore.getState();
-  state.retarget("source:parent");
-  state.openWith("jobs");
-  const writes = vi.spyOn(localStorage, "setItem");
-  state.retarget("source:child");
-  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
-  expect(writes).not.toHaveBeenCalled();
+  vi.useFakeTimers();
+  try {
+    const state = activitySidebarStore.getState();
+    state.retarget("source:parent");
+    state.openWith("jobs");
+    state.retarget("source:other");
+    state.openWith("jobs");
+    const writes = vi.spyOn(localStorage, "setItem");
+    state.retarget("source:parent");
+    vi.runOnlyPendingTimers();
+    window.dispatchEvent(new Event("pagehide"));
+    expect(writes).not.toHaveBeenCalled();
+    state.retarget("source:child");
+    expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
+    vi.runOnlyPendingTimers();
+    window.dispatchEvent(new Event("pagehide"));
+    expect(writes).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test.each(["{broken", "[]", '{"source:owner":{"open":true,"tab":"unknown"}}'])(
@@ -78,6 +91,66 @@ test("retained session intent is bounded and a recently revisited scope keeps it
   expect(Object.keys(saved)).toHaveLength(ACTIVITY_VIEW_LIMIT);
   expect(saved["source:1"]).toBeUndefined();
   expect(saved["source:0"].tab).toBe("watches");
+});
+
+test.each(["pagehide", "timer"])(
+  "a committed revisit saved by %s survives reload before capacity eviction",
+  (boundary) => {
+    vi.useFakeTimers();
+    try {
+      const state = activitySidebarStore.getState();
+      for (let index = 0; index < ACTIVITY_VIEW_LIMIT; index++) {
+        state.retarget(`source:${index}`);
+        state.openWith(index === 0 ? "watches" : "jobs");
+      }
+      const otherRef = `source:${ACTIVITY_VIEW_LIMIT - 1}`;
+      for (const ref of ["source:0", otherRef]) {
+        state.retarget(ref);
+        state.retainOpenView(ref);
+        if (boundary === "pagehide") window.dispatchEvent(new Event("pagehide"));
+        else vi.runOnlyPendingTimers();
+      }
+
+      resetActivitySidebarStoreForTests({ preserveStorage: true });
+      state.retarget(otherRef);
+      state.retainOpenView(otherRef);
+      state.retarget("source:new");
+      state.openWith("tasks");
+
+      const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
+      expect(saved["source:0"]).toEqual({ open: true, tab: "watches", categories: {} });
+      expect(saved["source:1"]).toBeUndefined();
+      expect(Object.keys(saved)).toHaveLength(ACTIVITY_VIEW_LIMIT);
+      expect(activitySidebarStore.getState().views.size).toBe(ACTIVITY_VIEW_LIMIT);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+test("committed revisit writes are deferred and an already newest view remains a no-op", () => {
+  vi.useFakeTimers();
+  try {
+    const state = activitySidebarStore.getState();
+    state.retarget("source:owner");
+    state.openWith("jobs");
+    state.retarget("source:other");
+    state.openWith("jobs");
+    const writes = vi.spyOn(localStorage, "setItem");
+    state.retarget("source:owner");
+    state.retainOpenView("source:owner");
+    state.retainOpenView("source:owner");
+    expect(writes).not.toHaveBeenCalled();
+    vi.runOnlyPendingTimers();
+    expect(writes).toHaveBeenCalledTimes(1);
+
+    state.retainOpenView("source:owner");
+    vi.runOnlyPendingTimers();
+    window.dispatchEvent(new Event("pagehide"));
+    expect(writes).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("equivalent scroll and disclosure-count choices do not rewrite storage or notify the view", () => {
