@@ -22,7 +22,8 @@ type navigationArchivedPage struct {
 	Sessions   hubapi.NavigationArray[hubapi.NavigationSessionSummary]
 	NextCursor string
 	Total      int
-	// Catalog is the catalog read; the zero kind when none holds the key.
+	// Catalog is the catalog read; the zero kind when none of the catalogs the
+	// hint allows holds the key.
 	Catalog navigationResourceKind
 }
 
@@ -69,10 +70,11 @@ func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navig
 
 // archivedCursor is a hubcore.SessionOrderKey on the wire, bound to the list
 // it continues (the request's catalog hint and project key), so a cursor from
-// another list is rejected instead of misapplied. It holds the hint rather than
-// the catalog read, so the next page still follows a project that moved
-// between Projects and Archived projects. A zero time.Time round-trips through JSON as
-// the zero time, so a row with no timestamps keeps its place in the order.
+// another list is rejected instead of misapplied. It holds the hint rather
+// than the catalog read, so the next page still follows a project that moved
+// between Projects and Archived projects. A zero time.Time round-trips through
+// JSON as the zero time, so a row with no timestamps keeps its place in the
+// order.
 type archivedCursor struct {
 	Hint    navigationResourceKind `json:"k"`
 	Project string                 `json:"p"`

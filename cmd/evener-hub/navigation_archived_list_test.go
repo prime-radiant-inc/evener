@@ -665,8 +665,9 @@ func TestArchivedListCursorContinuesAcrossAMoveBetweenPages(t *testing.T) {
 	if err != nil || first.NextCursor == "" {
 		t.Fatalf("first page: cursor %q, err %v", first.NextCursor, err)
 	}
-	// Moved, with a newer row archived and the cursor's own row gone.
-	newer := archivedRows("newer", 1, func(int) time.Time { return time.Unix(200, 0).UTC() }, func(int) string { return "newer" })
+	// Moved, with two newer rows archived and the cursor's own row gone, so
+	// skipping the two rows already served would land elsewhere.
+	newer := archivedRows("newer", 2, func(i int) time.Time { return time.Unix(int64(200+i), 0).UTC() }, func(i int) string { return fmt.Sprintf("newer %d", i) })
 	moved := append(append(newer, rows[0]), rows[2:]...)
 	after := archivedProjection(t, hubcore.TreeProject{Key: "moving", Name: "moving", IsArchived: true, Archived: moved})
 	request, err := parseNavigationArchivedListParams(appwire.ArchivedListParams{Catalog: "projects", ProjectKey: "moving", Cursor: first.NextCursor, Limit: 2})

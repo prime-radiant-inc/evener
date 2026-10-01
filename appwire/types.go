@@ -697,7 +697,8 @@ type ArchivedListParams struct {
 // cannot import hubapi, so the rows travel as raw JSON the way a navigation
 // read's data does. NextCursor is empty on the last page. Total counts every
 // archived session of the project. Catalog is the catalog the hub read; it is
-// absent when no catalog holds the key, and the page is empty.
+// absent when none of the catalogs the hint allows holds the key, and the page
+// is empty.
 type ArchivedListResponse struct {
 	Sessions   json.RawMessage `json:"sessions"`
 	NextCursor string          `json:"nextCursor,omitempty"`
