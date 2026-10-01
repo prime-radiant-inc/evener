@@ -22,10 +22,15 @@ import { configFingerprint, projectThread, resolveEffectiveConfig } from "@evene
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
+import { ScopeCrumbs } from "../../shell/statusbar/ScopeCrumbs";
+import { deriveScope } from "../../shell/statusbar/statusScope";
 import { connectionStore } from "../../stores/connection";
+import { navigationStore } from "../../stores/navigation/store";
+import { useSessionActivity } from "../../stores/sessionActivity";
 import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
+import { requireClass } from "../../widgets/internal/requireClass";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
@@ -38,6 +43,13 @@ import {
 } from "../session/transcript/TranscriptBody";
 import { useTranscript } from "../session/transcript/useTranscript";
 import { JobLog } from "./JobLog";
+import styles from "./transcript.module.css";
+
+const CLASS = {
+  body: requireClass(styles.body, "transcript.module.css", "body"),
+  list: requireClass(styles.list, "transcript.module.css", "list"),
+  scope: requireClass(styles.scope, "transcript.module.css", "scope"),
+};
 
 export interface TranscriptParams {
   ref: string;
@@ -65,6 +77,14 @@ export default function Transcript({ params, paneId }: PaneProps<TranscriptParam
 function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId?: string }) {
   const { ref } = params;
   const now = useNowTick(NOW_TICK_MS);
+  const { snapshot: activity } = useSessionActivity(params.parentRef ? ref : null);
+  const scope = deriveScope(navigationStore.getState(), ref, activity);
+  const ancestry =
+    scope.ancestryKnown && scope.path.length > 1 ? (
+      <div className={CLASS.scope}>
+        <ScopeCrumbs path={scope.path} hierarchy />
+      </div>
+    ) : null;
 
   // ensureThread on mount / releaseThread on unmount, deferred until the one
   // client is actually ready - a deep-linked open can reach this effect before
@@ -144,6 +164,7 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
   if (!model) {
     return (
       <PaneScaffold title={ref}>
+        {ancestry}
         <EmptyState title="Loading transcript…" />
       </PaneScaffold>
     );
@@ -151,36 +172,41 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
 
   const content = (
     <PaneScaffold title={model.name || ref}>
-      {model.turns.length === 0 ? (
-        <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
-      ) : (
-        <TranscriptBody
-          model={model}
-          config={displayConfig}
-          preparedView={preparedView}
-          surface="readOnly"
-          disclosureScope={`transcript:readOnly:${ref}`}
-          sessionRef={ref}
-          viewId={paneId}
-          onAnnounceViewChange={(summary) => {
-            announcementSequence.current += 1;
-            setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
-          }}
-          loadOlderRow={
-            model.olderCursor && (
-              <LoadOlderRow
-                onLoad={loadOlderReportingError}
-                loading={loadingOlder}
-                error={olderError}
-                scrollElement={() => listRef.current?.getScrollElement() ?? null}
-              />
-            )
-          }
-          listRef={listRef}
-        />
-      )}
-      <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
-        <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
+      <div className={CLASS.body}>
+        {ancestry}
+        <div className={CLASS.list}>
+          {model.turns.length === 0 ? (
+            <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
+          ) : (
+            <TranscriptBody
+              model={model}
+              config={displayConfig}
+              preparedView={preparedView}
+              surface="readOnly"
+              disclosureScope={`transcript:readOnly:${ref}`}
+              sessionRef={ref}
+              viewId={paneId}
+              onAnnounceViewChange={(summary) => {
+                announcementSequence.current += 1;
+                setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
+              }}
+              loadOlderRow={
+                model.olderCursor && (
+                  <LoadOlderRow
+                    onLoad={loadOlderReportingError}
+                    loading={loadingOlder}
+                    error={olderError}
+                    scrollElement={() => listRef.current?.getScrollElement() ?? null}
+                  />
+                )
+              }
+              listRef={listRef}
+            />
+          )}
+        </div>
+        <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
+          <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
+        </div>
       </div>
     </PaneScaffold>
   );

@@ -12,6 +12,7 @@ interface ActivityPageBoundaryProps {
   error: unknown;
   permanent: boolean;
   enabled?: boolean;
+  restore?: boolean;
   loadMore(resource: SessionActivityCollection): Promise<void>;
 }
 
@@ -26,6 +27,7 @@ export function ActivityPageBoundary({
   error,
   permanent,
   enabled = true,
+  restore = false,
   loadMore,
 }: ActivityPageBoundaryProps) {
   const element = useRef<HTMLDivElement>(null);
@@ -59,9 +61,20 @@ export function ActivityPageBoundary({
     // Re-observe the moved boundary so stale geometry cannot drain unseen pages.
   }, [enabled, hasMore, loading, rows, isCurrent]);
   useEffect(() => {
-    if (isCurrent() && enabled && visible && currentVisibility.current && hasMore && !loading && !error && !permanent)
-      void loadMore(resource);
-  }, [enabled, visible, hasMore, loading, error, permanent, loadMore, resource, isCurrent]);
+    if (!isCurrent() || !enabled || !hasMore || loading || error || permanent) return;
+    if (!restore && !(visible && currentVisibility.current)) return;
+    const admitPage = () => {
+      if (isCurrent() && observedRows.current === rows) void loadMore(resource);
+    };
+    if (!restore) {
+      admitPage();
+      return;
+    }
+    // Restoring a previously inspected extent supplies bounded view demand.
+    // Yield between fresh pages; failures remain the shared store's concern.
+    const timer = setTimeout(admitPage, 100);
+    return () => clearTimeout(timer);
+  }, [enabled, visible, hasMore, loading, error, permanent, loadMore, resource, isCurrent, restore, rows]);
   if (!hasMore) return null;
   return (
     <div ref={element}>

@@ -279,11 +279,24 @@ starts with compact job, delegate and watch details, each one disclosure away.
 Failed entries remain visible outside the inactive fold, including parent rows
 needed to expose failed descendants; successful inactive work stays folded.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
-retains sheet visibility and disclosure choices by session ref for the lifetime
-of its retained workspace panes. Opening a child transcript releases the hidden
-subtree read demand; Back restores the Activity inspection context and acquires
-demand again through the shared binding. Explicitly closing the sheet keeps it
-closed across navigation. Closing the last retaining pane evicts this view state.
+retains sheet visibility, disclosure choices and each collection's last loaded
+row identity by session ref for the lifetime of its retained workspace panes.
+Opening a child transcript releases the hidden subtree read demand. Back acquires
+fresh demand through the shared binding and restores the inspected extent using
+the existing page boundary, yielding 100 ms between pages. Delegates, jobs and
+watches restore independently until their saved identity arrives or an
+authoritative complete read proves it absent. A partial first page cannot replace
+an outstanding boundary. The view stores only identities, not resource rows,
+cursors or retry state; the shared store continues to own failed-page recovery.
+Explicitly closing the sheet clears extent restoration and keeps the sheet closed
+across navigation. A changed resolved session clears the former session's extent
+and disclosure choices. Closing the last retaining pane evicts this view state.
+
+The [read-only child transcript](../../cmd/evener-hub/frontend/src/panes/transcript/Transcript.tsx)
+shows the same proven scope hierarchy above its content while preserving its
+chosen transcript title. Its existing session binding supplies summary context;
+the Back target alone is not ancestry evidence, and no parent transcript is read
+to obtain a name.
 
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection
