@@ -20,6 +20,7 @@ import {
   jobFixture,
   summaryFixture,
 } from "./sessionActivityTestUtils";
+import { subagentOutcomesDelegatesResponse } from "./testing/subagentWireFixtures";
 import type { SessionDelegate, SessionWatch } from "./types.gen";
 import { watchArmedLabel, watchGloss } from "./watchText";
 
@@ -295,4 +296,24 @@ test("watch rows retain receiver identity, domain fields and explicit unknown st
   const state = snapshot();
   state.watches.rows = [first, second];
   expect(projectSessionActivity(state).watches).toBe(state.watches.rows);
+});
+
+test("recorded delegate names survive domain projection", () => {
+  const recorded = subagentOutcomesDelegatesResponse();
+  const state = snapshot(recorded.delegates);
+  const projected = projectSessionActivity({
+    ...state,
+    context: recorded.context,
+    delegates: { ...state.delegates, context: recorded.context },
+  });
+  if (!projected.tree) throw new Error("missing domain activity");
+  const entities = indexActivityEntities(projected.tree);
+  const row = [...entities.values()].find(
+    (row) => row.kind === "delegate" && row.delegate.delegateId === "dlg_reported",
+  );
+  const named = row?.kind === "delegate" ? row.delegate : undefined;
+  expect(named?.name).toBe("reported-delegate");
+  expect(named?.task).toBe("Fix race in tree settle");
+  expect(named?.runGeneration).toBe(1);
+  expect(named?.reportPreview).toContain("Fixed the race");
 });

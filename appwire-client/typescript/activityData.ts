@@ -118,6 +118,7 @@ export interface ActivitySessionNode {
 }
 
 export interface ActivityDelegate {
+  name?: string;
   runGeneration?: number;
   reportPreview?: string;
   reportPreviewTruncated?: boolean;
@@ -505,6 +506,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "rootSessionId",
     "transcriptRef",
     "parentDelegateId",
+    "name",
     "type",
     "lifecycle",
     "phase",

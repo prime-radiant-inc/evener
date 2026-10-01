@@ -3127,6 +3127,11 @@ export interface SessionActivitySummary {
 
 export interface SessionDelegate {
   /**
+   * Name is the immutable caller display label, capped at 200 Unicode code points.
+   * Unnamed descriptors omit it; delegate IDs and refs remain the addressing keys.
+   */
+  name?: string;
+  /**
    * RunGeneration identifies the current activation; zero means no run has started.
    */
   runGeneration: number;

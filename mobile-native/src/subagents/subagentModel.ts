@@ -113,10 +113,11 @@ export function subtreeStopped(delegate: ActivityDelegate): boolean {
 	return subtreeStops(delegate) > 0;
 }
 
-/** The short description (spec 9's "mandate"), else the first line of its
- * task (the whole brief, ruling 3), else its session. */
+/** Prefer the durable display name, then the descriptive evidence available
+ * on an unnamed delegate. Identity and transcript targets remain separate. */
 export function subagentTitle(delegate: ActivityDelegate): string {
 	return (
+		delegate.name?.trim() ||
 		delegate.description?.trim() ||
 		firstLine(delegate.task ?? "", 80) ||
 		delegate.child?.label.trim() ||

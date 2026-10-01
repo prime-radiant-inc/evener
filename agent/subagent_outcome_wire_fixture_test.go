@@ -69,6 +69,7 @@ func TestSubagentOutcomeWireFixtures(t *testing.T) {
 	}
 	for i, run := range runs {
 		descriptor := stableReadonlyDescriptor(s, run.id)
+		descriptor.Name = strings.TrimPrefix(run.id, "dlg_") + "-delegate"
 		descriptor.Task = run.title
 		descriptor.Description = run.title
 		started := wireFixtureStart.Add(time.Duration(i) * time.Minute)
