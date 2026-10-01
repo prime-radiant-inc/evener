@@ -52,16 +52,16 @@ const props = {
 	navigation: { navigate: () => {}, setParams: () => {} },
 } as unknown as ComponentProps<typeof ProjectsScreen>;
 /** A project page located for `revealRef`, as locating a session opens it. */
-const locationProps = (revealRef = "local:a") =>
+const locationProps = (revealRef = "local:a", tier = "current", ref = revealRef) =>
 	({
 		route: {
 			params: {
 				hubId: "hub-1",
 				location: {
-					ref: revealRef,
+					ref,
 					revealRef,
 					title: "Project",
-					params: { resource: "project_page", projectKey: "p", tier: "current" },
+					params: { resource: "project_page", projectKey: "p", tier },
 				},
 			},
 		},
@@ -73,6 +73,19 @@ const projectProps = (params: Record<string, unknown>) =>
 		route: { params: { hubId: "hub-1", projectKey: "p", title: "Project", ...params } },
 		navigation: { navigate: () => {}, setParams: () => {} },
 	}) as unknown as ComponentProps<typeof ProjectScreen>;
+/** A hub whose project archived list holds Alpha, then Beta behind cursor
+ * "c1", recording every archived list read it answers. */
+const twoPageArchivedHub = () => {
+	const hub = new FakeClient("ready");
+	const archivedReads: unknown[] = [];
+	hub.on("evener/archived/list", (params) => {
+		archivedReads.push(params);
+		return params.cursor
+			? { sessions: [completeSession({ ref: "local:b", title: "Beta" })], total: 2 }
+			: { sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 2, nextCursor: "c1" };
+	});
+	return { hub, archivedReads };
+};
 
 it("offers no pull to refresh: the projects list keeps itself current", async () => {
 	const hub = new FakeClient("ready");
@@ -175,6 +188,44 @@ it("pages a page the hub cut short through Load more, with no partial-tree notic
 	tree.unmount();
 });
 
+// Navigation serves a project's archived tier empty, and a location names no
+// catalog: an archived session is revealed from the project's archived list,
+// read from whichever catalog holds the project now.
+it("reveals a located archived session from the project's archived list", async () => {
+	const { hub, archivedReads } = twoPageArchivedHub();
+	harness.connection = screenConnection(hub, "ready");
+	flatListCalls.length = 0;
+	const tree = render(<SessionLocationScreen {...locationProps("local:b", "archived")} />);
+	await act(async () => {});
+	expect(archivedReads).toEqual([{ projectKey: "p" }, { projectKey: "p", cursor: "c1" }]);
+	expect(hub.calls.filter((call) => call.method === "evener/navigation/read")).toEqual([]);
+	expect(flatListCalls).toContainEqual({
+		method: "scrollToIndex",
+		args: { index: 1, animated: false, viewPosition: 0.3 },
+	});
+	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
+	expect(renderedText(tree)).not.toContain("not in the returned list");
+	tree.unmount();
+});
+
+// An archived fork original sits inside its continuation's row, so locating
+// it reveals that row and says so.
+it("reveals a located archived fork original through the row that carries it", async () => {
+	const hub = new FakeClient("ready");
+	const original = completeSession({ ref: "local:orig", title: "Original", kind: "fork" });
+	hub.on("evener/archived/list", () => ({
+		sessions: [completeSession({ ref: "local:cont", title: "Cont", children: [original] })],
+		total: 1,
+	}));
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<SessionLocationScreen {...locationProps("local:cont", "archived", "local:orig")} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Showing the row that owns this session");
+	expect(pressable(tree, "Open Cont")?.props.accessibilityState).toEqual({ selected: true });
+	expect(renderedText(tree)).not.toContain("not in the returned list");
+	tree.unmount();
+});
+
 // Locating a session reveals its row on the flat list: the list scrolls to
 // that row's place among the loaded rows and marks it selected.
 it("scrolls to and selects the located row", async () => {
@@ -203,14 +254,7 @@ it("scrolls to and selects the located row", async () => {
 // Navigation v3 serves a project's archived tier empty: its rows come from
 // evener/archived/list, paged by cursor, from the project's catalog.
 it("lists a project's archived sessions from the archived list, a page at a time", async () => {
-	const hub = new FakeClient("ready");
-	const archivedReads: unknown[] = [];
-	hub.on("evener/archived/list", (params) => {
-		archivedReads.push(params);
-		return params.cursor
-			? { sessions: [completeSession({ ref: "local:b", title: "Beta" })], total: 2 }
-			: { sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 2, nextCursor: "c1" };
-	});
+	const { hub, archivedReads } = twoPageArchivedHub();
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
 	await act(async () => {});
@@ -269,8 +313,14 @@ it("reads the archived list again once a dropped connection recovers", async () 
 
 // An archived row's Unarchive runs through the same organize flow as any
 // row's: the hub accepts it, the change is confirmed, and the archived list
-// is read again, so the row leaves the tab.
-it("unarchives an archived row and reads the archived list again", async () => {
+// is read again, so the row leaves the tab. The organize flow reads every
+// loaded archived list again and the page waits for that read, so a clean one
+// is the only read after the change; when that read fails, the page reads
+// again rather than fail to confirm the change.
+it.each([
+	["once", false, 2],
+	["again when the organize flow's read failed", true, 3],
+])("unarchives an archived row and reads the archived list %s", async (_name, organizeReadFails, reads) => {
 	harness.kv.clear();
 	const hub = new FakeClient("ready");
 	// A local session id is 22 alphanumerics; the change is checked by its ref.
@@ -279,6 +329,7 @@ it("unarchives an archived row and reads the archived list again", async () => {
 	let archivedReads = 0;
 	hub.on("evener/archived/list", () => {
 		archivedReads++;
+		if (organizeReadFails && archivedReads === 2) throw new Error("offline");
 		return archived ? { sessions: [completeSession(alpha)], total: 1 } : { sessions: [], total: 0 };
 	});
 	hub.on("evener/archive/set", () => {
@@ -309,7 +360,7 @@ it("unarchives an archived row and reads the archived list again", async () => {
 	expect(hub.calls.filter((call) => call.method === "evener/archive/set").map((call) => call.params)).toEqual([
 		{ kind: "session", id: "AlphaSession0000000001", archived: false },
 	]);
-	expect(archivedReads).toBeGreaterThan(1);
+	expect(archivedReads).toBe(reads);
 	expect(renderedText(tree)).not.toContain("Alpha");
 	expect(renderedText(tree)).not.toContain("could not be confirmed");
 	tree.unmount();

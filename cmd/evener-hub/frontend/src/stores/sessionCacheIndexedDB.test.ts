@@ -105,6 +105,39 @@ function countStoreRows(factory: IDBFactory, store: "records" | "meta"): Promise
   });
 }
 
+// Inspect durable rows without the adapter's decoding, expiry, or epoch logic.
+function readStoreRows(factory: IDBFactory, store: "records" | "meta"): Promise<unknown[]> {
+  return new Promise((resolve, reject) => {
+    const request = factory.open("evener-session-cache");
+    request.addEventListener(
+      "success",
+      () => {
+        const db = request.result;
+        const tx = db.transaction(store, "readonly");
+        const rows = tx.objectStore(store).getAll();
+        tx.addEventListener(
+          "complete",
+          () => {
+            db.close();
+            resolve(rows.result);
+          },
+          { once: true },
+        );
+        tx.addEventListener(
+          "abort",
+          () => {
+            db.close();
+            reject(tx.error);
+          },
+          { once: true },
+        );
+      },
+      { once: true },
+    );
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+}
+
 // Poison a record body row (valid meta row kept): opens the cache database
 // directly on the adapter's own factory and writes a structurally invalid
 // body row beside a real meta row, in one readwrite transaction. put's cap
@@ -430,9 +463,10 @@ describe("SessionCacheIndexedDB put", () => {
   });
 
   it("replaces on a second write for the same ref, and meta bytes/savedAt follow", async () => {
-    const { adapter, write } = freshAdapter();
+    const { adapter, factory, write } = freshAdapter();
     await write(record());
     const bigger = record({
+      name: "更新した名前",
       savedAt: 2_000,
       history: {
         ...record().history,
@@ -443,52 +477,42 @@ describe("SessionCacheIndexedDB put", () => {
     await adapter.put(bigger, 0, 2_000);
     await settleProjectionWorkForTests();
     const hit = await adapter.get("local:thr_1", 3_000);
-    expect(hit?.record.history.length).toBe(20);
+    expect(hit?.record).toEqual(bigger);
+    expect(await readStoreRows(factory, "meta")).toEqual([
+      { ref: "__clearEpoch", epoch: 0 },
+      { ref: bigger.ref, bytes: new TextEncoder().encode(JSON.stringify(bigger)).byteLength, savedAt: 2_000 },
+    ]);
     adapter.close();
   });
 
   it("evicts the least-recently-saved record past maxBytes, deleting record and meta rows together", async () => {
-    // The two fixtures encode to 351 bytes each (ItemModel.text is a required
-    // field), so a 500-byte cap keeps the first write and evicts it when the
-    // second lands: 702 total crosses the small injected cap, which is what
-    // the maxBytes option exists for.
+    // The oldest savedAt is neither end of insertion order nor key order.
+    // FIFO, reverse insertion, either key order, and newest-saved-first all
+    // choose a different victim. The fourth equal-sized record evicts one.
+    const first = record({ ref: "local:a", savedAt: 3_000 });
+    const oldest = record({ ref: "local:m", savedAt: 1_000 });
+    const third = record({ ref: "local:z", savedAt: 2_000 });
+    const newest = record({ ref: "local:n", savedAt: 4_000 });
+    const initial = [first, oldest, third];
+    const bytes = (row: CachedSessionRecord) => new TextEncoder().encode(JSON.stringify(row)).byteLength;
+    expect([first, oldest, third, newest].map(bytes)).toEqual(Array(4).fill(bytes(first)));
     const factory = new IDBFactory();
-    const adapter = new SessionCacheIndexedDB({ indexedDB: factory, maxBytes: 500 });
-    const older = record({
-      ref: "local:old",
-      history: {
-        ...record().history,
-        turns: [
-          {
-            id: "t1",
-            status: "completed",
-            items: [{ type: "assistantMessage", id: "i1", turnId: "t1", status: "completed", text: "" }],
-          },
-        ],
-      },
+    const adapter = new SessionCacheIndexedDB({
+      indexedDB: factory,
+      maxBytes: initial.reduce((total, row) => total + bytes(row), 0),
     });
-    await adapter.put(older, 0, 1_000);
+    for (const row of initial) expect(await adapter.put(row, 0, 4_000)).toEqual({ outcome: "written" });
+    expect(await countStoreRows(factory, "records")).toBe(3);
+    expect(await adapter.put(newest, 0, 4_000)).toEqual({ outcome: "written" });
     await settleProjectionWorkForTests();
-    const newer = record({
-      ref: "local:new",
-      savedAt: 2_000,
-      history: {
-        ...record().history,
-        turns: [
-          {
-            id: "t2",
-            status: "completed",
-            items: [{ type: "assistantMessage", id: "i2", turnId: "t2", status: "completed", text: "" }],
-          },
-        ],
-      },
-    });
-    await adapter.put(newer, 0, 2_000);
-    await settleProjectionWorkForTests();
-    expect(await adapter.get("local:old", 3_000)).toBeUndefined(); // evicted: oldest savedAt
-    expect((await adapter.get("local:new", 3_000))?.record.ref).toBe("local:new");
-    expect(await countStoreRows(factory, "records")).toBe(1); // the victim's body row went with the eviction...
-    expect(await countStoreRows(factory, "meta")).toBe(2); // ...and its meta row too: the epoch row plus the survivor
+    const survivors = [first, newest, third]; // IndexedDB key order, not savedAt order
+    expect(await readStoreRows(factory, "records")).toEqual(survivors);
+    expect(await readStoreRows(factory, "meta")).toEqual([
+      { ref: "__clearEpoch", epoch: 0 },
+      ...survivors.map((row) => ({ ref: row.ref, bytes: bytes(row), savedAt: row.savedAt })),
+    ]);
+    expect(await adapter.get(oldest.ref, 5_000)).toBeUndefined();
+    expect((await adapter.get(newest.ref, 5_000))?.record).toEqual(newest);
     adapter.close();
   });
 
@@ -628,13 +652,22 @@ describe("SessionCacheIndexedDB clear, deleteRecords, count", () => {
         if (op === "clear") throw new Error("fault");
       },
     });
-    await adapter.put(record(), 0, 1_000);
+    const stored = record();
+    expect(await adapter.put(stored, 0, 1_000)).toEqual({ outcome: "written" });
+    await bumpCacheEpochRow(indexedDB, 7);
+    expect(await adapter.get(stored.ref, 2_000)).toEqual({ record: stored, epoch: 7 });
+    expect(adapter.observedEpoch).toBe(7);
     await settleProjectionWorkForTests();
     const result = await adapter.clear();
-    expect(result.committed).toBe(false);
+    expect(result).toEqual({ committed: false, epoch: 7 });
     await settleProjectionWorkForTests();
+    expect(adapter.observedEpoch).toBe(7); // no later get can mask an aborted epoch bump
+    expect(await readStoreRows(indexedDB, "meta")).toEqual([
+      { ref: "__clearEpoch", epoch: 7 },
+      { ref: stored.ref, bytes: new TextEncoder().encode(JSON.stringify(stored)).byteLength, savedAt: 1_000 },
+    ]);
     expect(await adapter.count()).toBe(1); // nothing changed anywhere
-    expect((await adapter.get("local:thr_1", 2_000))?.record.ref).toBe("local:thr_1");
+    expect(await adapter.get(stored.ref, 2_000)).toEqual({ record: stored, epoch: 7 });
     adapter.close();
   });
 
@@ -651,6 +684,16 @@ describe("SessionCacheIndexedDB clear, deleteRecords, count", () => {
     await settleProjectionWorkForTests();
     expect(await adapter.deleteRecords(["local:a", "local:b"])).toBe(false); // aborted: idempotent retry upstream
     await settleProjectionWorkForTests();
+    const survivors = [record({ ref: "local:a" }), record({ ref: "local:b" })];
+    expect(await readStoreRows(indexedDB, "records")).toEqual(survivors);
+    expect(await readStoreRows(indexedDB, "meta")).toEqual([
+      { ref: "__clearEpoch", epoch: 0 },
+      ...survivors.map((row) => ({
+        ref: row.ref,
+        bytes: new TextEncoder().encode(JSON.stringify(row)).byteLength,
+        savedAt: row.savedAt,
+      })),
+    ]);
     const ok = new SessionCacheIndexedDB({ indexedDB });
     expect(await ok.deleteRecords(["local:a", "local:b"])).toBe(true);
     await settleProjectionWorkForTests();

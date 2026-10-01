@@ -42,7 +42,9 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 	private owed = false;
 	constructor(
 		private readonly client: ConversationClientLike,
-		private readonly catalog: ArchivedListCatalog,
+		/** Undefined reads the catalog holding the project now (a session's
+		 * location names none). */
+		private readonly catalog: ArchivedListCatalog | undefined,
 		private readonly projectKey: string,
 	) {
 		this.store = archivedListStoreFor(client);
@@ -69,17 +71,40 @@ export class ArchivedPages implements PageSource<NavigationSessionSummary> {
 		this.owed = false;
 		return this.store.refresh(this.catalog, this.projectKey);
 	}
-	// An archived list is read from the hub's current navigation, which an
-	// accepted change has already rebuilt, so the receipt adds nothing.
-	refreshAfter() {
-		return this.refresh();
+	/** After an accepted organize change, which has already read every loaded
+	 * archived list again (navigationActions.ts, refreshLoadedArchivedLists):
+	 * wait for that read while it is out; a list it loaded cleanly holds its
+	 * rows, and one whose read failed, or that no one loaded, reads now. The
+	 * receipt adds nothing: the list is read from the hub's current
+	 * navigation. */
+	async refreshAfter() {
+		this.paused = false;
+		this.owed = false;
+		if (this.store.getState().lists[this.key]?.loading) await this.landed();
+		const list = this.store.getState().lists[this.key];
+		if (list?.loaded && !list.error) return;
+		await this.store.refresh(this.catalog, this.projectKey);
+	}
+	/** Settles once the read out for this list has landed. */
+	private landed() {
+		return new Promise<void>((resolve) => {
+			const stop = this.store.subscribe((state) => {
+				if (state.lists[this.key]?.loading) return;
+				stop();
+				resolve();
+			});
+		});
 	}
 	more() {
+		// A failed read with no next page has nothing to page to: read it again.
+		const list = this.store.getState().lists[this.key];
+		if (list?.error && !list.nextCursor) return this.refresh();
 		return this.store.loadMore(this.catalog, this.projectKey);
 	}
 	/** Reads the list again when the hub announces a change to this project's
-	 * pages (a session archived on another device, or one ageing into the
-	 * archived tier); the hub's navigation names no archived list itself. A
+	 * pages (a session archived on another device, one ageing into the
+	 * archived tier, or an archived session renamed, whose location the
+	 * project covers); the hub's navigation names no archived list itself. A
 	 * list already loaded is read again now: nothing followed the hub for it
 	 * since the view that loaded it closed. */
 	watch() {

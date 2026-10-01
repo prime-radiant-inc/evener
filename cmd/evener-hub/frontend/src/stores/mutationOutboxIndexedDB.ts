@@ -1,4 +1,5 @@
 import type { InputItem } from "@evener/appwire-client";
+import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { ownClientId } from "./mutationClientIdentity";
 import type {
   MutationAttachment,
@@ -134,36 +135,11 @@ function isCancelableByStop(record: MutationOutboxRecord): boolean {
   return (record.state === "submitting" || record.state === "blockedUnknown") && record.attempted === false;
 }
 
-function requestResult<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error ?? new Error("IndexedDB request failed")), {
-      once: true,
-    });
-  });
-}
-
-function transactionCompletion(transaction: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener(
-      "abort",
-      () => reject(transaction.error ?? new Error("IndexedDB transaction aborted")),
-      { once: true },
-    );
-    transaction.addEventListener(
-      "error",
-      () => reject(transaction.error ?? new Error("IndexedDB transaction failed")),
-      { once: true },
-    );
-  });
-}
-
 // MutationOutboxIndexedDB serializes sequence allocation with each durable
 // transition. Cross-tab correctness comes from IndexedDB readwrite transaction
 // ordering rather than a browser lease or leader election.
 export class MutationOutboxIndexedDB {
-  readonly #indexedDB: IDBFactory;
+  readonly #connection: IDBConnection;
   readonly #databaseName: string;
   readonly #createMutationId: () => string;
   readonly #createPresentationId: () => string;
@@ -174,13 +150,10 @@ export class MutationOutboxIndexedDB {
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #settledListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
-  #databasePromise: Promise<IDBDatabase> | undefined;
-  #database: IDBDatabase | undefined;
 
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
     const factory = options.indexedDB ?? globalThis.indexedDB;
     if (!factory) throw new Error("IndexedDB is unavailable");
-    this.#indexedDB = factory;
     this.#databaseName = options.databaseName ?? DATABASE_NAME;
     this.#createMutationId = options.createMutationId ?? createSecureUUID;
     this.#createPresentationId = options.createPresentationId ?? createSecureUUID;
@@ -188,15 +161,24 @@ export class MutationOutboxIndexedDB {
     this.#beforeCommit = options.beforeCommit;
     this.#onWriteStalled = options.onWriteStalled;
     this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
+    this.#connection = new IDBConnection({
+      indexedDB: factory,
+      databaseName: this.#databaseName,
+      databaseVersion: DATABASE_VERSION,
+      waitMs: STORAGE_WAIT_MS,
+      upgrade: (database) => this.#upgrade(database),
+      errors: {
+        open: "Unable to open mutation outbox",
+        superseded: "Mutation outbox connection was closed",
+        timeout: () => new MutationStorageTimeoutError(),
+        blocked: "Mutation outbox upgrade is blocked",
+      },
+      reportDiagnostic: (path, active) => this.#reportOpenDiagnostic(path, active),
+    });
   }
 
   close(): void {
-    // Drop the connection we hold and forget it, so a later call simply opens
-    // again. An open still in flight keeps running: its success lands after
-    // this, finds its promise superseded, and closes the late connection.
-    this.#database?.close();
-    this.#database = undefined;
-    this.#databasePromise = undefined;
+    this.#connection.close();
   }
 
   // §6's note-row supersede discard (below) is the one write this class
@@ -781,114 +763,22 @@ export class MutationOutboxIndexedDB {
     return undefined;
   }
 
-  async #open(): Promise<IDBDatabase> {
-    // A stuck open is not remembered: every later call attempts the open
-    // again, so a send after storage recovers still succeeds.
-    if (this.#database) return this.#database;
-    if (this.#databasePromise) return this.#databasePromise;
-    const opening = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = this.#indexedDB.open(this.#databaseName, DATABASE_VERSION);
-      let abandoned = false;
-      const fail = (error: unknown) => {
-        abandoned = true;
-        clearTimeout(timer);
-        reject(error);
-      };
-      const timer = setTimeout(() => {
-        // The watchdog fired: fail this one attempt with the actionable error.
-        // A later call attempts the open again.
-        this.#reportOpenDiagnostic("open-timeout", Boolean(request.transaction));
-        fail(new MutationStorageTimeoutError());
-      }, STORAGE_WAIT_MS);
-      request.addEventListener(
-        "upgradeneeded",
-        () => {
-          // The schema upgrade must always be allowed to commit, even for an
-          // open this adapter has already abandoned. Aborting a
-          // versionchange/upgrade transaction is the documented trigger for
-          // Chromium's wedged connection coordinator (crbug 40278488), after
-          // which open() never fires success, error, or blocked - so there is
-          // deliberately no release/abort path here. `abandoned` and
-          // `#databasePromise` decide only whether the late success below
-          // installs its connection, never whether the upgrade commits; a
-          // later call clears the abandoned promise and opens afresh, which is
-          // what makes recovery after a stalled upgrade possible.
-          //
-          // An upgrade arriving for an abandoned or superseded attempt is
-          // exactly the path whose abort used to wedge the coordinator, so it
-          // is recorded (the upgrade still commits) even though nothing else
-          // here reacts to it.
-          if (abandoned || this.#databasePromise !== opening) {
-            this.#reportOpenDiagnostic("upgrade-abandoned", Boolean(request.transaction));
-          }
-          const database = request.result;
-          if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
-            const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
-            outbox.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
-          }
-          if (!database.objectStoreNames.contains(OPTIMISTIC_STORE)) {
-            const optimistic = database.createObjectStore(OPTIMISTIC_STORE, { keyPath: "clientMutationId" });
-            optimistic.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
-          }
-          if (!database.objectStoreNames.contains(RECOVERY_STORE)) {
-            const recovery = database.createObjectStore(RECOVERY_STORE, { keyPath: "clientMutationId" });
-            recovery.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"]);
-          }
-          if (!database.objectStoreNames.contains(SEQUENCE_STORE)) {
-            database.createObjectStore(SEQUENCE_STORE, { keyPath: "targetRef" });
-          }
-        },
-        { once: true },
-      );
-      request.addEventListener(
-        "success",
-        () => {
-          clearTimeout(timer);
-          const database = request.result;
-          if (abandoned || this.#databasePromise !== opening) {
-            database.close();
-            reject(new Error("Mutation outbox connection was closed"));
-            return;
-          }
-          this.#database = database;
-          database.addEventListener("versionchange", () => {
-            // Another connection is taking the database to a new version, so
-            // this one must close. No versionchange transaction is in progress
-            // on it; the upgrade belongs to the other connection's request.
-            this.#reportOpenDiagnostic("versionchange-retire", false);
-            this.#retire(database);
-          });
-          database.addEventListener("close", () => this.#retire(database));
-          resolve(database);
-        },
-        { once: true },
-      );
-      request.addEventListener("error", () => fail(request.error ?? new Error("Unable to open mutation outbox")), {
-        once: true,
-      });
-      request.addEventListener(
-        "blocked",
-        () => {
-          this.#reportOpenDiagnostic("open-blocked", Boolean(request.transaction));
-          fail(new Error("Mutation outbox upgrade is blocked"));
-        },
-        { once: true },
-      );
-    });
-    this.#databasePromise = opening;
-    try {
-      return await opening;
-    } catch (error) {
-      if (this.#databasePromise === opening) this.#databasePromise = undefined;
-      throw error;
+  #upgrade(database: IDBDatabase): void {
+    if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
+      const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
+      outbox.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
     }
-  }
-
-  #retire(database: IDBDatabase): void {
-    database.close();
-    if (this.#database !== database) return;
-    this.#database = undefined;
-    this.#databasePromise = undefined;
+    if (!database.objectStoreNames.contains(OPTIMISTIC_STORE)) {
+      const optimistic = database.createObjectStore(OPTIMISTIC_STORE, { keyPath: "clientMutationId" });
+      optimistic.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
+    }
+    if (!database.objectStoreNames.contains(RECOVERY_STORE)) {
+      const recovery = database.createObjectStore(RECOVERY_STORE, { keyPath: "clientMutationId" });
+      recovery.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"]);
+    }
+    if (!database.objectStoreNames.contains(SEQUENCE_STORE)) {
+      database.createObjectStore(SEQUENCE_STORE, { keyPath: "targetRef" });
+    }
   }
 
   // Record one open failure path. The try/catch is the whole contract: a
@@ -940,26 +830,22 @@ export class MutationOutboxIndexedDB {
   ): Promise<T> {
     // One attempt: a timeout fails this call (the caller retries by acting
     // again), and every later call attempts the open afresh.
-    const database = await this.#open();
+    const database = await this.#connection.open();
     const transaction = database.transaction(stores, mode);
     const completed = transactionCompletion(transaction);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stalledWrite = false;
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
-        this.#retire(database);
-        try {
-          transaction.abort();
-        } catch {
-          if (mode === "readwrite") {
-            // abort() refuses a committing/finished transaction. A deadline
-            // cannot prove rollback: keep the original submission pending
-            // until its complete/abort event establishes its outcome.
-            stalledWrite = true;
-            this.#stalledWrites += 1;
-            if (this.#stalledWrites === 1) this.#notifyWriteStalled(true);
-            return;
-          }
+        this.#connection.retire(database);
+        if (!tryAbortTransaction(transaction) && mode === "readwrite") {
+          // abort() refuses a committing/finished transaction. A deadline
+          // cannot prove rollback: keep the original submission pending
+          // until its complete/abort event establishes its outcome.
+          stalledWrite = true;
+          this.#stalledWrites += 1;
+          if (this.#stalledWrites === 1) this.#notifyWriteStalled(true);
+          return;
         }
         reject(new MutationStorageTimeoutError());
       }, STORAGE_WAIT_MS);
@@ -978,11 +864,7 @@ export class MutationOutboxIndexedDB {
       const [result] = await Promise.race([Promise.all([work, completed]), deadline]);
       return result;
     } catch (error) {
-      try {
-        transaction.abort();
-      } catch {
-        // The transaction already completed; preserve the original failure.
-      }
+      tryAbortTransaction(transaction);
       throw error;
     } finally {
       clearTimeout(timer);

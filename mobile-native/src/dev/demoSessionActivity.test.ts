@@ -114,6 +114,16 @@ describe("bounded demo activity continuations", () => {
 	});
 });
 
+// The hub closes a finished delegate that can't be resumed: its phase is
+// "closed", not "idle".
+it("reports a finished delegate that can't be resumed as closed", () => {
+	const rows = fleet().answerDelegatesList({ ...params, limit: 200 }).delegates;
+	const finished = rows.filter((row) => row.terminal);
+	expect(finished.length).toBeGreaterThan(0);
+	for (const row of finished) expect(row).toMatchObject({ resumable: false, phase: "closed" });
+	for (const row of rows.filter((candidate) => !candidate.terminal)) expect(row.phase).toBe("running");
+});
+
 it("preserves the producer's finished report and truncation through typed demo reads", () => {
 	const tree = parseActivityTree(
 		demoActivityTree(

@@ -103,7 +103,8 @@ export function createDemoSessionActivity(resolve: (ref: string) => ActivityRoot
 					task: delegate.task ?? "",
 					type: "delegate",
 					lifecycle: terminal ? "idle" : "running",
-					phase: terminal ? "idle" : "running",
+					// The hub closes a finished delegate that can't be resumed.
+					phase: terminal ? "closed" : "running",
 					status: terminal ? "idle" : "running",
 					...(delegate.outcome ? { outcome: delegate.outcome } : {}),
 					terminal,
