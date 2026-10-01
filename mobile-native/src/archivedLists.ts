@@ -18,10 +18,11 @@ export function archivedListStoreFor(client: ConversationClientLike): ArchivedLi
 	return store;
 }
 
-/** Reads every archived list loaded on this connection again. Archived lists
- * follow no invalidations, and an accepted organize change can move rows in
- * or out of any project's archived tier. A connection with no store has no
- * list loaded. */
+/** Reads every archived list loaded on this connection again. An accepted
+ * organize change can move rows in or out of any project's archived tier, and
+ * a list no view is following hears no invalidation (a view showing one waits
+ * for this read: ArchivedPages.refreshAfter). A connection with no store has
+ * no list loaded. */
 export function refreshLoadedArchivedLists(client: ConversationClientLike): void {
 	void stores.get(client)?.refreshLoaded();
 }

@@ -313,8 +313,14 @@ it("reads the archived list again once a dropped connection recovers", async () 
 
 // An archived row's Unarchive runs through the same organize flow as any
 // row's: the hub accepts it, the change is confirmed, and the archived list
-// is read again, so the row leaves the tab.
-it("unarchives an archived row and reads the archived list again", async () => {
+// is read again, so the row leaves the tab. The organize flow reads every
+// loaded archived list again and the page waits for that read, so a clean one
+// is the only read after the change; when that read fails, the page reads
+// again rather than fail to confirm the change.
+it.each([
+	["once", false, 2],
+	["again when the organize flow's read failed", true, 3],
+])("unarchives an archived row and reads the archived list %s", async (_name, organizeReadFails, reads) => {
 	harness.kv.clear();
 	const hub = new FakeClient("ready");
 	// A local session id is 22 alphanumerics; the change is checked by its ref.
@@ -323,6 +329,7 @@ it("unarchives an archived row and reads the archived list again", async () => {
 	let archivedReads = 0;
 	hub.on("evener/archived/list", () => {
 		archivedReads++;
+		if (organizeReadFails && archivedReads === 2) throw new Error("offline");
 		return archived ? { sessions: [completeSession(alpha)], total: 1 } : { sessions: [], total: 0 };
 	});
 	hub.on("evener/archive/set", () => {
@@ -353,7 +360,7 @@ it("unarchives an archived row and reads the archived list again", async () => {
 	expect(hub.calls.filter((call) => call.method === "evener/archive/set").map((call) => call.params)).toEqual([
 		{ kind: "session", id: "AlphaSession0000000001", archived: false },
 	]);
-	expect(archivedReads).toBeGreaterThan(1);
+	expect(archivedReads).toBe(reads);
 	expect(renderedText(tree)).not.toContain("Alpha");
 	expect(renderedText(tree)).not.toContain("could not be confirmed");
 	tree.unmount();

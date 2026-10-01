@@ -749,7 +749,8 @@ function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 			...(parent ? { parentDelegateId: parent } : {}),
 			type: "delegate",
 			lifecycle: "stable",
-			phase: running ? "running" : "idle",
+			// The hub closes a finished delegate that can't be resumed.
+			phase: running ? "running" : "closed",
 			status: SUBAGENT_STATUS[subagent.state],
 			terminal: !running,
 			// The activity tree carries the same outcome (demoSubagents.ts), so the
