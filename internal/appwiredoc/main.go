@@ -121,6 +121,15 @@ func build() docData {
 		register(v)
 	}
 	register(appwire.EvenerDelegateInfo{})
+	// Nested session activity resources need field tables independently of the
+	// catalog's top-level read and page responses.
+	register(appwire.SessionActivityAncestor{})
+	register(appwire.SessionActivityContext{})
+	register(appwire.SessionActivityCounts{})
+	register(appwire.SessionActivityIssue{})
+	register(appwire.SessionActivityPage{})
+	register(appwire.SessionDelegate{})
+	register(appwire.SessionWatch{})
 	register(appwire.HostEntry{})
 	// InstanceEntry never appears as a method's own Params/Result - only
 	// nested inside InstanceListResponse.Instances - so without this it

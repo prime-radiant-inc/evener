@@ -28,10 +28,10 @@ type navigationArchivedPage struct {
 }
 
 // navigationArchivedListRequest is a validated evener/archived/list request.
-// Catalog is the caller's hint, the zero kind when it gave none. After is the
-// key of the last row the caller holds; nil starts at the top.
+// Hint is the catalog the caller named, the zero kind when it named none.
+// After is the key of the last row the caller holds; nil starts at the top.
 type navigationArchivedListRequest struct {
-	Catalog    navigationResourceKind
+	Hint       navigationResourceKind
 	ProjectKey string
 	After      *hubcore.SessionOrderKey
 	Limit      int
@@ -43,13 +43,13 @@ type navigationArchivedListRequest struct {
 // 0..maxNavigationSectionRows (0 or absent means the maximum), and a cursor
 // this hub minted.
 func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navigationArchivedListRequest, error) {
-	var catalog navigationResourceKind
+	var hint navigationResourceKind
 	if params.Catalog != "" {
 		parsed, err := parseNavigationCatalog(params.Catalog)
 		if err != nil {
 			return navigationArchivedListRequest{}, err
 		}
-		catalog = parsed
+		hint = parsed
 	}
 	if err := validateNavigationIdentity("project key", params.ProjectKey, false); err != nil {
 		return navigationArchivedListRequest{}, err
@@ -57,9 +57,9 @@ func parseNavigationArchivedListParams(params appwire.ArchivedListParams) (navig
 	if params.Limit < 0 || params.Limit > maxNavigationSectionRows {
 		return navigationArchivedListRequest{}, fmt.Errorf("limit must be between 0 and %d (0 or absent means %d)", maxNavigationSectionRows, maxNavigationSectionRows)
 	}
-	request := navigationArchivedListRequest{Catalog: catalog, ProjectKey: params.ProjectKey, Limit: params.Limit}
+	request := navigationArchivedListRequest{Hint: hint, ProjectKey: params.ProjectKey, Limit: params.Limit}
 	if params.Cursor != "" {
-		after, err := decodeArchivedCursor(params.Cursor, catalog, params.ProjectKey)
+		after, err := decodeArchivedCursor(params.Cursor, hint, params.ProjectKey)
 		if err != nil {
 			return navigationArchivedListRequest{}, err
 		}
@@ -143,7 +143,7 @@ func archivedListCandidates(hint navigationResourceKind) []navigationResourceKin
 // read from holds answers an empty page: it was deleted, or became or stopped
 // being a test run, since the rail listed it.
 func (p navigationProjection) ArchivedList(request navigationArchivedListRequest) (navigationArchivedPage, error) {
-	catalog, project := p.archivedListCatalog(request.Catalog, request.ProjectKey)
+	catalog, project := p.archivedListCatalog(request.Hint, request.ProjectKey)
 	rows, _ := project.TierRows("archived")
 	start := 0
 	if request.After != nil {
@@ -169,7 +169,7 @@ func (p navigationProjection) ArchivedList(request navigationArchivedListRequest
 	}
 	out := navigationArchivedPage{Sessions: page.Sessions, Total: len(rows), Catalog: catalog}
 	if page.Remaining > 0 {
-		out.NextCursor = encodeArchivedCursor(request.Catalog, request.ProjectKey, hubcore.TreeNodeOrderKey(rows[start+len(page.Sessions)-1]))
+		out.NextCursor = encodeArchivedCursor(request.Hint, request.ProjectKey, hubcore.TreeNodeOrderKey(rows[start+len(page.Sessions)-1]))
 	}
 	return out, nil
 }

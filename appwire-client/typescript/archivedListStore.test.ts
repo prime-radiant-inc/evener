@@ -22,7 +22,7 @@ function page(refs: string[], total: number, nextCursor?: string): ArchivedListR
 let fake: FakeClient;
 let store: ArchivedListStore;
 
-function entry(catalog: ArchivedListCatalog, projectKey: string): ArchivedList {
+function entry(catalog: ArchivedListCatalog | undefined, projectKey: string): ArchivedList {
   const list = store.getState().lists[archivedListKey(catalog, projectKey)];
   if (!list) throw new Error(`no archived list for ${catalog}|${projectKey}`);
   return list;
@@ -293,6 +293,35 @@ describe("refreshLoaded", () => {
     await store.refreshLoaded();
 
     expect(seen.sort()).toEqual(["archived_projects|proj", "projects|a|b", "projects|proj"]);
+  });
+});
+
+// A caller that knows only the project key (a session's location) names no
+// catalog, and the hub reads the catalog holding the project now.
+describe("a list read with no catalog", () => {
+  test("sends no catalog, is its own list, and is refreshed with the rest", async () => {
+    const seen: ArchivedListParams[] = [];
+    fake.on("evener/archived/list", (params) => {
+      seen.push(params);
+      if (params.catalog) return page(["local:a"], 1);
+      return params.cursor ? page(["local:c"], 2) : page(["local:b"], 2, "cursor-1");
+    });
+
+    await store.refresh(undefined, "proj");
+    await store.refresh("projects", "proj");
+    await store.loadMore(undefined, "proj");
+    expect(seen).toEqual([
+      { projectKey: "proj" },
+      { catalog: "projects", projectKey: "proj" },
+      { projectKey: "proj", cursor: "cursor-1" },
+    ]);
+    expect(entry(undefined, "proj").rows.map((r) => r.ref)).toEqual(["local:b", "local:c"]);
+    expect(entry("projects", "proj").rows.map((r) => r.ref)).toEqual(["local:a"]);
+
+    seen.length = 0;
+    await store.refreshLoaded();
+    expect(seen).toContainEqual({ projectKey: "proj" });
+    expect(seen).toContainEqual({ catalog: "projects", projectKey: "proj" });
   });
 });
 

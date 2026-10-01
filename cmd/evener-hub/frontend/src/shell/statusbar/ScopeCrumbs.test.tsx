@@ -1,9 +1,11 @@
 import { hydrateThread } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { activityThread } from "../../stores/sessionActivityTestUtils";
 import { threadsStore } from "../../stores/threads";
+import { workspaceStore } from "../workspace";
 import { ScopeCrumbs } from "./ScopeCrumbs";
 import { installFocusedScope, summaryOf } from "./scopeTestUtils";
 
@@ -100,6 +102,44 @@ test("an unhydrated public alias keeps its own fallback instead of borrowing ano
   expect(screen.getByText("Public child").getAttribute("aria-current")).toBe("page");
   expect(screen.queryByText("Remote name")).toBeNull();
   expect(screen.queryByText("Remote title")).toBeNull();
+});
+
+test("ancestor buttons retain exact transcript context beside the live owner", async () => {
+  const user = userEvent.setup();
+  window.history.replaceState({}, "", "/s/local%3Aroot");
+  const panes = [
+    { id: "root", type: "session" as const, params: { ref: "local:root" }, slot: "main" as const },
+    {
+      id: "child",
+      type: "transcript" as const,
+      params: { ref: "local:child", parentRef: "local:root" },
+      slot: "secondary" as const,
+    },
+    {
+      id: "grandchild",
+      type: "transcript" as const,
+      params: { ref: "local:grandchild", parentRef: "local:child" },
+      slot: "secondary" as const,
+    },
+  ];
+  workspaceStore.setState({ panes, focusedPaneId: "grandchild" });
+  render(
+    <ScopeCrumbs
+      path={[
+        { ref: "local:root", title: "Live owner" },
+        { ref: "local:child", title: "Read-only parent" },
+        { ref: "local:grandchild", title: "Current child" },
+      ]}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "Read-only parent" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe("child");
+  expect(workspaceStore.getState().panes).toEqual(panes);
+  expect(window.location.pathname).toBe("/s/local%3Aroot");
+  await user.click(screen.getByRole("button", { name: "Live owner" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe("root");
+  expect(workspaceStore.getState().panes).toEqual(panes);
+  expect(window.location.pathname).toBe("/s/local%3Aroot");
 });
 
 test("navigation-only metadata publication and rename refresh mounted exact-ref crumbs", () => {

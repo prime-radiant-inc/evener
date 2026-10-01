@@ -1,9 +1,14 @@
 # Session activity
 
 Session activity describes the delegates, shell jobs and watches owned by a
-conversation. The primary navigation rail lists sessions and their compact
-summaries. Reading a session's activity is a separate operation, so browsing
-navigation does not load every session's work tree.
+conversation. The primary navigation rail reduces each navigation summary to a
+one-line status and title; its title HoverCard exposes the summary's project,
+host, branch, running-job, subagent, watch, pin-section, tier and age context. This remains a
+navigation-domain read. Hovering the title or focusing its tree row reveals that
+context; on a hoverless device, tapping the title reveals it without activating
+the session, and tapping it again activates the session. Reading a session's
+activity is a separate operation, so browsing navigation does not load every
+session's work tree.
 
 ## APIs and ownership
 
@@ -105,7 +110,13 @@ nonzero generation match. A resumed or settling run cannot borrow the previous
 run's report, even if their timestamps coincide. Initial live reads, retained
 reads and delegate notifications preserve the same counter. Candidate capture
 holds generation and immutable packet evidence together; decoding report text
-happens outside the controller's mutation lock.
+happens outside the controller's mutation lock. Each captured report prefix is
+an owned copy bounded independently of the durable packet. A capture batch stops
+at 256 KiB of cumulative report-prefix bytes, allowing at most one bounded
+prefix overshoot (49,165 bytes). This bound covers report copies, rather than
+all candidate metadata or total work under the controller lock. Response-byte
+admission keeps excluded and unvisited delegates reachable through the opaque
+continuation cursor.
 
 The [delegate projection](../../agent/session_activity_delegates.go),
 [recorded producer outcomes](../../agent/testdata/subagentwire/outcomes.json)
@@ -211,6 +222,14 @@ remain independent. Only the last holder unsubscribes. Transcript and activity
 owners must both use this seam, because a raw unsubscribe or replacing read can
 otherwise remove another view's subscription.
 
+A successful subscribed saved-history read keeps that connection’s future event
+membership even when no daemon is live. The hub buffers events before reading
+the bounded saved response and releases them after it enters the connection’s
+send queue. A separate connection can resume the session without making existing
+transcript and activity consumers reload. Failed hydration, unsubscribe and
+connection closure withdraw pending membership. Reading saved history alone does
+not launch a daemon.
+
 The [presentation adapter](../../appwire-client/typescript/sessionActivityPresentation.ts)
 builds rendering models without network calls, retry timers or lifecycle
 authority. Loaded descendants whose parents have not arrived remain visible
@@ -250,6 +269,13 @@ preferences: 100 recent session views and 2,000 disclosure choices. Loading them
 does not rewrite storage or acquire a collection for a closed sidebar. These
 preferences never contain activity rows or continuation/retry state.
 
+Without a retained choice, the desktop [Jobs tab](../../cmd/evener-hub/frontend/src/shell/activitybar/JobsTab.tsx)
+starts successful completed job history folded, and the shared
+[task panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx)
+starts settled done/cancelled task history folded. Running and unsuccessful jobs
+remain visible, as do the Current and Remaining task sections. Task details
+remain an explicit disclosure choice.
+
 The [Activity viewport](../../cmd/evener-hub/frontend/src/shell/activitybar/ActivityViewport.tsx)
 restores the retained row after its collection and disclosures render. A row
 that is already loaded can still need trailing page extent to reach its saved
@@ -257,8 +283,11 @@ viewport offset; restoration remains pending until that position is reachable
 or the collection is authoritative complete. For cold
 pages it positions the existing page boundary in view; each new visibility
 observation supplies demand through `ActivityPageBoundary`. It starts no fetch
-or retry loop. A changed scope/category, close, reader scroll/navigation gesture,
-or deliberate control activation cancels pending positioning. Focus-only keys
+or retry loop. Closing the sidebar pauses positioning and page admission while
+it is closed. Reopening during its exit animation can resume the same mounted
+viewport's pending intent; a completed exit or scope/category replacement retires
+that viewport's pending work. Reader scroll/navigation gestures and deliberate
+control activation cancel pending positioning. Focus-only keys
 such as Tab, modifier keys and text keys preserve it when the viewport does not
 scroll. Scroll anchors update in memory immediately; the existing view store
 coalesces their storage writes after a gesture. Closing, changing category or
@@ -311,7 +340,11 @@ is read to obtain a name. Root sessions omit redundant ancestry.
 Activity delegate rows use the shared transcript opener, which retains the
 enclosing conversation and canonicalizes restored variants of the same child
 pane before focusing it. Nested drills keep the child’s parent context so an
-unchanged root URL does not steal focus.
+unchanged root URL does not steal focus. Ancestor buttons reuse an already open
+read-only transcript with its exact pane identity and parent context; an existing
+live owner regains focus even when its URL is unchanged. The session rail and
+Open session actions request the live session route and composer, including when
+a read-only transcript of that session is already open.
 
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection
