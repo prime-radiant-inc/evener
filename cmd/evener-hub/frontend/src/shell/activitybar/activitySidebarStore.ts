@@ -218,7 +218,10 @@ export function activitySidebarReturnFocusTarget(tab: ActivityTab): HTMLElement 
   if (activitySidebarOpener?.isConnected) return activitySidebarOpener;
   const candidates = document.querySelectorAll<HTMLElement>(`[data-activity-tab="${tab}"]`);
   if (activitySidebarOpenerPaneId === null) return candidates.item(0);
-  return Array.from(candidates).find((candidate) => candidate.dataset.paneId === activitySidebarOpenerPaneId) ?? null;
+  return (
+    Array.from(candidates).find((candidate) => candidate.dataset.paneId === activitySidebarOpenerPaneId) ??
+    candidates.item(0)
+  );
 }
 
 export function useActivitySidebarStore<T>(selector: (state: ActivitySidebarState) => T): T {

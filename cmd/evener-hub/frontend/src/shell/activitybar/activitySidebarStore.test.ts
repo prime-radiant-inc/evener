@@ -52,6 +52,23 @@ test("retargeting into an open view returns focus to the current navigation cont
   }
 });
 
+test("focus return falls back to a remaining activity chip when the opener pane disappears", () => {
+  const remainingChip = document.body.appendChild(document.createElement("button"));
+  remainingChip.dataset.activityTab = "jobs";
+  remainingChip.dataset.paneId = "pane-remaining";
+  const removedOpener = document.body.appendChild(document.createElement("button"));
+  workspaceStore.setState({ focusedPaneId: "pane-removed" });
+  activitySidebarStore.getState().openWith("jobs", removedOpener);
+
+  removedOpener.remove();
+
+  try {
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(remainingChip);
+  } finally {
+    remainingChip.remove();
+  }
+});
+
 test("a focus change while the desktop sidebar is unmounted does not persist inherited open intent", () => {
   vi.useFakeTimers();
   try {
