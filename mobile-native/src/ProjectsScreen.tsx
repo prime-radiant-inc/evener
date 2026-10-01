@@ -19,7 +19,6 @@ import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
 import { NavigationPages, updating } from "./navigationPages";
 import { revealNavigationRow } from "./navigationReveal";
-import { navigationTree } from "./navigationTree";
 import {
 	controllerOwnedProject,
 	type OrganizationObservation,
@@ -65,8 +64,6 @@ export function PageList<T>({
 	detail,
 	open,
 	empty,
-	childRows,
-	omitted,
 	organization,
 	organizationHubId,
 	revealRef,
@@ -88,12 +85,7 @@ export function PageList<T>({
 	detail: (row: T) => string;
 	open: (row: T) => void;
 	empty: string;
-	childRows?: (row: T) => readonly T[];
-	omitted?: (row: T) => number;
-	organization: (
-		row: T,
-		depth: number,
-	) => {
+	organization: (row: T) => {
 		target: Omit<ArchiveParams, "archived">;
 		archived: boolean;
 		favorite?: boolean;
@@ -156,23 +148,10 @@ export function PageList<T>({
 	useEffect(() => () => actions?.dispose(), [actions]);
 	const actionState = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 
-	const [expansion, setExpansion] = useState({
-		owner: pages,
-		keys: new Set<string>(),
-	});
-	const expanded = expansion.owner === pages ? expansion.keys : new Set<string>();
-	const rows = navigationTree(state.rows, rowKey, childRows, expanded);
-	function toggle(row: T) {
-		const keys = new Set(expanded);
-		const key = rowKey(row);
-		if (keys.has(key)) keys.delete(key);
-		else keys.add(key);
-		setExpansion({ owner: pages, keys });
-	}
 	useEffect(() => pages.watch(), [pages]);
-	const list = useRef<FlatList<{ item: T; depth: number }>>(null);
-	const access = useRef({ rowKey, childRows });
-	access.current = { rowKey, childRows };
+	const list = useRef<FlatList<T>>(null);
+	const rowKeyNow = useRef(rowKey);
+	rowKeyNow.current = rowKey;
 	const [revealError, setRevealError] = useState<string | null>(null);
 	const [revealRequest, setRevealRequest] = useState(0);
 	const [loadingMore, setLoadingMore] = useState(false);
@@ -226,13 +205,11 @@ export function PageList<T>({
 				void revealNavigationRow(
 					pages,
 					revealRef,
-					access.current.rowKey,
-					access.current.childRows,
+					rowKeyNow.current,
 					() => active && revealEpoch.current === revealRequest,
 				)
-					.then((path) => {
-						if (!active || !path) return;
-						setExpansion({ owner: pages, keys: new Set(path.slice(0, -1)) });
+					.then((found) => {
+						if (!active || !found) return;
 						scrollAttempt.current = 0;
 						setRevealed(pages);
 					})
@@ -247,7 +224,7 @@ export function PageList<T>({
 			};
 		}, [pages, ready, revealRef, revealRequest]),
 	);
-	const targetIndex = revealRef ? rows.findIndex((row) => rowKey(row.item) === revealRef) : -1;
+	const targetIndex = revealRef ? state.rows.findIndex((row) => rowKey(row) === revealRef) : -1;
 	useEffect(() => {
 		if (revealed === pages && targetIndex >= 0)
 			list.current?.scrollToIndex({
@@ -312,8 +289,8 @@ export function PageList<T>({
 						);
 					}
 				}}
-				data={rows}
-				keyExtractor={({ item }) => rowKey(item)}
+				data={state.rows}
+				keyExtractor={rowKey}
 				onEndReachedThreshold={0.5}
 				onEndReached={loadMore}
 				contentContainerStyle={styles.padded}
@@ -326,9 +303,6 @@ export function PageList<T>({
 				}
 				ListFooterComponent={
 					<View style={{ gap: 8 }}>
-						{state.truncated ? (
-							<Copy muted>The hub returned a partial session tree. Some related sessions may be missing.</Copy>
-						) : null}
 						{loadingMore ? (
 							<View accessibilityLiveRegion="polite" style={{ alignItems: "center", paddingVertical: 8 }}>
 								<ActivityIndicator accessibilityLabel="Loading more results" />
@@ -341,92 +315,80 @@ export function PageList<T>({
 						) : null}
 					</View>
 				}
-				renderItem={({ item: { item, depth } }) => (
+				renderItem={({ item }) => (
 					<View
-						style={{
-							backgroundColor: rowKey(item) === revealRef ? colors.surface : "transparent",
-							paddingLeft: Math.min(depth, 2) * 12,
-							borderBottomWidth: 0.5,
-							borderColor: colors.border,
-						}}
+						style={[
+							styles.row,
+							{
+								backgroundColor: rowKey(item) === revealRef ? colors.surface : "transparent",
+								borderBottomWidth: 0.5,
+								borderColor: colors.border,
+							},
+						]}
 					>
-						<View style={styles.row}>
-							<Pressable
-								accessibilityRole="button"
-								accessibilityLabel={[`Open ${title(item)}`, chipLabel?.(item)].filter(Boolean).join(", ")}
-								accessibilityState={{ selected: rowKey(item) === revealRef }}
-								disabled={!ready}
-								onPress={() => open(item)}
-								style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
-							>
-								<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-									<View style={{ flex: 1, minWidth: 0 }}>
-										<Copy>{title(item)}</Copy>
-									</View>
-									{chip?.(item)}
+						<Pressable
+							accessibilityRole="button"
+							accessibilityLabel={[`Open ${title(item)}`, chipLabel?.(item)].filter(Boolean).join(", ")}
+							accessibilityState={{ selected: rowKey(item) === revealRef }}
+							disabled={!ready}
+							onPress={() => open(item)}
+							style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
+						>
+							<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+								<View style={{ flex: 1, minWidth: 0 }}>
+									<Copy>{title(item)}</Copy>
 								</View>
-								<Copy muted>{detail(item)}</Copy>
-							</Pressable>
-							{actions && organization(item, depth) ? (
-								<Action
-									tone="quiet"
-									label={`More actions for ${title(item)}`}
-									disabled={
-										!ready ||
-										state.loading ||
-										!!actionState?.pending ||
-										!!actionState?.uncertain ||
-										!!actionState?.storageUnavailable
-									}
-									onPress={() => {
-										const value = organization(item, depth);
-										const actionState = actions.getSnapshot();
-										if (!value || actionState.pending || actionState.uncertain || actionState.storageUnavailable)
-											return;
-										const invoke = (operation: () => void) => {
-											if (current.current === binding) operation();
-										};
-										Alert.alert(
-											title(item),
-											`${activeProfile?.name ?? "Hub"} · Organize without deleting history or stopping work.`,
-											[
-												...(value.favorite === undefined
-													? []
-													: [
-															{
-																text: value.favorite ? "Remove from pinned" : "Add to pinned",
-																onPress: () =>
-																	invoke(() => {
-																		void actions.favorite(value.target.id, !value.favorite);
-																	}),
-															},
-														]),
-												{
-													text: value.archived ? "Unarchive" : "Archive",
-													onPress: () =>
-														invoke(() => {
-															void actions.archive(value.target, !value.archived);
-														}),
-												},
-												{ text: "Cancel", style: "cancel" },
-											],
-										);
-									}}
-								>
-									···
-								</Action>
-							) : null}
-						</View>
-						{childRows?.(item).length ? (
+								{chip?.(item)}
+							</View>
+							<Copy muted>{detail(item)}</Copy>
+						</Pressable>
+						{actions && organization(item) ? (
 							<Action
 								tone="quiet"
-								label={`${expanded.has(rowKey(item)) ? "Hide" : "Show"} related sessions for ${title(item)}`}
-								expanded={expanded.has(rowKey(item))}
-								onPress={() => toggle(item)}
-							>{`${expanded.has(rowKey(item)) ? "▾" : "▸"} ${childRows(item).length} related session${childRows(item).length === 1 ? "" : "s"}`}</Action>
-						) : null}
-						{(omitted?.(item) ?? 0) > 0 ? (
-							<Copy muted>{`${omitted?.(item)} related sessions were omitted by the hub.`}</Copy>
+								label={`More actions for ${title(item)}`}
+								disabled={
+									!ready ||
+									state.loading ||
+									!!actionState?.pending ||
+									!!actionState?.uncertain ||
+									!!actionState?.storageUnavailable
+								}
+								onPress={() => {
+									const value = organization(item);
+									const actionState = actions.getSnapshot();
+									if (!value || actionState.pending || actionState.uncertain || actionState.storageUnavailable) return;
+									const invoke = (operation: () => void) => {
+										if (current.current === binding) operation();
+									};
+									Alert.alert(
+										title(item),
+										`${activeProfile?.name ?? "Hub"} · Organize without deleting history or stopping work.`,
+										[
+											...(value.favorite === undefined
+												? []
+												: [
+														{
+															text: value.favorite ? "Remove from pinned" : "Add to pinned",
+															onPress: () =>
+																invoke(() => {
+																	void actions.favorite(value.target.id, !value.favorite);
+																}),
+														},
+													]),
+											{
+												text: value.archived ? "Unarchive" : "Archive",
+												onPress: () =>
+													invoke(() => {
+														void actions.archive(value.target, !value.archived);
+													}),
+											},
+											{ text: "Cancel", style: "cancel" },
+										],
+									);
+								}}
+							>
+								···
+							</Action>
 						) : null}
 					</View>
 				)}
@@ -621,8 +583,7 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 					pages={pages}
 					ready={state === "ready"}
 					rowKey={sessionRef}
-					organization={(row, depth) =>
-						depth > 0 ||
+					organization={(row) =>
 						row.host_id !== "local" ||
 						row.ref !== `local:${row.session_id}` ||
 						["subagent", "fork", "cluster"].includes(row.kind)
@@ -632,8 +593,6 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 									archived: tier === "archived",
 								}
 					}
-					childRows={(row) => row.children ?? []}
-					omitted={(row) => row.omitted_descendants ?? 0}
 					chip={sessionSubagentChip}
 					chipLabel={sessionSubagentChipLabel}
 					title={(row) => row.title || "Untitled session"}
@@ -656,7 +615,6 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 	);
 }
 
-const sessionChildren = (row: NavigationSessionSummary) => row.children ?? [];
 export function SessionLocationScreen({ route, navigation }: NativeStackScreenProps<Routes, "SessionLocation">) {
 	const { client, activeProfile, state } = useConnection();
 	const colors = useColors();
@@ -686,8 +644,6 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 					ready={state === "ready"}
 					revealRef={location.revealRef ?? location.ref}
 					rowKey={sessionRef}
-					childRows={sessionChildren}
-					omitted={(row) => row.omitted_descendants ?? 0}
 					chip={sessionSubagentChip}
 					chipLabel={sessionSubagentChipLabel}
 					title={(row) => row.title || "Untitled session"}

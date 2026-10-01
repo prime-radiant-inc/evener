@@ -614,36 +614,6 @@ it("retries a read that predates a generation change during the request", async 
 	expect(pages.getSnapshot().stale).toBe(false);
 });
 
-it("retains session truncation across pages and clears it on refresh", async () => {
-	const { requests, pages } = boundary("section");
-	const page = (ref: string, offset: number, remaining: number, truncated: boolean) =>
-		wireSnapshot(
-			{
-				representationVersion: 3,
-				resource: "section",
-				section: "live",
-				offset,
-				limit: 2,
-			},
-			{ sessions: [{ ref }], remaining, truncated },
-			`etag-${offset}`,
-			1,
-			"hub-generation",
-		);
-	const first = pages.refresh();
-	requests[0].resolve(page("a", 0, 1, true));
-	await first;
-	expect(pages.getSnapshot().truncated).toBe(true);
-	const next = pages.more();
-	requests[1].resolve(page("b", 1, 0, false));
-	await next;
-	expect(pages.getSnapshot().truncated).toBe(true);
-	const refresh = pages.refresh();
-	requests[2].resolve(page("c", 0, 0, false));
-	await refresh;
-	expect(pages.getSnapshot().truncated).toBe(false);
-});
-
 it("requires a post-mutation read to satisfy its receipt even without notifications", async () => {
 	const { requests, pages } = boundary();
 	const first = pages.refresh();

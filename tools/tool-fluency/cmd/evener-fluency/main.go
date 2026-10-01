@@ -1436,6 +1436,14 @@ func writeFixtureFiles(workDir string, files map[string]string) error {
 // global git setup belongs to their own work and stays out: the repository
 // starts from no template, so no template hooks land in it; it never signs;
 // it uses its own empty hooks directory; and it reads no global ignore file.
+//
+// maintenance.auto=false keeps the commit from leaving a detached writer
+// behind. Since git 2.5x, `git commit` runs `git maintenance run --auto
+// --detach` (run-command.c:prepare_auto_maintenance), and that background
+// process outlives the commit and writes into .git — recreating it if
+// t.TempDir() cleanup already removed it, which makes cleanup fail with
+// "directory not empty". The same quiescent-commit rule the worktree tools
+// use keeps the fixture's commits from racing a cleanup.
 func commitFixture(workDir string) error {
 	for _, args := range [][]string{
 		{"init", "-q", "-b", "main", "--template="},
@@ -1444,6 +1452,7 @@ func commitFixture(workDir string) error {
 		{"config", "commit.gpgsign", "false"},
 		{"config", "core.hooksPath", ".git/hooks"},
 		{"config", "core.excludesFile", os.DevNull},
+		{"config", "maintenance.auto", "false"},
 		{"add", "-A"},
 		{"commit", "-q", "--allow-empty", "-m", "init"},
 	} {

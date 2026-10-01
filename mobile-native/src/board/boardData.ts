@@ -229,7 +229,6 @@ const nothingRetained: Retained = {
 };
 const emptyPage = {
 	loaded: false,
-	truncated: false,
 	rows: [],
 	remaining: 0,
 	loading: false,
