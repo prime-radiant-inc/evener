@@ -290,7 +290,7 @@ export function PageList<T>({
 					}
 				}}
 				data={state.rows}
-				keyExtractor={(row) => rowKey(row)}
+				keyExtractor={rowKey}
 				onEndReachedThreshold={0.5}
 				onEndReached={loadMore}
 				contentContainerStyle={styles.padded}
@@ -317,79 +317,80 @@ export function PageList<T>({
 				}
 				renderItem={({ item }) => (
 					<View
-						style={{
-							backgroundColor: rowKey(item) === revealRef ? colors.surface : "transparent",
-							borderBottomWidth: 0.5,
-							borderColor: colors.border,
-						}}
+						style={[
+							styles.row,
+							{
+								backgroundColor: rowKey(item) === revealRef ? colors.surface : "transparent",
+								borderBottomWidth: 0.5,
+								borderColor: colors.border,
+							},
+						]}
 					>
-						<View style={styles.row}>
-							<Pressable
-								accessibilityRole="button"
-								accessibilityLabel={[`Open ${title(item)}`, chipLabel?.(item)].filter(Boolean).join(", ")}
-								accessibilityState={{ selected: rowKey(item) === revealRef }}
-								disabled={!ready}
-								onPress={() => open(item)}
-								style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
-							>
-								<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-									<View style={{ flex: 1, minWidth: 0 }}>
-										<Copy>{title(item)}</Copy>
-									</View>
-									{chip?.(item)}
+						<Pressable
+							accessibilityRole="button"
+							accessibilityLabel={[`Open ${title(item)}`, chipLabel?.(item)].filter(Boolean).join(", ")}
+							accessibilityState={{ selected: rowKey(item) === revealRef }}
+							disabled={!ready}
+							onPress={() => open(item)}
+							style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
+						>
+							<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+								<View style={{ flex: 1, minWidth: 0 }}>
+									<Copy>{title(item)}</Copy>
 								</View>
-								<Copy muted>{detail(item)}</Copy>
-							</Pressable>
-							{actions && organization(item) ? (
-								<Action
-									tone="quiet"
-									label={`More actions for ${title(item)}`}
-									disabled={
-										!ready ||
-										state.loading ||
-										!!actionState?.pending ||
-										!!actionState?.uncertain ||
-										!!actionState?.storageUnavailable
-									}
-									onPress={() => {
-										const value = organization(item);
-										const actionState = actions.getSnapshot();
-										if (!value || actionState.pending || actionState.uncertain || actionState.storageUnavailable)
-											return;
-										const invoke = (operation: () => void) => {
-											if (current.current === binding) operation();
-										};
-										Alert.alert(
-											title(item),
-											`${activeProfile?.name ?? "Hub"} · Organize without deleting history or stopping work.`,
-											[
-												...(value.favorite === undefined
-													? []
-													: [
-															{
-																text: value.favorite ? "Remove from pinned" : "Add to pinned",
-																onPress: () =>
-																	invoke(() => {
-																		void actions.favorite(value.target.id, !value.favorite);
-																	}),
-															},
-														]),
-												{
-													text: value.archived ? "Unarchive" : "Archive",
-													onPress: () =>
-														invoke(() => {
-															void actions.archive(value.target, !value.archived);
-														}),
-												},
-												{ text: "Cancel", style: "cancel" },
-											],
-										);
-									}}
-								>
-									···
-								</Action>
-							) : null}
-						</View>
+								{chip?.(item)}
+							</View>
+							<Copy muted>{detail(item)}</Copy>
+						</Pressable>
+						{actions && organization(item) ? (
+							<Action
+								tone="quiet"
+								label={`More actions for ${title(item)}`}
+								disabled={
+									!ready ||
+									state.loading ||
+									!!actionState?.pending ||
+									!!actionState?.uncertain ||
+									!!actionState?.storageUnavailable
+								}
+								onPress={() => {
+									const value = organization(item);
+									const actionState = actions.getSnapshot();
+									if (!value || actionState.pending || actionState.uncertain || actionState.storageUnavailable)
+										return;
+									const invoke = (operation: () => void) => {
+										if (current.current === binding) operation();
+									};
+									Alert.alert(
+										title(item),
+										`${activeProfile?.name ?? "Hub"} · Organize without deleting history or stopping work.`,
+										[
+											...(value.favorite === undefined
+												? []
+												: [
+														{
+															text: value.favorite ? "Remove from pinned" : "Add to pinned",
+															onPress: () =>
+																invoke(() => {
+																	void actions.favorite(value.target.id, !value.favorite);
+																}),
+														},
+													]),
+											{
+												text: value.archived ? "Unarchive" : "Archive",
+												onPress: () =>
+													invoke(() => {
+														void actions.archive(value.target, !value.archived);
+													}),
+											},
+											{ text: "Cancel", style: "cancel" },
+										],
+									);
+								}}
+							>
+								···
+							</Action>
+						) : null}
 					</View>
 				)}
 			/>
