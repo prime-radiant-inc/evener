@@ -273,8 +273,10 @@ for these shared ownership contracts.
 
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 shares a store by actual client object, requested ref and scope. A committed view
-acquires its holder; an abandoned render starts no read. The focused status
-surface observes the summary. Agents, Jobs and Watches tabs observe their own
+acquires its holder; an abandoned render starts no read. Every visible desktop
+session pane has a status footer that observes that pane's summary by explicit
+ref, so side-by-side panes retain independent counts while duplicate consumers
+of one ref share the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation.
 

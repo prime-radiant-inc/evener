@@ -115,13 +115,22 @@ export interface ActivitySidebarState {
   tab: ActivityTab;
   ref: string | null;
   views: ReadonlyMap<string, ActivitySessionView>;
-  openWith(tab?: ActivityTab): void;
+  openWith(tab?: ActivityTab, opener?: HTMLElement): void;
   close(): void;
   setTab(tab: ActivityTab): void;
   toggle(): void;
   retarget(ref: string | null): void;
   retainOpenView(ref: string): void;
   setCategoryView(ref: string, tab: ActivityTab, patch: Partial<ActivityCategoryView>): void;
+}
+
+let activitySidebarOpener: HTMLElement | null = null;
+let activitySidebarOpenerPaneId: string | null = null;
+
+function captureActivitySidebarOpener(opener?: HTMLElement): void {
+  const active = opener ?? document.activeElement;
+  activitySidebarOpener = active instanceof HTMLElement && active !== document.body ? active : null;
+  activitySidebarOpenerPaneId = workspaceStore.getState().focusedPaneId;
 }
 
 export const activitySidebarStore = createStore<ActivitySidebarState>()((set, get) => {
@@ -139,10 +148,16 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
     tab: "agents",
     ref: null,
     views: new Map(),
-    openWith: (tab) => update({ open: true, tab: tab ?? get().tab }),
+    openWith: (tab, opener) => {
+      captureActivitySidebarOpener(opener);
+      update({ open: true, tab: tab ?? get().tab });
+    },
     close: () => update({ open: false }),
     setTab: (tab) => update({ tab }),
-    toggle: () => update({ open: !get().open }),
+    toggle: () => {
+      if (!get().open) captureActivitySidebarOpener();
+      update({ open: !get().open });
+    },
     retarget(ref) {
       const state = get();
       if (ref === state.ref) return;
@@ -153,6 +168,7 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       // A fresh child keeps the ongoing inspection open on its current kind;
       // a visited session restores its own category and explicit close choice.
       const view = views.get(ref) ?? { open: state.open, tab: state.tab, categories: {} };
+      if (view.open && !state.open) captureActivitySidebarOpener();
       set({ ref, open: view.open, tab: view.tab, views: rememberView(views, ref, view) });
     },
     retainOpenView(ref) {
@@ -198,6 +214,16 @@ workspaceStore.subscribe((state, previous) => {
   if (ref !== currentSessionRef(previous)) activitySidebarStore.getState().retarget(ref);
 });
 
+export function activitySidebarReturnFocusTarget(tab: ActivityTab): HTMLElement | null {
+  if (activitySidebarOpener?.isConnected) return activitySidebarOpener;
+  const candidates = document.querySelectorAll<HTMLElement>(`[data-activity-tab="${tab}"]`);
+  if (activitySidebarOpenerPaneId === null) return candidates.item(0);
+  return (
+    Array.from(candidates).find((candidate) => candidate.dataset.paneId === activitySidebarOpenerPaneId) ??
+    candidates.item(0)
+  );
+}
+
 export function useActivitySidebarStore<T>(selector: (state: ActivitySidebarState) => T): T {
   return useStore(activitySidebarStore, selector);
 }
@@ -239,6 +265,8 @@ export function closeSessionActivityPanes(ref: string): void {
 // mirrors chromeStore's resetChromeStoreForTests precedent. No production code
 // should ever call this.
 export function resetActivitySidebarStoreForTests({ preserveStorage = false } = {}): void {
+  activitySidebarOpener = null;
+  activitySidebarOpenerPaneId = null;
   if (!preserveStorage) {
     try {
       localStorage.removeItem(ACTIVITY_VIEW_STORAGE_KEY);

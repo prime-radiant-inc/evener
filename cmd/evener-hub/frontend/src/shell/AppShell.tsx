@@ -44,7 +44,6 @@ import { navigate, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
-import { StatusBar } from "./statusbar/StatusBar";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
 import { type OpenPaneRecord, workspaceStore } from "./workspace";
@@ -942,18 +941,14 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             ) : isMobile ? (
               <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
             ) : (
-              // The workspace column owns everything that reports on the
-              // workspace: the dock host, then the status bar (the spec's
-              // "30px strip under the workspace" - right of the rail, never
-              // beneath it). The column carries the row's flex share by class,
-              // not by :last-child: the activity sidebar mounts as a sibling
-              // AFTER it, and a positional rule would either stretch the
-              // sidebar or drop the column's sizing the moment it opens.
+              // The workspace column carries the dock host's row flex share by
+              // class, not by :last-child: the activity sidebar mounts as a
+              // sibling AFTER it, and a positional rule would either stretch
+              // the sidebar or drop the column's sizing the moment it opens.
               <div className={styles.workspaceColumn} data-testid="workspace-column">
                 <div className={styles.workspaceHost} data-testid="workspace-host">
                   <DockRegion />
                 </div>
-                <StatusBar />
               </div>
             )}
             {/* The activity sidebar: the zoom system's triage surface, a right

@@ -181,6 +181,63 @@ function assertTapTargets(result) {
   return failures;
 }
 
+function assertPaneFooters(result) {
+  const failures = [];
+  if (result.panes.length !== 2) failures.push(`expected two pane fixtures, found ${result.panes.length}`);
+  for (const [index, pane] of result.panes.entries()) {
+    if (pane.box === null) {
+      failures.push(`pane ${index + 1} did not render`);
+      continue;
+    }
+    if (pane.edgeFooter === null) {
+      failures.push(`pane ${index + 1} has no edge footer`);
+      continue;
+    }
+    if (!pane.containsStatusbar || pane.statusbar === null) {
+      failures.push(`pane ${index + 1} does not contain its status bar`);
+      continue;
+    }
+    if (Math.abs(pane.box.left - pane.edgeFooter.left) > 1 || Math.abs(pane.box.right - pane.edgeFooter.right) > 1) {
+      failures.push(`pane ${index + 1} edge footer does not span its own pane`);
+    }
+    if (
+      Math.abs(pane.edgeFooter.left - pane.statusbar.left) > 1 ||
+      Math.abs(pane.edgeFooter.right - pane.statusbar.right) > 1
+    ) {
+      failures.push(`pane ${index + 1} status bar does not span its edge footer`);
+    }
+    if (Math.abs(pane.box.bottom - pane.edgeFooter.bottom) > 1) {
+      failures.push(`pane ${index + 1} edge footer is not docked to its pane bottom`);
+    }
+    if (pane.controls.length !== result.expectedControlsPerPane) {
+      failures.push(
+        `pane ${index + 1} rendered ${pane.controls.length} activity controls instead of ${result.expectedControlsPerPane}`,
+      );
+    }
+    for (const control of pane.controls) {
+      if (control.left < pane.statusbar.left - 1 || control.right > pane.statusbar.right + 1) {
+        failures.push(
+          `pane ${index + 1} activity control escapes its status bar ` +
+            `(control ${control.left.toFixed(1)}..${control.right.toFixed(1)}, bar ${pane.statusbar.left.toFixed(1)}..${pane.statusbar.right.toFixed(1)})`,
+        );
+      }
+    }
+    if (pane.statusbarScrollWidth > pane.statusbarClientWidth + 1) {
+      failures.push(
+        `pane ${index + 1} status bar overflows horizontally (${pane.statusbarScrollWidth}px in ${pane.statusbarClientWidth}px)`,
+      );
+    }
+  }
+  if (result.panes.length === 2) {
+    const [first, second] = result.panes;
+    if (first.edgeFooter?.right > second.box.left + 1)
+      failures.push("the first pane footer crosses into the second pane");
+    if (second.edgeFooter?.left < first.box.right - 1)
+      failures.push("the second pane footer crosses into the first pane");
+  }
+  return failures;
+}
+
 function assertMobileResult(result) {
   const failures = [];
   if (result.errors.length > 0) failures.push(`page errors: ${result.errors.join("; ")}`);
@@ -258,7 +315,7 @@ async function main() {
       cdpEndpoint,
       vitePort,
       VIEWPORT,
-      "(async () => { await window.applyShellNavigationDelta(); const renders = window.measureRailRenderCounts(); return JSON.stringify({ ...window.measureShell(), counts: renders.counts, changedRowID: renders.changedRowID, visibleRowIDs: renders.visibleRowIDs }); })()",
+      "(async () => { await window.applyShellNavigationDelta(); const renders = window.measureRailRenderCounts(); return JSON.stringify({ ...window.measureShell(), paneFooters: window.measurePaneFooters(), counts: renders.counts, changedRowID: renders.changedRowID, visibleRowIDs: renders.visibleRowIDs }); })()",
     );
     // Both mobile measurements come from ONE page load of the emulated phone:
     // the sidebar geometry and the tap-floor audit need the same context.
@@ -271,6 +328,7 @@ async function main() {
     const failures = [
       ...assertResult(result),
       ...assertDeltaRenders(result),
+      ...assertPaneFooters(result.paneFooters),
       ...assertMobileResult(mobile.sidebar),
       ...assertTapTargets(mobile.tap),
     ];
@@ -279,7 +337,8 @@ async function main() {
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +
           `rail body scrolls (${result.railBody.scrollHeight}px in ${result.railBody.clientHeight}px), ` +
           `${result.treeRows} tree rows; mobile Sheet body scrolls (${mobile.sidebar.panelBody.scrollHeight}px in ${mobile.sidebar.panelBody.clientHeight}px); ` +
-          `${mobile.tap.measured} mobile tap targets all >= ${mobile.tap.min}px`,
+          `${mobile.tap.measured} mobile tap targets all >= ${mobile.tap.min}px; ` +
+          `${result.paneFooters.panes.length} pane-local footers stay within their panes`,
       );
       console.log(
         `shellguard render isolation: changed=${result.changedRowID} count=${result.counts[result.changedRowID] ?? 0}; ` +

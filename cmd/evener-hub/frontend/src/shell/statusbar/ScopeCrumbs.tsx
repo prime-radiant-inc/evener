@@ -1,7 +1,6 @@
-// The scope breadcrumb, shared by the status bar and the activity sidebar:
-// the path from the root session to the scope you're reading. Crumbs above
-// the leaf open their session; the leaf is current text, never a link to
-// itself.
+// The activity sidebar's scope breadcrumb: the path from the root session to
+// the scope you're reading. Crumbs above the leaf open their session; the leaf
+// is current text, never a link to itself.
 
 import { selectSessionSummary } from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";

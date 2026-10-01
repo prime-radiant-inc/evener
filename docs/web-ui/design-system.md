@@ -61,6 +61,12 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
+- **Keep session status inside its pane.** Every visible desktop session pane ends with its own
+  flush status footer, never one strip spanning sibling panes. The footer leads with that
+  session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
+  counts. A count click focuses the owning pane before opening the shared activity sidebar.
+  The sidebar retains its scope breadcrumb and an accessible, visually hidden “Activity kind”
+  label. Phones omit the activity footer and keep repository location below the composer.
 
 The provenance corrections and nested navigation/focus repairs change behavior. Folding,
 disclosure persistence, keyboard rules, preferences and semantic hue roles are retained

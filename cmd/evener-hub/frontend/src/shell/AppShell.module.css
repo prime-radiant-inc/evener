@@ -33,9 +33,9 @@
   min-width: 0;
 }
 
-/* The workspace column stacks the dock host above the status bar; the host
- * takes the column's height above the bar's strip. (These bare-class rules
- * precede the .content > rule below: noDescendingSpecificity.) */
+/* The workspace column gives the dock host a bounded flex-height chain. These
+ * bare-class rules precede the .content > rule below:
+ * noDescendingSpecificity. */
 .workspaceColumn {
   display: flex;
   flex-direction: column;
@@ -47,11 +47,11 @@
   min-height: 0;
 }
 
-/* The workspace column (dock host + status bar) takes all remaining width
- * beside the rail. Keyed by class (the activity sidebar mounts as a LATER
- * sibling in .content, so a bare :last-child rule would jump to it when
- * open); the :last-child fallback keeps the mobile StackHost and the NotFound
- * page, which never share the row with the aside. */
+/* The workspace column takes all remaining width beside the rail. Keyed by
+ * class (the activity sidebar mounts as a LATER sibling in .content, so a bare
+ * :last-child rule would jump to it when open); the :last-child fallback keeps
+ * the mobile StackHost and the NotFound page, which never share the row with
+ * the aside. */
 .content > .workspaceColumn,
 .content > :last-child:not(aside) {
   flex: 1 1 auto;
