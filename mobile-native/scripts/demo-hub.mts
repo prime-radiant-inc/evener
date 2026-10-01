@@ -835,9 +835,6 @@ export async function createDemoHub(
 					case "evener/thread/watches/list":
 						result = requireFleet().answerWatchesList(params);
 						break;
-					case "evener/jobs/list":
-						result = requireFleet().answerJobsList(params);
-						break;
 					case "evener/jobs/output":
 						result = requireFleet().answerJobsOutput(params);
 						break;

@@ -44,7 +44,7 @@ import { FirstLoad, SheetStatus } from "../sheet/SheetStatus";
 import { Spinner } from "../sheet/Spinner";
 import type { HubRoutes } from "./hubSheetContext";
 import { CredentialPasteSheet } from "./CredentialPasteSheet";
-import { usePublishProviderDetail } from "./providersScreenSlot";
+import { usePublishProviderDetail } from "./hubScreenSlot";
 import { useAuthStatuses } from "./useAuthStatuses";
 import {
 	appliedButFailed,

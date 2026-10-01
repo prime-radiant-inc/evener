@@ -12,8 +12,6 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { archiveTarget } from "../board/rowActions.js";
 import { localSessionId } from "../sessionDeletionResult.js";
-import { parseActivityTree } from "@evener/appwire-client";
-import { flattenSubagents, subagentLastLine, tallyActivity } from "../subagents/subagentModel";
 import { createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId } from "./demoFleet.js";
 import { DEMO_MODEL_NAMES } from "./demoSetup.js";
 
@@ -1012,36 +1010,46 @@ describe("demo fleet archive", () => {
 	});
 });
 
-// The Subagents list, a subagent's screen and the Reader read the same swarm
-// the Board's rows come from (spec Appendix B).
+// The Activity list, a subagent's screen and the Reader read the same swarm
+// the Board's rows come from (spec Appendix B), through the typed activity
+// reads.
 describe("demo fleet subagents", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 	const pr2138 = `local:${demoSessionId("s-pr2138")}`;
+	const subtree = (ref: string) => fleet.answerDelegatesList({ ref, scope: "subtree", limit: 200 }).delegates;
 
-	it("lists Get PR 2138 Test Clean's 55 subagents in its activity tree, with data.js's details", () => {
-		const tree = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
-		if (!tree) throw new Error("no tree");
-		const rows = flattenSubagents(tree);
-		expect(tallyActivity(rows)).toEqual({ total: 55, running: 32, failed: 2, done: 21 });
-		const settle = rows.find((row) => row.title === "Fix race in tree settle");
-		expect(settle?.delegate).toMatchObject({ outcome: "failed" });
-		expect(subagentLastLine(settle as never, "glm-5.3-vision", (model) => model)).toMatchObject({
-			branch: "fix-settle-race",
-			tokens: "1.2M tokens",
+	it("counts Get PR 2138 Test Clean's 55 subagents and lists them with data.js's details", () => {
+		expect(fleet.answerActivityRead({ ref: pr2138, scope: "subtree" }).delegates).toEqual({
+			known: true,
+			total: 55,
+			active: 32,
+			failed: 2,
+			completed: 21,
+		});
+		const rows = subtree(pr2138);
+		expect(rows).toHaveLength(55);
+		expect(rows.find((row) => row.description === "Fix race in tree settle")).toMatchObject({
+			outcome: "failed",
+			worktree: { branch: "fix-settle-race" },
+			usage: { totalTokens: 1_200_000 },
 		});
 	});
 
-	it("gives a subagent that started subagents its own tree, as its transcript's delegates name them", () => {
-		const coordinator = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
-		const settle = flattenSubagents(coordinator as never).find((row) => row.title === "Fix race in tree settle");
+	it("gives a subagent that started subagents its own, as its transcript's delegates name them", () => {
+		const settle = subtree(pr2138).find((row) => row.description === "Fix race in tree settle");
 		if (!settle) throw new Error("no Fix race in tree settle");
-		const tree = parseActivityTree(fleet.answerJobsList({ ref: settle.ref }).data);
-		expect(tree?.root.ref).toBe(settle.ref);
-		expect(flattenSubagents(tree as never).map((row) => row.title)).toEqual(["Check drain ordering in tests"]);
+		const own = fleet.answerDelegatesList({ ref: settle.childRef });
+		expect(own.context.ref).toBe(settle.childRef);
+		expect(own.delegates.map((row) => row.description)).toEqual(["Check drain ordering in tests"]);
 	});
 
-	it("gives a session with no subagents an empty tree", () => {
-		const other = parseActivityTree(fleet.answerJobsList({ ref: `local:${demoSessionId("s-gateway")}` }).data);
-		expect(other?.root.entries).toEqual([]);
+	it("gives a session with no subagents or shell jobs complete, empty lists", () => {
+		const ref = `local:${demoSessionId("s-gateway")}`;
+		const delegates = fleet.answerDelegatesList({ ref });
+		expect(delegates.delegates).toEqual([]);
+		expect(delegates.page).toEqual({ complete: true, issues: [] });
+		const jobs = fleet.answerSessionJobsList({ ref });
+		expect(jobs.jobs).toEqual([]);
+		expect(jobs.page).toEqual({ complete: true, issues: [] });
 	});
 });
