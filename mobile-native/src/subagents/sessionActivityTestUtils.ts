@@ -97,7 +97,8 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 				const d = entry.delegate;
 				// The hub reports a finished delegate as idle, and closes one that
 				// can't be resumed.
-				const state = d.terminal === true ? "idle" : "running";
+				const terminal = d.terminal === true;
+				const state = terminal ? "idle" : "running";
 				const resumable = d.resumable ?? false;
 				delegates.push({
 					delegateId: d.delegateId,
@@ -110,9 +111,9 @@ export function activityFixture(raw: unknown, params: SessionActivityReadParams)
 					task: d.task ?? d.description ?? "",
 					type: d.type ?? "delegate",
 					lifecycle: d.lifecycle ?? state,
-					phase: d.phase ?? (d.terminal === true && !resumable ? "closed" : state),
+					phase: d.phase ?? (terminal && !resumable ? "closed" : state),
 					status: d.status ?? state,
-					terminal: d.terminal ?? false,
+					terminal,
 					resumable,
 					...definedFields(d, DELEGATE_FIELDS),
 				});

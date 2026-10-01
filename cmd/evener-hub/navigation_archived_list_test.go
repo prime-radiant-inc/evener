@@ -712,10 +712,7 @@ func TestRenamingAnArchivedSessionInvalidatesItsProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range mutation.Targets {
-		if target.Kind == appwire.NavigationTargetProject && target.ProjectKey == "p1" {
-			return
-		}
+	if !hasNavigationTarget(mutation.Targets, appwire.NavigationTargetProject, "p1") {
+		t.Fatalf("rename targets = %+v, want project p1", mutation.Targets)
 	}
-	t.Fatalf("rename targets = %+v, want project p1", mutation.Targets)
 }
