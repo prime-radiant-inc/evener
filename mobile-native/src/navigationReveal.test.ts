@@ -161,9 +161,14 @@ it("loads later pages and reveals the flat destination", async () => {
 });
 it("says so once every page is read and the row isn't there", async () => {
 	const list = pages(() => response([{ ref: "other" }], 0));
-	await expect(revealNavigationRow(list, "child", (r) => r.ref, () => true)).rejects.toThrow(
-		"The session is not in the returned list. It may have moved.",
-	);
+	await expect(
+		revealNavigationRow(
+			list,
+			"child",
+			(r) => r.ref,
+			() => true,
+		),
+	).rejects.toThrow("The session is not in the returned list. It may have moved.");
 });
 it("does not continue paging after leaving", async () => {
 	let current = true,

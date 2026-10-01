@@ -356,8 +356,7 @@ export function PageList<T>({
 								onPress={() => {
 									const value = organization(item);
 									const actionState = actions.getSnapshot();
-									if (!value || actionState.pending || actionState.uncertain || actionState.storageUnavailable)
-										return;
+									if (!value || actionState.pending || actionState.uncertain || actionState.storageUnavailable) return;
 									const invoke = (operation: () => void) => {
 										if (current.current === binding) operation();
 									};
