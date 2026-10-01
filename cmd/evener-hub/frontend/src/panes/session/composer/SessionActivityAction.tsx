@@ -1,9 +1,9 @@
-import { activityPanelStore } from "../../../stores/activityPanel";
+import { activitySidebarStore, closeSessionActivityPanes } from "../../../shell/activitybar/activitySidebarStore";
 import { useSessionActivity } from "../../../stores/sessionActivity";
 import { Button } from "../../../widgets";
 import { activityActionLabel } from "../chrome/activityFormat";
 
-/** Opens SessionChrome's existing sheet; the shared binding owns summary demand. */
+/** Opens the shared activity sidebar; the binding owns summary demand. */
 export function SessionActivityAction({ sessionRef }: { sessionRef: string }) {
   const { snapshot } = useSessionActivity(sessionRef);
   return (
@@ -13,7 +13,10 @@ export function SessionActivityAction({ sessionRef }: { sessionRef: string }) {
       aria-haspopup="dialog"
       data-testid="composer-activity"
       title="Activity: active jobs and agents in this session"
-      onClick={() => activityPanelStore.getState().setSheetOpen(sessionRef, true)}
+      onClick={() => {
+        closeSessionActivityPanes(sessionRef);
+        activitySidebarStore.getState().openWith();
+      }}
     >
       {activityActionLabel(snapshot?.summary)}
     </Button>

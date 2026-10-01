@@ -39,6 +39,7 @@
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useEffect, useRef, useState } from "react";
 import { Chevron, IconButton } from "../../widgets";
+import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { navigate, paneToURL, urlToPane } from "../routing";
@@ -413,6 +414,9 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
           // panes) would not, without this.
           <StackedPane key={focusedPane.id} pane={focusedPane} />
         )}
+      </div>
+      <div className={styles.activityOverlay}>
+        <ActivitySidebar mobile />
       </div>
       <MobilePanel rail={railSlot} open={panelOpen} onClose={() => setPanelOpen(false)} />
     </div>

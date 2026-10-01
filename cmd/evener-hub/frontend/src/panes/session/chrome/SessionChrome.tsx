@@ -13,10 +13,12 @@
 // row's container-query variants own compression inside .body instead),
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
 // and Shut down. The composer placement alone can also lead with the
-// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The three
-// panels stay mounted triggerless so their imperative handles still open the
-// mobile Sheets; ActivityPanel's refreshWhenHidden is unconditional because
-// the menu's "Activity · N" label reads the summary that refresh maintains.
+// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The
+// hidden ActivityPanel stays mounted for summary discovery; DetailsPanel's
+// imperative handle still opens its mobile Sheet. Activity opens the shared
+// sidebar at every viewport, and ActivityPanel's refreshWhenHidden is
+// unconditional because the menu's "Activity · N" label reads the summary that
+// refresh maintains.
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in
 // the menu - the session's own composer owns those now (2026-08-14, "the
 // composer is where you act on this session"; the command palette only
@@ -58,7 +60,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
-import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
+import { ActivityPanel } from "./ActivityPanel";
 import { activityActionLabel } from "./activityFormat";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { StatusRow } from "./StatusRow";
@@ -117,8 +119,8 @@ export function SessionChrome({
   const toasts = useToasts();
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
   // The Activity menu item's checked state is the sidebar open ON THIS
-  // SESSION (the shared predicate hook); on mobile the item opens the Sheet
-  // and is never "checked".
+  // SESSION (the shared predicate hook). The mobile overlay uses the same
+  // scope, so rail and session menus agree at every viewport.
   const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
   const activityOpen = !isMobile && sidebarOpenHere;
   const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
@@ -170,7 +172,6 @@ export function SessionChrome({
   // liveness.ts's own useNowTick doc comment: "transient by design").
   const now = useNowTick(NOW_TICK_MS);
   const detailsRef = useRef<DetailsPanelHandle>(null);
-  const activityRef = useRef<ActivityPanelHandle>(null);
   if (!model) return null;
 
   // The ONE hidden ActivityPanel every shape below shares. `discoverWhenHidden`
@@ -178,7 +179,6 @@ export function SessionChrome({
   // here; `discoveryOnly` is itself an opt-in (it exists for nothing else).
   const hiddenActivityPanel = (
     <ActivityPanel
-      ref={activityRef}
       sessionRef={sessionRef}
       model={model}
       hideTrigger
@@ -211,14 +211,14 @@ export function SessionChrome({
     else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
   };
   const openActivity = () => {
-    // Desktop: the activity sidebar (the zoom system's triage surface).
-    // Mobile: the per-session Sheet, unchanged. Desktop toggles only when the
-    // sidebar already shows THIS session; open on another session, the item
-    // re-scopes it here instead of closing it under the user. The open also
-    // retires a leftover sessionActivity pane for this session - nothing on
-    // desktop can open or mark one anymore.
-    if (isMobile) activityRef.current?.open();
-    else if (activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
+    // Mobile and desktop share the activity sidebar. Desktop toggles only when
+    // the sidebar already shows THIS session; opening on another session
+    // re-scopes it here instead of closing it under the user. Opening it also
+    // retires a leftover sessionActivity pane for this session.
+    if (isMobile) {
+      closeSessionActivityPanes(sessionRef);
+      activitySidebarStore.getState().openWith();
+    } else if (activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
     else {
       closeSessionActivityPanes(sessionRef);
       activitySidebarStore.getState().openWith();

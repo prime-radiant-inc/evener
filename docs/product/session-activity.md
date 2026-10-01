@@ -290,7 +290,7 @@ its already loaded title through the [pane chrome store](../../cmd/evener-hub/fr
 tab naming adds no metadata request. Closing Activity from within the sidebar
 returns keyboard focus to its opener or the matching footer control.
 
-The [desktop sidebar view store](../../cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts)
+The [activity sidebar view store](../../cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts)
 retains open/category choices and a semantic row anchor per public session ref
 and category. The browser disclosure binding opts Activity into retaining explicit
 fold choices, including task and watch details. These are bounded, best-effort UI
@@ -341,11 +341,14 @@ references use the transcript's own watch evidence. The
 observes subtree collections while its body is open. These view lifetimes do not
 cause an activity read for every session in the navigation rail.
 
-The narrow composer exposes Activity beside its receiving conversation. Its
-optional active count sums
+The narrow composer exposes Activity beside its receiving conversation. On the
+phone, that action opens the full-screen shared activity sidebar, preserving the
+last selected category for the focused session. Its optional active count sums
 the session's authoritative job and delegate active counts only when both are
-known; watches and completed work are not part of that number. The mobile sheet
-starts with compact job, delegate and watch details, each one disclosure away.
+known; watches and completed work are not part of that number. The sidebar's
+Jobs, Agents, Watches and Tasks tabs use the same scoped reads as desktop.
+The legacy activity pane remains restorable for saved layouts, but new mobile
+Activity actions retire that pane and open the shared sidebar instead.
 Expanded watch details reveal the full user note as wrapped text, regardless of
 how much fits in the compact collapsed row.
 Failed entries remain visible outside the inactive fold, including parent rows

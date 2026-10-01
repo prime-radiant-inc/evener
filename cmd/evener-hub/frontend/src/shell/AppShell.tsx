@@ -951,8 +951,9 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
                 </div>
               </div>
             )}
-            {/* The activity sidebar: the zoom system's triage surface, a right
-              shell region scoped to the session being read. Desktop only. */}
+            {/* Desktop: the activity sidebar is the zoom system's triage surface,
+              a right shell region scoped to the session being read. Mobile
+              StackHost mounts the same surface as its full-screen overlay. */}
             {!isMobile && route !== null && <ActivitySidebar />}
           </div>
         </div>

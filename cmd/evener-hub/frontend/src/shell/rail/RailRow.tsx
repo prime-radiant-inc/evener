@@ -57,7 +57,6 @@ import type { TreeRowInfo } from "../../widgets/tree";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
-import { useIsMobile } from "../useIsMobile";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
@@ -399,16 +398,9 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   // workspace change (SessionChrome selects the same four booleans the
   // same way).
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
-  // The Activity ✓ marks what this row's Activity action opens, per viewport:
-  // the desktop sidebar (the predicate is shared with the session chrome so
-  // the two menus can never disagree), or the sessionActivity pane the mobile
-  // rail still opens from the tree drawer. On desktop a leftover pane is an
-  // orphan the chrome never marks (opening the sidebar retires it), so the
-  // pane half is mobile-only. Unconditional hook calls throughout.
-  const isMobile = useIsMobile();
+  // The Activity ✓ marks the shared sidebar's scope. A leftover
+  // sessionActivity pane is not an opener and is intentionally not marked.
   const activitySidebarOpen = useActivitySidebarOpenFor(ref);
-  const activityPaneOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
-  const activityOpen = activitySidebarOpen || (isMobile && activityPaneOpen);
   return (
     <SessionMenu
       sessionRef={ref}
@@ -418,7 +410,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       canShutdown={session.live && session.state !== "restartRequired"}
       stopped={SHUT_DOWN_STATUSES.has(session.state) || isConfirmedCrashedSession(session)}
       treeNode={session}
-      panesOpen={{ details: detailsOpen, activity: activityOpen }}
+      panesOpen={{ details: detailsOpen, activity: activitySidebarOpen }}
       actions={{
         onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
         onRename: (name) => actions.onRenameSession(session, name),

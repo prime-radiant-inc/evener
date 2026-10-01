@@ -1848,10 +1848,10 @@ describe("resource-backed Rail", () => {
     }
   });
 
-  test("a rail row's Activity action on mobile keeps the old pane (no sidebar exists there)", async () => {
-    // The sidebar is desktop chrome; on the phone the rail lives in the tree
-    // drawer and Activity keeps its pre-sidebar behavior: the sessionActivity
-    // pane. The desktop retarget must not leak into the mobile rail.
+  test("a rail row's Activity action on mobile opens the new activity sidebar", async () => {
+    // The mobile rail lives in the tree drawer, but Activity now opens the
+    // same Tasks, Jobs and Watches surface as desktop instead of the retired
+    // sessionActivity pane.
     const restoreViewport = installMobileViewport();
     resetActivitySidebarStoreForTests();
     const restoreSessionPane = registerPaneForTests({
@@ -1872,10 +1872,8 @@ describe("resource-backed Rail", () => {
 
       fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
-      await waitFor(() => {
-        expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(true);
-      });
-      expect(activitySidebarStore.getState().open).toBe(false);
+      await waitFor(() => expect(activitySidebarStore.getState().open).toBe(true));
+      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
     } finally {
       restoreViewport();
       restoreSessionPane();

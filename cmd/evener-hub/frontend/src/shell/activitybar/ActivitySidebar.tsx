@@ -28,6 +28,7 @@ import { ACTIVITY_TABS, activityTabSpec } from "./activityTabs";
 
 const CLASS = {
   sidebar: requireClass(styles.sidebar, "activitybar.module.css", "sidebar"),
+  sidebarMobile: requireClass(styles.sidebarMobile, "activitybar.module.css", "sidebarMobile"),
   scope: requireClass(styles.scope, "activitybar.module.css", "scope"),
   pending: requireClass(styles.pending, "activitybar.module.css", "pending"),
   head: requireClass(styles.head, "activitybar.module.css", "head"),
@@ -35,7 +36,7 @@ const CLASS = {
   body: requireClass(styles.body, "activitybar.module.css", "body"),
 };
 
-export function ActivitySidebar() {
+export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const open = useActivitySidebarStore((state) => state.open);
   const tab = useActivitySidebarStore((state) => state.tab);
   const sidebar = useRef<HTMLElement>(null);
@@ -90,7 +91,7 @@ export function ActivitySidebar() {
       {open && scope !== null ? (
         <m.aside
           ref={sidebar}
-          className={CLASS.sidebar}
+          className={mobile ? CLASS.sidebarMobile : CLASS.sidebar}
           initial={{ x: 320 }}
           animate={{ x: 0 }}
           exit={{ x: 320 }}

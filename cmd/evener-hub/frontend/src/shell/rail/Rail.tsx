@@ -1050,7 +1050,6 @@ function NavigationRail({
   scrollOwner = "rail",
 }: RailProps = {}) {
   const client = useClient();
-  const isMobile = useIsMobile();
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
@@ -1579,18 +1578,11 @@ function NavigationRail({
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: session.ref });
         if (pane === "activity") {
-          // Desktop Activity everywhere is the zoom system's sidebar, scoped
-          // by the just-focused session. On mobile there is no sidebar (the
-          // rail lives in the tree drawer), so the sessionActivity pane keeps
-          // its pre-sidebar behavior. Both idempotent opens: the rail
-          // navigates, it never toggles closed. The sidebar open also retires
-          // a leftover sessionActivity pane for this session - nothing on
-          // desktop can open or mark one anymore.
-          if (isMobile) workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
-          else {
-            closeSessionActivityPanes(session.ref);
-            activitySidebarStore.getState().openWith();
-          }
+          // Activity is the shared sidebar at every viewport. Focus the
+          // session first so the sidebar derives the correct scope, then
+          // retire any restored legacy pane before opening it.
+          closeSessionActivityPanes(session.ref);
+          activitySidebarStore.getState().openWith();
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }
@@ -1752,7 +1744,7 @@ function NavigationRail({
         setDeleteTarget(project);
       },
     }),
-    [client, runAction, toasts.push, isMobile],
+    [client, runAction, toasts.push],
   );
   function closeDeleteDialog() {
     setDeleteTarget(null);

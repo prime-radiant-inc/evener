@@ -2,12 +2,16 @@ import { hydrateThread } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { lazy } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import {
+  activitySidebarStore,
+  resetActivitySidebarStoreForTests,
+} from "../../../shell/activitybar/activitySidebarStore";
 import { resetChromeStoreForTests } from "../../../shell/chromeStore";
 import { ClientProvider } from "../../../shell/clientContext";
 import { StackHost } from "../../../shell/mobile/StackHost";
 import { type PaneProps, registerPaneForTests } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
+import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { connectionStore } from "../../../stores/connection";
 import { resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
@@ -35,6 +39,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetChromeStoreForTests();
   resetActivityPanelStoreForTests();
+  resetActivitySidebarStoreForTests();
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
 });
@@ -43,6 +48,7 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ client: null, state: "idle" });
   resetActivityPanelStoreForTests();
+  resetActivitySidebarStoreForTests();
   resetWorkspaceStoreForTests();
   restoreViewport();
   window.history.pushState({}, "", "/");
@@ -182,7 +188,7 @@ test("mobile child transcript Back restores Activity and disclosures until expli
   }
 });
 
-test("narrow Activity action opens the single chrome sheet and labels only known active counts", async () => {
+test("narrow Activity action opens the shared sidebar and labels only known active counts", async () => {
   const client = connectActivity();
   let known = false;
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
@@ -206,8 +212,21 @@ test("narrow Activity action opens the single chrome sheet and labels only known
     }),
   );
   fireEvent.click(await screen.findByRole("button", { name: "Activity · 2 active" }));
-  expect(await screen.findByRole("dialog", { name: "Activity" })).toBeTruthy();
+  expect(activitySidebarStore.getState().open).toBe(true);
+  expect(activityPanelStore.getState().entries.get(ref)?.sheetOpen).not.toBe(true);
   expect(screen.queryByRole("menu")).toBeNull();
+});
+
+test("the composer Activity action opens the shared activity sidebar and preserves its selected tab", async () => {
+  connectActivity();
+  activitySidebarStore.getState().setTab("jobs");
+  render(<SessionActivityAction sessionRef={ref} />);
+
+  fireEvent.click(await screen.findByRole("button", { name: /^Activity/ }));
+
+  expect(activitySidebarStore.getState().open).toBe(true);
+  expect(activitySidebarStore.getState().tab).toBe("jobs");
+  expect(activityPanelStore.getState().entries.get(ref)?.sheetOpen).not.toBe(true);
 });
 
 test("mobile child Back restores the loaded job extent and expanded older failure with fresh cursors", async () => {

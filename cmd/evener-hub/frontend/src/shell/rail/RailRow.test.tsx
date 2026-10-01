@@ -1236,17 +1236,15 @@ describe("session row", () => {
     expect(panes).toContain("sessionDetails");
   });
 
-  test("the Activity check marks a sessionActivity pane open for this session on mobile", async () => {
-    // The ✓ names what the row's own Activity action opens. On mobile that
-    // is the sessionActivity pane (the desktop sidebar retarget never
-    // reaches the tree drawer), so the pane predicate marks the item there,
-    // beside the desktop sidebar predicate.
+  test("a restored sessionActivity pane does not mark Activity on mobile", async () => {
+    // New mobile Activity actions open the shared sidebar. A restored legacy
+    // pane has no opener and must not claim the Activity checkmark.
     const restoreViewport = installMobileViewport();
     try {
       workspaceStore.getState().openPane("sessionActivity", { ref: "local:a" });
       renderRow();
       await openMenu(/actions for/i);
-      expect(screen.getByRole("menuitem", { name: "Activity ✓" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
     } finally {
       restoreViewport();
     }

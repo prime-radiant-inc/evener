@@ -924,56 +924,18 @@ test("renders a textarea with an accessible name", async () => {
   expect(screen.getAllByRole("textbox")).toHaveLength(1);
 });
 
-test("the composer keeps its recipient visible when activity focuses another session", async () => {
-  await mountComposer("parent:ref", { name: "Release coordinator" });
-  act(() => {
-    workspaceStore.setState({
-      panes: [{ id: "child-pane", type: "transcript", params: { ref: "child:ref" }, slot: "secondary" }],
-      focusedPaneId: "child-pane",
-    });
-    replaceEditorText(textarea(), "Continue the release checks");
-  });
-  const recipientId = textarea().getAttribute("aria-describedby");
-  expect(recipientId).toBeTruthy();
-  const recipient = document.getElementById(recipientId ?? "");
-  expect(recipient?.textContent).toContain("Release coordinator");
-  expect(recipient?.closest("[hidden]")).toBeNull();
-  expect(screen.getByText("To: Release coordinator")).toBeTruthy();
-  expect(textarea().textContent).toBe("Continue the release checks");
-});
+test.each([false, true])("the composer omits the recipient and Activity row on %s", async (mobile) => {
+  const restore = mobile ? installMobileViewport() : undefined;
+  try {
+    await mountComposer("ref_a", { name: "Release coordinator" });
 
-test.each([false, true])(
-  "narrow Activity beside the recipient opens the existing session sheet (known counts: %s)",
-  async (known) => {
-    const restore = installMobileViewport();
-    try {
-      const { fake } = await mountComposerWithHandle(
-        "ref_activity_recipient",
-        { name: "Release coordinator" },
-        {
-          prepare: (client) =>
-            client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-              ...activitySummary(ref),
-              scope: scope ?? "session",
-              delegates: { known, total: 8, active: 1, failed: 0, completed: 7 },
-              jobs: { known: true, total: 6, active: 2, failed: 1, completed: 3 },
-            })),
-        },
-      );
-      const button = await screen.findByRole("button", { name: known ? "Activity · 3 active" : "Activity" });
-      const recipient = screen.getByText("To: Release coordinator");
-      expect(button.parentElement).toBe(recipient.parentElement);
-      expect(fake.calls.filter((call) => call.method === "evener/thread/activity/read")).toHaveLength(1);
-      await userEvent.setup().click(button);
-      expect(await screen.findByRole("dialog", { name: "Activity" })).toBeTruthy();
-      expect(screen.getAllByRole("dialog", { name: "Activity" })).toHaveLength(1);
-      expect(activityPanelStore.getState().entries.get("ref_activity_recipient")?.sheetOpen).toBe(true);
-      expect(screen.queryByRole("menu")).toBeNull();
-    } finally {
-      restore();
-    }
-  },
-);
+    expect(screen.queryByText("To: Release coordinator")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Activity/ })).toBeNull();
+    expect(textarea().getAttribute("aria-describedby")).toBeNull();
+  } finally {
+    restore?.();
+  }
+});
 
 // --- mount autofocus ---------------------------------------------------------
 //

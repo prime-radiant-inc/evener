@@ -20,7 +20,7 @@ import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
-import { activityClient, activityContext, activitySummary } from "../../../stores/sessionActivityTestUtils";
+import { activityClient, activitySummary } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
@@ -678,35 +678,23 @@ test("the session menu does not expose the tasks panel", async () => {
   restoreViewport();
 });
 
-// The tasks half of this pair (above) and the activity half join the same two
-// facts from opposite ends: ActivityPanel.test.tsx proves the panel fetches for
-// whatever sessionRef prop it is HANDED, and this proves SessionChrome hands
-// it its own. Neither alone catches a chrome that wires the panel to a wrong
-// or stale ref - both files stay green while the sheet quietly reports
-// another session's activity.
-test("the activity panel fetches for the SAME ref passed to SessionChrome", async () => {
+test("mobile Activity opens the shared sidebar for the SessionChrome ref", async () => {
   const restoreViewport = installMobileViewport();
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_e"));
   await threadsStore.getState().ensureThread("ref_e");
-  let calledRef: unknown;
-  fake.on("evener/thread/jobs/list", (params) => {
-    calledRef = params.ref;
-    return {
-      context: activityContext(params.ref),
-      scope: params.scope ?? "session",
-      jobs: [],
-      page: { complete: true, issues: [] },
-    };
-  });
 
-  render(<SessionChrome ref="ref_e" />);
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Activity" }));
+  try {
+    render(<SessionChrome ref="ref_e" />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Activity" }));
 
-  await waitFor(() => expect(calledRef).toBe("ref_e"));
-  restoreViewport();
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionActivity")).toBe(false);
+  } finally {
+    restoreViewport();
+  }
 });
 
 // --- panes through the menu (2026-08-05-unified-session-context-menu) --------
