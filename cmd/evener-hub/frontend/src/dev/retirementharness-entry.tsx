@@ -31,7 +31,13 @@ import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client"
 import Session from "../panes/session/Session";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
-import { threadsStore } from "../stores/threads";
+import { readMutationPersistence, subscribeMutationPersistence, threadsStore } from "../stores/threads";
+import {
+  observeRestartSubmission,
+  type RestartMutationSnapshot,
+  type RestartSubmissionObserver,
+  type RestartSubmissionSnapshot,
+} from "./retirementharness-persistence";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -56,7 +62,11 @@ const params = new URLSearchParams(window.location.search);
 const HUB_WS_URL = params.get("hub") ?? "";
 const RETIRE_URL = params.get("retire") ?? "";
 const DEGRADE_URL = params.get("degrade") ?? "";
+const RESTART_URL = params.get("restart") ?? "";
+const RELEASE_URL = params.get("release") ?? "";
 const REF = params.get("ref") ?? "local:retirement-harness";
+const RESTART_DRAFT = params.get("restartDraft") ?? "";
+const RESTART_TURN_ID = params.get("restartTurn") ?? "";
 
 if (!HUB_WS_URL) {
   console.error("retirementharness: missing ?hub= query param");
@@ -173,6 +183,14 @@ interface RetirementHarness {
   degrade(): Promise<void>;
   /** Types text into the real composer WITHOUT submitting it. */
   typeDraft(text: string): void;
+  /** Closes the serving replacement and holds its successor behind a gate. */
+  beginReplacementRestart(): Promise<void>;
+  /** Submits once and resolves when the exact prompt is durably pending. */
+  submitDuringReplacementRestart(): Promise<RestartSubmissionSnapshot>;
+  /** Opens the replacement gate and waits for the mutation and turn to settle. */
+  releaseReplacement(): Promise<RestartSubmissionSnapshot>;
+  /** Reads the exact restart prompt's current durable mutation state. */
+  restartSubmission(): Promise<RestartSubmissionSnapshot>;
 }
 
 function snapshot(): RetirementHarnessSnapshot {
@@ -293,22 +311,37 @@ function enterIntoComposer(text: string): void {
   composer.dispatchEvent(new ClipboardEvent("paste", { clipboardData: clipboard, bubbles: true, cancelable: true }));
 }
 
+async function submitComposer(text: string, disabledError: string): Promise<void> {
+  enterIntoComposer(text);
+  const sendBtn = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Send");
+  if (!sendBtn) throw new Error("retirementharness: Send button not found");
+  if (sendBtn.disabled) {
+    await new Promise<void>((resolve, reject) => {
+      let timer = 0;
+      let observer: MutationObserver;
+      const finish = (error?: Error): void => {
+        observer.disconnect();
+        window.clearTimeout(timer);
+        if (error) reject(error);
+        else resolve();
+      };
+      observer = new MutationObserver(() => {
+        if (!sendBtn.disabled) finish();
+      });
+      timer = window.setTimeout(() => finish(new Error(disabledError)), 15000);
+      observer.observe(sendBtn, { attributes: true, attributeFilter: ["disabled"] });
+      if (!sendBtn.disabled) finish();
+    });
+  }
+  sendBtn.click();
+}
+
 // retryDraft drives the real composer a second time after retirement: enter
 // the retry draft, click Send, and await the replacement's accepted turn. The
 // source drops the first attempt's reply, so the turn only appears if the
 // client replayed the same mutation id.
 async function retryDraft(): Promise<void> {
-  enterIntoComposer(RETRY_DRAFT);
-  const sendBtn = [...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Send");
-  if (!sendBtn) throw new Error("retirementharness: Send button not found");
-  // The composer keeps Send disabled until it has content to send and an
-  // answer to send against, so wait for the state a user could click.
-  const enabledBy = performance.now() + 15000;
-  while (sendBtn.disabled && performance.now() < enabledBy) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  if (sendBtn.disabled) throw new Error("retirementharness: Send stayed disabled before the retry");
-  sendBtn.click();
+  await submitComposer(RETRY_DRAFT, "retirementharness: Send stayed disabled before the retry");
   await awaitTurn(RETRY_TURN_ID);
 }
 
@@ -330,6 +363,69 @@ function typeDraft(text: string): void {
   enterIntoComposer(text);
 }
 
+async function beginReplacementRestart(): Promise<void> {
+  if (!RESTART_URL) throw new Error("retirementharness: missing ?restart= query param");
+  if (!RESTART_DRAFT || !RESTART_TURN_ID) throw new Error("retirementharness: missing restart fixture identifiers");
+  retireThreshold = hydrationCount();
+  const resp = await fetch(RESTART_URL, { method: "POST" });
+  if (!resp.ok) throw new Error(`retirementharness: restart endpoint returned ${resp.status}`);
+}
+
+function restartRecord(record: {
+  clientMutationId: string;
+  method: string;
+  state: string;
+  composerText?: string;
+}): RestartMutationSnapshot {
+  return {
+    clientMutationId: record.clientMutationId,
+    method: record.method,
+    state: record.state,
+    composerText: record.composerText ?? "",
+  };
+}
+
+async function restartSubmission(): Promise<RestartSubmissionSnapshot> {
+  const snapshot = await readMutationPersistence(REF);
+  const matches = (record: { composerText?: string }): boolean => record.composerText === RESTART_DRAFT;
+  return {
+    outbox: snapshot.outbox.filter(matches).map(restartRecord),
+    recovery: snapshot.recovery.filter(matches).map(restartRecord),
+  };
+}
+
+let restartObserver: RestartSubmissionObserver | undefined;
+
+async function submitDuringReplacementRestart(): Promise<RestartSubmissionSnapshot> {
+  restartObserver = observeRestartSubmission({
+    read: restartSubmission,
+    subscribe: (listener) =>
+      subscribeMutationPersistence((refs) => {
+        if (refs.includes(REF)) listener();
+      }),
+    timeoutMs: 15000,
+  });
+  // Keep an early rejection handled while the runner examines the pending
+  // snapshot; releaseReplacement still awaits the original promise below.
+  void restartObserver.settled.catch(() => {});
+  await submitComposer(RESTART_DRAFT, "retirementharness: Send stayed disabled before restart-gated submission");
+  return restartObserver.pending;
+}
+
+async function releaseReplacement(): Promise<RestartSubmissionSnapshot> {
+  if (!RELEASE_URL) throw new Error("retirementharness: missing ?release= query param");
+  if (!restartObserver) throw new Error("retirementharness: restart submission was not observed");
+  const threshold = retireThreshold ?? hydrationCount();
+  const resp = await fetch(RELEASE_URL, { method: "POST" });
+  if (!resp.ok) throw new Error(`retirementharness: release endpoint returned ${resp.status}`);
+  const [, , durable] = await Promise.all([
+    awaitHydrationAbove(threshold),
+    awaitTurn(RESTART_TURN_ID),
+    restartObserver.settled,
+  ]);
+  return durable;
+}
+
 declare global {
   interface Window {
     retirementHarness: RetirementHarness;
@@ -349,4 +445,8 @@ window.retirementHarness = {
   retryDraft,
   degrade,
   typeDraft,
+  beginReplacementRestart,
+  submitDuringReplacementRestart,
+  releaseReplacement,
+  restartSubmission,
 };
