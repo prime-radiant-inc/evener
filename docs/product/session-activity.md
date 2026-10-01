@@ -239,6 +239,8 @@ returned job owner ref, delegate stopping addresses its controller root, and a
 child transcript opens the returned child ref. A rendering key never becomes an
 action argument. The [delegate stop handler](../../server/appwire_runtime.go)
 checks that root mutation boundary. Optional usage fields stay absent when unknown.
+Job output panes keep the logical job ID as their title when descriptive
+metadata is unavailable, while independently readable output remains usable.
 
 See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.ts),
 [lease tests](../../appwire-client/typescript/threadSubscription.test.ts) and

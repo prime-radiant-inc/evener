@@ -282,7 +282,8 @@ export interface ActivityDelegateState {
 }
 
 // A terminal entry's failure is the outcome the daemon already decided, so the
-// rows, the fold's failure count, and the merged badge counts stay one number.
+// rows and merged badge counts use that same truth; failed rows stay visible
+// outside inactive folds.
 // Work that has not ended carries no outcome and can only say so through its
 // current status.
 export function jobIsFailed(job: ActivityJob): boolean {
@@ -298,8 +299,8 @@ export function shellJobState(job: ActivityJob): "running" | "failed" | "done" {
 }
 
 // Stable delegates describe one reusable resource; other delegate types are
-// turn containers. Keep this in one place so row visibility, fold failure
-// counts, and the status shown by the row all use the protocol's same truth.
+// turn containers. Keep this in one place so row visibility and the status
+// shown by the row both use the protocol's same truth.
 export function activityDelegateState(delegate: ActivityDelegate): ActivityDelegateState {
   const childActive = delegate.child ? sessionIsActive(delegate.child) : false;
   const childFailed = (delegate.child?.counts.failed ?? 0) > 0;
