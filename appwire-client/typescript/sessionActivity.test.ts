@@ -1,5 +1,11 @@
 import { expect, test } from "vitest";
-import { decodeActivityRead, MAX_INTENT_LENGTH, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
+import {
+  decodeActivityRead,
+  MAX_INTENT_CODE_POINTS,
+  QUIET_AFTER_MS,
+  quietState,
+  STUCK_AFTER_MS,
+} from "./sessionActivity";
 
 const minutes = [0, 0, 1, 4, 9, 2, 0];
 
@@ -59,18 +65,30 @@ test("decodeActivityRead keeps the latest tool intent", () => {
 });
 
 // An intent a hub could not have cut to the wire's bound is a malformed entry
-// like any other, and drops its own row alone.
+// like any other, and drops its own row alone. The wire's bound counts Unicode
+// code points, so an astral character must not smuggle a longer line past it.
 test("decodeActivityRead drops a session whose intent is unusable", () => {
   const good = { ref: "local:a", minutes, runningSubagents: 0 };
+  const astral = "\u{1F600}";
   expect(
     decodeActivityRead({
       sessions: [
         good,
         { ref: "local:b", minutes, runningSubagents: 0, latestIntent: 42 },
-        { ref: "local:c", minutes, runningSubagents: 0, latestIntent: "x".repeat(MAX_INTENT_LENGTH + 1) },
+        { ref: "local:c", minutes, runningSubagents: 0, latestIntent: astral.repeat(MAX_INTENT_CODE_POINTS + 1) },
+        { ref: "local:d", minutes, runningSubagents: 0, latestIntent: "x".repeat(MAX_INTENT_CODE_POINTS + 1) },
       ],
     }),
   ).toEqual([good]);
+});
+
+// The bound itself is not a runaway: an intent of exactly the wire's length,
+// astral characters included, is kept.
+test("decodeActivityRead keeps an intent of exactly the wire's bound", () => {
+  const intent = "\u{1F600}".repeat(MAX_INTENT_CODE_POINTS);
+  expect(
+    decodeActivityRead({ sessions: [{ ref: "local:a", minutes, runningSubagents: 0, latestIntent: intent }] }),
+  ).toEqual([{ ref: "local:a", minutes, runningSubagents: 0, latestIntent: intent }]);
 });
 
 test("a working session reads Quiet from three minutes and May be stuck from ten", () => {

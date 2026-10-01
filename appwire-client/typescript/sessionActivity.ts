@@ -9,11 +9,25 @@ import type { SessionActivity } from "./types.gen";
 export const QUIET_AFTER_MS = 3 * 60_000;
 /** A working session reads May be stuck after ten. */
 export const STUCK_AFTER_MS = 10 * 60_000;
-/** The longest string this client keeps for a session's latest tool intent:
- * twice the 400 UTF-16 units the wire's bound (appwire.MaxIntentRunes, 200
- * runes) can ever cost, so it holds a runaway without ever dropping an intent
- * a hub may legitimately send. */
-export const MAX_INTENT_LENGTH = 800;
+/** The wire's bound on a session's latest tool intent, in Unicode code points
+ * (appwire.MaxIntentRunes): a hub never sends a longer one, so this is the
+ * whole of what a row may carry rather than a runaway backstop. Counting code
+ * points rather than UTF-16 units is what stops an astral character from
+ * measuring as two and smuggling a longer line past the bound. */
+export const MAX_INTENT_CODE_POINTS = 200;
+
+/** Whether value is an intent the wire's bound allows: at most
+ * MAX_INTENT_CODE_POINTS code points, astral characters counted once. The walk
+ * stops at the bound, so a runaway costs no more than the bound plus one step. */
+function intentWithinBound(value: string): boolean {
+  let points = 0;
+  for (let index = 0; index < value.length; ) {
+    const code = value.codePointAt(index) ?? 0;
+    index += code > 0xffff ? 2 : 1;
+    if (++points > MAX_INTENT_CODE_POINTS) return false;
+  }
+  return true;
+}
 
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 
@@ -28,8 +42,7 @@ function sessionActivity(value: unknown): SessionActivity | null {
   if (!Array.isArray(minutes) || minutes.length === 0 || minutes.length > 60 || !minutes.every(count)) return null;
   if (!count(runningSubagents)) return null;
   if (quietForMs !== undefined && !count(quietForMs)) return null;
-  if (latestIntent !== undefined && (typeof latestIntent !== "string" || latestIntent.length > MAX_INTENT_LENGTH))
-    return null;
+  if (latestIntent !== undefined && (typeof latestIntent !== "string" || !intentWithinBound(latestIntent))) return null;
   return {
     ref,
     minutes: [...minutes],
