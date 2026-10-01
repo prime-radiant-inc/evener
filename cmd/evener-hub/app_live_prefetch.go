@@ -24,8 +24,9 @@ const instanceLiveListTimeout = 8 * time.Second
 // minted at request start — is still current. A Reload landing mid-fetch
 // swaps in a fresh object (whose carryLive only knows the before
 // snapshot); the re-apply carries the listing forward instead of losing
-// it on the detached registry. An unsupported listing (ok == false)
-// carries no live facts, so it applies nothing.
+// it on the detached registry. An unusable provider result publishes an
+// empty snapshot so registry reads take the static fallback. Caller
+// cancellation leaves the last healthy snapshot untouched.
 func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, auth *hubAuthController, name string) error {
 	// The listing sends the instance's credential, so what the provider
 	// answers is recorded as a probe of it (#3539). The probe begins before
@@ -52,9 +53,13 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, au
 	rows, ok, err := fetchInstanceLiveWith(fetchCtx, newLiveClient(reg), name)
 	auth.settleCredentialProbe(probe, llm.ModelListing{Live: ok}, err)
 	if err != nil {
+		if ctx.Err() == nil {
+			holder.ReapplyLive(tok, name, id, nil)
+		}
 		return err
 	}
 	if !ok {
+		holder.ReapplyLive(tok, name, id, nil)
 		return nil
 	}
 	holder.ReapplyLive(tok, name, id, rows)
@@ -101,7 +106,11 @@ func newLiveClient(reg *registry.Registry) *llm.Client {
 func fetchInstanceLiveWith(ctx context.Context, client *llm.Client, name string) ([]registry.Model, bool, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, instanceLiveListTimeout)
 	defer cancel()
-	return client.ListLive(fetchCtx, name)
+	rows, ok, err := client.ListLive(fetchCtx, name)
+	if err != nil || !ok {
+		return rows, ok, err
+	}
+	return rows, client.LiveListingUsable(name, rows), nil
 }
 
 // visibleModelFacts snapshots the full observable facts behind the

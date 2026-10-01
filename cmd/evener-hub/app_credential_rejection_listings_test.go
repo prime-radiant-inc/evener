@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,7 @@ import (
 type listingGateway struct {
 	status  atomic.Int32
 	hits    atomic.Int32
+	noTools atomic.Bool
 	lastKey atomic.Value
 }
 
@@ -55,11 +57,16 @@ func newListingController(t *testing.T) (*hubInstancesController, *listingGatewa
 			_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided: ` + rejectionSecret + `","type":"invalid_request_error"}}`))
 			return
 		}
+		if gw.noTools.Load() {
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live","supported_parameters":["temperature"]}]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
 	}))
 	t.Cleanup(srv.Close)
 	tomlPath := filepath.Join(t.TempDir(), "providers.toml")
-	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\n"
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\n" +
+		"[providers.gw.models.\"catalog-fallback\"]\n"
 	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -170,10 +177,15 @@ func TestCredentialRejection_ThePickersLiveListingRecordsIt(t *testing.T) {
 	liveModelLoadClient = func(string) (*llm.Client, error) { return LiveRegistryClient(ctl.reg.Get()), nil }
 	t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
 
-	server.fetchLiveModels(context.Background())
+	models := server.fetchLiveModels(context.Background())
 
 	if got := gwError(t, server.auth); got != gwRejected {
 		t.Fatalf("error after the picker's listing = %q, want %q", got, gwRejected)
+	}
+	if !slices.ContainsFunc(models, func(model appwire.ModelDescriptor) bool {
+		return model.Provider == "gw" && model.Model == "catalog-fallback"
+	}) {
+		t.Fatalf("picker models = %+v, want gw/catalog-fallback despite the live error", models)
 	}
 }
 

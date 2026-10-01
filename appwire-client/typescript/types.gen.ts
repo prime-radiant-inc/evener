@@ -1673,9 +1673,9 @@ export interface InstanceEntry {
   warnings?: string[];
   /**
    * Models is the instance's known models with their effective
-   * disabled state, for the sheet's per-model toggles: exact catalog
-   * rows plus cached live ids, alias rows included. Empty for an
-   * instance with no rows.
+   * disabled state, for the sheet's per-model toggles: live ids plus
+   * additive overlay/config rows when usable, otherwise static fallback
+   * rows, with aliases included. Empty for an instance with no rows.
    */
   models?: InstanceModelEntry[];
 }

@@ -126,15 +126,24 @@ overlay field-wise, and later always wins regardless of level: a curated
 provider glob beats an upstream row fact, and a user-layer instance-wide
 `context_window` rewrites every row of that instance.
 
-The live layer sits between the curated overlay and the user config. It
-establishes existence for models the catalog lacks and supplies `Tools`,
-`InputModalities`, `ContextWindow`, `MaxOutputTokens`, `EffortValues`, `DefaultEffort`,
-`Cost`, `Reasoning`, plus `ThinkingAlwaysOn` (only when OpenRouter's
-`reasoning.mandatory` is `true`). It overrides catalog and curated facts but
-**never a field the user layer (layer 4) set**, and it never touches any
-other wire-shaping cap. Live rows matching the non-chat pattern list
-(`embedding`, `whisper`, `tts`, `dall-e`, `moderation`, `audio`,
-`transcribe`, `image`, `realtime`, `davinci`, `babbage`, `sora`) are dropped.
+Model visibility and fact precedence are separate. A non-empty usable live
+listing makes the visible ID set **live IDs + exact curated-overlay rows +
+exact user-config rows**; snapshot/cache-only IDs disappear. If the endpoint
+is unsupported, errors, times out, or returns no usable chat rows, the visible
+set falls back to **snapshot/cache + curated overlay + user config**. The
+original fetch error remains available to diagnostics while callers such as
+the hub picker can still display the fallback. A caller-cancelled hub prefetch
+does not erase a previously healthy live snapshot.
+
+For facts on a visible ID, the live layer sits between the curated overlay and
+the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
+`MaxOutputTokens`, `EffortValues`, `DefaultEffort`, `Cost`, `Reasoning`, plus
+`ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`). It
+overrides catalog and curated facts but **never a field the user layer (layer
+4) set**, and it never touches any other wire-shaping cap. Live rows matching
+the non-chat pattern list (`embedding`, `whisper`, `tts`, `dall-e`,
+`moderation`, `audio`, `transcribe`, `image`, `realtime`, `davinci`, `babbage`,
+`sora`) are unusable for model selection and are dropped.
 
 ## Instances
 
