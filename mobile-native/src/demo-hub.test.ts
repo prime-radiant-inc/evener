@@ -13,16 +13,11 @@ import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } 
 import { DEMO_MODEL_LIST } from "./dev/demoSetup.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
-import {
-	SessionActivityStore,
-	projectSessionActivity,
-	parseActivityTree,
-	parseJobLogTail,
-} from "@evener/appwire-client";
+import { SessionActivityStore, projectSessionActivity, parseJobLogTail } from "@evener/appwire-client";
 import { readDocFile } from "@evener/appwire-client/docContent";
 import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
 import { nativeDocPort } from "./nativeDocPort";
-import { flattenActivity, flattenJobs, flattenSubagents, isJobRow, isSubagentRow } from "./subagents/subagentModel";
+import { flattenActivity, isJobRow, isSubagentRow } from "./subagents/subagentModel";
 import { SubagentTree } from "./subagents/subagentTree";
 
 describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
@@ -318,35 +313,32 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 	// A shell job's detail reads its output from the session that owns it.
 	it("serves a listed shell job's output tail to the session that owns it", async () => {
 		await withFleetHub(async (_hub, client) => {
-			const listed = await client.request("evener/jobs/list", { ref: PR2138 });
-			const tree = parseActivityTree((listed as { data: unknown }).data);
-			if (!tree) throw new Error("no tree");
-			const failed = flattenJobs(tree, tree.root.label).find((row) => row.state === "failed");
+			const listed = await client.request("evener/thread/jobs/list", { ref: PR2138, scope: "subtree", limit: 200 });
+			const failed = listed.jobs.find((job) => job.status === "command_exited_nonzero");
 			if (!failed) throw new Error("no failed job");
-			const response = await client.request("evener/jobs/output", {
-				ref: failed.job.ownerRef,
-				jobId: failed.id,
-			});
+			const response = await client.request("evener/jobs/output", { ref: failed.ownerRef, jobId: failed.jobId });
 			const tail = parseJobLogTail((response as { data: unknown }).data);
 			expect(tail?.tail).toContain("FAIL");
 			expect(tail?.totalBytes).toBe(new TextEncoder().encode(tail?.tail ?? "").length);
 			// Only the owning session answers for the job, as on a real hub.
-			await expect(client.request("evener/jobs/output", { ref: PR2138, jobId: failed.id })).rejects.toThrow(
-				`job not found: ${failed.id}`,
+			await expect(client.request("evener/jobs/output", { ref: PR2138, jobId: failed.jobId })).rejects.toThrow(
+				`job not found: ${failed.jobId}`,
 			);
 		});
 	});
 
 	it("opens a subagent's own session through the real conversation service", async () => {
 		await withFleetHub(async (_hub, client) => {
-			const response = await client.request("evener/jobs/list", { ref: PR2138 });
-			const child = flattenSubagents(parseActivityTree((response as { data: unknown }).data) as never).find(
-				(row) => row.title === "Check drain ordering in tests",
-			);
+			const listed = await client.request("evener/thread/delegates/list", {
+				ref: PR2138,
+				scope: "subtree",
+				limit: 200,
+			});
+			const child = listed.delegates.find((row) => row.description === "Check drain ordering in tests");
 			if (!child) throw new Error("no nested subagent");
 			const service = createConversationService(client);
 			try {
-				const conversation = await service.open(child.ref);
+				const conversation = await service.open(child.childRef);
 				expect(conversation.items.length).toBeGreaterThan(0);
 			} finally {
 				service.close();
@@ -354,13 +346,11 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 		});
 	});
 
-	it("gives Get PR 2138 Test Clean's transcript the same subagent refs as its Subagents list", async () => {
+	it("gives Get PR 2138 Test Clean's transcript the same subagent refs as its Activity list", async () => {
 		await withFleetHub(async (_hub, client) => {
-			const listed = flattenSubagents(
-				parseActivityTree(
-					((await client.request("evener/jobs/list", { ref: PR2138 })) as { data: unknown }).data,
-				) as never,
-			).map((row) => row.ref);
+			const listed = (
+				await client.request("evener/thread/delegates/list", { ref: PR2138, scope: "subtree", limit: 200 })
+			).delegates.map((row) => row.childRef);
 			const read = await client.request("thread/read", { ref: PR2138, includeTurns: false });
 			const transcript = (read.thread.evener.diagnostics?.delegates ?? []).map((delegate) => delegate.transcriptRef);
 			expect(transcript.length).toBeGreaterThan(0);

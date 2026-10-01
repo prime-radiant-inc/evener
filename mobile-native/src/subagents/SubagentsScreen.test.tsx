@@ -1,9 +1,9 @@
 import { installActivityFixture } from "./sessionActivityTestUtils";
-// The Subagents list (spec 9): a coordinator's subagents, read whole from
-// evener/jobs/list, in failed, running and done sections, with the strip, the
-// chips, search, and each row's why and last line.
+// The Activity list (spec 9): a coordinator's subagents and shell jobs, read
+// through the typed activity reads, in failed, running and done sections, with
+// the strip, the chips, search, and each row's why and last line.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { ACTIVITY_REFRESH_MIN_INTERVAL_MS, WireError } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
@@ -89,15 +89,16 @@ const doneOne = (id: string, description: string) =>
 function specTree() {
 	const race = failedOne("race", "Fix race in tree settle", {
 		reason: "go test exited 1 (3 times)",
+		usage: { inputTokens: 1_000_000, outputTokens: 200_000, totalTokens: 1_200_000 },
 		child: session("local:race", "Fix race in tree settle", [runningOne("repro", "Reproduce the race")]),
 	});
 	const running = Array.from({ length: 31 }, (_, index) =>
 		runningOne(`run-${index}`, index === 0 ? "Port the drain to the new lock" : `Running task ${index}`, {
 			...(index === 0
 				? {
-						resolvedModel: "gpt-5",
+						model: "gpt-5",
 						worktree: { path: "/w", branch: "fix/drain", headSha: "abc", ahead: 1, dirty: false },
-						usage: { inputTokens: 1_000_000, outputTokens: 200_000, totalTokens: 1_200_000 },
+						usage: { inputTokens: 300_000, outputTokens: 10_000, totalTokens: 310_000 },
 					}
 				: {}),
 		}),
@@ -148,18 +149,19 @@ async function settle() {
 	});
 }
 
-// The list paces whole-tree reads, so the read a notification asks for runs
-// once the minimum interval has passed.
+// The activity store re-reads what a notification names at once.
 async function treeUpdatedAndRead(hubClient: FakeClient) {
-	vi.useFakeTimers();
-	hubClient.emitNotification({
-		method: "evener/thread/activity/changed",
-		params: { threadId: "coord", sessionId: "coord", ref: "local:coord", resources: ["summary", "delegates", "jobs"] },
-	} as never);
-	await act(async () => {
-		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
-	});
-	vi.useRealTimers();
+	act(() =>
+		hubClient.emitNotification({
+			method: "evener/thread/activity/changed",
+			params: {
+				threadId: "coord",
+				sessionId: "coord",
+				ref: "local:coord",
+				resources: ["summary", "delegates", "jobs"],
+			},
+		} as never),
+	);
 	await settle();
 }
 
@@ -388,7 +390,7 @@ it("searches past eight subagents, filtering rows and section counts while the c
 	expect(pressable(tree, "Clear filter")).toBeDefined();
 });
 
-it("reads a failure, a nested subagent, another model, a branch and tokens on their rows", async () => {
+it("reads a failure, a nested subagent, another model, a branch and a finished run's tokens on their rows", async () => {
 	const tree = await mount();
 	const shown = text(tree);
 	expect(shown).toContain("go test exited 1 (3 times)");
@@ -396,6 +398,8 @@ it("reads a failure, a nested subagent, another model, a branch and tokens on th
 	expect(shown).toContain("GPT-5");
 	expect(shown).toContain("fix/drain");
 	expect(shown).toContain("1.2M tokens");
+	// A running subagent's usage is an earlier run's, so its row shows none.
+	expect(shown).not.toContain("310K tokens");
 	expect(pressable(tree, "Fix race in tree settle, Failed, go test exited 1 (3 times), 6 minutes")).toBeDefined();
 	expect(shown).toContain("6m");
 });

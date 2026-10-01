@@ -971,9 +971,6 @@ export interface DemoFleet extends FleetAnswers {
 	// ref), another host's by its ref. Returns the reply and the
 	// evener/navigation/invalidated payload a real hub sends for it.
 	archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload };
-	// Answers evener/jobs/list: a coordinator's subagent tree, and an empty
-	// root for any other fleet session (demoSubagents.ts).
-	answerJobsList(params: { ref?: string; continuation?: string }): { data: unknown };
 	// Answers evener/jobs/output: a listed shell job's tail (demoSubagents.ts),
 	// only for the session that owns it (its ownerRef), as a hub answers.
 	answerJobsOutput(params: { ref?: string; jobId: string }): { data: unknown };
@@ -1020,7 +1017,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				sessionRef(raw) === ref || findSubagent(rawChildren(raw), ref, (id) => hostSessionRef(hostId(raw.host), id)),
 		);
 		if (!owner) return null;
-		const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(owner)), startupMs).data);
+		const tree = parseActivityTree(demoActivityTree(coordinatorOf(owner), startupMs).data);
 		if (!tree) throw new Error("Invalid demonstration activity authority");
 		return { tree, availability: owner.state === "shutdown" ? "retained" : "live" };
 	}, `demo-activity-${startupMs}`);
@@ -1130,13 +1127,12 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerDelegatesList: activity.delegates,
 		answerSessionJobsList: activity.jobs,
 		answerWatchesList: activity.watches,
-		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
 		answerJobsOutput: (params) => {
 			// Read back as the phone reads the tree, so the job answered is the
 			// one the Activity list shows, and only for the session that owns
 			// it, as a hub answers.
 			for (const raw of sessionsList) {
-				const tree = parseActivityTree(demoActivityTree(coordinatorFor(sessionsList, sessionRef(raw)), startupMs).data);
+				const tree = parseActivityTree(demoActivityTree(coordinatorOf(raw), startupMs).data);
 				const job = tree ? flattenJobs(tree, tree.root.label).find((row) => row.id === params.jobId)?.job : undefined;
 				if (job && job.ownerRef === params.ref) return demoJobOutput(job);
 			}
@@ -1145,31 +1141,21 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	};
 }
 
-// The fleet session or subagent a ref names, as the coordinator of the
-// subagents it started (demoSubagents.ts); nobody's, an empty tree. A
-// subagent's are its children, named as the Board's child rows and the
-// sessions' delegates name them.
-function coordinatorFor(sessions: readonly RawSession[], ref: string): DemoCoordinator {
-	for (const raw of sessions) {
-		const host = hostId(raw.host);
-		const subagentRef = (id: string) => hostSessionRef(host, id);
-		const model = raw.model ?? "";
-		if (sessionRef(raw) === ref) {
-			const command = runningCommand(raw);
-			return {
-				ref,
-				title: raw.title,
-				model,
-				subagents: rawChildren(raw),
-				jobs: raw.jobs,
-				...(command ? { runningJob: { id: raw.id, command } } : {}),
-				subagentRef,
-			};
-		}
-		const sub = findSubagent(rawChildren(raw), ref, subagentRef);
-		if (sub) return { ref, title: sub.title, model: sub.model ?? model, subagents: sub.children ?? [], subagentRef };
-	}
-	return { ref, title: "", model: "", subagents: [], subagentRef: (id) => id };
+// A fleet session as the coordinator of the subagents it started
+// (demoSubagents.ts), named as the Board's child rows and the sessions'
+// delegates name them.
+function coordinatorOf(raw: RawSession): DemoCoordinator {
+	const host = hostId(raw.host);
+	const command = runningCommand(raw);
+	return {
+		ref: sessionRef(raw),
+		title: raw.title,
+		model: raw.model ?? "",
+		subagents: rawChildren(raw),
+		jobs: raw.jobs,
+		...(command ? { runningJob: { id: raw.id, command } } : {}),
+		subagentRef: (id) => hostSessionRef(host, id),
+	};
 }
 
 function findSubagent(

@@ -86,6 +86,30 @@ func TestMaterializeFixtureRejectsUntrackedPathEscape(t *testing.T) {
 	}
 }
 
+// TestMaterializeFixtureCommitDisablesAutoMaintenance: since git 2.5x a commit
+// runs `git maintenance run --auto --detach` (run-command.c:
+// prepare_auto_maintenance). That writer lives in its own session, outlives the
+// commit, and writes into the fixture's .git — recreating it if t.TempDir()
+// cleanup already removed it, so cleanup then fails with "directory not empty".
+// The fixture must commit with maintenance.auto=false, as the worktree tools
+// already do, so no detached writer is left to race the cleanup.
+func TestMaterializeFixtureCommitDisablesAutoMaintenance(t *testing.T) {
+	t.Parallel()
+	work := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(work, fixtureSpec{Git: true, Files: map[string]string{"main.go": "package main\n"}}); err != nil {
+		t.Fatalf("materializeFixture: %v", err)
+	}
+	cmd := exec.Command("git", "config", "--get", "maintenance.auto")
+	cmd.Dir = work
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("the fixture repository does not set maintenance.auto, so on git 2.5x its commit leaves a detached `git maintenance run --auto` writer that outlives it and races t.TempDir() cleanup: git config --get maintenance.auto: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "false" {
+		t.Errorf("fixture maintenance.auto = %q, want false so the fixture's commit leaves no detached maintenance writer", got)
+	}
+}
+
 // TestRunCheckCutsTheFixtureOffFromAnEnclosingRepository: results can land
 // inside a repository with a go.work, such as evener's own. A check still sees
 // the fixture as its own Go module and finds no git repository above it.

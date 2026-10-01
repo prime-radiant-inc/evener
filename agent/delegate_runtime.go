@@ -689,7 +689,10 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// rather than relying on each caller to remember (#940).
 	// drivePendingStableDelegateAttention reaches this primitive directly with no
 	// caller-side gate.
-	blocked := sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id)
+	// startBlockedLocked is the shared drive-guard predicate delegate_send reads
+	// through takeSendDriveGuard, so the two busy lists cannot drift. The
+	// attention-only extras are layered on top.
+	blocked := sub.startBlockedLocked() || sub.closed || sub.fatalRunGated || s.childCommittedSendStart(sub.sess.id)
 	if !blocked {
 		sub.driving = true
 	}
@@ -702,9 +705,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		if launched {
 			return
 		}
-		sub.mu.Lock()
-		sub.driving = false
-		sub.mu.Unlock()
+		releaseSendDriveGuard(sub)
 	}()
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
@@ -1344,9 +1345,10 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 // takeSendDriveGuard takes sub's drive guard for a send's start: it sets
 // driving unless the child can't take a new generation now (a run, a drive
 // or a finalizer in flight, or worktree disposal holding it), and reports
-// whether it did. The sibling guard in driveStableDelegateAttention refuses
-// on these flags too, and also on a closed or fatally gated child and on a
-// committed-send claim, which a send has already settled by this point.
+// whether it did. The sibling guard in driveStableDelegateAttention routes
+// through startBlockedLocked too, and also refuses a closed or fatally gated
+// child and a committed-send claim, which a send has already settled by this
+// point.
 // `running` goes false at the top of a run's finalize block, before
 // FinishGeneration moves the aggregate back to idle and before finalizing is
 // cleared, so the finalizer and dispose flags are read under the same sub.mu
@@ -1364,8 +1366,8 @@ func (s *Session) takeSendDriveGuard(sub *subagent) bool {
 	return true
 }
 
-// releaseSendDriveGuard gives back the guard takeSendDriveGuard took, on a
-// send that didn't hand its start to a run.
+// releaseSendDriveGuard gives back a drive guard taken by takeSendDriveGuard or
+// by driveStableDelegateAttention, on a start that didn't hand over to a run.
 func releaseSendDriveGuard(sub *subagent) {
 	sub.mu.Lock()
 	sub.driving = false
@@ -1864,6 +1866,13 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 	}
 	result := stableDelegateFailedSendResult(started, plans, errors.Join(cause, executeErr))
 	if waiter == nil || result.Action == "recovery_required" {
+		return stableDelegateSendOutcome{result: result}
+	}
+	if runtime.owner.delegateController.dropStoppedDelegateWaiter(started.lease) {
+		// The failed start already settled this generation durably, and a
+		// covering stop owns its delivery, so no inline delivery will answer
+		// the wait: answer with the stopped outcome instead of sitting out
+		// max_wait (#3502).
 		return stableDelegateSendOutcome{result: result}
 	}
 	waitCtx := ctx
