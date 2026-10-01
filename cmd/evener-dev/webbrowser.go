@@ -23,14 +23,14 @@ import (
 )
 
 // browserGuards is every guard in verdict order.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "skillguard"}
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "sessioncacheguard", "retirementguard", "mermaidguard", "skillguard"}
 
 const (
 	skillGuard      = "skillguard"
 	retirementGuard = "retirementguard"
 )
 
-// newBrowserGate is the browser gate over its eight guards; the caller supplies
+// newBrowserGate is the browser gate over its guards; the caller supplies
 // where it runs (see runWebGate).
 func newBrowserGate(slots int, buildFrontend bool) *webGate {
 	return &webGate{

@@ -292,8 +292,13 @@ export async function waitForHttp(
  * as a successful measurement. Callers close() in a finally.
  */
 export async function connectPage(endpoint) {
+  return connectPageMatching(endpoint, () => true);
+}
+
+/** Attach to a particular real tab without depending on /json/list order. */
+export async function connectPageMatching(endpoint, match) {
   const targets = await (await fetch(devtoolsHttpURL(endpoint, "/json/list"))).json();
-  const target = targets.find((entry) => entry.type === "page");
+  const target = targets.find((entry) => entry.type === "page" && match(entry));
   if (!target) throw new Error("chrome exposed no page target");
 
   const ws = new WebSocket(target.webSocketDebuggerUrl);
@@ -322,6 +327,23 @@ export async function connectPage(endpoint) {
     });
 
   return { ws, send, close: () => ws.close() };
+}
+
+/** Chrome's browser WS announcement also names the DevTools HTTP listener. */
+export async function openPage(endpoint, url) {
+  const response = await fetch(devtoolsHttpURL(endpoint, `/json/new?${encodeURIComponent(url)}`), {
+    method: "PUT",
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`openPage: HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function closePage(endpoint, targetId) {
+  const response = await fetch(devtoolsHttpURL(endpoint, `/json/close/${encodeURIComponent(targetId)}`), {
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`closePage ${targetId}: HTTP ${response.status}`);
 }
 
 // The bounded re-navigation budget navigateTo's boot options use: a harness
