@@ -232,6 +232,13 @@ surface observes the summary. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation.
 
+The composer names its receiving conversation even when a child or output pane
+has focus. Job rows and output tabs use the job description when present, and
+output details retain the command and exit status. Each output pane publishes
+its already loaded title through the [pane chrome store](../../cmd/evener-hub/frontend/src/shell/chromeStore.ts);
+tab naming adds no metadata request. Closing Activity from within the sidebar
+returns keyboard focus to its opener or the matching footer control.
+
 The [visible transcript](../../cmd/evener-hub/frontend/src/panes/session/transcript/useEntityView.ts)
 observes session-scoped jobs and delegates for inline entity links and controls.
 It shares those reads with other holders of the same binding. If neither
