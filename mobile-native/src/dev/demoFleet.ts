@@ -734,6 +734,12 @@ function rawChildren(raw: RawSession): RawSubagent[] {
 	return [];
 }
 
+// A live top-level session: not shut down and not archived, the set Live's rows
+// and the pulse read both report.
+function isLiveSession(raw: RawSession): boolean {
+	return raw.state !== "shutdown" && !raw.archived;
+}
+
 // A live root's compact whole-tree tally. Activity trees retain the detailed
 // descendants independently of the flat navigation records.
 function subagentTally(subs: readonly RawSubagent[]): { running: number; failed: number; done: number } {
@@ -766,7 +772,7 @@ function latestIntentOf(raw: RawSession): string | undefined {
 	if (
 		activity === undefined ||
 		activity === "Thinking" ||
-		activity.startsWith("Running ") ||
+		runningCommand(raw) !== undefined ||
 		activity.startsWith("Waiting on ")
 	)
 		return undefined;
@@ -1187,10 +1193,10 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 			const elapsed = Math.max(0, clock() - startupMs);
 			return {
 				// Only a live top-level session is read: an ended or archived one is
-				// absent, and a ref the fleet doesn't hold is simply not named.
+				// absent, and a ref the fleet doesn't hold is simply not named. Sorted
+				// by ref, as the hub sorts its own answer (app_activity.go).
 				sessions: sessionsList
-					.filter((raw) => raw.state !== "shutdown" && !raw.archived)
-					.filter((raw) => !wanted || wanted.has(sessionRef(raw)))
+					.filter(isLiveSession)
 					.map((raw): SessionActivity => {
 						const runningSubagents = subagentTally(rawChildren(raw)).running;
 						const level = runningSubagents + (runningCommand(raw) ? 1 : 0);
@@ -1206,7 +1212,9 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 							...(raw.state === "working" && runningSubagents === 0 ? { quietForMs: quietBase + elapsed } : {}),
 							...(latestIntent === undefined ? {} : { latestIntent }),
 						};
-					}),
+					})
+					.filter((session) => !wanted || wanted.has(session.ref))
+					.sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)),
 			};
 		},
 		answerActivityRead: activity.summary,
@@ -1297,7 +1305,7 @@ function fleetAnswers(
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
 
 	// An archived session leaves Live, whatever its state.
-	const liveRaw = sessionsList.filter((raw) => raw.state !== "shutdown" && !raw.archived);
+	const liveRaw = sessionsList.filter(isLiveSession);
 	const liveSessions = liveRaw.map(rowOf);
 	const needsYouSessions = liveRaw.filter((raw) => NEEDS_YOU_STATES.has(raw.state)).map(rowOf);
 	// "9 working" (spec 7.1's Live summary line) is the working band itself,
