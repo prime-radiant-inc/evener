@@ -12,15 +12,17 @@ import { createProjectBrowserController, type ProjectSessionTier } from "./proje
 
 function boundary() {
 	const requests: Array<{
-		params: NavigationReadParams;
+		method: string;
+		params: NavigationReadParams & { cursor?: string };
 		resolve: (value: NavigationReadResponse) => void;
 		reject: (error: Error) => void;
 	}> = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
-		request: (_method, params) =>
+		request: (method, params) =>
 			new Promise((resolve, reject) => {
 				requests.push({
+					method,
 					params: params as NavigationReadParams,
 					resolve,
 					reject,
@@ -61,7 +63,9 @@ const session = (ref: string) => ({
 	children: [],
 });
 type Row = ReturnType<typeof session>;
-/** Answers one project's tier reads, each with its own rows and remaining. */
+const ARCHIVED_LIST = "evener/archived/list";
+/** Answers one project's tier reads, each with its own rows and remaining:
+ * Today and Recent from navigation, Archived from the archived list. */
 function answerTiers(
 	pending: readonly (Pending | undefined)[],
 	rows: Partial<Record<ProjectSessionTier, Row[]>> = {},
@@ -70,6 +74,16 @@ function answerTiers(
 ) {
 	for (const request of pending) {
 		if (!request) continue;
+		if (request.method === ARCHIVED_LIST) {
+			const sessions = rows.archived ?? [];
+			const more = remaining.archived ?? 0;
+			request.resolve({
+				sessions,
+				total: sessions.length + more,
+				...(more > 0 ? { nextCursor: "next" } : {}),
+			} as never);
+			continue;
+		}
 		const tier = request.params.tier as ProjectSessionTier;
 		request.resolve(
 			response(
@@ -88,7 +102,9 @@ function answerTiers(
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const label = (request: Pending | undefined) =>
-	`${request?.params.projectKey ?? "catalog"}:${request?.params.tier ?? ""}`;
+	request?.method === ARCHIVED_LIST
+		? `${request.params.projectKey}:archived list`
+		: `${request?.params.projectKey ?? "catalog"}:${request?.params.tier ?? ""}`;
 /** A controller whose catalog holds project "a", expanded, with its tiers
  * answered with these rows and remaining counts. */
 async function loadedProject(
@@ -137,7 +153,7 @@ describe("project browser", () => {
 		expect(requests).toHaveLength(1);
 		expect(controller.getSnapshot().groups).toEqual([]);
 		const expanding = controller.expand("a");
-		expect(requests.map(label)).toEqual(["catalog:", "a:current", "a:recent", "a:archived"]);
+		expect(requests.map(label)).toEqual(["catalog:", "a:current", "a:recent", "a:archived list"]);
 		answerTiers(requests.slice(1), {
 			current: [session("a1")],
 			recent: [session("a2")],
@@ -151,6 +167,45 @@ describe("project browser", () => {
 		expect(listeners.size).toBe(4);
 		controller.dispose();
 		expect(listeners.size).toBe(0);
+	});
+
+	// Navigation serves no archived rows: a project's Archived fold reads the
+	// archived list of the catalog its section shows.
+	it("reads an expanded project's archived sessions from its section's archived list", async () => {
+		for (const catalog of ["projects", "archived_projects", "test_runs"] as const) {
+			const { client, requests } = boundary();
+			const controller = createProjectBrowserController(client, catalog);
+			const loading = controller.initialLoad();
+			requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
+			await loading;
+			const expanding = controller.expand("a");
+			expect(requests.filter((request) => request.method === ARCHIVED_LIST).map((request) => request.params)).toEqual(
+				[{ catalog, projectKey: "a" }],
+			);
+			answerTiers(requests.slice(1), { archived: [session("a0")] }, { archived: 3 });
+			await expanding;
+			expect(controller.getSnapshot().groups[0]?.archived).toMatchObject({
+				loaded: true,
+				remaining: 3,
+				rows: [{ ref: "a0" }],
+			});
+			controller.dispose();
+		}
+	});
+
+	it("pages a project's archived list on with its cursor", async () => {
+		const { controller, requests } = await loadedProject({ archived: [session("a0")] }, { archived: 1 });
+		const more = controller.loadMoreSessions("a", "archived");
+		expect(requests.slice(4).map((request) => [label(request), request.params.cursor])).toEqual([
+			["a:archived list", "next"],
+		]);
+		answerTiers(requests.slice(4), { archived: [session("a1")] });
+		await more;
+		expect(controller.getSnapshot().groups[0]?.archived).toMatchObject({
+			remaining: 0,
+			rows: [{ ref: "a0" }, { ref: "a1" }],
+		});
+		controller.dispose();
 	});
 
 	it("collapse keeps a project's rows and stops it loading more", async () => {
@@ -221,10 +276,10 @@ describe("project browser", () => {
 		const { controller, requests, invalidate } = await loadedProject();
 		invalidate({ kind: "project", projectKey: "a", revision: 2 });
 		expect(requests).toHaveLength(7);
-		expect(requests.slice(4).map((r) => [r.params.tier, r.params.offset])).toEqual([
-			["current", 0],
-			["recent", 0],
-			["archived", 0],
+		expect(requests.slice(4).map((r) => [label(r), r.params.offset ?? r.params.cursor])).toEqual([
+			["a:current", 0],
+			["a:recent", 0],
+			["a:archived list", undefined],
 		]);
 		expect(controller.getSnapshot().groups[0]?.current).toMatchObject({
 			stale: true,
@@ -290,7 +345,7 @@ describe("project browser", () => {
 		expect(requests).toHaveLength(4);
 		expect(controller.getSnapshot().groups[0]?.current.stale).toBe(true);
 		controller.resume();
-		expect(requests).toHaveLength(7);
+		expect(requests.slice(4).map(label)).toEqual(["a:current", "a:recent", "a:archived list"]);
 		controller.dispose();
 	});
 

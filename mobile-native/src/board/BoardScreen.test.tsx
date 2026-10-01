@@ -6,6 +6,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type {
 	AnyNotification,
 	AppwireClientLike,
+	ArchivedListParams,
 	ConnectionState,
 	HubNotice,
 	NavigationInvalidationTarget,
@@ -245,7 +246,9 @@ interface Fleet {
 	noticesFail?: boolean;
 	/** Each project catalog's projects; a catalog left out is empty. */
 	catalogs?: Partial<Record<ProjectCatalogName, NavigationProjectSummary[]>>;
-	/** Each project tier's sessions, keyed `${projectKey}:${tier}`, paged by the read's limit. */
+	/** Each project tier's sessions, keyed `${projectKey}:${tier}`, paged by the
+	 * read's limit. As on the hub, navigation serves the archived tier empty and
+	 * evener/archived/list serves its rows. */
 	projectPages?: Record<string, NavigationSessionSummary[]>;
 }
 type ProjectCatalogName = "projects" | "archived_projects" | "test_runs";
@@ -287,6 +290,7 @@ function hub(
 	{ holdChanges = false, refuse = false } = {},
 ) {
 	const requests: NavigationReadParams[] = [];
+	const archivedReads: ArchivedListParams[] = [];
 	const activityReads: unknown[] = [];
 	const noticeReads: string[] = [];
 	const searches: string[] = [];
@@ -321,7 +325,7 @@ function hub(
 			return { projects: page, remaining: projects.length - offset - page.length };
 		}
 		if (params.resource === "project_page") {
-			const rows = shape.projectPages?.[`${params.projectKey}:${params.tier}`] ?? [];
+			const rows = params.tier === "archived" ? [] : (shape.projectPages?.[`${params.projectKey}:${params.tier}`] ?? []);
 			const page = rows.slice(offset, offset + (params.limit ?? 50));
 			return { sessions: page, remaining: rows.length - offset - page.length };
 		}
@@ -466,6 +470,21 @@ function hub(
 						else reject(new WireError("no such method", -32601));
 						return;
 					}
+					if (method === "evener/archived/list") {
+						// The cursor is the offset of the next page.
+						const read = params as ArchivedListParams;
+						archivedReads.push(read);
+						const rows = shape.projectPages?.[`${read.projectKey}:archived`] ?? [];
+						const offset = Number(read.cursor ?? 0);
+						const page = rows.slice(offset, offset + (read.limit || 50));
+						const next = offset + page.length;
+						resolve({
+							sessions: page,
+							total: rows.length,
+							...(next < rows.length ? { nextCursor: String(next) } : {}),
+						} as never);
+						return;
+					}
 					if (method !== "evener/navigation/read") throw new Error(`unexpected ${method}`);
 					const read = params as NavigationReadParams;
 					requests.push(read);
@@ -499,6 +518,7 @@ function hub(
 	return {
 		client,
 		requests,
+		archivedReads,
 		activityReads,
 		noticeReads,
 		searches,
@@ -2764,8 +2784,10 @@ const projectRows = (tree: ReactTestRenderer, label: string) =>
 	);
 const catalogReads = (fake: ReturnType<typeof hub>) =>
 	fake.requests.filter((read) => read.resource === "catalog").map((read) => read.catalog);
-const pageReads = (fake: ReturnType<typeof hub>) =>
-	fake.requests.filter((read) => read.resource === "project_page").map((read) => `${read.tier}@${read.offset ?? 0}`);
+const pageReads = (fake: ReturnType<typeof hub>) => [
+	...fake.requests.filter((read) => read.resource === "project_page").map((read) => `${read.tier}@${read.offset ?? 0}`),
+	...fake.archivedReads.map((read) => `archived list ${read.catalog}@${read.cursor ?? 0}`),
+];
 const rowOpacity = (node: ReactTestInstance) =>
 	(typeof node.props.style === "function" ? node.props.style({ pressed: false }) : node.props.style).opacity ?? 1;
 
@@ -2852,7 +2874,7 @@ it("reads an unfolded project's pages once, reads nothing to fold it, and rememb
 	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: false });
 	pressLabel(tree, "evener");
 	await settle();
-	expect(pageReads(fake).sort()).toEqual(["archived@0", "current@0", "recent@0"]);
+	expect(pageReads(fake).sort()).toEqual(["archived list projects@0", "current@0", "recent@0"]);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	pressLabel(tree, "evener");
 	await settle();
@@ -3180,7 +3202,7 @@ it("keeps every project row on screen from a dropped client until the new client
 	holding = false;
 	next.release();
 	await settle();
-	expect(pageReads(next).sort()).toEqual(["archived@0", "current@0", "recent@0"]);
+	expect(pageReads(next).sort()).toEqual(["archived list projects@0", "current@0", "recent@0"]);
 	expect(hasRow(tree, "Local work")).toBe(true);
 	act(() => tree.unmount());
 });
