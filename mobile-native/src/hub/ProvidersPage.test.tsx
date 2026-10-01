@@ -2264,9 +2264,9 @@ function linkedPage(focus: string) {
 			typeof ProvidersPage
 		>;
 	const tree = render(<ProvidersPage {...page({ focus })} />);
-	// A link reaches this page only with its list in front: a link while a
-	// detail is pushed stacks a new Providers page instead (openNotice names
-	// no `pop`, #3524). So a relink goes back to the list first.
+	// A link reaches this page with its list in front: one that names it while
+	// a detail is pushed pops back to the list first, through the detail's guard
+	// (#3524). So a relink goes back to the list first.
 	const relink = async (next: string) => {
 		if (detailParams()) back();
 		await act(async () => tree.update(<ProvidersPage {...page({})} />));
