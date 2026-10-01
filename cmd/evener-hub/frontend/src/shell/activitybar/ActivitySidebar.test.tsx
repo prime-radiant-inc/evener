@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeAll, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
@@ -9,6 +10,7 @@ import {
   activityDelegate,
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
+import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { currentSessionRef, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
@@ -16,6 +18,11 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activ
 
 beforeAll(async () => {
   await import("../../panes/transcript");
+});
+
+beforeEach(() => {
+  installLocalStorage(new MemoryStorage());
+  resetDisclosureStoreForTests();
 });
 
 const ref = "remote:owner";
@@ -27,6 +34,7 @@ const mount = () =>
   );
 afterEach(() => {
   cleanup();
+  resetDisclosureStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
@@ -92,6 +100,34 @@ test("inactive fold and explicit keyset pages preserve useful loaded rows", asyn
     { ref, scope: "session" },
     { ref, scope: "session", cursor: "page-two" },
   ]);
+});
+
+test("a fresh sidebar case starts with inactive delegates folded after a prior reader expanded them", async () => {
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", () => ({
+    context: activityContext(),
+    scope: "session",
+    delegates: [
+      activityDelegate({
+        delegateId: "done-fresh",
+        childRef: "remote:done-fresh",
+        description: "Fresh completed delegate",
+        terminal: true,
+        status: "completed",
+        phase: "done",
+        lifecycle: "idle",
+      }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  mount();
+  await screen.findByRole("button", { name: /Inactive subagents/ });
+  expect(screen.queryByRole("button", { name: /Fresh completed delegate/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Inactive subagents/ }));
+  expect(screen.getByRole("button", { name: /Fresh completed delegate/ })).toBeTruthy();
 });
 
 test("exact child focus switches demand without sibling leakage or a navigation activity reader", async () => {
