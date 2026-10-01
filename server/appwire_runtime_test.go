@@ -534,7 +534,7 @@ func TestAppDiagnosticsFromDetailedStatus_DelegateRosterKeepsClientFields(t *tes
 	valid := true
 	message := json.RawMessage("null")
 	input := DelegateStatusInfo{
-		DelegateID: "dlg_wire", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
+		RunGeneration: 3, DelegateID: "dlg_wire", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
 		ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Outcome: "completed",
 		Resumable: true, NeedsAttention: true, ProjectionRevision: 6, Task: "task", Message: message, StructuredResult: json.RawMessage("null"), StructuredValid: &valid,
 		Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"}, Usage: &appwire.EvenerUsage{InputTokens: 3, TotalTokens: 3},
@@ -545,7 +545,7 @@ func TestAppDiagnosticsFromDetailedStatus_DelegateRosterKeepsClientFields(t *tes
 		t.Fatalf("delegates = %+v", got.Delegates)
 	}
 	delegate := got.Delegates[0]
-	if delegate.DelegateID != input.DelegateID || delegate.ParentDelegateID != input.ParentDelegateID || !delegate.NeedsAttention || delegate.ProjectionRevision != input.ProjectionRevision ||
+	if delegate.RunGeneration != input.RunGeneration || delegate.DelegateID != input.DelegateID || delegate.ParentDelegateID != input.ParentDelegateID || !delegate.NeedsAttention || delegate.ProjectionRevision != input.ProjectionRevision ||
 		len(delegate.Message) != 0 || len(delegate.StructuredResult) != 0 || delegate.StructuredValid == nil || !*delegate.StructuredValid || delegate.Usage == nil || delegate.Worktree == nil ||
 		!reflect.DeepEqual(delegate.Warnings, input.Warnings) || !reflect.DeepEqual(delegate.Diagnostics, input.Diagnostics) {
 		t.Fatalf("app delegate diagnostics = %+v", delegate)

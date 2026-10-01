@@ -431,8 +431,8 @@ function Subagent({
 	// tree shows it done; until then the line says what the roster knows.
 	const finished = line.state === "done" ? line.delegateId : undefined;
 	const outcome = useMemo(
-		() => (tree && finished ? subagentOutcome(tree, finished, now, ownerRef) : undefined),
-		[tree, finished, now, ownerRef],
+		() => (tree && finished ? subagentOutcome(tree, finished, now, ownerRef, line.runGeneration) : undefined),
+		[tree, finished, now, ownerRef, line.runGeneration],
 	);
 	return <SubagentRow line={outcome ? { ...line, activity: outcome } : line} onOpen={openSubagent} />;
 }

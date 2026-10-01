@@ -64,6 +64,7 @@ const tool = (
 const nestedDelegates: EvenerDelegateInfo[] = Object.entries(parentRefs)
   .filter(([ref]) => ref === GRANDCHILD || ref === GREAT_GRANDCHILD)
   .map(([ref, parentRef]) => ({
+    runGeneration: 1,
     delegateId: `dlg_${ref.slice(6).replaceAll("-", "_")}`,
     ownerSessionId: parentRef.slice(6),
     rootSessionId: PARENT.slice(6),
@@ -81,6 +82,7 @@ const nestedDelegates: EvenerDelegateInfo[] = Object.entries(parentRefs)
   }));
 const delegates: EvenerDelegateInfo[] = [
   {
+    runGeneration: 1,
     delegateId: "dlg_editorial_report",
     ownerSessionId: "editorial-parent",
     rootSessionId: "editorial-parent",
@@ -97,6 +99,7 @@ const delegates: EvenerDelegateInfo[] = [
     projectionRevision: 2,
   },
   {
+    runGeneration: 1,
     delegateId: "dlg_editorial_resumed",
     ownerSessionId: "editorial-parent",
     rootSessionId: "editorial-parent",

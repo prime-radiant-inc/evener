@@ -195,7 +195,7 @@ func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 	valid, resumable := true, false
 	running, quiet, duration := int64(100), int64(40), int64(60)
 	in := agent.DelegateStatusInfo{
-		DelegateID: "dlg_bridge", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
+		DelegateID: "dlg_bridge", RunGeneration: 2, OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
 		ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Outcome: "exhausted",
 		Reason: "tool_round_budget_exhausted", Terminal: true, Resumable: true, NeedsAttention: true, ProjectionRevision: 9,
 		Task: "inspect", Description: "inspect carefully", AgentType: "explorer", RequestedModel: "openai/gpt-5",
@@ -212,7 +212,7 @@ func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 		t.Fatalf("delegates = %+v, want one", out.Delegates)
 	}
 	want := server.DelegateStatusInfo{
-		DelegateID: in.DelegateID, OwnerSessionID: in.OwnerSessionID, RootSessionID: in.RootSessionID, ChildSessionID: in.ChildSessionID, TranscriptRef: in.TranscriptRef,
+		DelegateID: in.DelegateID, RunGeneration: in.RunGeneration, OwnerSessionID: in.OwnerSessionID, RootSessionID: in.RootSessionID, ChildSessionID: in.ChildSessionID, TranscriptRef: in.TranscriptRef,
 		ParentDelegateID: in.ParentDelegateID, Type: in.Type, Lifecycle: in.Lifecycle, Phase: in.Phase, Status: in.Status, Outcome: in.Outcome,
 		Reason: in.Reason, Terminal: in.Terminal, Resumable: in.Resumable, NeedsAttention: in.NeedsAttention, NotResumableReason: in.NotResumableReason, ProjectionRevision: in.ProjectionRevision,
 		Task: in.Task, Description: in.Description, AgentType: in.AgentType, RequestedModel: in.RequestedModel, ResolvedProfileID: in.ResolvedProfileID,
