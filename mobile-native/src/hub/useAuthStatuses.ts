@@ -1,55 +1,38 @@
 // The hub's sign-in statuses by provider (evener/auth/list), for the words
-// Providers shows beside each instance (ruling 6). It reads when it gets a
-// client and again on each evener/auth/updated, and a failed read keeps the
-// last statuses: the page stays calm while the hub is away. A failed read
-// also tries again on its own, waiting twice as long each time up to a
-// minute, until one lands. Until a first read lands it answers null: nothing
-// is known, so no account sign-in is called "Signed in" (statusOf).
+// Providers shows beside each instance (ruling 6). This is the package's
+// shared createAuthStatusesStore (state/credentials/authStatuses.ts) over this
+// screen's connection: the store reads when the hook first has a client, reads
+// again on evener/auth/updated, and a failed read keeps the last statuses and
+// records why, so the page stays calm while the hub is away. Until a first
+// read lands it answers null: nothing is known, so no account sign-in is
+// called "Signed in" (statusOf). A client the screen replaces builds a fresh
+// store, so a reply of the hub the previous one named never lands on the new
+// one.
 import type { AuthStatusResponse } from "@evener/appwire-client";
+import { type AuthStatusesClient, createAuthStatusesStore } from "@evener/appwire-client/state/credentials";
 import { useEffect, useState } from "react";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { authByProvider } from "../providers/providerStatus";
 
-/** How long after a first failed read the next one starts; each further
- * failure doubles it, up to AUTH_RETRY_MAX_MS. */
-export const AUTH_RETRY_MS = 5_000;
-export const AUTH_RETRY_MAX_MS = 60_000;
-
-export function useAuthStatuses(client: ConversationClientLike | null): ReadonlyMap<string, AuthStatusResponse> | null {
+export function useAuthStatuses(client: AuthStatusesClient | null): ReadonlyMap<string, AuthStatusResponse> | null {
 	const [statuses, setStatuses] = useState<ReadonlyMap<string, AuthStatusResponse> | null>(null);
 	useEffect(() => {
-		if (!client) return;
-		let live = true;
-		// Only the newest read lands: an older answer arriving late would
-		// otherwise put back a sign-in the hub has since renewed.
-		let latest = 0;
-		let retry: ReturnType<typeof setTimeout> | undefined;
-		let wait = AUTH_RETRY_MS;
-		const read = () => {
-			clearTimeout(retry);
-			const seq = ++latest;
-			client.request("evener/auth/list", {}).then(
-				(result) => {
-					if (!live || seq !== latest) return;
-					wait = AUTH_RETRY_MS;
-					// Go sends an empty (nil) slice as null.
-					setStatuses(authByProvider(result.providers ?? []));
-				},
-				() => {
-					if (!live || seq !== latest) return;
-					retry = setTimeout(read, wait);
-					wait = Math.min(wait * 2, AUTH_RETRY_MAX_MS);
-				},
-			);
-		};
-		read();
-		const stop = client.onNotification((notification) => {
-			if (notification.method === "evener/auth/updated") read();
-		});
+		if (!client) {
+			setStatuses(null);
+			return;
+		}
+		const store = createAuthStatusesStore(client);
+		store.start();
+		// A fresh store knows nothing, and the replaced client's statuses must
+		// not linger against this one.
+		setStatuses(null);
+		const stop = store.subscribe((state) => setStatuses(state.authStatuses));
+		// The store only re-reads a list something has asked for, so this first
+		// read is what makes evener/auth/updated matter from here on.
+		void store.getState().fetchAuthStatuses();
 		return () => {
-			live = false;
-			clearTimeout(retry);
 			stop();
+			// Drops every reply still in flight: a read of the client being
+			// replaced must not publish against the next one.
+			store.dispose();
 		};
 	}, [client]);
 	return statuses;
