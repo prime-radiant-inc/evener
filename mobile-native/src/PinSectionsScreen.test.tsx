@@ -53,14 +53,14 @@ it("reads a change the hub announced while a conversation covered the section", 
 		if (resource === "pin_section") return wireSnapshot(params as never, { sessions }, `"v${revision}"`, revision);
 		throw new Error(`unexpected read ${resource}`);
 	});
+	harness.focused = true;
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<PinnedSectionScreen {...props} />);
 	const show = async (focused: boolean) => {
 		harness.focused = focused;
 		harness.connection = screenConnection(hub, "ready");
 		await act(async () => tree.update(<PinnedSectionScreen {...props} />));
 	};
-	harness.focused = true;
-	harness.connection = screenConnection(hub, "ready");
-	const tree = render(<PinnedSectionScreen {...props} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Alpha");
 	expect(renderedText(tree)).not.toContain("Beta");
