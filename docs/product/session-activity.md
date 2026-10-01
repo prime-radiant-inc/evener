@@ -84,8 +84,8 @@ and end reasons remain useful, and retained watch history has a bounded lifetime
 
 Delegate rows carry an optional compact `name` from the immutable caller-supplied
 name in the durable delegate descriptor. The domain read caps it at 200 Unicode
-code points, including an ellipsis when truncated. Browser and native activity rows prefer
-this label; genuinely unnamed records keep each view's existing prompt or ID
+code points, including an ellipsis when truncated. Browser and native activity
+rows prefer this label; genuinely unnamed records keep each view's existing prompt or ID
 fallback. Names are display data: owner refs and delegate IDs still identify and
 address delegates. Reading a name needs no child transcript or navigation lookup.
 
@@ -249,7 +249,8 @@ references use the transcript's own watch evidence. The
 observes subtree collections while its body is open. These view lifetimes do not
 cause an activity read for every session in the navigation rail.
 
-Narrow session chrome exposes Activity directly. Its optional active count sums
+The narrow composer exposes Activity beside its receiving conversation. Its
+optional active count sums
 the session's authoritative job and delegate active counts only when both are
 known; watches and completed work are not part of that number. The mobile sheet
 starts with compact job, delegate and watch details, each one disclosure away.
