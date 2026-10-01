@@ -12,7 +12,14 @@ import {
 } from "react";
 import { AccessibilityInfo, ActivityIndicator, Alert, FlatList, Platform, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { ArchiveParams, NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
+import type {
+	ArchivedListCatalog,
+	ArchiveParams,
+	NavigationProjectSummary,
+	NavigationReadParams,
+	NavigationSessionSummary,
+} from "@evener/appwire-client";
+import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
@@ -485,6 +492,18 @@ function OrganizationStatus({
 }
 const projectKey = (row: NavigationProjectSummary) => row.key;
 const sessionRef = (row: NavigationSessionSummary) => row.ref;
+// Navigation serves a project's archived tier empty, so its sessions come from
+// the project's archived list. With no catalog (a session's location names
+// none), the hub reads the one holding the project now.
+function sessionPages(
+	client: ConversationClientLike,
+	params: Omit<NavigationReadParams, "representationVersion">,
+	catalog?: ArchivedListCatalog,
+): PageSource<NavigationSessionSummary> {
+	if (params.tier === "archived" && params.projectKey !== undefined)
+		return new ArchivedPages(client, catalog, params.projectKey);
+	return new NavigationPages<NavigationSessionSummary>(client, params, "sessions", sessionRef);
+}
 
 export function ProjectsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Projects">) {
 	const { client, activeProfile, state } = useConnection();
@@ -564,17 +583,13 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 	const tier = route.params.tier ?? "current";
 	const belongs = activeProfile?.id === route.params.hubId;
 	const catalog = route.params.archived ? "archived_projects" : "projects";
-	const pages = useMemo((): PageSource<NavigationSessionSummary> | null => {
-		if (!client || !belongs) return null;
-		// Navigation serves no archived rows; the archived list does.
-		if (tier === "archived") return new ArchivedPages(client, catalog, route.params.projectKey);
-		return new NavigationPages<NavigationSessionSummary>(
-			client,
-			{ resource: "project_page", projectKey: route.params.projectKey, tier },
-			"sessions",
-			sessionRef,
-		);
-	}, [client, belongs, catalog, route.params.projectKey, tier]);
+	const pages = useMemo(
+		() =>
+			client && belongs
+				? sessionPages(client, { resource: "project_page", projectKey: route.params.projectKey, tier }, catalog)
+				: null,
+		[client, belongs, catalog, route.params.projectKey, tier],
+	);
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<View style={{ paddingHorizontal: 20, gap: 8 }}>
@@ -633,15 +648,10 @@ export function SessionLocationScreen({ route, navigation }: NativeStackScreenPr
 	const colors = useColors();
 	const belongs = activeProfile?.id === route.params.hubId;
 	const { location } = route.params;
-	// Navigation serves a project's archived tier empty, so an archived session
-	// is revealed from the project's archived list. A location names no
-	// catalog, and the hub reads the one holding the project now.
-	const pages = useMemo((): PageSource<NavigationSessionSummary> | null => {
-		if (!client || !belongs) return null;
-		const { tier, projectKey } = location.params;
-		if (tier === "archived" && projectKey) return new ArchivedPages(client, undefined, projectKey);
-		return new NavigationPages<NavigationSessionSummary>(client, location.params, "sessions", sessionRef);
-	}, [client, belongs, location]);
+	const pages = useMemo(
+		() => (client && belongs ? sessionPages(client, location.params) : null),
+		[client, belongs, location],
+	);
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<View style={{ paddingHorizontal: 20, gap: 8 }}>

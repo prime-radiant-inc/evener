@@ -72,6 +72,19 @@ const projectProps = (params: Record<string, unknown>) =>
 		route: { params: { hubId: "hub-1", projectKey: "p", title: "Project", ...params } },
 		navigation: { navigate: () => {}, setParams: () => {} },
 	}) as unknown as ComponentProps<typeof ProjectScreen>;
+/** A hub whose project archived list holds Alpha, then Beta behind cursor
+ * "c1", recording every archived list read it answers. */
+const twoPageArchivedHub = () => {
+	const hub = new FakeClient("ready");
+	const archivedReads: unknown[] = [];
+	hub.on("evener/archived/list", (params) => {
+		archivedReads.push(params);
+		return params.cursor
+			? { sessions: [completeSession({ ref: "local:b", title: "Beta" })], total: 2 }
+			: { sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 2, nextCursor: "c1" };
+	});
+	return { hub, archivedReads };
+};
 
 it("offers no pull to refresh: the projects list keeps itself current", async () => {
 	const hub = new FakeClient("ready");
@@ -178,14 +191,7 @@ it("pages a page the hub cut short through Load more, with no partial-tree notic
 // catalog: an archived session is revealed from the project's archived list,
 // read from whichever catalog holds the project now.
 it("reveals a located archived session from the project's archived list", async () => {
-	const hub = new FakeClient("ready");
-	const archivedReads: unknown[] = [];
-	hub.on("evener/archived/list", (params) => {
-		archivedReads.push(params);
-		return params.cursor
-			? { sessions: [completeSession({ ref: "local:b", title: "Beta" })], total: 2 }
-			: { sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 2, nextCursor: "c1" };
-	});
+	const { hub, archivedReads } = twoPageArchivedHub();
 	harness.connection = screenConnection(hub, "ready");
 	flatListCalls.length = 0;
 	const tree = render(<SessionLocationScreen {...locationProps("local:b", "archived")} />);
@@ -247,14 +253,7 @@ it("scrolls to and selects the located row", async () => {
 // Navigation v3 serves a project's archived tier empty: its rows come from
 // evener/archived/list, paged by cursor, from the project's catalog.
 it("lists a project's archived sessions from the archived list, a page at a time", async () => {
-	const hub = new FakeClient("ready");
-	const archivedReads: unknown[] = [];
-	hub.on("evener/archived/list", (params) => {
-		archivedReads.push(params);
-		return params.cursor
-			? { sessions: [completeSession({ ref: "local:b", title: "Beta" })], total: 2 }
-			: { sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 2, nextCursor: "c1" };
-	});
+	const { hub, archivedReads } = twoPageArchivedHub();
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
 	await act(async () => {});
