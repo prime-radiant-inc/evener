@@ -9,6 +9,17 @@ interface ActivityViewportState {
 }
 const ViewportContext = createContext<ActivityViewportState | null>(null);
 const alwaysCurrent = () => true;
+const SCROLL_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  " ",
+]);
 
 /** Tabs report the read they already own; this acquires no data or demand. */
 export function useActivityScrollProgress(ids: readonly string[], complete: boolean, hasMore = false): void {
@@ -134,7 +145,13 @@ export function ActivityViewport({
         onWheelCapture={cancel}
         onTouchStartCapture={cancel}
         onPointerDownCapture={cancel}
-        onKeyDownCapture={cancel}
+        onKeyDownCapture={(event) => {
+          if (SCROLL_KEYS.has(event.key)) cancel();
+        }}
+        onClickCapture={(event) => {
+          // Keyboard and assistive activation have no preceding pointer-down.
+          if (event.detail === 0) cancel();
+        }}
         onScroll={() => {
           if (!isCurrent()) return;
           if (programmaticTop.current === element.current?.scrollTop) {

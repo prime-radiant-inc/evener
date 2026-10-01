@@ -257,8 +257,10 @@ viewport offset; restoration remains pending until that position is reachable
 or the collection is authoritative complete. For cold
 pages it positions the existing page boundary in view; each new visibility
 observation supplies demand through `ActivityPageBoundary`. It starts no fetch
-or retry loop. A changed scope/category, close, or reader scroll cancels the
-pending positioning. Partial results keep a missing anchor; an authoritative
+or retry loop. A changed scope/category, close, reader scroll/navigation gesture,
+or deliberate control activation cancels pending positioning. Focus-only keys
+such as Tab, modifier keys and text keys preserve it when the viewport does not
+scroll. Partial results keep a missing anchor; an authoritative
 complete collection can prove it absent. A row inside a closed fold does not
 authorize opening that fold. A new child scope keeps an ongoing sidebar
 inspection open on its current category with fresh child-specific view choices;

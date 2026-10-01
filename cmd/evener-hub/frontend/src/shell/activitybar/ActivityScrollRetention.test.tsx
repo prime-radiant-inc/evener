@@ -1,5 +1,6 @@
 import { activityNodeID, buildWatchRows } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
@@ -420,6 +421,82 @@ test.each([false, true])(
   },
 );
 
+test.each(["Tab", "Shift", "Control", "Alt", "Meta", "a"])(
+  "%s without activation or scrolling preserves the pending row and offset through a deferred page",
+  async (key) => {
+    prepareRetainedAnchor();
+    const client = activityClient();
+    let finish: (() => void) | undefined;
+    client.on("evener/thread/jobs/list", async ({ cursor }) => {
+      if (cursor)
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      return {
+        context: activityContext(),
+        scope: "session",
+        jobs: cursor ? jobs.slice(10) : jobs.slice(0, 10),
+        page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: "next" } : {}) },
+      };
+    });
+    connectionStore.getState().connect(client);
+    mount();
+    const first = await screen.findByRole("button", { name: /History 0/ });
+    await act(async () => Visibility.latest().emit(true));
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    fireEvent.keyDown(first, { key });
+    await act(async () => finish?.());
+    const restored = await screen.findByRole("button", { name: /History 22/ });
+    expect(restored.getBoundingClientRect().top).toBe(anchor.offset);
+    expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(2);
+  },
+);
+
+test("keyboard activation of a history disclosure cancels its pending anchor before the deferred page arrives", async () => {
+  prepareRetainedAnchor();
+  setDisclosureOpen(`${ref}\0completed-jobs`, true);
+  const client = activityClient();
+  let finish: (() => void) | undefined;
+  client.on("evener/thread/jobs/list", async ({ cursor }) => {
+    if (cursor)
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    return {
+      context: activityContext(),
+      scope: "session",
+      jobs: (cursor ? jobs.slice(10) : jobs.slice(0, 10)).map((job) => ({
+        ...job,
+        terminal: true,
+        outcome: "success",
+        status: "completed",
+      })),
+      page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: "next" } : {}) },
+    };
+  });
+  connectionStore.getState().connect(client);
+  mount();
+  const disclosure = (await screen.findByText("10 completed jobs")).closest("summary");
+  if (!disclosure) throw new Error("completed history disclosure missing");
+  await screen.findByRole("button", { name: /History 0/ });
+  await act(async () => Visibility.latest().emit(true));
+  await waitFor(() => expect(finish).toBeTypeOf("function"));
+  act(() => disclosure.focus());
+  const user = userEvent.setup();
+  await user.keyboard("{Enter}");
+  // jsdom has no native summary activation; supply its keyboard-generated
+  // click, as the Disclosure component's own keyboard tests do.
+  fireEvent.click(disclosure, { detail: 0 });
+  expect(disclosure.closest("details")?.open).toBe(false);
+  expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor?.id).not.toBe(anchor.id);
+  const position = viewport().scrollTop;
+  await act(async () => finish?.());
+  await screen.findByText("30 completed jobs");
+  expect(screen.queryByRole("button", { name: /History 22/ })).toBeNull();
+  expect(viewport().scrollTop).toBe(position);
+  expect(disclosure.closest("details")?.open).toBe(false);
+});
+
 test.each(["wheel", "touch", "pointer", "key", "scroll"])(
   "user %s cancels pending anchor restoration while normal collection demand remains usable",
   async (gesture) => {
@@ -448,11 +525,14 @@ test.each(["wheel", "touch", "pointer", "key", "scroll"])(
     if (gesture === "touch") fireEvent.touchStart(body);
     if (gesture === "pointer") fireEvent.pointerDown(body);
     if (gesture === "key") fireEvent.keyDown(body, { key: "Home" });
-    body.scrollTop = 0;
-    fireEvent.scroll(body);
+    if (gesture !== "key") {
+      body.scrollTop = 0;
+      fireEvent.scroll(body);
+    }
+    const position = body.scrollTop;
     await act(async () => finish?.());
     await screen.findByRole("button", { name: /History 22/ });
-    expect(body.scrollTop).toBe(0);
+    expect(body.scrollTop).toBe(position);
     expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor?.id).not.toBe(anchor.id);
   },
 );
