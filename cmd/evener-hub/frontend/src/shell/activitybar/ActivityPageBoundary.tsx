@@ -1,6 +1,7 @@
 import type { SessionActivityCollection } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../../widgets";
+import { useActivityViewCurrent } from "./ActivityViewport";
 
 interface ActivityPageBoundaryProps {
   resource: SessionActivityCollection;
@@ -31,6 +32,7 @@ export function ActivityPageBoundary({
   const [visible, setVisible] = useState(false);
   const currentVisibility = useRef(false);
   const observedRows = useRef(rows);
+  const isCurrent = useActivityViewCurrent();
   useEffect(() => {
     observedRows.current = rows;
     currentVisibility.current = false;
@@ -40,7 +42,7 @@ export function ActivityPageBoundary({
     let active = true;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (!active || observedRows.current !== rows) return;
+        if (!active || !isCurrent() || observedRows.current !== rows) return;
         const next = entries.some((entry) => entry.isIntersecting);
         currentVisibility.current = next;
         setVisible(next);
@@ -55,11 +57,11 @@ export function ActivityPageBoundary({
     };
     // A successful page changes rows even when React batches the loading states.
     // Re-observe the moved boundary so stale geometry cannot drain unseen pages.
-  }, [enabled, hasMore, loading, rows]);
+  }, [enabled, hasMore, loading, rows, isCurrent]);
   useEffect(() => {
-    if (enabled && visible && currentVisibility.current && hasMore && !loading && !error && !permanent)
+    if (isCurrent() && enabled && visible && currentVisibility.current && hasMore && !loading && !error && !permanent)
       void loadMore(resource);
-  }, [enabled, visible, hasMore, loading, error, permanent, loadMore, resource]);
+  }, [enabled, visible, hasMore, loading, error, permanent, loadMore, resource, isCurrent]);
   if (!hasMore) return null;
   return (
     <div ref={element}>

@@ -103,6 +103,7 @@ export interface ActivitySidebarState {
   setTab(tab: ActivityTab): void;
   toggle(): void;
   retarget(ref: string | null): void;
+  retainOpenView(ref: string): void;
   setCategoryView(ref: string, tab: ActivityTab, patch: Partial<ActivityCategoryView>): void;
 }
 
@@ -136,12 +137,30 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       const view = views.get(ref) ?? { open: state.open, tab: state.tab, categories: {} };
       set({ ref, open: view.open, tab: view.tab, views: rememberView(views, ref, view) });
     },
+    retainOpenView(ref) {
+      const state = get();
+      const view = state.views.get(ref);
+      if (!view || !state.open || state.ref !== ref) return;
+      // A committed desktop view records inherited child inspection intent.
+      // Global focus can also move on mobile, where this sidebar is absent.
+      const saved = readViews().get(ref);
+      if (saved?.open === view.open && saved.tab === view.tab) return;
+      saveViews(state.views);
+    },
     setCategoryView(ref, tab, patch) {
       const state = get();
       const previous = state.views.get(ref) ?? { open: false, tab, categories: {} };
+      const before = previous.categories[tab];
+      const category = { ...before, ...patch };
+      if (
+        category.shown === before?.shown &&
+        category.anchor?.id === before?.anchor?.id &&
+        category.anchor?.offset === before?.anchor?.offset
+      )
+        return;
       const view = {
         ...previous,
-        categories: { ...previous.categories, [tab]: { ...previous.categories[tab], ...patch } },
+        categories: { ...previous.categories, [tab]: category },
       };
       const views = rememberView(state.views, ref, view);
       saveViews(views);
@@ -162,8 +181,8 @@ export function useActivitySidebarStore<T>(selector: (state: ActivitySidebarStat
 /** The Activity ✓ semantics, shared by the rail row and the session chrome:
  * the sidebar is open AND scoped to this session (the sidebar always describes
  * the focused session, so a bare "open" would mark every row). Subscribes to
- * BOTH inputs: the sidebar store's open, and the workspace scope - a pure
- * focus move touches no sidebar state, and without the second subscription
+ * BOTH inputs: the sidebar store's open, and the workspace scope - a focus
+ * move can keep the same open value, and without the scope subscription
  * the ✓ keeps naming the session the sidebar showed before the move (the
  * menu holds its open state internally, so re-opening it never re-renders
  * the owner into a fresh read). */

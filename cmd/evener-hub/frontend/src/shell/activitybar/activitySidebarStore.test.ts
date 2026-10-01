@@ -28,6 +28,16 @@ test("empty workspace bootstrap and passive restore never overwrite retained int
   expect(writes).not.toHaveBeenCalled();
 });
 
+test("a focus change while the desktop sidebar is unmounted does not persist inherited open intent", () => {
+  const state = activitySidebarStore.getState();
+  state.retarget("source:parent");
+  state.openWith("jobs");
+  const writes = vi.spyOn(localStorage, "setItem");
+  state.retarget("source:child");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
+  expect(writes).not.toHaveBeenCalled();
+});
+
 test.each(["{broken", "[]", '{"source:owner":{"open":true,"tab":"unknown"}}'])(
   "malformed saved state %s leaves the live controls usable",
   (raw) => {
@@ -68,6 +78,20 @@ test("retained session intent is bounded and a recently revisited scope keeps it
   expect(Object.keys(saved)).toHaveLength(ACTIVITY_VIEW_LIMIT);
   expect(saved["source:1"]).toBeUndefined();
   expect(saved["source:0"].tab).toBe("watches");
+});
+
+test("equivalent scroll and disclosure-count choices do not rewrite storage or notify the view", () => {
+  const state = activitySidebarStore.getState();
+  state.retarget("source:owner");
+  state.setCategoryView("source:owner", "agents", { anchor: { id: "delegate:one", offset: -12 }, shown: 40 });
+  const snapshot = activitySidebarStore.getState();
+  const writes = vi.spyOn(localStorage, "setItem");
+  state.setCategoryView("source:owner", "agents", { anchor: { id: "delegate:one", offset: -12 } });
+  state.setCategoryView("source:owner", "agents", { shown: 40 });
+  expect(writes).not.toHaveBeenCalled();
+  expect(activitySidebarStore.getState()).toBe(snapshot);
+  state.setCategoryView("source:owner", "agents", { anchor: { id: "delegate:one", offset: -13 } });
+  expect(writes).toHaveBeenCalledTimes(1);
 });
 
 describe("activitySidebarStore", () => {

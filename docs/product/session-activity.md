@@ -239,6 +239,25 @@ its already loaded title through the [pane chrome store](../../cmd/evener-hub/fr
 tab naming adds no metadata request. Closing Activity from within the sidebar
 returns keyboard focus to its opener or the matching footer control.
 
+The [desktop sidebar view store](../../cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts)
+retains open/category choices and a semantic row anchor per public session ref
+and category. The browser disclosure binding opts Activity into retaining explicit
+fold choices, including task and watch details. These are bounded, best-effort UI
+preferences: 100 recent session views and 2,000 disclosure choices. Loading them
+does not rewrite storage or acquire a collection for a closed sidebar. These
+preferences never contain activity rows or continuation/retry state.
+
+The [Activity viewport](../../cmd/evener-hub/frontend/src/shell/activitybar/ActivityViewport.tsx)
+restores the retained row after its collection and disclosures render. For cold
+pages it positions the existing page boundary in view; each new visibility
+observation supplies demand through `ActivityPageBoundary`. It starts no fetch
+or retry loop. A changed scope/category, close, or reader scroll cancels the
+pending positioning. Partial results keep a missing anchor; an authoritative
+complete collection can prove it absent. A row inside a closed fold does not
+authorize opening that fold. A new child scope keeps an ongoing sidebar
+inspection open on its current category with fresh child-specific view choices;
+returning to a visited session restores that session's choices.
+
 The [visible transcript](../../cmd/evener-hub/frontend/src/panes/session/transcript/useEntityView.ts)
 observes session-scoped jobs and delegates for inline entity links and controls.
 It shares those reads with other holders of the same binding. If neither

@@ -44,13 +44,15 @@
 
 **Interfaces:** Per-category anchor is `{ id: string, offset: number }`. Tabs expose their current read-completeness to the sidebar scroll helper without acquiring another reader. The helper scrolls only; ActivityPageBoundary owns page demand.
 
-- [ ] Add reload-after-cold-pages tests, including moved row positions, fresh visibility for each page, authoritative missing-row completion, partial results and cancelled restores.
-- [ ] Observe RED with the current scroll behavior.
-- [ ] Implement anchor capture/restoration and cancellation; do not call `loadMore` outside ActivityPageBoundary.
-- [ ] Confirm focused GREEN, including existing activity paging and task behavior suites.
-- [ ] Update the owning product guide and subsystem map, format touched paths, run `make test-web` from the repository root, inspect the final diff, and commit normally.
+- [x] Add reload-after-cold-pages tests, including moved row positions, fresh visibility for each page, authoritative missing-row completion, partial results and cancelled restores.
+- [x] Observe RED with the current scroll behavior.
+- [x] Implement anchor capture/restoration and cancellation; do not call `loadMore` outside ActivityPageBoundary.
+- [x] Confirm focused GREEN, including existing activity paging and task behavior suites.
+- [x] Update the owning product guide and subsystem map, format touched paths, run `make test-web` from the repository root, inspect the final diff, and commit normally.
 
 ## Evidence and status
 
 - Design approved by the coordinating agent before source edits. Task 1: four real-component regressions RED, then 41 focused tests and 214 script tests GREEN; TypeScript check GREEN. UI retention follows the rail's bounded-blob precedent: 100 recent session views and 2,000 explicit disclosure choices. Hydration does not write storage.
-- Current: Task 2 RED tests. Remaining: semantic scroll restoration, full gate, independent review and root-owned live persona confirmation.
+- Task 2: cold-page, disclosure-hydration, expanded-watch, cancellation, efficient repeated-event and immediate-child-reload cases observed RED then GREEN. Existing empty-page advancement remains owned by the shared store. Hidden/mobile focus changes cannot write inherited desktop open intent; the committed desktop view records it.
+- Final `make test-web`: PASS typecheck (23.4s), full test suite (119.1s), Biome (1.9s). Impeccable detector found no issues in the changed sidebar/viewport/row surfaces. A stale pre-existing ActivityPanel test locator was aligned with the existing description-first job label; its ownership assertions remain intact.
+- Completed: implementation, deterministic verification and owning documentation. Remaining: coordinator integration, independent final review and live persona/browser confirmation. No push or PR from this branch.

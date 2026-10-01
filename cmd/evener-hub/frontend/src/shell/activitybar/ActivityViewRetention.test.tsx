@@ -8,8 +8,10 @@ import {
   activityContext,
   activityDelegate,
   activityJob,
+  activityThread,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
+import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetWorkspaceStoreForTests } from "../workspace";
@@ -47,6 +49,7 @@ function clearLiveState() {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests({ preserveStorage: true });
   resetDisclosureStoreForTests();
+  resetThreadsStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
 }
 
@@ -84,6 +87,54 @@ test("reload restores the selected category and explicit job and watch disclosur
   expect(stored).not.toContain("History for remote:owner");
 });
 
+test("reload retains task disclosures while the existing task owner refetches completed, current and remaining work", async () => {
+  const makeClient = () => {
+    const client = activityClient();
+    client.on("thread/read", ({ ref }) => {
+      const response = activityThread(ref);
+      if (response.thread.evener) response.thread.evener.tasks = { total: 6, done: 2, remaining: 4 };
+      return response;
+    });
+    client.on("evener/tasks/list", () => ({
+      data: [
+        { id: 1, type: "implement", description: "Finished one", prompt: "First finished brief", status: "done" },
+        { id: 2, type: "implement", description: "Finished two", prompt: "", status: "done" },
+        { id: 3, type: "implement", description: "Current work", prompt: "Current brief", status: "in_progress" },
+        ...[4, 5, 6].map((id) => ({
+          id,
+          type: "implement",
+          description: `Remaining ${id}`,
+          prompt: "",
+          status: "open",
+        })),
+      ],
+    }));
+    return client;
+  };
+  connectionStore.getState().connect(makeClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("tasks");
+  mount();
+  fireEvent.click(await screen.findByText("2 completed tasks"));
+  fireEvent.click(screen.getByText("Finished one"));
+  fireEvent.click(screen.getByTestId("task-prompt-summary"));
+  expect(screen.getByTestId("task-prompt").getAttribute("open")).not.toBeNull();
+  clearLiveState();
+
+  const reloaded = makeClient();
+  connectionStore.getState().connect(reloaded);
+  installFocusedScope(ref);
+  mount();
+  await screen.findByText("Finished one");
+  expect(screen.getByTestId("task-prompt").getAttribute("open")).not.toBeNull();
+  expect(screen.getByText("Current work")).toBeTruthy();
+  expect(
+    screen.getAllByTestId("task-group-live").map((group) => group.querySelectorAll('[data-testid="task-row"]').length),
+  ).toEqual([1, 3]);
+  expect(reloaded.calls.filter((call) => call.method === "evener/tasks/list")).toHaveLength(1);
+  expect(reloaded.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(0);
+});
+
 test("retargeting restores each public session's own category and fold while an unseen scope starts fresh", async () => {
   connectionStore.getState().connect(clientWithHistory());
   installFocusedScope(ref);
@@ -119,6 +170,22 @@ test("an explicitly closed saved sidebar starts no activity read on reload and k
   expect(screen.queryByTestId("activity-sidebar")).toBeNull();
   expect(reloaded.calls).toHaveLength(0);
   expect(activitySidebarStore.getState().tab).toBe("jobs");
+});
+
+test("an unseen child keeps the ongoing inspection open after an immediate reload", async () => {
+  connectionStore.getState().connect(clientWithHistory());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("jobs");
+  mount();
+  await screen.findByText("1 completed job");
+  act(() => installFocusedScope(otherRef));
+  await screen.findByText("1 completed job");
+  clearLiveState();
+  connectionStore.getState().connect(clientWithHistory());
+  installFocusedScope(otherRef);
+  mount();
+  await screen.findByText("1 completed job");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs", ref: otherRef });
 });
 
 test("inactive agent disclosure and locally revealed rows survive reload without copying another session", async () => {

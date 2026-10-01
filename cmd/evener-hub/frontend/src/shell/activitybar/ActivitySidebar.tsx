@@ -17,6 +17,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
+import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import { activitySidebarStore, useActivitySidebarStore } from "./activitySidebarStore";
 import { ACTIVITY_TABS, activityTabSpec } from "./activityTabs";
@@ -56,6 +57,9 @@ export function ActivitySidebar() {
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
   const ref = useFocusedActivityScopeRef();
+  useEffect(() => {
+    if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
+  }, [open, ref]);
   const { snapshot } = useSessionActivity(open ? ref : null);
   // Closed derives nothing: the sidebar is mounted for the whole desktop
   // session, and a location lookup plus recursive walk per polling update
@@ -122,7 +126,14 @@ export function ActivitySidebar() {
             />
           </div>
           <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
-            <div className={CLASS.body}>{Body === null ? null : <Body key={scope.leaf.ref} scope={scope} />}</div>
+            <ActivityViewport
+              key={JSON.stringify([scope.leaf.ref, tab])}
+              sessionRef={scope.leaf.ref}
+              tab={tab}
+              className={CLASS.body}
+            >
+              {Body === null ? null : <Body scope={scope} />}
+            </ActivityViewport>
           </DisclosurePersistenceContext.Provider>
         </m.aside>
       ) : null}
