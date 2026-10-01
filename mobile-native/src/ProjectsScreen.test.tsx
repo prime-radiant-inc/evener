@@ -11,8 +11,8 @@ import { AccessibilityInfo } from "react-native";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import { ProjectsScreen, SessionLocationScreen } from "./ProjectsScreen";
+import { completeSession, wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { ProjectScreen, ProjectsScreen, SessionLocationScreen } from "./ProjectsScreen";
 import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
@@ -177,5 +177,34 @@ it("scrolls to and selects the located row", async () => {
 	});
 	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
 	expect(pressable(tree, "Open Alpha")?.props.accessibilityState).toEqual({ selected: false });
+	tree.unmount();
+});
+
+// Navigation v3 serves a project's archived tier empty: its rows come from
+// evener/archived/list, paged by cursor, from the project's catalog.
+it("lists a project's archived sessions from the archived list, a page at a time", async () => {
+	const hub = new FakeClient("ready");
+	const archivedReads: unknown[] = [];
+	hub.on("evener/navigation/read", (params) => wireSnapshot(params as never, { sessions: [], remaining: 0 }));
+	hub.on("evener/archived/list", (params) => {
+		archivedReads.push(params);
+		return params.cursor
+			? { sessions: [completeSession({ ref: "local:b", title: "Beta" })], total: 2 }
+			: { sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 2, nextCursor: "c1" };
+	});
+	harness.connection = screenConnection(hub, "ready");
+	const projectProps = {
+		route: { params: { hubId: "hub-1", projectKey: "p", title: "Project", tier: "archived", archived: true } },
+		navigation: { navigate: () => {}, setParams: () => {} },
+	} as unknown as ComponentProps<typeof ProjectScreen>;
+	const tree = render(<ProjectScreen {...projectProps} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Alpha");
+	await act(async () => pressable(tree, "Load more · 1 remaining")?.props.onPress());
+	expect(renderedText(tree)).toContain("Beta");
+	expect(archivedReads).toEqual([
+		{ catalog: "archived_projects", projectKey: "p" },
+		{ catalog: "archived_projects", projectKey: "p", cursor: "c1" },
+	]);
 	tree.unmount();
 });

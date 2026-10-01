@@ -17,7 +17,8 @@ import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
-import { NavigationPages, updating } from "./navigationPages";
+import { ArchivedPages, archivedListStoreFor } from "./archivedPages";
+import { NavigationPages, type PageSource, updating } from "./navigationPages";
 import { revealNavigationRow } from "./navigationReveal";
 import {
 	controllerOwnedProject,
@@ -78,7 +79,7 @@ export function PageList<T>({
 	/** The chip's text, for the row's accessibilityLabel: a Pressable override
 	 * hides the chip's own text from VoiceOver. Undefined when there is none. */
 	chipLabel?: (row: T) => string | undefined;
-	pages: NavigationPages<T>;
+	pages: PageSource<T>;
 	ready: boolean;
 	rowKey: (row: T) => string;
 	title: (row: T) => string;
@@ -186,7 +187,7 @@ export function PageList<T>({
 	);
 	const loadMore = useCallback(() => requestMore(), [requestMore]);
 	const retryMore = useCallback(() => requestMore(true), [requestMore]);
-	const [revealed, setRevealed] = useState<NavigationPages<T> | null>(null);
+	const [revealed, setRevealed] = useState<PageSource<T> | null>(null);
 	const scrollAttempt = useRef(0);
 	const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	useEffect(
@@ -546,21 +547,25 @@ export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Rout
 	const colors = useColors();
 	const tier = route.params.tier ?? "current";
 	const belongs = activeProfile?.id === route.params.hubId;
+	const catalog = route.params.archived ? "archived_projects" : "projects";
 	const pages = useMemo(
 		() =>
-			client && belongs
-				? new NavigationPages<NavigationSessionSummary>(
-						client,
-						{
-							resource: "project_page",
-							projectKey: route.params.projectKey,
-							tier,
-						},
-						"sessions",
-						sessionRef,
-					)
-				: null,
-		[client, belongs, route.params.projectKey, tier],
+			!client || !belongs
+				? null
+				: // Navigation serves no archived rows; the archived list does.
+					tier === "archived"
+					? new ArchivedPages(archivedListStoreFor(client), catalog, route.params.projectKey)
+					: new NavigationPages<NavigationSessionSummary>(
+							client,
+							{
+								resource: "project_page",
+								projectKey: route.params.projectKey,
+								tier,
+							},
+							"sessions",
+							sessionRef,
+						),
+		[client, belongs, catalog, route.params.projectKey, tier],
 	);
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
