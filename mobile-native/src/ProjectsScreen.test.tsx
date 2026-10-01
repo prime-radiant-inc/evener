@@ -241,6 +241,32 @@ it("reads no archived list while the connection is not ready", async () => {
 	tree.unmount();
 });
 
+// A recovered connection drops every archived list (archivedLists.ts), and
+// the screen reads its list again once the connection is ready: the same
+// read of an unloaded list it makes on every focus, so a screen out of view
+// while the connection recovered reads it on its return too.
+it("reads the archived list again once a dropped connection recovers", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/archived/list", () => ({ sessions: [completeSession({ ref: "local:a", title: "Alpha" })], total: 1 }));
+	const reads = () => hub.calls.filter((call) => call.method === "evener/archived/list").length;
+	const screen = () => <ProjectScreen {...projectProps({ tier: "archived", archived: true })} />;
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(screen());
+	await act(async () => {});
+	expect(reads()).toBe(1);
+
+	hub.emitStateChange("reconnecting");
+	harness.connection = screenConnection(hub, "reconnecting");
+	await act(async () => tree.update(screen()));
+	hub.emitReady();
+	harness.connection = screenConnection(hub, "ready");
+	await act(async () => tree.update(screen()));
+	await act(async () => {});
+	expect(reads()).toBe(2);
+	expect(renderedText(tree)).toContain("Alpha");
+	tree.unmount();
+});
+
 // An archived row's Unarchive runs through the same organize flow as any
 // row's: the hub accepts it, the change is confirmed, and the archived list
 // is read again, so the row leaves the tab.
