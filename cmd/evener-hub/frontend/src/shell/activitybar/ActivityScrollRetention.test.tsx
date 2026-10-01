@@ -1,5 +1,5 @@
 import { activityNodeID, buildWatchRows } from "@evener/appwire-client";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, waitForElementToBeRemoved } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
@@ -118,6 +118,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   resetLive();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -320,6 +321,85 @@ test.each(["close", "tab", "scope"])(
     ).toHaveLength(2);
     expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(anchor);
     if (change !== "close") expect(viewport().scrollTop).toBe(0);
+  },
+);
+
+test("reopening during sidebar exit resumes the same viewport and its pending anchor", async () => {
+  prepareRetainedAnchor();
+  const client = activityClient();
+  client.on("evener/thread/jobs/list", ({ cursor }) => ({
+    context: activityContext(),
+    scope: "session",
+    jobs: cursor ? jobs.slice(10) : jobs.slice(0, 10),
+    page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: "next" } : {}) },
+  }));
+  connectionStore.getState().connect(client);
+  mount();
+  await screen.findByRole("button", { name: /History 0/ });
+  const original = viewport();
+  const boundary = Visibility.latest();
+  vi.useFakeTimers();
+  fireEvent.click(screen.getByRole("button", { name: "Close the activity sidebar" }));
+  // Real AnimatePresence keeps its one exiting aside mounted until motion ends.
+  expect(original.isConnected).toBe(true);
+  act(() => boundary.emit(true));
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(1);
+  act(() => activitySidebarStore.getState().openWith("jobs"));
+  expect(screen.getAllByTestId("activity-sidebar")).toHaveLength(1);
+  expect(viewport()).toBe(original);
+  await act(async () => boundary.emit(true));
+  expect(screen.getByRole("button", { name: /History 22/ }).getBoundingClientRect().top).toBe(anchor.offset);
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(2);
+});
+
+test.each(["tab", "scope", "completed exit"])(
+  "%s replacement leaves old viewport callbacks inert after the original selection returns",
+  async (replacement) => {
+    prepareRetainedAnchor();
+    const client = activityClient();
+    client.on("evener/thread/jobs/list", ({ ref: requested, cursor }) => ({
+      context: activityContext(requested),
+      scope: "session",
+      jobs: requested === ref ? (cursor ? jobs.slice(10) : jobs.slice(0, 10)) : [],
+      page:
+        requested === ref
+          ? { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: "next" } : {}) }
+          : { complete: true, issues: [] },
+    }));
+    connectionStore.getState().connect(client);
+    mount();
+    await screen.findByRole("button", { name: /History 0/ });
+    const obsoleteBody = viewport();
+    const obsoleteBoundary = Visibility.latest();
+    if (replacement !== "completed exit") vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Close the activity sidebar" }));
+    expect(obsoleteBody.isConnected).toBe(true);
+    if (replacement === "tab") {
+      act(() => activitySidebarStore.getState().openWith("watches"));
+    } else if (replacement === "scope") {
+      act(() => installFocusedScope("remote:other"));
+      act(() => activitySidebarStore.getState().openWith("jobs"));
+      act(() => installFocusedScope(ref));
+    } else {
+      await waitForElementToBeRemoved(obsoleteBody);
+    }
+    expect(obsoleteBody.isConnected).toBe(false);
+    await act(async () => activitySidebarStore.getState().openWith("jobs"));
+    const current = viewport();
+    expect(current).not.toBe(obsoleteBody);
+    expect(screen.getAllByTestId("activity-sidebar")).toHaveLength(1);
+    const reads = client.calls.filter((call) => call.method === "evener/thread/jobs/list").length;
+    const position = current.scrollTop;
+    const saved = activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor;
+    await act(async () => {
+      obsoleteBoundary.emit(true);
+      fireEvent.scroll(obsoleteBody);
+    });
+    expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(reads);
+    expect(current.scrollTop).toBe(position);
+    expect(activitySidebarStore.getState().views.get(ref)?.categories.jobs?.anchor).toEqual(saved);
+    await act(async () => Visibility.latest().emit(true));
+    expect(screen.getByRole("button", { name: /History 22/ }).getBoundingClientRect().top).toBe(anchor.offset);
   },
 );
 

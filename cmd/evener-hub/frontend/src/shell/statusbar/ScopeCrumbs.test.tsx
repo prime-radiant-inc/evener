@@ -101,3 +101,20 @@ test("an unhydrated public alias keeps its own fallback instead of borrowing ano
   expect(screen.queryByText("Remote name")).toBeNull();
   expect(screen.queryByText("Remote title")).toBeNull();
 });
+
+test("navigation-only metadata publication and rename refresh mounted exact-ref crumbs", () => {
+  installFocusedScope("remote:child");
+  render(
+    <ScopeCrumbs
+      path={[
+        { ref: "remote:parent", title: "Parent fallback" },
+        { ref: "remote:child", title: "Child fallback" },
+      ]}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Parent fallback" })).toBeTruthy();
+  act(() => installFocusedScope("remote:child", summaryOf({ ref: "remote:parent", title: "Published parent" })));
+  expect(screen.getByRole("button", { name: "Published parent" })).toBeTruthy();
+  act(() => installFocusedScope("remote:child", summaryOf({ ref: "remote:parent", title: "Renamed parent" })));
+  expect(screen.getByRole("button", { name: "Renamed parent" })).toBeTruthy();
+});
