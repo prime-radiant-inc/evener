@@ -295,9 +295,16 @@ func (read *sessionActivityRead) advanceJobs(ctx context.Context, owner string) 
 // Summary demand catches up only sources whose complete authority was already
 // established. Source replacement retires that eligibility with the index.
 func (read *sessionActivityRead) refreshWarmSources(ctx context.Context, owners map[string]bool) (bool, error) {
-	ordered := make([]string, 0, len(owners))
+	var ordered []string
 	for owner := range owners {
+		source := read.index.jobs[owner]
+		if source == nil || !source.Established || source.Complete && source.Version == read.index.revision.Load() {
+			continue
+		}
 		ordered = append(ordered, owner)
+	}
+	if len(ordered) == 0 {
+		return false, nil
 	}
 	sort.Strings(ordered)
 	// Start after the previous admitted source so a growing journal cannot
