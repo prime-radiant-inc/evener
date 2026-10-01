@@ -306,7 +306,7 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 		return fmt.Errorf("model %s is not available from provider %s", ref.Qualified(), ref.Provider)
 	}
 	listing, err := client.Models(ctx, ref.Provider)
-	if err != nil || !listing.Live {
+	if err != nil || !listing.Usable {
 		return nil
 	}
 	for _, m := range listing.Models {

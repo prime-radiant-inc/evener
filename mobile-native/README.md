@@ -166,6 +166,11 @@ An evicted continuation reports a stale cursor, so the shared activity store
 refreshes only that collection and retains useful rows while it loads. Malformed
 cursors and requests for a different session, scope or resource remain invalid.
 
+With `EVENER_DEMO_FLEET`, the same hub answers the Board's pulse read
+(`evener/activity/read`, S5): one entry per live top-level session with its
+per-minute counts, running-subagent tally, quiet time and latest tool intent, so
+the demo Board draws real meters, subagent tallies and Quiet/May-be-stuck labels.
+
 ## Standalone simulator builds
 
 Follow the [locked dependency procedure](../docs/design/mobile/ios-build-distribution.md) to prebuild iOS and install pods.

@@ -624,9 +624,6 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		// An instance the hub's registry does not hold has no probe here,
 		// and its zero start settles to nothing.
 		s.auth.settleCredentialProbe(probes[inst.Name], listing, listErr)
-		if listErr != nil {
-			continue
-		}
 		for _, m := range listing.Models {
 			out = append(out, cmdutil.ModelDescriptorFromResolved(m))
 		}
