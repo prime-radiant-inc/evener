@@ -655,6 +655,9 @@ func TestInitPlugins_CommandModelOverrideWarnsUnenforced(t *testing.T) {
 	for _, w := range warnings {
 		if w.Title == "unenforced command override" && w.PluginName == "model-plugin" && strings.Contains(w.Message, "model") {
 			found = true
+			if w.Code != events.WarningCodePluginCompatibility {
+				t.Errorf("unenforced-model-override warning code = %q, want %q", w.Code, events.WarningCodePluginCompatibility)
+			}
 		}
 	}
 	if !found {
@@ -672,6 +675,9 @@ func TestInitPlugins_CommandAllowedToolsWarnsUnenforced(t *testing.T) {
 	for _, w := range warnings {
 		if w.Title == "unenforced command override" && w.PluginName == "tools-plugin" && strings.Contains(w.Message, "allowed-tools") {
 			found = true
+			if w.Code != events.WarningCodePluginCompatibility {
+				t.Errorf("unenforced-allowed-tools warning code = %q, want %q", w.Code, events.WarningCodePluginCompatibility)
+			}
 		}
 	}
 	if !found {

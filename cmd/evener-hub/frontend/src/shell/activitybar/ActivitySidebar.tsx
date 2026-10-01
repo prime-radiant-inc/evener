@@ -12,10 +12,12 @@ import { AnimatePresence, m, spatialTransition } from "../../motion";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { IconButton, SegmentedControl } from "../../widgets";
+import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
+import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import {
   activitySidebarReturnFocusTarget,
@@ -49,6 +51,9 @@ export function ActivitySidebar() {
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
   const ref = useFocusedActivityScopeRef();
+  useEffect(() => {
+    if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
+  }, [open, ref]);
   const { snapshot } = useSessionActivity(open ? ref : null);
   // Closed derives nothing: the sidebar is mounted for the whole desktop
   // session, and a location lookup plus recursive walk per polling update
@@ -114,10 +119,16 @@ export function ActivitySidebar() {
               }))}
             />
           </div>
-          {/* key on the leaf: the tab's fold/paging state belongs to the
-              scope, and a re-scope must not inherit the previous leaf's
-              open folds and page offsets. */}
-          <div className={CLASS.body}>{Body === null ? null : <Body key={scope.leaf.ref} scope={scope} />}</div>
+          <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
+            <ActivityViewport
+              key={JSON.stringify([scope.leaf.ref, tab])}
+              sessionRef={scope.leaf.ref}
+              tab={tab}
+              className={CLASS.body}
+            >
+              {Body === null ? null : <Body scope={scope} />}
+            </ActivityViewport>
+          </DisclosurePersistenceContext.Provider>
         </m.aside>
       ) : null}
     </AnimatePresence>

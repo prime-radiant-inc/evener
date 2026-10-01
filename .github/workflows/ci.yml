@@ -68,7 +68,7 @@ jobs:
           kind: web
 
       - name: Build and browser guards
-        run: make build-web && make test-web-browser
+        run: make test-web-browser
 
       - uses: ./.github/actions/go-cache-save
 

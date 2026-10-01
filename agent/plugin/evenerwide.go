@@ -121,8 +121,10 @@ func scanEvenerwideDir(dir, source string, out map[string]Command, warnings *[]e
 				fmt.Sprintf("command file %s contains !` spans: execution directives are inert in evener-wide commands; use a plugin command for executable templates", file)))
 		}
 		if command.Model != "" || len(command.AllowedTools) > 0 {
-			*warnings = append(*warnings, evenerwideWarning("unenforced command frontmatter",
-				fmt.Sprintf("command file %s declares model/allowed-tools, which evener does not enforce yet", file)))
+			warning := evenerwideWarning("unenforced command frontmatter",
+				fmt.Sprintf("command file %s declares model/allowed-tools, which evener does not enforce yet", file))
+			warning.Code = events.WarningCodePluginCompatibility
+			*warnings = append(*warnings, warning)
 		}
 		out[name] = command
 	}

@@ -10,6 +10,19 @@ the session, and tapping it again activates the session. Reading a session's
 activity is a separate operation, so browsing navigation does not load every
 session's work tree.
 
+Transcript delegate cards and status indicators use the same
+owner-qualified delegate entity projection as Activity. Retained transcripts do
+not require a live diagnostics roster to display authoritative delegate state.
+A receipt identifies the owned delegate and, when present, its child session; it
+does not establish current status. Missing or ambiguous entity identity remains
+unavailable. Snapshots of the same proven owner/delegate/child are ordered by nonzero run
+generation, then terminal settlement within that generation, then comparable
+projection revisions. A known generation outranks an unknown generation; two
+unknown generations retain revision ordering without inferred settlement. Each
+selected entity remains one whole snapshot, so resumed status is not combined
+with a previous generation's report. These labels reuse the
+transcript's existing activity binding without adding reads or subscriptions.
+
 ## APIs and ownership
 
 Daemon and hub AppWire expose four typed reads:
@@ -25,7 +38,17 @@ Every request names an explicit public session `ref`. The default `session`
 scope selects resources logically owned by that session. `subtree` includes
 resources owned by its delegate descendants. Neither scope includes fork
 originals or unrelated sessions. A watch belongs in its receiver's collection
-even when another session's manager observes the source.
+even when another session's manager observes the source. Watch `ownerRef` and
+`receiverRef` identify that logical recipient; required `sourceRef` identifies
+the physical source session whose manager and journal own the watch and scope
+its resolved job target. Detail rows show “Notifies” with the known recipient
+name, an already loaded compact delegate name, or its stable ref. Status overlays
+retain compact names only for the same owned delegate; they do not transfer
+report or run state between generations. Releasing a child transcript does not
+remove a recipient identity still present in the parent’s loaded activity.
+Output conditions use a job description only from an
+already loaded entity with that exact source ref and job ID; missing metadata
+keeps the raw target. Naming never adds collection demand or network reads.
 
 The [typed contracts](../../appwire/session_activity.go) and
 [generated API catalog](../appwire-protocol.md) define the fields. The
@@ -239,6 +262,8 @@ returned job owner ref, delegate stopping addresses its controller root, and a
 child transcript opens the returned child ref. A rendering key never becomes an
 action argument. The [delegate stop handler](../../server/appwire_runtime.go)
 checks that root mutation boundary. Optional usage fields stay absent when unknown.
+Job output panes keep the logical job ID as their title when descriptive
+metadata is unavailable, while independently readable output remains usable.
 
 See the [store tests](../../appwire-client/typescript/sessionActivityStore.test.ts),
 [lease tests](../../appwire-client/typescript/threadSubscription.test.ts) and
@@ -263,6 +288,47 @@ its already loaded title through the [pane chrome store](../../cmd/evener-hub/fr
 tab naming adds no metadata request. Closing Activity from within the sidebar
 returns keyboard focus to its opener or the matching footer control.
 
+The [desktop sidebar view store](../../cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts)
+retains open/category choices and a semantic row anchor per public session ref
+and category. The browser disclosure binding opts Activity into retaining explicit
+fold choices, including task and watch details. These are bounded, best-effort UI
+preferences: 100 recent session views and 2,000 disclosure choices. Loading them
+does not rewrite storage or acquire a collection for a closed sidebar. These
+preferences never contain activity rows or continuation/retry state. A committed
+desktop revisit preserves the session's recency through the existing coalesced
+save, so a reload does not make that session an older eviction candidate. Focus
+changes while the sidebar is unmounted do not persist inherited view intent.
+
+Without a retained choice, the desktop [Jobs tab](../../cmd/evener-hub/frontend/src/shell/activitybar/JobsTab.tsx)
+starts successful completed job history folded, and the shared
+[task panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx)
+starts settled done/cancelled task history folded. Running and unsuccessful jobs
+remain visible, as do the Current and Remaining task sections. Task details
+remain an explicit disclosure choice.
+
+The [Activity viewport](../../cmd/evener-hub/frontend/src/shell/activitybar/ActivityViewport.tsx)
+restores the retained row after its collection and disclosures render. A row
+that is already loaded can still need trailing page extent to reach its saved
+viewport offset; restoration remains pending until that position is reachable
+or the collection is authoritative complete. For cold
+pages it positions the existing page boundary in view; each new visibility
+observation supplies demand through `ActivityPageBoundary`. It starts no fetch
+or retry loop. Closing the sidebar pauses positioning and page admission while
+it is closed. Reopening during its exit animation can resume the same mounted
+viewport's pending intent; a completed exit or scope/category replacement retires
+that viewport's pending work. Reader scroll/navigation gestures and deliberate
+control activation cancel pending positioning. Focus-only keys
+such as Tab, modifier keys and text keys preserve it when the viewport does not
+scroll. Scroll anchors update in memory immediately; the existing view store
+coalesces their storage writes after a gesture. Closing, changing category or
+session, and page departure flush the latest position. Other explicit view
+choices remain immediately durable; unavailable storage never blocks use.
+Partial results keep a missing anchor; an authoritative
+complete collection can prove it absent. A row inside a closed fold does not
+authorize opening that fold. A new child scope keeps an ongoing sidebar
+inspection open on its current category with fresh child-specific view choices;
+returning to a visited session restores that session's choices.
+
 The [visible transcript](../../cmd/evener-hub/frontend/src/panes/session/transcript/useEntityView.ts)
 observes session-scoped jobs and delegates for inline entity links and controls.
 It shares those reads with other holders of the same binding. If neither
@@ -278,14 +344,31 @@ optional active count sums
 the session's authoritative job and delegate active counts only when both are
 known; watches and completed work are not part of that number. The mobile sheet
 starts with compact job, delegate and watch details, each one disclosure away.
+Expanded watch details reveal the full user note as wrapped text, regardless of
+how much fits in the compact collapsed row.
 Failed entries remain visible outside the inactive fold, including parent rows
-needed to expose failed descendants; successful inactive work stays folded.
+needed to expose failed descendants. The fold count covers only the other
+inactive entries grouped beneath it.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
-retains sheet visibility and disclosure choices by session ref for the lifetime
-of its retained workspace panes. Opening a child transcript releases the hidden
-subtree read demand; Back restores the Activity inspection context and acquires
-demand again through the shared binding. Explicitly closing the sheet keeps it
-closed across navigation. Closing the last retaining pane evicts this view state.
+retains sheet visibility, disclosure choices and each collection's last loaded
+row identity by session ref for the lifetime of its retained workspace panes.
+Opening a child transcript releases the hidden subtree read demand. Back acquires
+fresh demand through the shared binding and restores the inspected extent using
+the existing page boundary, yielding 100 ms between pages. Delegates, jobs and
+watches restore independently until their saved identity arrives or an
+authoritative complete read proves it absent. A partial first page cannot replace
+an outstanding boundary. The view stores only identities, not resource rows,
+cursors or retry state; the shared store continues to own failed-page recovery.
+Explicitly closing the sheet clears extent restoration and keeps the sheet closed
+across navigation. A changed resolved session clears the former session's extent
+and disclosure choices. Closing the last retaining pane evicts this view state.
+
+The [read-only child transcript](../../cmd/evener-hub/frontend/src/panes/transcript/Transcript.tsx)
+shows the same proven scope hierarchy above its content while preserving its
+chosen transcript title. Its existing session binding supplies summary context;
+direct links and restored panes obtain the same context without requiring a Back
+target. The Back target alone is not ancestry evidence, and no parent transcript
+is read to obtain a name. Root sessions omit redundant ancestry.
 
 Activity delegate rows use the shared transcript opener, which retains the
 enclosing conversation and canonicalizes restored variants of the same child

@@ -160,7 +160,7 @@ function triggerLabel(tasks: ThreadModel["tasks"]): string {
 // session's panel opens. Mirrors subagentModuleStore.ts's itemScopeKey (same
 // NUL-separator idiom); no "" fallback is needed here since TasksPanelProps'
 // sessionRef is never optional.
-function taskDisclosureId(sessionRef: string, taskId: number): string {
+export function taskDisclosureId(sessionRef: string, taskId: number): string {
   return `${sessionRef}\0${taskId}`;
 }
 
@@ -318,7 +318,7 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
     // No className here: Disclosure's own .summary/.body already lay out
     // the full row width - this <li> exists only to keep the <ul>'s
     // children real <li>s, the list semantics screen readers rely on.
-    <li data-testid="task-row">
+    <li data-testid="task-row" data-activity-anchor={taskDisclosureId(sessionRef, task.id)}>
       <Disclosure id={taskDisclosureId(sessionRef, task.id)} summary={summary}>
         <TaskExpandedBody task={task} sessionRef={sessionRef} />
       </Disclosure>

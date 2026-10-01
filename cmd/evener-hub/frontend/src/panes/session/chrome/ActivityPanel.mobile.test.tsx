@@ -1,7 +1,7 @@
 import { hydrateThread } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { lazy } from "react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetChromeStoreForTests } from "../../../shell/chromeStore";
 import { ClientProvider } from "../../../shell/clientContext";
 import { StackHost } from "../../../shell/mobile/StackHost";
@@ -142,9 +142,12 @@ test("mobile child transcript Back restores Activity and disclosures until expli
     const inactive = await screen.findByRole("treeitem", { name: /inactive/ });
     fireEvent.click(inactive);
     fireEvent.click(screen.getByRole("button", { name: "Show details for Observer" }));
-    fireEvent.click(
-      within(screen.getByRole("treeitem", { name: "Observer" })).getByRole("button", { name: "Open transcript" }),
-    );
+    await act(async () => {
+      fireEvent.click(
+        within(screen.getByRole("treeitem", { name: "Observer" })).getByRole("button", { name: "Open transcript" }),
+      );
+      await vi.dynamicImportSettled();
+    });
     await screen.findByText("No turns yet");
     const childPane = workspaceStore.getState().focusedPaneId;
     if (childPane === null) throw new Error("expected the child transcript to own focus");
@@ -205,4 +208,92 @@ test("narrow Activity action opens the single chrome sheet and labels only known
   fireEvent.click(await screen.findByRole("button", { name: "Activity · 2 active" }));
   expect(await screen.findByRole("dialog", { name: "Activity" })).toBeTruthy();
   expect(screen.queryByRole("menu")).toBeNull();
+});
+
+test("mobile child Back restores the loaded job extent and expanded older failure with fresh cursors", async () => {
+  const client = connectActivity();
+  const completed = Array.from({ length: 60 }, (_, index) =>
+    activityJob({
+      jobId: `history-${index}`,
+      description: `Completed history ${index}`,
+      terminal: true,
+      outcome: "success",
+    }),
+  );
+  const firstPage = [
+    activityJob({ jobId: "build", description: "Current build" }),
+    activityJob({ jobId: "monitor", description: "Current monitor" }),
+    ...completed.slice(0, 48),
+  ];
+  const olderPage = [
+    ...completed.slice(48),
+    activityJob({ jobId: "failed", description: "Older failed checks", terminal: true, outcome: "failure" }),
+  ];
+  let walk = 0;
+  client.on("evener/thread/jobs/list", ({ cursor, ref, scope }) => {
+    if (!cursor) walk += 1;
+    else expect(cursor).toBe(`older-${walk}`);
+    return {
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      jobs: cursor ? olderPage : firstPage,
+      page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: `older-${walk}` } : {}) },
+    };
+  });
+  client.on("evener/jobs/output", () => ({ data: { tail: "Older failure output", totalBytes: 20, retainedStart: 0 } }));
+  const restoreSessionPane = registerPaneForTests<{ ref: string }>({
+    id: "session",
+    title: () => "Activity owner",
+    component: lazy(() =>
+      Promise.resolve({
+        default: ({ params }: PaneProps<{ ref: string }>) => (
+          <ActivityPanel sessionRef={params.ref} model={model(params.ref)} />
+        ),
+      }),
+    ),
+  });
+  try {
+    workspaceStore.getState().openPane("session", { ref });
+    render(
+      <ClientProvider client={client}>
+        <StackHost />
+      </ClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Activity/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more jobs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Older failed checks" }));
+    expect(await screen.findByText("Older failure output")).toBeTruthy();
+    fireEvent.click(screen.getByRole("treeitem", { name: "61 inactive" }));
+    await act(async () => {
+      fireEvent.click(
+        within(screen.getByRole("treeitem", { name: "Observer" })).getByRole("button", { name: "Open transcript" }),
+      );
+      await vi.dynamicImportSettled();
+    });
+    await screen.findByText("No turns yet");
+    await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
+    const jobReadsBeforeBack = client.calls.filter(
+      (call) => call.method === "evener/thread/jobs/list" && (call.params as { scope?: string }).scope === "subtree",
+    ).length;
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    const dialog = await screen.findByRole("dialog", { name: "Activity" });
+    expect(await within(dialog).findByRole("button", { name: "Hide details for Older failed checks" })).toBeTruthy();
+    expect(await within(dialog).findByText("Older failure output")).toBeTruthy();
+    expect(within(dialog).getByRole("treeitem", { name: "61 inactive" })).toBeTruthy();
+    expect(within(dialog).getByRole("treeitem", { name: "Completed history 59" })).toBeTruthy();
+    expect(
+      client.calls
+        .filter(
+          (call) =>
+            call.method === "evener/thread/jobs/list" && (call.params as { scope?: string }).scope === "subtree",
+        )
+        .slice(jobReadsBeforeBack)
+        .map((call) => call.params),
+    ).toEqual([
+      { ref, scope: "subtree" },
+      { ref, scope: "subtree", cursor: `older-${walk}` },
+    ]);
+  } finally {
+    restoreSessionPane();
+  }
 });

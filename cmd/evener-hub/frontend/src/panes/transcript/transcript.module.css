@@ -17,6 +17,13 @@
    * .content and PaneScaffold's own .body already carry. */
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+}
+
+.scope {
+  flex: none;
+  min-width: 0;
+  margin-bottom: var(--space-2);
 }
 
 /* JobLog ("job:<id>" refs): the shell transcript is one bounded tail, not a

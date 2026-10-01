@@ -382,14 +382,13 @@ const FoldRowView = memo(function FoldRowView({
   registerRowRef,
 }: FoldRowViewProps): ReactNode {
   const label = `${row.inactiveCount} inactive`;
-  const accessibleLabel = row.failedCount > 0 ? `${label} · ${row.failedCount} failed` : label;
   return (
     <div
       ref={(element) => {
         registerRowRef(row.id, element);
       }}
       role="treeitem"
-      aria-label={accessibleLabel}
+      aria-label={label}
       aria-level={row.level}
       aria-expanded={expanded}
       tabIndex={tabIndex}
@@ -410,10 +409,7 @@ const FoldRowView = memo(function FoldRowView({
       >
         <Chevron direction={expanded ? "down" : "right"} size={12} />
       </button>
-      <span className={CLASS.denseName}>
-        {label}
-        {row.failedCount > 0 && <span className={CLASS.denseFailed}>{` · ${row.failedCount} failed`}</span>}
-      </span>
+      <span className={CLASS.denseName}>{label}</span>
     </div>
   );
 });
