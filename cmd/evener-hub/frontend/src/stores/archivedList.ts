@@ -3,8 +3,8 @@
 // a time from evener/archived/list. The rail refetches a list when it sees
 // the navigation archived count move to a total the list does not hold, and
 // after an action that can change the project's archived rows (archive,
-// unarchive, pin, delete). Paging, overtaking and the failed-refresh-keeps-
-// rows rule live in the package.
+// unarchive, pin, unpin, delete). Paging, overtaking and the failed-refresh-
+// keeps-rows rule live in the package.
 //
 // The client port resolves connectionStore's CURRENT client at request time,
 // and a replaced or recovered connection resets the store, so no list
@@ -13,14 +13,13 @@
 import {
   type ArchivedList,
   type ArchivedListCatalog,
-  type ArchivedListState,
   archivedListKey,
   createArchivedListStore,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { connectedClientPort, onConnectionReplacedOrRecovered } from "./connection";
 
-export type { ArchivedList, ArchivedListCatalog, ArchivedListState };
+export type { ArchivedList };
 export { archivedListKey };
 
 export const archivedListStore = createArchivedListStore({ request: connectedClientPort("archivedList").request });
