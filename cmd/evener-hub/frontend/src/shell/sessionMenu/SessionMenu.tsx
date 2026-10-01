@@ -25,6 +25,7 @@ import { Button, Dialog, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuEntry } from "../../widgets/menu";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
+import { isTopLevelSession } from "../rail/sessionKind";
 import { ForceStopDialog } from "./ForceStopDialog";
 import styles from "./sessionmenu.module.css";
 
@@ -140,9 +141,8 @@ export function SessionMenu({
   // Organization actions are decisions about a top-level navigation row;
   // nested and remote rows retain the exact legacy restrictions.
   const sessionModel = session ?? treeNode;
-  const nestedKinds = new Set(["subagent", "fork"]);
   const organizationEligible =
-    sessionModel !== undefined && sessionModel.top_level !== false && !nestedKinds.has(sessionModel.kind);
+    sessionModel !== undefined && sessionModel.top_level !== false && isTopLevelSession(sessionModel);
   const deleteEligible = organizationEligible && sessionModel.host_id === "local";
 
   // Groups joined by separators: panes / organize / destructive. Both

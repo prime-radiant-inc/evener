@@ -33,6 +33,7 @@
 import {
   approvalWaiting,
   humanizeState,
+  SHUT_DOWN_STATUSES,
   watchCadenceLabel,
   watchDurationLabel,
   watchGloss,
@@ -423,7 +424,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       triggerLabel={`Actions for ${session.title}`}
       canRename={session.rename === true}
       canShutdown={session.live && session.state !== "restartRequired"}
-      stopped={session.state === "ended"}
+      stopped={SHUT_DOWN_STATUSES.has(session.state)}
       treeNode={session}
       panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
       actions={{

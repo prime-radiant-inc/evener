@@ -10,6 +10,6 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 // than silently losing it.
 const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork"]);
 
-export function isTopLevelSession(session: NavigationSessionSummary): boolean {
+export function isTopLevelSession(session: Pick<NavigationSessionSummary, "kind">): boolean {
   return !NESTED_KINDS.has(session.kind);
 }

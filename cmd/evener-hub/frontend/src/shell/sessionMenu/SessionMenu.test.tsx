@@ -42,7 +42,7 @@ function seedPinCatalog(): void {
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
 }
 
-function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
+function renderMenu(overrides: Partial<SessionMenuProps> = {}, actionOverrides: Partial<SessionMenuActions> = {}) {
   const actions: SessionMenuActions = {
     onOpenPane: vi.fn(),
     onRename: vi.fn().mockResolvedValue(undefined),
@@ -51,6 +51,7 @@ function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
     onUnpin: vi.fn().mockResolvedValue(undefined),
     onToggleArchive: vi.fn().mockResolvedValue(undefined),
     onDelete: vi.fn().mockResolvedValue(undefined),
+    ...actionOverrides,
   };
   render(
     <SessionMenu
@@ -217,18 +218,7 @@ test("Delete is hidden until the session is stopped", async () => {
 
 test("force-stop action is labeled Force shutdown", async () => {
   const user = userEvent.setup();
-  renderMenu({
-    actions: {
-      onOpenPane: vi.fn(),
-      onRename: vi.fn().mockResolvedValue(undefined),
-      onShutdown: vi.fn().mockResolvedValue(undefined),
-      onForceStop: vi.fn().mockResolvedValue(undefined),
-      onPin: vi.fn().mockResolvedValue(undefined),
-      onUnpin: vi.fn().mockResolvedValue(undefined),
-      onToggleArchive: vi.fn().mockResolvedValue(undefined),
-      onDelete: vi.fn().mockResolvedValue(undefined),
-    },
-  });
+  renderMenu({}, { onForceStop: vi.fn().mockResolvedValue(undefined) });
   await openMenu(user);
   expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
   expect(screen.queryByRole("menuitem", { name: "Force stop…" })).toBeNull();
