@@ -1025,6 +1025,120 @@ test("a saved notLoaded session with sending enabled discovers activity while it
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
 });
 
+test.each(["notLoaded", "ended", "closed"] as const)(
+  "an empty %s follow-up keeps its session actions open when the editor loses focus",
+  async (status) => {
+    const user = userEvent.setup();
+    await mountComposer("ref_a", {
+      status: { type: status },
+      evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    });
+    await user.click(textarea());
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    expect(screen.getByRole("dialog", { name: "Rename session" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Session actions" })).toBe(document.activeElement);
+    render(<button type="button">Outside composer</button>);
+    await user.click(screen.getByRole("button", { name: "Outside composer" }));
+    await waitFor(() => expect(screen.queryByTestId("session-chrome-inline")).toBeNull());
+    expect(textarea().textContent).toBe("");
+  },
+);
+
+test("an empty exited follow-up can pick its next model after the editor loses focus", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "notLoaded" },
+    evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+  });
+  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
+  fake.on("thread/model/set", () => ({}));
+  await user.click(textarea());
+  await user.click(screen.getByTestId("model-switch-trigger"));
+
+  expect(screen.queryByRole("combobox")).not.toBeNull();
+  await user.clear(screen.getByRole("combobox"));
+  await user.click(await screen.findByRole("option", { name: /gpt-5.5/ }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "thread/model/set").map((call) => call.params)).toEqual([
+      { ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" },
+    ]),
+  );
+  render(<button type="button">Outside composer</button>);
+  await user.click(screen.getByRole("button", { name: "Outside composer" }));
+  await waitFor(() => expect(screen.queryByTestId("session-chrome-inline")).toBeNull());
+});
+
+test("an empty exited follow-up keeps its phone menus usable", async () => {
+  const restoreViewport = installMobileViewport();
+  try {
+    const user = userEvent.setup();
+    const fake = await mountComposer("ref_a", {
+      status: { type: "notLoaded" },
+      evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    });
+    fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
+    fake.on("thread/model/set", () => ({}));
+    await user.click(textarea());
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByTestId("model-switch-trigger"));
+    expect(screen.getByRole("dialog", { name: "Choose model" })).toBeTruthy();
+    await user.click(await screen.findByRole("option", { name: /gpt-5.5/ }));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(1));
+    expect(document.activeElement).toBe(screen.getByTestId("model-switch-trigger"));
+  } finally {
+    cleanup();
+    restoreViewport();
+  }
+});
+
+test("an empty exited follow-up supports keyboard focus through its controls and picker", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "notLoaded" },
+    evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+  });
+  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
+  await user.click(textarea());
+  await user.tab();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Attach image" }));
+  await user.tab();
+  expect(document.activeElement).toBe(screen.getByTestId("model-switch-trigger"));
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("combobox")).not.toBeNull();
+  await user.keyboard("{Escape}");
+  expect(document.activeElement).toBe(screen.getByTestId("model-switch-trigger"));
+  expect(screen.queryByRole("combobox")).toBeNull();
+});
+
+test("an empty exited follow-up survives the native blur checkpoint before its next control gains focus", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "notLoaded" },
+    evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+  });
+  const editor = textarea();
+  await user.click(editor);
+  const trigger = screen.getByRole("button", { name: "Session actions" });
+  // Chrome runs microtasks after native blur, before the destination focus.
+  await act(async () => {
+    editor.blur();
+    await Promise.resolve();
+  });
+  expect(trigger.isConnected).toBe(true);
+  act(() => trigger.focus());
+  await user.click(trigger);
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  expect(screen.queryByRole("menu")).not.toBeNull();
+});
+
 test("restores a stored draft into the textarea on mount", async () => {
   localStorage.setItem("evener.composer.draft.v1.ref_a", "unsent thought");
   await mountComposer("ref_a");
@@ -3418,9 +3532,14 @@ test("an ended session that still holds text keeps its control row after blur", 
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "dw");
-  await user.tab();
+  render(<button type="button">Outside composer</button>);
+  await user.click(screen.getByRole("button", { name: "Outside composer" }));
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
 
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
+  expect(editor.textContent).toBe("dw");
 });
 
 // The writing surface opens from one line to three when a follow-up is focused.
@@ -3431,7 +3550,10 @@ test("an ended session's field rests at one line and opens to three on focus", a
   await act(async () => textarea().focus());
   expect(textarea().style.minHeight).toBe("3lh");
 
-  await act(async () => textarea().blur());
+  await act(async () => {
+    textarea().blur();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
   expect(textarea().style.minHeight).toBe("1lh");
 });
 
