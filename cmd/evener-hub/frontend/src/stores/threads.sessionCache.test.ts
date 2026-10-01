@@ -1393,46 +1393,36 @@ describe("cached write seam", () => {
     }
   });
 
-  it("flush: the pinned drain (dropUnpinnedModel) ends a suppressed ref's suppression and lease with the model", async () => {
+  it("flush: the pinned drain (dropUnpinnedModel) ends a suppressed shell's metadata and lease with the model", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      // The same pinned-drain mechanics as the test above: a durable queued
-      // row pins the ref, the ready discovery publishes its model, and the
-      // row's settle is what finally drops the pin and the model.
-      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-drain-suppressed" });
-      await storage.enqueueIntent({
-        targetRef: "local:pinned_sup",
-        method: "turn/queue",
-        payload: { ref: "local:pinned_sup", expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
-        attachments: [],
-        optimisticDisplay: { text: "queued" },
-      });
+      // Claim a real cached shell and pin it while its read is still pending.
+      // No authoritative publish may clear its shell metadata before the drain.
+      await seedAndReload("local:pinned_sup");
+      await threadsStore.getState().queue("local:pinned_sup", "queued");
+      const storage = new MutationOutboxIndexedDB();
+      const rows = await storage.listOutbox("local:pinned_sup");
       storage.close();
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {})); // the row stays durable
-      await nextModelPublished("local:pinned_sup");
-      await threadsStore.getState().ensureThread("local:pinned_sup_warm"); // warms the connection's adapter
-      void threadsStore.getState().ensureThread("local:pinned_sup"); // the pane claim; the model exists, so no read
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+      if (row === undefined) throw new Error("the queued mutation must pin the shell");
       threadsStore.getState().releaseThread("local:pinned_sup"); // pinned: the model stays
       expect(threadsStore.getState().threads.has("local:pinned_sup")).toBe(true);
-      // The state a committed clear leaves on an open leased ref, armed
-      // directly here (clearCachedSessions is the production writer, covered
-      // in "the clear" below); this test owns the drain-side lifecycle.
-      threadsStore.setState((s) => ({
-        cacheSuppressed: new Set(s.cacheSuppressed).add("local:pinned_sup"),
-        cacheLeases: new Map(s.cacheLeases).set("local:pinned_sup", 0),
-      }));
+      expect(await clearCachedSessions()).toEqual({ committed: true });
       expect(threadsStore.getState().cacheSuppressed.has("local:pinned_sup")).toBe(true);
       expect(threadsStore.getState().cacheLeases.has("local:pinned_sup")).toBe(true);
+      expect(threadsStore.getState().cacheShellRefs.has("local:pinned_sup")).toBe(true);
+      expect(threadsStore.getState().cacheAnchors.has("local:pinned_sup")).toBe(true);
       const drained = nextModelRemoved("local:pinned_sup");
-      emitAppliedQueuedNotification("local:pinned_sup", "mutation-drain-suppressed"); // the row settles: the pin drops
+      emitAppliedQueuedNotification("local:pinned_sup", row.clientMutationId);
       await drained;
       expect(threadsStore.getState().threads.has("local:pinned_sup")).toBe(false);
-      // The drain's removal dropped both: premature suppression decays with
-      // the final release of the ref, the pinned-drain path included.
       expect(threadsStore.getState().cacheSuppressed.has("local:pinned_sup")).toBe(false);
       expect(threadsStore.getState().cacheLeases.has("local:pinned_sup")).toBe(false);
+      expect(threadsStore.getState().cacheShellRefs.has("local:pinned_sup")).toBe(false);
+      expect(threadsStore.getState().cacheAnchors.has("local:pinned_sup")).toBe(false);
+      expect(await cacheRecord("local:pinned_sup")).toBeUndefined();
+      resolvePendingRead(); // the retired read cannot revive the shell
     } finally {
       vi.useRealTimers();
     }
@@ -2505,6 +2495,74 @@ describe("the clear", () => {
       await driveThreadClear("local:cc", fake); // the thread/clear driver threads.test.ts's own coverage uses
       expect(await cacheRecord("local:cc")).toBeUndefined(); // gone in the same step: no pre-clear shell on the next reload
       expect(threadsStore.getState().threads.get("local:cc")?.history).toBeUndefined(); // the model is the bare hydrate
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the session-content clear retires shell metadata, admits paging, and re-caches after reopen", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const ref = "local:clear_shell";
+      const { adapter } = cacheTestBed();
+      await seedCache(adapter, ref);
+      const fake = connectFakeClient();
+      let resolveRead: ((response: ThreadReadResponse) => void) | undefined;
+      const readArmed = nextHandledRequest(
+        fake,
+        "thread/read",
+        () =>
+          new Promise<ThreadReadResponse>((resolve) => {
+            resolveRead = resolve;
+          }),
+      );
+      const pending = threadsStore.getState().ensureThread(ref);
+      const params = await readArmed;
+      expect(threadsStore.getState().cacheShellRefs.has(ref)).toBe(true);
+      expect(threadsStore.getState().cacheAnchors.has(ref)).toBe(true);
+
+      await driveThreadClear(ref, fake);
+      expect(threadsStore.getState().threads.get(ref)?.history).toBeUndefined();
+      expect(threadsStore.getState().cacheShellRefs.has(ref)).toBe(false);
+      expect(threadsStore.getState().cacheAnchors.has(ref)).toBe(false);
+      expect(await cacheRecord(ref)).toBeUndefined();
+      if (resolveRead === undefined) throw new Error("the pre-clear read must still be pending");
+      resolveRead(readResponse(ref, { requestGeneration: params.requestGeneration, turns: [turnFixture("old")] }));
+      await pending;
+      expect(threadsStore.getState().threads.get(ref)?.history).toBeUndefined(); // the stale read did not replace the clear
+
+      // A clear has no older cursor. Demand must still reach the ready wait,
+      // rather than return at the stale shell gate; reconnect supplies history.
+      fake.emitStateChange("connecting");
+      const listeners = fake.listenerCount;
+      const paging = threadsStore.getState().loadOlderTurns(ref);
+      expect(fake.listenerCount).toBeGreaterThan(listeners);
+      fake.on(
+        "thread/read",
+        echoingReadHandler({
+          snapshot: { incarnation: "inc-cleared", length: 2 },
+          turns: [turnFixture("new")],
+          olderCursor: "older-cleared",
+        }),
+      );
+      fake.on("thread/turns/list", () => ({
+        ...olderPageResponse({ turns: [turnFixture("older")] }),
+        snapshot: { incarnation: "inc-cleared", length: 2 },
+      }));
+      fake.emitReady();
+      await paging;
+      expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+      expect(
+        threadsStore
+          .getState()
+          .threads.get(ref)
+          ?.turns.map((turn) => turn.id),
+      ).toContain("older");
+
+      threadsStore.getState().releaseThread(ref);
+      await threadsStore.getState().ensureThread(ref);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect((await cacheRecord(ref))?.history.incarnation).toBe("inc-cleared");
     } finally {
       vi.useRealTimers();
     }

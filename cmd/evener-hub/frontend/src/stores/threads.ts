@@ -1067,10 +1067,18 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
     stateBefore.watchedThreads.has(targetRef) ? model : undefined,
   );
   threadsStore.setState((state) => {
+    // This authoritative replacement retired the shell's pending read, so
+    // publishThreadHydration will never clear its verification metadata.
+    const cacheShellRefs = new Set(state.cacheShellRefs);
+    cacheShellRefs.delete(targetRef);
+    const cacheAnchors = new Map(state.cacheAnchors);
+    cacheAnchors.delete(targetRef);
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(targetRef);
     else mutationAuthorityRefs.delete(targetRef);
     return {
+      cacheShellRefs,
+      cacheAnchors,
       mutationAuthorityRefs,
       hydrations: stateBefore.threads.has(targetRef)
         ? new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1)
@@ -1156,7 +1164,9 @@ function dropUnpinnedModel(ref: string): void {
       !state.frameTimes.has(ref) &&
       !state.hydrations.has(ref) &&
       !state.cacheSuppressed.has(ref) &&
-      !state.cacheLeases.has(ref)
+      !state.cacheLeases.has(ref) &&
+      !state.cacheShellRefs.has(ref) &&
+      !state.cacheAnchors.has(ref)
     )
       return state;
     const threads = new Map(state.threads);
@@ -1169,7 +1179,11 @@ function dropUnpinnedModel(ref: string): void {
     cacheSuppressed.delete(ref);
     const cacheLeases = new Map(state.cacheLeases);
     cacheLeases.delete(ref);
-    return { threads, frameTimes, hydrations, cacheSuppressed, cacheLeases };
+    const cacheShellRefs = new Set(state.cacheShellRefs);
+    cacheShellRefs.delete(ref);
+    const cacheAnchors = new Map(state.cacheAnchors);
+    cacheAnchors.delete(ref);
+    return { threads, frameTimes, hydrations, cacheSuppressed, cacheLeases, cacheShellRefs, cacheAnchors };
   });
 }
 
