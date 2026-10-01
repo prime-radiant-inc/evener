@@ -7,7 +7,7 @@
 // glyphs, and their counts come from the one ACTIVITY_TABS table - the same
 // table the status bar's chips read, so the two surfaces cannot drift.
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity } from "../../stores/sessionActivity";
@@ -22,6 +22,8 @@ import { ACTIVITY_TABS, activityTabSpec } from "./activityTabs";
 
 const CLASS = {
   sidebar: requireClass(styles.sidebar, "activitybar.module.css", "sidebar"),
+  scope: requireClass(styles.scope, "activitybar.module.css", "scope"),
+  pending: requireClass(styles.pending, "activitybar.module.css", "pending"),
   head: requireClass(styles.head, "activitybar.module.css", "head"),
   tabs: requireClass(styles.tabs, "activitybar.module.css", "tabs"),
   body: requireClass(styles.body, "activitybar.module.css", "body"),
@@ -30,6 +32,25 @@ const CLASS = {
 export function ActivitySidebar() {
   const open = useActivitySidebarStore((state) => state.open);
   const tab = useActivitySidebarStore((state) => state.tab);
+  const sidebar = useRef<HTMLElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (open) {
+      const active = document.activeElement;
+      opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    }
+  }, [open]);
+  const close = useCallback(() => {
+    const focusInside = sidebar.current?.contains(document.activeElement);
+    activitySidebarStore.getState().close();
+    if (!focusInside) return;
+    // Menus may remove the original opener; the matching footer chip remains
+    // a useful return point. Other pane changes never restore sidebar focus.
+    const target = opener.current?.isConnected
+      ? opener.current
+      : document.querySelector<HTMLElement>(`[data-activity-tab="${activitySidebarStore.getState().tab}"]`);
+    target?.focus();
+  }, []);
   // Narrow subscriptions: re-render on the resources map (nav data) or the
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
@@ -60,15 +81,16 @@ export function ActivitySidebar() {
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented) activitySidebarStore.getState().close();
+      if (event.key === "Escape" && !event.defaultPrevented) close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+  }, [open, close]);
   return (
     <AnimatePresence initial={false}>
       {open && scope !== null ? (
         <m.aside
+          ref={sidebar}
           className={CLASS.sidebar}
           initial={{ x: 320 }}
           animate={{ x: 0 }}
@@ -77,24 +99,25 @@ export function ActivitySidebar() {
           data-testid="activity-sidebar"
         >
           <div className={CLASS.head}>
-            <ScopeCrumbs path={scope.path} />
-            {!scope.ancestryKnown ? <span>Finding session context…</span> : null}
-            <IconButton
-              label="Close the activity sidebar"
-              icon="×"
-              variant="quiet"
-              size="sm"
-              onClick={() => activitySidebarStore.getState().close()}
-            />
+            <div className={CLASS.scope}>
+              <ScopeCrumbs path={scope.path} hierarchy />
+              {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
+            </div>
+            <IconButton label="Close the activity sidebar" icon="×" variant="quiet" size="sm" onClick={close} />
           </div>
           <div className={CLASS.tabs}>
             <SegmentedControl<ActivityTab>
               label="Activity kind"
+              hideLabel
               size="sm"
               fullWidth
               value={tab}
               onChange={(next) => activitySidebarStore.getState().setTab(next)}
-              options={ACTIVITY_TABS.map((spec) => ({ value: spec.id, label: spec.tabLabel(scope.counts) }))}
+              options={ACTIVITY_TABS.map((spec) => ({
+                value: spec.id,
+                label: spec.tabLabel(scope.counts),
+                accessibleLabel: spec.chipLabel(scope.counts),
+              }))}
             />
           </div>
           {/* key on the leaf: the tab's fold/paging state belongs to the

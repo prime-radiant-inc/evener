@@ -16,26 +16,28 @@
 // Compare the real host rail row and the real activity watch row. Their CSS
 // modules keep distinct row classes while the drawn glyphs share a 13px box.
 window.measure = async () => {
-  const [{ createElement }, { createRoot }, { flushSync }, { Tree }, { RailRow }, { WatchRow }] = await Promise.all([
+  const [{ createElement }, { createRoot }, { flushSync }, { Tree }, { RailRow }, { WatchRow }, { buildWatchRows }] = await Promise.all([
     import("react"),
     import("react-dom/client"),
     import("react-dom"),
     import("/src/widgets/tree/index.tsx"),
     import("/src/shell/rail/RailRow.tsx"),
     import("/src/shell/activitybar/activityRows.tsx"),
+    import("@evener/appwire-client"),
   ]);
   const host = { id: "host:devbox", kind: "host", host: { id: "devbox", label: "devbox", online: true }, children: [] };
   const watch = {
     ownerRef: "local:session", receiverRef: "local:session", state: "armed",
     watch: { id: "clock", source: "job:refresh", active: true, deliveries: 0, createdAt: "2026-09-30T12:00:00Z" },
   };
+  const [watchRow] = buildWatchRows([watch]);
   const root = createRoot(document.getElementById("root"));
   flushSync(() => root.render(createElement("div", null,
     createElement(Tree, {
       nodes: [host], onActivate: () => {}, onToggle: () => {},
       renderRow: (node, info) => createElement(RailRow, { node, info, actions: {} }),
     }),
-    createElement(WatchRow, { watch, now: Date.parse("2026-09-30T12:01:00Z") }),
+    createElement(WatchRow, { row: watchRow, now: Date.parse("2026-09-30T12:01:00Z") }),
   )));
   await document.fonts.ready;
   const box = (testId) => {

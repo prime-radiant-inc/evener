@@ -127,7 +127,7 @@ describe("ActivityTree watch rows", () => {
       failed: 0,
       completed: 0,
     });
-    expect(screen.getByText("… armed")).toBeTruthy();
+    expect(screen.getByText("Armed count unknown")).toBeTruthy();
     expect(screen.queryByText("1 armed")).toBeNull();
   });
 

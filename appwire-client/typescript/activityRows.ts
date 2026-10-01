@@ -1,6 +1,6 @@
 // Pure row-model builder for the dense activity tree: walks a parsed
-// ActivityTree and returns the flat list of rows to render. Live entries keep
-// their original order; terminal entries collapse behind one fold row per
+// ActivityTree and returns the flat list of rows to render. Live and failed entries keep
+// their original order; other terminal entries collapse behind one fold row per
 // parent session (revealed in original order when the fold is expanded).
 // Sessions never become rows — the panel header covers the root and a delegate
 // row stands in for its child session.
@@ -54,7 +54,6 @@ export interface ActivityFoldRow extends ActivityRowBase {
   kind: "fold";
   foldParentID: string;
   inactiveCount: number;
-  failedCount: number;
 }
 
 // A watch is pending work the session is waiting on, carried on the session
@@ -283,7 +282,8 @@ export interface ActivityDelegateState {
 }
 
 // A terminal entry's failure is the outcome the daemon already decided, so the
-// rows, the fold's failure count, and the merged badge counts stay one number.
+// rows and merged badge counts use that same truth; failed rows stay visible
+// outside inactive folds.
 // Work that has not ended carries no outcome and can only say so through its
 // current status.
 export function jobIsFailed(job: ActivityJob): boolean {
@@ -299,8 +299,8 @@ export function shellJobState(job: ActivityJob): "running" | "failed" | "done" {
 }
 
 // Stable delegates describe one reusable resource; other delegate types are
-// turn containers. Keep this in one place so row visibility, fold failure
-// counts, and the status shown by the row all use the protocol's same truth.
+// turn containers. Keep this in one place so row visibility and the status
+// shown by the row both use the protocol's same truth.
 export function activityDelegateState(delegate: ActivityDelegate): ActivityDelegateState {
   const childActive = delegate.child ? sessionIsActive(delegate.child) : false;
   const childFailed = (delegate.child?.counts.failed ?? 0) > 0;
@@ -483,7 +483,7 @@ export function indexActivityEntities(tree: ActivityTree): Map<string, ActivityJ
     // the panel would give it: index membership stays independent of what is
     // disclosed, while an indexed row still matches that entry's panel row.
     visitSession(walk) {
-      for (const entry of walk.entries) walk.emit(entry, !entryIsActive(entry));
+      for (const entry of walk.entries) walk.emit(entry, !entryIsActive(entry) && !entryIsFailed(entry));
     },
   });
 
@@ -498,12 +498,12 @@ export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet
       rows.push(row);
     },
     visitSession(walk) {
-      const live: ActivityEntry[] = [];
+      const visible: ActivityEntry[] = [];
       const inactive: ActivityEntry[] = [];
       for (const entry of walk.entries) {
-        (entryIsActive(entry) ? live : inactive).push(entry);
+        (entryIsActive(entry) || entryIsFailed(entry) ? visible : inactive).push(entry);
       }
-      for (const entry of live) walk.emit(entry, false);
+      for (const entry of visible) walk.emit(entry, false);
       if (inactive.length === 0) return;
       const id = foldRowID(activityNodeID(walk.session));
       rows.push({
@@ -513,7 +513,6 @@ export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet
         level: walk.level,
         foldParentID: activityNodeID(walk.session),
         inactiveCount: inactive.length,
-        failedCount: inactive.filter(entryIsFailed).length,
       });
       if (!expandedFolds.has(id)) return;
       for (const entry of inactive) walk.emit(entry, true);

@@ -3,6 +3,7 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // continuation pages at its visible boundary. Cadence and delivery labels use
 // the shared clock, which ticks only while this tab is mounted.
 
+import { buildWatchRows } from "@evener/appwire-client";
 import { useNowTick } from "../../panes/session/liveness";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -29,8 +30,8 @@ export function WatchesTab({ scope }: { scope: ActivityScope }) {
     return <span className={CLASS.emptyNote}>No watches at this level.</span>;
   return (
     <div className={CLASS.stack}>
-      {watches.map((watch) => (
-        <WatchRow key={JSON.stringify([watch.receiverRef, watch.watch.id])} watch={watch} now={now} />
+      {buildWatchRows(watches).map((row) => (
+        <WatchRow key={row.id} row={row} now={now} />
       ))}
       <ActivityPageBoundary
         resource="watches"

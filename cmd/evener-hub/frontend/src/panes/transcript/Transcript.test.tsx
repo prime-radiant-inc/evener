@@ -357,6 +357,89 @@ test("a job log shows the job's full command above its output", async () => {
   expect(commandCalls[0]?.params).toEqual({ ref: "ref_parent", jobId: "job_x" });
 });
 
+test.each([
+  { status: "command_exited_nonzero", reason: "exit_nonzero", exitCode: 7, label: "Command failed" },
+  { status: "completed", reason: "exit_zero", exitCode: 0, label: "completed" },
+])("a job log identifies its result: $status", async ({ status, reason, exitCode, label }) => {
+  const fake = connectFakeClient();
+  fake.on("evener/jobs/get", () => ({
+    data: {
+      jobId: "job_x",
+      ownerSessionId: "sess_ref_parent",
+      ownerRef: "ref_parent",
+      type: "shell",
+      status,
+      reason,
+      exitCode,
+      terminal: true,
+      background: true,
+      hasOutput: true,
+      description: "Verify the release package",
+      command: "make verify-release",
+      startedAt: "2026-08-05T15:00:00Z",
+      outputBytes: 9,
+    },
+  }));
+  fake.on("evener/jobs/output", () => ({
+    data: { tail: "finished\n", totalBytes: 9, retainedStart: 0, truncated: false },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:job_x", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Verify the release package" })).toBeTruthy();
+  const result = screen.getByTestId("joblog-status");
+  expect(result.textContent).toContain(label);
+  expect(result.textContent).toContain(`Exit code ${exitCode}`);
+  expect(screen.getByTestId("joblog-command").textContent).toBe("make verify-release");
+  expect(await screen.findByText("finished")).toBeTruthy();
+});
+
+test("a job log does not borrow metadata from another owner's equal job id", async () => {
+  const fake = connectFakeClient();
+  const metadata = (ownerRef: string, description: string) => ({
+    data: {
+      jobId: "shared-id",
+      ownerSessionId: ownerRef,
+      ownerRef,
+      type: "shell",
+      status: "completed",
+      terminal: true,
+      background: true,
+      hasOutput: false,
+      description,
+      command: `echo ${ownerRef}`,
+      startedAt: "2026-08-05T15:00:00Z",
+      outputBytes: 0,
+      exitCode: 0,
+    },
+  });
+  let finishSecond: (value: ReturnType<typeof metadata>) => void = () => {};
+  const second = new Promise<ReturnType<typeof metadata>>((resolve) => {
+    finishSecond = resolve;
+  });
+  fake.on("evener/jobs/get", ({ ref }) => (ref === "first-owner" ? metadata(ref, "First owner's job") : second));
+  fake.on("evener/jobs/output", () => ({ data: { tail: "", totalBytes: 0, retainedStart: 0 } }));
+  const view = (ownerRef: string) => (
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "job:shared-id", parentRef: ownerRef }} paneId="p1" focused={false} />
+    </ClientProvider>
+  );
+  const { rerender } = render(view("first-owner"));
+  expect((await screen.findByTestId("joblog-command")).textContent).toBe("echo first-owner");
+
+  await act(async () => rerender(view("second-owner")));
+  expect(screen.queryByTestId("joblog-command")).toBeNull();
+  expect(screen.queryByTestId("joblog-status")).toBeNull();
+  expect(screen.queryByRole("heading", { name: "First owner's job" })).toBeNull();
+  await act(async () => finishSecond(metadata("second-owner", "Second owner's job")));
+  expect(await screen.findByRole("heading", { name: "Second owner's job" })).toBeTruthy();
+  expect(screen.getByTestId("joblog-command").textContent).toBe("echo second-owner");
+});
+
 test("a job log whose metadata read fails still renders the output", async () => {
   const fake = connectFakeClient();
   fake.on("evener/jobs/get", () => Promise.reject(new Error("job not available")));
