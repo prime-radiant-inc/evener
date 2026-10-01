@@ -36,6 +36,7 @@ import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
 import { registerPaneForTests } from "../paneRegistry";
@@ -2774,10 +2775,7 @@ describe("host grouping (organize by)", () => {
     expect(loadProject).toHaveBeenCalledTimes(1);
   });
 
-  // Live rows group under host subheaders in BOTH grouped modes, so a Live
-  // tier's root rows sit at depth 1 there: the project line and the pin-star
-  // rule must follow the row's tier, not its nesting depth.
-  test("grouped Live rows still name their project under the host subheaders", () => {
+  test("grouped Live rows keep project context in the hover card", () => {
     prefsStore.setState({ sidebarGrouping: "host-project" });
     installState(
       [
@@ -2790,10 +2788,11 @@ describe("host grouping (organize by)", () => {
     );
     render(<Rail />);
     const live = sectionRoot("Live");
-    // The subheader answers "which machine"; the row's second line still
-    // answers "which project" - the one fact a Live row exists to carry.
-    expect(within(live).getByText("Evener")).toBeTruthy();
-    expect(within(live).getByText("Radiant")).toBeTruthy();
+    expect(within(live).queryByText("Evener")).toBeNull();
+    expect(within(live).queryByText("Radiant")).toBeNull();
+
+    const panel = hoverForTooltip(within(live).getByText("Local live"));
+    expect(within(panel).getByText("Evener")).toBeTruthy();
   });
 
   test("host grouping holds its shape across a manifest revalidation (last-known sources)", () => {

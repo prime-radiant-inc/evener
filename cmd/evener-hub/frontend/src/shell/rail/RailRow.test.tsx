@@ -24,12 +24,12 @@ import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
+import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
-  activityGloss,
   cadenceStateFor,
   watchGloss as domainWatchGloss,
   RailRow,
@@ -444,30 +444,10 @@ describe("cadenceStateFor", () => {
   });
 });
 
-// The signal dot (§ the dot earns its space): a row only shows a Cadence
-// dot for a state that TELLS you something - working, waiting on you, failed. A
-// quiet row shows no dot and, since the 2026-07-31 sidebar-density pass, holds
-// no space for one either: the old always-reserved 6px gutter is gone, so a
-// title's x-position now shifts one slot between quiet and signal rows -
-// deliberate, matching how state already moves row height via the gloss line.
+// A row only spends its signal gutter on running, needs-you, or broken.
 describe("signal gutter", () => {
-  test.each([
-    ["active", "Working"],
-    ["awaiting", "Needs you"],
-    ["warning", "Needs you"],
-    ["errored", "Failed"],
-  ] as const)("state %s shows a %s dot in the gutter", (state, label) => {
-    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
-    const gutter = screen.getByTestId("rail-row-signal");
-    expect(within(gutter).getByTestId("cadence-dot")).toBeTruthy();
-    expect(within(gutter).getByRole("img", { name: label })).toBeTruthy();
-  });
-
   test.each(["ended", "idle", "notLoaded", ""] as const)("state %s shows no dot and holds no slot", (state) => {
     render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
-    expect(screen.queryByTestId("cadence-dot")).toBeNull();
-    // ...and the gutter itself is gone too - no space held for a dot that
-    // is not there (the pre-density-pass behavior reserved it).
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
   });
 
@@ -475,109 +455,172 @@ describe("signal gutter", () => {
     const { rerender } = render(
       <RailRow node={projectRailNode(apiProject({ rollup_state: "active" }))} info={info()} actions={actions()} />,
     );
-    expect(within(screen.getByTestId("rail-row-signal")).getByTestId("cadence-dot")).toBeTruthy();
+    expect(within(screen.getByTestId("rail-row-signal")).getByTestId("rail-status-spinner")).toBeTruthy();
 
     rerender(
       <RailRow node={projectRailNode(apiProject({ rollup_state: "ended" }))} info={info()} actions={actions()} />,
     );
-    expect(screen.queryByTestId("cadence-dot")).toBeNull();
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
   });
 
   test("a project row with no rollup state at all shows no dot and holds no slot", () => {
     render(<RailRow node={projectRailNode(apiProject())} info={info()} actions={actions()} />);
-    expect(screen.queryByTestId("cadence-dot")).toBeNull();
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
   });
 });
 
-describe("activityGloss", () => {
-  test("states the humanized state alone when the session carries no branch", () => {
-    expect(activityGloss(apiNode({ state: "active" }))).toBe("working");
+describe("compact session status", () => {
+  test.each([
+    ["active", "Running", "rail-status-spinner"],
+    ["awaiting", "Needs you", "rail-status-dot"],
+    ["warning", "Needs you", "rail-status-dot"],
+    ["errored", "Broken", "rail-status-dot"],
+  ] as const)("state %s renders the %s indicator", (state, label, testID) => {
+    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
+
+    const signal = screen.getByTestId("rail-row-signal");
+    expect(within(signal).getByRole("img", { name: label })).toBeTruthy();
+    expect(within(signal).getByTestId(testID)).toBeTruthy();
   });
 
-  test("joins state and branch, in that order", () => {
-    expect(activityGloss(apiNode({ state: "awaiting", branch: "main" }))).toBe("your move · main");
-  });
-
-  // A plain "your move" (turn ended, nothing further queued) and a real
-  // blocked ask_user question both wire up as state "awaiting" - the ONLY
-  // wire signal telling them apart is ask_pending. Reusing hubapi.StateWord's
-  // own vocabulary (Track A §2 ask-tiering: "Question waiting" vs "Your
-  // move") here is what lets a person scanning the rail tell "the agent is
-  // blocked on my answer" from "the agent finished, read it when you like"
-  // without opening every amber row - see k9-navigation's persona panel,
-  // where every persona hit this exact wall.
-  test("an ask_pending awaiting session glosses as a question, not a generic move", () => {
-    expect(activityGloss(apiNode({ state: "awaiting", ask_pending: true }))).toBe("question waiting");
-  });
-
-  // An approval blocks its turn mid-tool, so the session's wire state stays
-  // "active"; approval_pending is the only thing saying it waits on a person.
-  test("an active session waiting on an approval glosses as approval waiting, not working", () => {
-    expect(activityGloss(apiNode({ state: "active", approval_pending: true }))).toBe("approval waiting");
-  });
-
-  // Like restart required, the approval is what the row needs from a person,
-  // so it leads even while jobs keep running beside it.
-  test("an approval leads the gloss beside running jobs", () => {
-    const session = apiNode({ state: "active", approval_pending: true });
-    Object.assign(session, {
-      running_job_count: 1,
+  test("broken descendants outrank needs-you and running work", () => {
+    const session = apiNode({
+      state: "awaiting",
+      running_job_count: 2,
+      subagents: { running: 1, failed: 1, done: 0 },
     });
-    expect(activityGloss(session)).toBe("approval waiting · 1 job running");
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
+
+    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
   });
 
-  // A question blocks its session on a person's answer the same way, so it
-  // leads too; a plain your-move row reads as its running job's work.
-  test("a question leads the gloss beside running jobs", () => {
-    const withJob = (props: Parameters<typeof apiNode>[0]) => {
-      const session = apiNode(props);
-      Object.assign(session, { running_job_count: 1 });
-      return session;
-    };
-    expect(activityGloss(withJob({ state: "awaiting", ask_pending: true }))).toBe("question waiting · 1 job running");
-    expect(activityGloss(withJob({ state: "awaiting" }))).toBe("1 job running");
+  test("a running descendant gives an otherwise quiet session the spinner", () => {
+    const session = apiNode({ state: "idle", subagents: { running: 1, failed: 0, done: 0 } });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
+
+    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
   });
 
-  test("omits an empty branch", () => {
-    expect(activityGloss(apiNode({ state: "idle", branch: "" }))).toBe("idle");
+  test("a running job gives an otherwise quiet session the spinner", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", running_job_count: 1 }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
   });
 
-  // kata 59mx: hubapi.StateWord already gives "warning" its own word
-  // ("Warning"), distinct from either "awaiting" band - this gloss used to
-  // fold it into the same "waiting on you" text a plain awaiting session
-  // gets, even though the two wire states are not the same situation.
-  test("glosses warning as its own word, not a generic waiting-on-you", () => {
-    expect(activityGloss(apiNode({ state: "warning" }))).toBe("warning");
+  test("needs-you outranks running work", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "active", approval_pending: true, running_job_count: 1 }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Running" })).toBeNull();
   });
 
-  // The model is a property of the session, not a reason to look at it - and
-  // the session pane's own status strip reports it the moment you open the row.
-  // On a triage surface it was noise on every row.
-  test("never carries the model, whatever the state", () => {
-    expect(activityGloss(apiNode({ state: "active", branch: "main", model: "opus" }))).toBe("working · main");
+  test("the session's own failure outranks a pending approval", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "errored", approval_pending: true }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
   });
 
-  // Tier isn't dropped, it's relocated: it survives in the row's title tooltip,
-  // where a fact a title cannot carry stays reachable without spending a line.
-  test("never carries the tier on the visible line", () => {
-    expect(activityGloss(apiNode({ state: "errored", tier: "archived" }))).toBe("failed");
-  });
-
-  test("keeps a branch suffix after the running job count", () => {
-    const session = apiNode({ state: "idle", branch: "fix/thing" });
-    Object.assign(session, {
-      running_job_count: 1,
+  test("a session row keeps status context out of its visible face", () => {
+    const session = apiNode({
+      state: "active",
+      project: "prime-radiant",
+      host_id: "buildbox",
+      branch: "sidebar-status-dots",
+      running_job_count: 2,
+      watch_count: 3,
+      armed_watch_count: 1,
+      subagents: { running: 1, failed: 0, done: 4 },
+      pin_section_id: "research",
+      model: "opus",
     });
-    expect(activityGloss(session)).toBe("1 job running · fix/thing");
+    render(<RailRow node={sessionRailNode(session, { crossProjectTier: true })} info={info()} actions={actions()} />);
+
+    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
+    expect(screen.queryByTestId("rail-row-watches")).toBeNull();
+    expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
+    expect(screen.queryByTestId("rail-row-host")).toBeNull();
+    expect(screen.queryByTestId("favorite-star")).toBeNull();
+    expect(screen.queryByText("prime-radiant")).toBeNull();
+    expect(screen.queryByText("sidebar-status-dots")).toBeNull();
+    expect(screen.queryByText("opus")).toBeNull();
+  });
+
+  test("hovering the title opens the session context panel", () => {
+    const session = apiNode({
+      state: "active",
+      project: "prime-radiant",
+      host_id: "buildbox",
+      branch: "sidebar-status-dots",
+      updated_at: minutesAgo(2),
+      running_job_count: 2,
+      watch_count: 3,
+      armed_watch_count: 1,
+      subagents: { running: 1, failed: 0, done: 4 },
+      tier: "archived",
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("Session")).toBeTruthy();
+    expect(within(panel).getByText("Running")).toBeTruthy();
+    expect(within(panel).getByText("Fix flaky test")).toBeTruthy();
+    expect(within(panel).getByText("prime-radiant")).toBeTruthy();
+    expect(within(panel).getByText("buildbox")).toBeTruthy();
+    expect(within(panel).getByText("sidebar-status-dots")).toBeTruthy();
+    expect(within(panel).getByText("2 running")).toBeTruthy();
+    expect(within(panel).getByText("1 running, 4 done")).toBeTruthy();
+    expect(within(panel).getByText("3 watches · 1 armed")).toBeTruthy();
+    expect(within(panel).getByText("archived")).toBeTruthy();
+    expect(within(panel).getByText("2m")).toBeTruthy();
+  });
+
+  test("the context panel marks an offline host", () => {
+    seedSources([
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+    ]);
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ ref: "buildbox:abc", host_id: "buildbox" }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+
+    const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+    expect(within(panel).getByText("buildbox (offline)")).toBeTruthy();
+  });
+
+  test("a truncated title stays recoverable from the context panel", () => {
+    const title = "It looks like a lot of the sidebar rows are truncating their titles";
+    render(<RailRow node={sessionRailNode(apiNode({ title }))} info={info()} actions={actions()} />);
+
+    const panel = hoverForTooltip(screen.getByText(title));
+    expect(within(panel).getByText(title)).toBeTruthy();
   });
 });
 
-// A watch row's own second line. It carries what the runtime really knows -
-// the cadence it repeats on and whether it is still armed - and never a
-// countdown, because no next-fire instant exists to count down to (the runtime
-// holds a ticker per watch). "armed" is the state word for every kind.
 describe("watchGloss", () => {
   test.each([
     ["every", 600, "every 10m · armed"],
@@ -676,192 +719,10 @@ describe("overflow row", () => {
   });
 });
 
-// The subagent tally chip on a live root's summary line (roots-only navigation
-// design, D1/D6): running and failed counts in words, absent when there is
-// nothing to say and on any row that is not live.
-describe("subagent tally on the summary line", () => {
-  test("a live root with running subagents shows the count", () => {
-    renderRow({ subagents: { running: 3, failed: 0, done: 2 } });
-    expect(screen.getByTestId("rail-row-subagent-tally").textContent).toBe("3 running");
-  });
-
-  test("names running and failed together", () => {
-    renderRow({ subagents: { running: 2, failed: 1, done: 0 } });
-    expect(screen.getByTestId("rail-row-subagent-tally").textContent).toBe("2 running, 1 failed");
-  });
-
-  test("shows failed alone", () => {
-    renderRow({ subagents: { running: 0, failed: 1, done: 0 } });
-    expect(screen.getByTestId("rail-row-subagent-tally").textContent).toBe("1 failed");
-  });
-
-  test("a zero tally hides the chip", () => {
-    renderRow({ subagents: { running: 0, failed: 0, done: 4 } });
-    expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
-  });
-
-  test("a past root shows no chip", () => {
-    renderRow({ live: false, state: "ended", subagents: { running: 2, failed: 0, done: 0 } });
-    expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
-  });
-
-  test("a nested fork original shows no chip", () => {
-    renderRow({ kind: "fork", subagents: { running: 2, failed: 0, done: 0 } });
-    expect(screen.queryByTestId("rail-row-subagent-tally")).toBeNull();
-  });
-
-  test("keeps its place before the gloss on a signal row", () => {
-    renderRow({ state: "active", branch: "main", subagents: { running: 1, failed: 0, done: 0 } });
-    expect(screen.getByTestId("rail-row-subagent-tally").textContent).toBe("1 running ·");
-    expect(screen.getByTestId("rail-row-activity").textContent).toContain("main");
-  });
-});
-
-// The count on the session's summary line. It is its own element beside the
-// gloss (never text inside it) so it keeps neutral ink: the gloss is tinted by
-// the row's signal family, and a watch is not a call for a human, a failure, or
-// a success. It leads the line so it precedes the branch - the deliberate
-// ellipsis sacrifice - and ellipsis can therefore never eat it.
-describe("watch count on the summary line", () => {
-  test("shows on an otherwise-quiet watch-bearing row", () => {
-    const session = apiNode({
-      state: "idle",
-      updated_at: minutesAgo(2),
-      watch_count: 1,
-      armed_watch_count: 1,
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
-    // The watch-only line is just the count: the state word "idle" beside it
-    // would be noise, not a gloss.
-    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
-    expect(screen.queryByTestId("cadence-dot")).toBeNull();
-  });
-
-  test("counts the row's own watches", () => {
-    // The count reads the row summary's compact receiver total, never a rollup of
-    // anything under it - railNodes' activeWatchCount pins that rule on the
-    // wire shape.
-    const session = apiNode({
-      state: "idle",
-      updated_at: minutesAgo(1),
-      watch_count: 1,
-      armed_watch_count: 1,
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
-  });
-
-  test("reports the retained total with the armed count, so a fired row is still counted", () => {
-    const session = apiNode({
-      state: "idle",
-      updated_at: minutesAgo(2),
-      watch_count: 2,
-      armed_watch_count: 1,
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    // A retained-but-inactive row is still listed by the fold-out, so the
-    // summary's total is two; the armed count stays visible beside it and is
-    // not inflated by the fired row.
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("2 watches · 1 armed");
-  });
-
-  test("pluralizes the count", () => {
-    const session = apiNode({
-      state: "idle",
-      updated_at: minutesAgo(2),
-      watch_count: 3,
-      armed_watch_count: 3,
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("3 watches");
-  });
-
-  test("reports the compact total independently of armed count", () => {
-    const session = apiNode({
-      state: "idle",
-      updated_at: minutesAgo(2),
-      watch_count: 3,
-      armed_watch_count: 1,
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("3 watches · 1 armed");
-  });
-
-  test("reports all armed watches from compact receiver totals", () => {
-    // Compact receiver totals remain authoritative beyond a collection page.
-    const session = apiNode({
-      state: "idle",
-      updated_at: minutesAgo(2),
-      watch_count: 40,
-      armed_watch_count: 40,
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("40 watches");
-  });
-
-  test("precedes the branch on the visible line", () => {
-    const session = apiNode({
-      state: "active",
-      branch: "feature/x",
-      watch_count: 1,
-      armed_watch_count: 1,
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    const count = screen.getByTestId("rail-row-watches");
-    const activity = screen.getByTestId("rail-row-activity");
-    expect(activity.textContent).toBe("working · feature/x");
-    expect(count.textContent).toBe("1 watch ·");
-    expect(count.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-  test("keeps neutral ink on a signal row instead of inheriting the gloss's tint", () => {
-    const session = apiNode({
-      state: "errored",
-      watch_count: 1,
-      armed_watch_count: 1,
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    const count = screen.getByTestId("rail-row-watches");
-    expect(count.className.split(" ")).toContain(railStyles.watchCount);
-    for (const tint of [railStyles.activityAlive, railStyles.activityAttention, railStyles.activityDanger]) {
-      expect(count.className.split(" ")).not.toContain(tint);
-    }
-    const activity = screen.getByTestId("rail-row-activity");
-    expect(activity.className.split(" ")).toContain(railStyles.activityDanger);
-  });
-
-  test("renders nothing for a session with no watches", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(2) }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.queryByTestId("rail-row-watches")).toBeNull();
-  });
-
-  // jsdom applies no stylesheet, so the neutral ink is only checkable against
-  // the (comment-stripped) stylesheet text - the same discipline the shared
-  // right-slot describe below uses.
-  test("the count's stylesheet rule is neutral ink, never one of the four hues", () => {
-    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8").replace(
-      /\/\*[\s\S]*?\*\//g,
-      " ",
-    );
-    const rule = /\.watchCount\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-    expect(rule).toMatch(/color:\s*var\(--ink-mid\)/);
-    expect(rule).not.toMatch(/var\(--(alive|attention|danger|accent)\)/);
-  });
-});
-
 describe("row alignment", () => {
-  // The outdented-dot contract the whole list's alignment rests on: .railRow
-  // reserves the leading padding the dot hangs in, and .signal's negative
-  // margin exactly cancels the dot's own width (6px) plus the title line's
-  // gap (--space-1), so a dotted row's title and a quiet row's title start
-  // at the same x.
+  // The outdented-status contract the whole list's alignment rests on:
+  // .railRow reserves the leading padding and .signal's negative margin
+  // cancels its 8px width plus the title line's gap.
   test("the row reserves the dot's outdent padding", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -871,7 +732,28 @@ describe("row alignment", () => {
   test("the signal dot outdents by exactly its own advance", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).toMatch(/\.signal\s*\{[^}]*width:\s*6px;[^}]*margin-left:\s*-10px;/);
+    expect(css).toMatch(/\.signal\s*\{[^}]*width:\s*8px;[^}]*margin-left:\s*-12px;/);
+  });
+
+  test("status colors are semantic, broken has distinct geometry, and the running ring respects reduced motion", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css).toMatch(/\.statusDot\[data-status="needs-you"\]\s*\{[^}]*var\(--attention\)/);
+    expect(css).toMatch(/\.statusDot\[data-status="failed"\]\s*\{[^}]*var\(--danger\)/);
+    expect(css).toMatch(/\.statusDot\[data-status="failed"\]\s*\{[^}]*border-radius:\s*1px;[^}]*rotate\(45deg\)/);
+    expect(css).toMatch(
+      /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{[\s\S]*?\.statusSpinner\s*\{[^}]*animation:/,
+    );
+    const baseSpinner = /(?:^|\n)\.statusSpinner\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(baseSpinner).not.toContain("animation:");
+  });
+
+  test("the title button reset preserves the rail label's explicit UI font size", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const buttonReset = /\.sessionTitle \.label\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(buttonReset).toContain("font-family: inherit");
+    expect(buttonReset).not.toMatch(/(?:^|\s)font:\s*inherit/);
   });
 });
 
@@ -892,6 +774,14 @@ describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
     expect(rule![1]).toContain("min-height: var(--tap-min)");
   });
 
+  test("tap-enabled session titles meet the 44px floor in both dimensions", () => {
+    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
+    const rule = coarseBlock!.match(/\.sessionTitle button\.label\s*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain("min-width: var(--tap-min)");
+    expect(rule![1]).toContain("min-height: var(--tap-min)");
+  });
+
   test("the widened menu trigger centres its glyph instead of hugging an edge", () => {
     expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
     const rule = coarseBlock!.match(/\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/);
@@ -902,13 +792,11 @@ describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
 });
 
 describe("session row", () => {
-  test("renders the session's title and a Cadence reflecting its state", () => {
+  test("renders the session's title and running indicator", () => {
     const session = apiNode({ title: "Fix flaky test", state: "active" });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
     expect(screen.getByText("Fix flaky test")).toBeTruthy();
-    // Cadence's wrapper carries the state as its accessible name (see
-    // widgets/cadence) - "Working" is the family "active" maps to.
-    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
   });
 
   test("clicking the label activates the row via info.activate", async () => {
@@ -960,347 +848,21 @@ describe("session row", () => {
     const label = screen.getByText("Fix flaky test");
     const titleLine = signal.parentElement;
     expect(titleLine).toBeTruthy();
-    expect([...(titleLine?.children ?? [])]).toEqual([signal, label]);
+    expect(titleLine?.firstElementChild).toBe(signal);
+    expect(signal.nextElementSibling?.contains(label)).toBe(true);
   });
 
   test("a quiet row holds no signal slot; its title line leads with the label", () => {
     render(<RailRow node={sessionRailNode(apiNode({ state: "idle" }))} info={info()} actions={actions()} />);
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
     const label = screen.getByText("Fix flaky test");
-    expect(label.parentElement?.firstElementChild).toBe(label);
-  });
-
-  test("shows a pin star on a nested row with a section assignment, and hides it on flat Live/pinned rows", () => {
-    // depth > 0: nested under its own project - the star is the only in-list
-    // signal there that the session is pinned.
-    const { rerender } = render(
-      <RailRow
-        node={sessionRailNode(apiNode({ pin_section_id: "research" }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("favorite-star")).toBeTruthy();
-
-    // A cross-project tier root (the flat Live and named-pin-section rows):
-    // being listed there already says the session is pinned, so the star is
-    // pure redundancy - the mark says so wherever host grouping nests it.
-    rerender(
-      <RailRow
-        node={sessionRailNode(apiNode({ pin_section_id: "research" }), { crossProjectTier: true })}
-        info={info({ depth: 0 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.queryByTestId("favorite-star")).toBeNull();
-
-    rerender(
-      <RailRow
-        node={sessionRailNode(apiNode({ pin_section_id: undefined }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.queryByTestId("favorite-star")).toBeNull();
-  });
-
-  // Host grouping nests a Live tier's rows under host subheaders, so a row's
-  // tier can no longer be inferred from nesting depth: the node carries the
-  // cross-project mark (railNodes' sessionNodes sets it) and RailRow reads
-  // the mark, not the depth.
-  test("a grouped Live row (cross-project mark, nested depth) still names its project", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", project: "prime-radiant" }), { crossProjectTier: true })}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByText("prime-radiant")).toBeTruthy();
-  });
-
-  test("a pinned grouped Live row (cross-project mark, nested depth) carries no star", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ pin_section_id: "research" }), { crossProjectTier: true })}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.queryByTestId("favorite-star")).toBeNull();
+    expect(label.closest(`.${railStyles.titleLine}`)?.firstElementChild?.contains(label)).toBe(true);
   });
 
   test("shows no Badge for a leaf session that itself needs you (the Cadence dot already covers it)", () => {
     render(<RailRow node={sessionRailNode(apiNode({ state: "awaiting" }))} info={info()} actions={actions()} />);
     expect(screen.queryByText("1")).toBeNull();
     expect(screen.queryByText("0")).toBeNull();
-  });
-
-  // vbh8 new capability, §2.3: row anatomy for the (already-existing)
-  // subagent tree - a right-aligned relative timestamp OR the Task-7 Badge,
-  // whichever slot applies, plus (on a signal row) the gloss line.
-  test("shows a humanized activity line and a relative timestamp", () => {
-    const session = apiNode({ state: "active", updated_at: minutesAgo(2) });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/working/i);
-    expect(screen.getByTestId("rail-row-time").textContent).toBe("2m");
-  });
-
-  test("shows an active job on a quiet session as green working activity", () => {
-    const session = apiNode({ state: "idle" });
-    Object.assign(session, {
-      running_job_count: 1,
-    });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
-    expect(screen.getByTestId("rail-row-activity").className.split(" ")).toContain(railStyles.activityAlive);
-  });
-
-  test("keeps a quiet row without active descendants one line", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(2) }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
-    expect(screen.getByTestId("rail-row-time").textContent).toBe("2m");
-  });
-
-  // --- the gloss line is a SIGNAL, not row furniture ---------------------
-  //
-  // The rail is a triage surface: who needs me, and nothing else. A quiet row's
-  // empty signal gutter and grey age already say "nothing happening here", so a
-  // second line restating "idle" in words put the same fact at two altitudes on
-  // the one surface that exists to be skimmed. Only a signal state earns the
-  // line - and it's the SAME predicate that earns the dot, so the two never
-  // disagree about whether a row matters.
-  //
-  // kata hxjn is the one deliberate exception: a row at depth 0 (a top-level
-  // entry in the flat, cross-project Live/Pinned tiers - see
-  // SessionRow's own showsProject comment) gets a second line for its
-  // project even when otherwise quiet, because that fact has nowhere else to
-  // live on a flat list. A depth>0 row (nested under its own ProjectRow, or
-  // a subagent child) is unaffected - `info()`'s own default is depth 0, so
-  // the tests below that want the OLD one-line-quiet-row behavior pass
-  // depth: 1 explicitly.
-
-  test.each([
-    ["active", /working/i],
-    ["awaiting", /your move/i],
-    ["warning", /^warning/i],
-    ["errored", /failed/i],
-  ] as const)("a signal row (%s) keeps a gloss line leading with the state", (state, expected) => {
-    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(expected);
-  });
-
-  // kata zq7g: the rail's only "waiting on you" signal used to be a 6px dot
-  // plus uniformly grey (--ink-low) gloss text, identical for working/
-  // needs-you/failed rows - a person had to already know to look at the dot
-  // to tell them apart. The gloss text now carries the same family color as
-  // its Cadence dot (cadenceStateFor), so a failed or needs-you row reads
-  // distinctly even at a glance, no dot inspection required. Idle/ended never
-  // render a gloss line at all (SIGNAL_STATES), so they need no family class.
-  test.each([
-    ["active", railStyles.activityAlive, "activityAlive"],
-    ["awaiting", railStyles.activityAttention, "activityAttention"],
-    ["warning", railStyles.activityAttention, "activityAttention"],
-    ["errored", railStyles.activityDanger, "activityDanger"],
-  ] as const)("a signal row (%s) tints its gloss text with the matching family color", (state, familyClass, name) => {
-    if (familyClass === undefined) throw new Error(`RailRow.module.css is missing the "${name}" class`);
-    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 1 })} actions={actions()} />);
-    const activity = screen.getByTestId("rail-row-activity");
-    expect(activity.className.split(" ")).toContain(familyClass);
-  });
-
-  // The one state where the SAME wire state ("awaiting") means two different
-  // things depending on ask_pending - see the activityGloss describe block
-  // above for why this distinction exists.
-  test("an ask_pending awaiting row glosses as a blocked question, not a generic move", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/question waiting/i);
-  });
-
-  // --- a row waiting on an approval needs you, never reads as working -------
-  //
-  // A sandbox escalation blocks the turn mid-tool, so the row's wire state
-  // stays "active". Its dot, gloss and tint must still say a person is
-  // needed: the row's own "active" and any running subagents or jobs must not
-  // turn it into a green working row.
-
-  test("an active row waiting on an approval shows the needs-you dot and an approval gloss", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "active", approval_pending: true }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
-    const activity = screen.getByTestId("rail-row-activity");
-    expect(activity.textContent).toBe("approval waiting");
-    expect(activity.className.split(" ")).toContain(railStyles.activityAttention);
-  });
-
-  test("an approval row keeps the needs-you dot while its jobs run", () => {
-    const session = apiNode({ state: "active", approval_pending: true });
-    Object.assign(session, { running_job_count: 1 });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("approval waiting · 1 job running");
-  });
-
-  test("a question row keeps the needs-you dot while its jobs run", () => {
-    const session = apiNode({ state: "awaiting", ask_pending: true });
-    Object.assign(session, { running_job_count: 1 });
-    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("question waiting · 1 job running");
-  });
-
-  test("a failed row stays failed with an approval pending", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "errored", approval_pending: true }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Failed" })).toBeTruthy();
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("failed");
-  });
-
-  test.each(["idle", "ended", "notLoaded", ""] as const)(
-    "a quiet, nested row (%s, depth > 0) is title + age on one line, with no gloss at all",
-    (state) => {
-      render(
-        <RailRow
-          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(180) }))}
-          info={info({ depth: 1 })}
-          actions={actions()}
-        />,
-      );
-      expect(screen.queryByTestId("rail-row-activity")).toBeNull();
-      expect(screen.getByText("Fix flaky test")).toBeTruthy();
-      expect(screen.getByTestId("rail-row-time").textContent).toBe("3h");
-    },
-  );
-
-  // kata hxjn: the exception above, in the flat cross-project tiers. A quiet
-  // row there still names its project, since a flat list gives it no other
-  // way to say which project it belongs to.
-  test.each(["idle", "ended", "notLoaded", ""] as const)(
-    "a quiet, cross-project tier root (%s) names its project on a second line",
-    (state) => {
-      render(
-        <RailRow
-          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(180), project: "prime-radiant" }), {
-            crossProjectTier: true,
-          })}
-          info={info({ depth: 0 })}
-          actions={actions()}
-        />,
-      );
-      expect(screen.getByTestId("rail-row-activity").textContent).toBe("prime-radiant");
-      expect(screen.getByTestId("rail-row-time").textContent).toBe("3h");
-    },
-  );
-
-  // The dot and the gloss answer the same question in a NESTED row (depth >
-  // 0, where hxjn's project line never applies) - one predicate
-  // (SIGNAL_STATES) drives both there, which is what stops a nested row from
-  // ever showing a dot with no explanation or an explanation with no dot. At
-  // depth 0 that one-to-one correspondence is deliberately broken by the
-  // project line (tested above and below).
-  test.each(["active", "awaiting", "warning", "errored", "idle", "ended", "notLoaded", ""] as const)(
-    "the dot and the gloss line agree for state %s on a nested row",
-    (state) => {
-      render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 1 })} actions={actions()} />);
-      const hasDot = screen.queryByTestId("cadence-dot") !== null;
-      const hasGloss = screen.queryByTestId("rail-row-activity") !== null;
-      expect(hasGloss).toBe(hasDot);
-    },
-  );
-
-  // At depth 0 a dot still always implies a gloss (a signal is never silent),
-  // but the reverse no longer holds: a quiet top-level row shows a gloss line
-  // for its project with no dot at all.
-  test.each(["active", "awaiting", "warning", "errored", "idle", "ended", "notLoaded", ""] as const)(
-    "a dot on a top-level row always implies a gloss line",
-    (state) => {
-      render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 0 })} actions={actions()} />);
-      const hasDot = screen.queryByTestId("cadence-dot") !== null;
-      const hasGloss = screen.queryByTestId("rail-row-activity") !== null;
-      if (hasDot) expect(hasGloss).toBe(true);
-    },
-  );
-
-  // Branch survives on a signal row because it distinguishes SIBLINGS in the
-  // case that matters: two working sessions in one project on different
-  // branches. Rendered nested (depth > 0) to isolate it from hxjn's project
-  // line, tested separately below.
-  test("a signal row's gloss carries the branch when the session has one", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "active", branch: "fix/thing" }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("working · fix/thing");
-  });
-
-  // kata hxjn: a cross-project tier root's gloss leads with the project,
-  // then the usual state · branch join - project answers "where", the rest
-  // answers "what's happening", in that reading order.
-  test("a top-level signal row's gloss leads with the project, then state and branch", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "active", branch: "fix/thing", project: "prime-radiant" }), {
-          crossProjectTier: true,
-        })}
-        info={info({ depth: 0 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("prime-radiant · working · fix/thing");
-  });
-
-  // UX fix: an empty project name must not leave an orphaned leading " · "
-  // separator in front of the gloss - the separator only belongs between two
-  // real parts.
-  test("a top-level signal row with an empty project has no orphaned leading separator", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "active", project: "" }), { crossProjectTier: true })}
-        info={info({ depth: 0 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("working");
-  });
-
-  // Three facts of noise on every row: the model is a property of the session,
-  // not a reason to look at it, and the session pane's own status strip reports
-  // it the moment the row is opened.
-  test("no row - signal or quiet - carries the model anywhere on its visible face", () => {
-    const { rerender } = render(
-      <RailRow node={sessionRailNode(apiNode({ state: "active", model: "opus" }))} info={info()} actions={actions()} />,
-    );
-    expect(screen.getByTestId("rail-row-activity").textContent).not.toMatch(/opus/);
-
-    rerender(
-      <RailRow node={sessionRailNode(apiNode({ state: "idle", model: "opus" }))} info={info()} actions={actions()} />,
-    );
-    expect(screen.queryByText(/opus/)).toBeNull();
   });
 
   // --- a session that has never run says so ------------------------------
@@ -1339,42 +901,6 @@ describe("session row", () => {
     expect(screen.queryByTestId("rail-row-not-started")).toBeNull();
   });
 
-  // "Not started" is a fact about a row's history, not a call for help. The
-  // signal gutter is reserved for the states worth crossing the room for
-  // (working / needs you / failed) - a dot here would put a dormant session in
-  // that company, and a rail full of dots is a rail whose dots mean nothing.
-  // Rendered nested (depth > 0) so hxjn's project line - orthogonal to
-  // dormancy - doesn't participate in this assertion; see the dedicated
-  // depth-0 case just below.
-  test("a dormant, nested row earns no dot and no gloss line", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", dormant: true }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.queryByTestId("cadence-dot")).toBeNull();
-    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
-  });
-
-  // kata hxjn: a dormant row still needs its project named when it's a
-  // cross-project tier root - dormancy says nothing about which project a
-  // flat row belongs to.
-  test("a dormant, top-level row still names its project, with no dot", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", dormant: true, project: "prime-radiant" }), {
-          crossProjectTier: true,
-        })}
-        info={info({ depth: 0 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.queryByTestId("cadence-dot")).toBeNull();
-    expect(screen.getByTestId("rail-row-activity").textContent).toBe("prime-radiant");
-  });
-
   // The moment a dormant session is given something to do it is working, and
   // the row must say THAT. Dormancy is only ever the most useful thing to
   // report on a row that is otherwise quiet.
@@ -1392,91 +918,6 @@ describe("session row", () => {
       expect(screen.getByTestId("rail-row-time").textContent).toBe("now");
     },
   );
-
-  // The visible row gave up its age, so the tooltip has to keep it - the same
-  // contract every other fact this row drops is held to.
-  test("a dormant row's tooltip keeps the age its visible line gave up", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(4), dormant: true }))}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · 4m");
-  });
-
-  // ...and that age is a clock like the visible stamp, not a snapshot the model
-  // froze: the tooltip is the row's other place a time is shown.
-  test("a dormant row's tooltip age advances with the rail clock", () => {
-    vi.useFakeTimers();
-    try {
-      const start = Date.parse("2026-01-01T00:00:00Z");
-      vi.setSystemTime(start);
-      const session = apiNode({
-        state: "idle",
-        dormant: true,
-        updated_at: new Date(start - 1_000).toISOString(),
-      });
-      render(
-        <RailTickProvider>
-          <RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />
-        </RailTickProvider>,
-      );
-      expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · now");
-      act(() => {
-        vi.advanceTimersByTime(60_000);
-      });
-      expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · 1m");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // --- what the visible row drops stays reachable on hover --------------
-  //
-  // Tier is real information a title cannot carry, and a quiet row no longer
-  // prints its state - so both land in the row's own title tooltip, which
-  // already existed for truncated titles.
-
-  test("a quiet row's title tooltip carries the state word its visible line no longer prints", () => {
-    render(<RailRow node={sessionRailNode(apiNode({ state: "ended" }))} info={info()} actions={actions()} />);
-    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · ended");
-  });
-
-  test("the tier rides the title tooltip on both quiet and signal rows", () => {
-    const { rerender } = render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", tier: "archived" }))}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · idle · archived");
-
-    // A signal row already prints its state, so the tooltip doesn't repeat it.
-    rerender(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "active", tier: "archived" }))}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · archived");
-  });
-
-  // "current" is the unremarkable default state of a session - the same
-  // exclusion the old visible line made, kept in its new home.
-  test("the unremarkable 'current' tier is omitted from the tooltip too", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "active", tier: "current" }))}
-        info={info()}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test");
-  });
 
   test("shows no timestamp when the session carries no age", () => {
     render(<RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={info()} actions={actions()} />);
@@ -1795,62 +1236,6 @@ describe("session row", () => {
     await waitFor(() => expect(acts.onShutdownSession).toHaveBeenCalledWith(session));
   });
 
-  // Title-first row (rail truncation round): the branch is secondary metadata
-  // that used to sit in the row's main line as a flex:none sibling, so at the
-  // rail's 280px it took its width off the top of the ONE thing that identifies
-  // a row. It rides the gloss line, which ellipsizes on its own; the title keeps
-  // the whole main line minus the (short, fixed) age.
-  test("keeps the branch out of the title's line, on the gloss line instead", () => {
-    const session = apiNode({ state: "active", branch: "main", updated_at: minutesAgo(47) });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
-
-    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/main/);
-    // The row's main line holds the title and the age, and nothing else
-    // that reserves width: every other text node lives on line two. The
-    // walk is label -> titleLine -> textCol -> row.
-    const title = screen.getByText("Fix flaky test");
-    const textCol = title.parentElement?.parentElement;
-    const mainLine = textCol?.parentElement;
-    expect(mainLine).toBeTruthy();
-    const mainLineText = [...(mainLine?.children ?? [])]
-      .filter((child) => child !== textCol)
-      .map((child) => child.textContent)
-      .join(" ");
-    expect(mainLineText).not.toMatch(/main/);
-    expect(screen.getByTestId("rail-row-time").textContent).toBe("47m");
-  });
-
-  // vitest leaves CSS Modules unprocessed (vite.config.ts sets no test.css),
-  // so the rule that actually keeps a long gloss from wrapping the row to a
-  // third line is only checkable against the stylesheet text - the same way
-  // StackHost.test.tsx / radiogroup.test.tsx pin their own layout-critical
-  // declarations.
-  test("the activity line's stylesheet rule ellipsizes rather than wraps, so metadata never grows the row", () => {
-    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8");
-    const activityRule = /\.activity\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-    expect(activityRule).toMatch(/white-space:\s*nowrap/);
-    expect(activityRule).toMatch(/text-overflow:\s*ellipsis/);
-    expect(activityRule).toMatch(/overflow:\s*hidden/);
-  });
-
-  // The tooltip's original job, unchanged: a truncated title stays recoverable.
-  // The title always LEADS the tooltip, so the recovery still works even now
-  // that the tooltip carries the row's dropped facts after it.
-  test("a truncated title stays readable via a hover tooltip", () => {
-    const long = "It looks like a lot of the sidebar rows are truncating their titles";
-    render(
-      <RailRow node={sessionRailNode(apiNode({ title: long, state: "active" }))} info={info()} actions={actions()} />,
-    );
-    expect(screen.getByText(long).getAttribute("title")).toBe(long);
-  });
-
-  test("the activity line carries its own full text as a tooltip, since it ellipsizes too", () => {
-    const session = apiNode({ state: "active", model: "opus", branch: "feature/long-branch-name" });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
-    const activity = screen.getByTestId("rail-row-activity");
-    expect(activity.getAttribute("title")).toBe(activity.textContent);
-  });
-
   // A live-tier row's own Tier/PinSectionID/Rename fields must all survive the
   // duplicate projection. RailRow reads pin_section_id/rename directly,
   // regardless of the session's real decisions, since the navigation
@@ -2160,11 +1545,11 @@ describe("project row", () => {
     expect(observer).toHaveBeenCalledTimes(1);
   });
 
-  test("renders the project's name and a Cadence reflecting its rollup state", () => {
+  test("renders the project's name and compact rollup status", () => {
     const project = apiProject({ name: "prime-radiant", rollup_state: "errored" });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
     expect(screen.getByText("prime-radiant")).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Broken" })).toBeTruthy();
   });
 
   // UX fix: two projects with the same name are disambiguated upstream in
@@ -2471,12 +1856,12 @@ describe("roving-tabindex integration (Tree + RailRow)", () => {
     ];
   }
 
-  function renderTree(nodes: SessionRailNode[]) {
+  function renderTree(nodes: SessionRailNode[], onActivate: (node: SessionRailNode) => void = () => {}) {
     return render(
       <Tree
         nodes={nodes}
         onToggle={() => {}}
-        onActivate={() => {}}
+        onActivate={onActivate}
         renderRow={(node, rowInfo) => <RailRow node={node} info={rowInfo} actions={actions()} />}
       />,
     );
@@ -2490,6 +1875,57 @@ describe("roving-tabindex integration (Tree + RailRow)", () => {
     const triggers = screen.getAllByRole("button", { name: /actions for/i });
     expect(triggers).toHaveLength(2);
     for (const trigger of triggers) expect(trigger.tabIndex).toBe(-1);
+  });
+
+  test("focusing the roving treeitem exposes the session context without adding a title Tab stop", () => {
+    vi.useFakeTimers();
+    try {
+      renderTree(twoSessionRows());
+      const row = screen.getByRole("treeitem", { name: /Row A/ });
+      const title = within(row).getByRole("button", { name: "Row A" });
+      expect(title.tabIndex).toBe(-1);
+
+      act(() => row.focus());
+      act(() => vi.advanceTimersByTime(300));
+
+      const card = screen.getByRole("tooltip");
+      expect(within(card).getByText("Session")).toBeTruthy();
+      expect(row.getAttribute("aria-describedby")).toBe(card.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("clicking a session title activates its row without moving focus into the title control", async () => {
+    const activate = vi.fn();
+    const user = userEvent.setup();
+    renderTree(twoSessionRows(), activate);
+    const row = screen.getByRole("treeitem", { name: /Row A/ });
+    act(() => row.focus());
+
+    await user.click(within(row).getByRole("button", { name: "Row A" }));
+
+    expect(activate).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(row);
+  });
+
+  test("clicking a session title releases unrelated editable focus", async () => {
+    const activate = vi.fn();
+    const user = userEvent.setup();
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    try {
+      renderTree(twoSessionRows(), activate);
+      act(() => input.focus());
+
+      await user.click(screen.getByRole("button", { name: "Row A" }));
+
+      expect(activate).toHaveBeenCalledOnce();
+      expect(document.activeElement).not.toBe(input);
+      expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Row A" }));
+    } finally {
+      input.remove();
+    }
   });
 
   test("Tab from before the tree lands on the roving treeitem, never a row's own trigger", async () => {
@@ -2718,50 +2154,17 @@ describe("shared right slot (RailRow.module.css)", () => {
   });
 });
 
-// A row that cannot be pinned must not display as pinned. The wire can still
-// carry favorite:true on a nested or synthetic node - from a decision written
-// before pinning was scoped, or by a direct API call - and rendering the star
-// there is a dead end: the menu offers no way to take it off. Suppressing it
-// keeps "only top-level sessions can be pinned" true in both directions.
-// Rows render unmarked here so the KIND gate alone decides - the marked
-// cross-project tier roots (Live, named pin sections) never show the star
-// at all (see "shows a pin star on a nested row…" above).
-describe("pin star follows the same scoping as the pin action", () => {
-  test("a top-level session shows its star", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ kind: "session", pin_section_id: "research" }))}
-        info={info({ depth: 1 })}
-        actions={actions()}
-      />,
-    );
-    expect(screen.getByTestId("favorite-star")).toBeTruthy();
-  });
-
-  for (const kind of ["subagent", "fork"]) {
-    test(`a ${kind} row shows no star even when the wire carries a section assignment`, () => {
-      render(
-        <RailRow
-          node={sessionRailNode(apiNode({ kind, pin_section_id: "research" }))}
-          info={info({ depth: 1 })}
-          actions={actions()}
-        />,
-      );
-      expect(screen.queryByTestId("favorite-star")).toBeNull();
-    });
-  }
-});
-
 test("an incompatible daemon has an attention signal and restart instruction", () => {
   renderRow({ state: "restartRequired", live: true, branch: "" });
   expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
-  expect(screen.getByTestId("rail-row-activity").textContent).toContain("restart required");
+  const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+  expect(within(panel).getByText("Restart required")).toBeTruthy();
 });
 
 test.each([
-  ["own activity", { state: "active" }, { state: "idle" }, "working"],
-  ["job activity", { state: "idle", running_job_count: 1 }, { state: "idle" }, "1 job running"],
-] as const)("normalized navigation preserves %s in the rendered sidebar", (_name, parentState, childState, gloss) => {
+  ["own activity", { state: "active" }, { state: "idle" }],
+  ["job activity", { state: "idle", running_job_count: 1 }, { state: "idle" }],
+] as const)("normalized navigation preserves %s in the rendered sidebar", (_name, parentState, childState) => {
   const resource = normalizedRailResource(
     { kind: "project_page", projectKey: "project", tier: "current", offset: 0, limit: 50 },
     { ...parentState, running_job_count: "running_job_count" in parentState ? parentState.running_job_count : 0 },
@@ -2770,8 +2173,7 @@ test.each([
   const parent = [...selectRailModel(resource).sessions.values()].find((session) => session.ref === "parent");
   if (!parent) throw new Error("missing parent");
   render(<RailRow node={sessionRailNode(parent)} info={info()} actions={actions()} />);
-  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
-  expect(screen.getByTestId("rail-row-activity").textContent).toContain(gloss);
+  expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
 });
 
 test("restart-required navigation disables daemon actions in the sidebar menu", async () => {
@@ -2789,71 +2191,9 @@ test("restart explanation survives job activity", () => {
     running_job_count: 1,
   });
   expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
-  const gloss = screen.getByTestId("rail-row-activity").textContent;
-  expect(gloss).toContain("restart required");
-  expect(gloss).toContain("1 job running");
-});
-
-// --- host badge / offline affordance (Component 06b) -----------------------
-
-test("a non-local row renders its host as a badge", () => {
-  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
-  const badge = screen.getByTestId("rail-row-host");
-  expect(badge.textContent).toContain("buildbox");
-  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
-});
-
-test("a local row renders no host badge", () => {
-  renderRow({ ref: "local:abc", host_id: "local" });
-  expect(screen.queryByTestId("rail-row-host")).toBeNull();
-});
-
-test("a row on an offline host renders the offline affordance", () => {
-  seedSources([
-    { id: "local", label: "Local", kind: "local", online: true },
-    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
-  ]);
-  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
-  expect(screen.getByTestId("rail-row-host").textContent).toContain("buildbox");
-  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
-});
-
-test("a row on an online host has no offline affordance", () => {
-  seedSources([
-    { id: "local", label: "Local", kind: "local", online: true },
-    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
-  ]);
-  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
-  expect(screen.getByTestId("rail-row-host").textContent).toContain("buildbox");
-  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
-});
-
-test("a host the manifest does not name defaults to online (no offline affordance)", () => {
-  renderRow({ ref: "mystery:abc", host_id: "mystery" });
-  expect(screen.getByTestId("rail-row-host").textContent).toContain("mystery");
-  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
-});
-
-// The badge is a DISPLAY of the last reading, and the store retains that reading
-// while the fresh manifest is in flight (loading/stale). A display read that
-// withheld it turned every offline badge back into an ONLINE host for the length
-// of the refresh (round nine).
-test("an offline host's badge survives a manifest revalidation", () => {
-  const sources: NavigationManifest["sources"] = [
-    { id: "local", label: "Local", kind: "local", online: true },
-    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
-  ];
-  seedSources(sources);
-  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
-  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
-
-  act(() => seedSources(sources, { loading: true, stale: true }));
-  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
-
-  // The FRESH manifest, once it settles, is the authority again: a host it no
-  // longer names is the unchanged "unknown host" case and reads as online.
-  act(() => seedSources([{ id: "local", label: "Local", kind: "local", online: true }]));
-  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+  const panel = hoverForTooltip(screen.getByText("Fix flaky test"));
+  expect(within(panel).getByText("Restart required")).toBeTruthy();
+  expect(within(panel).getByText("1 running")).toBeTruthy();
 });
 
 // The rail's organize-by host group row (a "Host, then project" top group, a

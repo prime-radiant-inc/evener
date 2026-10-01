@@ -155,20 +155,31 @@ danger = failure/destruction; accent = links, focus and selection. No decorative
 hues, invented activity, speculative progress bars or color-only distinctions.
 
 **Motion is evidence.** Default none. Preserve measured cadence and reduced-motion
-behavior; nothing animates during silence. See §5 for the exact budgets and exceptions.
+behavior. The rail's running ring is the one state-driven navigation exception; it spins only
+while the navigation summary reports running work and becomes static under reduced motion. See §5
+for the exact budgets and exceptions.
 
-**Signature — the cadence instrument (`<Cadence>` widget):** one component rendered everywhere
-a session appears (tree row, pane header, mobile card): a state dot plus a 64×10px activity
+**Signature — the cadence instrument (`<Cadence>` widget):** the full activity treatment used where
+a surface has room and frame evidence: a state dot plus a 64×10px activity
 trace of the last ~60s of frame arrivals as vertical ticks that fade with age. (The plan's
 original sketch said 24×10; implementation landed on 64×10 for tick legibility and every
 consumer + test pins 64 — recorded here so the doc matches the shipped truth.) Working = fresh
 ticks (alive token); quiet = ticks visibly aging to `--ink-low`; needs-you = dot and trailing
 edge in attention amber; failed = danger. It never animates on its own — it only re-renders
 when frames actually arrive, so a busy agent shows a dense fresh trace and a stalled one shows
-honest decay. **A trace with no in-window frames renders no SVG at all** — the dot alone —
-so callers without a live frame feed (rail rows) don't reserve 64px of dead width per row.
+honest decay. **A trace with no in-window frames renders no SVG at all** — the dot alone.
 Props: `{state: "idle"|"working"|"needs-you"|"failed"|"ended", frameTimes: number[], now:
 number}`.
+
+The browser rail uses a deliberately smaller status grammar instead of `<Cadence>` because its
+navigation summaries carry no frame trace and every session row must stay one line. Yellow solid
+dot = needs you, red diamond = broken, grey spinning ring = running; the shape difference keeps
+needs-you and broken distinct without hue. Precedence is broken, needs-you, running. Idle and ended
+rows reserve no indicator. The visible face is indicator, title, and age/actions only. Project,
+host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
+the title. Hovering the title or focusing the owning tree row exposes it; tapping the title does so
+on hoverless devices without activating the row, and a second tap activates it. Session pin stars
+and textual state lines do not appear on the row.
 
 ---
 
@@ -365,6 +376,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Sheet** | `{side?: "right"\|"bottom"; open; onClose; title; children; footer?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry/slide-in animation differs. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. |
 | **FocusScope** | `{trap?: boolean; children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. Does not (yet) set `inert` on anything outside the scope — see §4. |
 | **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, hidden on touch via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
+| **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; tapEnabled?: boolean}` | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. Hidden on touch unless `tapEnabled`, which lets a semantic child reveal it without bubbling the tap into its container. |
 | **Toast** + `useToasts()` | `useToasts(): {push: (kind, text) => void}`; `<Toast/>` takes no props | Module-singleton queue (`useSyncExternalStore`), mounted once near the app root. 5s auto-dismiss, true pause/resume on hover (tracks remaining time, doesn't restart the full window — fix-wave, see §4). |
 | **PaneScaffold** | `{title; cadence?; actions?; footer?; children}` | The standard pane chrome: header (title + cadence slot + actions) + scrollable body + optional footer. Most-copied layout primitive in the app. |
 | **CodeBlock** | `{text: string; language?: string; showLineNumbers?: boolean}` | Mono block with a copy button (renders a real `Button` internally); no syntax highlighting (YAGNI this wave). |
@@ -573,11 +585,15 @@ budgeted. Three budgets, all on `--motion-easing-standard` (`ease-out`):
   triggered by hover, focus, or press. Transitions name their properties explicitly; a blanket
   `transition: all` is never used.
 
-Forbidden, unchanged: idle pulses, shimmer loops on live data, anything that animates during
-silence (the honest-liveness rule — a "working" indicator that looks identical whether the agent
-is streaming or hung is worse than no indicator). Every widget with motion of its own respects
+Forbidden: idle pulses, shimmer loops on live data, and animation that invents progress. Every
+widget with motion of its own respects
 `prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
 SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
+
+One navigation exception (2026-10-01): the browser rail's grey running ring rotates while the
+authoritative navigation summary reports active work, including running jobs or descendants. It
+communicates state, not frame throughput or percent complete. Broken and needs-you remain static
+solid dots. Under `prefers-reduced-motion: reduce`, the ring remains visible but does not rotate.
 
 One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
 shown for a live reasoning item while the Reasoning content flag is off, uses the catalog

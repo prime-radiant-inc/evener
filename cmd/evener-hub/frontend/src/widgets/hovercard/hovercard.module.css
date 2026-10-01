@@ -45,7 +45,7 @@
 }
 
 @media (hover: none) {
-  .bubble {
+  .bubble:not([data-tap-enabled="true"]) {
     display: none;
   }
 }
