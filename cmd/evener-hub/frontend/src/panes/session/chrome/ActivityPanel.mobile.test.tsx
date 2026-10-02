@@ -83,7 +83,9 @@ function connectActivity() {
     ),
     page: { complete: true, issues: [] },
   }));
-  client.on("evener/jobs/output", () => ({ data: { tail: "build output", totalBytes: 12, retainedStart: 0 } }));
+  client.on("evener/jobs/output", () => ({
+    data: { tail: "build output", totalBytes: 12, retainedStart: 0, truncated: false },
+  }));
   connectionStore.getState().connect(client);
   return client;
 }
@@ -213,7 +215,9 @@ test("mobile child Back restores the loaded job extent and expanded older failur
       page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: `older-${walk}` } : {}) },
     };
   });
-  client.on("evener/jobs/output", () => ({ data: { tail: "Older failure output", totalBytes: 20, retainedStart: 0 } }));
+  client.on("evener/jobs/output", () => ({
+    data: { tail: "Older failure output", totalBytes: 20, retainedStart: 0, truncated: false },
+  }));
   const restoreSessionPane = registerPaneForTests<{ ref: string }>({
     id: "session",
     title: () => "Activity owner",

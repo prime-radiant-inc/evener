@@ -1595,7 +1595,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `appwire.JobActivityJob` |  |  |
 
 
 ### `JobsListParams`
@@ -1627,7 +1627,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `appwire.JobOutputTail` |  |  |
 
 
 ### `JobsTreeUpdatedParams`
