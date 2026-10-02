@@ -19,11 +19,12 @@
 // see the just-saved value) and varies by cwd+layer, so there is no single
 // value to memoize the way schema's is.
 
-import type { AppwireClient } from "./client";
+import type { AppwireClientLike, RequestPort } from "./clientLike";
 import { createFrameworkFreeStore, type FrameworkFreeStore, type StoreListener } from "./frameworkFreeStore";
 import type { LaunchConfigLayerName } from "./launchSchema";
 import { equalJSON } from "./state/navigation/immutable";
 import type {
+  HostRequestMethod,
   LaunchConfigLayer,
   LaunchConfigResolved,
   LaunchOption,
@@ -32,7 +33,7 @@ import type {
 } from "./types.gen";
 
 /** The two members of the client this module calls; AppwireClientLike satisfies it. */
-export type LaunchConfigClient = Pick<AppwireClient, "request" | "onNotification">;
+export type LaunchConfigClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
 export interface LaunchConfigStoreState {
   schema(): Promise<LaunchOptionSchemaResponse>;

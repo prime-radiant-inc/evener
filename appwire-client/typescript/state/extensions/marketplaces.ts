@@ -15,10 +15,11 @@
 // be replaced (the web's connection store) hands in an object that resolves
 // the current client on each call.
 
-import type { AppwireClient } from "../../client";
+import type { AppwireClientLike, RequestPort } from "../../clientLike";
 import { ErrorMarketplaceRemoveApplied, errorText, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
+  HostRequestMethod,
   MarketplaceAddParams,
   MarketplaceCatalogPlugin,
   MarketplaceEditParams,
@@ -29,7 +30,7 @@ import { createKeyedRevision } from "./keyedRevision";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
 import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
-export type MarketplacesClient = Pick<AppwireClient, "request" | "onNotification">;
+export type MarketplacesClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
 // One cached browse result per marketplace name - permanent until an explicit
 // refreshMarketplace/removeMarketplace/editMarketplace/reloadCatalog retires
