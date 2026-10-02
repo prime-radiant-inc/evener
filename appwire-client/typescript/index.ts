@@ -257,6 +257,8 @@ export {
   rootsFromText,
   rootsToText,
 } from "./hostMutations";
+export type { HostDependentDiscoveryMethod } from "./hostRouting";
+export { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST, normalizeHost } from "./hostRouting";
 export { housekeepingAction } from "./housekeepingSteps";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
@@ -747,7 +749,13 @@ export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 
 export type * from "./types.gen";
-export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
+export {
+  HOST_REQUEST_METHODS,
+  METHOD_NAMES,
+  NOTIFICATION_NAMES,
+  STEERING_KINDS,
+  THREAD_ITEM_EVENT_KINDS,
+} from "./types.gen";
 export type { WarningWords } from "./warnings";
 export {
   attentionWarningNotice,
