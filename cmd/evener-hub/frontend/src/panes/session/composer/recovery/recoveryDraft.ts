@@ -121,6 +121,32 @@ export function mergeRecoveryComposerDraft(
   // duplicates one the record carries too. The union is canonicalized so a
   // padded or empty name from either side collapses to the same list.
   const skillNames = canonicalSkillNames([...currentSkillNames, ...recovered.skillNames]);
+  let mentions: ComposerMention[] | undefined;
+  if (currentMentions || recovered.mentions) {
+    const currentLocations =
+      currentMentions ??
+      skillAtomMentions(
+        parseSkillDocument({
+          text: currentText,
+          skillNames: [...currentSkillNames],
+          commandNames: [...currentCommandNames],
+        }),
+      );
+    const recoveredLocations = recovered.mentions ?? skillAtomMentions(parseSkillDocument(recovered));
+    const appendOffset = currentText.length ? currentText.length + 2 : 0;
+    mentions = [
+      ...currentLocations,
+      ...recoveredLocations.map((mention) => ({
+        ...mention,
+        offset:
+          mention.offset +
+          appendOffset +
+          markerShifts
+            .filter((shift) => shift.offset < mention.offset)
+            .reduce((delta, shift) => delta + shift.delta, 0),
+      })),
+    ];
+  }
   return {
     text,
     attachments: [...currentAttachments, ...attachments],
@@ -128,28 +154,6 @@ export function mergeRecoveryComposerDraft(
     ...(currentCommandNames.length || recovered.commandNames?.length
       ? { commandNames: canonicalSkillNames([...currentCommandNames, ...(recovered.commandNames ?? [])]) }
       : {}),
-    ...(currentMentions || recovered.mentions
-      ? {
-          mentions: [
-            ...(currentMentions ??
-              skillAtomMentions(
-                parseSkillDocument({
-                  text: currentText,
-                  skillNames: [...currentSkillNames],
-                  commandNames: [...currentCommandNames],
-                }),
-              )),
-            ...(recovered.mentions ?? skillAtomMentions(parseSkillDocument(recovered))).map((mention) => ({
-              ...mention,
-              offset:
-                mention.offset +
-                (currentText.length ? currentText.length + 2 : 0) +
-                markerShifts
-                  .filter((shift) => shift.offset < mention.offset)
-                  .reduce((delta, shift) => delta + shift.delta, 0),
-            })),
-          ],
-        }
-      : {}),
+    ...(mentions ? { mentions } : {}),
   };
 }

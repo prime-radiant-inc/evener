@@ -115,7 +115,7 @@ func (s *Session) prepareSelectedCommands(ctx context.Context, names []string) (
 			return nil, err
 		}
 		cmd := s.pluginCommands[name]
-		body := command.ExpandArgs(cmd.Body, "")
+		var body string
 		if cmd.Source == "plugin" {
 			if owner != "" {
 				if err := s.clientMutations.saveCommandPreparation(owner, selectedCommandPreparation{Name: name, State: "in_progress"}); err != nil {
@@ -130,6 +130,8 @@ func (s *Session) prepareSelectedCommands(ctx context.Context, names []string) (
 			if err != nil {
 				return nil, fmt.Errorf("expand selected command %q: %w", name, err)
 			}
+		} else {
+			body = command.ExpandArgs(cmd.Body, "")
 		}
 		if owner != "" {
 			if err := s.clientMutations.saveCommandPreparation(owner, selectedCommandPreparation{Name: name, State: "completed", Body: body}); err != nil {

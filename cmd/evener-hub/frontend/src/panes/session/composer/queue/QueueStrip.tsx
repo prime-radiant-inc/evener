@@ -29,7 +29,7 @@ import {
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
-import { commandMarkers, queueEntryPreviewText, skillMarkers, truncateForDisplay } from "./queueDisplay";
+import { commandMarkers, pendingEntryPreview, skillMarkers, truncateForDisplay } from "./queueDisplay";
 import styles from "./queuestrip.module.css";
 
 const CLASS = {
@@ -165,11 +165,7 @@ function recordContent(record: MutationOutboxRecord): {
 }
 
 function recordPreview(record: MutationOutboxRecord): string {
-  const { text, imageCount, skillNames, commandNames } = recordContent(record);
-  const preview = [queueEntryPreviewText(text, imageCount), skillMarkers(skillNames), commandMarkers(commandNames)]
-    .filter((part) => part !== "")
-    .join(" ");
-  return truncateForDisplay(preview);
+  return truncateForDisplay(pendingEntryPreview(recordContent(record)));
 }
 
 // A pending entry already carries its canonical skill names, so it renders the
@@ -177,13 +173,7 @@ function recordPreview(record: MutationOutboxRecord): string {
 // entry with no text and no images (a skill-only submission) would be blank
 // until the authoritative queue row replaces it.
 function pendingPreview(entry: PendingTurnEntry): string {
-  return [
-    queueEntryPreviewText(entry.text, entry.imageCount),
-    skillMarkers(entry.skillNames),
-    commandMarkers(entry.commandNames ?? []),
-  ]
-    .filter((part) => part !== "")
-    .join(" ");
+  return pendingEntryPreview(entry);
 }
 
 function editDisabledReason(opts: {

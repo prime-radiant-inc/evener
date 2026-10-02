@@ -121,7 +121,7 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   // Names alone suffice only when every matching reference is an actual skill
   // atom. Keep locations when commands or same-spelling prose need distinct
   // intent, including after deletion of the final command.
-  const needsMentions = commands.length > 0 || !parseSkillDocument(value).eq(doc);
+  const needsMentions = commands.length > 0 || (value.skillNames.length > 0 && !parseSkillDocument(value).eq(doc));
   return {
     ...value,
     ...(commands.length ? { commandNames: canonicalSkillNames(commands) } : {}),
@@ -129,17 +129,27 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   };
 }
 
+/** Length of the leading run two serialized values share. */
+export function sharedPrefixLength(before: string, after: string): number {
+  const limit = Math.min(before.length, after.length);
+  let index = 0;
+  while (index < limit && before[index] === after[index]) index++;
+  return index;
+}
+
+/** Length of the trailing run two serialized values share, past `prefix`. */
+export function sharedSuffixLength(before: string, after: string, prefix: number): number {
+  const limit = Math.min(before.length, after.length) - prefix;
+  let count = 0;
+  while (count < limit && before[before.length - 1 - count] === after[after.length - 1 - count]) count++;
+  return count;
+}
+
 /** Shift existing atom identities across a plain-text splice without selecting new prose. */
 export function patchSelectionText(value: SkillEditorValue, text: string): SkillEditorValue {
   if (!value.mentions) return serializeSkillDocument(parseSkillDocument({ ...value, text }));
-  let prefix = 0;
-  while (prefix < Math.min(value.text.length, text.length) && value.text[prefix] === text[prefix]) prefix++;
-  let suffix = 0;
-  while (
-    suffix < Math.min(value.text.length, text.length) - prefix &&
-    value.text[value.text.length - suffix - 1] === text[text.length - suffix - 1]
-  )
-    suffix++;
+  const prefix = sharedPrefixLength(value.text, text);
+  const suffix = sharedSuffixLength(value.text, text, prefix);
   const oldEnd = value.text.length - suffix;
   const delta = text.length - value.text.length;
   const mentions = value.mentions.flatMap((item) =>

@@ -9,6 +9,8 @@ import { flushSync } from "react-dom";
 import {
   completeSkillReferenceAt,
   documentPositionToTextOffset,
+  sharedPrefixLength as documentSharedPrefixLength,
+  sharedSuffixLength as documentSharedSuffixLength,
   isSkillTokenCharacter,
   parseSkillDocument,
   type SkillEditorValue,
@@ -139,18 +141,12 @@ const externalSync = "skillEditorExternalSync";
 
 /** Length of the leading run two serialized values share. */
 function sharedPrefixLength(before: string, after: string): number {
-  const limit = Math.min(before.length, after.length);
-  let index = 0;
-  while (index < limit && before[index] === after[index]) index++;
-  return index;
+  return documentSharedPrefixLength(before, after);
 }
 
 /** Length of the trailing run two serialized values share, past `prefix`. */
 function sharedSuffixLength(before: string, after: string, prefix: number): number {
-  const limit = Math.min(before.length, after.length) - prefix;
-  let count = 0;
-  while (count < limit && before[before.length - 1 - count] === after[after.length - 1 - count]) count++;
-  return count;
+  return documentSharedSuffixLength(before, after, prefix);
 }
 
 function createState(value: SkillEditorValue): EditorState {
@@ -181,6 +177,28 @@ function updateDetails(dom: HTMLElement, name: string, props: SkillEditorProps) 
   const details = (dom.dataset.commandName ? props.commandDetails?.(name) : props.skillDetails?.(name)) ?? name;
   dom.title = details;
   dom.setAttribute("aria-label", `/${name}: ${details}`);
+}
+
+function createAtomView(node: ProseMirrorNode, kind: "skill" | "command", props: SkillEditorProps) {
+  const dom = document.createElement("span");
+  dom.className = styles.skill ?? "";
+  dom.dataset[kind === "skill" ? "skillName" : "commandName"] = node.attrs.name;
+  dom.dataset.testid = `composer-${kind}-chip`;
+  dom.setAttribute("contenteditable", "false");
+  dom.setAttribute("role", "note");
+  dom.textContent = `/${node.attrs.name}`;
+  updateDetails(dom, node.attrs.name, props);
+  return { dom };
+}
+
+function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
+  return (
+    a.text === b.text &&
+    a.skillNames.length === b.skillNames.length &&
+    a.skillNames.every((name, index) => b.skillNames[index] === name) &&
+    JSON.stringify(a.commandNames ?? []) === JSON.stringify(b.commandNames ?? []) &&
+    JSON.stringify(a.mentions ?? []) === JSON.stringify(b.mentions ?? [])
+  );
 }
 
 function insertAtom(
@@ -275,28 +293,8 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
           }
         },
         nodeViews: {
-          skill: (node) => {
-            const dom = document.createElement("span");
-            dom.className = styles.skill ?? "";
-            dom.dataset.skillName = node.attrs.name;
-            dom.dataset.testid = "composer-skill-chip";
-            dom.setAttribute("contenteditable", "false");
-            dom.setAttribute("role", "note");
-            dom.textContent = `/${node.attrs.name}`;
-            updateDetails(dom, node.attrs.name, latest.current);
-            return { dom };
-          },
-          command: (node) => {
-            const dom = document.createElement("span");
-            dom.className = styles.skill ?? "";
-            dom.dataset.commandName = node.attrs.name;
-            dom.dataset.testid = "composer-command-chip";
-            dom.setAttribute("contenteditable", "false");
-            dom.setAttribute("role", "note");
-            dom.textContent = `/${node.attrs.name}`;
-            updateDetails(dom, node.attrs.name, latest.current);
-            return { dom };
-          },
+          skill: (node) => createAtomView(node, "skill", latest.current),
+          command: (node) => createAtomView(node, "command", latest.current),
         },
         // Never parse clipboard HTML, even if it contains our data attributes.
         handlePaste: (_view, event) => {
@@ -323,12 +321,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
     const current = serializeSkillDocument(view.state.doc);
     // Compare the serialized boundary BEFORE parsing. A plain pasted /name must
     // not become an atom just because an earlier mention selected that name.
-    const echo =
-      current.text === props.value.text &&
-      current.skillNames.length === props.value.skillNames.length &&
-      current.skillNames.every((name, index) => props.value.skillNames[index] === name) &&
-      JSON.stringify(current.commandNames ?? []) === JSON.stringify(props.value.commandNames ?? []) &&
-      JSON.stringify(current.mentions ?? []) === JSON.stringify(props.value.mentions ?? []);
+    const echo = sameEditorValue(current, props.value);
     // Consumed on every pass, even when the value already matches: a restore
     // whose value happens to equal what is on screen is still spent, and leaving
     // it pending would make the next ordinary patch look authoritative.
@@ -369,13 +362,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       // became keeps the composer's text, its draft and the screen saying the
       // same thing.
       const settled = serializeSkillDocument(view.state.doc);
-      if (
-        settled.text !== props.value.text ||
-        settled.skillNames.length !== props.value.skillNames.length ||
-        !settled.skillNames.every((name, index) => props.value.skillNames[index] === name) ||
-        JSON.stringify(settled.commandNames ?? []) !== JSON.stringify(props.value.commandNames ?? []) ||
-        JSON.stringify(settled.mentions ?? []) !== JSON.stringify(props.value.mentions ?? [])
-      ) {
+      if (!sameEditorValue(settled, props.value)) {
         latest.current.onChange(settled, documentPositionToTextOffset(view.state.doc, view.state.selection.head));
       }
     }
