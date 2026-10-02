@@ -7,10 +7,13 @@ The session and rail action menus open **Overview**, with **About** as the last
 category beside Agents, Jobs, Watches, and Tasks. About contains the existing
 session details. Remove the separate Details menu item.
 
-Jesse chose consolidation on desktop and mobile, with the existing Details URLs
-and saved workspace panes left unchanged. The web `/status` command opens About.
-Jesse rejected a playful name and asked for a clear one. Use **Overview** for the
-combined surface and its menu action.
+Jesse chose consolidation on desktop and mobile, with existing saved Details
+workspace panes left unchanged. Details and Activity panes have no standalone
+URLs. Jesse chose to retire legacy Activity workspace panes without migration:
+their saved placements disappear, while underlying session and activity records
+remain. The web `/status` command opens About. Jesse rejected a playful name and
+asked for a clear one. Use **Overview** for the combined surface and its menu
+action.
 
 This spec describes intended behavior. The evergreen product guides continue to
 describe shipped behavior until implementation and verification.
@@ -147,18 +150,36 @@ their existing independent demand.
   when the target model has not loaded yet. A same-ref session replacement uses
   the thread store's existing identity reconciliation.
 
-## Retained surfaces and non-goals
+## Retired and retained surfaces
 
-Existing Details URLs and saved Details workspace panes keep their registration,
-title, body, and loading behavior. This change adds no route migration or new
-backward-compatibility layer. The hidden mobile Details Sheet mount is no longer
-needed by session chrome once its menu action is removed; remove that mount.
-Keep implementations used by retained surfaces and preserve their tests.
+Remove the `sessionActivity` workspace pane registration and its production
+opening/rendering branches. Saved layouts omit that unregistered pane through
+the existing restoration behavior. Do not migrate its position, focus, or
+session intent into Overview and do not add a compatibility shim. Restore
+remaining registered panes normally, including when Activity was the saved
+focused pane. Independently saved Overview choices restore normally for the
+surviving session. Valid routes retain their existing precedence over restored
+layouts and the empty-workspace fallback. No session, delegate, job, watch,
+transcript, or output data is deleted.
 
-Legacy Activity workspace panes and recursive Activity Sheets retain their
-titles, triggers, recursive scope, and restoration behavior. Overview names only
-the combined shared sidebar and its entry points. The legacy surfaces do not
-gain a parallel set of About/category tabs in this change.
+The retired pane displays recursive subtree activity. Overview retains its
+existing session-scoped categories: inspecting a descendant requires selecting
+that session. Retiring the pane deliberately removes its combined subtree view
+from saved layouts. Do not silently broaden Overview's read scope to replace it.
+
+Existing saved Details workspace panes keep their registration, title, body,
+and loading behavior. Session-panel panes have no standalone URLs, so this
+change needs no route migration. Remove the hidden mobile Details Sheet mount
+from session chrome once its menu action is removed. Keep implementations used
+by retained surfaces and preserve their tests.
+
+The recursive Activity Sheet and hidden activity-discovery owner are distinct
+from the retired workspace pane. Preserve their existing trigger/title, read
+scope, and restoration contracts where still used. Overview names only the
+combined shared sidebar and its entry points. Remove code only when the retired
+pane was its last caller; do not replace the discovery or Sheet implementation.
+
+## Non-goals
 
 Native mobile and TUI behavior, backend APIs, activity ownership, counts,
 transcript detail levels, session lifecycle, and generic retry behavior are out
@@ -197,8 +218,8 @@ of scope.
    desktop and mobile, including repeated invocation and another focused pane.
    Exercise composer submission, not only the command handler. No new Details
    workspace pane or provider turn appears.
-9. Existing Details routes and restored workspace panes still render the same
-   body. The removal of menu access must not remove their registration.
+9. Existing restored Details workspace panes still render the same body. The
+   removal of menu access must not remove their registration.
 10. Real menu and `/status` phone flows move focus into Overview and contain
     sequential keyboard navigation. Escape and close restore a visible control
     for the intended session and originating pane. Include a closed phone drawer
@@ -210,6 +231,15 @@ of scope.
     readable and selectable. The close control stays reachable without
     page-wide overflow. Check both themes, visible keyboard focus, and preserved
     touch-target floors. DOM-only tests do not prove geometry.
+12. Restore layouts containing Activity plus retained session, Details, and
+    other panes through the real workspace host. Activity is omitted without
+    losing another pane or creating, transferring, or altering Overview intent.
+    Independently saved Overview choices restore normally: cover both closed
+    and open-on-About choices. Include Activity as the saved main and focused
+    pane; surviving panes render and focus resolves to a useful survivor.
+    Activity-only layouts with no valid routed primary reach the existing
+    Welcome fallback. A valid session route keeps its existing precedence.
+    No resource-deletion calls occur.
 
 Use real components and stores. Script only external transport/model reads and
 clocks. Assert visible behavior, store demand, and subscription effects rather
