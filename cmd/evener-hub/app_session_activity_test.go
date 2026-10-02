@@ -265,17 +265,17 @@ func TestSessionActivityArchivedNestedHierarchy(t *testing.T) {
 			}
 		}
 		assertActivityArchiveNavigation(t, f.cfg, f.activity, f.refs)
-		assertRealNestedActivity(t, f.ctx, f.activity, f.refs, "live")
+		assertRealNestedActivity(f.ctx, t, f.activity, f.refs, "live")
 		f.stop()
 		if _, err := f.cfg.Past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
-		assertRealNestedActivity(t, t.Context(), f.activity, f.refs, "retained")
+		assertRealNestedActivity(t.Context(), t, f.activity, f.refs, "retained")
 		assertActivityArchiveNavigation(t, f.cfg, f.activity, f.refs)
 	})
 }
 
-func assertRealNestedActivity(t *testing.T, ctx context.Context, client *appwire.Client, refs []string, availability string) {
+func assertRealNestedActivity(ctx context.Context, t *testing.T, client *appwire.Client, refs []string, availability string) {
 	t.Helper()
 	for index, ref := range refs {
 		page, err := client.ThreadDelegatesList(ctx, appwire.SessionActivityListParams{Ref: ref, Scope: appwire.SessionActivityScopeSession, Limit: 200})

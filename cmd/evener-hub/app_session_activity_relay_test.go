@@ -575,7 +575,7 @@ func TestSessionActivityNestedReconnect(t *testing.T) {
 		if !counts(3, 2, 2) {
 			t.Fatal("closing peek released a column or sidebar membership")
 		}
-		assertRealNestedActivity(t, f.ctx, reconnected, f.refs, "live")
+		assertRealNestedActivity(f.ctx, t, reconnected, f.refs, "live")
 		close(f.adapter.grandSend)
 		childID := strings.TrimPrefix(f.refs[1], "local:")
 		grandID := strings.TrimPrefix(f.refs[2], "local:")
