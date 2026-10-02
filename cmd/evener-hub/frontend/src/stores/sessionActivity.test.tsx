@@ -5,7 +5,7 @@ import { StrictMode } from "react";
 import { afterEach, expect, test } from "vitest";
 import { connectionStore } from "./connection";
 import { acquireSessionActivity, sessionActivitySnapshot, useSessionActivity } from "./sessionActivity";
-import { activityClient, activityRef, activitySummary } from "./sessionActivityTestUtils";
+import { activityClient, activityRef, activitySummary, activityThread } from "./sessionActivityTestUtils";
 
 afterEach(() => {
   cleanup();
@@ -26,6 +26,50 @@ test("reading an absent binding owns no network work; committed summary consumer
   expect(sessionActivitySnapshot(client, activityRef, "session")).not.toBeNull();
   second.release();
   await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1));
+  expect(sessionActivitySnapshot(client, activityRef, "session")).toBeNull();
+});
+
+test("summary-only hooks share qualified runtime and lose status trust on disconnect", async () => {
+  const client = activityClient();
+  client.on("thread/read", () => ({
+    thread: { ...activityThread().thread, id: "wire-root", sessionId: "root-session" },
+  }));
+  client.on("evener/thread/activity/read", () => ({
+    ...activitySummary(),
+    context: { ...activitySummary().context, sessionId: "root-session" },
+  }));
+  connectionStore.getState().connect(client);
+  const first = renderHook(() => useSessionActivity(activityRef)),
+    second = renderHook(() => useSessionActivity(activityRef));
+  await waitFor(() => expect(second.result.current.snapshot?.runtime?.sessionId).toBe("root-session"));
+  expect(first.result.current.snapshot).toBe(second.result.current.snapshot);
+  expect(client.calls.map(({ method }) => method)).toEqual(["thread/read", "evener/thread/activity/read"]);
+  act(() =>
+    client.emitNotification({
+      method: "thread/status/changed",
+      params: { ref: activityRef, threadId: "wire-root", status: { type: "active" } },
+    }),
+  );
+  expect(first.result.current.snapshot?.runtime?.status.type).toBe("active");
+  expect(second.result.current.snapshot?.runtime?.status.type).toBe("active");
+  expect(client.calls).toHaveLength(2);
+  first.unmount();
+  expect(client.calls.filter(({ method }) => method === "thread/unsubscribe")).toHaveLength(0);
+  act(() => client.emitStateChange("reconnecting"));
+  expect(second.result.current.snapshot?.runtime).toBeNull();
+  act(() =>
+    client.emitNotification({
+      method: "thread/status/changed",
+      params: { ref: activityRef, threadId: "wire-root", status: { type: "active" } },
+    }),
+  );
+  expect(second.result.current.snapshot?.runtime).toBeNull();
+  act(() => client.emitReady());
+  await waitFor(() => expect(second.result.current.snapshot?.runtime?.status.type).toBe("idle"));
+  expect(client.calls.filter(({ method }) => method === "thread/read")).toHaveLength(2);
+  expect(client.calls.filter(({ method }) => method === "evener/thread/jobs/list")).toHaveLength(0);
+  second.unmount();
+  await waitFor(() => expect(client.calls.filter(({ method }) => method === "thread/unsubscribe")).toHaveLength(1));
   expect(sessionActivitySnapshot(client, activityRef, "session")).toBeNull();
 });
 

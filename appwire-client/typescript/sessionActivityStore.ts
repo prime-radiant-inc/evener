@@ -1,7 +1,11 @@
 import type { AppwireClientLike } from "./clientLike";
 import { mutationErrorData, WireError } from "./errors";
 import { isThreadNotFound } from "./sessionErrors";
-import { acquireThreadSubscription, type ThreadSubscriptionLease } from "./threadSubscription";
+import {
+  acquireThreadSubscription,
+  type ThreadSubscriptionLease,
+  type ThreadSubscriptionMetadata,
+} from "./threadSubscription";
 import type {
   AnyNotification,
   JobActivityJob,
@@ -12,6 +16,7 @@ import type {
   SessionActivitySummary,
   SessionDelegate,
   SessionWatch,
+  ThreadStatus,
 } from "./types.gen";
 
 export type SessionActivityCollection = "delegates" | "jobs" | "watches";
@@ -41,6 +46,7 @@ export interface SessionActivitySnapshot {
   ref: string;
   scope: SessionActivityScope;
   context: SessionActivityContext | null;
+  runtime: ThreadSubscriptionMetadata | null;
   summary: SessionActivitySummary | null;
   summaryState: SessionActivityReadState;
   delegates: SessionActivityCollectionState<SessionDelegate>;
@@ -131,6 +137,9 @@ export class SessionActivityStore {
   private lease: ThreadSubscriptionLease | null = null;
   private disposed = false;
   private generation = 0;
+  private runtimeThreadId: string | null = null;
+  private statusRevision = 0;
+  private statusUpdate: { revision: number; threadId: string; status: ThreadStatus } | null = null;
 
   constructor(
     private readonly client: SessionActivityClient,
@@ -145,6 +154,7 @@ export class SessionActivityStore {
       ref,
       scope: this.scope,
       context: null,
+      runtime: null,
       summary: null,
       summaryState: readState(),
       delegates: collectionState(),
@@ -215,6 +225,9 @@ export class SessionActivityStore {
           this.cancelPace(read);
           read.refresh = null;
         }
+        this.runtimeThreadId = null;
+        this.statusUpdate = null;
+        this.publish({ runtime: null });
       }),
       this.client.onReady(() => {
         for (const resource of resources) {
@@ -244,6 +257,9 @@ export class SessionActivityStore {
     // cursors retire together; opaque cache epochs alone do not imply this.
     this.generation += 1;
     const generation = this.generation;
+    const metadata = this.lease?.metadata();
+    if (metadata?.sessionId !== context.sessionId || this.statusUpdate?.threadId !== metadata?.threadId)
+      this.statusUpdate = null;
     for (const resource of resources) {
       const read = this.reads[resource];
       this.cancelTimer(read);
@@ -266,6 +282,7 @@ export class SessionActivityStore {
     });
     this.publish({
       context,
+      runtime: null,
       summary: null,
       summaryState: {
         ...readState(),
@@ -341,6 +358,7 @@ export class SessionActivityStore {
       }
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
+      const statusRevision = this.statusRevision;
       try {
         this.lease ??= acquireThreadSubscription(this.client, this.ref);
         await this.lease.ensure();
@@ -356,6 +374,7 @@ export class SessionActivityStore {
           if (!unavailable) read.failures = 0;
           this.publish({
             context: summary.context,
+            runtime: this.runtimeFor(summary.context, statusRevision),
             summary,
             summaryState: {
               ...this.state.summaryState,
@@ -433,7 +452,7 @@ export class SessionActivityStore {
             permanent: false,
           });
           if (this.disposed || generation !== this.generation) continue;
-          this.publish({ context: page.context });
+          this.publish({ context: page.context, runtime: this.runtimeFor(page.context, statusRevision) });
           // Collection reads can warm retained count indexes without emitting
           // a notification. Refresh an observed unknown count after useful
           // progress, paced and coalesced across pages, without scanning merely
@@ -488,6 +507,22 @@ export class SessionActivityStore {
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
     }
+  }
+  private runtimeFor(context: SessionActivityContext, statusRevision: number): ThreadSubscriptionMetadata | null {
+    const metadata = this.lease?.metadata();
+    if (
+      !metadata ||
+      metadata.sessionId !== context.sessionId ||
+      (this.runtimeThreadId !== null && metadata.threadId !== this.runtimeThreadId)
+    )
+      return null;
+    const update = this.statusUpdate;
+    // The shared metadata can also come from another owner's delayed rich
+    // read. A qualified live notification remains authoritative until its
+    // connection or session identity retires, including on later summary polls.
+    if (update && update.revision >= statusRevision && update.threadId === metadata.threadId)
+      return { ...metadata, status: update.status };
+    return metadata;
   }
   private publishCollection(
     resource: SessionActivityCollection,
@@ -558,6 +593,38 @@ export class SessionActivityStore {
       return;
     let changed: readonly SessionActivityResource[];
     switch (notification.method) {
+      case "thread/status/changed": {
+        if (this.client.state !== "ready") return;
+        if (this.runtimeThreadId !== null && notification.params.threadId !== this.runtimeThreadId) return;
+        const metadata = this.lease?.metadata();
+        if (
+          metadata &&
+          notification.params.threadId !== metadata.threadId &&
+          notification.params.threadId !== this.runtimeThreadId
+        )
+          return;
+        if (
+          metadata &&
+          notification.params.threadId === metadata.threadId &&
+          this.state.context &&
+          this.state.context.sessionId !== metadata.sessionId &&
+          notification.params.threadId !== this.runtimeThreadId
+        )
+          return;
+        this.statusRevision += 1;
+        this.statusUpdate = {
+          revision: this.statusRevision,
+          threadId: notification.params.threadId,
+          status: notification.params.status,
+        };
+        if (
+          metadata &&
+          notification.params.threadId === metadata.threadId &&
+          this.state.context?.sessionId === metadata.sessionId
+        )
+          this.publish({ runtime: { ...metadata, status: this.statusUpdate.status } });
+        return;
+      }
       case "evener/thread/activity/changed":
         if (
           this.scope === "session" &&
@@ -585,6 +652,9 @@ export class SessionActivityStore {
         // The server may already have emitted a reply before the alias was
         // cleared. It must not publish after this resync boundary.
         this.generation += 1;
+        this.runtimeThreadId = notification.params.threadId;
+        if (this.statusUpdate?.threadId !== this.runtimeThreadId) this.statusUpdate = null;
+        if (this.state.runtime && this.state.runtime.threadId !== this.runtimeThreadId) this.publish({ runtime: null });
         changed = resources;
         break;
       default:
@@ -609,8 +679,11 @@ export class SessionActivityStore {
       return;
     this.lease?.release();
     this.lease = null;
+    this.runtimeThreadId = null;
+    this.statusUpdate = null;
     for (const stop of this.stopListening) stop();
     this.stopListening = [];
+    if (this.state.runtime) this.publish({ runtime: null });
   }
   dispose(): void {
     if (this.disposed) return;
@@ -628,6 +701,9 @@ export class SessionActivityStore {
     }
     this.lease?.release();
     this.lease = null;
+    this.runtimeThreadId = null;
+    this.statusUpdate = null;
+    this.state = { ...this.state, runtime: null };
     for (const stop of this.stopListening) stop();
     this.stopListening = [];
     this.listeners.clear();

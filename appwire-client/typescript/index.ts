@@ -599,6 +599,7 @@ export { insertMarker, markerPattern, markerText, stripMarker } from "./textarea
 export type {
   ThreadSubscriptionClient,
   ThreadSubscriptionLease,
+  ThreadSubscriptionMetadata,
   ThreadSubscriptionReadParams,
 } from "./threadSubscription";
 export { acquireThreadSubscription } from "./threadSubscription";
