@@ -5,15 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
-	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/plugins"
 )
 
@@ -66,30 +62,12 @@ func (c *hubPluginsController) Preview(ctx context.Context, params appwire.Plugi
 	if params.LaunchOverrides != nil {
 		overrides = launchconfig.FromWire(*params.LaunchOverrides)
 	}
-	var resolved launchconfig.Resolved
-	if strings.TrimSpace(params.CWD) == "" {
-		// No launch directory chosen yet: the user-level inventory (global
-		// layer + per-launch overrides) is all that exists. Repo and project
-		// layers resolve once a directory is picked, and clients re-preview
-		// then.
-		userResolved, err := launchconfig.ResolveUserOnly(c.launchConfigRoot, overrides)
-		if err != nil {
-			return appwire.PluginPreviewResponse{}, err
-		}
-		resolved = userResolved
-	} else {
-		cwd, project, cleanup, err := pluginPreviewCWD(params.CWD)
-		if err != nil {
-			return appwire.PluginPreviewResponse{}, err
-		}
-		defer cleanup()
-		fullResolved, err := launchconfig.ResolveWithProject(c.launchConfigRoot, cwd, project, overrides)
-		if err != nil {
-			return appwire.PluginPreviewResponse{}, err
-		}
-		resolved = fullResolved
+	preview, err := prepareLaunchPreview(c.launchConfigRoot, params.CWD, overrides)
+	if err != nil {
+		return appwire.PluginPreviewResponse{}, err
 	}
-	resolution, err := c.mgr.PreviewForLaunch(ctx, resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins)
+	defer preview.cleanup()
+	resolution, err := c.mgr.PreviewForLaunch(ctx, preview.resolved.Effective.PluginDirs, preview.resolved.Effective.EnabledPlugins)
 	if err != nil {
 		return appwire.PluginPreviewResponse{}, err
 	}
@@ -115,67 +93,6 @@ func (c *hubPluginsController) Preview(ctx context.Context, params appwire.Plugi
 		resp.SelectionErrors = append(resp.SelectionErrors, appwire.PluginSelectionError{Name: selectionErr.Name, Reason: selectionErr.Reason})
 	}
 	return resp, nil
-}
-
-func pluginPreviewCWD(path string) (string, identifier.Project, func(), error) {
-	cwd, err := fspaths.CanonicalizeDir(path)
-	if err == nil {
-		project, projectErr := identifier.ResolveProject(cwd)
-		if projectErr != nil {
-			return "", identifier.Project{}, nil, appwire.InvalidParams("cwd: " + projectErr.Error())
-		}
-		return cwd, project, func() {}, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", identifier.Project{}, nil, appwire.InvalidParams("cwd: " + err.Error())
-	}
-
-	// launchconfig.Resolve needs an existing directory to derive project
-	// identity. Put the temporary resolver directory under the nearest existing
-	// ancestor so project identity follows the eventual target, while the
-	// target itself and its ancestor's local files remain untouched.
-	requested := filepath.Clean(strings.TrimSpace(path))
-	ancestor := requested
-	for {
-		info, statErr := os.Stat(ancestor)
-		if statErr == nil {
-			if !info.IsDir() {
-				return "", identifier.Project{}, nil, appwire.InvalidParams("cwd: nearest existing path is not a directory")
-			}
-			existingAncestor := ancestor
-			ancestor, statErr = fspaths.CanonicalizeDir(ancestor)
-			if statErr != nil {
-				return "", identifier.Project{}, nil, appwire.InvalidParams("cwd: " + statErr.Error())
-			}
-			missingSuffix, relErr := filepath.Rel(existingAncestor, requested)
-			if relErr != nil {
-				return "", identifier.Project{}, nil, appwire.InvalidParams("cwd: " + relErr.Error())
-			}
-			requestedCanonical := filepath.Join(ancestor, missingSuffix)
-			previewDir, mkdirErr := os.MkdirTemp(ancestor, "evener-plugin-preview-")
-			if mkdirErr != nil {
-				return "", identifier.Project{}, nil, mkdirErr
-			}
-			probeProject, projectErr := identifier.ResolveProject(previewDir)
-			if projectErr != nil {
-				_ = os.RemoveAll(previewDir)
-				return "", identifier.Project{}, nil, appwire.InvalidParams("cwd: " + projectErr.Error())
-			}
-			project := probeProject
-			if probeProject.CanonicalPath == previewDir {
-				project = identifier.ProjectFromCanonicalPath(requestedCanonical)
-			}
-			return previewDir, project, func() { _ = os.RemoveAll(previewDir) }, nil
-		}
-		if !errors.Is(statErr, os.ErrNotExist) {
-			return "", identifier.Project{}, nil, appwire.InvalidParams("cwd: " + statErr.Error())
-		}
-		parent := filepath.Dir(ancestor)
-		if parent == ancestor {
-			return "", identifier.Project{}, nil, appwire.InvalidParams("cwd: no existing ancestor")
-		}
-		ancestor = parent
-	}
 }
 
 func marketplaceSourceFromWire(in appwire.MarketplaceSourceInput) plugins.Source {
