@@ -9,7 +9,7 @@ import { describe, expect, test } from "vitest";
 import { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST } from "./hostRouting";
 
 // The CROSS-LANGUAGE half of this contract. The shipped set above and the Go
-// proxy's allow-list (cmd/evener-hub/app_host_admin.go's remoteHostAdminMethods)
+// proxy's allow-list (appwire/host_request.go's hostRequestMethods)
 // are both pinned to the checked-in list at cmd/evener-hub/
 // host_request_methods.txt, read here and by app_host_admin_test.go. That file
 // carries the rationale for what belongs on the list; this test's job is to

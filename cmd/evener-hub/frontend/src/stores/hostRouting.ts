@@ -30,7 +30,7 @@ export const LOCAL_HOST = "local";
 // The two sides are pinned to each other by a single checked-in list,
 // cmd/evener-hub/host_request_methods.txt: this file's own test asserts the
 // array below IS that list (both directions), and the Go proxy's test asserts
-// every name on it is on remoteHostAdminMethods and is actually forwarded
+// every name on it is in appwire/host_request.go and is actually forwarded
 // rather than refused (app_host_admin_test.go). Before that pin, each side only
 // answered to a literal of its own, so a method dropped from one end left the
 // other end green while the browser forwarded a call the proxy rejects.
