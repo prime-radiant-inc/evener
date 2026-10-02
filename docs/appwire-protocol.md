@@ -1583,6 +1583,17 @@ _(no fields)_
 | `dirty` | `bool` |  |  |
 
 
+### `JobOutputTail`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `tail` | `string` |  |  |
+| `totalBytes` | `int64` |  |  |
+| `retainedStart` | `int64` |  |  |
+| `truncated` | `bool` |  |  |
+| `hasEarlier` | `bool` | yes |  |
+
+
 ### `JobsGetParams`
 
 | Field | Go type | Omitempty | Embedded |
