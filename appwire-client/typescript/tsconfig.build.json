@@ -57,6 +57,7 @@
     "itemFailure.ts",
     "jobOutput.ts",
     "hostMutations.ts",
+    "hostRouting.ts",
     "hubOverview.ts",
     "hubUpdate.ts",
     "model.ts",

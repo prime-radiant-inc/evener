@@ -108,6 +108,16 @@ The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
 
+## Host-scoped requests
+
+`hostRequest(client, host, method, params, opts)` sends a typed request to the
+selected host. An absent, empty, or `local` host uses the plain client request;
+other hosts use `evener/host/request`. Parameters, results, errors, and caller
+timeouts pass through unchanged. The hub owns the explicit forwarding allow-list
+and retry-safety classification. `LOCAL_HOST`, `isLocalHost`, and `normalizeHost`
+provide the shared host spelling rules, and `HOST_DEPENDENT_DISCOVERY_METHODS`
+names the discovery calls used by the new-session forms.
+
 ## Older-history demand
 
 `HistoryPaging` retains a requested older page until history advances. Attach
