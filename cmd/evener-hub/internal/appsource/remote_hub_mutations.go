@@ -43,40 +43,18 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 	return s.translateOut(out)
 }
 
-// remoteHubMutationCallError mirrors localDaemonMutationCallError in shape: a
-// mutation whose response was lost (the transport failure was mapped by
-// mapCallError to SessionUnavailable) cannot be known to have been applied, so
-// it becomes ErrorMutationOutcomeUnknown with the client's id preserved and
-// RetryDispositionAutomatic. Semantic wire errors pass through untouched.
-//
-// The Data type assertion is deliberately appwire.ErrorData only, not the
-// decoded map[string]any a JSON error frame produces. The two shapes mean
-// different things here:
-//
-//   - The typed shape is one WE synthesized in mapCallError/transportUnavailable
-//     after a transport failure, i.e. the request crossed the wire and its
-//     response was lost. Only that in-doubt case becomes MutationOutcomeUnknown.
-//   - The decoded-map shape is an error frame that arrived intact from the
-//     remote hub, so the response was NOT lost; it is the hub's semantic
-//     verdict on the mutation (its thread is gone, its agent is unavailable
-//     before the request was dispatched). The hub already labels a genuinely
-//     in-doubt mutation of its own as mutationOutcomeUnknown, so a
-//     sessionUnavailable it sends means "not applied". Converting that to
-//     MutationOutcomeUnknown+Automatic would re-drive a mutation against a
-//     session that is known absent (e.g. an autoretry loop on "thread not
-//     found"), and locally the same verdict is NotAccepted
-//     (localDaemonMutationEntryError) that the auto-resume gate acts on via
-//     isSessionUnavailableError.
+// remoteHubMutationCallError reports a lost mutation response as outcome
+// unknown with automatic replay. A delivered WireError is a semantic verdict,
+// regardless of whether its Data is typed or decoded JSON. Classify that
+// provenance before mapCallError replaces a transport failure with an ordinary
+// SessionUnavailable WireError.
 func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, err error) error {
-	mapped := s.mapCallError(err)
-	var wire appwire.WireError
-	if !errors.As(mapped, &wire) {
-		return mapped
+	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
+		return err
 	}
-	// Only the locally synthesized typed ErrorData counts; a decoded
-	// map[string]any is a delivered semantic verdict, not a lost response.
-	data, ok := wire.Data.(appwire.ErrorData)
-	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+	mapped := s.mapCallError(err)
+	wire, ok := errors.AsType[appwire.WireError](mapped)
+	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
 	}
 	return appwire.WireError{
