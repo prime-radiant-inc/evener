@@ -1,7 +1,8 @@
 import type { SessionActivityContext, ThreadReadResponse } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { useStore } from "zustand";
 import { ClientProvider } from "../../shell/clientContext";
@@ -15,7 +16,7 @@ import {
   activitySummary,
   activityThread,
 } from "../../stores/sessionActivityTestUtils";
-import { resetThreadsStoreForTests } from "../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
@@ -168,6 +169,135 @@ test("root and child render through real read-only readers inside one scaffold",
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+test.each(["deleted", "missing"] as const)(
+  "a $0 child has a scoped terminal explanation while parent, Open conversation and Return stay usable",
+  async (failure) => {
+    const { fake, response, context } = fixture();
+    const error =
+      failure === "deleted"
+        ? new WireError("target has been deleted: child", -32001, {
+            evenerErrorInfo: "actionUnavailable",
+            mutationOutcome: "targetDeleted",
+            retryDisposition: "none",
+          })
+        : new WireError("thread not found: child", -32001, { evenerErrorInfo: "sessionUnavailable" });
+    fake.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
+      if (!ref) throw new Error("thread/read requires ref");
+      if (ref === "child") throw error;
+      const read = response(ref);
+      return {
+        ...read,
+        requestGeneration,
+        thread: includeTurns === false ? { ...read.thread, turns: [] } : read.thread,
+      };
+    });
+    fake.on("evener/thread/activity/read", ({ ref }) => {
+      if (ref === "child" && failure === "missing") throw error;
+      return { ...activitySummary(ref), context: context(ref) };
+    });
+    mount(fake);
+    await screen.findByText("root content old-root");
+    const child = screen
+      .getAllByTestId("cascade-column")
+      .find((column) => column.getAttribute("data-scope-ref") === "child");
+    if (!child) throw new Error("Missing child column");
+    await within(child).findByText(failure === "deleted" ? "This session was deleted" : "Transcript unavailable");
+    expect(within(child).queryByText("Loading transcript…")).toBeNull();
+    expect(screen.getByText("root content old-root")).toBeTruthy();
+    if (failure === "deleted") expect(threadsStore.getState().deletedRefs.has("child")).toBe(true);
+    act(() => fireEvent.click(within(child).getByRole("button", { name: "Open conversation" })));
+    expect(
+      workspaceStore
+        .getState()
+        .panes.some((pane) => pane.type === "session" && (pane.params as { ref: string }).ref === "child"),
+    ).toBe(true);
+    act(() =>
+      fireEvent.click(
+        within(screen.getByRole("navigation", { name: "Agent path" })).getByRole("button", { name: "root" }),
+      ),
+    );
+    expect(currentParams().ref).toBe("root");
+    expect(columnRefs()).toEqual(["root"]);
+    expect(screen.getByText("root content old-root")).toBeTruthy();
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Return to previous view" })));
+    expect(currentPane()).toMatchObject({ id: "cascade", type: "session", params: { ref: "root" } });
+    expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+  },
+);
+
+test("a deleted child hides its retained transcript without hiding the parent", async () => {
+  const { fake, response } = fixture();
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  fake.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    if (ref === "child") {
+      throw new WireError("target has been deleted: child", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    }
+    const read = response(ref);
+    return { ...read, requestGeneration, thread: includeTurns === false ? { ...read.thread, turns: [] } : read.thread };
+  });
+  await act(async () => {
+    await expect(threadsStore.getState().refreshThread("child")).rejects.toThrow("target has been deleted");
+  });
+  expect(threadsStore.getState().threads.get("child")).toBeDefined();
+  expect(screen.getByText("This session was deleted")).toBeTruthy();
+  expect(screen.queryByText("child content child-id")).toBeNull();
+  expect(screen.getByText("root content old-root")).toBeTruthy();
+});
+
+test("unsupported child activity does not hide its healthy transcript", async () => {
+  const { fake, context } = fixture();
+  fake.on("evener/thread/activity/read", ({ ref }) => {
+    if (ref === "child") throw new WireError("activity unavailable", -32601, { evenerErrorInfo: "methodNotFound" });
+    return { ...activitySummary(ref), context: context(ref) };
+  });
+  mount(fake);
+  await screen.findByText("child content child-id");
+  expect(screen.queryByText("Transcript unavailable")).toBeNull();
+  expect(currentParams().ref).toBe("child");
+  expect(columnRefs()).toEqual(["root", "child"]);
+});
+
+test("a transient child read failure recovers through the existing owner without changing the cascade", async () => {
+  const { fake, response, context } = fixture();
+  const failed = deferred<void>();
+  let healed = false;
+  fake.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    if (ref === "child" && !healed) {
+      failed.resolve();
+      throw new WireError("connection reset", -32001, { evenerErrorInfo: "sessionUnavailable" });
+    }
+    const read = response(ref);
+    return { ...read, requestGeneration, thread: includeTurns === false ? { ...read.thread, turns: [] } : read.thread };
+  });
+  fake.on("evener/thread/activity/read", ({ ref }) => {
+    if (ref === "child" && !healed)
+      throw new WireError("connection reset", -32001, { evenerErrorInfo: "sessionUnavailable" });
+    return { ...activitySummary(ref), context: context(ref) };
+  });
+  mount(fake);
+  await act(async () => failed.promise);
+  expect(screen.queryByText("This session was deleted")).toBeNull();
+  expect(screen.queryByText("Transcript unavailable")).toBeNull();
+  const source = currentPane();
+  healed = true;
+  act(() =>
+    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "child", threadId: "wire-child-id" } }),
+  );
+  await screen.findByText("child content child-id");
+  await screen.findByText("root content old-root");
+  expect(currentPane()).toBe(source);
+  expect(columnRefs()).toEqual(["root", "child"]);
+  expect(workspaceStore.getState().focusedPaneId).toBe("cascade");
 });
 
 test("deeper drill retains the root view as a paused spine and pop reuses its source role", async () => {

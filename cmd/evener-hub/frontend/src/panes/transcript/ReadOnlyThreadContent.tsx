@@ -1,8 +1,14 @@
-import { configFingerprint, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
+import {
+  configFingerprint,
+  projectThread,
+  resolveEffectiveConfig,
+  type SessionActivityReadState,
+  sessionActionError,
+} from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { connectionStore } from "../../stores/connection";
-import { threadsStore } from "../../stores/threads";
+import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { EmptyState, type VirtualListHandle } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -25,7 +31,15 @@ const CLASS = {
   list: requireClass(styles.list, "transcript.module.css", "list"),
 };
 
-export function ReadOnlyThreadContent({ ref, view }: { ref: string; view: TranscriptReadView }) {
+export function ReadOnlyThreadContent({
+  ref,
+  view,
+  availability,
+}: {
+  ref: string;
+  view: TranscriptReadView;
+  availability?: SessionActivityReadState;
+}) {
   const now = useNowTick(NOW_TICK_MS);
   // The existing store owns hydration and reconnect. Each mounted content
   // owns one claim, released independently of the retained view handle.
@@ -48,6 +62,7 @@ export function ReadOnlyThreadContent({ ref, view }: { ref: string; view: Transc
   }, [ref, view]);
 
   const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(ref, view);
+  const deletedRef = useThreadsStore((state) => state.deletedRefs.has(ref));
   const initialViewCapture = view.getCapture();
   const listRef = useRef<VirtualListHandle>(null);
   const announcementSequence = useRef(0);
@@ -80,7 +95,18 @@ export function ReadOnlyThreadContent({ ref, view }: { ref: string; view: Transc
     initialViewCapture,
   });
 
-  if (!model) return <EmptyState title="Loading transcript…" />;
+  if (deletedRef) return <EmptyState title="This session was deleted" hint="Its transcript is gone." />;
+  if (!model) {
+    if (availability?.permanent && availability.unavailable) {
+      return (
+        <EmptyState
+          title="Transcript unavailable"
+          hint={sessionActionError("Couldn't load transcript", availability.error)}
+        />
+      );
+    }
+    return <EmptyState title="Loading transcript…" />;
+  }
   return (
     <SessionNowContext.Provider value={now}>
       <div className={CLASS.body}>

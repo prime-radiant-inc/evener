@@ -298,6 +298,12 @@ useful rows. An empty incomplete page remains progress, not proof of no delegate
 Unknown ancestry and runtime metadata stay explicit. Late metadata and status
 changes do not move focus or animate column geometry.
 
+A proven missing or deleted readable scope shows its explanation inside that
+column. Healthy parents, Return and Open conversation remain usable. The thread
+store's deletion fence outranks retained transcript content; other activity
+failures preserve useful history. Transient reads keep the existing hydration
+and activity recovery owners, so a recovered child becomes readable in place.
+
 Return restores the original pane type, ref and live source state: draft,
 selected skills, staged attachments, pending encodes, queued inputs and mutation
 identity. Promotion does not submit or replay input. An explicit Open conversation

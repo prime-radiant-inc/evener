@@ -94,7 +94,7 @@ function ScopeConversation({
       {readable ? (
         <CascadeColumn paneId={pane.id} scope={activity}>
           {admitted ? (
-            <ReadOnlyThreadContent ref={scope.requestedRef} view={view} />
+            <ReadOnlyThreadContent ref={scope.requestedRef} view={view} availability={snapshot?.summaryState} />
           ) : (
             <EmptyState title="Loading transcript…" />
           )}
