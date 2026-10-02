@@ -18,7 +18,7 @@
 # while the browser kept forwarding — or stopped forwarding — a call the proxy
 # refuses with InvalidParams. Now each side answers to this list:
 #
-#   SDK       hostRouting.test.ts asserts the shipped set IS this list (both
+#   frontend  hostRouting.test.ts asserts the shipped set IS this list (both
 #             directions), so dropping a method from the product set fails even
 #             when its neighbouring literal is deleted with it;
 #   Go        app_host_admin_test.go asserts every method here is on the
