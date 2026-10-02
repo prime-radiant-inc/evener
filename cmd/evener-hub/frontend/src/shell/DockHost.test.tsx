@@ -567,6 +567,31 @@ test("reopening a singleton pane with different params updates the existing tab'
   expect(workspaceStore.getState().panes).toHaveLength(1);
 });
 
+test("retyping with the same params changes the content in the same Dockview tab and group", async () => {
+  const id = workspaceStore.getState().openPane("doc", { ref: "retype_source" });
+  workspaceStore.getState().openPane("doc", { ref: "retype_other" });
+  render(<DockHost />);
+  await screen.findByText(/doc pane: retype_source/);
+  await screen.findByText(/doc pane: retype_other/);
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === id);
+  if (!source) throw new Error("Missing source record");
+  const tab = Array.from(document.querySelectorAll(".dv-tab")).find((node) => node.textContent === "Doc retype_source");
+  if (!tab) throw new Error("Missing source tab");
+  const group = tab.closest(".dv-groupview");
+  const before = workspaceStore.getState().layoutJSON() as { grid: unknown };
+  const focus = workspaceStore.getState().focusedPaneId;
+  act(() => {
+    expect(workspaceStore.getState().retypePane(source, "settings", source.params)).toBe(true);
+  });
+  expect(await screen.findByText("settings pane: none")).toBeTruthy();
+  expect(screen.queryByText(/doc pane: retype_source/)).toBeNull();
+  expect(tab.isConnected).toBe(true);
+  expect(tab.closest(".dv-groupview")).toBe(group);
+  expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
+  expect(workspaceStore.getState().focusedPaneId).toBe(focus);
+  expect(screen.getByText(/doc pane: retype_other/)).toBeTruthy();
+});
+
 // DockHost must reconcile the real dockview panels with a primary replacement,
 // not merely update the store and leave the old main or secondary panels
 // visible in the host.
@@ -1058,6 +1083,45 @@ test("debounces saving the layout to localStorage after a change", async () => {
   const parsed = JSON.parse(saved!) as { panels: Record<string, unknown> };
   expect(Object.keys(parsed.panels)).toEqual(["pane_doc_1", "pane_doc_2"]);
 });
+
+test.each(["debounce", "teardown"] as const)(
+  "a parameter-only retype persists through %s without a native layout change",
+  async (settlement) => {
+    const id = workspaceStore.getState().openPane("doc", { ref: "params_source" });
+    const view = render(<DockHost />);
+    await screen.findByText(/doc pane: params_source/);
+    vi.useFakeTimers();
+    act(() => {
+      workspaceStore.getState().openPane("doc", { ref: "params_other" });
+    });
+    await Promise.resolve();
+    advance(450);
+    const baseline = localStorage.getItem(LAYOUT_KEY);
+    if (!baseline) throw new Error("Missing initial saved layout");
+    const source = workspaceStore.getState().panes.find((pane) => pane.id === id);
+    if (!source) throw new Error("Missing source record");
+    const params = { ref: "params_source", detail: "retained-intent" };
+    act(() => {
+      workspaceStore.getState().retypePane(source, "doc", params);
+    });
+    await Promise.resolve();
+    advance(200);
+    expect(localStorage.getItem(LAYOUT_KEY)).toBe(baseline);
+    if (settlement === "teardown") view.unmount();
+    else advance(200);
+    const saved = localStorage.getItem(LAYOUT_KEY);
+    if (!saved) throw new Error("Missing parameter-only save");
+    const layout = JSON.parse(saved) as {
+      panels: Record<string, { params: { paneType: string; paneParams: unknown } }>;
+    };
+    expect(layout.panels[id]?.params).toEqual({ paneType: "doc", paneParams: params });
+    if (settlement === "teardown") {
+      localStorage.removeItem(LAYOUT_KEY);
+      advance(1000);
+      expect(localStorage.getItem(LAYOUT_KEY)).toBeNull();
+    }
+  },
+);
 
 test("unmounting flushes a pending debounced save rather than writing after teardown", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });

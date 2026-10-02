@@ -58,6 +58,7 @@ import "../panes/spawn"; // registers the "spawn" pane type
 // the pane type registered instead of discarding the whole saved workspace.
 import "../panes/doc"; // registers the "doc" pane type
 import "../panes/transcript"; // registers the "transcript" pane type
+import "../panes/zoom"; // registers the "sessionZoom" pane type
 import "../panes/sessionPanels"; // registers the session panel pane types
 import { initPrefs } from "../stores/prefs";
 

@@ -232,13 +232,9 @@ export function DockHost() {
   const paneTitles = useChromeStore((s) => s.paneTitles);
   const threads = useThreadsStore((s) => s.threads);
   const navigation = useNavigationStore();
-  // Tracks, per paneId, the last params reference actually pushed into
-  // dockview (via addPanel at creation or updateParameters on a change) -
-  // params identity only changes in workspace.ts when the value actually
-  // differs (see its own sameParams guard), so a reference-equality check
-  // here is enough to skip a no-op updateParameters() call on every
-  // unrelated re-render without needing a second deep-equal pass.
-  const pushedParamsRef = useRef(new Map<string, unknown>());
+  // A pane can change type while retaining its exact params object. Track
+  // both values pushed into the existing panel, without a deep-equal pass.
+  const pushedParamsRef = useRef(new Map<string, PanePanelParams>());
 
   // Native-interaction wiring: mirrors dockview-native interactions
   // (closing a tab via its own (x), clicking a different tab) back into the
@@ -331,10 +327,15 @@ export function DockHost() {
           params: panelParams,
           ...positionFor(api, pane),
         });
-        pushedParamsRef.current.set(pane.id, pane.params);
-      } else if (pushedParamsRef.current.get(pane.id) !== pane.params) {
-        api.getPanel(pane.id)?.api.updateParameters(panelParams);
-        pushedParamsRef.current.set(pane.id, pane.params);
+        pushedParamsRef.current.set(pane.id, panelParams);
+      } else {
+        const pushed = pushedParamsRef.current.get(pane.id);
+        if (pushed?.paneType !== pane.type || pushed.paneParams !== pane.params) {
+          // Dockview publishes onDidLayoutChange for parameter updates too,
+          // so the existing debounce persists intent as well as geometry.
+          api.getPanel(pane.id)?.api.updateParameters(panelParams);
+          pushedParamsRef.current.set(pane.id, panelParams);
+        }
       }
     }
 
@@ -424,15 +425,10 @@ export function DockHost() {
     // restoreLayout() and the store operations are already safe when either
     // the saved layout or the routed intent is absent.
     //
-    // Failure-mode floor, preserved exactly: restoreLayout()'s own
-    // structural-validation failure (a layout dockview itself rejects) clears
-    // the store back to empty (see workspace.ts) BEFORE the routed re-apply
-    // runs - so a corrupt saved layout still leaves the routed pane as the
-    // ONLY thing that ends up open, the same "deep link wins alone"
-    // guarantee the pre-merge implementation always provided. A restored
-    // panel naming an unregistered pane type no longer clears anything:
-    // restoreLayout skips it, removes it from the live api synchronously,
-    // and focus falls to a surviving pane.
+    // Structural restore failure preserves live records and their retained
+    // work. The routed re-apply still gives a deep link its primary slot.
+    // An unregistered or invalid pane is skipped locally, removed from the
+    // live api synchronously, and focus falls to a surviving pane.
     //
     // NOTE for whoever wires AppShell's routing glue to this store: React
     // runs child effects before parent effects within one commit, so THIS
