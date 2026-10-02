@@ -118,7 +118,7 @@ export type {
   TerminalReason,
 } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
-export type { AppwireClientLike } from "./clientLike";
+export type { AppwireClientLike, RequestPort } from "./clientLike";
 export type {
   CommandCatalog,
   CommandCatalogClient,

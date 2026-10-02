@@ -16,15 +16,15 @@
 // be replaced (the web's connection store) hands in an object that resolves
 // the current client on each call.
 
-import type { AppwireClient } from "../../client";
+import type { AppwireClientLike, RequestPort } from "../../clientLike";
 import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
-import type { PluginEntry, PluginListResponse } from "../../types.gen";
+import type { HostRequestMethod, PluginEntry, PluginListResponse } from "../../types.gen";
 import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
 import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
-export type PluginsClient = Pick<AppwireClient, "request" | "onNotification">;
+export type PluginsClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
 export interface PluginsState {
   plugins: PluginEntry[] | null;

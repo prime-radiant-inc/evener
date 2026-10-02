@@ -1,5 +1,5 @@
 // hostStoreClient.ts is the store-boundary client for a REMOTE host (component
-// 07b): the `Pick<AppwireClient, "request" | "onNotification">` port the
+// 07b): the host-scoped request and notification port the
 // package's launch-config, marketplace, plugins and launch-layer stores take,
 // bound to the settings route's selected host.
 //
@@ -15,14 +15,20 @@
 // stores/connection.ts's connectedClientPort byte-for-byte (see
 // stores/launchConfig.ts and stores/extensions.ts), so a local selection issues
 // the same calls on the same client as before this module existed.
-import type { AnyNotification, AppwireClient, MethodName, MethodTypes } from "@evener/appwire-client";
+import type {
+  AnyNotification,
+  AppwireClientLike,
+  HostRequestMethod,
+  MethodTypes,
+  RequestPort,
+} from "@evener/appwire-client";
 import { connectionStore, onConnectionNotification } from "./connection";
 import { hostRequest } from "./hostRouting";
 
 /** HostStoreClient is the narrow port every host-scoped package store takes
  * (LaunchConfigClient, MarketplacesClient, PluginsClient, LaunchLayerClient are
- * all this same Pick). */
-export type HostStoreClient = Pick<AppwireClient, "request" | "onNotification">;
+ * all accept only methods in the generated forwarding catalog). */
+export type HostStoreClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
 /** remoteHostStoreClient binds that port to `host`:
  *
@@ -48,7 +54,7 @@ export type HostStoreClient = Pick<AppwireClient, "request" | "onNotification">;
  * host-scoped stores pass one today (they call with method and params only). */
 export function remoteHostStoreClient(host: string): HostStoreClient {
   return {
-    request: async <M extends MethodName>(
+    request: async <M extends HostRequestMethod>(
       method: M,
       params: MethodTypes[M]["params"],
       opts?: { timeoutMs?: number },
