@@ -1,6 +1,13 @@
 import { translateAttachmentMarkers } from "./attachmentMarkers";
 import type { InputItem } from "./types.gen";
 
+/** Editing-only identity and UTF-16 position, never an AppWire input field. */
+export interface ComposerMention {
+  kind: "skill" | "command";
+  name: string;
+  offset: number;
+}
+
 /** Staged image bytes; marker identifies its editing anchor, never a wire field. */
 export interface InputAttachment {
   marker: number;

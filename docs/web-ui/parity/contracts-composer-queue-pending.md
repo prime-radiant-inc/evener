@@ -18,6 +18,24 @@ except where a line says so itself.
 
 ## Composer
 
+### Atomic skill and command selections
+
+- Session and launcher composers share the real ProseMirror editor. Explicit
+  completion creates distinct indivisible skill or command atoms anywhere in
+  the prompt. Plain inline typed/pasted references remain prose.
+- Backspace/Delete remove an atom in one step. Undo/redo restore its kind and
+  canonical name. IME composition refuses completion without dismissing the menu.
+- Command atoms submit `{type: "command", name}` with empty arguments, while
+  leading typed commands and built-in controls keep their existing behavior.
+- Structured drafts and durable recovery retain kind and mention locations when
+  needed to distinguish same-spelling atoms from prose. Attachments preserve
+  selection intent while inserting/removing anchors and renumbering recovery.
+- The launcher uses the selected target's pre-session catalog, keeps plain
+  Enter as newline/completion and submits only on Mod+Enter. Failed creation,
+  project navigation and remount retain unsent selections and attachments.
+- Session commands require `commandInput` at submission/resend. Unsupported
+  targets preserve the draft rather than silently sending only its prose.
+
 ### test-composer-shortcuts.js
 - in the main workspace, Cmd+Enter submits the composer and Shift+Enter triggers steer (test-composer-shortcuts.js)
 - with the enterToSend preference off (default), Cmd+Enter still submits and Shift+Enter still steers, identical to the unset default (test-composer-shortcuts.js)

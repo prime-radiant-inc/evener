@@ -111,6 +111,7 @@ export function mergeSlashCommands(
   const pluginItems: SlashMenuItem[] = catalog.map((c) => ({
     key: `plugin:${c.pluginName ?? ""}:${c.name}`,
     invocation: slashCommandInvocation(c),
+    canonicalName: slashCommandInvocation(c).slice(1),
     label: c.name,
     hint: c.description || c.argumentHint || `plugin: ${c.pluginName ?? c.source ?? "unknown"}`,
     kind: "plugin",

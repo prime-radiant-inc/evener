@@ -205,3 +205,25 @@ test("merging without current selections keeps the recovered selections", () => 
   });
   expect(merged.skillNames).toEqual(["pkg:probe"]);
 });
+
+test("merging a command recovery retains the existing skill and shifts command offsets after image renumbering", () => {
+  const merged = mergeRecoveryComposerDraft(
+    "/same [image 1][image 2][image 3][image 4][image 5][image 6][image 7][image 8][image 9]",
+    [],
+    {
+      text: "[image 1] /same and /same",
+      attachments: [settledAttachment(1, "failed.png", "BBBB")],
+      skillNames: [],
+      commandNames: ["same"],
+      mentions: [{ kind: "command", name: "same", offset: 10 }],
+    },
+    ["same"],
+  );
+  expect(merged.text).toBe(
+    "/same [image 1][image 2][image 3][image 4][image 5][image 6][image 7][image 8][image 9]\n\n[image 10] /same and /same",
+  );
+  expect(merged.mentions).toEqual([
+    { kind: "skill", name: "same", offset: 0 },
+    { kind: "command", name: "same", offset: 100 },
+  ]);
+});

@@ -1,7 +1,8 @@
-import type { InputItem } from "@evener/appwire-client";
+import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { canonicalSkillNames, markerPattern, markerText } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
+import { parseSkillDocument, skillAtomMentions } from "../skillDocument";
 
 export interface RecoveredComposerDraft {
   text: string;
@@ -11,6 +12,8 @@ export interface RecoveredComposerDraft {
   // name} input item, and restoring it puts the name back on the composer's
   // selection list rather than into the textarea.
   skillNames: string[];
+  commandNames?: string[];
+  mentions?: ComposerMention[];
 }
 
 function recordInput(record: MutationRecoveryRecord): InputItem[] {
@@ -57,7 +60,16 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
       pending: false,
     };
   });
-  return { text, attachments, skillNames: skillSelections(input) };
+  const commandNames = canonicalSkillNames(
+    input.filter((item) => item.type === "command").map((item) => item.name ?? ""),
+  );
+  return {
+    text,
+    attachments,
+    skillNames: skillSelections(input),
+    ...(commandNames.length ? { commandNames } : {}),
+    ...(record.composerMentions ? { mentions: [...record.composerMentions] } : {}),
+  };
 }
 
 export function mergeRecoveryComposerDraft(
@@ -65,6 +77,8 @@ export function mergeRecoveryComposerDraft(
   currentAttachments: PendingAttachment[],
   recovered: RecoveredComposerDraft,
   currentSkillNames: readonly string[] = [],
+  currentCommandNames: readonly string[] = [],
+  currentMentions?: readonly ComposerMention[],
 ): RecoveredComposerDraft {
   const usedMarkers = new Set([
     ...markerNumbers(currentText),
@@ -78,9 +92,12 @@ export function mergeRecoveryComposerDraft(
     markerMapping.set(attachment.marker, marker);
     return { ...attachment, marker };
   });
-  const recoveredText = recovered.text.replace(markerPattern(), (match, marker: string) => {
+  const markerShifts: { offset: number; delta: number }[] = [];
+  const recoveredText = recovered.text.replace(markerPattern(), (match, marker: string, offset: number) => {
     const replacement = markerMapping.get(Number(marker));
-    return replacement === undefined ? match : markerText(replacement);
+    const text = replacement === undefined ? match : markerText(replacement);
+    if (text.length !== match.length) markerShifts.push({ offset, delta: text.length - match.length });
+    return text;
   });
   const text = [currentText, recoveredText].filter((part) => part.length > 0).join("\n\n");
   // Selections union the same way the text does, current names first, so a
@@ -92,5 +109,31 @@ export function mergeRecoveryComposerDraft(
     text,
     attachments: [...currentAttachments, ...attachments],
     skillNames,
+    ...(currentCommandNames.length || recovered.commandNames?.length
+      ? { commandNames: canonicalSkillNames([...currentCommandNames, ...(recovered.commandNames ?? [])]) }
+      : {}),
+    ...(currentMentions || recovered.mentions
+      ? {
+          mentions: [
+            ...(currentMentions ??
+              skillAtomMentions(
+                parseSkillDocument({
+                  text: currentText,
+                  skillNames: [...currentSkillNames],
+                  commandNames: [...currentCommandNames],
+                }),
+              )),
+            ...(recovered.mentions ?? skillAtomMentions(parseSkillDocument(recovered))).map((mention) => ({
+              ...mention,
+              offset:
+                mention.offset +
+                (currentText.length ? currentText.length + 2 : 0) +
+                markerShifts
+                  .filter((shift) => shift.offset < mention.offset)
+                  .reduce((delta, shift) => delta + shift.delta, 0),
+            })),
+          ],
+        }
+      : {}),
   };
 }

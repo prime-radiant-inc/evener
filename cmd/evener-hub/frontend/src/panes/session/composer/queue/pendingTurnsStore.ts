@@ -1,3 +1,4 @@
+import type { ComposerMention } from "@evener/appwire-client";
 import {
   awaitingFirstFrameSend,
   createMutationProjectionFence,
@@ -226,6 +227,7 @@ export interface SubmitWithPendingTrackingOptions {
   // submitted snapshot: the stored draft clears only when both its text and
   // its selections still match what was sent.
   skillNames?: readonly string[];
+  commandNames?: readonly string[];
   recoveryId?: string;
   onFailure: (error: unknown) => void;
 }
@@ -241,6 +243,7 @@ type SubmissionCommittedListener = (
   text: string,
   skillNames: readonly string[],
   recovery?: RecoverySubmissionCommit,
+  commandNames?: readonly string[],
 ) => void;
 const submissionCommittedListeners = new Set<SubmissionCommittedListener>();
 
@@ -271,6 +274,7 @@ export function submitWithPendingTracking(
       draftRevisionAtStart: readDraftRevision(opts.ref),
       text: opts.text,
       skillNames,
+      commandNames: opts.commandNames,
       onFailure: opts.onFailure,
     },
     perform,
@@ -285,6 +289,7 @@ export function submitWithPendingTracking(
             opts.recoveryId
               ? { clientMutationId: opts.recoveryId, draftUnchanged, attachments: opts.attachments ?? [] }
               : undefined,
+            opts.commandNames,
           );
         } catch (error) {
           console.error("Composer submission listener failed", error);
@@ -454,12 +459,22 @@ export function updateRecoveryPendingTurn(
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): Promise<boolean> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
   return trackProjectionWork(
     (async () => {
-      const updated = await updateRecoveryMutation(clientMutationId, ref, text, attachments, skillNames);
+      const updated = await updateRecoveryMutation(
+        clientMutationId,
+        ref,
+        text,
+        attachments,
+        skillNames,
+        commandNames,
+        mentions,
+      );
       void refreshPendingTurnsProjection(ref);
       return updated;
     })(),
@@ -481,12 +496,23 @@ export function resendRecoveryPendingTurn(
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): Promise<boolean> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
   return trackProjectionWork(
     (async () => {
-      const record = await resendRecoveryMutation(clientMutationId, ref, route, text, attachments, skillNames);
+      const record = await resendRecoveryMutation(
+        clientMutationId,
+        ref,
+        route,
+        text,
+        attachments,
+        skillNames,
+        commandNames,
+        mentions,
+      );
       void refreshPendingTurnsProjection(ref);
       return record !== undefined;
     })(),

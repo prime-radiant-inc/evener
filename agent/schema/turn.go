@@ -373,7 +373,8 @@ type Turn struct {
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
 	// recovery for both client input and daemon goal continuations.
-	ClientMutationID string `json:"client_mutation_id,omitempty"`
+	ClientMutationID string              `json:"client_mutation_id,omitempty"`
+	CommandInput     *CommandInputRecord `json:"command_input,omitempty"`
 	// Communicate carries a delivered message on TurnCommunicate entries.
 	Communicate *CommunicateInfo `json:"communicate,omitempty"`
 	// Completion carries how an execution ended on TurnCompletion entries.
@@ -426,9 +427,8 @@ type Turn struct {
 	// first recorded ASSISTANT entry shares it.
 	RoundID string `json:"round_id,omitempty"`
 	// SkillState carries explicit typed operation records, not inferred history.
-	SkillState   *SkillTurnState     `json:"skill_state,omitempty"`
-	CommandInput *CommandInputRecord `json:"command_input,omitempty"`
-	StableTurnID string              `json:"stable_turn_id,omitempty"`
+	SkillState   *SkillTurnState `json:"skill_state,omitempty"`
+	StableTurnID string          `json:"stable_turn_id,omitempty"`
 	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
 	// so a reloaded transcript labels a steer the same way the live path did.
 	SteeringKind string `json:"steering_kind,omitempty"`

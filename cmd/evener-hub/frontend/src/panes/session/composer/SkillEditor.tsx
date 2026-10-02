@@ -30,6 +30,7 @@ export interface SkillEditorHandle {
    * composition), so the caller does not dismiss its own affordance for a skill
    * that never landed. */
   insertSkill(start: number, end: number, name: string): boolean;
+  insertCommand(start: number, end: number, name: string): boolean;
 }
 
 export interface SkillEditorProps {
@@ -53,6 +54,7 @@ export interface SkillEditorProps {
   "aria-controls"?: string;
   "aria-activedescendant"?: string;
   skillDetails?(name: string): string;
+  commandDetails?(name: string): string;
 }
 
 function deleteAtom(direction: -1 | 1): Command {
@@ -60,7 +62,7 @@ function deleteAtom(direction: -1 | 1): Command {
     if (!state.selection.empty) return deleteSelection(state, dispatch);
     const { $from } = state.selection;
     const adjacent = direction === -1 ? $from.nodeBefore : $from.nodeAfter;
-    if (adjacent?.type !== skillSchema.nodes.skill) return false;
+    if (!adjacent || adjacent.isText) return false;
     const from = direction === -1 ? $from.pos - adjacent.nodeSize : $from.pos;
     dispatch?.(closeHistory(state.tr.delete(from, from + adjacent.nodeSize)));
     return true;
@@ -176,9 +178,37 @@ function createState(value: SkillEditorValue): EditorState {
 }
 
 function updateDetails(dom: HTMLElement, name: string, props: SkillEditorProps) {
-  const details = props.skillDetails?.(name) ?? name;
+  const details = (dom.dataset.commandName ? props.commandDetails?.(name) : props.skillDetails?.(name)) ?? name;
   dom.title = details;
   dom.setAttribute("aria-label", `/${name}: ${details}`);
+}
+
+function insertAtom(
+  view: EditorView | null,
+  start: number,
+  end: number,
+  name: string,
+  kind: "skill" | "command",
+): boolean {
+  if (!view || view.composing) return false;
+  const { doc } = view.state;
+  const from = textOffsetToDocumentPosition(doc, start);
+  const to = textOffsetToDocumentPosition(doc, end, 1);
+  const suffix = doc.textBetween(to, doc.content.size);
+  // Ask the parser's own rule whether the label already reads as a whole
+  // reference with nothing added - punctuation that bounds it needs no
+  // separator (`/review,`, and `/review. ` because a dot before a
+  // non-token character is sentence punctuation). Only text that would
+  // join the reference (or an empty suffix) gets a space.
+  const separator = suffix !== "" && completeSkillReferenceAt(`/${name}${suffix}`, 0, [name]) === name ? "" : " ";
+  const content = [skillSchema.nodes[kind].create({ name })];
+  if (separator) content.push(skillSchema.text(separator));
+  const inserted = content.reduce((size, node) => size + node.nodeSize, 0);
+  const tr = closeHistory(view.state.tr.replaceWith(from, to, content));
+  tr.setSelection(TextSelection.create(tr.doc, from + inserted));
+  view.dispatch(tr);
+  view.focus();
+  return true;
 }
 
 /** A controlled value boundary around a persistent real ProseMirror editor. */
@@ -219,28 +249,8 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         const to = start === end ? from : textOffsetToDocumentPosition(view.state.doc, end, 1);
         view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)));
       },
-      insertSkill: (start, end, name) => {
-        const view = viewRef.current;
-        if (!view || view.composing) return false;
-        const { doc } = view.state;
-        const from = textOffsetToDocumentPosition(doc, start);
-        const to = textOffsetToDocumentPosition(doc, end, 1);
-        const suffix = doc.textBetween(to, doc.content.size);
-        // Ask the parser's own rule whether the label already reads as a whole
-        // reference with nothing added - punctuation that bounds it needs no
-        // separator (`/review,`, and `/review. ` because a dot before a
-        // non-token character is sentence punctuation). Only text that would
-        // join the reference (or an empty suffix) gets a space.
-        const separator = suffix !== "" && completeSkillReferenceAt(`/${name}${suffix}`, 0, [name]) === name ? "" : " ";
-        const content = [skillSchema.nodes.skill.create({ name })];
-        if (separator) content.push(skillSchema.text(separator));
-        const inserted = content.reduce((size, node) => size + node.nodeSize, 0);
-        const tr = closeHistory(view.state.tr.replaceWith(from, to, content));
-        tr.setSelection(TextSelection.create(tr.doc, from + inserted));
-        view.dispatch(tr);
-        view.focus();
-        return true;
-      },
+      insertSkill: (start, end, name) => insertAtom(viewRef.current, start, end, name, "skill"),
+      insertCommand: (start, end, name) => insertAtom(viewRef.current, start, end, name, "command"),
     }),
     [],
   );
@@ -276,6 +286,17 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
             updateDetails(dom, node.attrs.name, latest.current);
             return { dom };
           },
+          command: (node) => {
+            const dom = document.createElement("span");
+            dom.className = styles.skill ?? "";
+            dom.dataset.commandName = node.attrs.name;
+            dom.dataset.testid = "composer-command-chip";
+            dom.setAttribute("contenteditable", "false");
+            dom.setAttribute("role", "note");
+            dom.textContent = `/${node.attrs.name}`;
+            updateDetails(dom, node.attrs.name, latest.current);
+            return { dom };
+          },
         },
         // Never parse clipboard HTML, even if it contains our data attributes.
         handlePaste: (_view, event) => {
@@ -305,7 +326,9 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
     const echo =
       current.text === props.value.text &&
       current.skillNames.length === props.value.skillNames.length &&
-      current.skillNames.every((name, index) => props.value.skillNames[index] === name);
+      current.skillNames.every((name, index) => props.value.skillNames[index] === name) &&
+      JSON.stringify(current.commandNames ?? []) === JSON.stringify(props.value.commandNames ?? []) &&
+      JSON.stringify(current.mentions ?? []) === JSON.stringify(props.value.mentions ?? []);
     // Consumed on every pass, even when the value already matches: a restore
     // whose value happens to equal what is on screen is still spent, and leaving
     // it pending would make the next ordinary patch look authoritative.
@@ -349,7 +372,9 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       if (
         settled.text !== props.value.text ||
         settled.skillNames.length !== props.value.skillNames.length ||
-        !settled.skillNames.every((name, index) => props.value.skillNames[index] === name)
+        !settled.skillNames.every((name, index) => props.value.skillNames[index] === name) ||
+        JSON.stringify(settled.commandNames ?? []) !== JSON.stringify(props.value.commandNames ?? []) ||
+        JSON.stringify(settled.mentions ?? []) !== JSON.stringify(props.value.mentions ?? [])
       ) {
         latest.current.onChange(settled, documentPositionToTextOffset(view.state.doc, view.state.selection.head));
       }
@@ -368,8 +393,8 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       },
     });
     view.dom.style.minHeight = `${props.minLines ?? 2}lh`;
-    for (const dom of view.dom.querySelectorAll<HTMLElement>("[data-skill-name]")) {
-      updateDetails(dom, dom.dataset.skillName ?? "", props);
+    for (const dom of view.dom.querySelectorAll<HTMLElement>("[data-skill-name], [data-command-name]")) {
+      updateDetails(dom, dom.dataset.skillName ?? dom.dataset.commandName ?? "", props);
     }
   });
 

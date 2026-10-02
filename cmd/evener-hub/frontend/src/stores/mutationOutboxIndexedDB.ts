@@ -1,4 +1,4 @@
-import type { InputItem } from "@evener/appwire-client";
+import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { ownClientId } from "./mutationClientIdentity";
 import type {
@@ -682,6 +682,7 @@ export class MutationOutboxIndexedDB {
     input: InputItem[],
     attachments?: MutationAttachment[],
     composerText?: string,
+    composerMentions?: readonly ComposerMention[],
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
@@ -696,6 +697,7 @@ export class MutationOutboxIndexedDB {
             : { method: record.method, input },
         attachments: attachments ?? record.attachments,
         composerText: composerText ?? record.composerText,
+        composerMentions,
       };
       await requestResult(store.put(next));
       return next;

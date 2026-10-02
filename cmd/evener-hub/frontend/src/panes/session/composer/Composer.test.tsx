@@ -2121,14 +2121,22 @@ test("a plain typed mention stays prose through a programmatic attachment insert
   await selectEditorText(editor, "Run /cleanup".length);
   await user.keyboard(" then /cleanup");
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
-  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup", skillNames: ["cleanup"] });
+  expect(readComposerDraft(ref)).toEqual({
+    text: "Run /cleanup then /cleanup",
+    skillNames: ["cleanup"],
+    mentions: [{ kind: "skill", name: "cleanup", offset: 4 }],
+  });
 
   // A programmatic edit (the attachment marker) must not turn that prose into
   // a second chip behind the user's back.
   pastePngInto(editor, "shot.png");
   await screen.findByRole("button", { name: "View shot.png" });
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
-  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup[image 1]", skillNames: ["cleanup"] });
+  expect(readComposerDraft(ref)).toEqual({
+    text: "Run /cleanup then /cleanup[image 1]",
+    skillNames: ["cleanup"],
+    mentions: [{ kind: "skill", name: "cleanup", offset: 4 }],
+  });
 });
 
 test("Shift+Enter with an empty queue steers the draft and leaves nothing behind", async () => {
@@ -5249,6 +5257,88 @@ test("skill completions keep indivisible chips in the sentence and submit both r
       { type: "skill", name: "skill-2" },
     ],
   });
+});
+
+test.each([true, false])("explicit commands persist through remount and respect commandInput %s", async (supported) => {
+  const user = userEvent.setup();
+  const ref = "ref_atomic_command";
+  useCommandCatalog.setState({ commands: [{ name: "audit", source: "user", description: "command intent" }] });
+  const options = {
+    evener: { ref, capabilities: { ...FULL_CAPABILITIES, commandInput: supported }, queue: { revision: 0 } },
+  };
+  await mountComposer(ref, options);
+  await user.type(textarea(), "Before /aud");
+  await user.click(slashOptions().find((option) => option.textContent?.includes("command intent"))!);
+  await user.paste("after /audit");
+  expect(textarea().textContent).toBe("Before /audit after /audit");
+  expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  cleanup();
+  const fake = await mountComposer(ref, options);
+  expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  if (supported) {
+    expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
+      input: [
+        { type: "text", text: "Before /audit after /audit" },
+        { type: "command", name: "audit" },
+      ],
+    });
+  } else {
+    expect(fake.calls.some((call) => call.method === "turn/start")).toBe(false);
+    expect(readComposerDraft(ref).commandNames).toEqual(["audit"]);
+    expect(textarea().textContent).toBe("Before /audit after /audit");
+  }
+});
+
+test("queue edit retains current command and skill atom locations without activating duplicate prose", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_queue_atom_intent";
+  writeComposerDraft(ref, {
+    text: "/same and /same and /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 0 },
+      { kind: "skill", name: "same", offset: 10 },
+    ],
+  });
+  const fake = await mountComposer(ref, {
+    status: { type: "active" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+      activeTurnId: "turn_1",
+      queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued prose"], preview: ["queued prose"] },
+    },
+  });
+  fake.on("turn/cancelQueued", (params) => ({
+    removedText: "queued prose",
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  await user.click(screen.getByRole("button", { name: "Edit message" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("/same and /same and /same\n\nqueued prose");
+  expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+  expect(textarea().querySelectorAll("[data-skill-name]")).toHaveLength(1);
+  expect(readComposerDraft(ref).mentions).toEqual([
+    { kind: "command", name: "same", offset: 0 },
+    { kind: "skill", name: "same", offset: 10 },
+  ]);
 });
 
 test("repeated inline skills survive remount and undo while deletion reconciles activation", async () => {

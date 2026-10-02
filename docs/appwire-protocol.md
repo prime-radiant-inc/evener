@@ -74,6 +74,22 @@ Errors use JSON-RPC codes in `error.code` with a human `error.message`.
 when present. Common cases: method-not-found, invalid-params (params failed to
 unmarshal), invalid-request (e.g. a request before `initialize`).
 
+## Explicit skill and command input
+
+Input-bearing requests accept canonical selections alongside text and images:
+`{"type":"skill","name":"pkg:review"}` and
+`{"type":"command","name":"pkg:review"}` request different behavior even when
+their names match. These items admit only `type` and `name`; bodies, paths,
+arguments and other raw keys are rejected. The target's advertised `skillInput`
+or `commandInput` capability authorizes that kind, never a client assumption.
+
+Command selections resolve exact catalog identity at consumption and expand
+once per canonical name with empty arguments under their source's existing
+expansion rules. Original user text is retained separately from expanded bodies.
+Generated output cannot select or recursively invoke commands. Existing leading
+typed `/command args` retains its arguments; unselected inline slash prose is
+not an explicit selection. Queue, return and recovery input keeps both kinds.
+
 ## Request methods
 
 `Scope` is which binaries expose the method: **both** (hub and daemon), **hub**
