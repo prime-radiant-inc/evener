@@ -36,6 +36,7 @@ import {
   subscribeComposerSubmissionCommitted,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { createTestComposerSource } from "../panes/session/testing/composerSource";
 import { replaceEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
@@ -382,7 +383,7 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
   // live, then enter the unsent draft through the editor itself.
   const { unmount } = render(
     <ClientProvider client={client}>
-      <ComposerView ref={REF} focused={false} />
+      <ComposerView ref={REF} source={createTestComposerSource(REF)} focused={false} />
     </ClientProvider>,
   );
 

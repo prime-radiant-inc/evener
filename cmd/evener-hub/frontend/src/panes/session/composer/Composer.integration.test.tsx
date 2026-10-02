@@ -28,8 +28,11 @@ import {
   threadsStore,
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
+import { createTestComposerSource } from "../testing/composerSource";
 import { replaceEditorText, selectEditorText } from "../testing/editor";
+import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
@@ -157,14 +160,18 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Promise<FakeClient> {
+async function mountComposer(
+  ref: string,
+  overrides: Partial<Thread> = {},
+  source = createTestComposerSource(ref),
+): Promise<FakeClient> {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} focused={false} />
+      <Composer ref={ref} source={source} focused={false} />
     </ClientProvider>,
   );
   await flushPendingTurnsProjectionForTests();
@@ -219,6 +226,275 @@ function drainButton(): HTMLButtonElement {
 function composerSteerButton(): HTMLButtonElement {
   return screen.getByTestId("composer-steer") as HTMLButtonElement;
 }
+
+function skillFocusThread(ref: string): Partial<Thread> {
+  return {
+    ...idleFocusThread(ref),
+    evener: {
+      ref,
+      mutationStateAuthoritative: true,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "skill-1",
+            description: "first skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+          {
+            name: "skill-2",
+            description: "second skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
+  };
+}
+
+async function selectSkill(user: ReturnType<typeof userEvent.setup>, name: string): Promise<void> {
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  replaceEditorText(editor, `Run /${name}`);
+  await user.click(within(screen.getByTestId("composer-slash-menu")).getByRole("option"));
+}
+
+function selectImageFile(file: File): void {
+  const picker = document.querySelector('input[type="file"]');
+  if (!picker) throw new Error("Composer has no image picker");
+  fireEvent.change(picker, { target: { files: [file] } });
+}
+
+test("source text survives a view remount without sending", async () => {
+  const source = createTestComposerSource("root");
+  const fake = await mountComposer("root", idleFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  await userEvent.setup().type(screen.getByRole("textbox", { name: "Message" }), "keep this draft");
+  cleanup();
+  render(<Composer ref="root" source={source} focused={false} />);
+  await flushPendingTurnsProjectionForTests();
+  expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("keep this draft");
+  expect(source.getSnapshot().text).toBe("keep this draft");
+  expect(readComposerDraft("root")).toEqual({ text: "keep this draft", skillNames: [] });
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
+test("selected source skill chips survive a view remount without sending", async () => {
+  const source = createTestComposerSource("root");
+  const fake = await mountComposer("root", skillFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  await selectSkill(userEvent.setup(), "skill-1");
+  expect(source.getSnapshot().skillNames).toEqual(["skill-1"]);
+  cleanup();
+  render(<Composer ref="root" source={source} focused={false} />);
+  await flushPendingTurnsProjectionForTests();
+  expect(within(screen.getByRole("textbox", { name: "Message" })).getByTestId("composer-skill-chip").textContent).toBe(
+    "/skill-1",
+  );
+  expect(source.getSnapshot().skillNames).toEqual(["skill-1"]);
+  expect(readComposerDraft("root")).toEqual({ text: "Run /skill-1 ", skillNames: ["skill-1"] });
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
+test.each([
+  { recovery: false, newer: false },
+  { recovery: false, newer: true },
+  { recovery: true, newer: false },
+  { recovery: true, newer: true },
+])(
+  "detached delayed acceptance retains source ownership, recovery $recovery, newer $newer",
+  async ({ recovery, newer }) => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const input = [
+      { type: "text" as const, text: "Run /skill-1 " },
+      { type: "skill" as const, name: "skill-1" },
+    ];
+    const original = recovery
+      ? await storage.enqueueIntent({
+          targetRef: "root",
+          method: "turn/start",
+          payload: { ref: "root", input },
+          attachments: [],
+          optimisticDisplay: { method: "turn/start", input },
+        })
+      : null;
+    if (original) await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const source = createTestComposerSource("root");
+    const fake = await mountComposer("root", skillFocusThread("root"), source);
+    await settleActivityDiscovery("root");
+    const user = userEvent.setup();
+    if (!recovery) await selectSkill(user, "skill-1");
+    expect(source.getSnapshot().activeRecoveryId).toBe(original?.clientMutationId ?? null);
+    expect(source.getSnapshot().skillNames).toEqual(["skill-1"]);
+    const delivered = deferred<void>();
+    fake.on("turn/start", (params) => {
+      delivered.resolve();
+      return {
+        turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thr_root",
+          projectionState: "reflected",
+        },
+      };
+    });
+    await flushPendingTurnsProjectionForTests();
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    try {
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      await hold.reached;
+      expect(source.getSnapshot().activeRecoveryId).toBe(original?.clientMutationId ?? null);
+      const durable = await storage.listOutbox("root");
+      expect(durable).toHaveLength(1);
+      const mutationId = durable[0]?.clientMutationId;
+      expect(mutationId).toEqual(expect.any(String));
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+      if (newer) await selectSkill(user, "skill-2");
+      cleanup();
+      await act(async () => {
+        hold.release();
+        await delivered.promise;
+      });
+      await flushPendingTurnsProjectionForTests();
+      expect(source.getSnapshot().activeRecoveryId).toBeNull();
+      expect(source.getSnapshot().text).toBe(newer ? "Run /skill-2 " : "");
+      expect(source.getSnapshot().skillNames).toEqual(newer ? ["skill-2"] : []);
+      render(<Composer ref="root" source={source} focused={false} />);
+      await flushPendingTurnsProjectionForTests();
+      expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(newer ? "Run /skill-2 " : "");
+      expect(readComposerDraft("root")).toEqual(
+        newer ? { text: "Run /skill-2 ", skillNames: ["skill-2"] } : { text: "", skillNames: [] },
+      );
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+        { method: "turn/start", params: expect.objectContaining({ ref: "root", clientMutationId: mutationId, input }) },
+      ]);
+      expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
+      if (original) expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
+    } finally {
+      hold.release();
+    }
+  },
+);
+
+test("a pending source image survives a Composer view remount without sending", async () => {
+  const encoding = installControlledImageEncoding();
+  const source = createTestComposerSource("root");
+  const fake = await mountComposer("root", idleFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  const message = screen.getByRole("textbox", { name: "Message" });
+  const file = new File([new Uint8Array([1, 2, 3])], "source.png", { type: "image/png" });
+  selectImageFile(file);
+  expect(message.textContent).toBe("[image 1]");
+  expect(screen.getByRole("button", { name: "Remove source.png" })).toBeTruthy();
+
+  cleanup();
+  render(<Composer ref="root" source={source} focused={false} />);
+  await settleActivityDiscovery("root");
+  expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("[image 1]");
+  expect(screen.queryByRole("button", { name: "Remove source.png" })).not.toBeNull();
+  await act(async () => encoding.resolve());
+  await screen.findByRole("button", { name: "View source.png" });
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
+test("a source encode failure after remount keeps text typed in its current view", async () => {
+  const encoding = installControlledImageEncoding();
+  const source = createTestComposerSource("root");
+  await mountComposer("root", idleFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  const file = new File([new Uint8Array([1, 2, 3])], "bad.png", { type: "image/png" });
+  selectImageFile(file);
+  cleanup();
+  render(<Composer ref="root" source={source} focused={false} />);
+  await settleActivityDiscovery("root");
+  replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "[image 1] keep this edit");
+  await act(async () => encoding.reject());
+  await waitFor(() => expect(readComposerDraft("root").text).toBe(" keep this edit"));
+  expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(" keep this edit");
+  expect(screen.queryByRole("button", { name: "Remove bad.png" })).toBeNull();
+});
+
+test("an old source encode failure cannot overwrite a newer pane's same-ref draft", async () => {
+  const encoding = installControlledImageEncoding();
+  await mountComposer("root", idleFocusThread("root"));
+  await settleActivityDiscovery("root");
+  const file = new File([new Uint8Array([1, 2, 3])], "bad.png", { type: "image/png" });
+  selectImageFile(file);
+  cleanup();
+  render(<Composer ref="root" source={createTestComposerSource("root")} focused={false} />);
+  await settleActivityDiscovery("root");
+  replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "foreign [image 1] draft");
+  await act(async () => encoding.reject());
+  await waitFor(() => expect(getToasts().map((toast) => toast.text)).toEqual(["bad.png (image decode failed)"]));
+  expect(readComposerDraft("root")).toEqual({ text: "foreign [image 1] draft", skillNames: [] });
+  expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("foreign [image 1] draft");
+});
+
+test.each(["success", "failure"] as const)(
+  "detached recovery encode %s keeps its original durable identity",
+  async (outcome) => {
+    const encoding = installControlledImageEncoding();
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const input = [
+      { type: "text" as const, text: "Run /skill-1 " },
+      { type: "skill" as const, name: "skill-1" },
+    ];
+    const original = await storage.enqueueIntent({
+      targetRef: "root",
+      method: "turn/start",
+      payload: { ref: "root", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const source = createTestComposerSource("root");
+    const fake = await mountComposer("root", skillFocusThread("root"), source);
+    await settleActivityDiscovery("root");
+    selectEditorText(screen.getByRole("textbox", { name: "Message" }), "Run /skill-1 ".length);
+    const file = new File([new Uint8Array([1, 2, 3])], "source.png", { type: "image/png" });
+    selectImageFile(file);
+    expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    cleanup();
+    const child = createTestComposerSource("child");
+    child.editor.write("child draft", 11);
+    await act(async () => {
+      if (outcome === "success") await encoding.resolve();
+      else await encoding.reject();
+    });
+    await flushPendingTurnsProjectionForTests();
+    const recovered = await storage.getRecovery(original.clientMutationId);
+    expect(recovered?.clientMutationId).toBe(original.clientMutationId);
+    expect(recovered?.targetRef).toBe("root");
+    expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(recovered?.payload.input).toEqual(
+      outcome === "success"
+        ? [
+            { type: "text", text: "Run /skill-1 [image 1]" },
+            { type: "image", mediaType: "image/png", data: "AQID", name: "source.png" },
+            { type: "skill", name: "skill-1" },
+          ]
+        : input,
+    );
+    expect(getToasts().map((toast) => toast.text)).toEqual(
+      outcome === "failure" ? ["source.png (image decode failed)"] : [],
+    );
+    expect(readComposerDraft("child")).toEqual({ text: "child draft", skillNames: [] });
+    render(<Composer ref="root" source={source} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    expect(
+      within(screen.getByRole("textbox", { name: "Message" })).getByTestId("composer-skill-chip").textContent,
+    ).toBe("/skill-1");
+    if (outcome === "success") await screen.findByRole("button", { name: "View source.png" });
+    expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+  },
+);
 
 test.each(["pointer", "keyboard"] as const)(
   "ordinary %s Send returns focus to Message after successful submission",
@@ -380,7 +656,7 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
         await act(async () => {
           await threadsStore.getState().ensureThread("ref_b");
         });
-        const second = render(<Composer ref="ref_b" focused={false} />);
+        const second = render(<Composer ref="ref_b" source={createTestComposerSource("ref_b")} focused={false} />);
         destinationElement = second
           .getAllByRole("textbox", { name: "Message" })
           .find((element) => element !== message)!;
@@ -711,7 +987,7 @@ test.each([
       });
       if (remount) {
         cleanup();
-        render(<Composer ref="ref_a" focused={false} />);
+        render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
       }
       expect(actionButton().disabled).toBe(true);
       fireEvent.click(actionButton());
@@ -1261,7 +1537,7 @@ test("shows the session's cwd and git branch under the composer card", async () 
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="local:ref_loc" focused={false} />
+      <Composer ref="local:ref_loc" source={createTestComposerSource("local:ref_loc")} focused={false} />
     </ClientProvider>,
   );
   await flushPendingTurnsProjectionForTests();
@@ -1304,7 +1580,7 @@ test("keeps the location line under a finished session with no composer card", a
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="local:ref_ended" focused={false} />
+      <Composer ref="local:ref_ended" source={createTestComposerSource("local:ref_ended")} focused={false} />
     </ClientProvider>,
   );
   await flushPendingTurnsProjectionForTests();
@@ -1326,7 +1602,7 @@ test("does not resolve a branch for a source-backed (non-local) session", async 
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="remote:ref_remote" focused={false} />
+      <Composer ref="remote:ref_remote" source={createTestComposerSource("remote:ref_remote")} focused={false} />
     </ClientProvider>,
   );
   await flushPendingTurnsProjectionForTests();
@@ -1486,7 +1762,7 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="ref_a" focused={false} />
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
     </ClientProvider>,
   );
 

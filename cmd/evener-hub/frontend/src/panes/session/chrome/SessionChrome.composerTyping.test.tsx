@@ -21,6 +21,7 @@ import "../testing/editorGeometry";
 import { resetAskDockStoreForTests } from "../composer/askDock/askDockStore";
 import { Composer } from "../composer/Composer";
 import { resetPendingTurnsStoreForTests } from "../composer/queue/pendingTurnsStore";
+import { createTestComposerSource } from "../testing/composerSource";
 
 const statusRowRenders = vi.hoisted(() => ({ count: 0 }));
 
@@ -105,7 +106,7 @@ test("typing in the composer does not re-render its inline session chrome", asyn
   await threadsStore.getState().ensureThread(REF);
   render(
     <ClientProvider client={fake}>
-      <Composer ref={REF} focused={false} />
+      <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
     </ClientProvider>,
   );
   const textbox = screen.getByRole("textbox", { name: /^message$/i });

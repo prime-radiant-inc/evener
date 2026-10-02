@@ -748,13 +748,12 @@ describe("exact Open origin lifetime", () => {
     expect(transcriptOpenOrigin(restoredLeaf)).toBeUndefined();
   });
 
-  test.each(["same identities", "reused identities", "invalid layout"])(
+  test.each(["same identities", "reused identities"])(
     "layout restoration with %s clears non-persisted origin edges",
     async (shape) => {
       const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
       const fake = new FakeDockviewApi();
       fake.fromJSONBehavior = () => {
-        if (shape === "invalid layout") throw new Error("invalid layout");
         fake.panels = [
           {
             id: owner.id,
@@ -764,12 +763,29 @@ describe("exact Open origin lifetime", () => {
         ];
       };
       registerDockviewApi(asDockviewApi(fake));
-      expect(workspace.restoreLayout({})).toBe(shape !== "invalid layout");
+      expect(workspace.restoreLayout({})).toBe(true);
       expect(transcriptOpenOrigin(leaf)).toBeUndefined();
       for (const pane of workspaceStore.getState().panes) expect(transcriptOpenOrigin(pane)).toBeUndefined();
-      expect(workspaceStore.getState().panes).toHaveLength(shape === "invalid layout" ? 0 : 2);
+      expect(workspaceStore.getState().panes).toHaveLength(2);
     },
   );
+
+  test("failed layout restoration preserves exact pane identities and their Open origin", async () => {
+    const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+    const before = workspaceStore.getState();
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      throw new Error("invalid layout");
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    expect(workspace.restoreLayout({})).toBe(false);
+    expect(workspaceStore.getState().panes).toBe(before.panes);
+    expect(workspaceStore.getState().panes[0]).toBe(owner);
+    expect(workspaceStore.getState().panes[1]).toBe(leaf);
+    expect(workspaceStore.getState().focusedPaneId).toBe(before.focusedPaneId);
+    expect(transcriptOpenOrigin(leaf)).toBe(owner);
+  });
 });
 
 describe("currentSessionRef", () => {

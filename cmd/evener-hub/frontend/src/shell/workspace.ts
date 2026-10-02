@@ -457,12 +457,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       });
       return true;
     } catch {
-      // fromJSON's own structural failures leave dockview already cleared
-      // (see dockview-core's source), and nothing else throws anymore:
-      // readPanelParams skips unloadable panels instead of raising, so this
-      // catch now covers only a layout dockview itself rejects.
+      // Dockview may have partially rebuilt its grid. Clear that failed grid,
+      // but keep the committed records so reconciliation can remount their
+      // original views without discarding runtime source work.
       dockviewApi?.clear();
-      set({ panes: [], focusedPaneId: null });
       return false;
     }
   },

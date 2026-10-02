@@ -57,6 +57,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
@@ -106,23 +107,12 @@ import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import {
-  clearDraft,
-  clearPersistedDraft,
-  markDraftEdited,
-  readComposerDraft,
-  readDraft,
-  readDraftRevision,
-  writeComposerDraft,
-} from "./draft";
+import { clearPersistedDraft, readDraftRevision } from "./draft";
 import { useNarrowComposer } from "./narrowComposer";
 import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   discardRecoveryPendingTurn,
-  refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
-  subscribeComposerSubmissionCommitted,
-  updateRecoveryPendingTurn,
   useBlockedMutationEntries,
   useComposerSubmitting,
   useRecoveryEntries,
@@ -132,13 +122,8 @@ import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
-import {
-  maskSkillAtoms,
-  materializeSkillReferences,
-  parseSkillDocument,
-  type SkillEditorValue,
-  serializeSkillDocument,
-} from "./skillDocument";
+import { maskSkillAtoms, materializeSkillReferences, type SkillEditorValue } from "./skillDocument";
+import { type ComposerSourceState, restoredSkillNames } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
 
 export interface ComposerProps {
@@ -147,6 +132,7 @@ export interface ComposerProps {
   // autofocus keys on it: a session loading into a background tab must never
   // yank keyboard focus away from what the reader is doing.
   focused: boolean;
+  source: ComposerSourceState;
 }
 
 const CLASS = {
@@ -167,20 +153,6 @@ const CLASS = {
 const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: SessionChromeProps) {
   return <SessionChrome {...props} />;
 });
-
-// Selections compare by exact ordered content: same names, same order, no
-// extra. A changed chip list is a changed draft even when the text is
-// byte-identical, so both halves of a submitted snapshot must still match
-// before a delayed commit may clear what the user is holding.
-function sameSkillSelections(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((name, index) => name === right[index]);
-}
-
-// Stored selections can outlive their visible references. Restore only names
-// represented by complete chips in the document; never reconstruct missing text.
-function restoredSkillNames(value: SkillEditorValue): string[] {
-  return serializeSkillDocument(parseSkillDocument(value)).skillNames;
-}
 
 function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] {
   return items.flatMap((item) =>
@@ -213,7 +185,7 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({ ref, focused }: ComposerProps) {
+export function Composer({ ref, focused, source }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows: while any exist the hub's explicit Resume still
@@ -243,59 +215,34 @@ export function Composer({ ref, focused }: ComposerProps) {
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  // Set by getComposerText() below, the moment QueueStrip's own drain
-  // affordance actually reads this composer's text/attachments; consumed by
-  // handleDrainSuccess to decide whether a strip-triggered drain should
-  // still clear the composer (only if unchanged since THAT read, mirroring
-  // clearIfUnchanged's own submittedText snapshot for the classic drain
-  // path below).
-  const lastDrainSnapshotRef = useRef<{
-    text: string;
-    attachments: PendingAttachment[];
-    skillNames: string[];
-    revision: number;
-    draftRevision: number;
-  } | null>(null);
-  // Tracks edits within this mount, including recovery drafts whose persistence
-  // writes can finish without an edit. Commit notifications only update the
-  // display; they must still let this mount remove its submitted attachments.
-  const draftEditRevisionRef = useRef(0);
-  const ownedDraftRevisionRef = useRef(readDraftRevision(ref));
-
-  // Restore-on-mount is unconditional, not leak-guarded: under dockview a
-  // session pane's `ref` never changes across a mounted Composer's
-  // lifetime (shell/paneRegistry.ts marks "session" non-singleton, so a
-  // different ref is always a DIFFERENT pane/mount, never this same
-  // instance re-parented - see draft.ts's own header comment for the full
-  // trail). A fresh mount's React state starts empty by construction, so
-  // there is no "stale text from a different ref" a lazy initializer could
-  // ever observe here, unlike the legacy DOM-morph world drafts.ts's own
-  // isOtherSessionsDraft guarded against.
-  const [text, setText] = useState(() => readDraft(ref));
-  // The canonical skill selections staged for this request (chips). Same
-  // sticky-draft contract as `text`: restored per-ref on mount, persisted in
-  // the one structured v2 draft record, and snapshotted before every submit.
-  const [skillNames, setSkillNames] = useState<string[]>(() => restoredSkillNames(readComposerDraft(ref)));
-
-  // Bumped whenever `text`/`skillNames` are replaced by a value that came from
-  // somewhere other than this composer's own editor - a stored draft, a
-  // recovery, a queued entry. SkillEditor rebuilds its document from such a
-  // value, so the selections it names become chips again; a programmatic edit
-  // (an attachment marker, a goal command) is not marked, and what it inserts
-  // stays prose. See SkillEditor's restoreEpoch contract.
-  const [restoreEpoch, setRestoreEpoch] = useState(0);
-  const markRestore = useCallback((): void => setRestoreEpoch((epoch) => epoch + 1), []);
-
-  const [activeRecoveryId, setActiveRecoveryIdState] = useState<string | null>(null);
-  const [freshRecoveryRef, setFreshRecoveryRef] = useState<string | null>(null);
-  const activeRecoveryIdRef = useRef<string | null>(null);
-  const recoveryWrites = useRef<Promise<void>>(Promise.resolve());
-  const recoveryWriteVersionRef = useRef(0);
-  // Unlike write versions, this changes only when canonical replacement exits
-  // recovery ownership. Durable delete predicates capture it so a discard
-  // already awaiting storage cannot remove a row after replacement.
-  const recoveryReplacementEpochRef = useRef(0);
-  const recoveryOwnsLocalDraftRef = useRef(false);
+  const { text, skillNames, restoreEpoch, activeRecoveryId, freshRecoveryRef } = useSyncExternalStore(
+    source.subscribe,
+    source.getSnapshot,
+    source.getSnapshot,
+  );
+  const {
+    lastDrainSnapshotRef,
+    draftEditRevisionRef,
+    ownedDraftRevisionRef,
+    textRef,
+    skillNamesRef,
+    activeRecoveryIdRef,
+    recoveryWriteVersionRef,
+    recoveryReplacementEpochRef,
+    recoveryOwnsLocalDraftRef,
+  } = source.continuity;
+  const {
+    updateText,
+    editText,
+    updateSkillNames,
+    editSkillNames,
+    setActiveRecoveryId,
+    markRestore,
+    persistDraft,
+    queueRecoveryPersistence,
+    clearIfUnchanged,
+    clearSubmittedAttachments,
+  } = source;
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const actionPending = busyAction !== null || submitting || mutationWriteStalled;
   const mountedRef = useRef(false);
@@ -405,170 +352,56 @@ export function Composer({ ref, focused }: ComposerProps) {
     setSlashHighlighted(0);
   }, [slashToken?.start, slashToken?.query]);
 
-  // textRef mirrors `text`, updated SYNCHRONOUSLY by updateText() below -
-  // unlike `text` itself (a plain per-render const) or an editor read
-  // before React commits a programmatic replacement,
-  // textRef.current is correct the INSTANT any text-changing path runs,
-  // regardless of which render's closure is asking or whether React has
-  // had a chance to re-render yet. Both properties matter: useAttachments'
-  // decode-failure callback (useAttachments.ts) can resume long after the
-  // render that registered it - a closure over plain `text` would read
-  // however stale that render's value was, correctly stripping the marker
-  // from it but then overwriting whatever the user has typed SINCE with
-  // that same stale text (a real, reproduced bug: paste an image whose
-  // decode later fails, type before it settles, watch the typed text get
-  // silently reverted - Composer.test.tsx's own regression test). And two
-  // attachment gestures fired back-to-back with no intervening render
-  // (also tested) would see the SAME staleness from a DOM read, since
-  // React hasn't committed the first gesture's `setText` yet by the time
-  // the second one asks.
-  const textRef = useRef(text);
-  const skillNamesRef = useRef(skillNames);
-
-  const setActiveRecoveryId = useCallback((clientMutationId: string | null): void => {
-    activeRecoveryIdRef.current = clientMutationId;
-    setActiveRecoveryIdState(clientMutationId);
-  }, []);
-
-  const updateText = useCallback((nextText: string): void => {
-    textRef.current = nextText;
-    setText(nextText);
-  }, []);
-
-  const editText = useCallback(
-    (nextText: string): void => {
-      draftEditRevisionRef.current += 1;
-      if (activeRecoveryIdRef.current !== null) {
-        markDraftEdited(ref);
-        ownedDraftRevisionRef.current = readDraftRevision(ref);
-      }
-      updateText(nextText);
-    },
-    [ref, updateText],
-  );
-
-  // The selection-list twin of updateText/editText: a chip change is a draft
-  // edit (draftEditRevisionRef, recovery ownership) even though the prose is
-  // untouched, which is what keeps a delayed commit from clearing a draft
-  // whose chips changed while it was in flight.
-  const updateSkillNames = useCallback((nextSkillNames: string[]): void => {
-    skillNamesRef.current = nextSkillNames;
-    setSkillNames(nextSkillNames);
-  }, []);
-
-  const editSkillNames = useCallback(
-    (nextSkillNames: string[]): void => {
-      draftEditRevisionRef.current += 1;
-      if (activeRecoveryIdRef.current !== null) {
-        markDraftEdited(ref);
-        ownedDraftRevisionRef.current = readDraftRevision(ref);
-      }
-      updateSkillNames(nextSkillNames);
-    },
-    [ref, updateSkillNames],
-  );
-
-  const persistDraft = useCallback(
-    (nextText: string): void => {
-      writeComposerDraft(ref, { text: nextText, skillNames: skillNamesRef.current });
-      ownedDraftRevisionRef.current = readDraftRevision(ref);
-    },
-    [ref],
-  );
-
-  useLayoutEffect(() => {
-    mountedRef.current = true;
-    // Re-read at subscription time so a commit between render and mount
-    // cannot leave an already-cleared sticky draft in a fresh composer.
-    const draft = readComposerDraft(ref);
-    markRestore();
-    updateText(draft.text);
-    updateSkillNames(restoredSkillNames(draft));
-    ownedDraftRevisionRef.current = readDraftRevision(ref);
-    const unsubscribe = subscribeComposerSubmissionCommitted(
-      (targetRef, submittedText, submittedSkillNames, recovery) => {
-        if (targetRef !== ref) return;
-        if (recovery && activeRecoveryIdRef.current === recovery.clientMutationId) {
-          if (recovery.draftUnchanged) ownedDraftRevisionRef.current = readDraftRevision(ref);
-          const ownsDraft = ownedDraftRevisionRef.current === readDraftRevision(ref);
-          recoveryOwnsLocalDraftRef.current = false;
-          recoveryWriteVersionRef.current += 1;
-          recoveryReplacementEpochRef.current += 1;
-          setActiveRecoveryId(null);
-          if (
-            recovery.draftUnchanged &&
-            textRef.current === submittedText &&
-            sameSkillSelections(skillNamesRef.current, submittedSkillNames)
-          ) {
-            updateText("");
-            updateSkillNames([]);
-          }
-          // Restoring the same recovery in another mount recreates its items.
-          // Match the submitted payload under that recovery owner; newly staged
-          // items have distinct markers, and replacing the draft exits ownership.
-          const markers = new Set(
-            attachmentItemsRef.current
-              .filter((item) =>
-                recovery.attachments.some(
-                  (submitted) =>
-                    submitted.marker === item.marker &&
-                    submitted.data === item.data &&
-                    submitted.name === item.name &&
-                    submitted.mediaType === item.mediaType,
-                ),
-              )
-              .map((item) => item.marker),
-          );
-          clearSubmittedAttachmentsRef.current(markers);
-          if (ownsDraft) persistDraft(textRef.current);
-        } else if (
-          !recovery &&
-          activeRecoveryIdRef.current === null &&
-          textRef.current === submittedText &&
-          sameSkillSelections(skillNamesRef.current, submittedSkillNames)
-        ) {
-          ownedDraftRevisionRef.current = readDraftRevision(ref);
-          updateText("");
-          updateSkillNames([]);
-        }
-      },
-    );
-    return () => {
-      mountedRef.current = false;
-      unsubscribe();
-    };
-  }, [ref, setActiveRecoveryId, updateText, updateSkillNames, persistDraft, markRestore]);
-
   // Attachment marker edits update controlled text, selected references and
   // the persisted draft together. Prefer a pending cursor restoration over
   // the live editor selection so two attachment gestures before React commits
   // insert consecutive markers rather than reusing the first position.
-  const textEditor: TextEditor = {
-    read: () => {
-      const cursor = cursorToRestoreRef.current ?? editorRef.current?.getCursor() ?? textRef.current.length;
-      const selection =
-        cursorToRestoreRef.current === null && editorRef.current
-          ? editorRef.current.getSelection()
-          : { start: cursor, end: cursor };
-      return { text: textRef.current, cursor, selection };
-    },
-    write: (nextText, cursor, source) => {
-      // Submission cleanup retires this mount's markers without claiming a
-      // shared draft that another composer has edited in the meantime.
-      const mayPersist = source !== "submission" || ownedDraftRevisionRef.current === readDraftRevision(ref);
-      const next = restoredSkillNames({ text: nextText, skillNames: skillNamesRef.current });
-      updateSkillNames(next);
-      if (source === "submission") updateText(nextText);
-      else editText(nextText);
-      if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(nextText);
-      scheduleCursorRestore(cursor);
-    },
-  };
-  const attachments = useAttachments(textEditor);
+  const textEditor: TextEditor = useMemo(
+    () => ({
+      read: () => {
+        const cursor = cursorToRestoreRef.current ?? editorRef.current?.getCursor() ?? textRef.current.length;
+        const selection =
+          cursorToRestoreRef.current === null && editorRef.current
+            ? editorRef.current.getSelection()
+            : { start: cursor, end: cursor };
+        return { text: textRef.current, cursor, selection };
+      },
+      write: (nextText, cursor, source) => {
+        // Submission cleanup retires this mount's markers without claiming a
+        // shared draft that another composer has edited in the meantime.
+        const mayPersist = source !== "submission" || ownedDraftRevisionRef.current === readDraftRevision(ref);
+        const next = restoredSkillNames({ text: nextText, skillNames: skillNamesRef.current });
+        updateSkillNames(next);
+        if (source === "submission") updateText(nextText);
+        else editText(nextText);
+        if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(nextText);
+        scheduleCursorRestore(cursor);
+      },
+    }),
+    [
+      ref,
+      textRef,
+      skillNamesRef,
+      ownedDraftRevisionRef,
+      activeRecoveryIdRef,
+      updateSkillNames,
+      updateText,
+      editText,
+      persistDraft,
+      scheduleCursorRestore,
+    ],
+  );
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    const unbind = source.bindEditor(textEditor);
+    return () => {
+      mountedRef.current = false;
+      unbind();
+    };
+  }, [source, textEditor]);
+  const attachments = useAttachments(source.editor, source.attachments);
   const attachmentItemsRef = useRef(attachments.items);
   attachmentItemsRef.current = attachments.items;
-  const clearSubmittedAttachmentsRef = useRef(attachments.clearSubmitted);
-  clearSubmittedAttachmentsRef.current = attachments.clearSubmitted;
   const recoveryEntries = useRecoveryEntries(ref);
 
   const replaceComposerWithGoalDraft = (objective: string): void => {
@@ -611,94 +444,9 @@ export function Composer({ ref, focused }: ComposerProps) {
     else activitySidebarStore.getState().openWith("tasks");
   };
 
-  // A shared projection can outlive a Composer remount while its durable
-  // discard is still being projected. Only auto-activate after this mount
-  // has observed a successful IndexedDB refresh for the current session.
   useEffect(() => {
-    let mounted = true;
-    setFreshRecoveryRef(null);
-    void refreshPendingTurnsProjection(ref).then((refreshed) => {
-      if (mounted && refreshed) setFreshRecoveryRef(ref);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [ref]);
-
-  const queueRecoveryPersistence = useCallback(
-    (
-      clientMutationId: string,
-      nextText: string,
-      nextAttachments: ReturnType<typeof attachments.toInputAttachments>,
-      nextSkillNames: readonly string[],
-    ): Promise<void> => {
-      const version = ++recoveryWriteVersionRef.current;
-      const replacementEpoch = recoveryReplacementEpochRef.current;
-      const draftRevision = readDraftRevision(ref);
-      const operation = recoveryWrites.current
-        .catch(() => undefined)
-        .then(async () => {
-          if (activeRecoveryIdRef.current !== clientMutationId) return;
-          if (nextText.trim() === "" && nextAttachments.length === 0 && nextSkillNames.length === 0) {
-            if (
-              textRef.current.trim() !== "" ||
-              attachmentItemsRef.current.length > 0 ||
-              skillNamesRef.current.length > 0
-            )
-              return;
-            await discardRecoveryPendingTurn(
-              clientMutationId,
-              ref,
-              () =>
-                recoveryReplacementEpochRef.current === replacementEpoch &&
-                activeRecoveryIdRef.current === clientMutationId &&
-                textRef.current.trim() === "" &&
-                attachmentItemsRef.current.length === 0 &&
-                skillNamesRef.current.length === 0,
-            );
-            if (
-              activeRecoveryIdRef.current === clientMutationId &&
-              readDraftRevision(ref) === draftRevision &&
-              textRef.current.trim() === "" &&
-              attachmentItemsRef.current.length === 0 &&
-              skillNamesRef.current.length === 0
-            ) {
-              recoveryOwnsLocalDraftRef.current = false;
-              setActiveRecoveryId(null);
-              clearPersistedDraft(ref);
-            }
-            return;
-          }
-          const updated = await updateRecoveryPendingTurn(
-            clientMutationId,
-            ref,
-            nextText,
-            nextAttachments,
-            nextSkillNames,
-          );
-          if (
-            updated &&
-            recoveryOwnsLocalDraftRef.current &&
-            recoveryWriteVersionRef.current === version &&
-            readDraftRevision(ref) === draftRevision &&
-            activeRecoveryIdRef.current === clientMutationId
-          ) {
-            recoveryOwnsLocalDraftRef.current = false;
-            clearPersistedDraft(ref);
-          }
-        });
-      recoveryWrites.current = operation;
-      void operation.catch((error) => {
-        if (activeRecoveryIdRef.current !== clientMutationId) return;
-        toasts.push(
-          "error",
-          `Couldn't save recovered message: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
-      return operation;
-    },
-    [ref, setActiveRecoveryId, toasts],
-  );
+    source.refreshRecovery();
+  }, [source]);
 
   useEffect(() => {
     if (activeRecoveryId === null || attachments.hasPending) return;
@@ -745,12 +493,16 @@ export function Composer({ ref, focused }: ComposerProps) {
   }, [
     activeRecoveryId,
     attachments.replaceWithSettled,
+    draftEditRevisionRef,
     freshRecoveryRef,
     markRestore,
     recoveryEntries,
+    recoveryOwnsLocalDraftRef,
     ref,
     scheduleCursorRestore,
     setActiveRecoveryId,
+    skillNamesRef,
+    textRef,
     updateText,
     updateSkillNames,
   ]);
@@ -837,7 +589,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     textEditor.write(merged, cursor);
     editorRef.current?.focus();
     consumeQuoteInsert(ref);
-  }, [quoteInsertRequest, ref, textEditor.write]);
+  }, [quoteInsertRequest, ref, textEditor.write, textRef]);
 
   // composerFocus.ts's own seam: a global chord (owned elsewhere) asks this
   // ref's Composer to move keyboard focus into its textarea. Exactly the
@@ -1064,43 +816,13 @@ export function Composer({ ref, focused }: ComposerProps) {
     editorRef.current?.focus();
   }
 
-  // Equal text can belong to a newer edit, including a reused image marker.
-  // A commit notification may already have cleared the display without editing
-  // the draft; its original attachment cleanup still belongs to this revision.
-  function clearIfUnchanged(
-    submittedText: string,
-    submittedRevision: number,
-    submittedDraftRevision: number,
-    submittedSkillNames: readonly string[],
-  ): boolean {
-    if (!mountedRef.current || draftEditRevisionRef.current !== submittedRevision) return false;
-    if (textRef.current === submittedText && sameSkillSelections(skillNamesRef.current, submittedSkillNames)) {
-      updateText("");
-      updateSkillNames([]);
-      if (readDraftRevision(ref) === submittedDraftRevision) {
-        clearDraft(ref);
-        ownedDraftRevisionRef.current = readDraftRevision(ref);
-      }
-    }
-    return true;
-  }
-
   // QueueStrip captures this mount's payload and edit revision through
   // getComposerText before it starts the drain's durable write.
   function handleDrainSuccess(): void {
     const snapshot = lastDrainSnapshotRef.current;
-    if (!snapshot || !mountedRef.current) return;
+    if (!snapshot || !source.alive) return;
     clearIfUnchanged(snapshot.text, snapshot.revision, snapshot.draftRevision, snapshot.skillNames);
     clearSubmittedAttachments(snapshot.attachments);
-  }
-
-  function clearSubmittedAttachments(submitted: PendingAttachment[]): void {
-    // Text edits do not replace an attachment. Object identity distinguishes
-    // the submitted item from a replacement that reuses its marker number.
-    const markers = new Set(
-      attachmentItemsRef.current.filter((item) => submitted.includes(item)).map((item) => item.marker),
-    );
-    attachments.clearSubmitted(markers);
   }
 
   // A chip's details: the skill's own description, or - when the live catalog
@@ -1301,7 +1023,7 @@ export function Composer({ ref, focused }: ComposerProps) {
           return threadsStore.getState().drainAsSteer(ref, submittedText, payload, submittedSkillNames);
         },
       );
-      if (!mountedRef.current) return;
+      if (!source.alive) return;
       if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
       clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision, submittedSkillNames);
       clearSubmittedAttachments(submittedAttachments);

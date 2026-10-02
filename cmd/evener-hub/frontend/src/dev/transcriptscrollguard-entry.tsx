@@ -276,6 +276,11 @@ document.body.style.background = "var(--surface-0)";
 rootEl.style.height = "100%";
 
 if (DOCK) workspaceStore.getState().openPane("session", { ref: REF });
+else if (!READONLY)
+  workspaceStore.setState({
+    panes: [{ id: "transcriptscrollguard", type: "session", params: { ref: REF }, slot: "main" }],
+    focusedPaneId: "transcriptscrollguard",
+  });
 
 createRoot(rootEl).render(
   <ClientProvider client={fake}>

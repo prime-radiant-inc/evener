@@ -45,6 +45,7 @@ import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
+import { createTestComposerSource } from "../testing/composerSource";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 
@@ -144,7 +145,7 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={REF} focused={false} />
+      <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
     </ClientProvider>,
   );
   await settleActivityDiscovery(REF);
@@ -333,7 +334,7 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
       .then(() => {
         render(
           <ClientProvider client={fake}>
-            <Composer ref={REF} focused={false} />
+            <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
           </ClientProvider>,
         );
         act(() => {

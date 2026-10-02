@@ -15,6 +15,7 @@ import { StrictMode, useSyncExternalStore } from "react";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
+import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { urlToPane } from "../../shell/routing";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
@@ -44,7 +45,9 @@ import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
-import Session from "./Session";
+import { settleActivityDiscovery } from "./testing/activityDiscovery";
+import { CommittedSession as Session } from "./testing/CommittedSession";
+import { installControlledImageEncoding } from "./testing/imageEncoding";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
 import "./testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
@@ -243,6 +246,42 @@ afterEach(() => {
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
+});
+
+test("the real Session binds its committed pane source across a view remount", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  const encoding = installControlledImageEncoding();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("root"));
+  const pane = { id: "source-pane", type: "session" as const, params: { ref: "root" }, slot: "main" as const };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const first = render(
+    <ClientProvider client={fake}>
+      <Session params={pane.params} paneId={pane.id} focused />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await settleActivityDiscovery("root");
+  await flushPendingTurnsProjectionForTests();
+  const file = new File([new Uint8Array([1, 2, 3])], "source.png", { type: "image/png" });
+  const picker = first.container.querySelector('input[type="file"]');
+  if (!picker) throw new Error("Session has no image picker");
+  fireEvent.change(picker, { target: { files: [file] } });
+  const source = conversationPaneLifetime(pane).composer;
+  expect(source?.attachments.getState().items).toHaveLength(1);
+  first.unmount();
+  render(
+    <ClientProvider client={fake}>
+      <Session params={pane.params} paneId={pane.id} focused />
+    </ClientProvider>,
+  );
+  await screen.findByRole("button", { name: "Remove source.png" });
+  expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("[image 1]");
+  await act(async () => encoding.resolve());
+  await screen.findByRole("button", { name: "View source.png" });
+  expect(conversationPaneLifetime(pane).composer).toBe(source);
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
 });
 
 test("desktop session panes own separate location and activity footers", async ({ onTestFinished }) => {

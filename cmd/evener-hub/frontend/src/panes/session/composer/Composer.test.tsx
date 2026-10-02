@@ -39,6 +39,7 @@ import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css"
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
+import { createTestComposerSource } from "../testing/composerSource";
 import { editorCursor, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
@@ -314,7 +315,7 @@ async function mountComposerWithHandle(
   const view = render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} focused={options.focused ?? false} />
+      <Composer ref={ref} source={createTestComposerSource(ref)} focused={options.focused ?? false} />
     </ClientProvider>,
   );
   await settleActivityDiscovery(ref);
@@ -980,7 +981,7 @@ test("the real live Composer mount discovers initial activity without a test-sup
 
   render(
     <ClientProvider client={fake}>
-      <Composer ref={ref} focused={false} />
+      <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
     </ClientProvider>,
   );
 
@@ -1013,7 +1014,7 @@ test("a saved notLoaded session with sending enabled discovers activity while it
 
   render(
     <ClientProvider client={fake}>
-      <Composer ref={ref} focused={false} />
+      <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
     </ClientProvider>,
   );
 
@@ -3065,7 +3066,7 @@ test.each([
     fireEvent.click(submitButton());
     await written;
     cleanup();
-    render(<Composer ref="ref_a" focused={false} />);
+    render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
     // The remount restores the recovery draft through an IDB read plus a
     // render the scheduler commits on a macrotask, while this test
     // deliberately holds the recovery WRITE - so the projection flush
@@ -3181,7 +3182,7 @@ test.each([false, true])(
     }
     const firstInput = textarea();
     const firstButton = submitButton();
-    const second = render(<Composer ref="ref_a" focused={false} />);
+    const second = render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
     const secondInput = within(second.container).getByRole<HTMLDivElement>("textbox");
     await flushPendingTurnsProjectionForTests();
     const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
@@ -4346,7 +4347,7 @@ test.each([
       });
       if (remount) {
         cleanup();
-        render(<Composer ref="ref_a" focused={false} />);
+        render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
         replaceEditorText(textarea(), "");
         pastePngInto(textarea(), "replacement.png");
         await waitFor(() => expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy());
@@ -5152,7 +5153,7 @@ test("repeated inline skills survive remount and undo while deletion reconciles 
   expect(readComposerDraft(ref)).toEqual({ text: original, skillNames: ["skill-1"] });
 
   cleanup();
-  render(<Composer ref={ref} focused={false} />);
+  render(<Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />);
   await settleActivityDiscovery(ref);
   expect(textarea().textContent).toBe(original);
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
@@ -5183,7 +5184,7 @@ test("a token typed directly against a chip is separated so the reference stays 
 
   // The same holds after a re-derivation, which re-reads the persisted value.
   cleanup();
-  render(<Composer ref={ref} focused={false} />);
+  render(<Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />);
   await settleActivityDiscovery(ref);
   expect(textarea().textContent).toBe("Use /cleanup d");
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
@@ -5295,7 +5296,7 @@ test.each(["before render", "before subscription"] as const)(
     render(
       <>
         <SeedBeforeSubscription />
-        <Composer ref={ref} focused={false} />
+        <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
         <ObserveFirstCommit />
       </>,
     );
