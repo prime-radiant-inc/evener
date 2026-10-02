@@ -68,11 +68,106 @@ function rawOutput(text: string): Evidence[] {
 	return text ? [{ kind: "output", text, lines: lineCount(text) }] : [];
 }
 
+// The index of the ")" that closes the "(" at start, counting nested balanced
+// pairs; undefined when the "(" never closes. A backslash escapes the next
+// character; a destination that opens with "<" runs to its unescaped ">"; and a
+// quote after whitespace opens a title whose only close is its own delimiter.
+// Parentheses inside any of those are literal (CommonMark).
+function balancedClose(markdown: string, start: number): number | undefined {
+	let depth = 1;
+	let quote: string | undefined;
+	let started = false;
+	for (let i = start + 1; i < markdown.length; i++) {
+		const ch = markdown[i];
+		if (ch === "\\") {
+			i++;
+			started = true;
+		} else if (quote !== undefined) {
+			if (ch === quote) quote = undefined;
+		} else if (!started) {
+			if (/\s/.test(ch)) continue;
+			started = true;
+			if (ch === "<") {
+				for (i = i + 1; i < markdown.length; i++) {
+					if (markdown[i] === "\\") i++;
+					else if (markdown[i] === ">") break;
+				}
+				if (i >= markdown.length) return undefined;
+			} else if (ch === '"' || ch === "'") {
+				// An empty destination may still carry a quoted title.
+				quote = ch;
+			} else if (ch === "(") {
+				depth++;
+			} else if (ch === ")" && --depth === 0) {
+				return i;
+			}
+		} else if ((ch === '"' || ch === "'") && /\s/.test(markdown[i - 1] ?? "")) {
+			quote = ch;
+		} else if (ch === "(") {
+			depth++;
+		} else if (ch === ")" && --depth === 0) {
+			return i;
+		}
+	}
+	return undefined;
+}
+
 // A skill's markdown is its author's, and the phone's markdown view loads
 // images from their URLs, so each image, inline (![alt](url)), by reference
 // (![alt][ref]) or shortcut (![alt]), reads as its alt text instead.
 function withoutImages(markdown: string): string {
-	return markdown.replace(/!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])?/g, "$1");
+	let out = "";
+	for (let i = 0; i < markdown.length; i++) {
+		if (markdown[i] !== "!" || markdown[i + 1] !== "[") {
+			out += markdown[i];
+			continue;
+		}
+		// The alt may itself hold a nested image, so its "]" is the one that
+		// balances the "![", counting brackets and honoring escapes — the first
+		// "]" would end it early and let a nested destination leak out as a live
+		// image (#3289).
+		let altEnd = -1;
+		let brackets = 1;
+		for (let j = i + 2; j < markdown.length; j++) {
+			const ch = markdown[j];
+			if (ch === "\\") j++;
+			else if (ch === "[") brackets++;
+			else if (ch === "]" && --brackets === 0) {
+				altEnd = j;
+				break;
+			}
+		}
+		if (altEnd === -1) {
+			out += markdown[i];
+			continue;
+		}
+		// A nested image in the alt reads as its own alt text too.
+		const alt = withoutImages(markdown.slice(i + 2, altEnd));
+		const dest = altEnd + 1;
+		if (markdown[dest] === "[") {
+			// By reference: ![alt][ref], the reference defined elsewhere.
+			const refEnd = markdown.indexOf("]", dest + 1);
+			if (refEnd !== -1) {
+				out += alt;
+				i = refEnd;
+				continue;
+			}
+		} else if (markdown[dest] === "(") {
+			// An inline URL may hold nested balanced parentheses and a title, so
+			// scan to the matching close; an unbalanced one reads to its first
+			// close, as the pattern always did, leaving nothing behind either way.
+			const end = balancedClose(markdown, dest) ?? markdown.indexOf(")", dest);
+			if (end !== -1) {
+				out += alt;
+				i = end;
+				continue;
+			}
+		}
+		// A shortcut image ![alt], or a reference/destination that never closes.
+		out += alt;
+		i = altEnd;
+	}
+	return out;
 }
 
 // What the shell tool's footer says besides the exit.

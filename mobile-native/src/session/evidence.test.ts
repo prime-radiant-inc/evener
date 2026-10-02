@@ -445,6 +445,97 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	// An image's URL may hold balanced parentheses (one level deep or nested),
+	// and may carry a title; each reads as exactly its alt text (#3289).
+	it("strips an image whose URL has parentheses or a title", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions:
+				'# Diagrams\n\n![a](https://x.test/a_(b).png) and ![b](https://x.test/c_(d).png "t") and ![c](https://x.test/n_(o_(p)).png)',
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{
+				kind: "markdown",
+				title: "diagrams",
+				markdown: "# Diagrams\n\na and b and c",
+			},
+		]);
+	});
+
+	// A URL with a lone, unbalanced parenthesis still reads to its first close,
+	// as it did before the balanced form, so no URL text is left behind.
+	it("strips an image whose URL has an unbalanced parenthesis", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions: "# Diagrams\n\n![a](https://x.test/a_(b.png)",
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\na" },
+		]);
+	});
+
+	// A parenthesis inside a quoted title, or one a backslash escapes, is
+	// literal: it neither ends the destination early nor lets it overrun into
+	// the text after the image (#3289).
+	it("does not count a parenthesis a title or an escape makes literal", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions:
+				'# Diagrams\n\n![a](https://x.test/a.png "t)") and ![b](https://x.test/d.png "see (") and ![c](https://x.test/a\\(b) more)',
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\na and b and c more)" },
+		]);
+	});
+
+	// A title may be double- or single-quoted, and an apostrophe inside one does
+	// not close it; an angle-bracket destination may hold a literal ")" (#3289).
+	it("reads a contraction in a title and an angle-bracket destination to their alt text", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions: '# Diagrams\n\n![a](https://x.test/x_(y).png "it\'s the diagram") and here',
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\na and here" },
+		]);
+	});
+
+	it("strips an angle-bracket image destination holding a parenthesis", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions: "# Diagrams\n\n![a](<https://x.test/a)b.png>) and here",
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\na and here" },
+		]);
+	});
+
+	// A bare "<" mid-URL is a literal character, not an angle-bracket
+	// destination, and an angle-bracket destination honors an escaped ">" (#3289).
+	it("scopes an angle-bracket destination and honors an escaped close", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions: "# Diagrams\n\n![a](https://x.test/a<b.png) (see > and here) and ![b](<https://x.test/a\\>b)c>)",
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\na (see > and here) and b" },
+		]);
+	});
+
+	// A nested image in the alt must not leak its destination as a live image,
+	// an empty destination may still carry a quoted title, and a title may be
+	// single-quoted (#3289).
+	it("strips a nested alt image, an empty-destination title, and a single-quoted title", () => {
+		const loaded = `<skill-context>\n${JSON.stringify({
+			name: "diagrams",
+			instructions:
+				"# Diagrams\n\n![![x](https://attacker.test/inner.png)](https://attacker.test/outer.png) and ![a]( \"a ) b\") and ![b](url 'x)y')",
+		})}\n</skill-context>`;
+		expect(stepEvidence({ label: "use_skill", detail: { output: loaded } })).toEqual([
+			{ kind: "markdown", title: "diagrams", markdown: "# Diagrams\n\nx and a and b" },
+		]);
+	});
+
 	// -1 is the shell tool's sentinel for a command stopped by a signal or by
 	// evener's runtime limit, not an exit code, so it reads as no exit at all.
 	it("never says a command exited -1", () => {
