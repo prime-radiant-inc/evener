@@ -1024,13 +1024,15 @@ func localDaemonCallError(err error) error {
 }
 
 func localDaemonMutationCallError(clientMutationID string, err error) error {
-	mapped := localDaemonCallError(err)
-	var wire appwire.WireError
-	if !errors.As(mapped, &wire) {
-		return mapped
+	// A delivered WireError is an application verdict regardless of its data
+	// shape. Retain that provenance before mapping a transport failure to an
+	// ordinary SessionUnavailable WireError.
+	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
+		return err
 	}
-	data, ok := wire.Data.(appwire.ErrorData)
-	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+	mapped := localDaemonCallError(err)
+	wire, ok := errors.AsType[appwire.WireError](mapped)
+	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
 	}
 	return appwire.WireError{
