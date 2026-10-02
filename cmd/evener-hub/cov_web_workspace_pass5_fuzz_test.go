@@ -7,33 +7,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/rendezvous"
 )
 
-// FuzzWebWorkspacePass5 exercises workspace composition and model rendering
-// against in-memory sources and indexes. It never consults a live provider.
+// FuzzWebWorkspacePass5 exercises session titles, HTTP routes, and model
+// presentation against in-memory indexes. It never consults a live provider.
 func FuzzWebWorkspacePass5(f *testing.F) {
-	for mode := range uint8(12) {
+	for _, mode := range []uint8{3, 6, 7, 8, 9, 10, 11} {
 		f.Add(mode, "alpha\r\nbeta")
 	}
 	f.Fuzz(func(t *testing.T, mode uint8, text string) {
-		started := time.Now().Add(-90 * time.Second).UnixMilli()
-		thread := appwire.Thread{
-			ID: "thread", SessionID: "thread", Source: "remote", Name: text,
-			Preview: "preview", CWD: "/tmp/work", ModelProvider: "openai/gpt-4o",
-			Status: appwire.ThreadStatus{Type: "active"},
-			Turns:  []appwire.Turn{{ID: "done", Status: appwire.TurnStatusCompleted}, {ID: "active", Status: appwire.TurnStatusInProgress, StartedAt: &started}},
-			Evener: appwire.EvenerThread{Ref: "remote:thread", ActiveTurnID: "active", ContextUsed: 12, ContextWindow: 100,
-				ContextRemaining: 88, WorkMillis: 61_000, Usage: &appwire.EvenerUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12},
-				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Compact: true, Queue: true}},
-		}
-		source := &scriptedAppSource{id: "remote", thread: thread}
 		past := hubcore.NewPastIndex("")
 		parent := schema.SessionMeta{ID: "parent", Name: "Parent"}
 		child := schema.SessionMeta{ID: "child", Name: "Child", Model: "openai/gpt-4o", OriginalPrompt: text,
@@ -47,36 +34,8 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, LiveModels: func(context.Context) []appwire.ModelDescriptor {
 			return []appwire.ModelDescriptor{{Provider: "fixture", Model: "model"}}
 		}})
-		web.sources.Add(source)
 
 		switch mode % 12 {
-		case 0:
-			_ = workspaceDataFromAppThread(thread)
-			thread.Name, thread.Preview, thread.SessionID, thread.Evener.Ref, thread.Status.Type = "", "", "", "", ""
-			_ = workspaceDataFromAppThread(thread)
-		case 1:
-			for _, d := range []time.Duration{-time.Second, 0, 30 * time.Second, 2 * time.Minute, 2*time.Hour + 4*time.Minute} {
-				_ = compactDuration(d)
-			}
-			_ = activeTurnRunningFor(thread)
-			thread.Turns[1].StartedAt = nil
-			_ = activeTurnRunningFor(thread)
-			_ = activeTurnIDFromAppwireThread(thread)
-			thread.Evener.ActiveTurnID = ""
-			_ = activeTurnIDFromAppwireThread(thread)
-			thread.Turns = nil
-			_ = activeTurnIDFromAppwireThread(thread)
-		case 2:
-			for _, v := range []string{"bad", "local:one", "remote:one", "", ".", "/", "/a/tree"} {
-				_ = sourceLabelFromRefText(v)
-				_ = worktreeLabel(v)
-			}
-			for _, n := range []int{-1, 0, 999, 1000, 1500} {
-				_ = formatTokenCount(n)
-			}
-			_ = formatContextNumbers(1, 0, -1)
-			_ = formatContextNumbers(1, 2, -1)
-			_ = formatCompactContextNumbers(1, 0)
 		case 3:
 			for _, m := range []schema.SessionMeta{{Name: " name "}, {OriginalPrompt: text}, {ID: "0123456789abcdef"}} {
 				_ = sessionTitleFromMeta(m)
@@ -85,20 +44,6 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 				_ = compactSessionPromptTitle(p)
 			}
 			_ = searchPastTitle(hubcore.PastEntry{Meta: child})
-			_ = stateLabel("active", true)
-		case 4:
-			_ = web.workspaceData("remote:thread")
-			_ = web.workspaceData("remote:missing")
-			_ = web.liveWorkspaceCapabilities("remote:thread", hubapi.SessionCapabilities{Send: true})
-			_, _ = web.liveWorkspaceSnapshot("missing:thread", hubapi.SessionCapabilities{Send: true})
-		case 5:
-			_ = web.workspaceData("child")
-			_ = web.workspaceData("parent")
-			_ = web.workspaceData("missing")
-			data := WorkspaceData{}
-			web.fillForkLineage(&data, child)
-			web.fillSubagentLineage(&data, child)
-			web.fillObserverLink(&data, child)
 		case 6:
 			for _, target := range []string{"/s/", "/s/remote:thread", "/s/remote:thread/state", "/s/remote:thread/details", "/s/remote:thread/tasks", "/s/remote:thread/nope"} {
 				web.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))

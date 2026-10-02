@@ -3,9 +3,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +17,7 @@ import (
 // are otherwise difficult for the broad route fuzzers to reach. All sources
 // and filesystem roots are process-local and deterministic.
 func FuzzSessionTreePass3(f *testing.F) {
-	for op := range uint8(16) {
+	for _, op := range []uint8{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15} {
 		f.Add(op, "alpha\r\nbeta", int64(90_000))
 	}
 	f.Fuzz(func(t *testing.T, op uint8, text string, number int64) {
@@ -36,41 +33,7 @@ func FuzzSessionTreePass3(f *testing.F) {
 		}
 
 		switch op % 16 {
-		case 0:
-			_ = workspaceDataFromAppThread(thread)
-			thread.Name, thread.Preview, thread.Evener.Ref = "", "", ""
-			thread.Status.Type = ""
-			_ = workspaceDataFromAppThread(thread)
-		case 1:
-			_ = activeTurnRunningFor(thread)
-			thread.Turns[1].StartedAt = nil
-			_ = activeTurnRunningFor(thread)
-			_ = compactDuration(-time.Second)
-			_ = compactDuration(500 * time.Millisecond)
-			_ = compactDuration(90 * time.Second)
-			_ = compactDuration(2*time.Hour + 5*time.Minute)
-		case 2:
-			_ = activeTurnIDFromAppwireThread(thread)
-			thread.Evener.ActiveTurnID = ""
-			_ = activeTurnIDFromAppwireThread(thread)
-			thread.Turns = nil
-			_ = activeTurnIDFromAppwireThread(thread)
-			_ = completedTurnCount([]appwire.Turn{{Status: appwire.TurnStatusCompleted}, {Status: appwire.TurnStatusFailed}})
-		case 3:
-			for _, ref := range []string{"bad", "local:one", "remote:one"} {
-				_ = sourceLabelFromRefText(ref)
-			}
-			for _, n := range []int{-1, 0, 999, 1000, 1499} {
-				_ = formatTokenCount(n)
-			}
-			_ = formatContextNumbers(1, 0, -1)
-			_ = formatContextNumbers(1, 2, -1)
-			_ = formatCompactContextNumbers(1, 0)
-			_ = formatCompactContextNumbers(1000, 2000)
 		case 4:
-			for _, p := range []string{"", ".", "/", "/work/tree"} {
-				_ = worktreeLabel(p)
-			}
 			for _, p := range []string{"", " first\r\nsecond ", strings.Repeat("x", 90)} {
 				_ = compactSessionPromptTitle(p)
 			}
@@ -121,12 +84,6 @@ func FuzzSessionTreePass3(f *testing.F) {
 			_ = pastTitle(pe)
 			_ = searchPastTitle(pe)
 			_ = liveTitle(meta.ID, hubcore.LiveEntry{}, nil)
-			_ = stateLabel("active", true)
-			_ = filepath.Base(dir)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"status":"active"}`)) }))
-			defer srv.Close()
-			_ = NewWebServer(hubcore.WebConfig{}).fetchStatus(hubcore.LiveEntry{Address: strings.TrimPrefix(srv.URL, "http://")})
-			_ = NewWebServer(hubcore.WebConfig{}).fetchStatus(hubcore.LiveEntry{Address: "[bad"})
 		}
 	})
 }

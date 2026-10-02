@@ -24,23 +24,6 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 			t.Skip()
 		}
 		now := time.Now().UnixMilli() - 2000
-		for _, d := range []time.Duration{-time.Second, 0, time.Second, time.Minute, time.Hour + time.Minute} {
-			_ = compactDuration(d)
-		}
-		for _, n := range []int{-1, 0, 999, 1000, tokens} {
-			_ = formatTokenCount(n)
-			_ = formatContextNumbers(n, 0, n)
-			_ = formatContextNumbers(n, 1000, -1)
-			_ = formatCompactContextNumbers(n, 0)
-			_ = formatCompactContextNumbers(n, 1000)
-		}
-		_ = htmlEscape(title)
-		_ = sourceLabelFromRefText(refText)
-		_ = sourceLabelFromRefText("local:x")
-		_ = sourceLabelFromRefText("remote:x")
-		_ = worktreeLabel("")
-		_ = worktreeLabel("/")
-		_ = worktreeLabel("/tmp/worktree")
 		for _, prompt := range []string{"", title, "first\nsecond", strings.Repeat("z", 100)} {
 			_ = compactSessionPromptTitle(prompt)
 		}
@@ -58,20 +41,13 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 			},
 			Evener: appwire.EvenerThread{Ref: refText, ActiveTurnID: "active", Goal: &appwire.GoalState{Status: "active", Iterations: 2}},
 		}
-		_ = workspaceDataFromAppThread(thread)
-		_ = activeTurnRunningFor(thread)
 		_, _, _ = appThreadTreeEntries(thread)
 		_, _ = appThreadTreeRef(thread)
 		thread.Evener.ActiveTurnID = ""
-		_ = activeTurnIDFromAppwireThread(thread)
 		thread.Turns = nil
-		_ = activeTurnIDFromAppwireThread(thread)
-		_ = activeTurnRunningFor(thread)
 		thread.Preview, thread.SessionID = "", "session"
-		_ = workspaceDataFromAppThread(thread)
 		thread.Evener.Ref = ""
 		thread.Name, thread.Preview, thread.SessionID = "", title, ""
-		_ = workspaceDataFromAppThread(thread)
 		_, _, _ = appThreadTreeEntries(thread)
 		thread.Source, thread.ID = "", ""
 		_, _, _ = appThreadTreeEntries(thread)
@@ -79,8 +55,6 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 			thread.Status.Type = status
 			_ = appThreadTreeLive(thread)
 		}
-		_ = workspaceDataFromAppThread(appwire.Thread{ID: "id", Preview: "preview"})
-		_ = workspaceDataFromAppThread(appwire.Thread{ID: "id"})
 	})
 }
 

@@ -2,11 +2,8 @@ package hub
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,9 +13,9 @@ import (
 )
 
 // FuzzSessionResiduePass5 targets the remaining tree, memoization,
-// decision-store, and daemon-status branches with process-local inputs.
+// and decision-store branches with process-local inputs.
 func FuzzSessionResiduePass5(f *testing.F) {
-	for op := range uint8(4) {
+	for op := range uint8(3) {
 		f.Add(op, "residue")
 	}
 	f.Fuzz(func(t *testing.T, op uint8, title string) {
@@ -72,15 +69,6 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			tree, _ := web.memoTree(context.Background())
 			if len(tree.Projects) == 0 {
 				t.Fatal("expected project")
-			}
-		case 3:
-			// fetchStatus rejects invalid JSON and accepts a valid daemon response.
-
-			for _, payload := range []string{"{", `{"status":"active","turns":2}`} {
-				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(payload)) }))
-				addr := strings.TrimPrefix(srv.URL, "http://")
-				_ = NewWebServer(hubcore.WebConfig{}).fetchStatus(hubcore.LiveEntry{Address: addr})
-				srv.Close()
 			}
 		}
 	})
