@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HostForwardedResult } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { describe, expect, test } from "vitest";
-import { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST } from "./hostRouting";
+import { describe, expect, test, vi } from "vitest";
+import { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST } from "./index";
 
 // The CROSS-LANGUAGE half of this contract. The shipped set above and the Go
 // proxy's allow-list (cmd/evener-hub/app_host_admin.go's remoteHostAdminMethods)
@@ -17,7 +17,7 @@ import { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST 
 // from the product set (with or without the literal list it used to be spelled
 // against here) fails rather than silently narrowing what the pane forwards.
 const here = dirname(fileURLToPath(import.meta.url));
-const SHARED_LIST_PATH = join(here, "../../../host_request_methods.txt");
+const SHARED_LIST_PATH = join(here, "../../cmd/evener-hub/host_request_methods.txt");
 
 function sharedForwardedMethods(): string[] {
   return readFileSync(SHARED_LIST_PATH, "utf8")
@@ -128,5 +128,24 @@ describe("hostRequest (remote host)", () => {
     await hostRequest(fake, "alpha", method, {} as never);
 
     expect(fake.calls).toEqual([{ method: "evener/host/request", params: { host: "alpha", method, params: {} } }]);
+  });
+});
+
+describe("hostRequest deadlines", () => {
+  test.each([LOCAL_HOST, "alpha"])("preserves the caller deadline for %s", async (host) => {
+    const fake = new FakeClient("ready");
+    fake.on("model/list", () => ({ data: [] }));
+    fake.on("evener/host/request", () => ({ data: [] }) as unknown as HostForwardedResult);
+    const request = vi.spyOn(fake, "request");
+    const params = {};
+    const opts = { timeoutMs: 90_000 };
+
+    await hostRequest(fake, host, "model/list", params, opts);
+
+    if (host === LOCAL_HOST) {
+      expect(request).toHaveBeenCalledWith("model/list", params, opts);
+    } else {
+      expect(request).toHaveBeenCalledWith("evener/host/request", { host, method: "model/list", params }, opts);
+    }
   });
 });
