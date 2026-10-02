@@ -2532,6 +2532,24 @@ _(no fields)_
 | `skills` | `[]appwire.EvenerSkillInfo` | yes |  |
 
 
+### `Task`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `int` |  |  |
+| `type` | `appwire.TaskType` |  |  |
+| `description` | `string` |  |  |
+| `prompt` | `string` |  |  |
+| `status` | `appwire.TaskStatus` |  |  |
+| `depends_on` | `[]int` | yes |  |
+| `notes` | `[]string` | yes |  |
+| `reasoning_effort` | `string` | yes |  |
+| `insert` | `string` | yes |  |
+| `created_at` | `*time.Time` | yes |  |
+| `updated_at` | `*time.Time` | yes |  |
+| `completed_at` | `*time.Time` | yes |  |
+
+
 ### `TaskListParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2543,7 +2561,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| `data` | `[]appwire.Task` |  |  |
 
 
 ### `TaskUpdatedParams`

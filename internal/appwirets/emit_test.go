@@ -81,6 +81,19 @@ func TestEmitInterface_PointerNullVsOptional(t *testing.T) {
 	}
 }
 
+// A nil slice can mean unavailable, distinct from an authoritative empty list.
+func TestEmitInterface_NullableSlice(t *testing.T) {
+	type Sample struct {
+		Data     []string `json:"data" appwire:"nullable"`
+		Optional []string `json:"optional,omitempty" appwire:"nullable"`
+	}
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
+	want := "export interface Sample {\n  data: string[] | null;\n  optional?: string[];\n}\n"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestEmitInterface_NumericKinds(t *testing.T) {
 	type Sample struct {
 		I   int     `json:"i"`

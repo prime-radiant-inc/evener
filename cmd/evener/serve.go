@@ -129,7 +129,7 @@ type serveServer interface {
 	// SetCostLookupFunc is the one place a dollar figure enters the daemon:
 	// the live session's registry resolution of an instance/model reference.
 	SetCostLookupFunc(func(string) *registry.Cost)
-	SetTasksFunc(func() any)
+	SetTasksFunc(func() []appwire.Task)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
 	SetThreadActivityReadFunc(func(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error))
 	SetThreadDelegatesListFunc(func(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error))
@@ -1519,7 +1519,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// Resolved per call like the model hook above: the replacement session a
 	// thread/clear installs resolves on its own registry.
 	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return getSession().CostFor(ref) })
-	srv.SetTasksFunc(func() any { return getSession().Tasks() })
+	srv.SetTasksFunc(func() []appwire.Task { return getSession().Tasks() })
 	srv.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
 		sess := getSession()
 		if params.Ref == workspaceRef {
