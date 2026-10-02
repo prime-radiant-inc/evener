@@ -35,9 +35,14 @@ type TaskTemplate struct {
 // Task and its enums share the persisted and AppWire representation. Aliases
 // preserve the task-store API without maintaining a second serialization shape.
 type Task = appwire.Task
+
+// TaskStatus is the shared lifecycle state of a task.
 type TaskStatus = appwire.TaskStatus
+
+// TaskType is the shared classification of task work.
 type TaskType = appwire.TaskType
 
+// Task status and type constants retain the task-store API names.
 const (
 	TaskOpen          = appwire.TaskOpen
 	TaskInProgress    = appwire.TaskInProgress

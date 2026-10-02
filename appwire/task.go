@@ -32,6 +32,8 @@ const (
 
 // Task is a task-list row shared by persistence and evener/tasks/list.
 // Its existing snake_case field names are part of the wire contract.
+//
+//nolint:tagliatelle // Preserve the existing snake_case task wire and persistence contract.
 type Task struct {
 	ID          int        `json:"id"`          // store-assigned, 1-based identifier
 	Type        TaskType   `json:"type"`        // classification of the work
