@@ -51,10 +51,10 @@ func isOpaqueStruct(t reflect.Type) bool {
 // but the type is still a reflect.Type so callers can either stringify it
 // (emitInterface) or walk it for further named types to register (registry).
 type rawField struct {
-	json      string
-	elemType  reflect.Type // pointer already stripped
-	isPointer bool
-	optional  bool // omitempty
+	json     string
+	elemType reflect.Type // pointer already stripped
+	nullable bool
+	optional bool // omitempty
 	// doc is the Go doc comment above the field, verbatim lines joined by
 	// "\n", or "" when the field is undocumented. reflect.Type carries no
 	// comments, so fieldDoc reads it back out of the Go source.
@@ -79,7 +79,7 @@ func rawFieldsOf(t reflect.Type) []rawField {
 			continue
 		}
 		ft := f.Type
-		isPointer := ft.Kind() == reflect.Pointer
+		nullable := ft.Kind() == reflect.Pointer || f.Tag.Get("appwire") == "nullable"
 		for ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
@@ -91,9 +91,9 @@ func rawFieldsOf(t reflect.Type) []rawField {
 			name = f.Name
 		}
 		out = append(out, rawField{
-			json:      name,
-			elemType:  ft,
-			isPointer: isPointer,
+			json:     name,
+			elemType: ft,
+			nullable: nullable,
 			// omitzero omits only the zero value, so a tagged field can still
 			// be absent from a frame and is optional to a client just as an
 			// omitempty one is. The two differ in what they send for an empty
@@ -372,7 +372,7 @@ func emitInterface(name string, t reflect.Type) string {
 	for _, f := range rawFieldsOf(t) {
 		writeFieldDoc(&b, f.doc)
 		tsType := typeExpr(f.elemType)
-		if f.isPointer && !f.optional {
+		if f.nullable && !f.optional {
 			tsType += " | null"
 		}
 		optMark := ""

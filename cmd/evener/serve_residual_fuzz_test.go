@@ -47,7 +47,7 @@ type residualServeServer struct {
 	visionModel    func(string) error
 	name           func(string) error
 	effort         func(string) error
-	tasks          func() any
+	tasks          func() []appwire.Task
 	jobs           func(appwire.JobsListParams) (any, error)
 	jobOutput      func(string, int64, int64) (any, bool, error)
 	jobGet         func(string) (any, bool, error)
@@ -94,7 +94,7 @@ func (s *residualServeServer) SetModelFunc(f func(string) error)           { s.m
 func (s *residualServeServer) SetVisionModelFunc(f func(string) error)     { s.visionModel = f }
 func (s *residualServeServer) SetNameFunc(f func(string) error)            { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string) error) { s.effort = f }
-func (s *residualServeServer) SetTasksFunc(f func() any)                   { s.tasks = f }
+func (s *residualServeServer) SetTasksFunc(f func() []appwire.Task)        { s.tasks = f }
 func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
 	s.jobs = f
 }

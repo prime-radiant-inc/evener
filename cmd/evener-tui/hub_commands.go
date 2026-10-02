@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -918,12 +917,7 @@ func fetchHubTasksSync(ctx context.Context, client *appwire.Client, ref appwire.
 	if err != nil {
 		return nil, err
 	}
-	var tasks []task.Task
-	data, _ := json.Marshal(resp.Data)
-	if len(data) > 0 {
-		_ = json.Unmarshal(data, &tasks)
-	}
-	return tasks, nil
+	return resp.Data, nil
 }
 
 func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, expectedInstanceIDs ...string) tea.Cmd {

@@ -238,28 +238,22 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt","expectedInstanceId":"instance_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt", ExpectedInstanceID: "instance_1"})
 		}},
-		{"TasksList", MethodEvenerTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []map[string]any{{
-			"id": 5, "type": "implement", "description": "Wire up the status row",
-			"prompt": "Follow the existing disclosure idiom.", "status": "in_progress",
+		{"TasksList", MethodEvenerTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []Task{{
+			ID: 5, Type: TaskTypeImplement, Description: "Wire up the status row",
+			Prompt: "Follow the existing disclosure idiom.", Status: TaskInProgress,
 		}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.TasksList(ctx, TaskListParams{Ref: "local:th"})
 			if err != nil {
 				return err
 			}
-			// Data is `any` in the catalog and no appwire type describes a task
-			// row (the daemon puts agent/task.Task values here), so what this
-			// pins is the passthrough: rows arrive decoded, unwrapped, under
-			// the same snake_case keys and JSON types the web client's
-			// parseTaskListData requires of every row it accepts.
-			rows, ok := out.Data.([]any)
-			if !ok || len(rows) != 1 {
+			if len(out.Data) != 1 {
 				return fmt.Errorf("TasksList data = %#v, want one row", out.Data)
 			}
-			row, ok := rows[0].(map[string]any)
-			if !ok || row["id"] != float64(5) || row["type"] != "implement" ||
-				row["description"] != "Wire up the status row" ||
-				row["prompt"] != "Follow the existing disclosure idiom." || row["status"] != "in_progress" {
-				return fmt.Errorf("TasksList row = %#v", rows[0])
+			row := out.Data[0]
+			if row.ID != 5 || row.Type != TaskTypeImplement ||
+				row.Description != "Wire up the status row" ||
+				row.Prompt != "Follow the existing disclosure idiom." || row.Status != TaskInProgress {
+				return fmt.Errorf("TasksList row = %#v", row)
 			}
 			return nil
 		}},

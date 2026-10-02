@@ -18,7 +18,7 @@ import (
 type pass6WorkspaceSource struct {
 	*scriptedAppSource
 	readErr, nameErr, tasksErr error
-	tasks                      any
+	tasks                      []appwire.Task
 }
 
 func (s *pass6WorkspaceSource) ReadThread(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -83,7 +83,7 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			t.Fatal(err)
 		}
 		thread := appwire.Thread{ID: "thread", SessionID: "thread", Source: "remote", Name: "Live", CWD: work, ModelProvider: "openai/gpt-4o", Status: appwire.ThreadStatus{Type: "active"}, Evener: appwire.EvenerThread{Ref: "remote:thread", ActiveTurnID: "turn", Capabilities: appwire.ThreadCapabilities{Send: true}}}
-		source := &pass6WorkspaceSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, tasks: []map[string]any{{"id": "task"}}}
+		source := &pass6WorkspaceSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, tasks: []appwire.Task{{ID: 1}}}
 		roster := hubcore.NewRosterWithEntries()
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
 		web.sources.Add(source)

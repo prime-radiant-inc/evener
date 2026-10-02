@@ -123,6 +123,7 @@ func build() docData {
 	register(appwire.EvenerDelegateInfo{})
 	// Nested session activity resources need field tables independently of the
 	// catalog's top-level read and page responses.
+	register(appwire.Task{})
 	register(appwire.SessionActivityAncestor{})
 	register(appwire.SessionActivityContext{})
 	register(appwire.SessionActivityCounts{})

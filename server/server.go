@@ -428,7 +428,7 @@ type Server struct {
 	reasoningEffortFunc      func(string) error
 	listModelsFunc           func(context.Context) ([]appwire.ModelDescriptor, error)
 	appSessionActivity       sessionActivityHooks
-	tasksFn                  func() any
+	tasksFn                  func() []appwire.Task
 	jobsFn                   func(appwire.JobsListParams) (any, error)
 	jobOutputFn              func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
 	jobGetFn                 func(jobID string) (data any, found bool, err error)
@@ -849,9 +849,9 @@ func (s *Server) SetListModelsFunc(fn func(context.Context) ([]appwire.ModelDesc
 	s.mu.Unlock()
 }
 
-// SetTasksFunc sets the function called by evener/tasks/list. The function should
-// return a JSON-serializable slice (typically []task.Task).
-func (s *Server) SetTasksFunc(fn func() any) {
+// SetTasksFunc sets the task-list reader called by evener/tasks/list. A nil
+// slice means no data; a non-nil slice is authoritative, including an empty one.
+func (s *Server) SetTasksFunc(fn func() []appwire.Task) {
 	s.mu.Lock()
 	s.tasksFn = fn
 	s.mu.Unlock()

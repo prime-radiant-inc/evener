@@ -60,6 +60,11 @@ executable provides the commands that launch these processes. See
 | **S04 Terminal dashboard** — the same sessions and actions through a terminal | [TUI entry](../../cmd/evener-tui/main.go), [commands](../../cmd/evener-tui/hub_commands.go), [reconnect](../../cmd/evener-tui/hub_reconnect.go), [attachments](../../cmd/evener-tui/hub_attachments.go) | The model owns composer state and optimistic feedback. Reconnect continually redials and resubscribes; the pending coordinator reconciles authoritative notifications. A connection recovering does not itself replay every failed user action. | [Hub guide](../evener-hub.md), [architecture](../architecture.md) |
 | **S05 Protocol and shared client** — identities, requests, subscriptions, results, ordered events and capabilities | [AppWire catalog](../../appwire/protocol.go), [Go client](../../appwire/client.go), [server transport](../../internal/appserver), [TypeScript client](../../appwire-client/typescript), [shared state](../../appwire-client/typescript/state) | Generated contracts describe requests and results. Mutation identity and acceptance state determine replay semantics; connection owners handle reattachment and resubscription. The shared session activity store owns collection demand and recovery; connection/ref leases share transcript and activity subscription membership. Wire compatibility, a stale cache, a lost response and an authoritative refusal are distinct states. | [AppWire protocol](../appwire-protocol.md), [TypeScript package](../../appwire-client/typescript/README.md), [session activity](session-activity.md) |
 
+Task rows use the shared `appwire.Task` representation for persistence and protocol reads;
+`agent/task` retains aliases for the store API. A task-list result of `null` means data is
+unavailable, while `[]` is an authoritative empty list. SDK generation preserves this
+distinction, and client adapters own validation and display-field normalization.
+
 ## Hub, hosts and sessions
 
 | ID and responsibility | Entry points and implementation | State authority and recovery ownership | Owning references |

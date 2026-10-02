@@ -3458,6 +3458,43 @@ export interface SubagentTally {
   done: number;
 }
 
+export interface Task {
+  id: number;
+  type: string;
+  description: string;
+  prompt: string;
+  status: string;
+  /**
+   * DependsOn lists IDs of tasks that must complete before this one is ready.
+   */
+  depends_on?: number[];
+  /**
+   * Notes accumulates free-form progress notes appended over the task's life.
+   */
+  notes?: string[];
+  /**
+   * ReasoningEffort overrides the reasoning effort for a subagent that runs
+   * this task (low|medium|high); empty uses the session default.
+   */
+  reasoning_effort?: string;
+  /**
+   * Insert is a template-expansion marker (e.g. "parent_tasks") carried over
+   * from the task template it was created from; empty for ordinary tasks.
+   */
+  insert?: string;
+  /**
+   * CreatedAt/UpdatedAt/CompletedAt are minted automatically by the store —
+   * never settable through the agent-facing task tool. CreatedAt is stamped once when the task is added;
+   * UpdatedAt advances on every mutation; CompletedAt is stamped when the task
+   * transitions to a terminal status (done or cancelled) and cleared if it
+   * is later reopened. Pointers so an
+   * unset stamp (and tasks persisted before timestamps existed) omit cleanly.
+   */
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string;
+}
+
 export interface TaskAggregate {
   total: number;
   done: number;
@@ -3471,7 +3508,12 @@ export interface TaskListParams {
 }
 
 export interface TaskListResponse {
-  data: unknown;
+  /**
+   * Data is nil when task data is unavailable and non-nil (possibly empty)
+   * for an authoritative list. The nullable annotation preserves that
+   * distinction in the generated SDK without a pointer to the slice.
+   */
+  data: Task[] | null;
 }
 
 export interface TaskSummary {

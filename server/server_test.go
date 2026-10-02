@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -114,8 +115,8 @@ func TestServerAppWireThreadList(t *testing.T) {
 func TestServerAppWireTasksList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetTasksFunc(func() any {
-		return []map[string]any{{"id": "1"}}
+	srv.SetTasksFunc(func() []appwire.Task {
+		return []appwire.Task{{ID: 1}}
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -131,15 +132,40 @@ func TestServerAppWireTasksList(t *testing.T) {
 	if !ok {
 		t.Fatalf("evener/tasks/list result=%T (%+v)", resp.Response.Result, resp)
 	}
-	tasks, ok := out.Data.([]map[string]any)
-	if !ok {
-		t.Fatalf("task data type=%T, want []map[string]any", out.Data)
-	}
+	tasks := out.Data
 	if len(tasks) != 1 {
 		t.Fatalf("task data: got %d tasks, want 1", len(tasks))
 	}
-	if tasks[0]["id"] != "1" {
-		t.Errorf("task id: got %v, want 1", tasks[0]["id"])
+	if tasks[0].ID != 1 {
+		t.Errorf("task id: got %v, want 1", tasks[0].ID)
+	}
+}
+
+func TestServerAppWireTasksListAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read func() []appwire.Task
+		want string
+	}{
+		{name: "no reader", want: "null"},
+		{name: "unavailable", read: func() []appwire.Task { return nil }, want: "null"},
+		{name: "empty authoritative list", read: func() []appwire.Task { return []appwire.Task{} }, want: "[]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(ServerConfig{})
+			srv.SetTasksFunc(tc.read)
+			response, err := srv.handleAppTasksList(context.Background(), appwire.TaskListParams{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(response.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != tc.want {
+				t.Fatalf("task data = %s, want %s", data, tc.want)
+			}
+		})
 	}
 }
 
