@@ -81,6 +81,21 @@
   animation: sheetInLeft var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 
+/* A full-height edge sheet must follow the VISIBLE viewport, not the large
+ * one 100vh names while a phone's browser chrome is showing - the same
+ * reasoning AppShell.module.css's identical @supports records. Sized to
+ * 100vh, the mobile sessions drawer (side="left") extends below the visible
+ * bottom, so the last thing in its rail - the Archived sessions disclosure -
+ * can never be scrolled into view. dvh resolves to the visible viewport
+ * height; the 100vh declarations above stay as the fallback for engines
+ * without dvh. */
+@supports (height: 100dvh) {
+  .right,
+  .left {
+    height: 100dvh;
+  }
+}
+
 .standard {
   --sheet-inline-size: 420px;
 }

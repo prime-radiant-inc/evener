@@ -221,6 +221,32 @@ test("all side variants' slide-in animations honor prefers-reduced-motion, using
   expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
 });
 
+// The mobile sessions drawer is a full-height side="left" Sheet. jsdom has no
+// dynamic viewport and computes no cascade, so - the same source-read idiom as
+// AppShell.test.tsx's own dvh check - this proves the panel follows the
+// VISIBLE viewport: at 100vh the drawer extends below a phone's visible bottom
+// while its browser chrome shows, and the Archived sessions disclosure at the
+// end of the rail can never be scrolled into view. Comments are stripped so a
+// comment quoting the declaration cannot satisfy the assertion.
+test("full-height edge sheets follow the visible viewport, keeping a vh fallback", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "sheet.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  for (const variant of ["left", "right"]) {
+    const base = css.match(new RegExp(`^\\.${variant} \\{([\\s\\S]*?)\\n\\}`, "m"));
+    expect(base, `.${variant} rule`).not.toBeNull();
+    expect(base![1]).toContain("height: 100vh");
+    expect(base![1]).not.toContain("100dvh");
+  }
+
+  const supports = css.match(/@supports \(height: 100dvh\) \{([\s\S]*?)\n\}/);
+  expect(supports, "@supports (height: 100dvh) block").not.toBeNull();
+  expect(supports![1]).toContain(".left");
+  expect(supports![1]).toContain(".right");
+  expect(supports![1]).toContain("height: 100dvh");
+  expect(supports![1]).not.toContain("100vh");
+});
+
 // --- expandable mode (Task 2) --------------------------------------------
 // The drag handle (data-testid="sheet-handle") is rendered only when
 // `expandable` is set; geometry state ("peek" | "full") is exposed via a
