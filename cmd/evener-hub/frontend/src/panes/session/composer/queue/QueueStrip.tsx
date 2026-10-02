@@ -87,6 +87,7 @@ export interface QueueStripProps {
     attachments?: InputAttachment[],
     skillNames?: readonly string[],
     commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
   ): void;
   activeRecoveryId?: string;
   onEditRecovery?(record: MutationRecoveryRecord): void;
@@ -330,6 +331,7 @@ export function QueueStrip({
     fullText: string,
     skillNames?: readonly string[],
     commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
   ): Promise<void> {
     // The recovery fence, re-read live at the press. An edit refuses as a
     // whole: restoring the text without the cancelQueued half would leave the
@@ -347,7 +349,8 @@ export function QueueStrip({
       // must not borrow the cancel's message below, and must leave the queued
       // entry alone rather than removing a message with nowhere to go.
       try {
-        onRestoreToComposer(fullText, undefined, skillNames, ...(commandNames ? [commandNames] : []));
+        if (mentions) onRestoreToComposer(fullText, undefined, skillNames, commandNames, mentions);
+        else onRestoreToComposer(fullText, undefined, skillNames, ...(commandNames ? [commandNames] : []));
       } catch (err) {
         toasts.push("error", `Couldn't move this message to the composer: ${errorText(err)}`);
         return;
@@ -529,6 +532,9 @@ export function QueueStrip({
           // appended after it. The preview text is truncated first so a
           // full-length line can never push the markers past the display cap.
           const entryCommandNames = queue?.commandNames?.[index];
+          const entryMentions = queue?.mentions?.[index]?.flatMap((item): ComposerMention[] =>
+            item.kind === "skill" || item.kind === "command" ? [{ ...item, kind: item.kind }] : [],
+          );
           const namedMarkers = [skillMarkers(entrySkillNames ?? []), commandMarkers(entryCommandNames ?? [])]
             .filter(Boolean)
             .join(" ");
@@ -589,7 +595,7 @@ export function QueueStrip({
                   disabledReason={editDisabledReason({ actionsAvailable, hasTexts, imageOnly })}
                   onClick={() => {
                     if (entryId !== undefined && fullText !== undefined) {
-                      void handleEdit(index, entryId, fullText, entrySkillNames, entryCommandNames);
+                      void handleEdit(index, entryId, fullText, entrySkillNames, entryCommandNames, entryMentions);
                     }
                   }}
                 />

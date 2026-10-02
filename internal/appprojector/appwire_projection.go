@@ -201,6 +201,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				Texts:             append([]string(nil), data.Texts...),
 				SkillNames:        cloneSkillNames(data.SkillNames),
 				CommandNames:      cloneSkillNames(data.CommandNames),
+				Mentions:          appwire.CloneInputMentions(data.Mentions),
 			},
 			ConsumedClientMutationIDs: append([]string(nil), data.ConsumedClientMutationIDs...),
 		})}

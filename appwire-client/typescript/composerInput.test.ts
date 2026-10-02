@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { buildInput, formatQuoteBlock, mergeDraftText } from "./composerInput";
+import { buildComposerInput, buildInput, formatQuoteBlock, mergeDraftText } from "./composerInput";
 
 // Skill names reach buildInput from drafts, recovery records and queue
 // projections. Any of those can carry a stray space, an empty string or a
@@ -30,6 +30,32 @@ test("buildInput keeps same-spelling skills and commands distinct and dedupes ea
     { type: "command", name: "probe" },
     { type: "command", name: "pkg:probe" },
   ]);
+});
+
+test("wire editing locations follow attachment translation without activating prose", () => {
+  const text = "😀 [image 1] /same /same /same";
+  const mentions = [
+    { kind: "command" as const, name: "same", offset: text.indexOf("/same") },
+    { kind: "skill" as const, name: "same", offset: text.indexOf("/same") + 6 },
+  ];
+  const input = buildComposerInput(
+    text,
+    [{ marker: 1, mediaType: "image/png", data: "AQID", name: "one.png" }],
+    ["same"],
+    ["same"],
+    mentions,
+  );
+  expect(input[0]).toEqual({
+    type: "text",
+    text: "😀 (attached image 1: one.png) /same /same /same",
+    mentions: [
+      { kind: "command", name: "same", offset: 31 },
+      { kind: "skill", name: "same", offset: 37 },
+    ],
+  });
+  expect(input.filter((item) => item.type === "command")).toEqual([{ type: "command", name: "same" }]);
+  expect(input.filter((item) => item.type === "skill")).toEqual([{ type: "skill", name: "same" }]);
+  expect(mentions[0]?.offset).toBe(text.indexOf("/same"));
 });
 
 test("mergeDraftText appends after exactly one blank line, or replaces a blank draft", () => {

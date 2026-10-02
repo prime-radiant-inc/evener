@@ -2041,6 +2041,7 @@ func cloneClientMutationInput(src []appwire.InputItem) []appwire.InputItem {
 	for i, item := range src {
 		dst[i] = item
 		dst[i].Data = append([]byte(nil), item.Data...)
+		dst[i].Mentions = slices.Clone(item.Mentions)
 		if item.Metadata != nil {
 			dst[i].Metadata = make(map[string]string, len(item.Metadata))
 			maps.Copy(dst[i].Metadata, item.Metadata)

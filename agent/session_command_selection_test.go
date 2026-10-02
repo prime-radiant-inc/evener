@@ -2,17 +2,77 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
+
+func TestClientMutationQueueEditingLocationsRestore(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic"}
+	s := newSkillSelectionDiskSession(t, root, adapter)
+	id := s.ID()
+	seen, stop := captureEvents(s)
+	var params appwire.TurnQueueParams
+	if err := json.Unmarshal([]byte(`{"clientMutationId":"locations-318","input":[{"type":"text","text":"/same /same /same","mentions":[{"kind":"command","name":"same","offset":0},{"kind":"skill","name":"same","offset":6}]},{"type":"command","name":"same"},{"type":"skill","name":"same"}]}`), &params); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcceptClientMutationQueue(params); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	var pushed *events.QueueChangedData
+	for _, event := range *seen {
+		if event.Kind == events.EventQueueChanged {
+			data := event.Data.(events.QueueChangedData)
+			if data.Depth == 1 {
+				pushed = &data
+			}
+		}
+	}
+	if pushed == nil || !reflect.DeepEqual(pushed.Mentions, [][]appwire.InputMention{params.Input[0].Mentions}) {
+		t.Fatalf("accepted queue push lost editing locations: %+v", pushed)
+	}
+	restored := restoreSkillSelectionDiskSession(t, root, id, adapter)
+	t.Cleanup(restored.Close)
+	queue, pending := restored.ClientMutationProjection()
+	for label, value := range map[string]any{"queue": queue, "acceptedInput": pending[0].Input[0]} {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatal(err)
+		}
+		var mentions any
+		if err := json.Unmarshal(fields["mentions"], &mentions); err != nil {
+			t.Fatalf("%s dropped authoritative mentions: %s (%v)", label, data, err)
+		}
+		want := `[{"kind":"command","name":"same","offset":0},{"kind":"skill","name":"same","offset":6}]`
+		if label == "queue" {
+			want = "[" + want + "]"
+		}
+		var expected any
+		if err := json.Unmarshal([]byte(want), &expected); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(mentions, expected) {
+			t.Fatalf("%s mentions = %v, want %v", label, mentions, expected)
+		}
+	}
+}
 
 func TestClientMutationCommandSelection(t *testing.T) {
 	t.Parallel()

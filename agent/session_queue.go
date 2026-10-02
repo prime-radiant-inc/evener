@@ -471,9 +471,10 @@ type queuedInput struct {
 	// SkillNames carries the canonical skill identities this durable input
 	// selected. Identities only, never bodies: the complete instructions load
 	// from the recorded sources at actual consumption.
-	SkillNames   []string           `json:"skill_names,omitempty"`
-	CommandNames []string           `json:"command_names,omitempty"`
-	Provenance   *provenance.Causal `json:"provenance,omitempty"`
+	SkillNames   []string               `json:"skill_names,omitempty"`
+	CommandNames []string               `json:"command_names,omitempty"`
+	Mentions     []appwire.InputMention `json:"mentions,omitempty"`
+	Provenance   *provenance.Causal     `json:"provenance,omitempty"`
 	// SteeringCarrier marks the entry claimSteeringCarrierInput synthesizes
 	// to run pending user steering as a turn of its own: never queued, never
 	// persisted, and carrying no content -- the steering it exists for is
@@ -962,12 +963,14 @@ func (s *Session) queueChangedDataLocked() events.QueueChangedData {
 		data.Texts = make([]string, len(s.inputQueue))
 		data.SkillNames = make([][]string, len(s.inputQueue))
 		data.CommandNames = make([][]string, len(s.inputQueue))
+		data.Mentions = make([][]appwire.InputMention, len(s.inputQueue))
 		for i, entry := range s.inputQueue {
 			data.Preview[i] = queuedEntryPreviewLine(entry)
 			data.IDs[i] = entry.ID
 			data.Texts[i] = entry.Text
 			data.SkillNames[i] = slices.Clone(entry.SkillNames)
 			data.CommandNames[i] = slices.Clone(entry.CommandNames)
+			data.Mentions[i] = slices.Clone(entry.Mentions)
 		}
 	}
 	return data

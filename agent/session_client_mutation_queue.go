@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode/utf16"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -50,6 +51,7 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.Texts = make([]string, len(snapshot.InputQueue))
 		queue.SkillNames = make([][]string, len(snapshot.InputQueue))
 		queue.CommandNames = make([][]string, len(snapshot.InputQueue))
+		queue.Mentions = make([][]appwire.InputMention, len(snapshot.InputQueue))
 	}
 	pendingByID := make(map[string]appwire.PendingMutation, len(snapshot.PendingExecutions)+len(snapshot.InputQueue))
 	for id, pending := range snapshot.PendingExecutions {
@@ -69,6 +71,7 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.Texts[i] = queued.Text
 		queue.SkillNames[i] = slices.Clone(queued.SkillNames)
 		queue.CommandNames[i] = slices.Clone(queued.CommandNames)
+		queue.Mentions[i] = slices.Clone(queued.Mentions)
 		if _, exists := pendingByID[entry.ClientMutationID]; exists {
 			continue
 		}
@@ -687,6 +690,13 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 	for _, item := range entry.Input {
 		switch item.Type {
 		case "text":
+			if len(item.Mentions) > 0 {
+				offset := len(utf16.Encode([]rune(queued.Text)))
+				for _, mention := range item.Mentions {
+					mention.Offset += offset
+					queued.Mentions = append(queued.Mentions, mention)
+				}
+			}
 			queued.Text += item.Text
 		case "image":
 			queued.Images = append(queued.Images, ImageAttachment{MediaType: item.MediaType, Data: append([]byte(nil), item.Data...), Name: item.Name})

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -5299,6 +5299,74 @@ test.each([true, false])("explicit commands persist through remount and respect 
     expect(textarea().textContent).toBe("Before /audit after /audit");
   }
 });
+
+test.each(["same", "audit"])(
+  "authoritative queue edit preserves selected %s atoms in a fresh client through delete and resend",
+  async (name) => {
+    const user = userEvent.setup();
+    const ref = `ref_authoritative_${name}`;
+    const text = name === "same" ? "/same /same /same" : "/audit /audit";
+    const mentions = [
+      { kind: "command" as const, name, offset: 0 },
+      ...(name === "same" ? [{ kind: "skill" as const, name, offset: 6 }] : []),
+    ];
+    const { buildComposerInput } = await import("@evener/appwire-client");
+    const input = buildComposerInput(text, [], name === "same" ? [name] : [], [name], mentions);
+    // JSON is the accepted queue representation, with no local draft/outbox.
+    const accepted = JSON.parse(JSON.stringify(input));
+    const fake = await mountComposer(ref, {
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+        queue: {
+          revision: 1,
+          depth: 1,
+          ids: ["q1"],
+          texts: [accepted[0].text],
+          preview: [text],
+          commandNames: [[name]],
+          skillNames: [name === "same" ? [name] : []],
+          mentions: [accepted[0].mentions ?? []],
+        },
+      },
+    });
+    fake.on("turn/cancelQueued", (params) => ({
+      removedText: text,
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
+    fake.on("turn/start", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    }));
+    await user.click(screen.getByRole("button", { name: "Edit message" }));
+    await flushPendingTurnsProjectionForTests();
+    expect(readComposerDraft(ref).mentions).toEqual(mentions);
+    expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(1);
+    expect(textarea().querySelectorAll("[data-skill-name]")).toHaveLength(name === "same" ? 1 : 0);
+    await selectEditorText(textarea(), name.length + 1);
+    await user.keyboard("{Backspace}");
+    expect(textarea().querySelectorAll("[data-command-name]")).toHaveLength(0);
+    await user.click(submitButton());
+    await flushPendingTurnsProjectionForTests();
+    const sent = (fake.calls.find((call) => call.method === "turn/start")?.params as { input: InputItem[] } | undefined)
+      ?.input;
+    expect(sent?.filter((item) => item.type === "command")).toEqual([]);
+    expect(sent?.filter((item) => item.type === "skill").map((item) => item.name)).toEqual(
+      name === "same" ? [name] : [],
+    );
+    expect(sent?.[0]?.text).toBe(name === "same" ? " /same /same" : " /audit");
+  },
+);
 
 test("queue edit retains current command and skill atom locations without activating duplicate prose", async () => {
   const user = userEvent.setup();

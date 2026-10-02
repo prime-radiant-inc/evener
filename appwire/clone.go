@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"slices"
 )
 
 // CloneThread returns a copy of t in which every known nested mutable field
@@ -315,7 +316,20 @@ func cloneQueueState(q QueueState) QueueState {
 		}
 		q.CommandNames = names
 	}
+	q.Mentions = CloneInputMentions(q.Mentions)
 	return q
+}
+
+// CloneInputMentions retains FIFO locations without sharing mutable slices.
+func CloneInputMentions(src [][]InputMention) [][]InputMention {
+	if src == nil {
+		return nil
+	}
+	dst := make([][]InputMention, len(src))
+	for i := range src {
+		dst[i] = slices.Clone(src[i])
+	}
+	return dst
 }
 
 func clonePendingMutations(mutations []PendingMutation) []PendingMutation {

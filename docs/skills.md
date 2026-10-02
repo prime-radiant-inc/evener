@@ -370,7 +370,11 @@ They keep explicit skill and command selections as distinct canonical data:
   the target does not accept selections.
 - **Queue and recovery.** The names live in the durable mutation record's
   own input, so queue drains, recovery edits and resends, and remounts all
-  restore them. Merging a recovered draft into a composer unions its
+  restore them. Text items also retain `{kind, name, offset}` mention metadata,
+  with UTF-16 offsets shifted across attachment translation. The authoritative
+  queue projects these locations for a new client without the original outbox;
+  restoring an entry does not guess kinds or select duplicate quoted prose.
+  Editing locations do not authorize activation. Merging a recovered draft into a composer unions its
   selections with the currently staged ones, deduplicated by canonical name.
   The launcher's project-scoped draft retains text, both selection kinds and
   attachments through navigation, remounts and failed creation.

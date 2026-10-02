@@ -3,7 +3,7 @@
 // signature + a minimal working body (bare
 // prompt + cwd -> real session); T2 fills the rest (branch/access-mode ->
 // launchOverrides, the schema engine, sticky defaults).
-import type { AppwireClientLike, LaunchConfigLayer, ThreadStartParams } from "@evener/appwire-client";
+import type { AppwireClientLike, ComposerMention, LaunchConfigLayer, ThreadStartParams } from "@evener/appwire-client";
 import { buildComposerInput } from "@evener/appwire-client";
 import type { InputAttachment } from "../../stores/threads";
 import { mergeAccessModeSandbox } from "./accessMode";
@@ -14,6 +14,7 @@ export interface SpawnRequest {
   attachments?: InputAttachment[];
   skillNames?: readonly string[];
   commandNames?: readonly string[];
+  mentions?: readonly ComposerMention[];
   harness?: string;
   modelProvider?: string; // evener-model harness: "<provider>/<model>" split -> provider half
   model?: string; // model id (bare id for a non-evener harness - floor §1.4)
@@ -50,7 +51,7 @@ export interface SpawnResult {
 export async function startThread(client: AppwireClientLike, req: SpawnRequest): Promise<SpawnResult> {
   const params: ThreadStartParams = {
     cwd: req.cwd,
-    input: buildComposerInput(req.prompt, req.attachments, req.skillNames, req.commandNames),
+    input: buildComposerInput(req.prompt, req.attachments, req.skillNames, req.commandNames, req.mentions),
   };
   if (req.harness) params.harness = req.harness;
   if (req.modelProvider) params.modelProvider = req.modelProvider;

@@ -47,3 +47,39 @@ func TestCommandInputSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestInputMentionsEditingMetadata(t *testing.T) {
+	t.Parallel()
+	want := []InputItem{{Type: "text", Text: "😀 /same /same /same", Mentions: []InputMention{{Kind: "command", Name: "same", Offset: 3}, {Kind: "skill", Name: "same", Offset: 9}}}, {Type: "command", Name: "same"}, {Type: "skill", Name: "same"}}
+	normalized, err := NormalizeMutationInput(want)
+	if err != nil || !reflect.DeepEqual(normalized.Items, want) {
+		t.Fatalf("normalize = %+v, %v", normalized, err)
+	}
+	normalized.Items[0].Mentions[0].Offset = 0
+	if want[0].Mentions[0].Offset != 3 {
+		t.Fatal("input mentions alias normalized copy")
+	}
+	thread := Thread{Evener: EvenerThread{Queue: QueueState{Mentions: [][]InputMention{want[0].Mentions}}}}
+	clone := CloneThread(thread)
+	clone.Evener.Queue.Mentions[0][0].Name = "changed"
+	if thread.Evener.Queue.Mentions[0][0].Name != "same" {
+		t.Fatal("queue mentions alias clone")
+	}
+	for _, mentions := range [][]InputMention{
+		{{Kind: "command", Name: "same", Offset: -1}},
+		{{Kind: "command", Name: "same", Offset: 2}},
+		{{Kind: "command", Name: "missing", Offset: 3}},
+		{{Kind: "body", Name: "same", Offset: 3}},
+		{{Kind: "command", Name: "same", Offset: int(^uint(0) >> 1)}},
+		{{Kind: "command", Name: "same", Offset: 3}, {Kind: "skill", Name: "same", Offset: 3}},
+	} {
+		input := append([]InputItem(nil), want...)
+		input[0].Mentions = mentions
+		if _, err := NormalizeMutationInput(input); err == nil {
+			t.Fatalf("accepted invalid mentions: %+v", mentions)
+		}
+	}
+	if _, err := NormalizeMutationInput([]InputItem{{Type: "text", Text: "/same", Mentions: []InputMention{{Kind: "command", Name: "same", Offset: 0}}}}); err == nil {
+		t.Fatal("editing metadata authorized unselected command")
+	}
+}

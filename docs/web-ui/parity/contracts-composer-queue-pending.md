@@ -30,6 +30,10 @@ except where a line says so itself.
 - Structured drafts and durable recovery retain kind and mention locations when
   needed to distinguish same-spelling atoms from prose. Attachments preserve
   selection intent while inserting/removing anchors and renumbering recovery.
+- Accepted text items retain validated UTF-16 mention locations in daemon-owned
+  input. Queue reads, push events and edits preserve those locations even in a
+  new client without the original local outbox; deleting a chosen atom does not
+  select another same-spelling prose token.
 - The launcher uses the selected target's pre-session catalog, keeps plain
   Enter as newline/completion and submits only on Mod+Enter. Failed creation,
   project navigation and remount retain unsent selections and attachments.

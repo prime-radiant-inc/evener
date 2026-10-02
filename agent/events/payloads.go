@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -460,6 +461,8 @@ type QueueChangedData struct {
 	SkillNames [][]string `json:"skill_names,omitempty"`
 	// CommandNames retains each queued entry's explicit command selections.
 	CommandNames [][]string `json:"command_names,omitempty"`
+	// Mentions retains FIFO-aligned editing locations independently of names.
+	Mentions [][]appwire.InputMention `json:"mentions,omitempty"`
 	// ConsumedClientMutationIDs names the queued entries THIS push's
 	// transition just consumed (currently: a drain folding the queue into
 	// steering) so a client can settle those optimistic records by positive

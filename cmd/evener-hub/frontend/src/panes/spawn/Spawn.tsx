@@ -2160,6 +2160,7 @@ function SpawnForm({
       attachments: attachments.toInputAttachments(),
       skillNames,
       commandNames,
+      mentions,
       harness: harness || undefined,
       modelProvider: scalars.modelProvider,
       model: scalars.model,

@@ -90,6 +90,15 @@ Generated output cannot select or recursively invoke commands. Existing leading
 typed `/command args` retains its arguments; unselected inline slash prose is
 not an explicit selection. Queue, return and recovery input keeps both kinds.
 
+Text items may carry `mentions: [{kind, name, offset}]` as editing metadata.
+Offsets count UTF-16 code units in that text item and locate ordered,
+non-overlapping visible labels for separately selected canonical identities.
+They never authorize activation or carry command bodies, paths or arguments.
+Accepted input persists these locations; queue reads and `thread/queueChanged`
+project FIFO-aligned `mentions` beside full text and canonical name lists, so a
+fresh client's edit restores the chosen kind without selecting duplicate prose.
+Attachment marker translation shifts locations at the submission boundary.
+
 ## Request methods
 
 `Scope` is which binaries expose the method: **both** (hub and daemon), **hub**

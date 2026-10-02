@@ -63,12 +63,28 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
   const commandNames = canonicalSkillNames(
     input.filter((item) => item.type === "command").map((item) => item.name ?? ""),
   );
+  let mentions = record.composerMentions;
+  if (mentions === undefined && record.composerText === undefined) {
+    const textItems = input.filter((item) => item.type === "text" && typeof item.text === "string");
+    if (textItems.some((item) => item.mentions !== undefined)) {
+      let offset = 0;
+      mentions = textItems.flatMap((item) => {
+        const locations = (item.mentions ?? []).flatMap((mention): ComposerMention[] =>
+          mention.kind === "skill" || mention.kind === "command"
+            ? [{ ...mention, kind: mention.kind, offset: offset + mention.offset }]
+            : [],
+        );
+        offset += (item.text?.length ?? 0) + 1;
+        return locations;
+      });
+    }
+  }
   return {
     text,
     attachments,
     skillNames: skillSelections(input),
     ...(commandNames.length ? { commandNames } : {}),
-    ...(record.composerMentions ? { mentions: [...record.composerMentions] } : {}),
+    ...(mentions ? { mentions: [...mentions] } : {}),
   };
 }
 

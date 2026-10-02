@@ -1201,6 +1201,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     _attachments?: InputAttachment[],
     restoredNames?: readonly string[],
     restoredCommands?: readonly string[],
+    restoredMentions?: readonly ComposerMention[],
   ): void {
     const current = patchSelectionText(
       { text: textRef.current, skillNames: skillNamesRef.current, ...selectionMetaRef.current },
@@ -1213,6 +1214,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       text: restoredText,
       skillNames: [...(restoredNames ?? [])],
       commandNames: [...(restoredCommands ?? [])],
+      ...(restoredMentions ? { mentions: [...restoredMentions] } : {}),
     });
     const merged = mergeRecoveryComposerDraft(
       current.text,

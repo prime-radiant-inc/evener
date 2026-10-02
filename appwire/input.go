@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
+	"unicode/utf16"
 )
 
 func (p TurnStartParams) EffectiveInput() []InputItem {
@@ -71,6 +73,9 @@ func (i *InputItem) UnmarshalJSON(data []byte) error {
 func NormalizeMutationInput(items []InputItem) (MutationInput, error) {
 	normalized := MutationInput{Items: make([]InputItem, 0, len(items))}
 	for i, item := range items {
+		if item.Type != "text" && len(item.Mentions) > 0 {
+			return MutationInput{}, fmt.Errorf("input[%d]: mentions belong only to text", i)
+		}
 		switch item.Type {
 		case "text":
 			if strings.TrimSpace(item.Text) == "" {
@@ -90,6 +95,23 @@ func NormalizeMutationInput(items []InputItem) (MutationInput, error) {
 			return MutationInput{}, fmt.Errorf("input[%d].type %q is unsupported; want text, image, skill, or command", i, item.Type)
 		}
 		normalized.Items = append(normalized.Items, cloneMutationInputItem(item))
+	}
+	for i, item := range normalized.Items {
+		if len(item.Mentions) == 0 {
+			continue
+		}
+		text := utf16.Encode([]rune(item.Text))
+		end := 0
+		for _, mention := range item.Mentions {
+			selected := slices.ContainsFunc(normalized.Items, func(selection InputItem) bool {
+				return (mention.Kind == "skill" || mention.Kind == "command") && selection.Type == mention.Kind && selection.Name == mention.Name
+			})
+			label := utf16.Encode([]rune("/" + mention.Name))
+			if !selected || mention.Offset < end || mention.Offset > len(text) || len(label) > len(text)-mention.Offset || !slices.Equal(text[mention.Offset:mention.Offset+len(label)], label) {
+				return MutationInput{}, fmt.Errorf("input[%d]: mentions must locate ordered, non-overlapping labels for canonical selections", i)
+			}
+			end = mention.Offset + len(label)
+		}
 	}
 	return normalized, nil
 }
@@ -132,6 +154,7 @@ func (i MutationInput) HasContent() bool {
 
 func cloneMutationInputItem(item InputItem) InputItem {
 	item.Data = append([]byte(nil), item.Data...)
+	item.Mentions = slices.Clone(item.Mentions)
 	if item.Metadata != nil {
 		metadata := item.Metadata
 		item.Metadata = make(map[string]string, len(metadata))

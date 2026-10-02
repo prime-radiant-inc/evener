@@ -1,7 +1,7 @@
 import { translateAttachmentMarkers } from "./attachmentMarkers";
 import type { InputItem } from "./types.gen";
 
-/** Editing-only identity and UTF-16 position, never an AppWire input field. */
+/** Editing-only identity and UTF-16 position on a text item, never activation authority. */
 export interface ComposerMention {
   kind: "skill" | "command";
   name: string;
@@ -46,9 +46,15 @@ export function buildInput(
   attachments?: readonly InputAttachment[],
   skillNames?: readonly string[],
   commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): InputItem[] {
   const input: InputItem[] = [];
-  if (text.trim()) input.push({ type: "text", text });
+  if (text.trim())
+    input.push({
+      type: "text",
+      text,
+      ...(mentions?.length ? { mentions: mentions.map((item) => ({ ...item })) } : {}),
+    });
   for (const attachment of attachments ?? []) {
     const image: InputItem = { type: "image", mediaType: attachment.mediaType, data: attachment.data };
     if (attachment.name !== undefined) image.name = attachment.name;
@@ -69,8 +75,14 @@ export function buildComposerInput(
   attachments?: readonly InputAttachment[],
   skillNames?: readonly string[],
   commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): InputItem[] {
-  return buildInput(translateAttachmentMarkers(text, attachments), attachments, skillNames, commandNames);
+  const translated = translateAttachmentMarkers(text, attachments);
+  const translatedMentions = mentions?.map((mention) => ({
+    ...mention,
+    offset: translateAttachmentMarkers(text.slice(0, mention.offset), attachments).length,
+  }));
+  return buildInput(translated, attachments, skillNames, commandNames, translatedMentions);
 }
 
 // Text going back into a draft: after exactly one blank line (the draft's

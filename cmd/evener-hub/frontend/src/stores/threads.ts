@@ -1781,7 +1781,7 @@ export async function updateRecoveryMutation(
   await runtime.start;
   const record = await runtime.storage.updateRecoveryInput(
     clientMutationId,
-    buildInput(text, attachments, skillNames, commandNames),
+    buildInput(text, attachments, skillNames, commandNames, mentions),
     durableAttachments(attachments),
     text,
     mentions,
@@ -2233,7 +2233,7 @@ function composerMutationIntent(
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
-  const input = buildComposerInput(text, attachments, skillNames, commandNames);
+  const input = buildComposerInput(text, attachments, skillNames, commandNames, mentions);
   const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,

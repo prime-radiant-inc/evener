@@ -42,6 +42,33 @@ function settledAttachment(marker: number, name: string, data: string): PendingA
   };
 }
 
+test("accepted input restores exact locations without a local composer snapshot", () => {
+  const mentions = [
+    { kind: "command" as const, name: "same", offset: 0 },
+    { kind: "skill" as const, name: "same", offset: 6 },
+  ];
+  const input: InputItem[] = [
+    { type: "text", text: "/same /same /same", mentions },
+    { type: "command", name: "same" },
+    { type: "skill", name: "same" },
+  ];
+  expect(recoveryComposerDraft(recoveryRecord(input))).toEqual({
+    text: "/same /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions,
+    attachments: [],
+  });
+  expect(
+    recoveryComposerDraft(
+      recoveryRecord(input, {
+        composerText: "RAW_318 /same",
+        composerMentions: [{ kind: "skill", name: "same", offset: 8 }],
+      }),
+    ).mentions,
+  ).toEqual([{ kind: "skill", name: "same", offset: 8 }]);
+});
+
 test("projects durable image input into settled Composer attachment state", () => {
   expect(
     recoveryComposerDraft(

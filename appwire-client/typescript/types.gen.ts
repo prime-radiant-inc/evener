@@ -1516,12 +1516,19 @@ export interface InitializeResponse {
 export interface InputItem {
   type: string;
   text?: string;
+  mentions?: InputMention[];
   url?: string;
   mediaType?: string;
   data?: string;
   name?: string;
   path?: string;
   metadata?: Record<string, string>;
+}
+
+export interface InputMention {
+  kind: string;
+  name: string;
+  offset: number;
 }
 
 export interface InstanceCreateParams {
@@ -2876,6 +2883,11 @@ export interface QueueState {
    * identities independently from skill selections when editing or returning.
    */
   commandNames?: string[][];
+  /**
+   * Mentions is FIFO-aligned with Texts, retaining each atom's exact kind
+   * and UTF-16 location. It is editing metadata, not activation authority.
+   */
+  mentions?: InputMention[][];
 }
 
 export interface RemovedRow {

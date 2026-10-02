@@ -1267,6 +1267,9 @@ type QueueState struct {
 	// CommandNames is FIFO-aligned with Preview and retains exact command
 	// identities independently from skill selections when editing or returning.
 	CommandNames [][]string `json:"commandNames,omitempty"`
+	// Mentions is FIFO-aligned with Texts, retaining each atom's exact kind
+	// and UTF-16 location. It is editing metadata, not activation authority.
+	Mentions [][]InputMention `json:"mentions,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
@@ -1997,9 +2000,18 @@ type OutputImage struct {
 	Path      string `json:"path,omitempty"`
 }
 
+// InputMention records one visible selection's UTF-16 offset in a text item.
+// Canonical skill/command items remain the sole activation authority.
+type InputMention struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Offset int    `json:"offset"`
+}
+
 type InputItem struct {
 	Type      string            `json:"type"`
 	Text      string            `json:"text,omitempty"`
+	Mentions  []InputMention    `json:"mentions,omitempty"`
 	URL       string            `json:"url,omitempty"`
 	MediaType string            `json:"mediaType,omitempty"`
 	Data      []byte            `json:"data,omitempty"`
