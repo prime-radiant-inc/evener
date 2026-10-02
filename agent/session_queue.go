@@ -892,7 +892,7 @@ func (s *Session) pushQueueHead(entry queuedInput) error {
 			snapshot.InputQueue = append([]clientMutationQueueEntry{{
 				ID:               entry.ID,
 				ClientMutationID: entry.ClientMutationID,
-				Input:            clientMutationInput(entry.Text, entry.Images, entry.SkillNames, entry.CommandNames),
+				Input:            clientMutationInputWithMentions(entry.Text, entry.Images, entry.SkillNames, entry.Mentions, entry.CommandNames),
 			}}, snapshot.InputQueue...)
 			snapshot.QueueRevision++
 			if snapshot.AcceptedTurns > 0 {

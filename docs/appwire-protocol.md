@@ -98,6 +98,16 @@ Accepted input persists these locations; queue reads and `thread/queueChanged`
 project FIFO-aligned `mentions` beside full text and canonical name lists, so a
 fresh client's edit restores the chosen kind without selecting duplicate prose.
 Attachment marker translation shifts locations at the submission boundary.
+Automatic transcript-refusal recovery uses `returnClaimedQueuedMutation` to
+clone the original `pending.Input`, retaining text items and their locations.
+The separate `pushQueueHead` helper has no production callers; explicit use of
+it retains locations in the flattened returned text. Public `turn/drainAsSteer`
+preserves each retained entry's raw text and shifts its locations by the
+preceding UTF-16 text length plus the two-unit `\n\n` separator, including any
+extra drain input. Image-only entries add no text separator. Direct promotion
+retains the original text items and their item-relative locations. These
+locations survive durable recovery and mutation replay without changing
+canonical activation identities.
 
 Live completion reads `thread.evener.diagnostics.commands` from the owning
 session's `thread/read` response. It contains path-free descriptors for that

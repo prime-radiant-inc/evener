@@ -712,9 +712,13 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 }
 
 func clientMutationInput(text string, images []ImageAttachment, skillNames []string, commandNames ...[]string) []appwire.InputItem {
+	return clientMutationInputWithMentions(text, images, skillNames, nil, commandNames...)
+}
+
+func clientMutationInputWithMentions(text string, images []ImageAttachment, skillNames []string, mentions []appwire.InputMention, commandNames ...[]string) []appwire.InputItem {
 	input := make([]appwire.InputItem, 0, 1+len(images)+len(skillNames))
 	if text != "" {
-		input = append(input, appwire.InputItem{Type: "text", Text: text})
+		input = append(input, appwire.InputItem{Type: "text", Text: text, Mentions: slices.Clone(mentions)})
 	}
 	for _, image := range images {
 		input = append(input, appwire.InputItem{
@@ -975,25 +979,31 @@ func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []app
 	var images []ImageAttachment
 	var skillNames []string
 	var commandNames []string
-	for _, entry := range entries {
-		queued := queuedInputFromClientMutation(entry)
+	var mentions []appwire.InputMention
+	var textOffset int
+	appendInput := func(queued queuedInput) {
 		if strings.TrimSpace(queued.Text) != "" {
+			if len(texts) > 0 {
+				textOffset += 2 // The retained text entries are joined by "\n\n".
+			}
+			for _, mention := range queued.Mentions {
+				mention.Offset += textOffset
+				mentions = append(mentions, mention)
+			}
 			texts = append(texts, queued.Text)
+			textOffset += len(utf16.Encode([]rune(queued.Text)))
 		}
 		images = append(images, queued.Images...)
 		skillNames = append(skillNames, queued.SkillNames...)
 		commandNames = append(commandNames, queued.CommandNames...)
+	}
+	for _, entry := range entries {
+		appendInput(queuedInputFromClientMutation(entry))
 	}
 	if len(extra) > 0 {
-		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: extra})
-		if strings.TrimSpace(queued.Text) != "" {
-			texts = append(texts, queued.Text)
-		}
-		images = append(images, queued.Images...)
-		skillNames = append(skillNames, queued.SkillNames...)
-		commandNames = append(commandNames, queued.CommandNames...)
+		appendInput(queuedInputFromClientMutation(clientMutationQueueEntry{Input: extra}))
 	}
-	return clientMutationInput(strings.Join(texts, "\n\n"), images, skillNames, commandNames)
+	return clientMutationInputWithMentions(strings.Join(texts, "\n\n"), images, skillNames, mentions, commandNames)
 }
 
 func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
