@@ -1831,8 +1831,10 @@ func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, 
 // ambiguous case described on AdminMutationCall: it becomes
 // outcome-unknown/blocked directly, so the classification no longer depends on
 // mapCallError turning a deadline into SessionUnavailable and the
-// unavailability re-label below catching it. A semantic wire refusal keeps its
-// own code and message, exactly as on AdminCall. Everything else is mapped by
+// unavailability re-label below catching it. A delivered wire refusal keeps its
+// own code, message and data, regardless of the data's Go representation. Check
+// its original provenance before mapCallError replaces a transport failure with
+// an ordinary SessionUnavailable WireError. Everything else is mapped by
 // mapCallError, and only an unavailability it produced is re-labelled: that
 // mapping stays deliberately narrow because mapCallError's other outcomes are
 // not lost responses.
@@ -1843,18 +1845,16 @@ func (s *RemoteHubSource) remoteHubAdminMutationCallError(err error) error {
 		// rather than as an unknown outcome that blocks a safe retry.
 		return s.mapCallError(err)
 	}
-	var refused appwire.WireError
-	if !errors.As(err, &refused) && callerContextEnded(err) {
+	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
+		return err
+	}
+	if callerContextEnded(err) {
 		return s.hubAdminMutationOutcomeUnknown(
 			"mutation outcome is unknown after the caller's context ended while the remote hub call was in flight")
 	}
 	mapped := s.mapCallError(err)
-	var wire appwire.WireError
-	if !errors.As(mapped, &wire) {
-		return mapped
-	}
-	data, ok := wire.Data.(appwire.ErrorData)
-	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+	wire, ok := errors.AsType[appwire.WireError](mapped)
+	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
 	}
 	return s.hubAdminMutationOutcomeUnknown("mutation outcome is unknown after remote hub response loss")
