@@ -60,10 +60,15 @@ history recovery remain owned by the existing reader and virtual viewport.
 
 ## Exited-session controls
 
-An exited session's empty follow-up card expands when focused. It stays expanded
-while focus moves through its controls or their pop-up menus and dialogs,
-including overlays rendered outside the card's DOM. Leaving the composer
-collapses an empty card; a draft keeps its controls visible.
+An exited session's follow-up keeps its model selector, session actions and Send
+visible before typing. Its empty editor rests at one line and expands to three
+when focused. It stays expanded while focus moves through the controls or their
+pop-up menus and dialogs, including overlays outside the card's DOM. Focus is
+tracked while the session is live, so stopping preserves an already-focused
+editor. Leaving the composer shrinks only the empty editor; drafts and attachments
+keep it expanded. Send remains disabled until there is content and sending is
+available. The inline session chrome owns activity discovery at rest and while
+engaged, without a second discovery mount.
 
 The model picker remains available when the session advertises `changeModel`.
 Selecting a model uses `thread/model/set`; the hub owns resuming a cold session
