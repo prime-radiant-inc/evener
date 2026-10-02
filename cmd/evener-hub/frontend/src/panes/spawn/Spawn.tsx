@@ -415,6 +415,7 @@ function SpawnForm({
   const [skillNames] = useDraftField(draft, "skillNames");
   const [commandNames] = useDraftField(draft, "commandNames");
   const [mentions] = useDraftField(draft, "mentions");
+  const [selectionRestoreRevision] = useDraftField(draft, "selectionRestoreRevision");
   const [restoreEpoch, setRestoreEpoch] = useState(0);
   // biome-ignore lint/correctness/useExhaustiveDependencies: project and URL changes authoritatively replace the editor document
   useLayoutEffect(() => {
@@ -904,8 +905,12 @@ function SpawnForm({
       // Preserve Spawn's existing insertion-at-caret behavior.
       return { text, cursor, selection: { start: cursor, end: cursor } };
     },
-    write: (next, cursor) => {
+    write: (next, cursor, source) => {
       updatePrompt(next);
+      // A pending submission can finish after this form unmounts. Its draft
+      // owns restoration so the currently mounted editor sees the exact atoms.
+      if (source === "submission")
+        draft.fields.setState((fields) => ({ selectionRestoreRevision: fields.selectionRestoreRevision + 1 }));
       if (isCurrentDraft()) cursorRef.current = cursor;
     },
   };
@@ -2522,7 +2527,7 @@ function SpawnForm({
                 <SkillEditor
                   ref={textareaRef}
                   value={{ text: prompt, skillNames, commandNames, mentions }}
-                  restoreEpoch={restoreEpoch}
+                  restoreEpoch={restoreEpoch + selectionRestoreRevision}
                   aria-controls={slashActiveId ? slashListboxId : undefined}
                   aria-activedescendant={slashActiveId ?? undefined}
                   skillDetails={(name) =>

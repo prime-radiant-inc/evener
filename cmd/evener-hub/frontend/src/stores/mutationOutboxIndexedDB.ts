@@ -697,7 +697,9 @@ export class MutationOutboxIndexedDB {
             : { method: record.method, input },
         attachments: attachments ?? record.attachments,
         composerText: composerText ?? record.composerText,
-        composerMentions,
+        // Locations belong to composerText. A full replacement can omit them
+        // to clear old atoms, while a partial update preserves the pair.
+        composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,
       };
       await requestResult(store.put(next));
       return next;

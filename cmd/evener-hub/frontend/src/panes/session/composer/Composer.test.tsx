@@ -4559,6 +4559,87 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
   },
 );
 
+test("submitted markers around retained command and skill atoms preserve their exact identities", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_retained_selections";
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  writeComposerDraft(ref, {
+    text: "😀 /same /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 3 },
+      { kind: "skill", name: "same", offset: 9 },
+    ],
+  });
+  const fake = await mountComposer(ref, {
+    evener: {
+      ...testThread(ref).evener,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+    },
+  });
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const editor = textarea();
+  selectEditorText(editor, 0);
+  pastePngInto(editor, "before.png");
+  await screen.findByRole("button", { name: "View before.png" });
+  selectEditorText(editor, editor.textContent?.length ?? 0);
+  pastePngInto(editor, "after.png");
+  await screen.findByRole("button", { name: "View after.png" });
+  expect(editor.textContent).toBe("[image 1]😀 /same /same /same[image 2]");
+  expect(within(editor).getAllByTestId("composer-command-chip")).toHaveLength(1);
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  try {
+    await act(async () => {
+      fireEvent.click(submitButton());
+      await hold.reached;
+    });
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    await user.paste(" later");
+  } finally {
+    await act(async () => hold.release());
+    await flushPendingTurnsProjectionForTests();
+  }
+
+  expect.soft(editor.textContent).toBe("😀 /same /same /same later");
+  expect.soft(within(editor).queryAllByTestId("composer-command-chip")).toHaveLength(1);
+  expect.soft(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect.soft(readComposerDraft(ref)).toEqual({
+    text: "😀 /same /same /same later",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 3 },
+      { kind: "skill", name: "same", offset: 9 },
+    ],
+  });
+  expect(screen.queryByRole("button", { name: "Remove before.png" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove after.png" })).toBeNull();
+
+  fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const records = await storage.listOutbox(ref);
+  expect(records).toHaveLength(2);
+  expect(records[0]?.attachments.map((item) => item.name)).toEqual(["before.png", "after.png"]);
+  expect(records[1]?.attachments).toEqual([]);
+  expect(records[1]?.payload.input).toEqual([
+    {
+      type: "text",
+      text: "😀 /same /same /same later",
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    },
+    { type: "skill", name: "same" },
+    { type: "command", name: "same" },
+  ]);
+});
+
 test("the remove button names the specific attachment it removes", async () => {
   installCanvasStubs();
   await mountComposer("ref_a");

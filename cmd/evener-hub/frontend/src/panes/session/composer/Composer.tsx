@@ -582,8 +582,12 @@ export function Composer({ ref, focused }: ComposerProps) {
       );
       updateSkillNames(next.skillNames);
       updateSelectionMeta(next);
-      if (source === "submission") updateText(nextText);
-      else editText(nextText);
+      if (source === "submission") {
+        updateText(nextText);
+        // React can batch several exact marker deletions into one render.
+        // Restore the already-mapped atoms instead of diffing that whole span.
+        markRestore();
+      } else editText(nextText);
       if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(nextText);
       scheduleCursorRestore(cursor);
     },

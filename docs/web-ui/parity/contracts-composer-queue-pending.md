@@ -30,6 +30,14 @@ except where a line says so itself.
 - Structured drafts and durable recovery retain kind and mention locations when
   needed to distinguish same-spelling atoms from prose. Attachments preserve
   selection intent while inserting/removing anchors and renumbering recovery.
+- Removing submitted image markers preserves each retained atom between them,
+  including its UTF-16 location, concurrent edits and same-spelling prose. The
+  session composer restores those mapped identities during submission cleanup.
+  The launch draft owns its restoration signal so a remounted editor receives
+  the same mapped selections in the same render as the cleaned prompt.
+- Recovery updates retain stored mention locations when composer text is omitted.
+  Replacing composer text replaces its locations too; omitted locations then
+  clear the old set, and an explicit empty set clears all selections.
 - Accepted text items retain validated UTF-16 mention locations in daemon-owned
   input. Queue reads, push events and edits preserve those locations even in a
   new client without the original local outbox; deleting a chosen atom does not

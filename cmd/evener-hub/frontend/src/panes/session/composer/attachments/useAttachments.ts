@@ -264,18 +264,17 @@ export function useAttachments(editor: TextEditor, backingStore?: AttachmentStor
   const clearSubmitted = useCallback(
     (submittedMarkers: Set<number>) => {
       if (submittedMarkers.size > 0) {
-        // Same per-marker strip removeItem uses, threaded across every
-        // submitted marker in one editor.write() - stripMarker is a safe
-        // no-op (returns its input unchanged) for any marker no longer
-        // present in the CURRENT text, so this never fights a concurrent
-        // edit that already removed one itself.
+        // Each write describes one exact splice, so selected atoms between
+        // removed markers keep their identities. The editor's live refs update
+        // synchronously, and submission writes retain shared draft ownership.
+        // A marker already removed by a concurrent edit remains a safe no-op.
         let { text, cursor } = editor.read();
         for (const marker of submittedMarkers) {
           const stripped = stripMarker(text, cursor, marker);
           text = stripped.value;
           cursor = stripped.cursor ?? cursor;
+          editor.write(text, cursor, "submission");
         }
-        editor.write(text, cursor, "submission");
       }
       setItems((prev) => {
         const next = prev.filter((item) => !submittedMarkers.has(item.marker));

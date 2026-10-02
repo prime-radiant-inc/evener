@@ -22,6 +22,7 @@ interface DraftFields {
   commandNames: string[];
   mentions?: ComposerMention[];
   promptRevision: number;
+  selectionRestoreRevision: number;
   harness: string;
   model: string;
   /** The model value the uncredentialed-default fallback installed into `model`
@@ -70,6 +71,7 @@ function createDraft(cwd: string) {
       skillNames: [],
       commandNames: [],
       promptRevision: 0,
+      selectionRestoreRevision: 0,
       harness: defaults.harness ?? "",
       model: defaults.model ?? "",
       defaultModelFallback: null,

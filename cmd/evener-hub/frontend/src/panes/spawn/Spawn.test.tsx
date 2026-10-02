@@ -4698,6 +4698,84 @@ test("successful submitted snapshot clears only its images and preserves newer e
   expect(screen.getByRole("button", { name: "View newer.png" })).toBeTruthy();
 });
 
+test.each([false, true])(
+  "submitted launch markers preserve retained command and skill identities (remount: %s)",
+  async (remount) => {
+    installCanvasStubs();
+    const user = setupUser();
+    const cwd = "/tmp/retained-launch-selections";
+    window.history.pushState({}, "", `/new?dir=${cwd}`);
+    const draft = selectSpawnDirectory(cwd);
+    draft.fields.setState({
+      prompt: "😀 /same /same /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    });
+    const started = deferred<ThreadStartResponse>();
+    const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+    const mounted = renderSpawn(fake);
+    await settled();
+    let editor = promptField();
+    selectEditorText(editor, 0);
+    act(() => pastePngInto(editor, "before.png"));
+    await screen.findByRole("button", { name: "View before.png" });
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    act(() => pastePngInto(editor, "after.png"));
+    await screen.findByRole("button", { name: "View after.png" });
+    expect(editor.textContent).toBe("[image 1]😀 /same /same /same[image 2]");
+    expect(within(editor).getAllByTestId("composer-command-chip")).toHaveLength(1);
+    expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+    if (remount) {
+      mounted.unmount();
+      renderSpawn(fake);
+      await settled();
+      editor = promptField();
+    }
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    await user.paste(" later");
+    await act(async () => started.resolve(startResponse("local:retained-launch")));
+
+    expect.soft(editor.textContent).toBe("😀 /same /same /same later");
+    expect.soft(within(editor).queryAllByTestId("composer-command-chip")).toHaveLength(1);
+    expect.soft(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(1);
+    expect.soft(draft.fields.getState()).toMatchObject({
+      prompt: "😀 /same /same /same later",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "command", name: "same", offset: 3 },
+        { kind: "skill", name: "same", offset: 9 },
+      ],
+    });
+    expect(screen.queryByRole("button", { name: "View before.png" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View after.png" })).toBeNull();
+    await visitSpawnURL(`/new?dir=${cwd}`);
+    await user.click(screen.getByTestId("spawn-submit"));
+    const submissions = fake.calls.filter((call) => call.method === "thread/start");
+    expect(submissions).toHaveLength(2);
+    expect(submissions[1]?.params).toMatchObject({
+      input: [
+        {
+          type: "text",
+          text: "😀 /same /same /same later",
+          mentions: [
+            { kind: "command", name: "same", offset: 3 },
+            { kind: "skill", name: "same", offset: 9 },
+          ],
+        },
+        { type: "skill", name: "same" },
+        { type: "command", name: "same" },
+      ],
+    });
+  },
+);
+
 test.each([
   { outcome: "success", remount: false },
   { outcome: "failure", remount: false },
