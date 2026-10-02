@@ -949,6 +949,155 @@ func TestStreamResult_TextStream_FiltersToTextDeltasOnly(t *testing.T) {
 	}
 }
 
+// TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer pins LLM-01: a
+// consumer that abandons the channel after its buffer fills must be released by
+// the supported Close operation, and a closed stream must not keep forwarding
+// text. The oracle is the channel contract itself: after Close, draining the
+// channel must find only what the forwarder had already buffered (at most its
+// 16-entry capacity) and then the channel must close. Before the fix the
+// forwarder stayed parked on its downstream send and, once drained, delivered
+// every delta still queued upstream.
+func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
+	const deltas = 256 // well beyond the TextStream buffer (16) and event buffer (128)
+	c := NewClient()
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				st := NewChanStream(nil)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					for range deltas {
+						st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "x"})
+					}
+					<-ctx.Done()
+				}()
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hi"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:   c,
+		Model:    "m",
+		Provider: "openai",
+		Prompt:   &prompt,
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = res.Close()
+		}
+	})
+
+	ch := res.TextStream() // the consumer abandons it: it never reads.
+
+	// Wait until the forwarder has filled the channel buffer and parked on its
+	// downstream send, with more deltas still queued on the event stream — the
+	// exact leaked state the audit describes.
+	deadline := time.Now().Add(2 * time.Second)
+	for (len(ch) < cap(ch) || len(res.Events()) == 0) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(ch) < cap(ch) {
+		t.Fatalf("forwarder never filled its channel buffer (len=%d cap=%d)", len(ch), cap(ch))
+	}
+	if len(res.Events()) == 0 {
+		t.Fatal("precondition: expected deltas still queued on the event stream")
+	}
+
+	// The supported close operation must release the abandoned forwarder.
+	if cerr := res.Close(); cerr != nil {
+		t.Fatalf("Close: %v", cerr)
+	}
+	closed = true
+
+	drained := make(chan int, 1)
+	go func() {
+		n := 0
+		for range ch {
+			n++
+		}
+		drained <- n
+	}()
+	select {
+	case n := <-drained:
+		if n > cap(ch) {
+			t.Fatalf("TextStream forwarded %d deltas after Close, want at most its %d-entry buffer", n, cap(ch))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("TextStream channel did not close after Close (forwarder leak)")
+	}
+}
+
+// TestStreamResult_TextStream_ClosePriority pins the fail-fast shutdown check: a
+// stream closed while the TextStream buffer still has room must forward nothing.
+// The full-buffer test above only reaches the send select's close arm; this one
+// covers the check that runs before the send, so deleting that check fails here.
+func TestStreamResult_TextStream_ClosePriority(t *testing.T) {
+	// The send/close select picks randomly among ready cases, so a single
+	// instance cannot tell the fail-fast check apart from the select arm. Run
+	// many independent instances: with the check every one forwards nothing,
+	// without it at least one reliably forwards a delta.
+	for i := range 200 {
+		// White-box setup: close the stream's shutdown signal directly so that
+		// Events() stays open (the forwarder has work) while the TextStream
+		// buffer is empty (a plain send would succeed). CloseSend releases the
+		// constructed stream's channels when the iteration ends.
+		func() {
+			stream := NewChanStream(nil)
+			defer stream.CloseSend()
+			res := &StreamResult{stream: stream, done: make(chan struct{})}
+
+			stream.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "x"})
+			stream.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "y"})
+			close(stream.closing)
+
+			ch := res.TextStream()
+			select {
+			case delta, ok := <-ch:
+				if ok {
+					t.Fatalf("iteration %d: forwarded %q after the stream was closed, want none", i, delta)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("iteration %d: TextStream did not close after the stream was closed", i)
+			}
+		}()
+	}
+}
+
+// TestStreamResult_TextStream_CloseUnblocksIdleForwarder pins shutdown while the
+// forwarder is idle: parked waiting for the next event, it must still stop when
+// the stream is closed, even if Events() never closes. CloseSend releases the
+// constructed stream when the test ends.
+func TestStreamResult_TextStream_CloseUnblocksIdleForwarder(t *testing.T) {
+	stream := NewChanStream(nil)
+	defer stream.CloseSend()
+	res := &StreamResult{stream: stream, done: make(chan struct{})}
+
+	ch := res.TextStream() // nothing queued: the forwarder waits on Events().
+	close(stream.closing)  // Close signalled, but Events() stays open.
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("idle TextStream forwarded a delta, want none")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle forwarder did not stop when the stream was closed")
+	}
+}
+
 func TestStreamGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
 	c := NewClient()
 	a := &scriptedStreamAdapter{
