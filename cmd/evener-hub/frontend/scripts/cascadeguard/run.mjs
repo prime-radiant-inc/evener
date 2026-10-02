@@ -26,9 +26,24 @@ const frames = [];
 let failed = false;
 
 async function capture(name) {
+  const paint = await read(`([...document.querySelectorAll('[data-testid="transcript-virtual-list"]')]).map(list => {
+    const box = node => { const r = node.getBoundingClientRect(); return { x:r.x, y:r.y, width:r.width, height:r.height, top:r.top, bottom:r.bottom }; };
+    const port = list.firstElementChild;
+    const bounds = port.getBoundingClientRect();
+    const chain = [];
+    for (let node = port; node && chain.length < 12; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      chain.push({ tag:node.tagName, class:node.className, box:box(node), display:style.display, height:style.height, overflow:style.overflow, opacity:style.opacity, visibility:style.visibility, transform:style.transform });
+    }
+    return { ref:list.closest('[data-scope-ref]')?.dataset.scopeRef, scrollTop:port.scrollTop, scrollHeight:port.scrollHeight, clientHeight:port.clientHeight, chain,
+      rows:[...port.querySelectorAll('[data-index]')].map(node => { const r = node.getBoundingClientRect(); return { index:node.dataset.index, box:box(node), intersects:r.bottom > bounds.top && r.top < bounds.bottom, textLength:node.textContent.length }; }) };
+  })`);
+  writeFileSync(path.join(fixture.artifactDir, `${name}-paint.json`), JSON.stringify(paint, null, 2));
+  writeFileSync(path.join(fixture.artifactDir, `${name}-native-hits.json`), JSON.stringify(await read('window.__cascadeNativeHits'), null, 2));
   writeFileSync(path.join(fixture.artifactDir, `${name}.html`), await read("document.documentElement.outerHTML"));
   const screenshot = await driver.send("Page.captureScreenshot", { format: "png" });
   writeFileSync(path.join(fixture.artifactDir, `${name}.png`), Buffer.from(screenshot.result.data, "base64"));
+  return paint;
 }
 
 async function key(key, keyCode) {
@@ -446,6 +461,12 @@ try {
   await driver.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
     const Native = window.WebSocket;
     window.__cascadeSockets = [];
+    window.__cascadeNativeHits = [];
+    for (const type of ['mousedown', 'mouseup', 'click']) document.addEventListener(type, event => {
+      window.__cascadeNativeHits.push({ type, x:event.clientX, y:event.clientY, viewportWidth:innerWidth,
+        hitAnchor:event.target.closest('[data-activity-anchor]')?.dataset.activityAnchor ?? null,
+        button:event.target.closest('button')?.textContent.slice(0, 100) ?? null });
+    }, true);
     window.WebSocket = class extends Native {
       constructor(...args) { super(...args); window.__cascadeSockets.push(this); }
     };
@@ -480,7 +501,10 @@ try {
   })`);
   assert.deepEqual(boxes.map(n => n.ref), fixture.refs);
   driver.milestone("six-edges", { boxes, sourcePaneId: fixture.sourcePaneId, tabs: fixture.sourceTabCount });
-  await capture("six-edges");
+  const paint = await capture("six-edges");
+  assert.ok(paint[0].chain[0].box.width >= 398.5, `parent transcript fills its readable column, got ${paint[0].chain[0].box.width}px`);
+  assert.ok(paint[1].chain[0].box.width >= 439.5, `leaf transcript fills its readable column, got ${paint[1].chain[0].box.width}px`);
+  assert.ok(paint.every(view => view.rows.some(row => row.intersects && row.box.width > 0 && row.textLength > 0)), "both readable transcript viewports contain rendered text rows");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
   // A user pop/drill after the resize must reveal the selected leaf. Resizing
   // itself is not a drill and must not move the retained reader's position.

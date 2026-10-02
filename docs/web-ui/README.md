@@ -58,6 +58,17 @@ its group, preserving the mounted transcript and its native scroll position.
 Selecting a different tab still activates that panel. Transcript scroll and
 history recovery remain owned by the existing reader and virtual viewport.
 
+## Workspace geometry
+
+[DockHost](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx) owns the desktop
+Dockview integration. Its empty floating overlay host stays out of layout so
+cached grid dimensions cannot enlarge the document during a native window resize.
+Dockview still owns layout and resize observation. Populated floating windows
+keep their placement, permitted overhang and native pointer input, including
+input outside the workspace bounds. The integration does not clip those windows.
+The [shell guard](../../cmd/evener-hub/frontend/scripts/shellguard/run.mjs)
+checks native resize and real floating-window preservation in Chrome.
+
 ## Directory fields
 
 All directory selection uses the [shared directory-picker contract](design-system.md#directory-selection-one-shared-interaction). Read it before adding or changing a path field; older plans and parity checklists describe retired interactions.

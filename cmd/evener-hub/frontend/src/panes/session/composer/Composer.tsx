@@ -239,6 +239,7 @@ export function Composer({ ref, focused, source }: ComposerProps) {
     setActiveRecoveryId,
     markRestore,
     persistDraft,
+    writeDraft,
     queueRecoveryPersistence,
     clearIfUnchanged,
     clearSubmittedAttachments,
@@ -370,26 +371,11 @@ export function Composer({ ref, focused, source }: ComposerProps) {
         // Submission cleanup retires this mount's markers without claiming a
         // shared draft that another composer has edited in the meantime.
         const mayPersist = source !== "submission" || ownedDraftRevisionRef.current === readDraftRevision(ref);
-        const next = restoredSkillNames({ text: nextText, skillNames: skillNamesRef.current });
-        updateSkillNames(next);
-        if (source === "submission") updateText(nextText);
-        else editText(nextText);
-        if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(nextText);
+        writeDraft(nextText, mayPersist, source);
         scheduleCursorRestore(cursor);
       },
     }),
-    [
-      ref,
-      textRef,
-      skillNamesRef,
-      ownedDraftRevisionRef,
-      activeRecoveryIdRef,
-      updateSkillNames,
-      updateText,
-      editText,
-      persistDraft,
-      scheduleCursorRestore,
-    ],
+    [ref, textRef, ownedDraftRevisionRef, writeDraft, scheduleCursorRestore],
   );
   useLayoutEffect(() => {
     mountedRef.current = true;

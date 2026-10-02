@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { useStore } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { m, spatialTransition, useReducedMotion } from "../../motion";
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -56,7 +57,12 @@ function ScopeConversation({
   // Spines retain summary demand, not transcript or collection demand.
   const { snapshot } = useSessionActivity(scope.requestedRef);
   useNavigationStore((state) => state.resources);
-  const model = useThreadsStore((state) => state.threads.get(scope.requestedRef));
+  const model = useThreadsStore(
+    useShallow((state) => {
+      const thread = state.threads.get(scope.requestedRef);
+      return thread === undefined ? undefined : { name: thread.name, imageSessionId: thread.imageSessionId };
+    }),
+  );
   const sessionId = snapshot?.context?.sessionId ?? scope.sessionId;
   const previous = lifetime.resolvedSessions.get(scope.requestedRef);
   const rebinding = sessionId !== undefined && previous !== undefined && previous !== sessionId;
@@ -79,7 +85,9 @@ function ScopeConversation({
 
   const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot);
   activity.leaf.title = (imageMatches && model?.name) || scope.title;
-  const width = mobile ? "100%" : readable ? (leaf ? 440 : 400) : 52;
+  const readableWidth = leaf ? 440 : 400;
+  const desktopWidth = readable ? readableWidth : 52;
+  const width = mobile ? "100%" : desktopWidth;
   return (
     <m.section
       className={readable ? CLASS.column : CLASS.spine}

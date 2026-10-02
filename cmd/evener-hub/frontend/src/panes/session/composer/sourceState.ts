@@ -67,6 +67,7 @@ export interface ComposerSourceState {
   setActiveRecoveryId(id: string | null): void;
   markRestore(): void;
   persistDraft(text: string): void;
+  writeDraft(text: string, mayPersist: boolean, source?: "edit" | "submission"): void;
   refreshRecovery(): void;
   queueRecoveryPersistence(
     id: string,
@@ -169,12 +170,15 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
   }
-  function writeDetachedSourceDraft(text: string, _cursor: number, source?: "edit" | "submission"): void {
-    if (disposed || !ownsDraft()) return;
+  function writeDraft(text: string, mayPersist: boolean, source?: "edit" | "submission"): void {
     updateSkillNames(restoredSkillNames({ text, skillNames: skillNamesRef.current }));
     if (source === "submission") updateText(text);
     else editText(text);
-    if (activeRecoveryIdRef.current === null) persistDraft(text);
+    if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(text);
+  }
+  function writeDetachedSourceDraft(text: string, _cursor: number, source?: "edit" | "submission"): void {
+    if (disposed || !ownsDraft()) return;
+    writeDraft(text, true, source);
   }
   const editor: TextEditor = {
     read: () => {
@@ -337,6 +341,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     setActiveRecoveryId,
     markRestore,
     persistDraft,
+    writeDraft,
     queueRecoveryPersistence,
     bindEditor(nextEditor) {
       if (disposed) return () => {};

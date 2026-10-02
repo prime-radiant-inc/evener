@@ -1,4 +1,4 @@
-import type { SessionActivityContext } from "@evener/appwire-client";
+import { asJsonObject, type SessionActivityContext } from "@evener/appwire-client";
 import type { SessionPaneParams } from "../session/Session";
 import type { TranscriptParams } from "../transcript/Transcript";
 
@@ -26,9 +26,7 @@ export interface CascadePath {
 }
 
 function object(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
+  return asJsonObject(value) ?? null;
 }
 function sessionRef(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "" && !value.startsWith("job:");
@@ -96,7 +94,7 @@ export function deriveCascadePath(params: SessionZoomParams, context: SessionAct
   // Only an authoritative delegation can carry a requested alias onto its
   // canonical ancestor. Cached edges never invent or extend the full path.
   let index = nodes.length - 1;
-  for (const edge of [...edgeSegment(params.edges, params.ref)].reverse()) {
+  for (const edge of edgeSegment(params.edges, params.ref).reverse()) {
     const node = nodes[index];
     const parent = nodes[index - 1];
     const parentScope = scopes[index - 1];
