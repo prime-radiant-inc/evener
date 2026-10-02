@@ -363,11 +363,10 @@ func TestHubSpawnSlashCatalog_FileCWDIsInvalidParams(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
+	_, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
 		CWD: file,
-	}); err == nil {
-		t.Fatal("hubSpawnSlashCatalog with a file cwd = nil error, want InvalidParams")
-	}
+	})
+	assertWireCode(t, err, appwire.CodeInvalidParams)
 }
 
 func TestHubSpawnSlashCatalog_MissingCWDDoesNotLeakAncestorLocalConfig(t *testing.T) {
