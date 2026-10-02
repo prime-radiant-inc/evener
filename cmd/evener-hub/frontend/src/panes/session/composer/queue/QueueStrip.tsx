@@ -510,17 +510,9 @@ export function QueueStrip({
           const entryId = ids?.[index];
           const fullText = texts?.[index];
           const entrySkillNames = queue?.skillNames?.[index];
-          // The daemon's preview names skills only generically ("[skill]" /
-          // "[N skills]"), while the pending and durable rows for the SAME
-          // submission name them from the entry's own canonical selections.
-          // When the preview is NOTHING BUT that generic placeholder - the
-          // skill-only case, where it carries no information the named markers
-          // do not - the placeholder is redundant and is dropped rather than
-          // doubled ("[skill] [skill: pkg:probe]"). Every other preview keeps
-          // whatever it holds: prose (even when only the daemon supplies it),
-          // an image placeholder, or a mix of them, with the named markers
-          // appended after it. The preview text is truncated first so a
-          // full-length line can never push the markers past the display cap.
+          // Named markers replace synthetic selection-only previews. Full user
+          // text, including literal "[skill]" or "[command]", stays visible.
+          // Truncate the preview first so it cannot push the markers past the cap.
           const entryCommandNames = queue?.commandNames?.[index];
           const entryMentions = queue?.mentions?.[index]?.flatMap((item): ComposerMention[] =>
             item.kind === "skill" || item.kind === "command" ? [{ ...item, kind: item.kind }] : [],
@@ -529,13 +521,16 @@ export function QueueStrip({
             .filter(Boolean)
             .join(" ");
           const entryPreview = truncateForDisplay(preview?.[index] ?? fullText ?? "");
-          const genericSkillPlaceholder = /^\[\d*\s*skills?\]$/i.test(entryPreview.trim());
-          const previewText = genericSkillPlaceholder ? "" : entryPreview;
+          const genericSelectionPlaceholder =
+            (fullText ?? "").trim() === "" &&
+            namedMarkers !== "" &&
+            /^\[\d*\s*(skills?|commands?)\]$/i.test(entryPreview.trim());
+          const previewText = genericSelectionPlaceholder ? "" : entryPreview;
           const displayText = [previewText, namedMarkers].filter((part) => part !== "").join(" ");
           const busy = entryId !== undefined && busyEntryIds.has(entryId);
           const actionsAvailable = hasIds && entryId !== undefined;
           // A blank-text entry is uneditable only when it carries nothing
-          // else restorable - a skill-only entry's chips ARE the content.
+          // else restorable - a selection-only entry's chips ARE the content.
           const imageOnly =
             hasTexts &&
             (fullText ?? "").trim() === "" &&
@@ -568,9 +563,9 @@ export function QueueStrip({
                       // The ghost's display text: the row's full text, or - for a
                       // blank row - the same stripped preview the row renders
                       // above: the image placeholder for an image-only row (its
-                      // whole content), and nothing for a skill-only row, where
+                      // whole content), and nothing for a selection-only row, where
                       // the named markers carry the whole content and the raw
-                      // "[skill]" placeholder would only double it.
+                      // generic placeholder would only double it.
                       const rowText = fullText ?? "";
                       const displayText = rowText.trim() !== "" ? rowText : previewText;
                       void handlePromote(index, entryId, displayText, entrySkillNames, entryCommandNames);

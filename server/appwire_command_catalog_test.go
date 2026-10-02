@@ -19,8 +19,8 @@ func TestAppDiagnosticsOwningCommandInventory(t *testing.T) {
 			t.Fatalf("detailed inventory presence = %s", raw)
 		}
 		d := appDiagnosticsFromDetailedStatus(ds)
-		copy := appwire.CloneEvenerDiagnostics(d)
-		raw, err = json.Marshal(copy)
+		cloned := appwire.CloneEvenerDiagnostics(d)
+		raw, err = json.Marshal(cloned)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -28,7 +28,7 @@ func TestAppDiagnosticsOwningCommandInventory(t *testing.T) {
 			t.Fatalf("wire cloned inventory presence = %s", raw)
 		}
 		if len(commands) != 0 {
-			copy.Commands[0].Name = "mutated"
+			cloned.Commands[0].Name = "mutated"
 			d.Commands[0].Name = "other mutation"
 			if ds.Commands[0].Name != "project-only" {
 				t.Fatal("diagnostic snapshots alias loaded inventory")

@@ -1,6 +1,6 @@
 // The Commands and skills sheet route (spec 8.5; rulings 15 and 37), rendered
 // with a host in commandHosts the way ConversationScreen provides one. The
-// catalog comes from a fake client answering the two reads
+// catalog comes from a fake client answering the owning thread/read
 // createSessionCommandCatalog makes; only native edges are mocked.
 import type { AnyNotification, CommandDescriptor, EvenerSkillInfo } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -57,13 +57,16 @@ function catalogClient({ hold = false, fail = false } = {}) {
 		request: async (method: string) => {
 			if (hold) return new Promise(() => {});
 			if (fail) throw new Error("refused");
-			if (method === "evener/command/list") return { commands: COMMANDS };
 			if (method === "thread/read")
 				return {
 					thread: {
 						evener: {
 							ref: REF,
-							diagnostics: { plugins: [{ name: "shepherd-pr" }, { name: "superpowers" }], skills: SKILLS },
+							diagnostics: {
+								plugins: [{ name: "shepherd-pr" }, { name: "superpowers" }],
+								commands: COMMANDS,
+								skills: SKILLS,
+							},
 						},
 					},
 				};

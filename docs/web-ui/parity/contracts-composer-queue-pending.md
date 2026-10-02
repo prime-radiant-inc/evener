@@ -81,6 +81,12 @@ except where a line says so itself.
 
 ## Queue (edit / cancel / promote / drain)
 
+- Authoritative queue rows name selected skills and commands once. Named markers
+  replace synthetic selection-only previews such as `[skill]`, `[command]` or
+  `[2 commands]` when the row has no user prose.
+- User prose, including literal `[skill]` or `[command]`, and image placeholders
+  stay visible beside the named selections.
+
 ### test-queue-and-drain.js
 - the queue preview panel starts hidden with depth 0 and an empty list on init (test-queue-and-drain.js)
 - when send capability is off and queue capability is on, submitting the composer (Enter) POSTs the text to `/s/<id>/queue` and clears the textarea immediately, ahead of daemon confirmation (test-queue-and-drain.js)
