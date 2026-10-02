@@ -16,7 +16,9 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
+import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
+import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -191,6 +193,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetWorkspaceStoreForTests();
   resetMobileViewportForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -381,6 +384,123 @@ test.each([
     }
   },
 );
+
+test.each([
+  { action: "close", pending: "recovery edit" },
+  { action: "reset", pending: "recovery edit" },
+  { action: "close", pending: "acceptance" },
+  { action: "reset", pending: "acceptance" },
+])("pane $action fences held $pending completion from a same-ID replacement", async ({ action, pending }) => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input = [
+    { type: "text" as const, text: "Run /skill-1 " },
+    { type: "skill" as const, name: "skill-1" },
+  ];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const pane: OpenPaneRecord = { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const lifetime = conversationPaneLifetime(pane);
+  const source = lifetime.composer;
+  if (!source) throw new Error("session pane has no source composer");
+  const fake = await mountComposer("root", skillFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+  const delivered = deferred<void>();
+  fake.on("turn/start", (params) => {
+    delivered.resolve();
+    return {
+      turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_root",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const hold = holdNextWriteTransaction(
+    pending === "recovery edit" ? ["recovery"] : ["outbox", "optimistic", "recovery", "sequences"],
+  );
+  try {
+    let completion: Promise<void> | undefined;
+    if (pending === "recovery edit") {
+      completion = source.queueRecoveryPersistence(original.clientMutationId, "Run /skill-1 ", [], ["skill-1"]);
+    } else {
+      await userEvent.setup().click(screen.getByRole("button", { name: "Send" }));
+    }
+    await hold.reached;
+    cleanup();
+    if (action === "close") workspaceStore.getState().closePane(pane.id);
+    else resetWorkspaceStoreForTests();
+    const replacementPane: OpenPaneRecord = { ...pane, params: { ref: "root" } };
+    workspaceStore.setState({ panes: [replacementPane], focusedPaneId: replacementPane.id });
+    const replacement = conversationPaneLifetime(replacementPane);
+    const replacementSource = replacement.composer;
+    if (!replacementSource) throw new Error("replacement pane has no source composer");
+    expect(lifetime.alive).toBe(false);
+    expect(source.alive).toBe(false);
+    expect(replacement.serial).not.toBe(lifetime.serial);
+    render(<Composer ref="root" source={replacementSource} focused={false} />);
+    await waitFor(() => expect(replacementSource.getSnapshot().freshRecoveryRef).toBe("root"));
+    await selectSkill(userEvent.setup(), "skill-2");
+    selectEditorText(screen.getByRole("textbox", { name: "Message" }), "Run /skill-2 ".length);
+    const encoding = installControlledImageEncoding();
+    selectImageFile(new File([new Uint8Array([1, 2, 3])], "replacement.png", { type: "image/png" }));
+    await act(async () => encoding.resolve());
+    await screen.findByRole("button", { name: "View replacement.png" });
+    const replacementRecoveryId = pending === "recovery edit" ? original.clientMutationId : null;
+    expect(replacementSource.getSnapshot().activeRecoveryId).toBe(replacementRecoveryId);
+    await act(async () => {
+      hold.release();
+      if (completion) await completion;
+      else await delivered.promise;
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("Run /skill-2 [image 1]");
+    expect(
+      within(screen.getByRole("textbox", { name: "Message" })).getByTestId("composer-skill-chip").textContent,
+    ).toBe("/skill-2");
+    expect(screen.getByRole("button", { name: "View replacement.png" })).toBeTruthy();
+    expect(replacementSource.getSnapshot()).toMatchObject({
+      text: "Run /skill-2 [image 1]",
+      skillNames: ["skill-2"],
+      activeRecoveryId: replacementRecoveryId,
+    });
+    expect(replacementSource.attachments.getState().items).toEqual([
+      { marker: 1, name: "replacement.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 },
+    ]);
+    if (pending === "recovery edit") {
+      expect(await storage.getRecovery(original.clientMutationId)).toMatchObject({
+        clientMutationId: original.clientMutationId,
+        targetRef: "root",
+        payload: {
+          input: [
+            { type: "text", text: "Run /skill-2 [image 1]" },
+            { type: "image", mediaType: "image/png", data: "AQID", name: "replacement.png" },
+            { type: "skill", name: "skill-2" },
+          ],
+        },
+      });
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } else {
+      expect(readComposerDraft("root")).toEqual({ text: "Run /skill-2 [image 1]", skillNames: ["skill-2"] });
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+        { method: "turn/start", params: expect.objectContaining({ ref: "root", input }) },
+      ]);
+    }
+    expect(getToasts()).toEqual([]);
+  } finally {
+    hold.release();
+  }
+});
 
 test("a pending source image survives a Composer view remount without sending", async () => {
   const encoding = installControlledImageEncoding();

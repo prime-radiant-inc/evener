@@ -315,6 +315,12 @@ identity. Promotion does not submit or replay input. An explicit Open conversati
 opens or focuses an ordinary independent session pane. Unrelated panes keep
 their identity and placement.
 
+Closing the source pane or resetting the workspace retires that source lifetime.
+A fresh pane with the same ID and ref owns a new lifetime. Late recovery-write
+or acceptance completion cannot change its draft, skill selections, attachments
+or active recovery identity. Already durable input still belongs to the existing
+mutation dispatcher; retiring its editor does not cancel accepted work.
+
 Saved workspace intent contains the selected ref, validated ordered edges and
 return descriptor. Draft text and skill selections use their existing stores.
 Processed image bytes and pending encodes belong to the original pane lifetime;
