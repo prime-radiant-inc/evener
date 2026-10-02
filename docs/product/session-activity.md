@@ -280,6 +280,11 @@ tab and group remain in place. Each drill selects the actual returned child ref;
 drilling from an ancestor replaces only the path after that owner. Navigation
 children remain fork relationships, not delegate ancestry.
 
+Cascade and sidebar breadcrumbs use the same reconciled requested path. When
+authoritative delegation proves a saved source alias occupies an ancestor
+position, both surfaces pop to that alias without replacing the source binding.
+Unknown ancestry stays explicit; cached edges do not establish new ancestors.
+
 The selected session and its immediate parent are readable columns. Earlier
 ancestors are live compact spines. Each readable scope has an independent
 transcript position; collapsed spines retain their reader state while pausing

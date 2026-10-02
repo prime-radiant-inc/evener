@@ -19,7 +19,7 @@ import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { ClientProvider } from "../clientContext";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
-import { currentSessionRef, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
+import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 
@@ -283,6 +283,57 @@ test("desktop delegate rows build six nested edges in one pane and parent crumbs
   }
   expect(currentSessionRef(workspaceStore.getState())).toBe(root);
   expect(window.location.pathname).toBe("/s/remote%3Aroot");
+});
+
+test("cascade sidebar parent crumbs preserve the requested source alias at its proven ancestor position", async () => {
+  const context = (ref: string) =>
+    ref === "child"
+      ? {
+          ...activityContext(ref),
+          ref: "canonical-child",
+          sessionId: "child-id",
+          rootRef: "canonical-root",
+          parentRef: "canonical-root",
+          delegateId: "d1",
+          ancestors: [{ ref: "canonical-root", sessionId: "root-id", title: "Root" }],
+        }
+      : { ...activityContext(ref), ref: "canonical-root", sessionId: "root-id" };
+  const client = cascadeClient(context);
+  connectionStore.getState().connect(client);
+  installFocusedScope("child");
+  const source = { type: "session" as const, params: { ref: "root-alias" } };
+  const params: SessionZoomParams = {
+    ref: "child",
+    source,
+    edges: [{ ownerRef: "root-alias", childRef: "child", delegateId: "d1" }],
+  };
+  const unrelated: OpenPaneRecord = {
+    id: "unrelated",
+    type: "transcript",
+    params: { ref: "other" },
+    slot: "secondary",
+  };
+  workspaceStore.setState({
+    panes: [{ id: "source", type: "sessionZoom", params, slot: "main" }, unrelated],
+    focusedPaneId: "source",
+  });
+  activitySidebarStore.getState().openWith("agents");
+  mount();
+  const sidebar = within(screen.getByTestId("activity-sidebar"));
+  const parent = await sidebar.findByRole("button", { name: "Root" });
+  await act(async () => fireEvent.click(parent));
+  const pane = workspaceStore.getState().panes.find((item) => item.id === "source");
+  if (!pane) throw new Error("Missing source pane after breadcrumb pop");
+  expect(pane).toMatchObject({
+    id: "source",
+    type: "sessionZoom",
+    slot: "main",
+    params: { ref: "root-alias", edges: [] },
+  });
+  expect((pane.params as SessionZoomParams).source).toBe(source);
+  expect(workspaceStore.getState().focusedPaneId).toBe("source");
+  expect(workspaceStore.getState().panes).toHaveLength(2);
+  expect(workspaceStore.getState().panes.find((item) => item.id === "unrelated")).toBe(unrelated);
 });
 
 test("activity tabs keep a named keyboard radio group without a visible heading", async () => {
