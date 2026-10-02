@@ -1,9 +1,25 @@
 // @vitest-environment node
 
-import type { HostForwardedResult } from "@evener/appwire-client";
+import type { AppwireClientLike, HostForwardedResult, PathValidateResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST } from "./index";
+
+// Compile-time contracts stay uncalled: rejected calls must never reach a hub.
+function hostRequestTypeContract(client: AppwireClientLike) {
+  expectTypeOf(hostRequest(client, "alpha", "evener/path/validate", { path: "/srv", kind: "dir" })).toEqualTypeOf<
+    Promise<PathValidateResponse>
+  >();
+  // @ts-expect-error -- validation keeps its own required params through forwarding
+  hostRequest(client, "alpha", "evener/path/validate", { prefix: "/srv" });
+  // @ts-expect-error -- thread reads cannot be forwarded to an arbitrary host
+  hostRequest(client, "alpha", "thread/read", { ref: "local:t", includeTurns: false });
+  // @ts-expect-error -- local-only credential operations use the broad local client
+  hostRequest(client, "alpha", "evener/instance/refreshModels", { name: "primary" });
+  // The same local operation remains callable on the transport client.
+  client.request("evener/instance/refreshModels", { name: "primary" });
+}
+void hostRequestTypeContract;
 
 describe("isLocalHost", () => {
   test("treats the local id and an absent/empty host as local", () => {

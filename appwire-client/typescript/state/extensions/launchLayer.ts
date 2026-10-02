@@ -21,14 +21,14 @@
 // be replaced (the web's connection store) hands in an object that resolves
 // the current client on each call.
 
-import type { AppwireClient } from "../../client";
+import type { AppwireClientLike, RequestPort } from "../../clientLike";
 import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
-import type { LaunchConfigLayer } from "../../types.gen";
+import type { HostRequestMethod, LaunchConfigLayer } from "../../types.gen";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
 import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
-export type LaunchLayerClient = Pick<AppwireClient, "request" | "onNotification">;
+export type LaunchLayerClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
 export interface LaunchLayerState {
   launchLayer: LaunchConfigLayer | null;
